@@ -6,8 +6,9 @@ from typing import Optional, ParamSpec, TypeVar
 
 import pytest
 
+from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define, register
-from effectful.ops.interpreter import bind_result, interpreter, value_or_result
+from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
 

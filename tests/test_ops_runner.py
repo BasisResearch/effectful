@@ -5,9 +5,10 @@ from typing import ParamSpec, TypeVar
 
 import pytest
 
+from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.interpreter import bind_result, interpreter, value_or_result
+from effectful.ops.interpreter import interpreter
 from effectful.ops.runner import product, reflect
 
 logger = logging.getLogger(__name__)
