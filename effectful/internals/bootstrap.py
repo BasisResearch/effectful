@@ -2,11 +2,17 @@ import dataclasses
 import typing
 from typing import Callable, Generic, ParamSpec, Type, TypeGuard, TypeVar
 
-from effectful.ops.core import Context, Interpretation, Operation, Symbol, Term, Variable
-
-from . import runtime
+from effectful.ops.core import (
+    Context,
+    Interpretation,
+    Operation,
+    Symbol,
+    Term,
+    Variable,
+)
 
 from ..ops import core
+from . import runtime
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -55,6 +61,7 @@ def base_define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
         return typing.get_origin(m) is Operation or m is Operation
 
     if _is_op_type(m):
+
         @_BaseOperation
         def defop(fn: Callable[..., S]) -> _BaseOperation[..., S]:
             return _BaseOperation(fn)

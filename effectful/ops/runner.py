@@ -1,13 +1,8 @@
 import contextlib
 from typing import Mapping, Optional, ParamSpec, TypeVar
 
-from effectful.ops.interpreter import (
-    Prompt,
-    bind_prompts,
-    bind_result,
-    interpreter,
-)
 from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.interpreter import Prompt, bind_prompts, bind_result, interpreter
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")

@@ -1,6 +1,15 @@
 import collections.abc
 import typing
-from typing import Callable, Iterable, Mapping, Optional, ParamSpec, Protocol, Type, TypeVar
+from typing import (
+    Callable,
+    Iterable,
+    Mapping,
+    Optional,
+    ParamSpec,
+    Protocol,
+    Type,
+    TypeVar,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -65,10 +74,7 @@ def register(
 
 
 def apply(
-    intp: Interpretation[S, T],
-    op: Operation[P, S],
-    *args: P.args,
-    **kwargs: P.kwargs
+    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:
     try:
         interpret = intp[op]
@@ -84,5 +90,5 @@ def evaluate(term: Term[T]) -> T:
         **{
             k: (evaluate(v) if isinstance(v, Term) else v)
             for k, v in term.kwargs.items()
-        }
+        },
     )

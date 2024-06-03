@@ -14,8 +14,9 @@ V = TypeVar("V")
 
 @define(Operation)
 def free_interpretation(*ops: Operation[P, T]) -> Interpretation[T, Term[T]]:
-
-    def _free_wrapper(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> Term[T]:
+    def _free_wrapper(
+        op: Operation[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> Term[T]:
         return define(Term)(op, args, kwargs)
 
     return {op: functools.partial(_free_wrapper, op) for op in ops}
@@ -32,9 +33,11 @@ def quotient(
     if len(intps) > 1:
         raise NotImplementedError("Associativity laws not yet clear")
 
-    intp2, = intps
+    (intp2,) = intps
 
-    def _wrapper(fn: Callable[P, Term[T]], *args: P.args, **kwargs: P.kwargs) -> Term[T]:
+    def _wrapper(
+        fn: Callable[P, Term[T]], *args: P.args, **kwargs: P.kwargs
+    ) -> Term[T]:
         with interpreter(intp2):
             simplified_args = tuple(evaluate(arg) for arg in args)
             simplified_kwargs = {k: evaluate(kwarg) for k, kwarg in kwargs.items()}
