@@ -7,11 +7,11 @@ from typing_extensions import Concatenate, ParamSpec
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.interpreter import interpreter
 
+P = ParamSpec("P")
+Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-P = ParamSpec("P")
-Q = ParamSpec("Q")
 
 
 @contextlib.contextmanager
