@@ -5,10 +5,10 @@ from typing import ParamSpec, TypeVar
 
 import pytest
 
-from chirho.meta.ops.interpreter import value_or_result
-from chirho.meta.ops.handler import coproduct, fwd, handler
-from chirho.meta.ops.interpreter import bind_result, interpreter
-from chirho.meta.ops.core import Interpretation, Operation, define
+from effectful.ops.interpreter import value_or_result
+from effectful.ops.handler import coproduct, fwd, handler
+from effectful.ops.interpreter import bind_result, interpreter
+from effectful.ops.core import Interpretation, Operation, define
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,11 @@
-Contributing to ChiRho
-======================
+Contributing
+============
 
 Development
 -----------
 
 Please follow our established coding style including variable names,
-module imports, and function definitions. The ChiRho codebase follows
+module imports, and function definitions. The codebase follows
 the `PEP8 style guide <https://www.python.org/dev/peps/pep-0008/>`__
 (which you can check with ``make lint``) and follows
 `isort <https://github.com/timothycrosley/isort>`__ import order
@@ -14,7 +14,7 @@ the `PEP8 style guide <https://www.python.org/dev/peps/pep-0008/>`__
 Dev Setup
 ---------
 
-To install dev dependencies for ChiRho, run the following command.
+To install dev dependencies, run the following command.
 
 .. code:: sh
 

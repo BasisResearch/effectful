@@ -2,7 +2,7 @@ import dataclasses
 import typing
 from typing import Callable, Generic, ParamSpec, Type, TypeGuard, TypeVar
 
-from chirho.meta.ops.core import Context, Interpretation, Operation, Symbol, Term, Variable
+from effectful.ops.core import Context, Interpretation, Operation, Symbol, Term, Variable
 
 from . import runtime
 

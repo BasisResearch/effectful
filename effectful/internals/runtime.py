@@ -3,7 +3,7 @@ import functools
 import weakref
 from typing import Callable, Generic, TypeVar
 
-from chirho.meta.ops.core import Interpretation
+from effectful.ops.core import Interpretation
 
 S = TypeVar("S")
 T = TypeVar("T")

@@ -2,8 +2,8 @@ import contextlib
 import functools
 from typing import Callable, ParamSpec, TypeVar
 
-from chirho.meta.ops.core import Interpretation, Operation, Term, define, evaluate
-from chirho.meta.ops.interpreter import interpreter
+from effectful.ops.core import Interpretation, Operation, Term, define, evaluate
+from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")

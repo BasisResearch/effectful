@@ -2,7 +2,7 @@ import sys
 
 from setuptools import find_packages, setup
 
-VERSION = "0.2.0"
+VERSION = "0.0.1"
 
 try:
     long_description = open("README.rst", encoding="utf-8").read()
@@ -21,32 +21,29 @@ EXTRAS_REQUIRE = [
     "pytorch-lightning",
     "scikit-image",
     "tensorboard",
-    "typing_extensions",
 ]
 
-DYNAMICAL_REQUIRE = ["torchdiffeq"]
-
 setup(
-    name="chirho",
+    name="effectful",
     version=VERSION,
-    description="Causal reasoning",
+    description="Metaprogramming infrastructure",
     long_description=long_description,
-    packages=find_packages(include=["chirho", "chirho.*"]),
+    packages=find_packages(include=["effectful", "effectful.*"]),
     author="Basis",
     url="https://www.basis.ai/",
     project_urls={
     #     "Documentation": "",
-        "Source": "https://github.com/BasisResearch/chirho",
+        "Source": "https://github.com/BasisResearch/effectful",
     },
     install_requires=[
         # if you add any additional libraries, please also
         # add them to `docs/source/requirements.txt`
-        "pyro-ppl==1.8.6",
+        "typing_extensions",
+        "pyro-ppl",
     ],
     extras_require={
-        "dynamical": DYNAMICAL_REQUIRE,
         "extras": EXTRAS_REQUIRE,
-        "test": EXTRAS_REQUIRE + DYNAMICAL_REQUIRE
+        "test": EXTRAS_REQUIRE
         + [
             "pytest",
             "pytest-cov",

@@ -1,13 +1,13 @@
 import contextlib
 from typing import Mapping, Optional, ParamSpec, TypeVar
 
-from chirho.meta.ops.interpreter import (
+from effectful.ops.interpreter import (
     Prompt,
     bind_prompts,
     bind_result,
     interpreter,
 )
-from chirho.meta.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation, define
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
