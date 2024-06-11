@@ -265,9 +265,7 @@ def scatter_n(
     :param partitioned_values: A dictionary mapping index sets to values.
     :return: A single value.
     """
-    assert len(values) > 0
-    assert all(isinstance(k, IndexSet) for k in values)
-    for indices, value in values.items():
+    for indices, value in values:
         result = scatter(value, indices, result=result, **kwargs)
     return result
 
@@ -308,10 +306,8 @@ def cond(fst, snd: T, case: Optional[Union[bool, torch.Tensor]] = None, **kwargs
 def cond_n(
     values: Iterable[Tuple[IndexSet, T]], case: Union[bool, torch.Tensor], **kwargs
 ) -> T:
-    assert len(values) > 0
-    assert all(isinstance(k, IndexSet) for k in values.keys())
     result: Optional[T] = None
-    for indices, value in values.items():
+    for indices, value in values:
         tst = torch.as_tensor(
             functools.reduce(
                 operator.or_, [case == index for index in next(iter(indices.values()))]

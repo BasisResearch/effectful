@@ -388,7 +388,7 @@ def test_persistent_index_state(enum_shape, plate_shape, batch_shape, event_shap
 
     with index_state:
         actual = scatter_n(
-            {ind1: value1, ind2: value2}, result=result, event_dim=event_dim
+            ((ind1, value1), (ind2, value2)), result=result, event_dim=event_dim
         )
 
     try:
@@ -452,7 +452,7 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
             )
 
         actual_full = cond_n(
-            {ind1: value1, ind2: value2, ind3: value3}, case, event_dim=event_dim
+            ((ind1, value1), (ind2, value2), (ind3, value3)), case, event_dim=event_dim
         )
 
         actual_left = cond(

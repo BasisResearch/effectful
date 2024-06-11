@@ -1,6 +1,16 @@
 import collections
 import functools
-from typing import Any, Callable, Dict, Hashable, List, MutableMapping, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import pyro
 import torch
