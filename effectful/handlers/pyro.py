@@ -136,7 +136,7 @@ class IndexPlatesMessenger(pyro.poutine.messenger.Messenger):
                 ), f"cannot add {name}={indices} to {self.plates[name].size}"
 
     def _pyro_scatter_n(self, msg: Dict[str, Any]) -> None:
-        add_indices(union(*msg["args"][0].keys()))
+        add_indices(union(*(k for k, _ in msg["args"][0])))
         msg["stop"] = True
 
 
