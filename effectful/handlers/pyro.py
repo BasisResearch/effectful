@@ -1,13 +1,13 @@
 import collections
 import functools
-from typing import Any, Callable, Dict, Hashable, List, MutableMapping, Optional
+from typing import Any, Callable, Dict, Hashable, List, MutableMapping, Optional, Tuple
 
 import pyro
 import torch
 
 from effectful.internals.indexed_impls import get_sample_msg_device
 from effectful.ops.core import Symbol
-from effectful.ops.indexed import add_indices, indices_of, union
+from effectful.ops.indexed import IndexSet, add_indices, indices_of, union
 
 
 class _LazyPlateMessenger(pyro.poutine.indep_messenger.IndepMessenger):
@@ -157,3 +157,30 @@ class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
         msg["fn"] = msg["fn"].expand(
             torch.broadcast_shapes(msg["fn"].batch_shape, mask.shape)
         )
+
+
+def indexset_as_mask(
+    indexset: IndexSet,
+    *,
+    event_dim: int = 0,
+    name_to_dim_size: Optional[Dict[Hashable, Tuple[int, int]]] = None,
+    device: torch.device = torch.device("cpu"),
+) -> torch.Tensor:
+    """
+    Get a dense mask tensor for indexing into a tensor from an indexset.
+    """
+    if name_to_dim_size is None:
+        from effectful.internals.indexed_impls import get_index_plates
+
+        name_to_dim_size = {
+            name: (f.dim, f.size) for name, f in get_index_plates().items()
+        }
+    batch_shape = [1] * -min([dim for dim, _ in name_to_dim_size.values()], default=0)
+    inds: List[Union[slice, torch.Tensor]] = [slice(None)] * len(batch_shape)
+    for name, values in indexset.items():
+        dim, size = name_to_dim_size[name]
+        inds[dim] = torch.tensor(list(sorted(values)), dtype=torch.long)
+        batch_shape[dim] = size
+    mask = torch.zeros(tuple(batch_shape), dtype=torch.bool, device=device)
+    mask[tuple(inds)] = True
+    return mask[(...,) + (None,) * event_dim]

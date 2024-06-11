@@ -1,6 +1,6 @@
 import functools
 import operator
-from typing import Dict, Hashable, Iterable, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Dict, Iterable, Optional, Set, Tuple, TypeVar, Union
 
 import pyro
 import torch
@@ -320,33 +320,6 @@ def cond_n(
         )
         result = cond(result if result is not None else value, value, tst, **kwargs)
     return result
-
-
-def indexset_as_mask(
-    indexset: IndexSet,
-    *,
-    event_dim: int = 0,
-    name_to_dim_size: Optional[Dict[Hashable, Tuple[int, int]]] = None,
-    device: torch.device = torch.device("cpu"),
-) -> torch.Tensor:
-    """
-    Get a dense mask tensor for indexing into a tensor from an indexset.
-    """
-    if name_to_dim_size is None:
-        from effectful.internals.indexed_impls import get_index_plates
-
-        name_to_dim_size = {
-            name: (f.dim, f.size) for name, f in get_index_plates().items()
-        }
-    batch_shape = [1] * -min([dim for dim, _ in name_to_dim_size.values()], default=0)
-    inds: List[Union[slice, torch.Tensor]] = [slice(None)] * len(batch_shape)
-    for name, values in indexset.items():
-        dim, size = name_to_dim_size[name]
-        inds[dim] = torch.tensor(list(sorted(values)), dtype=torch.long)
-        batch_shape[dim] = size
-    mask = torch.zeros(tuple(batch_shape), dtype=torch.bool, device=device)
-    mask[tuple(inds)] = True
-    return mask[(...,) + (None,) * event_dim]
 
 
 @pyro.poutine.runtime.effectful(type="add_indices")

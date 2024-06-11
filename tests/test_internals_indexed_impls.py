@@ -6,7 +6,7 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.handlers.pyro import IndexPlatesMessenger
+from effectful.handlers.pyro import IndexPlatesMessenger, indexset_as_mask
 from effectful.internals.indexed_impls import get_index_plates
 from effectful.ops.indexed import (
     IndexSet,
@@ -14,7 +14,6 @@ from effectful.ops.indexed import (
     cond,
     cond_n,
     gather,
-    indexset_as_mask,
     indices_of,
     scatter,
     scatter_n,
