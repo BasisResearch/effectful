@@ -1,6 +1,6 @@
 import contextlib
 import functools
-from typing import Callable, Concatenate, Mapping, Optional, Tuple, TypeVar
+from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 

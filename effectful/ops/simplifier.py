@@ -1,6 +1,8 @@
 import contextlib
 import functools
-from typing import Callable, ParamSpec, TypeVar
+from typing import Callable, TypeVar
+
+from typing_extensions import ParamSpec
 
 from effectful.ops.core import Interpretation, Operation, Term, define, evaluate
 from effectful.ops.interpreter import interpreter

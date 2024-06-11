@@ -1,6 +1,8 @@
 import dataclasses
 import typing
-from typing import Callable, Generic, ParamSpec, Type, TypeGuard, TypeVar
+from typing import Callable, Generic, Type, TypeVar
+
+from typing_extensions import ParamSpec, TypeGuard
 
 from effectful.ops.core import (
     Context,

@@ -1,15 +1,8 @@
 import collections.abc
 import typing
-from typing import (
-    Callable,
-    Iterable,
-    Mapping,
-    Optional,
-    ParamSpec,
-    Protocol,
-    Type,
-    TypeVar,
-)
+from typing import Callable, Iterable, Mapping, Optional, Protocol, Type, TypeVar
+
+from typing_extensions import ParamSpec
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")

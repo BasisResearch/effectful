@@ -1,5 +1,7 @@
 import contextlib
-from typing import Optional, ParamSpec, TypeVar
+from typing import Optional, TypeVar
+
+from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompts
 from effectful.ops.core import Interpretation, Operation, define

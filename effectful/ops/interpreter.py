@@ -1,5 +1,7 @@
 import contextlib
-from typing import ParamSpec, TypeVar
+from typing import TypeVar
+
+from typing_extensions import ParamSpec
 
 from effectful.ops.core import Interpretation
 
