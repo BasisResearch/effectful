@@ -1,20 +1,12 @@
 import numbers
-from typing import Dict, Hashable, Optional, TypeVar, Union
+from typing import Dict, Hashable, Mapping, Optional, TypeVar, Union
 
 import pyro
 import pyro.infer.reparam
 import torch
-from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from effectful.ops.indexed import (
-    IndexSet,
-    cond,
-    gather,
-    get_index_plates,
-    indices_of,
-    scatter,
-    union,
-)
+from effectful.ops.core import Operation, Symbol, define
+from effectful.ops.indexed import IndexSet, cond, gather, indices_of, scatter, union
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -228,29 +220,6 @@ def _cond_tensor(
     return torch.where(case[(...,) + (None,) * event_dim], snd, fst)
 
 
-class _LazyPlateMessenger(IndepMessenger):
-    prefix: str = "__index_plate__"
-
-    def __init__(self, name: str, *args, **kwargs):
-        self._orig_name: str = name
-        super().__init__(f"{self.prefix}_{name}", *args, **kwargs)
-
-    @property
-    def frame(self) -> CondIndepStackFrame:
-        return CondIndepStackFrame(
-            name=self.name, dim=self.dim, size=self.size, counter=0
-        )
-
-    def _process_message(self, msg):
-        if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
-            return
-        if self._orig_name in union(
-            indices_of(msg["value"], event_dim=msg["fn"].event_dim),
-            indices_of(msg["fn"]),
-        ):
-            super()._process_message(msg)
-
-
 def get_sample_msg_device(
     dist: pyro.distributions.Distribution,
     value: Optional[Union[torch.Tensor, float, int, bool]],
@@ -270,6 +239,9 @@ def get_sample_msg_device(
     raise ValueError(f"could not infer device for {dist} and {value}")
 
 
-@pyro.poutine.runtime.effectful(type="add_indices")
-def add_indices(indexset: IndexSet) -> IndexSet:
-    return indexset
+@pyro.poutine.runtime.effectful(type="get_index_plates")
+@define(Operation)
+def get_index_plates() -> (
+    Mapping[Symbol, pyro.poutine.indep_messenger.CondIndepStackFrame]
+):
+    return {}

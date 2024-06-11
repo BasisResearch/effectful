@@ -7,13 +7,13 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import IndexPlatesMessenger
-from effectful.internals.indexed_impls import add_indices
+from effectful.internals.indexed_impls import get_index_plates
 from effectful.ops.indexed import (
     IndexSet,
+    add_indices,
     cond,
     cond_n,
     gather,
-    get_index_plates,
     indexset_as_mask,
     indices_of,
     scatter,

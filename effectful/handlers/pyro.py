@@ -1,20 +1,40 @@
 import collections
 import functools
-from typing import Any, Callable, Dict, Hashable, List, Optional
+from typing import Any, Callable, Dict, Hashable, List, MutableMapping, Optional
 
 import pyro
 import torch
 
-from effectful.internals.indexed_impls import (
-    _LazyPlateMessenger,
-    add_indices,
-    get_sample_msg_device,
-)
-from effectful.ops.indexed import union
+from effectful.internals.indexed_impls import get_sample_msg_device
+from effectful.ops.core import Symbol
+from effectful.ops.indexed import add_indices, indices_of, union
+
+
+class _LazyPlateMessenger(pyro.poutine.indep_messenger.IndepMessenger):
+    prefix: str = "__index_plate__"
+
+    def __init__(self, name: str, *args, **kwargs):
+        self._orig_name: str = name
+        super().__init__(f"{self.prefix}_{name}", *args, **kwargs)
+
+    @property
+    def frame(self) -> pyro.poutine.indep_messenger.CondIndepStackFrame:
+        return pyro.poutine.indep_messenger.CondIndepStackFrame(
+            name=self.name, dim=self.dim, size=self.size, counter=0
+        )
+
+    def _process_message(self, msg):
+        if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
+            return
+        if self._orig_name in union(
+            indices_of(msg["value"], event_dim=msg["fn"].event_dim),
+            indices_of(msg["fn"]),
+        ):
+            super()._process_message(msg)
 
 
 class IndexPlatesMessenger(pyro.poutine.messenger.Messenger):
-    plates: Dict[Hashable, pyro.poutine.indep_messenger.IndepMessenger]
+    plates: MutableMapping[Symbol, pyro.poutine.indep_messenger.IndepMessenger]
     first_available_dim: int
 
     def __init__(self, first_available_dim: Optional[int] = None):

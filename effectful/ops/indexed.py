@@ -5,7 +5,13 @@ from typing import Dict, Hashable, Iterable, List, Optional, Set, Tuple, TypeVar
 import pyro
 import torch
 
+from effectful.ops.core import Context, Operation, define
+
+S = TypeVar("S")
 T = TypeVar("T")
+
+
+_IndexSet = Context[Set[int]]
 
 
 class IndexSet(Dict[str, Set[int]]):
@@ -60,6 +66,7 @@ class IndexSet(Dict[str, Set[int]]):
         return hash(frozenset((k, frozenset(vs)) for k, vs in self.items()))
 
 
+@define(Operation)
 def union(*indexsets: IndexSet) -> IndexSet:
     """
     Compute the union of multiple :class:`IndexSet` s
@@ -84,12 +91,10 @@ def union(*indexsets: IndexSet) -> IndexSet:
             union(a, a) == a
             union(a, union(a, b)) == union(a, b)
     """
-    return IndexSet(
-        **{
-            k: set.union(*[vs[k] for vs in indexsets if k in vs])
-            for k in set.union(*(set(vs) for vs in indexsets))
-        }
-    )
+    return {
+        k: set.union(*[vs[k] for vs in indexsets if k in vs])
+        for k in set.union(*(set(vs) for vs in indexsets))
+    }
 
 
 @functools.singledispatch
@@ -249,7 +254,10 @@ def scatter(
 
 
 @pyro.poutine.runtime.effectful(type="scatter_n")
-def scatter_n(values: Dict[IndexSet, T], *, result: Optional[T] = None, **kwargs):
+@define(Operation)
+def scatter_n(
+    values: Iterable[Tuple[IndexSet, T]], *, result: Optional[T] = None, **kwargs
+) -> T:
     """
     Scatters a dictionary of disjoint masked values into a single value
     using repeated calls to :func:``scatter``.
@@ -265,7 +273,7 @@ def scatter_n(values: Dict[IndexSet, T], *, result: Optional[T] = None, **kwargs
 
 
 @functools.singledispatch
-def cond(fst, snd, case: Optional[T] = None, **kwargs):
+def cond(fst, snd: T, case: Optional[Union[bool, torch.Tensor]] = None, **kwargs) -> T:
     """
     Selection operation that is the sum-type analogue of :func:`scatter`
     in the sense that where :func:`scatter` propagates both of its arguments,
@@ -296,7 +304,10 @@ def cond(fst, snd, case: Optional[T] = None, **kwargs):
 
 
 @pyro.poutine.runtime.effectful(type="cond_n")
-def cond_n(values: Dict[IndexSet, T], case: Union[bool, torch.Tensor], **kwargs):
+@define(Operation)
+def cond_n(
+    values: Iterable[Tuple[IndexSet, T]], case: Union[bool, torch.Tensor], **kwargs
+) -> T:
     assert len(values) > 0
     assert all(isinstance(k, IndexSet) for k in values.keys())
     result: Optional[T] = None
@@ -311,13 +322,6 @@ def cond_n(values: Dict[IndexSet, T], case: Union[bool, torch.Tensor], **kwargs)
     return result
 
 
-@pyro.poutine.runtime.effectful(type="get_index_plates")
-def get_index_plates() -> (
-    Dict[Hashable, pyro.poutine.indep_messenger.CondIndepStackFrame]
-):
-    return {}
-
-
 def indexset_as_mask(
     indexset: IndexSet,
     *,
@@ -329,6 +333,8 @@ def indexset_as_mask(
     Get a dense mask tensor for indexing into a tensor from an indexset.
     """
     if name_to_dim_size is None:
+        from effectful.internals.indexed_impls import get_index_plates
+
         name_to_dim_size = {
             name: (f.dim, f.size) for name, f in get_index_plates().items()
         }
@@ -341,3 +347,9 @@ def indexset_as_mask(
     mask = torch.zeros(tuple(batch_shape), dtype=torch.bool, device=device)
     mask[tuple(inds)] = True
     return mask[(...,) + (None,) * event_dim]
+
+
+@pyro.poutine.runtime.effectful(type="add_indices")
+@define(Operation)
+def add_indices(indexset: IndexSet) -> IndexSet:
+    return indexset
