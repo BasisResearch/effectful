@@ -1,6 +1,6 @@
 import dataclasses
 import typing
-from typing import Callable, Generic, Type, TypeVar
+from typing import Callable, Generic, Type, TypeVar, Dict, Tuple, Union
 
 from typing_extensions import ParamSpec, TypeGuard
 
@@ -41,10 +41,10 @@ class _BaseOperation(Generic[P, T_co]):
 
 
 @dataclasses.dataclass
-class _BaseTerm(Generic[T]):
-    op: Operation[..., T]
-    args: tuple[Term[T] | T, ...]
-    kwargs: dict[str, Term[T] | T]
+class _BaseTerm(Generic[P, T]):
+    op: Operation[P, T]
+    args: Tuple[Union[Term[T], T], ...]
+    kwargs: Dict[str, Union[Term[T], T]]
 
 
 @dataclasses.dataclass
@@ -54,23 +54,23 @@ class _BaseVariable(Generic[T]):
 
 
 @runtime.weak_memoize
-def base_define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
+def base_define(m: Union[Type[T], Callable[Q, T]]) -> Operation[Q, T]:
     if not typing.TYPE_CHECKING:
         if typing.get_origin(m) not in (m, None):
             return base_define(typing.get_origin(m))
 
-    def _is_op_type(m: Type[S] | Callable[P, S]) -> TypeGuard[Type[Operation[..., S]]]:
+    def _is_op_type(m: Union[Type[S], Callable[P, S]]) -> TypeGuard[Type[Operation[P, S]]]:
         return typing.get_origin(m) is Operation or m is Operation
 
     if _is_op_type(m):
 
         @_BaseOperation
-        def defop(fn: Callable[..., S]) -> _BaseOperation[..., S]:
+        def defop(fn: Callable[P, S]) -> _BaseOperation[P, S]:
             return _BaseOperation(fn)
 
         return defop
     else:
-        return base_define(Operation[..., T])(m)
+        return base_define(Operation[P, T])(m)
 
 
 # bootstrap

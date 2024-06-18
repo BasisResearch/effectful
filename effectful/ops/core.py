@@ -1,6 +1,6 @@
 import collections.abc
 import typing
-from typing import Callable, Iterable, Mapping, Optional, Protocol, Type, TypeVar
+from typing import Callable, Mapping, Optional, Protocol, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -21,18 +21,20 @@ class Operation(Protocol[P, T_co]):
         ...
 
 
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+Interpretation = Mapping[Operation[P, T_co], Callable[P, T_co]]
 
+
+Symbolic = Union["Term[T]", T, "Variable[T]"]
 
 @typing.runtime_checkable
 class Term(Protocol[T]):
-    op: Operation[..., T]
-    args: Iterable["Term[T]" | T | "Variable[T]"]
-    kwargs: Mapping[str, "Term[T]" | T | "Variable[T]"]
+    op: Operation[P, T]
+    args: P.args
+    kwargs: P.kwargs
 
 
 Symbol = str  # TODO replace with extensional protocol type
-Context = collections.abc.MutableMapping[Symbol, T]
+Context = typing.MutableMapping[Symbol, T]
 TypeContext = Context[Type[T]]
 TermContext = Context[Term[T]]
 
@@ -43,7 +45,7 @@ class Variable(Protocol[T]):
     type: Type[T]
 
 
-def define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
+def define(m: Union[Type[T], Callable[Q, T]]) -> Operation[Q, T]:
     """
     Scott encoding of a type as its constructor.
     """
@@ -67,7 +69,7 @@ def register(
 
 
 def apply(
-    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
+    intp: Interpretation[P, S], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:
     try:
         interpret = intp[op]

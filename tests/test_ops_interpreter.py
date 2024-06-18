@@ -34,9 +34,9 @@ def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
 
-def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
+def times_n(n: int, *ops: Operation[int, int]) -> Interpretation[int, int]:
     def _op_times_n(
-        n: int, op: Operation[..., int], result: Optional[int], *args: int
+        n: int, op: Operation[int, int], result: Optional[int], *args: int
     ) -> int:
         return value_or_result(op.default)(result, *args) * n
 

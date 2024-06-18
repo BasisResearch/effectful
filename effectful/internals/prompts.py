@@ -67,7 +67,7 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return _wrapper
 
 
-Prompt = Operation[[Optional[T]], T]
+Prompt = Operation[Optional[T], T]
 
 
 def bind_prompts(

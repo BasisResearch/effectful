@@ -33,11 +33,11 @@ def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
 
-def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
+def defaults(*ops: Operation[int, int]) -> Interpretation[int, int]:
     return {op: bind_result(value_or_result(op.default)) for op in ops}
 
 
-def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
+def times_n_handler(n: int, *ops: Operation[int, int]) -> Interpretation[int, int]:
     return {op: bind_result(lambda v, *args, **kwargs: fwd(v) * n) for op in ops}
 
 
