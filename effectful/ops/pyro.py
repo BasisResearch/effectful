@@ -1,6 +1,7 @@
 import functools
 import random
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
 from weakref import ref
 from typing import Callable, Union, Optional, TypeVar, OrderedDict, TypedDict, Tuple
@@ -16,9 +17,9 @@ from typing_extensions import ParamSpec, Concatenate
 
 from effectful.internals.prompts import bind_result
 from effectful.ops import core
-from effectful.ops.runner import runner, reflect
+from effectful.ops.runner import runner, reflect, install, product
 from effectful.ops.core import Operation, define
-from effectful.ops.handler import handler, fwd, install
+from effectful.ops.handler import handler, fwd
 
 
 def empty_operation(name):
@@ -30,14 +31,16 @@ def empty_operation(name):
     return define(Operation)(empty_op)
 
 
-class SampleMsg(TypedDict):
+@dataclass
+class SampleMsg:
     name: str
     val: Tensor
     dist: Distribution
     obs: Optional[Tensor]
 
 
-class ParamMsg(TypedDict):
+@dataclass
+class ParamMsg:
     name: str
     val: Tensor
 
@@ -67,7 +70,7 @@ def trace():
 
     def do_param(result: Optional[Tensor],
                  var_name: str,
-                 initial_value: Union[Tensor, Callable[[], Tensor]],
+                 initial_value: Union[Tensor, Callable[[], Tensor]] = None,
                  constraint: Optional[Constraint] = None,
                  event_dim: Optional[int] = None) -> Tensor:
         result = fwd(result)
@@ -75,13 +78,22 @@ def trace():
 
         return result
 
-    with handler({sample: do_sample, param: do_param}):
+    with handler({sample: bind_result(do_sample), param: bind_result(do_param)}):
         yield the_trace
 
 
 def replay(trace: Trace):
+    def do_sample(res,
+                  var_name: str,
+                  dist: Distribution,
+                  **kwargs):
+        if var_name in trace:
+            return trace[var_name].val
+        else:
+            return fwd(res)
+
     return handler({
-        sample: lambda _, v, d: fwd(trace[v]["val"])
+        sample: bind_result(do_sample),
     })
 
 
@@ -97,8 +109,8 @@ def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool])
             return fwd(result)
 
     return handler({
-        sample: partial(blocking, fn=sample),
-        param: partial(block, fn=param)
+        sample: bind_result(partial(blocking, sample)),
+        param: bind_result(partial(blocking, param))
     })
 
 
@@ -106,10 +118,10 @@ Seed = Tuple[Tensor, tuple, dict]
 
 
 def seed_impl():
-    def do_get_rng_seed(_: None) -> Union[int, Seed]:
+    def do_get_rng_seed() -> Union[int, Seed]:
         return fwd((get_rng_state(), random.getstate(), np.random.get_state()))
 
-    def do_set_rng_seed(_: None, seed: Union[int, Seed]):
+    def do_set_rng_seed(seed: Union[int, Seed]):
         if isinstance(seed, int):
             manual_seed(seed)
             random.seed(seed)
@@ -120,15 +132,22 @@ def seed_impl():
             np.random.set_state(seed[2])
         return fwd(None)
 
-    def do_sample(name: str, dist: Distribution, **kwargs):
+    def do_sample(name: str, dist: Distribution, obs=None, **kwargs):
         assert isinstance(name, str)
-        return fwd(dist.rsample() if dist.has_rsample else dist.sample())
+        return fwd(obs or (dist.rsample() if dist.has_rsample else dist.sample()))
 
     return {
         get_rng_seed: do_get_rng_seed,
         set_rng_seed: do_set_rng_seed,
         sample: do_sample,
     }
+
+
+install(product(seed_impl(), {
+    get_rng_seed: lambda res, *_, **__: reflect(res),
+    set_rng_seed: lambda res, *_, **__: reflect(res),
+    sample: lambda res, *_, **__: reflect(res),
+}))
 
 
 @contextmanager
@@ -141,14 +160,10 @@ def seed(seed: int):
         set_rng_seed(old_seed)
 
 
-install(seed_impl())
-
-
 def param_impl():
     the_store = {}
 
-    def do_param(res: None,
-                 name: str,
+    def do_param(name: str,
                  initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
                  constraint: Constraint = distributions.constraints.real,
                  event_dim: Optional[int] = None) -> Tensor:
@@ -181,10 +196,13 @@ def param_impl():
     def do_get_param_store(res: None):
         return fwd(the_store)
 
-    return {param: bind_result(do_param), get_param_store: bind_result(do_get_param_store)}
+    return {param: do_param, get_param_store: bind_result(do_get_param_store)}
 
 
-install(param_impl())
+install(product(param_impl(), {
+    param: lambda res, *_, **__: reflect(res),
+    get_param_store: lambda res, *_, **__: reflect(res)
+}))
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):
@@ -249,12 +267,12 @@ class SVI:
         # further tracing occurs inside of `loss`.
         with trace() as param_capture:
             # We use block here to allow tracing to record parameters only.
-            with block(hide_fn=lambda msg: isinstance(msg, SampleMsg)):
+            with block(hide_fn=lambda op, *_, **__: op == sample):
                 loss = self.loss(self.model, self.guide, *args, **kwargs)
         # Differentiate the loss.
         loss.backward()
         # Grab all the parameters from the trace.
-        params = [site["value"].unconstrained() for site in param_capture.values()]
+        params = [site.val.unconstrained() for site in param_capture.values()]
         # Take a step w.r.t. each parameter in params.
         self.optim(params)
         # Zero out the gradients so that they don't accumulate.
@@ -263,7 +281,51 @@ class SVI:
         return loss.item()
 
 
+# This is a basic implementation of the Evidence Lower Bound, which is the
+# fundamental objective in Variational Inference.
+# See http://pyro.ai/examples/svi_part_i.html for details.
+# This implementation has various limitations (for example it only supports
+# random variables with reparameterized samplers), but all the ELBO
+# implementations in Pyro share the same basic logic.
+def elbo(model, guide, *args, **kwargs):
+    # Run the guide with the arguments passed to SVI.step() and trace the execution,
+    # i.e. record all the calls to Pyro primitives like sample() and param().
+    with trace() as guide_trace:
+        guide(*args, **kwargs)
+    # Now run the model with the same arguments and trace the execution. Because
+    # model is being run with replay, whenever we encounter a sample site in the
+    # model, instead of sampling from the corresponding distribution in the model,
+    # we instead reuse the corresponding sample from the guide. In probabilistic
+    # terms, this means our loss is constructed as an expectation w.r.t. the joint
+    # distribution defined by the guide.
+    with trace() as model_trace:
+        with replay(guide_trace):
+            model(*args, **kwargs)
+    # We will accumulate the various terms of the ELBO in `elbo`.
+    elbo = 0.0
+    # Loop over all the sample sites in the model and add the corresponding
+    # log p(z) term to the ELBO. Note that this will also include any observed
+    # data, i.e. sample sites with the keyword `obs=...`.
+    for site in model_trace.values():
+        if isinstance(site, SampleMsg):
+            elbo = elbo + site.dist.log_prob(site.val).sum()
+    # Loop over all the sample sites in the guide and add the corresponding
+    # -log q(z) term to the ELBO.
+    for site in guide_trace.values():
+        if isinstance(site, SampleMsg):
+            elbo = elbo - site.dist.log_prob(site.val).sum()
+    # Return (-elbo) since by convention we do gradient descent on a loss and
+    # the ELBO is a lower bound that needs to be maximized.
+    return -elbo
+
+
+# This is a wrapper for compatibility with full Pyro.
+def Trace_ELBO(**kwargs):
+    return elbo
+
+
 pyroapi.register_backend("effectful-minipyro", {
-    # "optim": "effectful.ops.pyro",
+    "infer": "effectful.ops.pyro",
+    "optim": "effectful.ops.pyro",
     "pyro": "effectful.ops.pyro"
 })
