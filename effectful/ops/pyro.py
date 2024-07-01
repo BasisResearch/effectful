@@ -1,37 +1,32 @@
-import functools
 import random
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+from typing import Callable, Union, Optional, TypeVar, OrderedDict, Tuple
 from weakref import ref
-from typing import Callable, Union, Optional, TypeVar, OrderedDict, TypedDict, Tuple
 
 import numpy as np
 import pyroapi
-from torch import Tensor, Size, get_rng_state, manual_seed, set_rng_state, no_grad, zeros_like, tensor
 import torch.distributions as distributions
+import torch.optim
+from effectful.internals.prompts import bind_result
+from torch import Tensor, Size, get_rng_state, manual_seed, set_rng_state, no_grad, zeros_like
 from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
-import torch.optim
 from typing_extensions import ParamSpec, Concatenate
 
-from effectful.internals.prompts import bind_result
-from effectful.ops.core import Operation, define, Interpretation
+from effectful.ops.core import Operation, define
 from effectful.ops.handler import handler, fwd, coproduct, install
 from effectful.ops.runner import reflect, product
-import functools
 
 
-@dataclass(frozen=True)
+@dataclass(eq=True, frozen=True)
 class EmptyOperation:
     name: str
 
     @property
     def __name__(self):
         return self.name
-
-    def __hash__(self):
-        return hash(self.name)
 
     def __call__(self, *args, **kwargs):
         raise RuntimeError(f"{self.name} has no default implementation")
