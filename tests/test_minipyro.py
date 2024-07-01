@@ -1,6 +1,8 @@
 import pytest
-import effectful.ops.pyro
+from effectful.handlers.minipyro import default_runner
 from pyroapi import pyro_backend
+
+from effectful.ops.interpreter import interpreter
 
 
 @pytest.fixture
@@ -11,7 +13,8 @@ def jit():
 @pytest.fixture
 def backend():
     with pyro_backend("effectful-minipyro"):
-        yield
+        with interpreter(default_runner):
+            yield
 
 
 # noinspection PyUnresolvedReferences

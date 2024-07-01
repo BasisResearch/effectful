@@ -21,9 +21,9 @@ def fwd(__result: Optional[T]) -> T:
 
 @define(Operation)
 def coproduct(
-    intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
-    prompt: Prompt[T] = fwd,
+        intp: Interpretation[S, T],
+        *intps: Interpretation[S, T],
+        prompt: Prompt[T] = fwd,
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
@@ -39,12 +39,6 @@ def coproduct(
             for op in set(intp.keys()) & set(intp2.keys())
         ]
     )
-
-
-def install(intp: Interpretation):
-    from ..internals.runtime import get_interpretation, swap_interpretation
-
-    swap_interpretation(coproduct(get_interpretation(), intp))
 
 
 @contextlib.contextmanager

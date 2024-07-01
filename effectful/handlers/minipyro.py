@@ -20,22 +20,6 @@ from effectful.ops.handler import handler, fwd, coproduct, install
 from effectful.ops.runner import reflect, product
 
 
-@dataclass(eq=True, frozen=True)
-class EmptyOperation:
-    name: str
-
-    @property
-    def __name__(self):
-        return self.name
-
-    def __call__(self, *args, **kwargs):
-        raise RuntimeError(f"{self.name} has no default implementation")
-
-
-def empty_operation(name):
-    return define(Operation)(EmptyOperation(name))
-
-
 @dataclass
 class SampleMsg:
     name: str
@@ -53,11 +37,43 @@ class ParamMsg:
 Message = Union[ParamMsg, SampleMsg]
 Trace = OrderedDict[str, Message]
 
-sample = empty_operation("sample")
-param = empty_operation("param")
-get_param_store = empty_operation("get_param_store")
-get_rng_seed = empty_operation("get_rng_seed")
-set_rng_seed = empty_operation("set_rng_seed")
+P = ParamSpec("P")
+T = TypeVar("T")
+
+Seed = Tuple[Tensor, tuple, dict]
+
+
+@define(Operation)
+def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
+    raise RuntimeError("No default implementation of sample")
+
+
+@define(Operation)
+def param(var_name: str,
+          initial_value: Union[Tensor, Callable[[], Tensor]] = None,
+          constraint: Optional[Constraint] = None,
+          event_dim: Optional[int] = None) -> Tensor:
+    raise RuntimeError("No default implementation of param")
+
+
+@define(Operation)
+def clear_param_store() -> None:
+    raise RuntimeError("No default implementation of clear_param_store")
+
+
+@define(Operation)
+def get_param_store() -> dict[str, Tensor]:
+    raise RuntimeError("No default implementation of get_param_store")
+
+
+@define(Operation)
+def get_rng_seed() -> Seed:
+    raise RuntimeError("No default implementation of get_rng_seed")
+
+
+@define(Operation)
+def set_rng_seed(seed: Union[int, Seed]):
+    raise RuntimeError("No default implementation of get_rng_seed")
 
 
 @contextmanager
@@ -65,6 +81,7 @@ def trace():
     from collections import OrderedDict
     the_trace = OrderedDict()
 
+    @bind_result
     def do_sample(result: Optional[Tensor],
                   var_name: str,
                   dist: Distribution,
@@ -73,6 +90,7 @@ def trace():
         the_trace[var_name] = SampleMsg(name=var_name, val=result, dist=dist, obs=kwargs.get("obs"))
         return result
 
+    @bind_result
     def do_param(result: Optional[Tensor],
                  var_name: str,
                  initial_value: Union[Tensor, Callable[[], Tensor]] = None,
@@ -83,29 +101,24 @@ def trace():
 
         return result
 
-    with handler({sample: bind_result(do_sample), param: bind_result(do_param)}):
+    with handler({sample: do_sample, param: do_param}):
         yield the_trace
 
 
 def replay(trace: Trace):
-    def do_sample(res,
+    @bind_result
+    def do_sample(res: Optional[Tensor],
                   var_name: str,
                   dist: Distribution,
-                  **kwargs):
+                  **kwargs) -> Tensor:
         if var_name in trace:
             return trace[var_name].val
         else:
             return fwd(res)
 
     return handler({
-        sample: bind_result(do_sample),
+        sample: do_sample,
     })
-
-
-P = ParamSpec("P")
-T = TypeVar("T")
-
-Seed = Tuple[Tensor, tuple, dict]
 
 
 def seed_impl():
@@ -182,10 +195,13 @@ def param_impl():
 
         return fwd(fn(initial_value, constraint))
 
-    def do_get_param_store(res: None):
+    def do_get_param_store():
         return fwd(the_store)
 
-    return {param: do_param, get_param_store: bind_result(do_get_param_store)}
+    def do_clear_param_store():
+        the_store.clear()
+
+    return {param: do_param, get_param_store: do_get_param_store, clear_param_store: do_clear_param_store}
 
 
 base_runner = coproduct(seed_impl(), param_impl())
@@ -206,14 +222,11 @@ def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool])
     }))
 
 
-install(default_runner)
-
-
 def plate(name: str, size: int, dim: Optional[int] = None):
     if dim is None:
         raise NotImplementedError("mini-pyro doesn't implement the `dim` argument to `plate`")
 
-    def do_sample(result: Tensor, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    def do_sample(result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = dist.batch_shape
 
         if len(batch_shape) < -dim or batch_shape[dim] != size:
@@ -329,7 +342,7 @@ def Trace_ELBO(**kwargs):
 
 
 pyroapi.register_backend("effectful-minipyro", {
-    "infer": "effectful.ops.pyro",
-    "optim": "effectful.ops.pyro",
-    "pyro": "effectful.ops.pyro"
+    "infer": "effectful.handlers.minipyro",
+    "optim": "effectful.handlers.minipyro",
+    "pyro": "effectful.handlers.minipyro"
 })
