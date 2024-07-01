@@ -16,19 +16,29 @@ import torch.optim
 from typing_extensions import ParamSpec, Concatenate
 
 from effectful.internals.prompts import bind_result
-from effectful.ops import core
-from effectful.ops.runner import runner, reflect, install, product
-from effectful.ops.core import Operation, define
-from effectful.ops.handler import handler, fwd
+from effectful.ops.core import Operation, define, Interpretation
+from effectful.ops.handler import handler, fwd, coproduct, install
+from effectful.ops.runner import reflect, product
+import functools
+
+
+@dataclass(frozen=True)
+class EmptyOperation:
+    name: str
+
+    @property
+    def __name__(self):
+        return self.name
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(f"{self.name} has no default implementation")
 
 
 def empty_operation(name):
-    def empty_op(*_, **__):
-        raise RuntimeError(f"{name} has no default implementation")
-
-    empty_op.__name__ = name
-
-    return define(Operation)(empty_op)
+    return define(Operation)(EmptyOperation(name))
 
 
 @dataclass
@@ -100,20 +110,6 @@ def replay(trace: Trace):
 P = ParamSpec("P")
 T = TypeVar("T")
 
-
-def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool]):
-    def blocking(fn: Operation[P, T], result: Optional[T], *args: P.args, **kwargs: P.kwargs):
-        if hide_fn(fn, result, *args, **kwargs):
-            return reflect(result)
-        else:
-            return fwd(result)
-
-    return handler({
-        sample: bind_result(partial(blocking, sample)),
-        param: bind_result(partial(blocking, param))
-    })
-
-
 Seed = Tuple[Tensor, tuple, dict]
 
 
@@ -134,20 +130,18 @@ def seed_impl():
 
     def do_sample(name: str, dist: Distribution, obs=None, **kwargs):
         assert isinstance(name, str)
-        return fwd(obs or (dist.rsample() if dist.has_rsample else dist.sample()))
+        if obs is not None:
+            return obs
+        elif dist.has_rsample:
+            return dist.rsample()
+        else:
+            return dist.sample()
 
     return {
         get_rng_seed: do_get_rng_seed,
         set_rng_seed: do_set_rng_seed,
         sample: do_sample,
     }
-
-
-install(product(seed_impl(), {
-    get_rng_seed: lambda res, *_, **__: reflect(res),
-    set_rng_seed: lambda res, *_, **__: reflect(res),
-    sample: lambda res, *_, **__: reflect(res),
-}))
 
 
 @contextmanager
@@ -199,10 +193,25 @@ def param_impl():
     return {param: do_param, get_param_store: bind_result(do_get_param_store)}
 
 
-install(product(param_impl(), {
-    param: lambda res, *_, **__: reflect(res),
-    get_param_store: lambda res, *_, **__: reflect(res)
-}))
+base_runner = coproduct(seed_impl(), param_impl())
+default_runner = product(base_runner, {k: bind_result(lambda r, *_, **__: reflect(r))
+                                       for k in base_runner})
+
+
+def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool]):
+    def blocking(fn: Operation[P, T], result: Optional[T], *args: P.args, **kwargs: P.kwargs):
+        if hide_fn(fn, result, *args, **kwargs):
+            return reflect(result)
+        else:
+            return fwd(result)
+
+    return handler(product(default_runner, {
+        sample: bind_result(partial(blocking, sample)),
+        param: bind_result(partial(blocking, param))
+    }))
+
+
+install(default_runner)
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):

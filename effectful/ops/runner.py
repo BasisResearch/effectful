@@ -44,14 +44,6 @@ def product(
     }
 
 
-def install(intp: Interpretation):
-    from ..internals.runtime import get_interpretation, swap_interpretation
-
-    ks = {k: lambda res, *_, **__: reflect(res) for k in intp}
-
-    swap_interpretation(product(intp, ks))
-
-
 @contextlib.contextmanager
 def runner(
     intp: Interpretation[S, T],

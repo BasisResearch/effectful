@@ -41,6 +41,12 @@ def coproduct(
     )
 
 
+def install(intp: Interpretation):
+    from ..internals.runtime import get_interpretation, swap_interpretation
+
+    swap_interpretation(coproduct(get_interpretation(), intp))
+
+
 @contextlib.contextmanager
 def handler(intp: Interpretation[S, T], *, prompt: Prompt[T] = fwd):
     from ..internals.runtime import get_interpretation
