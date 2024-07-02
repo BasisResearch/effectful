@@ -2,22 +2,30 @@ import random
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Union, Optional, TypeVar, OrderedDict, Tuple
+from typing import Callable, Optional, OrderedDict, Tuple, TypeVar, Union
 from weakref import ref
 
 import numpy as np
 import pyroapi
 import torch.distributions as distributions
 import torch.optim
-from effectful.internals.prompts import bind_result
-from torch import Tensor, Size, get_rng_state, manual_seed, set_rng_state, no_grad, zeros_like
+from torch import (
+    Size,
+    Tensor,
+    get_rng_state,
+    manual_seed,
+    no_grad,
+    set_rng_state,
+    zeros_like,
+)
 from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
-from typing_extensions import ParamSpec, Concatenate
+from typing_extensions import Concatenate, ParamSpec
 
+from effectful.internals.prompts import bind_result
 from effectful.ops.core import Operation, define
-from effectful.ops.handler import handler, fwd, coproduct, install
-from effectful.ops.runner import reflect, product
+from effectful.ops.handler import coproduct, fwd, handler
+from effectful.ops.runner import product, reflect
 
 
 @dataclass
@@ -49,10 +57,12 @@ def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tenso
 
 
 @define(Operation)
-def param(var_name: str,
-          initial_value: Union[Tensor, Callable[[], Tensor]] = None,
-          constraint: Optional[Constraint] = None,
-          event_dim: Optional[int] = None) -> Tensor:
+def param(
+    var_name: str,
+    initial_value: Union[Tensor, Callable[[], Tensor]] = None,
+    constraint: Optional[Constraint] = None,
+    event_dim: Optional[int] = None,
+) -> Tensor:
     raise RuntimeError("No default implementation of param")
 
 
@@ -79,46 +89,51 @@ def set_rng_seed(seed: Union[int, Seed]):
 @contextmanager
 def trace():
     from collections import OrderedDict
-    the_trace = OrderedDict()
+
+    TRACE = OrderedDict()
 
     @bind_result
-    def do_sample(result: Optional[Tensor],
-                  var_name: str,
-                  dist: Distribution,
-                  **kwargs) -> Tensor:
+    def do_sample(
+        result: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
+    ) -> Tensor:
         result = fwd(result)
-        the_trace[var_name] = SampleMsg(name=var_name, val=result, dist=dist, obs=kwargs.get("obs"))
+        TRACE[var_name] = SampleMsg(
+            name=var_name, val=result, dist=dist, obs=kwargs.get("obs")
+        )
         return result
 
     @bind_result
-    def do_param(result: Optional[Tensor],
-                 var_name: str,
-                 initial_value: Union[Tensor, Callable[[], Tensor]] = None,
-                 constraint: Optional[Constraint] = None,
-                 event_dim: Optional[int] = None) -> Tensor:
+    def do_param(
+        result: Optional[Tensor],
+        var_name: str,
+        initial_value: Union[Tensor, Callable[[], Tensor]] = None,
+        constraint: Optional[Constraint] = None,
+        event_dim: Optional[int] = None,
+    ) -> Tensor:
         result = fwd(result)
-        the_trace[var_name] = ParamMsg(name=var_name, val=result)
+        TRACE[var_name] = ParamMsg(name=var_name, val=result)
 
         return result
 
     with handler({sample: do_sample, param: do_param}):
-        yield the_trace
+        yield TRACE
 
 
 def replay(trace: Trace):
     @bind_result
-    def do_sample(res: Optional[Tensor],
-                  var_name: str,
-                  dist: Distribution,
-                  **kwargs) -> Tensor:
+    def do_sample(
+        res: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
+    ) -> Tensor:
         if var_name in trace:
             return trace[var_name].val
         else:
             return fwd(res)
 
-    return handler({
-        sample: do_sample,
-    })
+    return handler(
+        {
+            sample: do_sample,
+        }
+    )
 
 
 def seed_impl():
@@ -163,18 +178,22 @@ def seed(seed: int):
 
 
 def param_impl():
-    the_store = {}
+    PARAM_STORE = {}
 
-    def do_param(name: str,
-                 initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
-                 constraint: Constraint = distributions.constraints.real,
-                 event_dim: Optional[int] = None) -> Tensor:
+    def do_param(
+        name: str,
+        initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
+        constraint: Constraint = distributions.constraints.real,
+        event_dim: Optional[int] = None,
+    ) -> Tensor:
         if event_dim is not None:
-            raise NotImplementedError("minipyro.plate does not support the event_dim arg")
+            raise NotImplementedError(
+                "minipyro.plate does not support the event_dim arg"
+            )
 
         def fn(init_value, constraint):
-            if name in the_store:
-                unconstrained_value, constraint = the_store[name]
+            if name in PARAM_STORE:
+                unconstrained_value, constraint = PARAM_STORE[name]
             else:
                 # Initialize with a constrained value.
                 assert init_value is not None
@@ -184,7 +203,7 @@ def param_impl():
                         constrained_value
                     )
                 unconstrained_value.requires_grad_()
-                the_store[name] = unconstrained_value, constraint
+                PARAM_STORE[name] = unconstrained_value, constraint
 
             # Transform from unconstrained space to constrained space.
             constrained_value = distributions.transform_to(constraint)(
@@ -196,37 +215,27 @@ def param_impl():
         return fwd(fn(initial_value, constraint))
 
     def do_get_param_store():
-        return fwd(the_store)
+        return fwd(PARAM_STORE)
 
     def do_clear_param_store():
-        the_store.clear()
+        PARAM_STORE.clear()
 
-    return {param: do_param, get_param_store: do_get_param_store, clear_param_store: do_clear_param_store}
-
-
-base_runner = coproduct(seed_impl(), param_impl())
-default_runner = product(base_runner, {k: bind_result(lambda r, *_, **__: reflect(r))
-                                       for k in base_runner})
-
-
-def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool]):
-    def blocking(fn: Operation[P, T], result: Optional[T], *args: P.args, **kwargs: P.kwargs):
-        if hide_fn(fn, result, *args, **kwargs):
-            return reflect(result)
-        else:
-            return fwd(result)
-
-    return handler(product(default_runner, {
-        sample: bind_result(partial(blocking, sample)),
-        param: bind_result(partial(blocking, param))
-    }))
+    return {
+        param: do_param,
+        get_param_store: do_get_param_store,
+        clear_param_store: do_clear_param_store,
+    }
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):
     if dim is None:
-        raise NotImplementedError("mini-pyro doesn't implement the `dim` argument to `plate`")
+        raise NotImplementedError(
+            "mini-pyro doesn't implement the `dim` argument to `plate`"
+        )
 
-    def do_sample(result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    def do_sample(
+        result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
+    ) -> Tensor:
         batch_shape = dist.batch_shape
 
         if len(batch_shape) < -dim or batch_shape[dim] != size:
@@ -236,9 +245,33 @@ def plate(name: str, size: int, dim: Optional[int] = None):
         else:
             return fwd(result)
 
-    return handler({
-        sample: bind_result(do_sample)
-    })
+    return handler({sample: bind_result(do_sample)})
+
+
+base_runner = coproduct(seed_impl(), param_impl())
+default_runner = product(
+    base_runner, {k: bind_result(lambda r, *_, **__: reflect(r)) for k in base_runner}
+)
+
+
+def block(hide_fn: Callable[Concatenate[Operation[P, T], Optional[T], P], bool]):
+    def blocking(
+        fn: Operation[P, T], result: Optional[T], *args: P.args, **kwargs: P.kwargs
+    ):
+        if hide_fn(fn, result, *args, **kwargs):
+            return reflect(result)
+        else:
+            return fwd(result)
+
+    return handler(
+        product(
+            default_runner,
+            {
+                sample: bind_result(partial(blocking, sample)),
+                param: bind_result(partial(blocking, param)),
+            },
+        )
+    )
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that
@@ -341,8 +374,11 @@ def Trace_ELBO(**kwargs):
     return elbo
 
 
-pyroapi.register_backend("effectful-minipyro", {
-    "infer": "effectful.handlers.minipyro",
-    "optim": "effectful.handlers.minipyro",
-    "pyro": "effectful.handlers.minipyro"
-})
+pyroapi.register_backend(
+    "effectful-minipyro",
+    {
+        "infer": "effectful.handlers.minipyro",
+        "optim": "effectful.handlers.minipyro",
+        "pyro": "effectful.handlers.minipyro",
+    },
+)

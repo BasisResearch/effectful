@@ -14,11 +14,9 @@ T_co = TypeVar("T_co", covariant=True)
 
 @typing.runtime_checkable
 class Operation(Protocol[P, T_co]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co:
-        ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
 
-    def default(self, *args: P.args, **kwargs: P.kwargs) -> T_co:
-        ...
+    def default(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]

@@ -1,7 +1,7 @@
 import pytest
-from effectful.handlers.minipyro import default_runner
 from pyroapi import pyro_backend
 
+from effectful.handlers.minipyro import default_runner
 from effectful.ops.interpreter import interpreter
 
 

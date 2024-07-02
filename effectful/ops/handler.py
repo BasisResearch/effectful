@@ -21,9 +21,9 @@ def fwd(__result: Optional[T]) -> T:
 
 @define(Operation)
 def coproduct(
-        intp: Interpretation[S, T],
-        *intps: Interpretation[S, T],
-        prompt: Prompt[T] = fwd,
+    intp: Interpretation[S, T],
+    *intps: Interpretation[S, T],
+    prompt: Prompt[T] = fwd,
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
