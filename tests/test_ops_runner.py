@@ -10,7 +10,7 @@ from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
-from effectful.ops.runner import product, reflect
+from effectful.ops.runner import product, reflect, runner
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +84,52 @@ def test_product_block_associative(op, args, n1, n2):
     intp2 = product(product(h0, h1), h2)
 
     assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
+
+
+def test_runner_scopes():
+    @define(Operation)
+    def double(v):
+        raise RuntimeError("No Defaults")
+
+    @define(Operation)
+    def triple(v):
+        raise RuntimeError("No Defaults")
+
+    @define(Operation)
+    def sextuple(v):
+        raise RuntimeError("No Defaults")
+
+    def multiply_in_length():
+        return handler(
+            {
+                double: lambda v: [v, v],
+                triple: lambda v: [v, v, v],
+            }
+        )
+
+    def multiply_in_value():
+        return handler(
+            {
+                double: lambda v: v + v,
+                triple: lambda v: v + v + v,
+            }
+        )
+
+    def sextuple_as_double_triple(mode):
+        interp = {sextuple: lambda v: double(triple(v))}
+        if mode == "runner":
+            return runner(interp)
+        elif mode == "handler":
+            return handler(interp)
+
+    with multiply_in_length():
+        with sextuple_as_double_triple("runner"):
+            with multiply_in_value():
+                assert double(2) == 4
+                assert triple(3) == 9
+                assert sextuple(6) == [[6, 6, 6], [6, 6, 6]]
+        with sextuple_as_double_triple("handler"):
+            with multiply_in_value():
+                assert double(2) == 4
+                assert triple(3) == 9
+                assert sextuple(6) == 36
