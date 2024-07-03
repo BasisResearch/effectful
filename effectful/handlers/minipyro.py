@@ -96,7 +96,9 @@ class Tracer(Implementation):
 
     @implements(sample)
     @bind_result
-    def _(result: Optional[Tensor], self, var_name: str, dist: Distribution, **kwargs):
+    def sample(
+        result: Optional[Tensor], self, var_name: str, dist: Distribution, **kwargs
+    ):
         res = fwd(result)
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
@@ -126,26 +128,26 @@ def trace():
         yield t.TRACE
 
 
-def replay(trace: Trace):
+class Replay(Implementation):
+    def __init__(self, trace: Trace):
+        self.trace = trace
+
+    @implements(sample)
     @bind_result
-    def do_sample(
-        res: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
-    ) -> Tensor:
-        if var_name in trace:
-            return trace[var_name].val
+    def sample(res: Optional[Tensor], self: "Replay", var_name: str, *args, **kwargs):
+        if var_name in self.trace:
+            return self.trace[var_name].val
         else:
             return fwd(res)
 
-    return handler(
-        {
-            sample: do_sample,
-        }
-    )
+
+def replay(trace: Trace):
+    return handler(Replay(trace))
 
 
 class NativeSeed(Implementation):
     @implements(get_rng_seed)
-    def _(self):
+    def get_rng_seed(self):
         return fwd((get_rng_state(), random.getstate(), np.random.get_state()))
 
     @implements(set_rng_seed)
@@ -230,26 +232,34 @@ class NativeParam(Implementation):
         self.PARAM_STORE.clear()
 
 
-def plate(name: str, size: int, dim: Optional[int] = None):
-    if dim is None:
-        raise NotImplementedError(
-            "mini-pyro doesn't implement the `dim` argument to `plate`"
-        )
+class Plate(Implementation):
+    def __init__(self, name: str, size: int, dim: Optional[int]):
+        if dim is None:
+            raise NotImplementedError(
+                "mini-pyro doesn't implement the `dim` argument to `plate`"
+            )
 
+        self.name = name
+        self.size = size
+        self.dim = dim
+
+    @implements(sample)
     @bind_result
     def do_sample(
-        result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
+        result: Optional[Tensor], self, sampled_name: str, dist: Distribution, **kwargs
     ) -> Tensor:
         batch_shape = dist.batch_shape
 
-        if len(batch_shape) < -dim or batch_shape[dim] != size:
-            batch_shape = [1] * (-dim - len(batch_shape)) + list(batch_shape)
-            batch_shape[dim] = size
+        if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
+            batch_shape = [1] * (-self.dim - len(batch_shape)) + list(batch_shape)
+            batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
             return fwd(result)
 
-    return handler({sample: do_sample})
+
+def plate(name: str, size: int, dim: Optional[int] = None):
+    return handler(Plate(name, size, dim))
 
 
 base_runner = coproduct(NativeSeed(), NativeParam())
