@@ -53,6 +53,11 @@ class _BaseVariable(Generic[T]):
     type: Type[T]
 
 
+@dataclasses.dataclass
+class _BaseLiteral(Generic[T]):
+    value: T
+
+
 @runtime.weak_memoize
 def base_define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
     if not typing.TYPE_CHECKING:

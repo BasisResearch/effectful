@@ -22,11 +22,18 @@ class Operation(Protocol[P, T_co]):
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
+class Literal(Protocol[T]):
+    value: T
+
+
+Expr = Literal[T] | "Term[T]" | "Variable[T]"
+
+
 @typing.runtime_checkable
 class Term(Protocol[T]):
     op: Operation[..., T]
-    args: Iterable["Term[T]" | T | "Variable[T]"]
-    kwargs: Mapping[str, "Term[T]" | T | "Variable[T]"]
+    args: Iterable[Expr[T]]
+    kwargs: Mapping[str, Expr[T]]
 
 
 Symbol = str  # TODO replace with extensional protocol type
