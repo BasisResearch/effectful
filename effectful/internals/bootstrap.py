@@ -5,9 +5,9 @@ from typing import Callable, Generic, Type, TypeVar
 from typing_extensions import ParamSpec, TypeGuard
 
 from effectful.ops.core import (
+    Constant,
     Context,
     Interpretation,
-    Literal,
     Operation,
     Symbol,
     Term,
@@ -55,7 +55,7 @@ class _BaseVariable(Generic[T]):
 
 
 @dataclasses.dataclass
-class _BaseLiteral(Generic[T]):
+class _BaseConstant(Generic[T]):
     value: T
 
 
@@ -88,7 +88,7 @@ runtime.get_runtime = _BaseOperation(runtime.get_runtime)
 core.register(core.define(Operation), None, _BaseOperation)
 core.register(core.define(Term), None, _BaseTerm)
 core.register(core.define(Variable), None, _BaseVariable)
-core.register(core.define(Literal), None, _BaseLiteral)
+core.register(core.define(Constant), None, _BaseConstant)
 core.register(core.define(Interpretation), None, dict)
 core.register(core.define(Symbol), None, str)
 core.register(core.define(Context), None, dict)

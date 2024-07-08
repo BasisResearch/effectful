@@ -22,11 +22,11 @@ class Operation(Protocol[P, T_co]):
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class Literal(Protocol[T]):
+class Constant(Protocol[T]):
     value: T
 
 
-Expr = Literal[T] | "Term[T]" | "Variable[T]"
+Expr = Constant[T] | "Term[T]" | "Variable[T]"
 
 
 @typing.runtime_checkable
