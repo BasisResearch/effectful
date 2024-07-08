@@ -7,11 +7,11 @@ from typing_extensions import ParamSpec, TypeGuard
 from effectful.ops.core import (
     Context,
     Interpretation,
+    Literal,
     Operation,
     Symbol,
     Term,
     Variable,
-    Literal,
 )
 
 from ..ops import core
