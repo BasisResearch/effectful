@@ -11,6 +11,7 @@ from effectful.ops.core import (
     Symbol,
     Term,
     Variable,
+    Literal,
 )
 
 from ..ops import core
@@ -87,6 +88,7 @@ runtime.get_runtime = _BaseOperation(runtime.get_runtime)
 core.register(core.define(Operation), None, _BaseOperation)
 core.register(core.define(Term), None, _BaseTerm)
 core.register(core.define(Variable), None, _BaseVariable)
+core.register(core.define(Literal), None, _BaseLiteral)
 core.register(core.define(Interpretation), None, dict)
 core.register(core.define(Symbol), None, str)
 core.register(core.define(Context), None, dict)
