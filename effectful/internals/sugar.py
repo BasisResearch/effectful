@@ -1,5 +1,4 @@
 from collections.abc import Mapping
-from functools import partial
 from typing import Callable, Optional
 
 from effectful.ops.core import Operation
@@ -79,6 +78,9 @@ class _ImplementedOperation:
     def __init__(self, op: Optional[Operation]):
         self.op = op
         self.impl = None
+
+    def __get__(self, instance, owner):
+        return self.impl.__get__(instance, owner)
 
     def __call__(self, impl: Callable):
         self.impl = impl
