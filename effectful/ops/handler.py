@@ -1,9 +1,11 @@
 import contextlib
+from copy import copy
 from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompts
+from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.interpreter import interpreter
 
@@ -31,19 +33,19 @@ def coproduct(
         return coproduct(intp, coproduct(*intps, prompt=prompt), prompt=prompt)
 
     (intp2,) = intps
-    return dict(
-        [(op, intp[op]) for op in set(intp.keys()) - set(intp2.keys())]
-        + [(op, intp2[op]) for op in set(intp2.keys()) - set(intp.keys())]
-        + [
-            (op, bind_prompts({prompt: intp[op]})(intp2[op]))
-            for op in set(intp.keys()) & set(intp2.keys())
-        ]
-    )
+
+    res = copy(intp)
+
+    for op, i2 in intp2.items():
+        if i1 := intp.get(op):
+            res[op] = bind_prompts({prompt: i1})(i2)
+        else:
+            res[op] = i2
+
+    return res
 
 
 @contextlib.contextmanager
 def handler(intp: Interpretation[S, T], *, prompt: Prompt[T] = fwd):
-    from ..internals.runtime import get_interpretation
-
     with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
         yield intp
