@@ -1,5 +1,4 @@
 import contextlib
-from copy import copy
 from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
@@ -34,10 +33,11 @@ def coproduct(
 
     (intp2,) = intps
 
-    res = copy(intp)
+    res = dict(intp)
 
     for op, i2 in intp2.items():
-        if i1 := intp.get(op):
+        i1 = intp.get(op)
+        if i1:
             res[op] = bind_prompts({prompt: i1})(i2)
         else:
             res[op] = i2
