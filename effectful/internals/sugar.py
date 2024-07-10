@@ -58,10 +58,18 @@ class Implementation(Mapping):
     # This dict is shared by all `Implementation`s,
     # so we need to clear it when we're done.
     _temporary_implementations = dict()
+    implementations = dict()
 
+    @classmethod
     def __init_subclass__(cls, **kwargs):
-        cls.implementations = cls._temporary_implementations.copy()
-        cls._temporary_implementations.clear()
+        super().__init_subclass__(**kwargs)
+        cls.implementations = Implementation._temporary_implementations.copy()
+
+        for sup in cls.mro():
+            if issubclass(sup, Implementation):
+                cls.implementations = {**sup.implementations, **cls.implementations}
+
+        Implementation._temporary_implementations.clear()
 
     def __iter__(self):
         return iter(self.implementations)

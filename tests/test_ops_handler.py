@@ -182,9 +182,7 @@ def test_sugar_subclassing():
         def plus_1(self, v):
             return super().plus_1(v) + self._shift
 
-        @implements(plus_2)
-        def plus_2(self, v):
-            return super().plus_2(v) + self._shift
+        # plus_2 inhereted from ScaleBy
 
     with handler(ScaleBy(4)):
         assert plus_1(4) == 8
@@ -192,4 +190,4 @@ def test_sugar_subclassing():
 
     with handler(ScaleAndShiftBy(4, 1)):
         assert plus_1(4) == 9
-        assert plus_2(4) == 13
+        assert plus_2(4) == 12
