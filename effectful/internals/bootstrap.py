@@ -31,7 +31,7 @@ class _BaseOperation(Generic[P, T_co]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co:
         if self is runtime.get_runtime:
             intp = self.default(*args, **kwargs).interpretation
-            return core.apply.default(intp, self, *args, **kwargs)
+            return core.apply.default(intp, core.apply, intp, self, *args, **kwargs)
         elif self is core.apply:
             intp = runtime.get_interpretation()
             return core.apply.default(intp, self, *args, **kwargs)
