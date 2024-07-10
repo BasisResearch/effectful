@@ -5,6 +5,7 @@ from typing import Callable, Generic, Type, TypeVar
 from typing_extensions import ParamSpec, TypeGuard
 
 from effectful.ops.core import (
+    Constant,
     Context,
     Interpretation,
     Operation,
@@ -53,6 +54,11 @@ class _BaseVariable(Generic[T]):
     type: Type[T]
 
 
+@dataclasses.dataclass
+class _BaseConstant(Generic[T]):
+    value: T
+
+
 @runtime.weak_memoize
 def base_define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
     if not typing.TYPE_CHECKING:
@@ -82,6 +88,7 @@ runtime.get_runtime = _BaseOperation(runtime.get_runtime)
 core.register(core.define(Operation), None, _BaseOperation)
 core.register(core.define(Term), None, _BaseTerm)
 core.register(core.define(Variable), None, _BaseVariable)
+core.register(core.define(Constant), None, _BaseConstant)
 core.register(core.define(Interpretation), None, dict)
 core.register(core.define(Symbol), None, str)
 core.register(core.define(Context), None, dict)
