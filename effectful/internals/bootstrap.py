@@ -30,15 +30,8 @@ class _BaseOperation(Generic[P, T_co]):
     default: Callable[P, T_co]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co:
-        if self is runtime.get_runtime:
-            intp = self.default(*args, **kwargs).interpretation
-            return core.apply.default(intp, core.apply, intp, self, *args, **kwargs)
-        elif self is core.apply:
-            intp = runtime.get_interpretation()
-            return core.apply.default(intp, self, *args, **kwargs)
-        else:
-            intp = runtime.get_interpretation()
-            return core.apply(intp, self, *args, **kwargs)
+        intp = runtime.get_interpretation()
+        return core.apply(intp, self, *args, **kwargs)
 
 
 @dataclasses.dataclass
@@ -80,10 +73,8 @@ def base_define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
 
 
 # bootstrap
-core.apply = _BaseOperation(core.apply)
 core.define = _BaseOperation(core.define)
 core.register = _BaseOperation(core.register)
-runtime.get_runtime = _BaseOperation(runtime.get_runtime)
 
 core.register(core.define(Operation), None, _BaseOperation)
 core.register(core.define(Term), None, _BaseTerm)
