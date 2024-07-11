@@ -4,13 +4,12 @@ from typing import Callable, Optional
 from effectful.ops.core import Operation
 
 
-class Implementation(Mapping):
+class ObjectInterpretation(Mapping):
     """
-    A superclass for defining `Interpretation`s of `Operation`s with shared
-    state or behavior.
+    A helper superclass for defining `Interpretations`s of `Operation`s with shared state or behavior.
 
-    You can mark specific methods of an `Implementation` with operations using
-    the `implements` decorator. The `Implementation` object itself is an `Interpretation`
+    You can mark specific methods in the definition of an `ObjectInterpretation` with operations
+    using the `implements` decorator. The `ObjectInterpretation` object itself is an `Interpretation`
     (mapping from `Operation`s to `Callable`s)
 
     >>> from effectful.ops.core import define
@@ -23,7 +22,7 @@ class Implementation(Mapping):
     ... def write_box(new_value):
     ...     pass
     ...
-    >>> class StatefulBox(Implementation):
+    >>> class StatefulBox(ObjectInterpretation):
     ...     def __init__(self, init=None):
     ...         super().__init__()
     ...         self.stored = init
@@ -63,13 +62,13 @@ class Implementation(Mapping):
     @classmethod
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.implementations = Implementation._temporary_implementations.copy()
+        cls.implementations = ObjectInterpretation._temporary_implementations.copy()
 
         for sup in cls.mro():
-            if issubclass(sup, Implementation):
+            if issubclass(sup, ObjectInterpretation):
                 cls.implementations = {**sup.implementations, **cls.implementations}
 
-        Implementation._temporary_implementations.clear()
+        ObjectInterpretation._temporary_implementations.clear()
 
     def __iter__(self):
         return iter(self.implementations)
@@ -94,14 +93,14 @@ class _ImplementedOperation:
         self.impl = impl
         return self
 
-    def __set_name__(self, owner: Implementation, name):
+    def __set_name__(self, owner: ObjectInterpretation, name):
         assert self.impl is not None
         owner._temporary_implementations[self.op] = self.impl
 
 
 def implements(op: Operation):
     """
-    Makrs a method in an `Implementation` as the implementation of a
+    Makrs a method in an `ObjectInterpretation` as the implementation of a
     particular abstract `Operation`.
 
     When passed an `Operation`, returns a method decorator which installs the given

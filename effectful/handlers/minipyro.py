@@ -26,7 +26,7 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.prompts import bind_result
-from effectful.internals.sugar import Implementation, implements
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
@@ -90,7 +90,7 @@ def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
-class Tracer(Implementation):
+class Tracer(ObjectInterpretation):
     def __init__(self):
         self.TRACE = OrderedDict()
 
@@ -128,7 +128,7 @@ def trace():
         yield t.TRACE
 
 
-class Replay(Implementation):
+class Replay(ObjectInterpretation):
     def __init__(self, trace: Trace):
         self.trace = trace
 
@@ -145,7 +145,7 @@ def replay(trace: Trace):
     return handler(Replay(trace))
 
 
-class NativeSeed(Implementation):
+class NativeSeed(ObjectInterpretation):
     @implements(get_rng_seed)
     def get_rng_seed(self):
         return fwd((get_rng_state(), random.getstate(), np.random.get_state()))
@@ -183,7 +183,7 @@ def seed(seed: int):
         set_rng_seed(old_seed)
 
 
-class NativeParam(Implementation):
+class NativeParam(ObjectInterpretation):
     def __init__(self, initial_store=None):
         self.PARAM_STORE = initial_store or {}
 
@@ -232,7 +232,7 @@ class NativeParam(Implementation):
         self.PARAM_STORE.clear()
 
 
-class Plate(Implementation):
+class Plate(ObjectInterpretation):
     def __init__(self, name: str, size: int, dim: Optional[int]):
         if dim is None:
             raise NotImplementedError(

@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result, value_or_result
 from effectful.internals.runtime import get_runtime
-from effectful.internals.sugar import Implementation, implements
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, apply, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
@@ -161,7 +161,7 @@ def test_handling_internal_operations():
 
 
 def test_sugar_subclassing():
-    class ScaleBy(Implementation):
+    class ScaleBy(ObjectInterpretation):
         def __init__(self, scale):
             self._scale = scale
 
