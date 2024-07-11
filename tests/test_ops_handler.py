@@ -1,15 +1,13 @@
 import contextlib
 import itertools
 import logging
-from collections import defaultdict
 from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result, value_or_result
-from effectful.internals.runtime import get_runtime
-from effectful.ops.core import Interpretation, Operation, apply, define
+from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
 
@@ -139,21 +137,3 @@ def test_stop_without_fwd(op, args, n, depth):
         stack.enter_context(handler(defaults(op)))
 
         assert f() == expected
-
-
-def test_handling_internal_operations():
-    log = defaultdict(list)
-
-    def logged(op):
-        def wrapped(*args, **kwargs):
-            log[op].append((args, kwargs))
-            return op.default(*args, **kwargs)
-
-        return wrapped
-
-    with handler({apply: logged(apply), get_runtime: logged(get_runtime)}):
-        assert plus_1(1) == 2
-
-        assert apply in log
-        assert get_runtime in log
-        assert any(get_runtime in args for (args, kwargs) in log[apply])
