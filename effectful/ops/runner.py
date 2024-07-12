@@ -30,16 +30,18 @@ def product(
         return product(intp, product(*intps, prompt=prompt), prompt=prompt)
 
     (intp2,) = intps
-    reflect_intp_ops = {
-        op: bind_result(lambda v, *_, **__: prompt(v))
-        for op in set(intp.keys()) - set(intp2.keys())
-    }
 
     # on prompt, jump to the outer interpretation and interpret it using itself
-    return {
+    refls = {
         op: bind_prompts({prompt: interpreter(intp)(op)})(
-            interpreter(reflect_intp_ops)(interpreter(intp2)(intp2[op]))
-        )
+            bind_result(lambda v, *_, **__: prompt(v))
+        ) for op in intp.keys()
+    }
+
+    return {
+        op: interpreter(refls)(intp2[op])
+        if op not in intp
+        else interpreter(refls)(bind_prompts({prompt: interpreter(intp)(op)})(intp2[op]))
         for op in intp2.keys()
     }
 

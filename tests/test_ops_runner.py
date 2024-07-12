@@ -133,3 +133,34 @@ def test_runner_scopes():
                 assert double(2) == 4
                 assert triple(3) == 9
                 assert sextuple(6) == 36
+
+
+def test_runner_outer_reflect_1():
+
+    @bind_result
+    def plus_two_impl_inner(res, v):
+        assert res is None
+        r = plus_1(v)
+        return reflect(r + 1)
+
+    @bind_result
+    def plus_two_impl_outer(res, v):
+        if res is None:
+            return v + 2
+        else:
+            return res
+
+    @bind_result
+    def plus_one_to_plus_two(res, v):
+        assert res is None
+        return plus_2(v)
+
+    intp_inner = {plus_2: plus_two_impl_inner}
+    intp_outer = {plus_1: plus_one_to_plus_two, plus_2: plus_two_impl_outer}
+
+    with interpreter(intp_inner):
+        assert plus_2(2) == 4
+
+    with interpreter(product(intp_outer, intp_inner)):
+        assert plus_1(1) == 2
+        assert plus_2(2) == 5
