@@ -35,13 +35,18 @@ def product(
     refls = {
         op: bind_prompts({prompt: interpreter(intp)(op)})(
             bind_result(lambda v, *_, **__: prompt(v))
-        ) for op in intp.keys()
+        )
+        for op in intp.keys()
     }
 
     return {
-        op: interpreter(refls)(intp2[op])
-        if op not in intp
-        else interpreter(refls)(bind_prompts({prompt: interpreter(intp)(op)})(intp2[op]))
+        op: (
+            interpreter(refls)(intp2[op])
+            if op not in intp
+            else interpreter(refls)(
+                bind_prompts({prompt: interpreter(intp)(op)})(intp2[op])
+            )
+        )
         for op in intp2.keys()
     }
 
