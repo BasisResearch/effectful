@@ -164,3 +164,8 @@ def test_runner_outer_reflect_1():
     with interpreter(product(intp_outer, intp_inner)):
         assert plus_1(1) == 2
         assert plus_2(2) == 5
+
+    with interpreter(intp_outer):
+        assert plus_1(1) == 3
+        with runner(intp_inner):
+            assert plus_2(2) == 5
