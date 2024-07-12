@@ -151,21 +151,21 @@ def test_runner_outer_reflect_1():
             return res
 
     @bind_result
-    def plus_one_to_plus_two(res, v):
+    def plus_one_to_plus_five(res, v):
         assert res is None
-        return plus_2(v)
+        return plus_2(v) + 3
 
     intp_inner = {plus_2: plus_two_impl_inner}
-    intp_outer = {plus_1: plus_one_to_plus_two, plus_2: plus_two_impl_outer}
+    intp_outer = {plus_1: plus_one_to_plus_five, plus_2: plus_two_impl_outer}
 
     with interpreter(intp_inner):
         assert plus_2(2) == 4
 
     with interpreter(product(intp_outer, intp_inner)):
         assert plus_1(1) == 2
-        assert plus_2(2) == 5
+        assert plus_2(2) == 2 + (2 + 3) + 1
 
     with interpreter(intp_outer):
-        assert plus_1(1) == 3
+        assert plus_1(1) == 1 + 2 + 3
         with runner(intp_inner):
-            assert plus_2(2) == 5
+            assert plus_2(2) == 2 + (2 + 3) + 1
