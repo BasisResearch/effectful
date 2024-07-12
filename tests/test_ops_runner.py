@@ -1,4 +1,3 @@
-import contextlib
 import itertools
 import logging
 from typing import TypeVar
@@ -6,6 +5,7 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
+from effectful.handlers.state import State
 from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
@@ -135,8 +135,21 @@ def test_runner_scopes():
                 assert sextuple(6) == 36
 
 
-def test_runner_outer_reflect_1():
+def test_runner_outer_reflect():
+    def plus_two_calling_plus_one():
+        def plus_minus_one_then_reflect(v):
+            r = plus_1(v)
+            return reflect(r - 1)
 
+        return {plus_2: plus_minus_one_then_reflect}
+
+    defs = {plus_1: plus_1.default, plus_2: plus_2.default}
+    with interpreter(product(defs, plus_two_calling_plus_one())):
+        assert plus_1(1) == 2
+        assert plus_2(2) == 4
+
+
+def test_runner_outer_reflect_1():
     @bind_result
     def plus_two_impl_inner(res, v):
         assert res is None
