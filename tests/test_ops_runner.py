@@ -5,7 +5,6 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.handlers.state import State
 from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
