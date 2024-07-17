@@ -13,9 +13,9 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Operation)
+@define(Prompt)
 def reflect(__result: Optional[T]) -> T:
-    return __result
+    return __result  # type: ignore
 
 
 @define(Operation)

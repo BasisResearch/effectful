@@ -1,8 +1,11 @@
 import collections.abc
+import dataclasses
+import functools
 import typing
-from typing import Callable, Iterable, Mapping, Optional, Protocol, Type, TypeVar
+from typing import Callable, Generic, Iterable, Mapping, Optional, Protocol, Type, TypeVar
 
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec, TypeGuard, dataclass_transform
+
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -12,51 +15,58 @@ V = TypeVar("V")
 T_co = TypeVar("T_co", covariant=True)
 
 
-@typing.runtime_checkable
-class Operation(Protocol[P, T_co]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
+@dataclass_transform()
+@functools.cache
+def define(m: Type[T]) -> "Operation[..., T]":
+    """
+    Scott encoding of a type as its constructor.
+    """
+    if issubclass(m, Operation):
+        return dataclasses.dataclass()(m)
+    else:
+        return define(Operation)(m)
 
-    def default(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
+
+class Operation(Generic[P, T_co]):
+    default: Callable[P, T_co]
+
+    def __call__(self: "Operation[P, S]", *args: P.args, **kwargs: P.kwargs) -> S:
+        return apply(self, *args, **kwargs)  # type: ignore
 
 
+Operation = define(Operation)
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class Constant(Protocol[T]):
+@define
+class Symbol:
+    name: str
+
+
+@define
+class Constant(Generic[T]):
     value: T
 
 
-Expr = Constant[T] | "Term[T]" | "Variable[T]"
+@define
+class Variable(Generic[T]):
+    name: Symbol
+    type: Type[T]
 
 
-@typing.runtime_checkable
-class Term(Protocol[T]):
+@define
+class Term(Generic[T]):
     op: Operation[..., T]
-    args: Iterable[Expr[T]]
-    kwargs: Mapping[str, Expr[T]]
+    args: Iterable["Term[T]" | Constant[T] | Variable[T]]
+    kwargs: Mapping[str, "Term[T]" | Constant[T] | Variable[T]]
 
 
-Symbol = str  # TODO replace with extensional protocol type
 Context = collections.abc.MutableMapping[Symbol, T]
 TypeContext = Context[Type[T]]
 TermContext = Context[Term[T]]
 
 
-@typing.runtime_checkable
-class Variable(Protocol[T]):
-    name: Symbol
-    type: Type[T]
-
-
-def define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
-    """
-    Scott encoding of a type as its constructor.
-    """
-    from ..internals.bootstrap import base_define
-
-    return base_define(m)
-
-
+@Operation
 def register(
     op: Operation[P, T],
     intp: Optional[Interpretation[T, V]],
@@ -71,19 +81,16 @@ def register(
     raise NotImplementedError(f"Cannot register {op} in {intp}")
 
 
-def apply(
-    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
-) -> T:
-    try:
-        interpret = intp[op]
-    except KeyError:
-        interpret = op.default
-    return interpret(*args, **kwargs)
+@Operation
+def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    from ..internals.runtime import runtime_apply
+    return runtime_apply(op, *args, **kwargs)
 
 
-@define(Operation)
+@Operation
 def evaluate(term: Term[T]) -> T:
-    return term.op(
+    return apply(
+        term.op,  # type: ignore
         *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
         **{
             k: (evaluate(v) if isinstance(v, Term) else v)

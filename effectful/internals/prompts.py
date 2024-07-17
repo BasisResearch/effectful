@@ -1,5 +1,6 @@
 import contextlib
 import functools
+import typing
 from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
@@ -42,7 +43,7 @@ def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P],
     return _wrapper
 
 
-@define(Operation)
+@Operation
 def _get_result() -> Optional[T]:
     return None
 
@@ -61,7 +62,7 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         return interpreter({_get_result: _get_result.default})(fn)(
-            _get_result(), *args, **kwargs
+            typing.cast(Optional[T], _get_result()), *args, **kwargs
         )
 
     return _wrapper
@@ -75,7 +76,7 @@ def bind_prompts(
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     LocalState = Tuple[Tuple, Mapping]
 
-    @define(Operation)
+    @Operation
     def _get_local_state() -> LocalState:
         raise ValueError("No args stored")
 
