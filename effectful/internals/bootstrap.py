@@ -55,7 +55,11 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
                 return _overloadmeta(
                     m.__name__,
                     (dataclasses.dataclass(unsafe_hash=True)(m),),
-                    {"__cons_op__": staticmethod(lambda *_, **__: base_define(Operation)(*_, *__))},
+                    {
+                        "__cons_op__": staticmethod(
+                            lambda *_, **__: base_define(Operation)(*_, *__)
+                        )
+                    },
                 )
         else:
             cons_op = base_define(Operation)(m)
