@@ -38,7 +38,7 @@ else:
 @runtime.weak_memoize
 def base_define(m: Type[T]) -> "Operation[..., T]":
     if typing.TYPE_CHECKING:
-        return base_define(Operation)(m)  # type: ignore
+        return m  # type: ignore
     else:
         m = typing.get_origin(m) if typing.get_origin(m) is not None else m
 
