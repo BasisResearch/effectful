@@ -2,6 +2,7 @@ import contextlib
 import functools
 import itertools
 import logging
+from random import random
 from typing import Optional, TypeVar
 
 import pytest
@@ -64,6 +65,17 @@ def test_memoized_define():
     assert define(Operation[P, int]) is define(Operation)
 
     assert define(Operation) is not define(Interpretation)
+
+
+def test_reimplementing_define():
+    dummy_value = "dummy value"
+
+    def new_operation_implementation(*_, **__):
+        return dummy_value
+
+    with interpreter({define(Operation): new_operation_implementation}):
+        o = Operation(3)
+        assert o == dummy_value
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
