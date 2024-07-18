@@ -40,7 +40,8 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
     if typing.TYPE_CHECKING:
         return m  # type: ignore
     else:
-        m = typing.get_origin(m) if typing.get_origin(m) is not None else m
+        if typing.get_origin(m) not in (m, None):
+            return base_define(typing.get_origin(m))
 
         try:
             from ..ops.core import Operation
@@ -53,10 +54,13 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
                 )
             else:
                 cons_op = base_define(Operation)(m)
-                return _overloadmeta(
-                    m.__name__,
-                    (dataclasses.dataclass(unsafe_hash=True)(m),),
-                    {"__cons_op__": staticmethod(cons_op)},
-                )
+                try:
+                    return _overloadmeta(
+                        m.__name__,
+                        (dataclasses.dataclass(unsafe_hash=True)(m),),
+                        {"__cons_op__": staticmethod(cons_op)},
+                    )
+                except TypeError:
+                    return cons_op
         except ImportError:
             return dataclasses.dataclass(unsafe_hash=True)(m)
