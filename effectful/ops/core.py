@@ -1,6 +1,6 @@
 import collections.abc
 import typing
-from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar
+from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec, dataclass_transform
 
@@ -51,8 +51,8 @@ class Constant(Generic[T]):
 @define
 class Term(Generic[T]):
     op: Operation[..., T]
-    args: Iterable["Term[T]" | Constant[T] | Variable[T]]
-    kwargs: Mapping[str, "Term[T]" | Constant[T] | Variable[T]]
+    args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
+    kwargs: Mapping[str, Union["Term[T]", Constant[T], Variable[T]]]
 
 
 Context = Mapping[Symbol, T]

@@ -45,22 +45,22 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
 
         try:
             from ..ops.core import Operation
-
-            if issubclass(m, Operation):
-                return (
-                    m
-                    if dataclasses.is_dataclass(m)
-                    else dataclasses.dataclass(unsafe_hash=True)(m)
-                )
-            else:
-                cons_op = base_define(Operation)(m)
-                try:
-                    return _overloadmeta(
-                        m.__name__,
-                        (dataclasses.dataclass(unsafe_hash=True)(m),),
-                        {"__cons_op__": staticmethod(cons_op)},
-                    )
-                except TypeError:
-                    return cons_op
         except ImportError:
             return dataclasses.dataclass(unsafe_hash=True)(m)
+
+        if issubclass(m, Operation):
+            return (
+                m
+                if dataclasses.is_dataclass(m)
+                else dataclasses.dataclass(unsafe_hash=True)(m)
+            )
+        else:
+            cons_op = base_define(Operation)(m)
+            try:
+                return _overloadmeta(
+                    m.__name__,
+                    (dataclasses.dataclass(unsafe_hash=True)(m),),
+                    {"__cons_op__": staticmethod(cons_op)},
+                )
+            except TypeError:
+                return cons_op

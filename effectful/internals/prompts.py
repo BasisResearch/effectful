@@ -1,6 +1,5 @@
 import contextlib
 import functools
-import typing
 from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
@@ -62,7 +61,7 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         return interpreter({_get_result: _get_result.default})(fn)(
-            typing.cast(Optional[T], _get_result()), *args, **kwargs
+            _get_result(), *args, **kwargs
         )
 
     return _wrapper
