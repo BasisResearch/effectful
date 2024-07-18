@@ -1,10 +1,11 @@
 import contextlib
-from typing import Mapping, Optional, TypeVar
+import typing
+from typing import Callable, Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompts, bind_result
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
@@ -13,16 +14,16 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Prompt)
-def reflect(__result: Optional[T]) -> T:
+@Operation
+def reflect(__result: Optional[S]) -> S:
     return __result  # type: ignore
 
 
-@define(Operation)
+@Operation
 def product(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
-    prompt: Prompt[T] = reflect,
+    prompt: Prompt[T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
@@ -33,9 +34,9 @@ def product(
 
     # on prompt, jump to the outer interpretation and interpret it using itself
     refls = {
-        op: bind_prompts({prompt: interpreter(intp)(op)})(
-            bind_result(lambda v, *_, **__: prompt(v))
-        )
+        op: bind_prompts(
+            {prompt: interpreter(intp)(typing.cast(Callable[..., T], op))}
+        )(bind_result(lambda v, *_, **__: prompt(v)))
         for op in intp.keys()
     }
 
@@ -44,7 +45,9 @@ def product(
             interpreter(refls)(intp2[op])
             if op not in intp
             else interpreter(refls)(
-                bind_prompts({prompt: interpreter(intp)(op)})(intp2[op])
+                bind_prompts(
+                    {prompt: interpreter(intp)(typing.cast(Callable[..., T], op))}
+                )(intp2[op])
             )
         )
         for op in intp2.keys()
@@ -55,7 +58,7 @@ def product(
 def runner(
     intp: Interpretation[S, T],
     *,
-    prompt: Prompt[T] = reflect,
+    prompt: Prompt[T] = reflect,  # type: ignore
     handler_prompt: Optional[Prompt[T]] = None,
 ):
     from ..internals.runtime import get_interpretation

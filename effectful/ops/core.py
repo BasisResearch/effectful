@@ -1,40 +1,34 @@
 import collections.abc
-import dataclasses
-import functools
 import typing
-from typing import Callable, Generic, Iterable, Mapping, Optional, Protocol, Type, TypeVar
+from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec, TypeGuard, dataclass_transform
-
+from typing_extensions import ParamSpec, dataclass_transform
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-T_co = TypeVar("T_co", covariant=True)
 
 
 @dataclass_transform()
-@functools.cache
 def define(m: Type[T]) -> "Operation[..., T]":
     """
     Scott encoding of a type as its constructor.
     """
-    if issubclass(m, Operation):
-        return dataclasses.dataclass()(m)
-    else:
-        return define(Operation)(m)
+    from ..internals.bootstrap import base_define
+
+    return base_define(m)  # type: ignore
 
 
-class Operation(Generic[P, T_co]):
-    default: Callable[P, T_co]
+@define
+class Operation(Generic[Q, V]):
+    default: Callable[Q, V]
 
-    def __call__(self: "Operation[P, S]", *args: P.args, **kwargs: P.kwargs) -> S:
-        return apply(self, *args, **kwargs)  # type: ignore
+    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        return apply.default(apply, self, *args, **kwargs)  # type: ignore
 
 
-Operation = define(Operation)
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
@@ -44,14 +38,14 @@ class Symbol:
 
 
 @define
-class Constant(Generic[T]):
-    value: T
+class Variable(Generic[T]):
+    symbol: Symbol
+    type: Type[T]
 
 
 @define
-class Variable(Generic[T]):
-    name: Symbol
-    type: Type[T]
+class Constant(Generic[T]):
+    value: T
 
 
 @define
@@ -61,9 +55,34 @@ class Term(Generic[T]):
     kwargs: Mapping[str, "Term[T]" | Constant[T] | Variable[T]]
 
 
-Context = collections.abc.MutableMapping[Symbol, T]
+Context = Mapping[Symbol, T]
 TypeContext = Context[Type[T]]
 TermContext = Context[Term[T]]
+
+
+if typing.TYPE_CHECKING:
+
+    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
+
+else:
+
+    @Operation
+    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        from ..internals.runtime import get_interpretation
+
+        return get_interpretation().get(op, op.default)(*args, **kwargs)
+
+
+@Operation
+def evaluate(term: Term[T]) -> T:
+    return apply(
+        term.op,
+        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
+        **{
+            k: (evaluate(v) if isinstance(v, Term) else v)
+            for k, v in term.kwargs.items()
+        },
+    )
 
 
 @Operation
@@ -79,21 +98,3 @@ def register(
         intp.__setitem__(op, interpret_op)
         return interpret_op
     raise NotImplementedError(f"Cannot register {op} in {intp}")
-
-
-@Operation
-def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    from ..internals.runtime import runtime_apply
-    return runtime_apply(op, *args, **kwargs)
-
-
-@Operation
-def evaluate(term: Term[T]) -> T:
-    return apply(
-        term.op,  # type: ignore
-        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{
-            k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()
-        },
-    )

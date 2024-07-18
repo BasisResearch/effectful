@@ -54,7 +54,7 @@ def test_affine_continuation_compose(op, args):
     def f():
         return op(*args)
 
-    h_twice = define(Interpretation)({op: bind_result(lambda v, *a, **k: fwd(fwd(v)))})
+    h_twice = {op: bind_result(lambda v, *a, **k: fwd(fwd(v)))}
 
     assert (
         interpreter(defaults(op))(f)()

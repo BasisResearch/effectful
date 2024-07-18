@@ -25,7 +25,7 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.prompts import bind_result
-from effectful.ops.core import Operation, define
+from effectful.ops.core import Operation
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
 
@@ -53,37 +53,37 @@ T = TypeVar("T")
 Seed = Tuple[Tensor, tuple, dict]
 
 
-@define(Operation)
+@Operation
 def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
     raise RuntimeError("No default implementation of sample")
 
 
-@define(Operation)
+@Operation
 def param(
     var_name: str,
-    initial_value: Union[Tensor, Callable[[], Tensor]] = None,
+    initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
     constraint: Optional[Constraint] = None,
     event_dim: Optional[int] = None,
 ) -> Tensor:
     raise RuntimeError("No default implementation of param")
 
 
-@define(Operation)
+@Operation
 def clear_param_store() -> None:
     raise RuntimeError("No default implementation of clear_param_store")
 
 
-@define(Operation)
+@Operation
 def get_param_store() -> dict[str, Tensor]:
     raise RuntimeError("No default implementation of get_param_store")
 
 
-@define(Operation)
+@Operation
 def get_rng_seed() -> Seed:
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
-@define(Operation)
+@Operation
 def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 
@@ -108,7 +108,7 @@ def trace():
     def do_param(
         result: Optional[Tensor],
         var_name: str,
-        initial_value: Union[Tensor, Callable[[], Tensor]] = None,
+        initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
         event_dim: Optional[int] = None,
     ) -> Tensor:
@@ -149,7 +149,7 @@ def seed_impl():
             np.random.seed(seed)
         else:
             set_rng_state(seed[0])
-            random.seed(seed[1])
+            random.setstate(seed[1])
             np.random.set_state(seed[2])
         return fwd(None)
 
@@ -238,7 +238,7 @@ def plate(name: str, size: int, dim: Optional[int] = None):
     def do_sample(
         result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
     ) -> Tensor:
-        batch_shape = dist.batch_shape
+        batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -dim or batch_shape[dim] != size:
             batch_shape = [1] * (-dim - len(batch_shape)) + list(batch_shape)
