@@ -1,10 +1,11 @@
 import itertools
 import logging
-from typing import TypeVar
+from typing import List, TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
+from effectful.handlers.state import State
 from effectful.internals.prompts import bind_result, value_or_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
@@ -130,6 +131,29 @@ def test_runner_scopes():
                 assert double(2) == 4
                 assert triple(3) == 9
                 assert sextuple(6) == 36
+
+
+def test_using_runner_to_implement_trailing_state():
+    def trailing_state(st: State[List[T]]):
+        def trailing_set(new_value: T) -> None:
+            st.set(st.get() + [new_value])
+
+        interp: Interpretation = {
+            st.get: lambda: st.get()[-1],
+            st.set: trailing_set,
+        }
+
+        return runner(interp)
+
+    st = State([])
+
+    with handler(defaults(st.get, st.bound_to, st.set)):
+        with trailing_state(st):
+            st.set(3)
+            assert st.get() == 3
+            st.set(4)
+            assert st.get() == 4
+        assert st.get() == [3, 4]
 
 
 def test_runner_outer_reflect():
