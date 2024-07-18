@@ -56,7 +56,7 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
                 return _overloadmeta(
                     m.__name__,
                     (cons_op,),
-                    {"__cons_op__": staticmethod(cons_op)},
+                    {"__cons_op__": staticmethod(cons_op(cons_op))},
                 )
         else:
             cons_op = base_define(Operation)(m)
