@@ -61,7 +61,7 @@ TermContext = Context[Term[T]]
 
 
 if typing.TYPE_CHECKING:
-
+    # TODO figure out why mypy is unable to infer the type of apply as an Operation
     def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
 
 else:
