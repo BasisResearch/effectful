@@ -1,17 +1,24 @@
 import dataclasses
 import functools
+import typing
 import weakref
 from typing import Callable, Generic, TypeVar
 
-from effectful.ops.core import Interpretation
+from typing_extensions import ParamSpec
 
+P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
+V = TypeVar("V")
+T_co = TypeVar("T_co", covariant=True)
+
+if typing.TYPE_CHECKING:
+    from ..ops.core import Interpretation
 
 
 @dataclasses.dataclass
 class Runtime(Generic[S, T]):
-    interpretation: Interpretation[S, T]
+    interpretation: "Interpretation[S, T]"
 
 
 @functools.lru_cache(maxsize=1)
@@ -23,7 +30,7 @@ def get_interpretation():
     return get_runtime().interpretation
 
 
-def swap_interpretation(intp: Interpretation) -> Interpretation:
+def swap_interpretation(intp: "Interpretation[S, V]") -> "Interpretation[S, T]":
     old_intp = get_runtime().interpretation
     get_runtime().interpretation = intp
     return old_intp

@@ -19,17 +19,17 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Operation)
+@Operation
 def plus_1(x: int) -> int:
     return x + 1
 
 
-@define(Operation)
+@Operation
 def plus_2(x: int) -> int:
     return x + 2
 
 
-@define(Operation)
+@Operation
 def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 

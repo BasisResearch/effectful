@@ -4,7 +4,7 @@ from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
@@ -42,7 +42,7 @@ def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P],
     return _wrapper
 
 
-@define(Operation)
+@Operation
 def _get_result() -> Optional[T]:
     return None
 
@@ -67,7 +67,7 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return _wrapper
 
 
-Prompt = Operation[[Optional[T]], T]
+Prompt = Operation[[Optional[S]], S]
 
 
 def bind_prompts(
@@ -75,7 +75,7 @@ def bind_prompts(
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     LocalState = Tuple[Tuple, Mapping]
 
-    @define(Operation)
+    @Operation
     def _get_local_state() -> LocalState:
         raise ValueError("No args stored")
 

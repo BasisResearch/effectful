@@ -58,9 +58,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = define(Interpretation)(
-        {op: bind_result(lambda v, *a, **k: reflect(reflect(v)))}
-    )
+    h_twice = {op: bind_result(lambda v, *a, **k: reflect(reflect(v)))}
 
     assert (
         interpreter(defaults(op))(f)()

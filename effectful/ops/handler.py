@@ -5,7 +5,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompts
 from effectful.internals.runtime import get_interpretation
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
@@ -15,16 +15,16 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@define(Operation)
-def fwd(__result: Optional[T]) -> T:
-    return __result
+@Operation
+def fwd(__result: Optional[S]) -> S:
+    return __result  # type: ignore
 
 
-@define(Operation)
+@Operation
 def coproduct(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
-    prompt: Prompt[T] = fwd,
+    prompt: Prompt[T] = fwd,  # type: ignore
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
@@ -46,6 +46,10 @@ def coproduct(
 
 
 @contextlib.contextmanager
-def handler(intp: Interpretation[S, T], *, prompt: Prompt[T] = fwd):
+def handler(
+    intp: Interpretation[S, T],
+    *,
+    prompt: Prompt[T] = fwd,  # type: ignore
+):
     with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
         yield intp
