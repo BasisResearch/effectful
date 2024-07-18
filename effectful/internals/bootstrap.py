@@ -49,11 +49,15 @@ def base_define(m: Type[T]) -> "Operation[..., T]":
             return dataclasses.dataclass(unsafe_hash=True)(m)
 
         if issubclass(m, Operation):
-            return (
-                m
-                if dataclasses.is_dataclass(m)
-                else dataclasses.dataclass(unsafe_hash=True)(m)
-            )
+            if dataclasses.is_dataclass(m):
+                return m
+            else:
+                cons_op = dataclasses.dataclass(unsafe_hash=True)(m)
+                return _overloadmeta(
+                    m.__name__,
+                    (cons_op,),
+                    {"__cons_op__": staticmethod(cons_op)},
+                )
         else:
             cons_op = base_define(Operation)(m)
             try:
