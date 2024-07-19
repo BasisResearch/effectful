@@ -1,5 +1,6 @@
 import contextlib
 import functools
+import typing
 from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
@@ -42,39 +43,50 @@ def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P],
     return _wrapper
 
 
+class _NoStateError(Exception):
+    pass
+
+
 class LinearState(Generic[S]):
     _get_state: Operation[[], S]
 
-    def __init__(self, initial_state: S):
+    def __init__(self):
 
         @Operation
         def _get_state() -> S:
-            raise NotImplementedError("No state stored")
-        
-        self._initial_state = initial_state
+            raise _NoStateError("No state stored")
+
         self._get_state = _get_state
 
     def sets(self, fn: Callable[P, T]) -> Callable[Concatenate[S, P], T]:
         @functools.wraps(fn)
         def _wrapper(state: S, *args: P.args, **kwargs: P.kwargs) -> T:
-            return shallow_interpreter({self._get_state: lambda: state})(fn)(*args, **kwargs)
+            return shallow_interpreter({self._get_state: lambda: state})(fn)(
+                *args, **kwargs
+            )
 
         return _wrapper
 
     def gets(self, fn: Callable[Concatenate[S, P], T]) -> Callable[P, T]:
         @functools.wraps(fn)
         def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            try:
-                state = self._get_state()
-            except NotImplementedError:
-                state = self._initial_state
-            return fn(state, *args, **kwargs)
+            return fn(self._get_state(), *args, **kwargs)
+
+        return _wrapper
+
+    def dups(
+        self, fn: Callable[Concatenate[S, P], T]
+    ) -> Callable[Concatenate[S, P], T]:
+        @functools.wraps(fn)
+        def _wrapper(s: S, *a: P.args, **k: P.kwargs) -> T:
+            return self.sets(lambda *a, **k: fn(s, *a, **k))(s, *a, **k)
 
         return _wrapper
 
 
 Result = Optional[T]
 ArgSet = TypeVar("ArgSet", bound=Tuple[Tuple, Mapping])
+
 
 class LinearResult(Generic[T], LinearState[Result[T]]):
     pass
@@ -84,13 +96,24 @@ class LinearArgs(Generic[ArgSet], LinearState[ArgSet]):
     pass
 
 
-_result = LinearResult(None)
-_set_result = _result.sets
-bind_result = _result.gets
+_arg_state = LinearArgs()
+_result_state = LinearResult()
 
-_arg_state = LinearArgs(None)
-_set_args = _arg_state.sets
-_bind_args = _arg_state.gets
+
+def bind_result(fn: Callable[Concatenate[Result[T], P], T]) -> Callable[P, T]:
+
+    bound_fn = _result_state.gets(fn)
+    default_bound_fn = _result_state.dups(fn)
+
+    @functools.wraps(fn)
+    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        try:
+            return bound_fn(*args, **kwargs)
+        except _NoStateError:
+            return default_bound_fn(None, *args, **kwargs)
+
+    return _wrapper
+
 
 Prompt = Operation[[Result[S]], S]
 
@@ -99,16 +122,19 @@ def bind_prompts(
     unbound_conts: Mapping[Prompt[S], Callable[P, T]],
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
 
-    def _dup_args(fn: Callable[[ArgSet], V]) -> Callable[[ArgSet], V]:
-        return lambda ak: _set_args(lambda: fn(ak))(ak)
-
     def _flatten_args(fn: Callable[Q, V]) -> Callable[[ArgSet], V]:
-        return lambda ak: fn(*ak[0], **ak[1])
+        return lambda ak: fn(*ak[0], **typing.cast(Mapping, ak[1]))
+
+    def _unflatten_args(fn: Callable[[ArgSet], V]) -> Callable[Q, V]:
+        return lambda *a, **k: fn(typing.cast(ArgSet, (a, k)))
 
     def _bind_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
         bound_conts = {
-            p: _set_result(_bind_args(_flatten_args(unbound_conts[p]))) for p in unbound_conts.keys()
+            p: _result_state.sets(_arg_state.gets(_flatten_args(unbound_conts[p])))
+            for p in unbound_conts.keys()
         }
-        return shallow_interpreter(bound_conts)(lambda *a, **k: _dup_args(_flatten_args(fn))((a, k)))
+        return shallow_interpreter(bound_conts)(
+            _unflatten_args(_arg_state.dups(_flatten_args(fn)))
+        )
 
     return _bind_local_state
