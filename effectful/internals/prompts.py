@@ -1,6 +1,6 @@
 import contextlib
 import functools
-from typing import Callable, Mapping, Optional, Tuple, TypeVar
+from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
@@ -42,60 +42,65 @@ def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P],
     return _wrapper
 
 
-@Operation
-def _get_result() -> Optional[T]:
-    return None
+class LinearState(Generic[S]):
+    _get_state: Operation[[], S]
+
+    def __init__(self, initial_state: S):
+
+        @Operation
+        def _get_state() -> S:
+            raise NotImplementedError("No state stored")
+        
+        self._initial_state = initial_state
+        self._get_state = _get_state
+
+    def sets(self, fn: Callable[P, T]) -> Callable[Concatenate[S, P], T]:
+        @functools.wraps(fn)
+        def _wrapper(state: S, *args: P.args, **kwargs: P.kwargs) -> T:
+            return shallow_interpreter({self._get_state: lambda: state})(fn)(*args, **kwargs)
+
+        return _wrapper
+
+    def gets(self, fn: Callable[Concatenate[S, P], T]) -> Callable[P, T]:
+        @functools.wraps(fn)
+        def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            try:
+                state = self._get_state()
+            except NotImplementedError:
+                state = self._initial_state
+            return fn(state, *args, **kwargs)
+
+        return _wrapper
 
 
-def _set_result(
-    fn: Callable[Concatenate[Optional[T], P], T]
-) -> Callable[Concatenate[Optional[T], P], T]:
-    @functools.wraps(fn)
-    def _wrapper(res: Optional[T], *args: P.args, **kwargs: P.kwargs) -> T:
-        return shallow_interpreter({_get_result: lambda: res})(fn)(res, *args, **kwargs)
+Result = Optional[T]
+ArgSet = Tuple[Tuple, Mapping]
 
-    return _wrapper
+_result = LinearState[Result[T]](None)
+_set_result = _result.sets
+bind_result = _result.gets
 
+_arg_state = LinearState[ArgSet](None)
+_set_args = _arg_state.sets
+_bind_args = _arg_state.gets
 
-def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
-    @functools.wraps(fn)
-    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return interpreter({_get_result: _get_result.default})(fn)(
-            _get_result(), *args, **kwargs
-        )
-
-    return _wrapper
-
-
-Prompt = Operation[[Optional[S]], S]
+Prompt = Operation[[Result[S]], S]
 
 
 def bind_prompts(
     unbound_conts: Mapping[Prompt[S], Callable[P, T]],
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    LocalState = Tuple[Tuple, Mapping]
 
-    @Operation
-    def _get_local_state() -> LocalState:
-        raise ValueError("No args stored")
+    def _dup_args(fn: Callable[[ArgSet], T]) -> Callable[[ArgSet], T]:
+        return lambda ak: _set_args(lambda: fn(ak))(ak)
 
-    def _set_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
-        @functools.wraps(fn)
-        def _wrapper(*a: Q.args, **ks: Q.kwargs) -> V:
-            return interpreter({_get_local_state: lambda: (a, ks)})(fn)(*a, **ks)
+    def _flatten_args(fn: Callable[Q, V]) -> Callable[[ArgSet], V]:
+        return lambda ak: fn(*ak[0], **ak[1])
 
-        return _wrapper
-
-    def _bind_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
+    def _bind_local_state(fn: Callable[P, V]) -> Callable[P, V]:
         bound_conts = {
-            p: _set_result(
-                functools.partial(
-                    lambda k, _: k(*_get_local_state()[0], **_get_local_state()[1]),
-                    unbound_conts[p],
-                )
-            )
-            for p in unbound_conts.keys()
+            p: _set_result(_bind_args(_flatten_args(unbound_conts[p]))) for p in unbound_conts.keys()
         }
-        return shallow_interpreter(bound_conts)(_set_local_state(fn))
+        return shallow_interpreter(bound_conts)(lambda *a, **k: _dup_args(_flatten_args(fn))((a, k)))
 
     return _bind_local_state
