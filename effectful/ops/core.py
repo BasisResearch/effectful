@@ -94,13 +94,26 @@ def register(
 
 class NoDefaultImplementationError(RuntimeError):
     """
-    A RuntimeError raised when an Operation does not have
+    A :class:`RuntimeError` raised when an :py:class:`Operation` does not have
     a default implementation.
     """
 
 
-def explicit_operation(*args1: Any, **kwargs1: Any) -> Operation[..., Any]:
+def explicit_operation(*args: Any, **kwargs: Any) -> Operation[..., Any]:
+    """
+    Returns a new :class:`Operation` without a default implementation.
+
+    If the returned operation is called without first being bound, it will raise
+    a :class:`NoDefaultImplementaitonError`. Both the arguments passed to this
+    function and to the resulting operation will be passed to the :py:class:`NoDefaultImplementaitonError`.
+
+    :param args: Arguments which are passed to the :class:`NoDefaultImplementationError` constructor
+    :param kwargs: Arguments which are passed to the :class:`NoDefaultImplementationError` constructor
+
+    :return: A new, explicit :class:`Operation`
+    """
+
     def callback(*args2: Any, **kwargs2: Any) -> NoReturn:
-        raise NoDefaultImplementationError(*(args1 + args2), **{**kwargs1, **kwargs2})
+        raise NoDefaultImplementationError(*(args + args2), **{**kwargs, **kwargs2})
 
     return Operation(callback)

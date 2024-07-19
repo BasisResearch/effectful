@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Mapping, Optional, Tuple, TypeVar
+from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -15,8 +15,8 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-Prompt = Operation[[Optional[S]], S]
-Args = Tuple[Tuple, Mapping]
+Prompt: TypeAlias = Operation[[Optional[S]], S]
+Args: TypeAlias = Tuple[Tuple, Mapping]
 
 
 @contextmanager
@@ -42,11 +42,11 @@ def bind_prompt(
     prompt: Prompt[S], prompt_impl: Callable[P, T], wrapped: Callable[P, T]
 ) -> Callable[P, T]:
     """
-    Bind a prompt to a particular implementation in a particular function.
+    Bind a :py:type:`Prompt` to a particular implementation in a particular function.
 
-    Within the body of the wrapped function, calling `prompt` will forward the
+    Within the body of the wrapped function, calling ``prompt`` will forward the
     arguments passed to the wrapped function to the prompt's implementation.
-    The value passed to `prompt` will be bound to the state effect `result`.
+    The value passed to ``prompt`` will be bound to the :class:`State` ``result``.
 
     :param prompt: The prompt to be bound
     :param prompt_impl: The implementation of that prompt
