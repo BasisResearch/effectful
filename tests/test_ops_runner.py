@@ -39,20 +39,6 @@ def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
     return {op: lambda *_, **__: reflect(result()) for op in ops}
 
 
-def result_or(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    r = result()
-    return fn(*args, **kwargs) if r is None else r
-
-
-def trash_result(fn: Callable[P, T]) -> Callable[P, T]:
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        result.set(None)
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
     return {op: op.default for op in ops}
 
