@@ -112,7 +112,7 @@ class NoDefaultImplementationError(RuntimeError):
     """
 
 
-def invalid_operation(*args1: Any, **kwargs1: Any) -> Operation[..., Any]:
+def explicit_operation(*args1: Any, **kwargs1: Any) -> Operation[..., Any]:
     def callback(*args2: Any, **kwargs2: Any) -> NoReturn:
         raise NoDefaultImplementationError(*(args1 + args2), **{**kwargs1, **kwargs2})
 

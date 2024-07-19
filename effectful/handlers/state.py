@@ -23,7 +23,7 @@ LOG: 0
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, ParamSpec, TypeVar
 
-from effectful.ops.core import Interpretation, Operation, define, invalid_operation
+from effectful.ops.core import Interpretation, Operation, define, explicit_operation
 from effectful.ops.interpreter import interpreter
 
 T = TypeVar("T")
@@ -58,8 +58,8 @@ class State(Generic[T]):
             self.get = Operation(box.get)
             self.set = Operation(box.set)
         else:
-            self.get = invalid_operation("Cannot read from an empty box")
-            self.set = invalid_operation("Cannot write to an empty box")
+            self.get = explicit_operation("Cannot read from an empty box")
+            self.set = explicit_operation("Cannot write to an empty box")
 
         def bound_to(new: T):
             new_box = Box(new)
