@@ -1,18 +1,5 @@
 import collections.abc
-import functools
-from typing import (
-    Any,
-    NoReturn,
-    TYPE_CHECKING,
-    Callable,
-    Generic,
-    Iterable,
-    Mapping,
-    Optional,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import (Any, Callable, Generic, Iterable, Mapping, NoReturn, Optional, Type, TypeVar, Union)
 
 from typing_extensions import ParamSpec, dataclass_transform
 

@@ -1,30 +1,7 @@
-"""
-A generic mutable state effect with an optional default value.
-
->>> debug = State(False)
->>> def log(value):
-...     if debug.get():
-...         print(f"LOG: {value}")
-...
->>> def factorial(value):
-...     log(value)
-...     return 1 if value == 0 else value * factorial(value - 1)
->>> factorial(3)
-6
->>> with interpreter(debug.bound_to(True)):
-...     print(factorial(3))
-LOG: 3
-LOG: 2
-LOG: 1
-LOG: 0
-6
-"""
-
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, ParamSpec, TypeVar
+from typing import Generic, ParamSpec, TypeVar
 
 from effectful.ops.core import Interpretation, Operation, define, explicit_operation
-from effectful.ops.interpreter import interpreter
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -44,6 +21,29 @@ class Box(Generic[T]):
 
 @define
 class State(Generic[T]):
+    """
+    A generic mutable state effect with an optional default value.
+
+    >>> from effectful.ops.interpreter import interpreter
+    >>> debug = State(False)
+    >>> def log(value):
+    ...     if debug.get():
+    ...         print(f"LOG: {value}")
+    ...
+    >>> def factorial(value):
+    ...     log(value)
+    ...     return 1 if value == 0 else value * factorial(value - 1)
+    >>> factorial(3)
+    6
+    >>> with interpreter(debug.bound_to(True)):
+    ...     print(factorial(3))
+    LOG: 3
+    LOG: 2
+    LOG: 1
+    LOG: 0
+    6
+    """
+
     get: Operation[[], T]
     set: Operation[[T], None]
     bound_to: Operation[[T], Interpretation[T | None, T | None]]

@@ -5,7 +5,7 @@ from typing import Any, Callable, Mapping, Optional, Tuple, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.handlers.state import State
-from effectful.ops.core import Interpretation, Operation, explicit_operation
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
@@ -53,6 +53,7 @@ def bind_prompt(
     :param wrapped: The function in which the prompt will be bound.
     :return: A wrapper which calls the wrapped function with the prompt bound.
 
+    >>> from effectful.ops.core import explicit_operation
     >>> call_my_manager = explicit_operation()
     >>> def clerk(problem: str) -> str:
     ...     if "refund" in problem:
@@ -89,14 +90,14 @@ def bind_prompt(
     Clerk: Great, here's your refund.
     """
 
+    @wraps(prompt)
+    def prompt_wrapper(res: Optional[T]) -> T:
+        with interpreter(result.bound_to(res)):
+            return prompt_impl(*args()[0], **args()[1])
+
     @wraps(wrapped)
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        @wraps(prompt)
-        def wrapped_prompt(res: Optional[T]) -> T:
-            with interpreter(result.bound_to(res)):
-                return prompt_impl(*args()[0], **args()[1])
-
-        with shallow_interpreter({prompt: wrapped_prompt}):
+        with shallow_interpreter({prompt: prompt_wrapper}):
             with interpreter(args.bound_to((a, k))):
                 return wrapped(*a, **k)
 
