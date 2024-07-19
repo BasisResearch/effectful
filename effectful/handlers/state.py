@@ -23,7 +23,7 @@ LOG: 0
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, ParamSpec, TypeVar
 
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation, define, invalid_operation
 from effectful.ops.interpreter import interpreter
 
 T = TypeVar("T")
@@ -47,31 +47,30 @@ class State(Generic[T]):
     get: Operation[[], T]
     set: Operation[[T], None]
     bound_to: Operation[[T], Interpretation[T | None, T | None]]
+    linear: bool
 
-    class Nothing:
+    class _Empty:
         pass
 
-    def __init__(self, initial_state: T | Nothing = Nothing()):
-        if not isinstance(initial_state, self.Nothing):
+    @staticmethod
+    def empty():
+        return State()
+
+    def __init__(self, initial_state: T | _Empty = _Empty()):
+        if not isinstance(initial_state, self._Empty):
             box = Box(initial_state)
 
             self.get = Operation(box.get)
             self.set = Operation(box.set)
         else:
-
-            def raise_a(
-                ex: Callable[..., Exception], *args1, **kwargs1
-            ) -> Callable[..., Any]:
-                def do_raise(*args2, **kwargs2):
-                    raise ex(*(args1 + args2), **(kwargs1 | kwargs2))
-
-                return do_raise
-
-            self.get = Operation(raise_a(ValueError, "Cannot read from an empty box"))
-            self.set = Operation(raise_a(ValueError, "Cannot write to an empty box"))
+            self.get = invalid_operation(ValueError, "Cannot read from an empty box")
+            self.set = invalid_operation(ValueError, "Cannot write to an empty box")
 
         def bound_to(new: T):
             new_box = Box(new)
             return {self.get: new_box.get, self.set: new_box.set}
 
         self.bound_to = Operation(bound_to)
+
+    def __call__(self) -> T:
+        return self.get()

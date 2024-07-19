@@ -2,12 +2,12 @@ import contextlib
 import functools
 import itertools
 import logging
-from typing import Optional, TypeVar
+from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result, value_or_result
+from effectful.internals.prompts import result
 from effectful.ops.core import Interpretation, Operation, define, register
 from effectful.ops.interpreter import interpreter
 
@@ -35,12 +35,10 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    def _op_times_n(
-        n: int, op: Operation[..., int], result: Optional[int], *args: int
-    ) -> int:
-        return value_or_result(op.default)(result, *args) * n
+    def _op_times_n(n: int, op: Operation[..., int], *args: int) -> int:
+        return (result.get() or op.default(*args)) * n
 
-    return {op: bind_result(functools.partial(_op_times_n, n, op)) for op in ops}
+    return {op: functools.partial(_op_times_n, n, op) for op in ops}
 
 
 OPERATION_CASES = (

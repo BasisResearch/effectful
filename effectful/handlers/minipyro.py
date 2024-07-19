@@ -24,7 +24,7 @@ from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import bind_result
+from effectful.internals.prompts import result
 from effectful.ops.core import Operation
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
@@ -94,42 +94,34 @@ def trace():
 
     TRACE = OrderedDict()
 
-    @bind_result
-    def do_sample(
-        result: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
-    ) -> Tensor:
-        result = fwd(result)
+    def do_sample(var_name: str, dist: Distribution, **kwargs) -> Tensor:
+        res: Tensor = fwd(result.get())
         TRACE[var_name] = SampleMsg(
-            name=var_name, val=result, dist=dist, obs=kwargs.get("obs")
+            name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
-        return result
+        return res
 
-    @bind_result
     def do_param(
-        result: Optional[Tensor],
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
         event_dim: Optional[int] = None,
     ) -> Tensor:
-        result = fwd(result)
-        TRACE[var_name] = ParamMsg(name=var_name, val=result)
+        res: Tensor = fwd(result.get())
+        TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
-        return result
+        return res
 
     with handler({sample: do_sample, param: do_param}):
         yield TRACE
 
 
 def replay(trace: Trace):
-    @bind_result
-    def do_sample(
-        res: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
-    ) -> Tensor:
+    def do_sample(var_name: str, dist: Distribution, **kwargs) -> Tensor:
         if var_name in trace:
             return trace[var_name].val
         else:
-            return fwd(res)
+            return fwd(result.get())
 
     return handler(
         {
@@ -235,9 +227,7 @@ def plate(name: str, size: int, dim: Optional[int] = None):
             "mini-pyro doesn't implement the `dim` argument to `plate`"
         )
 
-    def do_sample(
-        result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
-    ) -> Tensor:
+    def do_sample(sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -dim or batch_shape[dim] != size:
@@ -245,32 +235,33 @@ def plate(name: str, size: int, dim: Optional[int] = None):
             batch_shape[dim] = size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
-            return fwd(result)
+            return fwd(result.get())
 
-    return handler({sample: bind_result(do_sample)})
+    return handler({sample: do_sample})
 
 
 base_runner = coproduct(seed_impl(), param_impl())
 default_runner = product(
-    base_runner, {k: bind_result(lambda r, *_, **__: reflect(r)) for k in base_runner}
+    base_runner, {k: lambda *_, **__: reflect(result.get()) for k in base_runner}
 )
 
 
 def block(
     hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
 ):
-    def blocking(fn: Operation, result, *args, **kwargs):
-        if hide_fn(fn, result, *args, **kwargs):
-            return reflect(result)
+    def blocking(fn: Operation, *args, **kwargs):
+        res = result.get()
+        if hide_fn(fn, res, *args, **kwargs):
+            return reflect(res)
         else:
-            return fwd(result)
+            return fwd(res)
 
     return handler(
         product(
             default_runner,
             {
-                sample: bind_result(partial(blocking, sample)),
-                param: bind_result(partial(blocking, param)),
+                sample: partial(blocking, sample),
+                param: partial(blocking, param),
             },
         )
     )

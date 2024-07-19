@@ -1,5 +1,6 @@
 import collections.abc
-from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
+import functools
+from typing import (Any, Callable, Generic, Iterable, Mapping, NoReturn, Optional, Type, TypeVar, Union)
 
 from typing_extensions import ParamSpec, dataclass_transform
 
@@ -90,3 +91,14 @@ def register(
         intp.__setitem__(op, interpret_op)
         return interpret_op
     raise NotImplementedError(f"Cannot register {op} in {intp}")
+
+
+def invalid_operation(
+    make_ex: Callable[..., Exception], *args1: Any, **kwargs1: Any
+) -> Operation[..., Any]:
+
+    @functools.wraps(make_ex)
+    def callback(*args2: Any, **kwargs2: Any) -> NoReturn:
+        raise make_ex(*(args1 + args2), **{**kwargs1, **kwargs2})
+
+    return Operation(callback)

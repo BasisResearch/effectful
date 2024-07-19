@@ -1,8 +1,8 @@
-import contextlib
-import functools
+from contextlib import contextmanager
+from functools import wraps
 from typing import Any, Callable, Mapping, Optional, Tuple, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 from effectful.handlers.state import State
 from effectful.ops.core import Interpretation, Operation
@@ -15,82 +15,57 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@contextlib.contextmanager
+Prompt = Operation[[Optional[S]], S]
+Args = Tuple[Tuple, Mapping]
+
+
+@contextmanager
 def shallow_interpreter(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation
 
     # destructive update: calling any op in intp should remove intp from active
     active_intp = get_interpretation()
-    prev_intp = {
-        op: active_intp[op] if op in active_intp else op.default for op in intp.keys()
+    prev_intp = {op: active_intp.get(op, op.default) for op in intp}
+    next_intp = {
+        op: interpreter(prev_intp, unset=False)(impl) for op, impl in intp.items()
     }
 
-    with interpreter(
-        {op: interpreter(prev_intp, unset=False)(intp[op]) for op in intp.keys()}
-    ):
+    with interpreter(next_intp):
         yield intp
 
 
-def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P], T]:
-    """
-    Return either the value or the result of calling the function.
-    """
-
-    @functools.wraps(fn)
-    def _wrapper(__result: Optional[T], *args: P.args, **kwargs: P.kwargs) -> T:
-        return fn(*args, **kwargs) if __result is None else __result
-
-    return _wrapper
-
-
 result = State[Any](None)
+args = State[Args](State._Empty())
 
 
-def _set_result(
-    fn: Callable[Concatenate[Optional[T], P], T]
-) -> Callable[Concatenate[Optional[T], P], T]:
-    @functools.wraps(fn)
-    def _wrapper(res: Optional[T], *args: P.args, **kwargs: P.kwargs) -> T:
-        return shallow_interpreter(result.bound_to(res))(fn)(res, *args, **kwargs)
+def bind_prompt(
+    prompt: Prompt[S],
+    prompt_impl: Callable[P, T],
+    wrapped: Callable[P, T],
+) -> Callable[P, T]:
+    """
+    Bind a prompt to a particular implementation in a particular function.
 
-    return _wrapper
+    Within the body of the wrapped function, calling `prompt` will forward the
+    arguments passed to the wrapped function to the prompt's implementation.
+    The value passed to `prompt` will be bound to the state effect `result`.
 
+    :param prompt: The prompt to be bound
+    :param prompt_impl: The implementation of that prompt
+    :param wrapped: The function in which the prompt will be bound
+    :return: A wrapper which calls the wrapped function with the prompt bound
 
-def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
-    @functools.wraps(fn)
-    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return interpreter(result.bound_to(None))(fn)(result.get(), *args, **kwargs)
+    """
 
-    return _wrapper
+    @wraps(wrapped)
+    def wrapper(*a: P.args, **k: P.kwargs) -> T:
+        @wraps(prompt)
+        def wrapped_prompt(res: Optional[T]) -> T:
+            with interpreter(result.bound_to(res)):
+                return prompt_impl(*args()[0], **args()[1])
 
+        with shallow_interpreter({prompt: wrapped_prompt}):
+            with interpreter(args.bound_to((a, k))):
+                return wrapped(*a, **k)
 
-Prompt = Operation[[Optional[S]], S]
-
-
-def bind_prompts(
-    unbound_conts: Mapping[Prompt[S], Callable[P, T]],
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    Args = Tuple[Tuple, Mapping]
-
-    args = State[Args]()
-
-    def set_args(fn: Callable[Q, V]) -> Callable[Q, V]:
-        @functools.wraps(fn)
-        def _wrapper(*a: Q.args, **ks: Q.kwargs) -> V:
-            return interpreter(args.bound_to((a, ks)))(fn)(*a, **ks)
-
-        return _wrapper
-
-    def bind_args(fn: Callable[Q, V]) -> Callable[Q, V]:
-        bound_conts = {
-            p: _set_result(
-                functools.partial(
-                    lambda k, _: k(*args.get()[0], **args.get()[1]),
-                    unbound_conts[p],
-                )
-            )
-            for p in unbound_conts.keys()
-        }
-        return shallow_interpreter(bound_conts)(set_args(fn))
-
-    return bind_args
+    return wrapper
