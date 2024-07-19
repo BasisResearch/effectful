@@ -74,13 +74,21 @@ class LinearState(Generic[S]):
 
 
 Result = Optional[T]
-ArgSet = Tuple[Tuple, Mapping]
+ArgSet = TypeVar("ArgSet", bound=Tuple[Tuple, Mapping])
 
-_result = LinearState[Result[T]](None)
+class LinearResult(Generic[T], LinearState[Result[T]]):
+    pass
+
+
+class LinearArgs(Generic[ArgSet], LinearState[ArgSet]):
+    pass
+
+
+_result = LinearResult(None)
 _set_result = _result.sets
 bind_result = _result.gets
 
-_arg_state = LinearState[ArgSet](None)
+_arg_state = LinearArgs(None)
 _set_args = _arg_state.sets
 _bind_args = _arg_state.gets
 
@@ -91,13 +99,13 @@ def bind_prompts(
     unbound_conts: Mapping[Prompt[S], Callable[P, T]],
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
 
-    def _dup_args(fn: Callable[[ArgSet], T]) -> Callable[[ArgSet], T]:
+    def _dup_args(fn: Callable[[ArgSet], V]) -> Callable[[ArgSet], V]:
         return lambda ak: _set_args(lambda: fn(ak))(ak)
 
     def _flatten_args(fn: Callable[Q, V]) -> Callable[[ArgSet], V]:
         return lambda ak: fn(*ak[0], **ak[1])
 
-    def _bind_local_state(fn: Callable[P, V]) -> Callable[P, V]:
+    def _bind_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
         bound_conts = {
             p: _set_result(_bind_args(_flatten_args(unbound_conts[p]))) for p in unbound_conts.keys()
         }
