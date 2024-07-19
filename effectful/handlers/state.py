@@ -47,14 +47,9 @@ class State(Generic[T]):
     get: Operation[[], T]
     set: Operation[[T], None]
     bound_to: Operation[[T], Interpretation[T | None, T | None]]
-    linear: bool
 
     class _Empty:
         pass
-
-    @staticmethod
-    def empty():
-        return State()
 
     def __init__(self, initial_state: T | _Empty = _Empty()):
         if not isinstance(initial_state, self._Empty):
@@ -63,8 +58,8 @@ class State(Generic[T]):
             self.get = Operation(box.get)
             self.set = Operation(box.set)
         else:
-            self.get = invalid_operation(ValueError, "Cannot read from an empty box")
-            self.set = invalid_operation(ValueError, "Cannot write to an empty box")
+            self.get = invalid_operation("Cannot read from an empty box")
+            self.set = invalid_operation("Cannot write to an empty box")
 
         def bound_to(new: T):
             new_box = Box(new)

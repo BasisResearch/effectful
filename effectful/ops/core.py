@@ -1,6 +1,18 @@
 import collections.abc
 import functools
-from typing import (Any, Callable, Generic, Iterable, Mapping, NoReturn, Optional, Type, TypeVar, Union)
+from typing import (
+    Any,
+    NoReturn,
+    TYPE_CHECKING,
+    Callable,
+    Generic,
+    Iterable,
+    Mapping,
+    Optional,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec, dataclass_transform
 
@@ -93,12 +105,15 @@ def register(
     raise NotImplementedError(f"Cannot register {op} in {intp}")
 
 
-def invalid_operation(
-    make_ex: Callable[..., Exception], *args1: Any, **kwargs1: Any
-) -> Operation[..., Any]:
+class NoDefaultImplementationError(RuntimeError):
+    """
+    A RuntimeError raised when an Operation does not have
+    a default implementation.
+    """
 
-    @functools.wraps(make_ex)
+
+def invalid_operation(*args1: Any, **kwargs1: Any) -> Operation[..., Any]:
     def callback(*args2: Any, **kwargs2: Any) -> NoReturn:
-        raise make_ex(*(args1 + args2), **{**kwargs1, **kwargs2})
+        raise NoDefaultImplementationError(*(args1 + args2), **{**kwargs1, **kwargs2})
 
     return Operation(callback)
