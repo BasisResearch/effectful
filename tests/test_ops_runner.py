@@ -1,7 +1,6 @@
-import functools
 import itertools
 import logging
-from typing import Callable, List, TypeVar
+from typing import List, TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
