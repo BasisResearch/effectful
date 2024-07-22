@@ -18,4 +18,4 @@ def backend():
 
 
 # noinspection PyUnresolvedReferences
-from pyroapi.tests import *
+from pyroapi.tests import *  # noqa: F401, E402, F403

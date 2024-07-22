@@ -1,62 +1,91 @@
 import collections.abc
 import typing
-from typing import Callable, Iterable, Mapping, Optional, Protocol, Type, TypeVar
+from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, dataclass_transform
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-T_co = TypeVar("T_co", covariant=True)
 
 
-@typing.runtime_checkable
-class Operation(Protocol[P, T_co]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
-
-    def default(self, *args: P.args, **kwargs: P.kwargs) -> T_co: ...
-
-
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
-
-
-class Constant(Protocol[T]):
-    value: T
-
-
-Expr = Constant[T] | "Term[T]" | "Variable[T]"
-
-
-@typing.runtime_checkable
-class Term(Protocol[T]):
-    op: Operation[..., T]
-    args: Iterable[Expr[T]]
-    kwargs: Mapping[str, Expr[T]]
-
-
-Symbol = str  # TODO replace with extensional protocol type
-Context = collections.abc.MutableMapping[Symbol, T]
-TypeContext = Context[Type[T]]
-TermContext = Context[Term[T]]
-
-
-@typing.runtime_checkable
-class Variable(Protocol[T]):
-    name: Symbol
-    type: Type[T]
-
-
-def define(m: Type[T] | Callable[Q, T]) -> Operation[..., T]:
+@dataclass_transform()
+def define(m: Type[T]) -> "Operation[..., T]":
     """
     Scott encoding of a type as its constructor.
     """
     from ..internals.bootstrap import base_define
 
-    return base_define(m)
+    return base_define(m)  # type: ignore
 
 
+@define
+class Operation(Generic[Q, V]):
+    default: Callable[Q, V]
+
+    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        return apply.default(apply, self, *args, **kwargs)  # type: ignore
+
+
+Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+
+
+@define
+class Symbol:
+    name: str
+
+
+@define
+class Variable(Generic[T]):
+    symbol: Symbol
+    type: Type[T]
+
+
+@define
+class Constant(Generic[T]):
+    value: T
+
+
+@define
+class Term(Generic[T]):
+    op: Operation[..., T]
+    args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
+    kwargs: Mapping[str, Union["Term[T]", Constant[T], Variable[T]]]
+
+
+Context = Mapping[Symbol, T]
+TypeContext = Context[Type[T]]
+TermContext = Context[Term[T]]
+
+
+if typing.TYPE_CHECKING:
+    # TODO figure out why mypy is unable to infer the type of apply as an Operation
+    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
+
+else:
+
+    @Operation
+    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        from ..internals.runtime import get_interpretation
+
+        return get_interpretation().get(op, op.default)(*args, **kwargs)
+
+
+@Operation
+def evaluate(term: Term[T]) -> T:
+    return apply(
+        term.op,
+        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
+        **{
+            k: (evaluate(v) if isinstance(v, Term) else v)
+            for k, v in term.kwargs.items()
+        },
+    )
+
+
+@Operation
 def register(
     op: Operation[P, T],
     intp: Optional[Interpretation[T, V]],
@@ -69,24 +98,3 @@ def register(
         intp.__setitem__(op, interpret_op)
         return interpret_op
     raise NotImplementedError(f"Cannot register {op} in {intp}")
-
-
-def apply(
-    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
-) -> T:
-    try:
-        interpret = intp[op]
-    except KeyError:
-        interpret = op.default
-    return interpret(*args, **kwargs)
-
-
-@define(Operation)
-def evaluate(term: Term[T]) -> T:
-    return term.op(
-        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{
-            k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()
-        },
-    )

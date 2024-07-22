@@ -1,4 +1,3 @@
-import contextlib
 import itertools
 import logging
 from typing import TypeVar
@@ -59,9 +58,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = define(Interpretation)(
-        {op: bind_result(lambda v, *a, **k: reflect(reflect(v)))}
-    )
+    h_twice = {op: bind_result(lambda v, *a, **k: reflect(reflect(v)))}
 
     assert (
         interpreter(defaults(op))(f)()
@@ -133,3 +130,52 @@ def test_runner_scopes():
                 assert double(2) == 4
                 assert triple(3) == 9
                 assert sextuple(6) == 36
+
+
+def test_runner_outer_reflect():
+    def plus_two_calling_plus_one():
+        def plus_minus_one_then_reflect(v):
+            r = plus_1(v)
+            return reflect(r - 1)
+
+        return {plus_2: plus_minus_one_then_reflect}
+
+    defs = {plus_1: plus_1.default, plus_2: plus_2.default}
+    with interpreter(product(defs, plus_two_calling_plus_one())):
+        assert plus_1(1) == 2
+        assert plus_2(2) == 4
+
+
+def test_runner_outer_reflect_1():
+    @bind_result
+    def plus_two_impl_inner(res, v):
+        assert res is None
+        r = plus_1(v)
+        return reflect(r + 1)
+
+    @bind_result
+    def plus_two_impl_outer(res, v):
+        if res is None:
+            return v + 2
+        else:
+            return res
+
+    @bind_result
+    def plus_one_to_plus_five(res, v):
+        assert res is None
+        return plus_2(v) + 3
+
+    intp_inner = {plus_2: plus_two_impl_inner}
+    intp_outer = {plus_1: plus_one_to_plus_five, plus_2: plus_two_impl_outer}
+
+    with interpreter(intp_inner):
+        assert plus_2(2) == 4
+
+    with interpreter(product(intp_outer, intp_inner)):
+        assert plus_1(1) == 2
+        assert plus_2(2) == 2 + (2 + 3) + 1
+
+    with interpreter(intp_outer):
+        assert plus_1(1) == 1 + 2 + 3
+        with runner(intp_inner):
+            assert plus_2(2) == 2 + (2 + 3) + 1
