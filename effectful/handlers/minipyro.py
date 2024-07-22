@@ -257,7 +257,7 @@ default_runner = product(
 
 
 def block(
-    hide_fn: Callable[Concatenate[Operation, object, ...], bool] = lambda *_, **__: True
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
 ):
     def blocking(fn: Operation, result, *args, **kwargs):
         if hide_fn(fn, result, *args, **kwargs):
