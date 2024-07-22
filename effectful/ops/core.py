@@ -1,5 +1,4 @@
 import collections.abc
-import typing
 from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec, dataclass_transform
