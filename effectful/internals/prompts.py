@@ -67,6 +67,12 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return _wrapper
 
 
+def bind_result_to_method(
+    fn: Callable[Concatenate[V, Optional[T], P], T]
+) -> Callable[Concatenate[V, P], T]:
+    return bind_result(lambda res, slf, *a, **k: fn(slf, res, *a, **k))
+
+
 Prompt = Operation[[Optional[S]], S]
 
 

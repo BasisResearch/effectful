@@ -1,7 +1,10 @@
 from collections.abc import Mapping
-from typing import Callable, Optional
+from typing import Callable, Generic, Optional, ParamSpec, TypeVar
 
 from effectful.ops.core import Operation
+
+P = ParamSpec("P")
+V = TypeVar("V")
 
 
 class ObjectInterpretation(Mapping):
@@ -56,8 +59,8 @@ class ObjectInterpretation(Mapping):
     # until __init__subclass__ is called.
     # This dict is shared by all `Implementation`s,
     # so we need to clear it when we're done.
-    _temporary_implementations = dict()
-    implementations = dict()
+    _temporary_implementations: dict[Operation, Callable] = dict()
+    implementations: dict[Operation, Callable] = dict()
 
     @classmethod
     def __init_subclass__(cls, **kwargs):
@@ -77,28 +80,30 @@ class ObjectInterpretation(Mapping):
         return len(self.implementations)
 
     def __getitem__(self, item):
-        impl = self.implementations[item]
-        return impl.__get__(self, type(self))
+        return self.implementations[item].__get__(self, type(self))
 
 
-class _ImplementedOperation:
-    def __init__(self, op: Optional[Operation]):
+class _ImplementedOperation(Generic[P, V]):
+    impl: Optional[Callable[P, V]]
+
+    def __init__(self, op: Optional[Operation[P, V]]):
         self.op = op
         self.impl = None
 
     def __get__(self, instance, owner):
         return self.impl.__get__(instance, owner)
 
-    def __call__(self, impl: Callable):
+    def __call__(self, impl: Callable[P, V]):
         self.impl = impl
         return self
 
     def __set_name__(self, owner: ObjectInterpretation, name):
         assert self.impl is not None
+        assert self.op is not None
         owner._temporary_implementations[self.op] = self.impl
 
 
-def implements(op: Operation):
+def implements(op: Operation[P, V]):
     """
     Makrs a method in an `ObjectInterpretation` as the implementation of a
     particular abstract `Operation`.

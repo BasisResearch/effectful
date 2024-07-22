@@ -24,7 +24,8 @@ from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import bind_result
+from effectful.internals.prompts import bind_result, bind_result_to_method
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
@@ -93,9 +94,9 @@ class Tracer(ObjectInterpretation):
         self.TRACE = OrderedDict()
 
     @implements(sample)
-    @bind_result
+    @bind_result_to_method
     def sample(
-        result: Optional[Tensor], self, var_name: str, dist: Distribution, **kwargs
+        self, result: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
     ):
         res = fwd(result)
         self.TRACE[var_name] = SampleMsg(
@@ -103,10 +104,10 @@ class Tracer(ObjectInterpretation):
         )
 
     @implements(param)
-    @bind_result
+    @bind_result_to_method
     def param(
-        result: Optional[Tensor],
         self,
+        result: Optional[Tensor],
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
@@ -131,8 +132,8 @@ class Replay(ObjectInterpretation):
         self.trace = trace
 
     @implements(sample)
-    @bind_result
-    def sample(res: Optional[Tensor], self: "Replay", var_name: str, *args, **kwargs):
+    @bind_result_to_method
+    def sample(self, res: Optional[Tensor], var_name: str, *args, **kwargs):
         if var_name in self.trace:
             return self.trace[var_name].val
         else:
@@ -242,9 +243,9 @@ class Plate(ObjectInterpretation):
         self.dim = dim
 
     @implements(sample)
-    @bind_result
+    @bind_result_to_method
     def do_sample(
-        result: Optional[Tensor], self, sampled_name: str, dist: Distribution, **kwargs
+        self, result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
     ) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
