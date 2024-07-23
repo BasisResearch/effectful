@@ -72,7 +72,7 @@ def evaluate(term: Term[T]) -> T:
         *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
         **{
             k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()
+            for k, v in term.kwargs.items()sfS
         },
     )
 
