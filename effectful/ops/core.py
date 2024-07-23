@@ -12,7 +12,9 @@ from typing import (
     Union,
 )
 
-from typing_extensions import ParamSpec, dataclass_transform
+from typing_extensions import ParamSpec
+
+from effectful.internals.bootstrap import Operation, define
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -21,28 +23,9 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclass_transform()
-def define(m: Type[T]) -> "Operation[..., T]":
-    """
-    Scott encoding of a type as its constructor.
-    """
-    from effectful.internals.bootstrap import base_define
-
-    return base_define(m)  # type: ignore
-
-
-@define
-class Operation(Generic[Q, V]):
-    default: Callable[Q, V]
-
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply(self, *args, **kwargs)  # type: ignore
-
-
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-@define
 class Symbol:
     name: str
 

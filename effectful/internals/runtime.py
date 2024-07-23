@@ -13,7 +13,7 @@ V = TypeVar("V")
 T_co = TypeVar("T_co", covariant=True)
 
 if typing.TYPE_CHECKING:
-    from ..ops.core import Interpretation
+    from effectful.ops.core import Interpretation
 
 
 @dataclasses.dataclass

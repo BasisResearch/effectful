@@ -35,7 +35,7 @@ def shallow_interpreter(intp: Interpretation):
 
 
 result = State[Any](None)
-args = State[Args](State._Empty())
+args = State[Args]()
 
 
 def bind_prompt(

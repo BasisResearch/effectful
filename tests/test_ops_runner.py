@@ -7,7 +7,7 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.state import State
 from effectful.internals.prompts import result
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
 from effectful.ops.runner import product, reflect, runner
@@ -19,17 +19,17 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Operation)
+@Operation
 def plus_1(x: int) -> int:
     return x + 1
 
 
-@define(Operation)
+@Operation
 def plus_2(x: int) -> int:
     return x + 2
 
 
-@define(Operation)
+@Operation
 def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
@@ -85,15 +85,15 @@ def test_product_block_associative(op, args, n1, n2):
 
 
 def test_runner_scopes():
-    @define(Operation)
+    @Operation
     def double(v):
         raise RuntimeError("No Defaults")
 
-    @define(Operation)
+    @Operation
     def triple(v):
         raise RuntimeError("No Defaults")
 
-    @define(Operation)
+    @Operation
     def sextuple(v):
         raise RuntimeError("No Defaults")
 

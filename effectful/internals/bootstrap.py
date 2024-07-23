@@ -1,66 +1,85 @@
-import dataclasses
-import typing
-from typing import Type, TypeVar
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Callable, Generic, Optional, TypeVar, final
 
-from typing_extensions import dataclass_transform
+from typing_extensions import ParamSpec, Self, dataclass_transform
 
-from . import runtime
+from effectful.internals.runtime import get_interpretation
 
-T = TypeVar("T")
+_T = TypeVar("_T")
+_V = TypeVar("_V")
+_P = ParamSpec("_P")
 
 
-if typing.TYPE_CHECKING:
-    from ..ops.core import Operation
-else:
+class InjectedType(Generic[_P], ABC):
+    _constructor_cache: Optional["Operation[_P, Self]"] = None
 
-    class _overloadmeta(type):
+    @classmethod
+    @abstractmethod
+    def constructor(cls) -> "Operation[_P, Self]":
+        raise NotImplementedError
 
-        def __getitem__(cls, item):
-            try:
-                return cls.__class_getitem__(item)
-            except TypeError as e:
-                if e.args[0].endswith("is not a generic class"):
-                    return cls  # TODO
-                else:
-                    raise
+    def __new__(cls, *args: _P.args, **kwargs: _P.kwargs) -> Self:
+        if cls._constructor_cache:
+            return cls._constructor_cache(*args, **kwargs)
+        else:
+            cls._constructor_cache = cls.constructor()
+            return cls._constructor_cache(*args, **kwargs)
 
-        def __or__(cls, other):
-            return typing.Union[cls, other]
 
-        def __ror__(cls, other):
-            return typing.Union[other, cls]
+class Operation(Generic[_P, _V], InjectedType[Callable[_P, _V]]):
+    default: Callable[_P, _V]
 
-        def __call__(cls, *args, **kwargs):
-            return cls.__cons_op__(*args, **kwargs)
+    def __hash__(self):
+        return id(self)
+
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _V:
+        return get_interpretation().get(self, self.default)(*args, **kwargs)
+
+    @classmethod
+    def constructor(cls) -> "Operation[[Callable[_P, _V]], Operation[_P, _V]]":
+        return _OperationConstructor()
+
+
+@final
+class _OperationConstructor(
+    Generic[_P, _V], Operation[[Callable[_P, _V]], Operation[_P, _V]]
+):
+    _me: Optional["_OperationConstructor[_P, _V]"] = None
+
+    def __hash__(self):
+        # This type is a singleton, so no other instances should exist, so hash collisions are impossible
+        return 1
+
+    def __new__(cls) -> Self:
+        def new_operation(cl: Callable[_P, _V]) -> Operation[_P, _V]:
+            ob = object.__new__(Operation)
+            ob.default = cl
+            return ob
+
+        if cls._me is None:
+            cls._me = object.__new__(cls)
+            cls._me.default = new_operation
+            return cls._me
+
+        return cls._me
+
+    def __init__(self):
+        self.default = self._me.default
 
 
 @dataclass_transform()
-@runtime.weak_memoize
-def base_define(m: Type[T]) -> "Operation[..., T]":
-    if typing.TYPE_CHECKING:
-        return m  # type: ignore
-    else:
-        if typing.get_origin(m) not in (m, None):
-            return base_define(typing.get_origin(m))
+def define(ty: type) -> type[InjectedType]:
+    ty = dataclass(ty)
 
-        try:
-            from ..ops.core import Operation
-        except ImportError:
-            return dataclasses.dataclass(unsafe_hash=True)(m)
+    class NewClass(ty, InjectedType):
+        @classmethod
+        def constructor(cls) -> "Operation[..., Self]":
+            return Operation(ty)
 
-        if issubclass(m, Operation):
-            return (
-                m
-                if dataclasses.is_dataclass(m)
-                else dataclasses.dataclass(unsafe_hash=True)(m)
-            )
-        else:
-            cons_op = base_define(Operation)(m)
-            try:
-                return _overloadmeta(
-                    m.__name__,
-                    (dataclasses.dataclass(unsafe_hash=True)(m),),
-                    {"__cons_op__": staticmethod(cons_op)},
-                )
-            except TypeError:
-                return cons_op
+    NewClass.__name__ = ty.__name__
+    NewClass.__doc__ = ty.__doc__
+    NewClass.__parameters__ = getattr(ty, "__parameters__", ())
+    NewClass.__wrapped__ = ty
+
+    return NewClass
