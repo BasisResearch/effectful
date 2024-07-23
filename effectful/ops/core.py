@@ -1,5 +1,16 @@
 import collections.abc
-from typing import (Any, Callable, Generic, Iterable, Mapping, NoReturn, Optional, Type, TypeVar, Union)
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    Mapping,
+    NoReturn,
+    Optional,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec, dataclass_transform
 
@@ -72,7 +83,7 @@ def evaluate(term: Term[T]) -> T:
         *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
         **{
             k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()sfS
+            for k, v in term.kwargs.items()
         },
     )
 
