@@ -97,7 +97,7 @@ class _ImplementedOperation(Generic[P1, P2, T, V]):
         self.impl = None
 
     def __get__(
-            self, instance: ObjectInterpretation[T, V], owner: type
+        self, instance: ObjectInterpretation[T, V], owner: type
     ) -> Callable[..., V]:
         assert self.impl is not None
 
