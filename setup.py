@@ -32,7 +32,7 @@ setup(
     author="Basis",
     url="https://www.basis.ai/",
     project_urls={
-    #     "Documentation": "",
+        #     "Documentation": "",
         "Source": "https://github.com/BasisResearch/effectful",
     },
     install_requires=[

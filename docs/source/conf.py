@@ -14,31 +14,29 @@ import os
 import sys
 from typing import List
 
-sys.path.insert(0, os.path.abspath('../../'))
-import sphinx_rtd_theme
-
+sys.path.insert(0, os.path.abspath("../../"))
+import sphinx_rtd_theme  # noqa: E402
 
 # -- Project information -----------------------------------------------------
 
-project = 'effectful'
-copyright = '2024, Basis'
-author = 'Basis'
+project = "effectful"
+copyright = "2024, Basis"
+author = "Basis"
 
 
 # -- Type hints configuration ------------------------------------------------
 
 autodoc_type_aliases = {
-    'R': 'R',
-    'State': 'State',
-    'Dynamics': 'Dynamics',
-    'AtomicIntervention': 'AtomicIntervention',
-    'CompoundIntervention': 'CompoundIntervention',
-    'Intervention': 'Intervention',
-    'AtomicObservation': 'AtomicObservation',
-    'CompoundObservation': 'CompoundObservation',
-    'Observation': 'Observation',
-    'Kernel': 'Kernel',
-
+    "R": "R",
+    "State": "State",
+    "Dynamics": "Dynamics",
+    "AtomicIntervention": "AtomicIntervention",
+    "CompoundIntervention": "CompoundIntervention",
+    "Intervention": "Intervention",
+    "AtomicObservation": "AtomicObservation",
+    "CompoundObservation": "CompoundObservation",
+    "Observation": "Observation",
+    "Kernel": "Kernel",
 }
 
 # -- General configuration ---------------------------------------------------
@@ -57,11 +55,11 @@ extensions = [
     "myst_parser",
     # "sphinx_gallery.gen_gallery",
     # "sphinx_search.extension",
-    "sphinxcontrib.bibtex"
+    "sphinxcontrib.bibtex",
 ]
 
 # Point sphinxcontrib.bibtex to the bibtex file.
-bibtex_bibfiles = ['refs.bib']
+bibtex_bibfiles = ["refs.bib"]
 
 # Enable documentation inheritance
 
@@ -85,7 +83,7 @@ master_doc = "index"
 
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = ["_templates"]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -108,5 +106,5 @@ html_logo = "_static/img/chirho_logo_wide.png"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = ["_static"]
 html_style = "css/pyro.css"
