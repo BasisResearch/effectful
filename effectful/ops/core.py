@@ -1,5 +1,4 @@
 import collections.abc
-import typing
 from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec, dataclass_transform
@@ -16,7 +15,7 @@ def define(m: Type[T]) -> "Operation[..., T]":
     """
     Scott encoding of a type as its constructor.
     """
-    from ..internals.bootstrap import base_define
+    from effectful.internals.bootstrap import base_define
 
     return base_define(m)  # type: ignore
 
@@ -26,7 +25,7 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply.default(apply, self, *args, **kwargs)  # type: ignore
+        return apply(self, *args, **kwargs)  # type: ignore
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
@@ -60,17 +59,10 @@ TypeContext = Context[Type[T]]
 TermContext = Context[Term[T]]
 
 
-if typing.TYPE_CHECKING:
-    # TODO figure out why mypy is unable to infer the type of apply as an Operation
-    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
+def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    from effectful.internals.runtime import get_interpretation
 
-else:
-
-    @Operation
-    def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-        from ..internals.runtime import get_interpretation
-
-        return get_interpretation().get(op, op.default)(*args, **kwargs)
+    return get_interpretation().get(op, op.default)(*args, **kwargs)
 
 
 @Operation
