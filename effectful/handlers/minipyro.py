@@ -25,6 +25,7 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.prompts import result
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
@@ -88,53 +89,63 @@ def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
-@contextmanager
-def trace():
-    from collections import OrderedDict
+class Tracer(ObjectInterpretation):
+    def __init__(self):
+        self.TRACE = OrderedDict()
 
-    TRACE = OrderedDict()
-
-    def do_sample(var_name: str, dist: Distribution, **kwargs) -> Tensor:
-        res: Tensor = fwd(result.get())
-        TRACE[var_name] = SampleMsg(
+    @implements(sample)
+    def sample(self, var_name: str, dist: Distribution, **kwargs):
+        res: Tensor = fwd(result())
+        self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
         return res
 
-    def do_param(
+    @implements(param)
+    def param(
+        self,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
         event_dim: Optional[int] = None,
     ) -> Tensor:
         res: Tensor = fwd(result.get())
-        TRACE[var_name] = ParamMsg(name=var_name, val=res)
+        self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
 
-    with handler({sample: do_sample, param: do_param}):
-        yield TRACE
+
+class Replay(ObjectInterpretation):
+    def __init__(self, trace: Trace):
+        self.trace = trace
+
+    @implements(sample)
+    def sample(self, var_name: str, *args, **kwargs):
+        if var_name in self.trace:
+            return self.trace[var_name].val
+        else:
+            return fwd(result())
 
 
 def replay(trace: Trace):
-    def do_sample(var_name: str, dist: Distribution, **kwargs) -> Tensor:
-        if var_name in trace:
-            return trace[var_name].val
-        else:
-            return fwd(result.get())
-
-    return handler(
-        {
-            sample: do_sample,
-        }
-    )
+    return handler(Replay(trace))
 
 
-def seed_impl():
-    def do_get_rng_seed() -> Union[int, Seed]:
+@contextmanager
+def trace():
+    t = Tracer()
+
+    with handler(t):
+        yield t.TRACE
+
+
+class NativeSeed(ObjectInterpretation):
+    @implements(get_rng_seed)
+    def get_rng_seed(self):
         return fwd((get_rng_state(), random.getstate(), np.random.get_state()))
 
-    def do_set_rng_seed(seed: Union[int, Seed]):
+    @implements(set_rng_seed)
+    def set_rng_seed(self, seed: Union[int, Seed]):
         if isinstance(seed, int):
             manual_seed(seed)
             random.seed(seed)
@@ -145,7 +156,8 @@ def seed_impl():
             np.random.set_state(seed[2])
         return fwd(None)
 
-    def do_sample(name: str, dist: Distribution, obs=None, **kwargs):
+    @implements(sample)
+    def sample(self, name: str, dist: Distribution, obs=None, **kwargs):
         assert isinstance(name, str)
         if obs is not None:
             return obs
@@ -153,12 +165,6 @@ def seed_impl():
             return dist.rsample()
         else:
             return dist.sample()
-
-    return {
-        get_rng_seed: do_get_rng_seed,
-        set_rng_seed: do_set_rng_seed,
-        sample: do_sample,
-    }
 
 
 @contextmanager
@@ -171,10 +177,13 @@ def seed(seed: int):
         set_rng_seed(old_seed)
 
 
-def param_impl():
-    PARAM_STORE = {}
+class NativeParam(ObjectInterpretation):
+    def __init__(self, initial_store=None):
+        self.PARAM_STORE = initial_store or {}
 
-    def do_param(
+    @implements(param)
+    def param(
+        self,
         name: str,
         initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
         constraint: Constraint = distributions.constraints.real,
@@ -186,8 +195,8 @@ def param_impl():
             )
 
         def fn(init_value, constraint):
-            if name in PARAM_STORE:
-                unconstrained_value, constraint = PARAM_STORE[name]
+            if name in self.PARAM_STORE:
+                unconstrained_value, constraint = self.PARAM_STORE[name]
             else:
                 # Initialize with a constrained value.
                 assert init_value is not None
@@ -197,7 +206,7 @@ def param_impl():
                         constrained_value
                     )
                 unconstrained_value.requires_grad_()
-                PARAM_STORE[name] = unconstrained_value, constraint
+                self.PARAM_STORE[name] = unconstrained_value, constraint
 
             # Transform from unconstrained space to constrained space.
             constrained_value = distributions.transform_to(constraint)(
@@ -208,39 +217,43 @@ def param_impl():
 
         return fwd(fn(initial_value, constraint))
 
-    def do_get_param_store():
-        return fwd(PARAM_STORE)
+    @implements(get_param_store)
+    def get_param_store(self):
+        return self.PARAM_STORE
 
-    def do_clear_param_store():
-        PARAM_STORE.clear()
-
-    return {
-        param: do_param,
-        get_param_store: do_get_param_store,
-        clear_param_store: do_clear_param_store,
-    }
+    @implements(clear_param_store)
+    def clear_param_store(self):
+        self.PARAM_STORE.clear()
 
 
-def plate(name: str, size: int, dim: Optional[int] = None):
-    if dim is None:
-        raise NotImplementedError(
-            "mini-pyro doesn't implement the `dim` argument to `plate`"
-        )
+class Plate(ObjectInterpretation):
+    def __init__(self, name: str, size: int, dim: Optional[int]):
+        if dim is None:
+            raise NotImplementedError(
+                "mini-pyro doesn't implement the `dim` argument to `plate`"
+            )
 
-    def do_sample(sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+        self.name = name
+        self.size = size
+        self.dim = dim
+
+    @implements(sample)
+    def do_sample(self, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
-        if len(batch_shape) < -dim or batch_shape[dim] != size:
-            batch_shape = [1] * (-dim - len(batch_shape)) + list(batch_shape)
-            batch_shape[dim] = size
+        if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
+            batch_shape = [1] * (-self.dim - len(batch_shape)) + list(batch_shape)
+            batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
             return fwd(result.get())
 
-    return handler({sample: do_sample})
+
+def plate(name: str, size: int, dim: Optional[int] = None):
+    return handler(Plate(name, size, dim))
 
 
-base_runner = coproduct(seed_impl(), param_impl())
+base_runner = coproduct(NativeSeed(), NativeParam())
 default_runner = product(
     base_runner, {k: lambda *_, **__: reflect(result.get()) for k in base_runner}
 )

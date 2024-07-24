@@ -8,6 +8,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import result
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define, register
 from effectful.ops.interpreter import interpreter
 
@@ -202,3 +203,69 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
         except ValueError as e:
             assert op(*args) == op.default(*args)
             raise e
+
+
+def test_object_interpretation_inheretance():
+    @Operation
+    def op1():
+        return "op1"
+
+    @Operation
+    def op2():
+        return "op2"
+
+    @Operation
+    def op3():
+        return "op3"
+
+    @Operation
+    def op4():
+        return "op4"
+
+    class MyHandler(ObjectInterpretation):
+        @implements(op1)
+        def op1_impl(self):
+            return "MyHandler.op1_impl"
+
+        @implements(op2)
+        def op2_impl(self):
+            return "MyHandler.op2_impl"
+
+        @implements(op3)
+        def an_op_impl(self):
+            return "MyHandler.an_op_impl"
+
+        @implements(op4)
+        def another_op_impl(self):
+            return "MyHandler.another_op_impl"
+
+    class MyHandlerSubclass(MyHandler):
+        @implements(op1)
+        def op1_impl(self):  # same method name, same op
+            return "MyHandlerSubclass.op1_impl"
+
+        @implements(op2)
+        def another_op2_impl(self):  # different method name, same op
+            return "MyHandlerSubclass.another_op2_impl"
+
+        @implements(op3)
+        def another_op_impl(
+            self,
+        ):  # reusing method name from parent impl of different op
+            return "MyHandlerSubclass.another_op_impl"
+
+        # no new implementation of op4, but will its behavior change through redefinition of another_op_impl?
+
+    my_handler = MyHandler()
+    with interpreter(my_handler):
+        assert op1() == "MyHandler.op1_impl"
+        assert op2() == "MyHandler.op2_impl"
+        assert op3() == "MyHandler.an_op_impl"
+        assert op4() == "MyHandler.another_op_impl"
+
+    my_handler_subclass = MyHandlerSubclass()
+    with interpreter(my_handler_subclass):
+        assert op1() == "MyHandlerSubclass.op1_impl"
+        assert op2() == "MyHandlerSubclass.another_op2_impl"
+        assert op3() == "MyHandlerSubclass.another_op_impl"
+        assert op4() == "MyHandler.another_op_impl"
