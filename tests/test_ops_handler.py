@@ -7,6 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result, value_or_result
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
@@ -137,3 +138,36 @@ def test_stop_without_fwd(op, args, n, depth):
         stack.enter_context(handler(defaults(op)))
 
         assert f() == expected
+
+
+def test_sugar_subclassing():
+    class ScaleBy(ObjectInterpretation):
+        def __init__(self, scale):
+            self._scale = scale
+
+        @implements(plus_1)
+        def plus_1(self, v):
+            return v + self._scale
+
+        @implements(plus_2)
+        def plus_2(self, v):
+            return v + 2 * self._scale
+
+    class ScaleAndShiftBy(ScaleBy):
+        def __init__(self, scale, shift):
+            super().__init__(scale)
+            self._shift = shift
+
+        @implements(plus_1)
+        def plus_1(self, v):
+            return super().plus_1(v) + self._shift
+
+        # plus_2 inhereted from ScaleBy
+
+    with handler(ScaleBy(4)):
+        assert plus_1(4) == 8
+        assert plus_2(4) == 12
+
+    with handler(ScaleAndShiftBy(4, 1)):
+        assert plus_1(4) == 9
+        assert plus_2(4) == 12
