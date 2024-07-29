@@ -53,8 +53,9 @@ def bind_prompt(
     :param wrapped: The function in which the prompt will be bound.
     :return: A wrapper which calls the wrapped function with the prompt bound.
 
-    >>> from effectful.ops.core import explicit_operation
-    >>> call_my_manager = explicit_operation()
+    >>> @Operation
+    ... def call_my_manager(has_receit: bool) -> bool:
+    ...     raise RuntimeError
     >>> def clerk(problem: str) -> str:
     ...     if "refund" in problem:
     ...         print("Clerk: Let me get my manager.")

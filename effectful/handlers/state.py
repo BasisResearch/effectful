@@ -1,8 +1,7 @@
 from dataclasses import dataclass
-from typing import Generic, ParamSpec, TypeVar, Any
+from typing import Any, Generic, ParamSpec, TypeVar
 
 from effectful.ops.core import Interpretation, Operation, define
-
 
 T = TypeVar("T")
 V = TypeVar("V")
@@ -60,6 +59,7 @@ class State(Generic[T]):
             self.get = Operation(box.get)
             self.set = Operation(box.set)
         else:
+
             def explicit_operation(msg: str) -> Operation[..., Any]:
                 def default(*args, **kwargs):
                     raise RuntimeError(msg, *args, **kwargs)
