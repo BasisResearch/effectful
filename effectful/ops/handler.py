@@ -3,7 +3,7 @@ from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompts
+from effectful.internals.prompts import Prompt, bind_prompt
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
@@ -38,7 +38,7 @@ def coproduct(
     for op, i2 in intp2.items():
         i1 = intp.get(op)
         if i1:
-            res[op] = bind_prompts({prompt: i1})(i2)
+            res[op] = bind_prompt(prompt, i1, i2)
         else:
             res[op] = i2
 

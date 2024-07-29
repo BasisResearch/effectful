@@ -1,11 +1,12 @@
 import itertools
 import logging
-from typing import TypeVar
+from typing import List, TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result, value_or_result
+from effectful.internals.prompts import bind_result
+from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
@@ -34,15 +35,15 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(lambda v, *args, **kwargs: reflect(v)) for op in ops}
+    return {op: bind_result(lambda r, *_, **__: reflect(r)) for op in ops}
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(value_or_result(op.default)) for op in ops}
+    return {op: op.default for op in ops}
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(lambda v, *args, **kwargs: fwd(v) * n) for op in ops}
+    return {op: bind_result(lambda r, *_, **__: fwd(r) * n) for op in ops}
 
 
 OPERATION_CASES = (
@@ -58,7 +59,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: bind_result(lambda v, *a, **k: reflect(reflect(v)))}
+    h_twice = {op: bind_result(lambda r, *a, **k: reflect(reflect(r)))}
 
     assert (
         interpreter(defaults(op))(f)()
@@ -132,6 +133,33 @@ def test_runner_scopes():
                 assert sextuple(6) == 36
 
 
+def test_using_runner_to_implement_trailing_state():
+    def trailing_state(st: State[List[T]]):
+        def trailing_set(new_value: T) -> None:
+            s = st.get() + [new_value]
+            st.set(s)
+
+        def get_last():
+            return st.get()[-1]
+
+        interp: Interpretation = {
+            st.get: get_last,
+            st.set: trailing_set,
+        }
+
+        return runner(interp)
+
+    st = State([])
+
+    with handler(defaults(st.get, st.bound_to, st.set)):
+        with trailing_state(st):
+            st.set(3)
+            assert st.get() == 3
+            st.set(4)
+            assert st.get() == 4
+        assert st.get() == [3, 4]
+
+
 def test_runner_outer_reflect():
     def plus_two_calling_plus_one():
         def plus_minus_one_then_reflect(v):
@@ -148,17 +176,14 @@ def test_runner_outer_reflect():
 
 def test_runner_outer_reflect_1():
     @bind_result
-    def plus_two_impl_inner(res, v):
-        assert res is None
+    def plus_two_impl_inner(r, v):
+        assert r is None
         r = plus_1(v)
         return reflect(r + 1)
 
     @bind_result
     def plus_two_impl_outer(res, v):
-        if res is None:
-            return v + 2
-        else:
-            return res
+        return res or v + 2
 
     @bind_result
     def plus_one_to_plus_five(res, v):

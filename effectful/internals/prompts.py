@@ -1,9 +1,10 @@
-import contextlib
-import functools
-from typing import Callable, Mapping, Optional, Tuple, TypeVar
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
+from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
@@ -14,94 +15,102 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@contextlib.contextmanager
+Prompt: TypeAlias = Operation[[Optional[S]], S]
+Args: TypeAlias = Tuple[Tuple, Mapping]
+
+
+@contextmanager
 def shallow_interpreter(intp: Interpretation):
-    from ..internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation
 
     # destructive update: calling any op in intp should remove intp from active
     active_intp = get_interpretation()
-    prev_intp = {
-        op: active_intp[op] if op in active_intp else op.default for op in intp.keys()
+    prev_intp = {op: active_intp.get(op, op.default) for op in intp}
+    next_intp = {
+        op: interpreter(prev_intp, unset=False)(impl) for op, impl in intp.items()
     }
 
-    with interpreter(
-        {op: interpreter(prev_intp, unset=False)(intp[op]) for op in intp.keys()}
-    ):
+    with interpreter(next_intp):
         yield intp
 
 
-def value_or_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[T], P], T]:
-    """
-    Return either the value or the result of calling the function.
-    """
-
-    @functools.wraps(fn)
-    def _wrapper(__result: Optional[T], *args: P.args, **kwargs: P.kwargs) -> T:
-        return fn(*args, **kwargs) if __result is None else __result
-
-    return _wrapper
-
-
-@Operation
-def _get_result() -> Optional[T]:
-    return None
-
-
-def _set_result(
-    fn: Callable[Concatenate[Optional[T], P], T]
-) -> Callable[Concatenate[Optional[T], P], T]:
-    @functools.wraps(fn)
-    def _wrapper(res: Optional[T], *args: P.args, **kwargs: P.kwargs) -> T:
-        return shallow_interpreter({_get_result: lambda: res})(fn)(res, *args, **kwargs)
-
-    return _wrapper
+result = State[Any](None)
+args = State[Args](State._Empty())
 
 
 def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
-    @functools.wraps(fn)
-    def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return interpreter({_get_result: _get_result.default})(fn)(
-            _get_result(), *args, **kwargs
-        )
-
-    return _wrapper
+    return lambda *a, **k: fn(result(), *a, **k)
 
 
 def bind_result_to_method(
     fn: Callable[Concatenate[V, Optional[T], P], T]
 ) -> Callable[Concatenate[V, P], T]:
-    return bind_result(lambda res, slf, *a, **k: fn(slf, res, *a, **k))
+    return lambda s, *a, **k: fn(s, result(), *a, **k)
 
 
-Prompt = Operation[[Optional[S]], S]
+def bind_prompt(
+    prompt: Prompt[S], prompt_impl: Callable[P, T], wrapped: Callable[P, T]
+) -> Callable[P, T]:
+    """
+    Bind a :py:type:`Prompt` to a particular implementation in a particular function.
 
+    Within the body of the wrapped function, calling ``prompt`` will forward the
+    arguments passed to the wrapped function to the prompt's implementation.
+    The value passed to ``prompt`` will be bound to the :class:`State` ``result``,
+    which can be accessed either directly or through the :fn:``bind_result`` wrapper.
 
-def bind_prompts(
-    unbound_conts: Mapping[Prompt[S], Callable[P, T]],
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    LocalState = Tuple[Tuple, Mapping]
+    :param prompt: The prompt to be bound
+    :param prompt_impl: The implementation of that prompt
+    :param wrapped: The function in which the prompt will be bound.
+    :return: A wrapper which calls the wrapped function with the prompt bound.
 
-    @Operation
-    def _get_local_state() -> LocalState:
-        raise ValueError("No args stored")
+    >>> @Operation
+    ... def call_my_manager(has_receit: bool) -> bool:
+    ...     raise RuntimeError
+    >>> def clerk(problem: str) -> str:
+    ...     if "refund" in problem:
+    ...         print("Clerk: Let me get my manager.")
+    ...         refunded = call_my_manager("receit" in problem)
+    ...         if refunded:
+    ...             print("Clerk: Great, here's your refund.")
+    ...     else:
+    ...         print("Clerk: Let me help you with that.")
+    >>> @bind_result
+    ... def manager(has_receit, problem: str) -> str:
+    ...     if has_receit:
+    ...         print("Manager: You can have a refund.")
+    ...         return True
+    ...     elif "corporate" in problem:
+    ...         print("Manager: No need to be hasty, have your refund!")
+    ...         return True
+    ...     else:
+    ...         print("Manager: Sorry, but you're ineligable for a refund.")
+    ...         return False
+    >>> storefront = bind_prompt(call_my_manager, manager, clerk)
+    >>> storefront("Do you have this in black?")
+    Clerk: Let me help you with that.
+    >>> storefront("Can I refund this purchase?")
+    Clerk: Let me get my manager.
+    Manager: Sorry, but you're ineligable for a refund.
+    >>> storefront("Can I refund this purchase? I have a receit")
+    Clerk: Let me get my manager.
+    Manager: You can have a refund.
+    Clerk: Great, here's your refund.
+    >>> storefront("Can I refund this purchase? I'll tell corporate!")
+    Clerk: Let me get my manager.
+    Manager: No need to be hasty, have your refund!
+    Clerk: Great, here's your refund.
+    """
 
-    def _set_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
-        @functools.wraps(fn)
-        def _wrapper(*a: Q.args, **ks: Q.kwargs) -> V:
-            return interpreter({_get_local_state: lambda: (a, ks)})(fn)(*a, **ks)
+    @wraps(prompt)
+    def prompt_wrapper(res: Optional[T]) -> T:
+        with interpreter(result.bound_to(res)):
+            return prompt_impl(*args()[0], **args()[1])
 
-        return _wrapper
+    @wraps(wrapped)
+    def wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with shallow_interpreter({prompt: prompt_wrapper}):
+            with interpreter(args.bound_to((a, k))):
+                return wrapped(*a, **k)
 
-    def _bind_local_state(fn: Callable[Q, V]) -> Callable[Q, V]:
-        bound_conts = {
-            p: _set_result(
-                functools.partial(
-                    lambda k, _: k(*_get_local_state()[0], **_get_local_state()[1]),
-                    unbound_conts[p],
-                )
-            )
-            for p in unbound_conts.keys()
-        }
-        return shallow_interpreter(bound_conts)(_set_local_state(fn))
-
-    return _bind_local_state
+    return wrapper

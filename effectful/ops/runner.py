@@ -4,7 +4,7 @@ from typing import Callable, Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompts, bind_result
+from effectful.internals.prompts import Prompt, bind_prompt, result
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
@@ -34,9 +34,11 @@ def product(
 
     # on prompt, jump to the outer interpretation and interpret it using itself
     refls = {
-        op: bind_prompts(
-            {prompt: interpreter(intp)(typing.cast(Callable[..., T], op))}
-        )(bind_result(lambda v, *_, **__: prompt(v)))
+        op: bind_prompt(
+            prompt,
+            interpreter(intp)(typing.cast(Callable[..., T], op)),
+            lambda *_, **__: prompt(result()),
+        )
         for op in intp.keys()
     }
 
@@ -45,9 +47,11 @@ def product(
             interpreter(refls)(intp2[op])
             if op not in intp
             else interpreter(refls)(
-                bind_prompts(
-                    {prompt: interpreter(intp)(typing.cast(Callable[..., T], op))}
-                )(intp2[op])
+                bind_prompt(
+                    prompt,
+                    interpreter(intp)(typing.cast(Callable[..., T], op)),
+                    intp2[op],
+                )
             )
         )
         for op in intp2.keys()
@@ -61,7 +65,7 @@ def runner(
     prompt: Prompt[T] = reflect,  # type: ignore
     handler_prompt: Optional[Prompt[T]] = None,
 ):
-    from ..internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation
 
     curr_intp, next_intp = get_interpretation(), intp
 
