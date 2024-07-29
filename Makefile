@@ -10,7 +10,10 @@ format:
 format-notebooks:
 	./scripts/clean_notebooks.sh
 
-tests: lint FORCE
-	pytest -v tests
+test: lint FORCE
+	./scripts/test.sh
+
+test-notebooks: lint FORCE
+	./scripts/test-notebooks.sh
 
 FORCE:
