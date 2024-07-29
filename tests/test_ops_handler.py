@@ -6,7 +6,7 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import result
+from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
@@ -39,7 +39,7 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: lambda *args, **kwargs: fwd(result()) * n for op in ops}
+    return {op: bind_result(lambda r, *args, **kwargs: fwd(r) * n) for op in ops}
 
 
 OPERATION_CASES = (
@@ -55,7 +55,7 @@ def test_affine_continuation_compose(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: lambda *a, **k: fwd(fwd(result()))}
+    h_twice = {op: bind_result(lambda r, *a, **k: fwd(fwd(r)))}
 
     assert (
         interpreter(defaults(op))(f)()

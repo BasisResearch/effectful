@@ -7,7 +7,7 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import result
+from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define, register
 from effectful.ops.interpreter import interpreter
@@ -36,8 +36,9 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    def _op_times_n(n: int, op: Operation[..., int], *args: int) -> int:
-        return (result.get() or op.default(*args)) * n
+    @bind_result
+    def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
+        return (res or op.default(*args)) * n
 
     return {op: functools.partial(_op_times_n, n, op) for op in ops}
 

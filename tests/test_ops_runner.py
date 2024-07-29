@@ -6,7 +6,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.handlers.state import State
-from effectful.internals.prompts import result
+from effectful.internals.prompts import bind_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
@@ -35,7 +35,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: lambda *_, **__: reflect(result()) for op in ops}
+    return {op: bind_result(lambda r, *_, **__: reflect(r)) for op in ops}
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
@@ -43,7 +43,7 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: lambda *_, **__: fwd(result()) * n for op in ops}
+    return {op: bind_result(lambda r, *_, **__: fwd(r) * n) for op in ops}
 
 
 OPERATION_CASES = (
@@ -59,7 +59,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: (lambda v, *a, **k: reflect(reflect(result())))}
+    h_twice = {op: bind_result(lambda r, *a, **k: reflect(reflect(r)))}
 
     assert (
         interpreter(defaults(op))(f)()
@@ -175,16 +175,19 @@ def test_runner_outer_reflect():
 
 
 def test_runner_outer_reflect_1():
-    def plus_two_impl_inner(v):
-        assert result() is None
+    @bind_result
+    def plus_two_impl_inner(r, v):
+        assert r is None
         r = plus_1(v)
         return reflect(r + 1)
 
-    def plus_two_impl_outer(v):
-        return result() or v + 2
+    @bind_result
+    def plus_two_impl_outer(res, v):
+        return res or v + 2
 
-    def plus_one_to_plus_five(v):
-        assert result() is None
+    @bind_result
+    def plus_one_to_plus_five(res, v):
+        assert res is None
         return plus_2(v) + 3
 
     intp_inner = {plus_2: plus_two_impl_inner}
