@@ -1,9 +1,11 @@
 from dataclasses import dataclass
-from typing import Generic, ParamSpec, TypeVar
+from typing import Generic, ParamSpec, TypeVar, Any
 
-from effectful.ops.core import Interpretation, Operation, define, explicit_operation
+from effectful.ops.core import Interpretation, Operation, define
+
 
 T = TypeVar("T")
+V = TypeVar("V")
 P = ParamSpec("P")
 Q = ParamSpec("Q")
 
@@ -58,6 +60,12 @@ class State(Generic[T]):
             self.get = Operation(box.get)
             self.set = Operation(box.set)
         else:
+            def explicit_operation(msg: str) -> Operation[..., Any]:
+                def default(*args, **kwargs):
+                    raise RuntimeError(msg, *args, **kwargs)
+
+                return Operation(default)
+
             self.get = explicit_operation("Cannot read from an empty box")
             self.set = explicit_operation("Cannot write to an empty box")
 
