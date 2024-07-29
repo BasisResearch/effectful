@@ -4,7 +4,7 @@ from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.handlers.state import State
+from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
