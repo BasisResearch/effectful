@@ -48,6 +48,7 @@ setup(
             "pytest",
             "pytest-cov",
             "pytest-xdist",
+            "pytest-mypy-testing",
             "mypy",
             "black",
             "flake8",

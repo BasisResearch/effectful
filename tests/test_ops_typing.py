@@ -1,25 +1,41 @@
-from effectful.internals.sugar import implements
-from effectful.ops.core import Operation, define
+import pytest
+
+from effectful.internals.sugar import implements, ObjectInterpretation
+from effectful.ops.core import Operation
 
 
-@define(Operation)
-def plus(x: int) -> int:
+@Operation
+def plus(x: int, /) -> int:
     raise NotImplementedError
 
 
-def test_plus_handler_typing():
+# we expect this to be a valid implementation
+class Plus(ObjectInterpretation):
     @implements(plus)
-    def _plus(x: int) -> int:
+    def _plus(self, x: int, /) -> int:
         return x + 1
 
-    @implements(plus)
-    def _bad_args(x: bool) -> int:
-        return 0
 
-    @implements(plus)
-    def _bad_return(x: int) -> bool:
-        return False
+@pytest.mark.mypy_testing
+def test_bad_args():
+    class BadArgs(ObjectInterpretation):
+        @implements(plus)  # E: [arg-type]
+        def _plus(self, x: bool, /) -> int:
+            return 0
 
-    @implements(plus)
-    def _too_many_args(x: int, y: int) -> int:
-        return 0
+
+# this should produce a mypy error, but doesn't!
+@pytest.mark.mypy_testing
+def test_bad_return():
+    class BadReturn(ObjectInterpretation):
+        @implements(plus)  # E: [arg-type]
+        def _plus(self, x: int, /) -> bool:
+            return False
+
+
+@pytest.mark.mypy_testing
+def test_too_many_args():
+    class TooManyArgs(ObjectInterpretation):
+        @implements(plus)  # E: [arg-type]
+        def _plus(self, x: int, y: int, /) -> int:
+            return 0
