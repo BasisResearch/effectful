@@ -1,6 +1,6 @@
 import pytest
 
-from effectful.internals.sugar import implements, ObjectInterpretation
+from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
 
 

@@ -1,4 +1,4 @@
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar, Concatenate, Any
+from typing import Any, Callable, Concatenate, Generic, Optional, ParamSpec, TypeVar
 
 from effectful.ops.core import Interpretation, Operation
 
