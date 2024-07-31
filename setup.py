@@ -35,6 +35,7 @@ setup(
         #     "Documentation": "",
         "Source": "https://github.com/BasisResearch/effectful",
     },
+    package_data={"effectful": ["py.typed"]},
     install_requires=[
         # if you add any additional libraries, please also
         # add them to `docs/source/requirements.txt`
