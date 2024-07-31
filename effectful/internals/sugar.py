@@ -1,4 +1,4 @@
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar
+from typing import Callable, Generic, Optional, ParamSpec, TypeVar, Concatenate, Any
 
 from effectful.ops.core import Interpretation, Operation
 
@@ -88,32 +88,37 @@ P1 = ParamSpec("P1")
 P2 = ParamSpec("P2")
 
 
-class _ImplementedOperation(Generic[P1, P2, T, V]):
-    impl: Optional[Callable[P2, V]]
-    op: Operation[P1, T]
+Self = TypeVar("Self")
 
-    def __init__(self, op: Operation[P1, T]):
+
+class _ImplementedOperation(Generic[P, V]):
+    impl: Optional[Callable[Concatenate[Any, P], V]]
+    op: Operation[P, V]
+
+    def __init__(self, op: Operation[P, V]):
         self.op = op
         self.impl = None
 
-    def __get__(
-        self, instance: ObjectInterpretation[T, V], owner: type
-    ) -> Callable[..., V]:
+    def __get__(self, instance: ObjectInterpretation, owner: type) -> Callable[..., V]:
         assert self.impl is not None
 
         return self.impl.__get__(instance, owner)
 
-    def __call__(self, impl: Callable[P2, V]):
+    def __call__(
+        self,
+        impl: Callable[Concatenate[Self, P], V],
+    ) -> "_ImplementedOperation[P, V]":
+        # implementation methods will take an additional `self` argument that is not reflected in the operation type
         self.impl = impl
         return self
 
-    def __set_name__(self, owner: ObjectInterpretation[T, V], name):
+    def __set_name__(self, owner: ObjectInterpretation, name):
         assert self.impl is not None
         assert self.op is not None
         owner._temporary_implementations[self.op] = self.impl
 
 
-def implements(op: Operation[P, V]):
+def implements(op: Operation[P, V]) -> _ImplementedOperation[P, V]:
     """
     Marks a method in an `ObjectInterpretation` as the implementation of a
     particular abstract `Operation`.

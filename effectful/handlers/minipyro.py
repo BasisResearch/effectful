@@ -55,13 +55,14 @@ Seed = Tuple[Tensor, tuple, dict]
 
 
 @Operation
-def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
+def sample(name: str, dist: Distribution, /, **kwargs) -> Tensor:
     raise RuntimeError("No default implementation of sample")
 
 
 @Operation
 def param(
     var_name: str,
+    /,
     initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
     constraint: Optional[Constraint] = None,
     event_dim: Optional[int] = None,
@@ -97,7 +98,9 @@ class Tracer(ObjectInterpretation):
 
     @implements(sample)
     @bind_result_to_method
-    def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+    def sample(
+        self, ires: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
+    ) -> Tensor:
         res: Tensor = fwd(ires)
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
@@ -126,7 +129,9 @@ class Replay(ObjectInterpretation):
 
     @implements(sample)
     @bind_result_to_method
-    def sample(self, res, var_name: str, *args, **kwargs):
+    def sample(
+        self, res: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
+    ) -> Tensor:
         if var_name in self.trace:
             return self.trace[var_name].val
         else:
@@ -191,8 +196,9 @@ class NativeParam(ObjectInterpretation):
     def param(
         self,
         name: str,
+        /,
         initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
-        constraint: Constraint = distributions.constraints.real,
+        constraint: Optional[Constraint] = distributions.constraints.real,
         event_dim: Optional[int] = None,
     ) -> Tensor:
         if event_dim is not None:
@@ -245,13 +251,15 @@ class Plate(ObjectInterpretation):
 
     @implements(sample)
     @bind_result_to_method
-    def do_sample(self, res, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    def do_sample(
+        self, res: Optional[Tensor], var_name: str, dist: Distribution, /, **kwargs
+    ) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
             batch_shape = [1] * (-self.dim - len(batch_shape)) + list(batch_shape)
             batch_shape[self.dim] = self.size
-            return sample(sampled_name, dist.expand(Size(batch_shape)))
+            return sample(var_name, dist.expand(Size(batch_shape)))
         else:
             return fwd(res)
 
