@@ -5,6 +5,7 @@ from effectful.ops.core import Interpretation, Operation
 P = ParamSpec("P")
 V = TypeVar("V")
 T = TypeVar("T")
+Self = TypeVar("Self")
 
 
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
@@ -82,13 +83,6 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
 
     def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
         return self.implementations[item].__get__(self, type(self))
-
-
-P1 = ParamSpec("P1")
-P2 = ParamSpec("P2")
-
-
-Self = TypeVar("Self")
 
 
 class _ImplementedOperation(Generic[P, V]):
