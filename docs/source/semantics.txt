@@ -1,10 +1,3 @@
-Notes
-=====
-
-Right now I'm trying to avoid having a global interpretation,
-mainly because it makes equational reasoning much harder, though
-it may just need to be that way.
-
 Syntax
 ======
 
@@ -56,7 +49,7 @@ Semantics
 [Interpreter Composition]
 
 ----------------------------
- H₁ ■ H₂ ■ e ⇒ (H₁ ● H₂) ■ e
+ H₁ ■ H₂ ■ e ⇒ (H₁ ⨆ H₂) ■ e
 
 [Handler Composition]
 
@@ -76,19 +69,20 @@ domain(H) = { o | (o → e) ∈ H }
 range(H)  = { e | (o → e) ∈ H }
 
 [Interpreter Union]
+Note: This is a dictionary union which prioritizes its right argument.
 
-H₁ ● H₂ = {
-   if (o → e₁) ∈ H₁ then (o → e₁) else 
-   if (o → e₂) ∈ H₂ then (o → e₂)
+H₁ ⨆ H₂ = {
+   if (o → e₂) ∈ H₂ then (o → e₂) else
+   if (o → e₁) ∈ H₁ then (o → e₁)
    | o ∈ domain(H₁) ∪ domain(H₂)
 } ∪ H₁ ∪ H₂
 
 [Coproduct]
 
-H₁ ⊕ H₂ = {
+H₁ ⊕ H₂ = H₁ ⨆ H₂ ⨆ {
    (o → {(fwd → e₂)} ■ e₁)
    | (o → e₁) ∈ H₁, (o → e₂) ∈ H₂
-} ● H₁ ● H₂
+}
 
 [Reflection]
 
