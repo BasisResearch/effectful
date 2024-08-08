@@ -204,3 +204,57 @@ def test_runner_outer_reflect_1():
         assert plus_1(1) == 1 + 2 + 3
         with runner(intp_inner):
             assert plus_2(2) == 2 + (2 + 3) + 1
+
+
+def test_runner_outer_reflect_2():
+    log = []
+
+    def logging(fn):
+        def wrapped(*a, **k):
+            log.append(fn.__name__)
+            return fn(*a, **k)
+
+        return wrapped
+
+    def check_log(*expected):
+        assert log == list(expected)
+        log.clear()
+
+    @bind_result
+    @logging
+    def plus_two_impl_inner(r, v):
+        return f"+2-impl_inner({v})"
+
+    @bind_result
+    @logging
+    def plus_two_impl_outer(res, v):
+        return plus_1(f"+2-impl_outer({v})")
+
+    @bind_result
+    @logging
+    def plus_one_impl_inner(res, v):
+        assert res is None
+        return f"+1-impl_inner({plus_2(v)})"
+
+    @bind_result
+    @logging
+    def plus_one_even_outer(res, v):
+        return f"+1-even_outer({v})"
+
+    intp_even_more_outer = {plus_1: plus_one_even_outer}
+    intp_inner = {plus_1: plus_one_impl_inner, plus_2: plus_two_impl_inner}
+    intp_outer = {plus_2: plus_two_impl_outer}
+
+    with interpreter(intp_inner):
+        assert plus_2(2) == "+2-impl_inner(2)"
+        check_log("plus_two_impl_inner")
+
+    with interpreter(product(intp_even_more_outer, product(intp_outer, intp_inner))):
+        assert plus_1(1) == "+1-impl_inner(+1-even_outer(+2-impl_outer(1)))"
+        check_log(
+            "plus_one_impl_inner",
+            "plus_two_impl_outer",
+            "plus_one_even_outer",
+        )
+        assert plus_2(2) == "+2-impl_inner(2)"
+        check_log("plus_two_impl_inner")
