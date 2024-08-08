@@ -65,17 +65,14 @@ Semantics
 Interpretation Combinators
 ==========================
 
-domain(H) = { o | (o → e) ∈ H }
-range(H)  = { e | (o → e) ∈ H }
-
 [Interpreter Union]
 Note: This is a dictionary union which prioritizes its right argument.
 
 H₁ ⨆ H₂ = {
    if (o → e₂) ∈ H₂ then (o → e₂) else
    if (o → e₁) ∈ H₁ then (o → e₁)
-   | o ∈ domain(H₁) ∪ domain(H₂)
-} ∪ H₁ ∪ H₂
+   | (o → e₁) ∈ H₁ ∨ (o → e₂) ∈ H₂
+}
 
 [Coproduct]
 
