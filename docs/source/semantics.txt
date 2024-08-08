@@ -1,0 +1,104 @@
+Notes
+=====
+
+Right now I'm trying to avoid having a global interpretation,
+mainly because it makes equational reasoning much harder, though
+it may just need to be that way.
+
+Syntax
+======
+
+o ∈ 𝕆, the set of operations
+n ∈ ℕ, the set of names
+c ∈ ℂ, the set of constants
+
+e = v      (Literals)
+  | e₁ e₂  (Application)
+  | n      (Variables)
+  | H ■ e  (Effect Interpreters)
+  | H ↓ e  (Effect Handlers)
+  | H ↯ e  (Effect Runners)
+  | !o     (Operation Invocations)
+v = c      (Constants)
+  | λ n. e (Abstractions)
+H = { (o → e), ... } (Effect Sets)
+
+Constants
+=========
+
+fwd, reflect ∈ 𝕆
+
+Semantics
+=========
+
+[β-reduction]
+
+    e₁ ⇒ λ n. e₂
+-------------------
+ e₁ e₃ ⇒ e₂[n ↦ e₃]
+
+[Interpreters over Values]
+
+-----------
+ H ■ v ⇒ v
+
+[Interpreters over Applications]
+
+---------------------------------
+ H ■ (e₁ e₂) ⇒ H ■ ((H ■ e₁) (H ■ e₂))
+
+[Interpreter Invocation]
+
+   (o → e₁) ∈ H
+------------------
+  H ■ !o ⇒ H ■ e₁
+
+[Interpreter Composition]
+
+----------------------------
+ H₁ ■ H₂ ■ e ⇒ (H₁ ● H₂) ■ e
+
+[Handler Composition]
+
+-----------------------------
+ H₁ ■ H₂ ↓ e ⇒ (H₁ ⊕ H₂) ■ e
+
+[Runner Composition]
+
+-----------------------------
+ H₁ ■ H₂ ↯ e ⇒ (H₁ ⊗ H₂) ■ e
+
+
+Interpretation Combinators
+==========================
+
+domain(H) = { o | (o → e) ∈ H }
+range(H)  = { e | (o → e) ∈ H }
+
+[Interpreter Union]
+
+H₁ ● H₂ = {
+   if (o → e₁) ∈ H₁ then (o → e₁) else 
+   if (o → e₂) ∈ H₂ then (o → e₂)
+   | o ∈ domain(H₁) ∪ domain(H₂)
+} ∪ H₁ ∪ H₂
+
+[Coproduct]
+
+H₁ ⊕ H₂ = {
+   (o → {(fwd → e₂)} ■ e₁)
+   | (o → e₁) ∈ H₁, (o → e₂) ∈ H₂
+} ● H₁ ● H₂
+
+[Reflection]
+
+↻ H = { o → H ■ e | (o → e) ∈ H }
+
+[Product]
+
+H₁ ⊗ H₂ = {
+   (o → (↻ H) ■ (if (o → e₁) ∈ H₁
+                 then {(reflect → H₁ ■ e₁)} ■ e₂
+                 else e₂))
+   | (o → e₂) ∈ H₂
+}
