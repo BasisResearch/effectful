@@ -36,7 +36,7 @@ reflect, fwd ∈ 𝕆
 
 [Handled-By Relation]
 
-o ~ H ⇔ ∃ e, (o → λ n. e)
+o ~ H ⇔ ∃ e, (o → λ n. e) ∈ H
 o ≁ H ⇔ ¬(o ~ H)
 
 [Interpretation Union (right-prioritizing dictionary union)]
@@ -79,7 +79,7 @@ Semantics
 [Interpreter Invocation]
               
     (o → λ n. e) ∈ H         o ≁ handled(C)
--------------------------------------------------
+------------------------------------------------------
  interpreter H: C[do o v] ⇒ interpreter H: C[e[n ↦ v]]
 
 [Shallow Interpreters over Values]
@@ -148,3 +148,14 @@ Semantics
              e₁[n₁ ↦ v]
      ]
  ]
+
+Example Derivations
+===================
+
+[Simple Interpreter Usage]
+
+  -----------------------------       --------------
+  (o → λ n. e) ∈ {(o → λ n. e)}       o ≁ handled(□)
+------------------------------------------------------ [Interpreter Invocation]
+   interpreter {(o → λ n. e)}: do o c ⇒ e[n ↦ c]
+
