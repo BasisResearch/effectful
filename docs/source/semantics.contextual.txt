@@ -1,0 +1,89 @@
+Syntax
+======
+
+o ∈ 𝕆, the set of operations
+n ∈ ℕ, the set of names
+c ∈ ℂ, the set of constants
+
+e = v                (Literals)
+  | e₁ e₂            (Application)
+  | n                (Variables)
+  | H ↓ e            (Effect Interpreters)
+  | H ⏚ e            (Effect Handlers)
+  | H ↯ e            (Effect Runners)
+  | !o               (Operation Invocations)
+  | forward          (Forward Operations)
+  | reflect          (Reflect Operations)
+v = c                (Constants)
+  | λ n. e           (Abstractions)
+H = { (o → e), ... } (Effect Sets)
+  | H₁ ⊕ H₂          (Coproducts)
+  | H₁ ⊗ H₂          (Products)
+C = □                (Empty Contexts)
+  | C e              (Function Contexts)
+  | v C              (Argument Contexts)
+  | H ↓ C            (Handler Contexts)
+
+Semantics
+=========
+
+[β-reduction]
+
+---------------------------
+ (λ n. e₂) e₃ ⇒ e₂[n ↦ e₃]
+
+[Left-Application]
+
+    e₁ ⇒ e₂
+---------------
+ e₁ e₃ ⇒ e₂ e₃
+
+[Right-Application]
+
+  e₁ ⇒ e₂
+-------------
+ v e₁ ⇒ v e₂
+
+[Interpreters over Values]
+
+-----------
+ H ■ v ⇒ v
+
+[Interpreters over Left-Applications]
+
+    (H ■ e₁) ⇒ e₂
+---------------------------
+ H ■ (e₁ e₃) ⇒ H ■ (e₂ e₃)
+
+[Interpreters over Applications]
+
+   (H ■ e₁) ⇒ e₂
+-------------------------
+ H ■ (v e₃) ⇒ H ■ (v e₃)
+
+[Interpreter Invocation]
+
+   (o → e₁) ∈ H
+------------------
+  H ■ !o ⇒ H ■ e₁
+
+[Interpreter Composition]
+
+-----------------------------
+ H₁ ■ (H₂ ■ e) ⇒ (H₁ ⨆ H₂) ■ e
+
+[Handler Composition]
+
+-----------------------------
+ H₁ ■ H₂ ↓ e ⇒ (H₁ ⊕ H₂) ■ e
+
+[Runner Composition]
+
+-----------------------------
+ H₁ ■ H₂ ↯ e ⇒ (H₁ ⊗ H₂) ■ e
+
+[Coproduct Evaluation] 
+
+        H₂ ■ e₁ ⇒ e₂
+---------------------------------
+ (H₁ ⊕ H₂) ■ e₁ ⇒ (H₁ ⊕ H₂) ■ e₂
