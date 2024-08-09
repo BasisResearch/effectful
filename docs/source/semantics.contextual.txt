@@ -5,24 +5,57 @@ o ∈ 𝕆, the set of operations
 n ∈ ℕ, the set of names
 c ∈ ℂ, the set of constants
 
-e = v                (Literals)
-  | e₁ e₂            (Application)
-  | n                (Variables)
-  | H ↓ e            (Effect Interpreters)
-  | H ⏚ e            (Effect Handlers)
-  | H ↯ e            (Effect Runners)
-  | !o               (Operation Invocations)
-  | forward          (Forward Operations)
-  | reflect          (Reflect Operations)
-v = c                (Constants)
-  | λ n. e           (Abstractions)
-H = { (o → e), ... } (Effect Sets)
-  | H₁ ⊕ H₂          (Coproducts)
-  | H₁ ⊗ H₂          (Products)
-C = □                (Empty Contexts)
-  | C e              (Function Contexts)
-  | v C              (Argument Contexts)
-  | H ↓ C            (Handler Contexts)
+e = v                     (Literals)
+  | e₁ e₂                 (Application)
+  | n                     (Variables)
+  | do o e                (Operation Invocations)
+  | interpreter H: e      (Effect Interpreters)
+  | handler H: e          (Effect Handlers)
+  | shallow H: e          (Shallow Interpreters)
+  | runner H: e           (Effect Runners)
+  | fix H: e              (Effect Fixing)
+v = c                     (Constants)
+  | λ n. e                (Abstractions)
+H = { (o → λ n. e), ... } (Interpretation Literals)
+C = □                     (Empty Contexts)
+  | C e                   (Function Contexts)
+  | v C                   (Argument Contexts)
+  | do o C                (Invocation Contexts)
+  | interpreter H: C      (Interpreter Contexts)
+  | handler H: C          (Handler Contexts)
+  | shallow H: C          (Shallow Interpreter Contexts)
+  | runner H: C           (Runner Contexts)
+  | fix H: C              (Fix Contexts)
+
+Functions and Constants
+=======================
+
+[Predefined Names]
+
+reflect, fwd ∈ 𝕆
+
+[Handled-By Relation]
+
+o ~ H ⇔ ∃ e, (o → λ n. e)
+o ≁ H ⇔ ¬(o ~ H)
+
+[Interpretation Union (right-prioritizing dictionary union)]
+
+{}                  ⨆ r = r
+{(o → λ n. e), ...} ⨆ r = ({...} ⨆ r)                  if o ~ r
+                          ({...} ⨆ r) ∪ {(o → λ n. e)} otherwise
+
+[Context Interpretation]
+
+handled(□)                = ∅
+handled(C e)              = handled(C)
+handled(v C)              = handled(C)
+handled(do o C)           = handled(C)
+handled(interpreter H: C) = H ⨆ handled(C)
+handled(handler H: C)     = H ⨆ handled(C)
+handled(shallow H: C)     = H ⨆ handled(C)
+handled(runner H: C)      = H ⨆ handled(C)
+handled(fix H: C)         = H ⨆ handled(C)
 
 Semantics
 =========
@@ -30,60 +63,88 @@ Semantics
 [β-reduction]
 
 ---------------------------
- (λ n. e₂) e₃ ⇒ e₂[n ↦ e₃]
+  (λ n. e) v ⇒ e[n ↦ v]
 
-[Left-Application]
+[In-Context]
 
-    e₁ ⇒ e₂
+   e₁ ⇒ e₂
 ---------------
- e₁ e₃ ⇒ e₂ e₃
-
-[Right-Application]
-
-  e₁ ⇒ e₂
--------------
- v e₁ ⇒ v e₂
+ C[e₁] ⇒ C[e₂]
 
 [Interpreters over Values]
 
------------
- H ■ v ⇒ v
-
-[Interpreters over Left-Applications]
-
-    (H ■ e₁) ⇒ e₂
----------------------------
- H ■ (e₁ e₃) ⇒ H ■ (e₂ e₃)
-
-[Interpreters over Applications]
-
-   (H ■ e₁) ⇒ e₂
--------------------------
- H ■ (v e₃) ⇒ H ■ (v e₃)
+----------------------
+ interpreter H: v ⇒ v
 
 [Interpreter Invocation]
+              
+    (o → λ n. e) ∈ H         o ≁ handled(C)
+-------------------------------------------------
+ interpreter H: C[do o v] ⇒ interpreter H: C[e[n ↦ v]]
 
-   (o → e₁) ∈ H
+[Shallow Interpreters over Values]
+
 ------------------
-  H ■ !o ⇒ H ■ e₁
+ shallow H: v ⇒ v
 
-[Interpreter Composition]
+[Shallow Interpreter Invocation]
 
------------------------------
- H₁ ■ (H₂ ■ e) ⇒ (H₁ ⨆ H₂) ■ e
+     (o → λ n. e) ∈ H    o ≁ handled(C)
+--------------------------------------------
+ shallow H: C[do o v] ⇒ C[e[n ↦ v]]
 
-[Handler Composition]
+[Fix over Values]
 
------------------------------
- H₁ ■ H₂ ↓ e ⇒ (H₁ ⊕ H₂) ■ e
+--------------
+ fix H: v ⇒ v
 
-[Runner Composition]
+[Fix Invocation]
 
------------------------------
- H₁ ■ H₂ ↯ e ⇒ (H₁ ⊗ H₂) ■ e
+       (o → λ n. e) ∈ H         o ≁ handled(C)
+------------------------------------------------------
+ fix H: C[do o v] ⇒ fix H: C[interpreter H: e[n ↦ v]]]
 
-[Coproduct Evaluation] 
+[Handlers over Values]
 
-        H₂ ■ e₁ ⇒ e₂
----------------------------------
- (H₁ ⊕ H₂) ■ e₁ ⇒ (H₁ ⊕ H₂) ■ e₂
+------------------
+ handler H: v ⇒ v 
+
+[Outermost Handlers]
+
+ (o → λ n. e) ∈ H    o ≁ handled(C₁)    o ≁ handled(C₂)
+---------------------------------------------------------
+ C₁[handler H: C₂[do o v]] ⇒ C₁[handler H: C₂[e[n ↦ v]]]
+
+[Nested Handlers]
+
+   (o → λ n₁. e₁) ∈ H    (o → λ n₂. e₂) ∈ handled(C₁)    o ≁ handled(C₂)
+-------------------------------------------------------------------------------
+ C₁[handler H: C₂[do o v]]
+    ⇒
+ C₁[handler H: C₂[shallow {(fwd → λn₂. e₂)}: e₁[n₁ ↦ v]]]
+
+[Runners over Values]
+
+-----------------
+ runner H: v ⇒ v
+
+[Outermost Runners]
+
+ H₂ = handled(C₁), (o → λ n. e) ∈ H₁, o ≁ H₂, o ≁ handled(C₂)
+--------------------------------------------------------------
+ C₁[runner H₁: C₂[do o v]]
+   ⇒
+ C₁[runner H₁: C₂[interpreter H₂: e[n ↦ v]]]
+
+[Nested Runners]
+
+ H₂ = handled(C₁), (o → λ n₁. e₁) ∈ H₁, o ~ H₂, o ≁ handled(C₂)
+-----------------------------------------------------------------------------
+ C₁[runner H₁: C₂[do o v]]
+     ⇒
+ C₁[runner H₁:
+     C₂[fix H₂:
+         shallow {(reflect → λ n₂. interpreter H₂: do o n₂)}:
+             e₁[n₁ ↦ v]
+     ]
+ ]
