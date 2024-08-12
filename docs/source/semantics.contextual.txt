@@ -63,57 +63,51 @@ Semantics
 [β-reduction]
 
 ---------------------------
-  (λ n. e) v ⇒ e[n ↦ v]
-
-[In-Context]
-
-   e₁ ⇒ e₂
----------------
- C[e₁] ⇒ C[e₂]
+  C[(λ n. e) v] ⇒ C[e[n ↦ v]]
 
 [Interpreters over Values]
 
 ----------------------
- interpreter H: v ⇒ v
+ C[interpreter H: v] ⇒ C[v]
 
 [Interpreter Invocation]
               
-    (o → λ n. e) ∈ H         o ≁ handled(C)
-------------------------------------------------------
- interpreter H: C[do o v] ⇒ interpreter H: C[e[n ↦ v]]
+       (o → λ n. e) ∈ H                 o ≁ handled(C₂)
+-----------------------------------------------------------------
+ C₁[interpreter H: C₂[do o v] ⇒ C₁[interpreter H: C₂[(λ n. e) v]]
 
 [Shallow Interpreters over Values]
 
-------------------
- shallow H: v ⇒ v
+---------------------
+ C[shallow H: v ⇒ v]
 
 [Shallow Interpreter Invocation]
 
-     (o → λ n. e) ∈ H    o ≁ handled(C)
---------------------------------------------
- shallow H: C[do o v] ⇒ C[e[n ↦ v]]
+       (o → λ n. e) ∈ H     o ≁ handled(C₂)
+---------------------------------------------------
+   C₁[shallow H: C₂[do o v]] ⇒ C₁[C₂[(λ n. e) v]]
 
 [Fix over Values]
 
---------------
- fix H: v ⇒ v
+--------------------
+ C[fix H: v] ⇒ C[v]
 
 [Fix Invocation]
 
-       (o → λ n. e) ∈ H         o ≁ handled(C)
-------------------------------------------------------
- fix H: C[do o v] ⇒ fix H: C[interpreter H: e[n ↦ v]]]
+           (o → λ n. e) ∈ H            o ≁ handled(C₂)
+-------------------------------------------------------------------
+ C₁[fix H: C₂[do o v]] ⇒ C₁[fix H: C₁[interpreter H: (λ n. e) v]]]
 
 [Handlers over Values]
 
-------------------
- handler H: v ⇒ v 
+------------------------
+ C[handler H: v] ⇒ C[v]
 
 [Outermost Handlers]
 
  (o → λ n. e) ∈ H    o ≁ handled(C₁)    o ≁ handled(C₂)
----------------------------------------------------------
- C₁[handler H: C₂[do o v]] ⇒ C₁[handler H: C₂[e[n ↦ v]]]
+-----------------------------------------------------------
+ C₁[handler H: C₂[do o v]] ⇒ C₁[handler H: C₂[(λ n. e) v]]
 
 [Nested Handlers]
 
@@ -121,12 +115,12 @@ Semantics
 -------------------------------------------------------------------------------
  C₁[handler H: C₂[do o v]]
     ⇒
- C₁[handler H: C₂[shallow {(fwd → λn₂. e₂)}: e₁[n₁ ↦ v]]]
+ C₁[handler H: C₂[shallow {(fwd → λn₂. e₂)}: (λ n₁. e₁) v]]
 
 [Runners over Values]
 
------------------
- runner H: v ⇒ v
+-----------------------
+ C[runner H: v] ⇒ C[v]
 
 [Outermost Runners]
 
@@ -134,7 +128,7 @@ Semantics
 --------------------------------------------------------------
  C₁[runner H₁: C₂[do o v]]
    ⇒
- C₁[runner H₁: C₂[interpreter H₂: e[n ↦ v]]]
+ C₁[runner H₁: C₂[interpreter H₂: (λ n. e) v]]
 
 [Nested Runners]
 
@@ -145,7 +139,7 @@ Semantics
  C₁[runner H₁:
      C₂[fix H₂:
          shallow {(reflect → λ n₂. interpreter H₂: do o n₂)}:
-             e₁[n₁ ↦ v]
+             (λ n₁. e₁) v
      ]
  ]
 
@@ -157,5 +151,4 @@ Example Derivations
   -----------------------------       --------------
   (o → λ n. e) ∈ {(o → λ n. e)}       o ≁ handled(□)
 ------------------------------------------------------ [Interpreter Invocation]
-   interpreter {(o → λ n. e)}: do o c ⇒ e[n ↦ c]
-
+   interpreter {(o → λ n. e)}: do o c ⇒ (λ n. e) c
