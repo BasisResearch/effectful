@@ -71,7 +71,7 @@ Semantics
  C[interpreter H: v] ⇒ C[v]
 
 [Interpreter Invocation]
-              
+
        (o → λ n. e) ∈ H                 o ≁ handled(C₂)
 -----------------------------------------------------------------
  C₁[interpreter H: C₂[do o v] ⇒ C₁[interpreter H: C₂[(λ n. e) v]]
@@ -152,3 +152,68 @@ Example Derivations
   (o → λ n. e) ∈ {(o → λ n. e)}       o ≁ handled(□)
 ------------------------------------------------------ [Interpreter Invocation]
    interpreter {(o → λ n. e)}: do o c ⇒ (λ n. e) c
+
+[Forwarding]
+
+Assume {square, 2, 4, ()} ⊆ ℂ, get ∈ 𝕆, and rewrite rule [Square Impl]:
+
+----------------------
+ C[(square 2)] ⇒ C[4]
+
+
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        do get ()
+⇒ [Nested Handlers] where
+  C₁=(handler {(get → λ n. 2)}: □),
+  C₂=□,
+  H={(get → λ n₁. (square (do fwd n₁)))},
+  o=get,
+  e₁=(square (do fwd n₁)),
+  e₂=2
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        shallow {(fwd → λn₂. 2)}:
+            (λ n₁. (square (do fwd n₁))) ()
+⇒ [β-reduction] where
+  C=(handler {...}: handler {...}: shallow {...}: □),
+  n=n₁,
+  v=(),
+  e=(square (do fwd n₁))
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        shallow {(fwd → λn₂. 2)}:
+            (square (do fwd ()))
+⇒ [Shallow Interpreter Invocation] where
+  C₁=(handler {...}: handler: {...}: □),
+  C₂=(square □)
+  n=n₂,
+  o=fwd,
+  e=2
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        (square ((λ n₂. 2) ()))
+⇒ [β-reduction] where
+  C=(handler {...}: handler {...}: (square □)),
+  n=n₂,
+  e=2,
+  v=()
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        (square 2)
+⇒ [Square Impl] where
+  C=(handler {...}: handler {...}: □)
+handler {(get → λ n₂. 2)}:
+    handler {(get → λ n₁. square (do fwd n₁))}:
+        4
+⇒ [Handlers over Values] where
+  C=(handler {...}: □),
+  H={...},
+  v=4
+handler {(get → λ n₂. 2)}:
+    4
+⇒ [Handlers over Values] where
+  C=□,
+  H={...},
+  v=4
+4
