@@ -1,3 +1,5 @@
+#+options: toc:nil author:nil title:nil num:nil
+
 * Syntax
 #+begin_example
   o ∈ 𝕆, the set of operations
@@ -185,14 +187,6 @@
 
 ** Forwarding
 
-Assume {square, 2, 4, ()} ⊆ ℂ, get ∈ 𝕆, and rewrite rule [Square Impl]:
-
-#+begin_example
-  ----------------------
-   C[(square 2)] ⇒ C[4]
-#+end_example
-
-
 #+begin_example
   handler {(get → λ n₂. 2)}:
       handler {(get → λ n₁. square (do fwd n₁))}:
@@ -251,6 +245,8 @@ Assume {square, 2, 4, ()} ⊆ ℂ, get ∈ 𝕆, and rewrite rule [Square Impl]:
     v=4
   4
 #+end_example
+
+** Nested Forwarding
 
 #+begin_example
   handler {(get → λ n₂. 2)}:
