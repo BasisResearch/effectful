@@ -1,186 +1,186 @@
 * Syntax
 #+begin_example
-o ∈ 𝕆, the set of operations
-n ∈ ℕ, the set of names
-c ∈ ℂ, the set of constants
+  o ∈ 𝕆, the set of operations
+  n ∈ ℕ, the set of names
+  c ∈ ℂ, the set of constants
 
-e = v                     (Literals)
-  | e₁ e₂                 (Application)
-  | n                     (Variables)
-  | do o e                (Operation Invocations)
-  | interpreter H: e      (Effect Interpreters)
-  | handler H: e          (Effect Handlers)
-  | shallow H: e          (Shallow Interpreters)
-  | runner H: e           (Effect Runners)
-  | fix H: e              (Effect Fixing)
-v = c                     (Constants)
-  | λ n. e                (Abstractions)
-H = { (o → λ n. e), ... } (Interpretation Literals)
-C = □                     (Empty Contexts)
-  | C e                   (Function Contexts)
-  | v C                   (Argument Contexts)
-  | do o C                (Invocation Contexts)
-  | interpreter H: C      (Interpreter Contexts)
-  | handler H: C          (Handler Contexts)
-  | shallow H: C          (Shallow Interpreter Contexts)
-  | runner H: C           (Runner Contexts)
-  | fix H: C              (Fix Contexts)
+  e = v                     (Literals)
+    | e₁ e₂                 (Application)
+    | n                     (Variables)
+    | do o e                (Operation Invocations)
+    | interpreter H: e      (Effect Interpreters)
+    | handler H: e          (Effect Handlers)
+    | shallow H: e          (Shallow Interpreters)
+    | runner H: e           (Effect Runners)
+    | fix H: e              (Effect Fixing)
+  v = c                     (Constants)
+    | λ n. e                (Abstractions)
+  H = { (o → λ n. e), ... } (Interpretation Literals)
+  C = □                     (Empty Contexts)
+    | C e                   (Function Contexts)
+    | v C                   (Argument Contexts)
+    | do o C                (Invocation Contexts)
+    | interpreter H: C      (Interpreter Contexts)
+    | handler H: C          (Handler Contexts)
+    | shallow H: C          (Shallow Interpreter Contexts)
+    | runner H: C           (Runner Contexts)
+    | fix H: C              (Fix Contexts)
 #+end_example
 
 * Functions and Constants
 ** Predefined Names
 
 #+begin_example
-reflect, fwd ∈ 𝕆
+  reflect, fwd ∈ 𝕆
 #+end_example
 
 ** Handled-By Relation
 
 #+begin_example
-o ~ H ⇔ ∃ e, (o → λ n. e) ∈ H
-o ≁ H ⇔ ¬(o ~ H)
+  o ~ H ⇔ ∃ e, (o → λ n. e) ∈ H
+  o ≁ H ⇔ ¬(o ~ H)
 #+end_example
 
 ** Interpretation Union (right-prioritizing dictionary union)
 
 #+begin_example
-{}                  ⨆ r = r
-{(o → λ n. e), ...} ⨆ r = ({...} ⨆ r)                  if o ~ r
-                          ({...} ⨆ r) ∪ {(o → λ n. e)} otherwise
+  {}                  ⨆ r = r
+  {(o → λ n. e), ...} ⨆ r = ({...} ⨆ r)                  if o ~ r
+                            ({...} ⨆ r) ∪ {(o → λ n. e)} otherwise
 #+end_example
 
 ** Context Interpretation
 
 #+begin_example
-handled(□)                = ∅
-handled(C e)              = handled(C)
-handled(v C)              = handled(C)
-handled(do o C)           = handled(C)
-handled(interpreter H: C) = H ⨆ handled(C)
-handled(handler H: C)     = H ⨆ handled(C)
-handled(shallow H: C)     = H ⨆ handled(C)
-handled(runner H: C)      = H ⨆ handled(C)
-handled(fix H: C)         = H ⨆ handled(C)
+  handled(□)                = ∅
+  handled(C e)              = handled(C)
+  handled(v C)              = handled(C)
+  handled(do o C)           = handled(C)
+  handled(interpreter H: C) = H ⨆ handled(C)
+  handled(handler H: C)     = H ⨆ handled(C)
+  handled(shallow H: C)     = H ⨆ handled(C)
+  handled(runner H: C)      = H ⨆ handled(C)
+  handled(fix H: C)         = H ⨆ handled(C)
 #+end_example
 
 * Semantics
 ** β-reduction
 
 #+begin_example
-------------------------------
-  C[(λ n. e) v] ⇒ C[e[n ↦ v]]
+  ------------------------------
+    C[(λ n. e) v] ⇒ C[e[n ↦ v]]
 #+end_example
 
 ** Interpreters over Values
 
 #+begin_example
-----------------------------
- C[interpreter H: v] ⇒ C[v]
+  ----------------------------
+   C[interpreter H: v] ⇒ C[v]
 #+end_example
 
 ** Interpreter Invocation
 
 #+begin_example
-       (o → λ n. e) ∈ H                 o ≁ handled(C₂)
-------------------------------------------------------------------
- C₁[interpreter H: C₂[do o v] ⇒ C₁[interpreter H: C₂[(λ n. e) v]]
+         (o → λ n. e) ∈ H                 o ≁ handled(C₂)
+  ------------------------------------------------------------------
+   C₁[interpreter H: C₂[do o v] ⇒ C₁[interpreter H: C₂[(λ n. e) v]]
 #+end_example
 
 ** Shallow Interpreters over Values
 
 #+begin_example
----------------------
- C[shallow H: v ⇒ v]
+  ---------------------
+   C[shallow H: v ⇒ v]
 #+end_example
 
 ** Shallow Interpreter Invocation
 
 #+begin_example
-       (o → λ n. e) ∈ H     o ≁ handled(C₂)
----------------------------------------------------
-   C₁[shallow H: C₂[do o v]] ⇒ C₁[C₂[(λ n. e) v]]
+         (o → λ n. e) ∈ H     o ≁ handled(C₂)
+  ---------------------------------------------------
+     C₁[shallow H: C₂[do o v]] ⇒ C₁[C₂[(λ n. e) v]]
 #+end_example
 
 ** Fix over Values
 
 #+begin_example
---------------------
- C[fix H: v] ⇒ C[v]
+  --------------------
+   C[fix H: v] ⇒ C[v]
 #+end_example
 
 ** Fix Invocation
 
 #+begin_example
-           (o → λ n. e) ∈ H            o ≁ handled(C₂)
--------------------------------------------------------------------
- C₁[fix H: C₂[do o v]] ⇒ C₁[fix H: C₁[interpreter H: (λ n. e) v]]]
+             (o → λ n. e) ∈ H            o ≁ handled(C₂)
+  -------------------------------------------------------------------
+   C₁[fix H: C₂[do o v]] ⇒ C₁[fix H: C₁[interpreter H: (λ n. e) v]]]
 #+end_example
 
 ** Handlers over Values
 
 #+begin_example
-------------------------
- C[handler H: v] ⇒ C[v]
+  ------------------------
+   C[handler H: v] ⇒ C[v]
 #+end_example
 
 ** Outermost Handlers
 
 #+begin_example
- (o → λ n. e) ∈ H    o ≁ handled(C₁)    o ≁ handled(C₂)
------------------------------------------------------------
- C₁[handler H: C₂[do o v]] ⇒ C₁[handler H: C₂[(λ n. e) v]]
+   (o → λ n. e) ∈ H    o ≁ handled(C₁)    o ≁ handled(C₂)
+  -----------------------------------------------------------
+   C₁[handler H: C₂[do o v]] ⇒ C₁[handler H: C₂[(λ n. e) v]]
 #+end_example
 
 ** Nested Handlers
 
 #+begin_example
-   (o → λ n₁. e₁) ∈ H    (o → λ n₂. e₂) ∈ handled(C₁)    o ≁ handled(C₂)
--------------------------------------------------------------------------------
- C₁[handler H: C₂[do o v]]
-    ⇒
- C₁[handler H: C₂[shallow {(fwd → λn₂. e₂)}: (λ n₁. e₁) v]]
+     (o → λ n₁. e₁) ∈ H    (o → λ n₂. e₂) ∈ handled(C₁)    o ≁ handled(C₂)
+  -------------------------------------------------------------------------------
+   C₁[handler H: C₂[do o v]]
+      ⇒
+   C₁[handler H: C₂[shallow {(fwd → λn₂. e₂)}: (λ n₁. e₁) v]]
 #+end_example
 
 ** Runners over Values
 
 #+begin_example
------------------------
- C[runner H: v] ⇒ C[v]
+  -----------------------
+   C[runner H: v] ⇒ C[v]
 #+end_example
 
 ** Outermost Runners
 
 #+begin_example
- H₂ = handled(C₁), (o → λ n. e) ∈ H₁, o ≁ H₂, o ≁ handled(C₂)
---------------------------------------------------------------
- C₁[runner H₁: C₂[do o v]]
-   ⇒
- C₁[runner H₁: C₂[interpreter H₂: (λ n. e) v]]
+   H₂ = handled(C₁), (o → λ n. e) ∈ H₁, o ≁ H₂, o ≁ handled(C₂)
+  --------------------------------------------------------------
+   C₁[runner H₁: C₂[do o v]]
+     ⇒
+   C₁[runner H₁: C₂[interpreter H₂: (λ n. e) v]]
 #+end_example
 
 ** Nested Runners
 
 #+begin_example
- H₂ = handled(C₁), (o → λ n₁. e₁) ∈ H₁, o ~ H₂, o ≁ handled(C₂)
------------------------------------------------------------------------------
- C₁[runner H₁: C₂[do o v]]
-     ⇒
- C₁[runner H₁:
-     C₂[fix H₂:
-         shallow {(reflect → λ n₂. interpreter H₂: do o n₂)}:
-             (λ n₁. e₁) v
-     ]
- ]
+   H₂ = handled(C₁), (o → λ n₁. e₁) ∈ H₁, o ~ H₂, o ≁ handled(C₂)
+  -----------------------------------------------------------------------------
+   C₁[runner H₁: C₂[do o v]]
+       ⇒
+   C₁[runner H₁:
+       C₂[fix H₂:
+           shallow {(reflect → λ n₂. interpreter H₂: do o n₂)}:
+               (λ n₁. e₁) v
+       ]
+   ]
 #+end_example
  
 * Example Derivations
 ** Simple Interpreter Usage
 
 #+begin_example
-  -----------------------------       --------------
-  (o → λ n. e) ∈ {(o → λ n. e)}       o ≁ handled(□)
------------------------------------------------------- [Interpreter Invocation]
-   interpreter {(o → λ n. e)}: do o c ⇒ (λ n. e) c
+    -----------------------------       --------------
+    (o → λ n. e) ∈ {(o → λ n. e)}       o ≁ handled(□)
+  ------------------------------------------------------ [Interpreter Invocation]
+     interpreter {(o → λ n. e)}: do o c ⇒ (λ n. e) c
 #+end_example
 
 ** Forwarding
@@ -188,74 +188,97 @@ handled(fix H: C)         = H ⨆ handled(C)
 Assume {square, 2, 4, ()} ⊆ ℂ, get ∈ 𝕆, and rewrite rule [Square Impl]:
 
 #+begin_example
-----------------------
- C[(square 2)] ⇒ C[4]
+  ----------------------
+   C[(square 2)] ⇒ C[4]
 #+end_example
 
 
 #+begin_example
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        do get ()
-⇒ [Nested Handlers] where
-  C₁=(handler {(get → λ n. 2)}: □),
-  C₂=□,
-  H={(get → λ n₁. (square (do fwd n₁)))},
-  o=get,
-  e₁=(square (do fwd n₁)),
-  e₂=2
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        shallow {(fwd → λn₂. 2)}:
-            (λ n₁. (square (do fwd n₁))) ()
-⇒ [β-reduction] where
-  C=(handler {...}: handler {...}: shallow {...}: □),
-  n=n₁,
-  v=(),
-  e=(square (do fwd n₁))
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        shallow {(fwd → λn₂. 2)}:
-            (square (do fwd ()))
-⇒ [Shallow Interpreter Invocation] where
-  C₁=(handler {...}: handler: {...}: □),
-  C₂=(square □)
-  n=n₂,
-  o=fwd,
-  e=2
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        (square ((λ n₂. 2) ()))
-⇒ [β-reduction] where
-  C=(handler {...}: handler {...}: (square □)),
-  n=n₂,
-  e=2,
-  v=()
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        (square 2)
-⇒ [Square Impl] where
-  C=(handler {...}: handler {...}: □)
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (do fwd n₁))}:
-        4
-⇒ [Handlers over Values] where
-  C=(handler {...}: □),
-  H={...},
-  v=4
-handler {(get → λ n₂. 2)}:
-    4
-⇒ [Handlers over Values] where
-  C=□,
-  H={...},
-  v=4
-4
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          do get ()
+  ⇒ [Nested Handlers] where
+    C₁=(handler {(get → λ n. 2)}: □),
+    C₂=□,
+    H={(get → λ n₁. (square (do fwd n₁)))},
+    o=get,
+    e₁=(square (do fwd n₁)),
+    e₂=2
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          shallow {(fwd → λn₂. 2)}:
+              (λ n₁. (square (do fwd n₁))) ()
+  ⇒ [β-reduction] where
+    C=(handler {...}: handler {...}: shallow {...}: □),
+    n=n₁,
+    v=(),
+    e=(square (do fwd n₁))
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          shallow {(fwd → λn₂. 2)}:
+              (square (do fwd ()))
+  ⇒ [Shallow Interpreter Invocation] where
+    C₁=(handler {...}: handler: {...}: □),
+    C₂=(square □)
+    n=n₂,
+    o=fwd,
+    e=2
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          (square ((λ n₂. 2) ()))
+  ⇒ [β-reduction] where
+    C=(handler {...}: handler {...}: (square □)),
+    n=n₂,
+    e=2,
+    v=()
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          (square 2)
+  ⇒ [Square Impl] where
+    C=(handler {...}: handler {...}: □)
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          4
+  ⇒ [Handlers over Values] where
+    C=(handler {...}: □),
+    H={...},
+    v=4
+  handler {(get → λ n₂. 2)}:
+      4
+  ⇒ [Handlers over Values] where
+    C=□,
+    H={...},
+    v=4
+  4
 #+end_example
 
 #+begin_example
-handler {(get → λ n₂. 2)}:
-    handler {(get → λ n₁. square (forward: do get n₁))}:
-        handler {(get → λ n₀. square (forward: do get n₀))}:
-            square (forward: do get ())
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          handler {(get → λ n₀. square (do fwd n₀))}:
+              do get ()
+  ⇒ [Nested Handlers]
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          handler {(get → λ n₀. square (do fwd n₀))}:
+              shallow {(fwd → λn₁. square (do fwd n₁))}:
+                  (λ n₀. square (do fwd n₀)) ()            
+  ⇒ [β-reduction]
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          handler {(get → λ n₀. square (do fwd n₀))}:
+              shallow {(fwd → λn₁. square (do fwd n₁))}:
+                  square (do fwd ()))
+  ⇒ [Shallow Interpreter Invocation]
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          handler {(get → λ n₀. square (do fwd n₀))}:
+              square ((λn₁. square (do fwd n₁)) ()))
+  ⇒ [β-reduction]
+  handler {(get → λ n₂. 2)}:
+      handler {(get → λ n₁. square (do fwd n₁))}:
+          handler {(get → λ n₀. square (do fwd n₀))}:
+              square (square (do fwd ()))
+  !!!STUCK!!!
 #+end_example
 
