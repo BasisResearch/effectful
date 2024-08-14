@@ -2,9 +2,9 @@ from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec
 
-from effectful.handlers.state import State
+from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
@@ -35,7 +35,17 @@ def shallow_interpreter(intp: Interpretation):
 
 
 result = State[Any](None)
-args = State[Args]()
+args = State[Args](State._Empty())
+
+
+def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
+    return lambda *a, **k: fn(result(), *a, **k)
+
+
+def bind_result_to_method(
+    fn: Callable[Concatenate[V, Optional[T], P], T]
+) -> Callable[Concatenate[V, P], T]:
+    return lambda s, *a, **k: fn(s, result(), *a, **k)
 
 
 def bind_prompt(
@@ -46,15 +56,17 @@ def bind_prompt(
 
     Within the body of the wrapped function, calling ``prompt`` will forward the
     arguments passed to the wrapped function to the prompt's implementation.
-    The value passed to ``prompt`` will be bound to the :class:`State` ``result``.
+    The value passed to ``prompt`` will be bound to the :class:`State` ``result``,
+    which can be accessed either directly or through the :fn:``bind_result`` wrapper.
 
     :param prompt: The prompt to be bound
     :param prompt_impl: The implementation of that prompt
     :param wrapped: The function in which the prompt will be bound.
     :return: A wrapper which calls the wrapped function with the prompt bound.
 
-    >>> from effectful.ops.core import explicit_operation
-    >>> call_my_manager = explicit_operation()
+    >>> @Operation
+    ... def call_my_manager(has_receit: bool) -> bool:
+    ...     raise RuntimeError
     >>> def clerk(problem: str) -> str:
     ...     if "refund" in problem:
     ...         print("Clerk: Let me get my manager.")
@@ -63,8 +75,8 @@ def bind_prompt(
     ...             print("Clerk: Great, here's your refund.")
     ...     else:
     ...         print("Clerk: Let me help you with that.")
-    >>> def manager(problem: str) -> str:
-    ...     has_receit = result()
+    >>> @bind_result
+    ... def manager(has_receit, problem: str) -> str:
     ...     if has_receit:
     ...         print("Manager: You can have a refund.")
     ...         return True

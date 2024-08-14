@@ -7,9 +7,9 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import result
+from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, register
+from effectful.ops.core import Interpretation, Operation, define, register
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,9 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    def _op_times_n(n: int, op: Operation[..., int], *args: int) -> int:
-        return (result.get() or op.default(*args)) * n
+    @bind_result
+    def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
+        return (res or op.default(*args)) * n
 
     return {op: functools.partial(_op_times_n, n, op) for op in ops}
 
@@ -59,7 +60,7 @@ def test_op_default(op, args):
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n", N_CASES)
 def test_op_times_n_interpretation(op, args, n):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     assert op in times_n(n, op)
     assert new_op not in times_n(n, op)
@@ -70,7 +71,7 @@ def test_op_times_n_interpretation(op, args, n):
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n", N_CASES)
 def test_op_register_new_op(op, args, n):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
     intp = times_n(n, op)
 
     with interpreter(intp):
@@ -87,7 +88,7 @@ def test_op_register_new_op(op, args, n):
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n", N_CASES)
 def test_op_interpreter_new_op_1(op, args, n):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n, new_op)):
         assert op(*args) == op.default(*args)
@@ -97,7 +98,7 @@ def test_op_interpreter_new_op_1(op, args, n):
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n", N_CASES)
 def test_op_interpreter_new_op_2(op, args, n):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n, op)):
         assert op(*args) == op.default(*args) * n
@@ -107,7 +108,7 @@ def test_op_interpreter_new_op_2(op, args, n):
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n", N_CASES)
 def test_op_interpreter_new_op_3(op, args, n):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n, op, new_op)):
         assert op(*args) == op.default(*args) * n
@@ -118,7 +119,7 @@ def test_op_interpreter_new_op_3(op, args, n):
 @pytest.mark.parametrize("n_outer", N_CASES)
 @pytest.mark.parametrize("n_inner", N_CASES)
 def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n_outer, op, new_op)):
         with interpreter(times_n(n_inner, op)):
@@ -130,7 +131,7 @@ def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
 @pytest.mark.parametrize("n_outer", N_CASES)
 @pytest.mark.parametrize("n_inner", N_CASES)
 def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n_outer, op, new_op)):
         with interpreter(times_n(n_inner, new_op)):
@@ -142,7 +143,7 @@ def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
 @pytest.mark.parametrize("n_outer", N_CASES)
 @pytest.mark.parametrize("n_inner", N_CASES)
 def test_op_nest_interpreter_3(op, args, n_outer, n_inner):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     with interpreter(times_n(n_outer, op, new_op)):
         with interpreter(times_n(n_inner, op, new_op)):
@@ -154,7 +155,7 @@ def test_op_nest_interpreter_3(op, args, n_outer, n_inner):
 @pytest.mark.parametrize("n", N_CASES)
 @pytest.mark.parametrize("depth", DEPTH_CASES)
 def test_op_repeat_nest_interpreter(op, args, n, depth):
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = define(Operation)(lambda *args: op(*args) + 3)
 
     intp = times_n(n, new_op)
     with contextlib.ExitStack() as stack:
@@ -172,7 +173,7 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
     def _fail_op(*args: int) -> int:
         raise ValueError("oops")
 
-    fail_op = Operation(_fail_op)
+    fail_op = define(Operation)(_fail_op)
     intp = times_n(n, op, fail_op)
 
     with pytest.raises(ValueError, match="oops"):
@@ -255,14 +256,3 @@ def test_object_interpretation_inheretance():
         assert op2() == "MyHandlerSubclass.another_op2_impl"
         assert op3() == "MyHandlerSubclass.another_op_impl"
         assert op4() == "MyHandler.another_op_impl"
-
-
-def test_redefine_operations():
-    dummy_value = "dummy value"
-
-    def new_operation_implementation(*_, **__):
-        return dummy_value
-
-    with interpreter({Operation.constructor(): new_operation_implementation}):
-        o = Operation(3)
-        assert o == dummy_value

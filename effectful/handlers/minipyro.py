@@ -24,7 +24,7 @@ from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import result
+from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
 from effectful.ops.handler import coproduct, fwd, handler
@@ -90,26 +90,31 @@ def set_rng_seed(seed: Union[int, Seed]):
 
 
 class Tracer(ObjectInterpretation):
+    TRACE: OrderedDict[str, Message]
+
     def __init__(self):
         self.TRACE = OrderedDict()
 
     @implements(sample)
-    def sample(self, var_name: str, dist: Distribution, **kwargs):
-        res: Tensor = fwd(result())
+    @bind_result_to_method
+    def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+        res: Tensor = fwd(ires)
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
         return res
 
     @implements(param)
+    @bind_result_to_method
     def param(
         self,
+        ires,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
         event_dim: Optional[int] = None,
     ) -> Tensor:
-        res: Tensor = fwd(result.get())
+        res: Tensor = fwd(ires)
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
@@ -120,11 +125,12 @@ class Replay(ObjectInterpretation):
         self.trace = trace
 
     @implements(sample)
-    def sample(self, var_name: str, *args, **kwargs):
+    @bind_result_to_method
+    def sample(self, res, var_name: str, *args, **kwargs):
         if var_name in self.trace:
             return self.trace[var_name].val
         else:
-            return fwd(result())
+            return fwd(res)
 
 
 def replay(trace: Trace):
@@ -238,7 +244,8 @@ class Plate(ObjectInterpretation):
         self.dim = dim
 
     @implements(sample)
-    def do_sample(self, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    @bind_result_to_method
+    def do_sample(self, res, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
@@ -246,7 +253,7 @@ class Plate(ObjectInterpretation):
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
-            return fwd(result.get())
+            return fwd(res)
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):
@@ -255,15 +262,15 @@ def plate(name: str, size: int, dim: Optional[int] = None):
 
 base_runner = coproduct(NativeSeed(), NativeParam())
 default_runner = product(
-    base_runner, {k: lambda *_, **__: reflect(result.get()) for k in base_runner}
+    base_runner, {k: bind_result(lambda r, *_, **__: reflect(r)) for k in base_runner}
 )
 
 
 def block(
-    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
 ):
-    def blocking(fn: Operation, *args, **kwargs):
-        res = result.get()
+    @bind_result
+    def blocking(res, fn: Operation, *args, **kwargs):
         if hide_fn(fn, res, *args, **kwargs):
             return reflect(res)
         else:
