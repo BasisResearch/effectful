@@ -171,3 +171,87 @@ def test_sugar_subclassing():
     with handler(ScaleAndShiftBy(4, 1)):
         assert plus_1(4) == 9
         assert plus_2(4) == 12
+
+
+def test_lazy_1():
+    from effectful.ops.core import Constant, Variable, Term
+
+    @Operation
+    def Add(x: int, y: int) -> int:
+        raise NotImplementedError
+
+    @bind_result
+    def eager_add(_, x, y):
+        if isinstance(x, type(one)) and isinstance(y, type(one)):
+            return Constant(x.value + y.value)
+        else:
+            return fwd(None)
+
+    eager = {Add: eager_add}
+
+    @bind_result
+    def lazy_add(_, x, y):
+        return Term(Add, (x, y), {})
+
+    lazy = {Add: lazy_add}
+
+    @bind_result
+    def simplify_add(_, x, y):
+        if not isinstance(x, type(one)) and isinstance(y, type(one)):
+            # x + c -> c + x
+            return Add(y, x)
+        elif isinstance(y, type(tm)):
+            # a + (b + c) -> (a + b) + c
+            return Add(Add(x, y.args[0]), y.args[1])
+        else:
+            return fwd(None)
+
+    simplify_assoc_commut = {Add: simplify_add}
+
+    @bind_result
+    def unit_add(_, x, y):
+        if x == zero:
+            return y
+        elif y == zero:
+            return x
+        else:
+            return fwd(None)
+
+    simplify_unit = {Add: unit_add}
+
+    mixed = coproduct(lazy, eager)
+    simplified = coproduct(simplify_assoc_commut, simplify_unit)
+    mixed_simplified = coproduct(mixed, simplified)
+
+    x, y, z = Variable("x", int), Variable("y", int), Variable("z", int)
+    zero, one, two, three = Constant(0), Constant(1), Constant(2), Constant(3)
+    tm = Term(Add, (one, two), {})
+
+    with interpreter(eager):
+        assert Add(one, two) == three
+
+    with interpreter(lazy):
+        assert Add(one, two) == Term(Add, (one, two), {})
+        assert Add(one, Add(two, three)) == Term(Add, (one, Term(Add, (two, three), {})), {})
+        assert Add(x, y) == Term(Add, (x, y), {})
+        assert Add(x, one) != Add(y, one)
+
+    with interpreter(mixed):
+        assert Add(one, two) == three
+        assert Add(Add(one, two), x) == Term(Add, (three, x), {})
+
+    with interpreter(mixed_simplified):
+        assert Add(one, two) == three
+        assert Add(three, x) == Add(x, three)
+        assert Add(Add(one, two), x) == Add(x, three)
+        assert Add(one, Add(x, two)) == Add(x, three)
+        assert Add(Add(one, Add(y, one)), Add(one, Add(x, one))) == Add(Add(y, x), Constant(4))
+
+        assert Add(one, Add(Add(x, y), two)) == Add(Add(x, y), three)
+        assert Add(one, Add(Add(x, Add(y, one)), one)) == Add(Add(x, y), three)
+
+        assert Add(Add(Add(x, x), Add(x, x)), Add(Add(x, x), Add(x, x))) == \
+            Add(Add(Add(Add(Add(Add(Add(x, x), x), x), x), x), x), x) == \
+            Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, x)))))))
+
+        assert Add(x, zero) == x
