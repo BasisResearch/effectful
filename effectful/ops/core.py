@@ -1,16 +1,5 @@
 import collections.abc
-from typing import (
-    Any,
-    Callable,
-    Generic,
-    Iterable,
-    Mapping,
-    Optional,
-    Type,
-    TypeVar,
-    Union,
-)
-
+from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
