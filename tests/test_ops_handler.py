@@ -313,7 +313,7 @@ def test_lazy_2():
         if not var.symbol.startswith("mangled_"):
             # TODO mangle more aggressively to avoid collisions
             mangled_var = Variable("mangled_" + var.symbol, var.type)
-            mangled_body = interpreter(lazy)(substitute({var: mangled_var}))(body)
+            mangled_body = substitute({var: mangled_var})(body)
             return Lam(mangled_var, mangled_body)
         else:
             return fwd(None)
