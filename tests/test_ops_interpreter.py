@@ -268,3 +268,6 @@ def test_injected_types() -> None:
 
     with interpreter({Foo.constructor: lambda *_, **__: 1}):
         assert Foo(1) == 1
+
+    with interpreter({Operation.constructor: lambda *_, **__: 1}):
+        assert Operation(lambda: 1) == 1
