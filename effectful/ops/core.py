@@ -1,9 +1,20 @@
 import collections.abc
-from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
+from dataclasses import dataclass
+from typing import (
+    Callable,
+    Generic,
+    Iterable,
+    Mapping,
+    Optional,
+    Type,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.bootstrap import Operation, define
+from effectful.internals.bootstrap import InjectedType, Operation
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -15,26 +26,30 @@ V = TypeVar("V")
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class Symbol:
+@dataclass
+class Symbol(InjectedType):
     name: str
 
 
-@define
-class Variable(Generic[T]):
+Expr: TypeAlias = Union["Variable[T]", "Constant[T]", "Term[T]"]
+
+
+@dataclass
+class Variable(InjectedType, Generic[T]):
     symbol: Symbol
     type: Type[T]
 
 
-@define
-class Constant(Generic[T]):
+@dataclass
+class Constant(InjectedType, Generic[T]):
     value: T
 
 
-@define
-class Term(Generic[T]):
+@dataclass
+class Term(InjectedType, Generic[T]):
     op: Operation[..., T]
-    args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
-    kwargs: Mapping[str, Union["Term[T]", Constant[T], Variable[T]]]
+    args: Iterable[Expr]
+    kwargs: Mapping[str, Expr]
 
 
 Context = Mapping[Symbol, T]
