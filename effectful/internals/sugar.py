@@ -1,6 +1,6 @@
 from functools import wraps
-from inspect import Parameter, signature
-from typing import Callable, Generic, Optional, OrderedDict, ParamSpec, TypeVar
+from inspect import signature
+from typing import Callable, Generic, Optional, ParamSpec, TypeVar
 
 from effectful.internals.prompts import Prompt
 from effectful.ops.core import Interpretation, Operation
