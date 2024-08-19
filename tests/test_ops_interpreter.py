@@ -8,6 +8,7 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
+from effectful.internals.bootstrap import InjectedDataclass, define
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import InjectedType, Interpretation, Operation, register
@@ -260,14 +261,25 @@ def test_object_interpretation_inheretance():
 
 
 def test_injected_types() -> None:
-    @dataclass
-    class Foo(InjectedType):
+    class Foo(InjectedDataclass):
         foo: int
 
     assert isinstance(Foo(1), Foo)
+    assert Foo(1).foo == 1
 
-    with interpreter({Foo.constructor: lambda *_, **__: 1}):
+    assert isinstance(define(Foo), Operation)
+    assert define(Foo) is not Foo
+    assert define(Foo)(1) == Foo(1)
+
+    with interpreter({define(Foo): lambda *_, **__: 1}):
         assert Foo(1) == 1
 
-    with interpreter({Operation.constructor: lambda *_, **__: 1}):
+    with interpreter({define(Operation): lambda *_, **__: 1}):
         assert Operation(lambda: 1) == 1
+
+    assert isinstance(define(list), Operation)
+    assert isinstance(define(list)((1, 2)), list)
+    assert define(list)((1, 2)) == [1, 2]
+
+    assert define(Foo) is define(Foo)
+    assert define(list) is define(list)
