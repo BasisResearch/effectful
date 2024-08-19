@@ -2,16 +2,20 @@ import contextlib
 import functools
 import itertools
 import logging
-from dataclasses import dataclass
 from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.bootstrap import InjectedDataclass, define
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import InjectedType, Interpretation, Operation, register
+from effectful.ops.core import (
+    InjectedDataclass,
+    Interpretation,
+    Operation,
+    define,
+    register,
+)
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
