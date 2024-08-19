@@ -1,6 +1,10 @@
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar
+from functools import wraps
+from inspect import Parameter, signature
+from typing import Callable, Generic, Optional, OrderedDict, ParamSpec, TypeVar
 
+from effectful.internals.prompts import Prompt
 from effectful.ops.core import Interpretation, Operation
+from effectful.ops.handler import fwd
 
 P = ParamSpec("P")
 V = TypeVar("V")
@@ -122,3 +126,54 @@ def implements(op: Operation[P, V]):
     method as the implementation of the given `Operation`.
     """
     return _ImplementedOperation(op)
+
+
+def type_guard(
+    prompt: Prompt = fwd, **kwargs
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    A helper for defining implementations of operations with type dispatch.
+    When arguments are type-annotated, the arguments are checked at runtime.
+    If they match, then the implementation is called as normal.
+    If it they don't, then `prompt(None)` (by default, `fwd(None)`) is called.
+    Other keyword arguments are passed to `inspect.signature`.
+
+    >>> from effectful.ops.handler import handler
+    >>> @Operation
+    ... def count_vowels(obj):
+    ...     return 0
+    >>> vowels = "aeiou"
+    >>> @type_guard()
+    ... def count_string_vowels(obj: str):
+    ...     return sum(int(c in vowels) for c in obj)
+    >>> @type_guard()
+    ... def count_list_vowels(obj: list):
+    ...     return sum(map(count_vowels, obj))
+    >>> text_sample = "an example sentence"
+    >>> with handler({count_vowels: count_string_vowels}):
+    ...     with handler({count_vowels: count_list_vowels}):
+    ...         print(f"String: {count_vowels(text_sample)}")
+    ...         print(f"List: {count_vowels(text_sample.split())}")
+    String: 7
+    List: 7
+    """
+
+    def take_fn(fn: Callable[..., T]) -> Callable[..., T]:
+        sig = signature(fn, **kwargs)
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs) -> T:
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+
+            for n, k in sig.parameters.items():
+                v = bound.arguments[n]
+
+                if k.annotation and not isinstance(v, k.annotation):
+                    return prompt(None)
+
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return take_fn
