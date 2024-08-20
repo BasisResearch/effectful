@@ -384,7 +384,7 @@ def test_bind_with_handler():
     def App(f: Term, arg: Term) -> Term:
         raise NotImplementedError
 
-    def substitute(subs: dict[str, Term | Constant]):
+    def substitution(subs: dict[str, Term | Constant]):
 
         def _traverse(term: Term):  # TODO fix evaluate and use that instead
             if isinstance(term, (str, type(one))):
@@ -420,7 +420,7 @@ def test_bind_with_handler():
         if not var.args[0].startswith("mangled_"):
             # TODO mangle more aggressively to avoid collisions
             mangled_var = getvar("mangled_" + var.args[0])
-            mangled_body = substitute({var.args[0]: mangled_var})(body)
+            mangled_body = substitution({var.args[0]: mangled_var})(body)
             return Lam(mangled_var, mangled_body)
         else:
             return fwd(None)
@@ -439,7 +439,7 @@ def test_bind_with_handler():
         """beta reduction"""
         if f.op == Lam:
             var, body = f.args
-            return substitute({var.args[0]: arg})(body)
+            return substitution({var.args[0]: arg})(body)
         else:
             return fwd(None)
 
@@ -458,7 +458,7 @@ def test_bind_with_handler():
 
         intp_scope = {getvar: getvar_scope, Lam: lam_scope}
         intp_lazy = coproduct(coproduct(lazy, {getvar: lazy_op(getvar)}), intp_scope)
-        interpreter(intp_lazy)(substitute({}))(term)
+        interpreter(intp_lazy)(substitution({}))(term)
         return env
 
     @bind_result
@@ -476,7 +476,7 @@ def test_bind_with_handler():
 
     with interpreter(eager):
         f1 = Lam(x, Add(x, one))
-        assert substitute({x.args[0]: one})(f1) == substitute({y.args[0]: one})(f1) == f1
+        assert substitution({x.args[0]: one})(f1) == substitution({y.args[0]: one})(f1) == f1
         assert App(f1, one) == two
         assert Lam(y, f1) == f1
 
