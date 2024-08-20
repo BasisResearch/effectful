@@ -7,7 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
-from effectful.internals.sugar import ObjectInterpretation, implements
+from effectful.internals.sugar import ObjectInterpretation, implements, type_guard
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
@@ -171,3 +171,33 @@ def test_sugar_subclassing():
     with handler(ScaleAndShiftBy(4, 1)):
         assert plus_1(4) == 9
         assert plus_2(4) == 12
+
+
+def test_type_guard():
+    @Operation
+    def do_something(obj):
+        return "default"
+
+    @type_guard()
+    def do_something_on_str(s: str):
+        return "str"
+
+    @type_guard()
+    def do_something_on_list(s: list[str]):
+        return "list"
+
+    @type_guard()
+    def do_something_on_type_var(s: T):
+        return "id"
+
+    with handler({do_something: do_something_on_list}):
+        assert do_something([1, 2, 3]) == "list"
+
+        with handler({do_something: do_something_on_str}):
+            assert do_something("one") == "str"
+            assert do_something(list("one")) == "list"
+
+            with handler({do_something: do_something_on_type_var}):
+                assert do_something("one") == "id"
+                assert do_something(list("one")) == "id"
+                assert do_something(9999) == "id"

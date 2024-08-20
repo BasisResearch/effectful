@@ -1,6 +1,6 @@
 from functools import wraps
 from inspect import signature
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar
+from typing import Callable, Generic, Optional, ParamSpec, TypeVar, get_origin
 
 from effectful.internals.prompts import Prompt
 from effectful.ops.core import Interpretation, Operation
@@ -128,15 +128,29 @@ def implements(op: Operation[P, V]):
     return _ImplementedOperation(op)
 
 
+def _adheres_to(obj, cond):
+    while get_origin(cond) is not None:
+        cond = get_origin(cond)
+
+    try:
+        return isinstance(obj, cond)
+    except TypeError:
+        return True
+
+
 def type_guard(
     prompt: Prompt = fwd, **kwargs
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     A helper for defining implementations of operations with type dispatch.
-    When arguments are type-annotated, the arguments are checked at runtime.
+    When arguments are annotated with runtime-checkable types, the arguments
+    are checked and dispatched upon.
     If they match, then the implementation is called as normal.
     If it they don't, then `prompt(None)` (by default, `fwd(None)`) is called.
     Other keyword arguments are passed to `inspect.signature`.
+
+    Because much of the type system's information is thrown out at runtime, we
+    can only check a subset of annotations. See `isinstance` for more information.
 
     >>> from effectful.ops.handler import handler
     >>> @Operation
@@ -164,12 +178,11 @@ def type_guard(
         @wraps(fn)
         def wrapper(*args, **kwargs) -> T:
             bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
 
             for n, k in sig.parameters.items():
                 v = bound.arguments[n]
 
-                if k.annotation and not isinstance(v, k.annotation):
+                if not _adheres_to(v, k.annotation):
                     return prompt(None)
 
             return fn(*args, **kwargs)
