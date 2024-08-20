@@ -366,3 +366,127 @@ def test_lazy_2():
         compose = Lam(x, Lam(y, Lam(z, App(x, App(y, z)))))
         f1_twice = App(App(compose, f1), f1)
         assert App(f1_twice, one) == three
+
+
+def test_bind_with_handler():
+    import functools
+    from effectful.ops.core import Constant, Term, evaluate
+    
+    @Operation
+    def Add(x: int, y: int) -> int:
+        raise NotImplementedError
+
+    @Operation
+    def Lam(var: Term, body: Term) -> Term:
+        raise NotImplementedError
+    
+    @Operation
+    def App(f: Term, arg: Term) -> Term:
+        raise NotImplementedError
+
+    def substitute(subs: dict[str, Term | Constant]):
+
+        def _traverse(term: Term):  # TODO fix evaluate and use that instead
+            if isinstance(term, (str, type(one))):
+                return term
+            else:
+                return term.op(
+                    *[_traverse(a) for a in term.args],
+                    **{k: _traverse(v) for k, v in term.kwargs.items()}
+                )
+
+        intp = {_genvar(v): functools.partial(lambda x: x, sub) for v, sub in subs.items()}
+        return interpreter(intp)(_traverse)
+    
+    def lazy_op(op):
+        @bind_result
+        def _lazy_op(_, *args):
+            return Term(op, args, {})
+        return _lazy_op
+
+    @Operation
+    def getvar(v: str):
+        return _genvar(v)()
+
+    @functools.cache
+    def _genvar(v: str) -> Operation:
+        return Operation(lambda: Term(getvar, (v,), {}))
+
+    lazy = {Add: lazy_op(Add), Lam: lazy_op(Lam), App: lazy_op(App)}
+
+    @bind_result
+    def alpha_lam(_, var: Term, body: Term):
+        """alpha reduction"""
+        if not var.args[0].startswith("mangled_"):
+            # TODO mangle more aggressively to avoid collisions
+            mangled_var = getvar("mangled_" + var.args[0])
+            mangled_body = substitute({var.args[0]: mangled_var})(body)
+            return Lam(mangled_var, mangled_body)
+        else:
+            return fwd(None)
+
+    alpha_conversion = {Lam: alpha_lam}
+
+    @bind_result
+    def eager_add(_, x, y):
+        if isinstance(x, type(Constant(0))) and isinstance(y, type(Constant(0))):
+            return Constant(x.value + y.value)
+        else:
+            return fwd(None)
+
+    @bind_result
+    def eager_app(_, f: Term, arg: Term):
+        """beta reduction"""
+        if f.op == Lam:
+            var, body = f.args
+            return substitute({var.args[0]: arg})(body)
+        else:
+            return fwd(None)
+
+    def fvs(term: Term) -> set:
+        env = set()
+
+        @bind_result
+        def getvar_scope(_, v: str):
+            env.add(v)
+            return fwd(None)
+
+        @bind_result
+        def lam_scope(_, var: Term, body: Term):
+            env.remove(var.args[0])
+            return fwd(None)
+
+        intp_scope = {getvar: getvar_scope, Lam: lam_scope}
+        intp_lazy = coproduct(coproduct(lazy, {getvar: lazy_op(getvar)}), intp_scope)
+        interpreter(intp_lazy)(substitute({}))(term)
+        return env
+
+    @bind_result
+    def eta_lam(_, var: Term, body: Term):
+        """eta reduction"""
+        if var.args[0] not in fvs(body):
+            return body
+        else:
+            return fwd(None)
+
+    eager = coproduct(coproduct(lazy, alpha_conversion), {Add: eager_add, App: eager_app, Lam: eta_lam})
+
+    x, y, z = getvar("x"), getvar("y"), getvar("z")
+    zero, one, two, three = Constant(0), Constant(1), Constant(2), Constant(3)
+
+    with interpreter(eager):
+        f1 = Lam(x, Add(x, one))
+        assert substitute({x.args[0]: one})(f1) == substitute({y.args[0]: one})(f1) == f1
+        assert App(f1, one) == two
+        assert Lam(y, f1) == f1
+
+        f2 = Lam(x, Lam(y, Add(x, y)))
+        assert App(App(f2, one), two) == three
+        assert Lam(y, f2) == f2
+
+        app2 = Lam(z, Lam(x, Lam(y, App(App(z, x), y))))
+        assert App(App(App(app2, f2), one), two) == three
+
+        compose = Lam(x, Lam(y, Lam(z, App(x, App(y, z)))))
+        f1_twice = App(App(compose, f1), f1)
+        assert App(f1_twice, one) == three
