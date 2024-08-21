@@ -1,5 +1,5 @@
 from functools import wraps
-from inspect import signature
+from inspect import Parameter, signature
 from typing import Callable, Generic, Optional, ParamSpec, TypeVar, get_origin
 
 from effectful.internals.prompts import Prompt
@@ -131,6 +131,9 @@ def implements(op: Operation[P, V]):
 def _adheres_to(obj, cond):
     while get_origin(cond) is not None:
         cond = get_origin(cond)
+
+    if isinstance(cond, type) and issubclass(cond, Parameter.empty):
+        return True
 
     try:
         return isinstance(obj, cond)
