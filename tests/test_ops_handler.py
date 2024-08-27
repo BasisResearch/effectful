@@ -174,33 +174,27 @@ def test_sugar_subclassing():
 
 
 def test_lazy_1():
-    from effectful.ops.core import Constant, Variable, Term
+    from effectful.ops.core import JUDGEMENTS, Term, gensym
 
     @Operation
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    @bind_result
-    def eager_add(_, x, y):
-        if isinstance(x, type(one)) and isinstance(y, type(one)):
-            return Constant(x.value + y.value)
+    JUDGEMENTS[Add] = lambda x, y: ({**(x[0] if isinstance(x, tuple) else {}), **(y[0] if isinstance(y, tuple) else {})}, int)
+
+    def eager_add(x, y):
+        if not isinstance(x, Term) and not isinstance(y, Term):
+            return x + y
         else:
             return fwd(None)
 
     eager = {Add: eager_add}
 
-    @bind_result
-    def lazy_add(_, x, y):
-        return Term(Add, (x, y), {})
-
-    lazy = {Add: lazy_add}
-
-    @bind_result
-    def simplify_add(_, x, y):
-        if not isinstance(x, type(one)) and isinstance(y, type(one)):
+    def simplify_add(x, y):
+        if isinstance(x, Term) and not isinstance(y, Term):
             # x + c -> c + x
             return Add(y, x)
-        elif isinstance(y, type(tm)):
+        elif isinstance(y, Term) and y.op == Add:
             # a + (b + c) -> (a + b) + c
             return Add(Add(x, y.args[0]), y.args[1])
         else:
@@ -208,8 +202,7 @@ def test_lazy_1():
 
     simplify_assoc_commut = {Add: simplify_add}
 
-    @bind_result
-    def unit_add(_, x, y):
+    def unit_add(x, y):
         if x == zero:
             return y
         elif y == zero:
@@ -219,13 +212,14 @@ def test_lazy_1():
 
     simplify_unit = {Add: unit_add}
 
+    lazy = {Add: lambda x, y: Term(Add, (x, y), {})}
     mixed = coproduct(lazy, eager)
     simplified = coproduct(simplify_assoc_commut, simplify_unit)
     mixed_simplified = coproduct(mixed, simplified)
 
-    x, y, z = Variable("x", int), Variable("y", int), Variable("z", int)
-    zero, one, two, three = Constant(0), Constant(1), Constant(2), Constant(3)
-    tm = Term(Add, (one, two), {})
+    x_, y_, z_ = gensym(int), gensym(int), gensym(int)
+    x, y, z = x_(), y_(), z_()
+    zero, one, two, three, four = 0, 1, 2, 3, 4
 
     with interpreter(eager):
         assert Add(one, two) == three
@@ -245,7 +239,7 @@ def test_lazy_1():
         assert Add(three, x) == Add(x, three)
         assert Add(Add(one, two), x) == Add(x, three)
         assert Add(one, Add(x, two)) == Add(x, three)
-        assert Add(Add(one, Add(y, one)), Add(one, Add(x, one))) == Add(Add(y, x), Constant(4))
+        assert Add(Add(one, Add(y, one)), Add(one, Add(x, one))) == Add(Add(y, x), four)
 
         assert Add(one, Add(Add(x, y), two)) == Add(Add(x, y), three)
         assert Add(one, Add(Add(x, Add(y, one)), one)) == Add(Add(x, y), three)
@@ -257,236 +251,81 @@ def test_lazy_1():
         assert Add(x, zero) == x
 
 
-def test_lazy_2():
-    from effectful.ops.core import Constant, Variable, Term, evaluate
-
-    @Operation
-    def Add(x: int, y: int) -> int:
-        raise NotImplementedError
-
-    @Operation
-    def Lam(var: Variable, body: Term) -> Term:
-        raise NotImplementedError
-    
-    @Operation
-    def App(f: Term, arg: Term) -> Term:
-        raise NotImplementedError
-
-    def substitute(subs: dict[Variable, Term | Variable | Constant]):
-
-        def _traverse(term: Term):  # TODO fix evaluate and use that instead
-            if isinstance(term, type(one)):
-                return term
-            elif isinstance(term, type(x)):
-                return subs.get(term, term)
-            elif term.op == Lam:
-                var, body = term.args
-                return Lam(var, _traverse(body))
-            else:
-                return term.op(
-                    *[_traverse(a) for a in term.args],
-                    **{k: _traverse(v) for k, v in term.kwargs.items()}
-                )
-
-        return _traverse
-    
-    def fvs(term: Term):
-        # TODO fix evaluate and use that instead
-        if isinstance(term, type(one)):
-            return set()
-        elif isinstance(term, type(x)):
-            return {term}
-        else:
-            return set.union(*[fvs(a) for a in term.args], *[fvs(v) for v in term.kwargs.values()])
-
-    def lazy_op(op):
-        @bind_result
-        def _lazy_op(_, *args):
-            return Term(op, args, {})
-        return _lazy_op
-
-    lazy = {Add: lazy_op(Add), Lam: lazy_op(Lam), App: lazy_op(App)}
-
-    @bind_result
-    def alpha_lam(_, var: Variable, body: Term):
-        """alpha reduction"""
-        if not var.symbol.startswith("mangled_"):
-            # TODO mangle more aggressively to avoid collisions
-            mangled_var = Variable("mangled_" + var.symbol, var.type)
-            mangled_body = substitute({var: mangled_var})(body)
-            return Lam(mangled_var, mangled_body)
-        else:
-            return fwd(None)
-
-    alpha_conversion = {Lam: alpha_lam}
-
-    @bind_result
-    def eager_add(_, x, y):
-        if isinstance(x, type(Constant(0))) and isinstance(y, type(Constant(0))):
-            return Constant(x.value + y.value)
-        else:
-            return fwd(None)
-
-    @bind_result
-    def eager_app(_, f: Term | Variable, arg: Term):
-        """beta reduction"""
-        if isinstance(f, type(tm)) and f.op == Lam:
-            var, body = f.args
-            return substitute({var: arg})(body)
-        else:
-            return fwd(None)
-
-    @bind_result
-    def eta_lam(_, var: Variable, body: Term):
-        """eta reduction"""
-        if var not in fvs(body):
-            return body
-        else:
-            return fwd(None)
-
-    eager = coproduct(coproduct(lazy, alpha_conversion), {Add: eager_add, App: eager_app, Lam: eta_lam})
-
-    x, y, z = Variable("x", int), Variable("y", int), Variable("z", int)
-    zero, one, two, three = Constant(0), Constant(1), Constant(2), Constant(3)
-    tm = Term(Add, (one, two), {})
-
-    with interpreter(eager):
-        f1 = Lam(x, Add(x, one))
-        assert substitute({x: one})(f1) == substitute({y: one})(f1) == f1
-        assert App(f1, one) == two
-        assert Lam(y, f1) == f1
-
-        f2 = Lam(x, Lam(y, Add(x, y)))
-        assert App(App(f2, one), two) == three
-        assert Lam(y, f2) == f2
-
-        app2 = Lam(z, Lam(x, Lam(y, App(App(z, x), y))))
-        assert App(App(App(app2, f2), one), two) == three
-
-        compose = Lam(x, Lam(y, Lam(z, App(x, App(y, z)))))
-        f1_twice = App(App(compose, f1), f1)
-        assert App(f1_twice, one) == three
-
-
 def test_bind_with_handler():
     import functools
-    from effectful.ops.core import Constant, Term, evaluate
-    
+    from effectful.ops.core import Term, evaluate, gensym, BINDINGS, JUDGEMENTS
+
     @Operation
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
     @Operation
-    def Lam(var: Term, body: Term) -> Term:
-        raise NotImplementedError
-    
-    @Operation
     def App(f: Term, arg: Term) -> Term:
         raise NotImplementedError
 
-    def substitution(subs: dict[str, Term | Constant]):
-
-        def _traverse(term: Term):  # TODO fix evaluate and use that instead
-            if isinstance(term, (str, type(one))):
-                return term
-            else:
-                return term.op(
-                    *[_traverse(a) for a in term.args],
-                    **{k: _traverse(v) for k, v in term.kwargs.items()}
-                )
-
-        intp = {_genvar(v): functools.partial(lambda x: x, sub) for v, sub in subs.items()}
-        return interpreter(intp)(_traverse)
-    
-    def lazy_op(op):
-        @bind_result
-        def _lazy_op(_, *args):
-            return Term(op, args, {})
-        return _lazy_op
-
     @Operation
-    def getvar(v: str):
-        return _genvar(v)()
+    def Lam(var: Operation, body: Term) -> Term:
+        raise NotImplementedError
+    
+    JUDGEMENTS[Lam] = lambda var, body: ({v: t for v, t in body[0].items() if v != var}, body[1])
+    JUDGEMENTS[App] = lambda f, arg: ({**f[0], **(arg[0] if isinstance(arg, tuple) else {})}, f[1])
+    JUDGEMENTS[Add] = lambda x, y: ({**(x[0] if isinstance(x, tuple) else {}), **(y[0] if isinstance(y, tuple) else {})}, int)
 
-    @functools.cache
-    def _genvar(v: str) -> Operation:
-        return Operation(lambda: Term(getvar, (v,), {}))
-
-    lazy = {Add: lazy_op(Add), Lam: lazy_op(Lam), App: lazy_op(App)}
-
-    @bind_result
-    def alpha_lam(_, var: Term, body: Term):
+    def alpha_lam(var: Operation, body: Term):
         """alpha reduction"""
-        if not var.args[0].startswith("mangled_"):
-            # TODO mangle more aggressively to avoid collisions
-            mangled_var = getvar("mangled_" + var.args[0])
-            mangled_body = substitution({var.args[0]: mangled_var})(body)
-            return Lam(mangled_var, mangled_body)
+        if not getattr(var, "_fresh", False):
+            mangled_var = gensym()
+            mangled_var._fresh = True
+            return Lam(mangled_var, interpreter({var: mangled_var})(evaluate)(body))
         else:
             return fwd(None)
 
-    alpha_conversion = {Lam: alpha_lam}
+    BINDINGS[Lam] = alpha_lam
 
-    @bind_result
-    def eager_add(_, x, y):
-        if isinstance(x, type(Constant(0))) and isinstance(y, type(Constant(0))):
-            return Constant(x.value + y.value)
+    def eager_add(x, y):
+        """integer addition"""
+        if not isinstance(x, Term) and not isinstance(y, Term):
+            return x + y
         else:
             return fwd(None)
 
-    @bind_result
-    def eager_app(_, f: Term, arg: Term):
+    def eager_app(f: Term, arg: Term | int):
         """beta reduction"""
         if f.op == Lam:
             var, body = f.args
-            return substitution({var.args[0]: arg})(body)
+            return interpreter({var: lambda: arg})(evaluate)(body)
         else:
             return fwd(None)
 
-    def fvs(term: Term) -> set:
-        env = set()
-
-        @bind_result
-        def getvar_scope(_, v: str):
-            env.add(v)
-            return fwd(None)
-
-        @bind_result
-        def lam_scope(_, var: Term, body: Term):
-            env.remove(var.args[0])
-            return fwd(None)
-
-        intp_scope = {getvar: getvar_scope, Lam: lam_scope}
-        intp_lazy = coproduct(coproduct(lazy, {getvar: lazy_op(getvar)}), intp_scope)
-        interpreter(intp_lazy)(substitution({}))(term)
-        return env
-
-    @bind_result
-    def eta_lam(_, var: Term, body: Term):
+    def eta_lam(var: Operation, body: Term):
         """eta reduction"""
-        if var.args[0] not in fvs(body):
+        if var not in interpreter(JUDGEMENTS)(evaluate)(body)[0]:
             return body
         else:
             return fwd(None)
 
-    eager = coproduct(coproduct(lazy, alpha_conversion), {Add: eager_add, App: eager_app, Lam: eta_lam})
+    free = {op: functools.partial(lambda op, *a, **k: Term(op, a, k), op) for op in (Add, App, Lam)}
+    free_alpha = coproduct(free, BINDINGS)
+    eager = {Add: eager_add, App: eager_app, Lam: eta_lam}
+    eager_mixed = coproduct(free_alpha, eager)
 
-    x, y, z = getvar("x"), getvar("y"), getvar("z")
-    zero, one, two, three = Constant(0), Constant(1), Constant(2), Constant(3)
+    x, y, z = gensym(), gensym(), gensym()
+    zero, one, two, three = 0, 1, 2, 3
 
-    with interpreter(eager):
-        f1 = Lam(x, Add(x, one))
-        assert substitution({x.args[0]: one})(f1) == substitution({y.args[0]: one})(f1) == f1
+    with interpreter(eager_mixed):
+        f1 = Lam(x, Add(x(), one))
+        assert interpreter({x: lambda: one})(evaluate)(f1) == f1
+        assert interpreter({y: lambda: one})(evaluate)(f1) == f1
         assert App(f1, one) == two
         assert Lam(y, f1) == f1
 
-        f2 = Lam(x, Lam(y, Add(x, y)))
+        f2 = Lam(x, Lam(y, Add(x(), y())))
         assert App(App(f2, one), two) == three
         assert Lam(y, f2) == f2
 
-        app2 = Lam(z, Lam(x, Lam(y, App(App(z, x), y))))
+        app2 = Lam(z, Lam(x, Lam(y, App(App(z(), x()), y()))))
         assert App(App(App(app2, f2), one), two) == three
 
-        compose = Lam(x, Lam(y, Lam(z, App(x, App(y, z)))))
+        compose = Lam(x, Lam(y, Lam(z, App(x(), App(y(), z())))))
         f1_twice = App(App(compose, f1), f1)
         assert App(f1_twice, one) == three

@@ -1,4 +1,6 @@
 import collections.abc
+import dataclasses
+import weakref
 from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec, dataclass_transform
@@ -24,57 +26,61 @@ def define(m: Type[T]) -> "Operation[..., T]":
 class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
+    # judgement: Callable[..., tuple[Type[V], Mapping[str, Type[V]]]]
+
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply(self, *args, **kwargs)  # type: ignore
+        # from effectful.internals.runtime import get_interpretation
+        # return evaluate(Term(self, *(reify(a) for a in args), **{k: reify(v) for k, v in kwargs.items()})))
+        # return evaluate(reify(Term(self, args, kwargs)))
+        # return apply(self, *args, **kwargs)  # type: ignore
+        return evaluate(Term(self, args, kwargs))
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-@define
-class Symbol:
-    name: str
-
-
-@define
-class Variable(Generic[T]):
-    symbol: Symbol
-    type: Type[T]
-
-
-@define
-class Constant(Generic[T]):
-    value: T
-
-
-@define
+# @define
+@dataclasses.dataclass(frozen=True, eq=True, order=True, repr=True, unsafe_hash=True)
 class Term(Generic[T]):
     op: Operation[..., T]
-    args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
-    kwargs: Mapping[str, Union["Term[T]", Constant[T], Variable[T]]]
+    args: Iterable[Union["Term[T]", T]]
+    kwargs: Mapping[str, Union["Term[T]", T]]
 
 
-Context = Mapping[Symbol, T]
-TypeContext = Context[Type[T]]
-TermContext = Context[Term[T]]
+Context = Mapping[Operation[..., S], T]
+TypeInContext = tuple[Context[T, Type[T]], Type[T]]
 
 
-def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    from effectful.internals.runtime import get_interpretation
+JUDGEMENTS: Interpretation[T, TypeInContext[T]] = weakref.WeakKeyDictionary()
 
-    return get_interpretation().get(op, op.default)(*args, **kwargs)
+BINDINGS: Interpretation[T, T] = weakref.WeakKeyDictionary()
+
+
+def gensym(t: Type[T] = object) -> Operation[[], T]:
+    op = Operation(lambda: Term(op, (), {}))
+    JUDGEMENTS[op] = lambda: ({op: t}, t)
+    return op
 
 
 @Operation
+def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    return op.default(*args, **kwargs)
+
+
+# @Operation
 def evaluate(term: Term[T]) -> T:
-    return apply(
-        term.op,
-        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{
-            k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()
-        },
-    )
+    from effectful.internals.runtime import get_interpretation
+
+    intp = get_interpretation()
+    op = term.op
+    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
+    kwargs = {k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs.items()}
+    if op in intp:
+        return intp[op](*args, **kwargs)
+    elif apply in intp:
+        return intp[apply](op, *args, **kwargs)
+    else:
+        return op.default(*args, **kwargs)
 
 
 @Operation
