@@ -1,10 +1,9 @@
 import contextlib
-import typing
-from typing import Callable, Optional, TypeVar
+from typing import Callable, Optional, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt, result
+from effectful.internals.prompts import Prompt, bind_prompt
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
@@ -33,28 +32,19 @@ def product(
     (intp2,) = intps
 
     # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {
-        op: bind_prompt(
-            prompt,
-            interpreter(intp)(typing.cast(Callable[..., T], op)),
-            lambda *_, **__: prompt(result()),
-        )
-        for op in intp.keys()
-    }
+    refls = {op: interpreter(intp)(op) for op in intp}
 
     return {
-        op: (
-            interpreter(refls)(intp2[op])
+        op: interpreter(refls)(
+            intp2[op]
             if op not in intp
-            else interpreter(refls)(
-                bind_prompt(
-                    prompt,
-                    interpreter(intp)(typing.cast(Callable[..., T], op)),
-                    intp2[op],
-                )
+            else bind_prompt(
+                prompt,
+                interpreter(intp)(cast(Callable[..., T], op)),
+                intp2[op],
             )
         )
-        for op in intp2.keys()
+        for op in intp2
     }
 
 
