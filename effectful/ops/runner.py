@@ -13,11 +13,10 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-# @Operation
+@Operation
 def product(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
-    # prompt: Prompt[T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp

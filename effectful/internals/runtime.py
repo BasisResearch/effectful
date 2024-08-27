@@ -91,7 +91,7 @@ def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return get_runtime().call_state(fn)
 
 
-def bind_cont(fn: Callable[Concatenate[V, P], T]) -> Callable[Concatenate[V, P], T]:
+def bind_cont(fn: Callable[Concatenate[Callable[..., T], P], T]) -> Callable[P, T]:
     return get_runtime().cont_state(fn)
 
 

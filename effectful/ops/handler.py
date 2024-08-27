@@ -4,7 +4,7 @@ from typing import TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import compose_continuation, get_interpretation
-from effectful.ops.core import Interpretation
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
@@ -14,7 +14,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-# @Operation
+@Operation
 def coproduct(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],

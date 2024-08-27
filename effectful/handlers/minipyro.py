@@ -27,8 +27,8 @@ from typing_extensions import Concatenate, ParamSpec
 from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
-from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.runner import product, reflect
+from effectful.ops.handler import coproduct, handler
+from effectful.ops.runner import product
 
 
 @dataclass
