@@ -251,7 +251,7 @@ def test_runner_outer_reflect_2():
         assert plus_2(2) == "+2-impl_inner(2)"
         check_log("plus_two_impl_inner")
 
-    with interpreter(product(intp_even_more_outer, product(intp_outer, intp_inner))):
+    with interpreter(product(product(intp_even_more_outer, intp_outer), intp_inner)):
         assert plus_1(1) == "+1-impl_inner(+1-even_outer(+2-impl_outer(1)))"
         check_log(
             "plus_one_impl_inner",

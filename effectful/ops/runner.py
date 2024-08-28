@@ -1,5 +1,5 @@
 import contextlib
-from typing import Callable, Optional, TypeVar, cast
+from typing import Callable, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
@@ -21,12 +21,12 @@ def product(
     if len(intps) == 0:  # unit
         return intp
     elif len(intps) > 1:  # associativity
-        return product(intp, product(*intps))
+        return product(product(intp, *intps[:-1]), intps[-1])
 
     (intp2,) = intps
 
     # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {op: interpreter(intp)(op) for op in intp}
+    refls = {**intp2, **{op: interpreter(intp)(op) for op in intp}}
 
     return {
         op: interpreter(refls)(
