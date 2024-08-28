@@ -1,5 +1,5 @@
 import contextlib
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -14,7 +14,6 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@Operation
 def coproduct(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],

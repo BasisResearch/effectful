@@ -5,7 +5,7 @@ from typing import List, TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import bind_result, bind_cont
+from effectful.internals.runtime import bind_result, bind_continuation
 from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, handler
@@ -35,7 +35,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_cont(bind_result(lambda r, reflect, *a, **k: reflect(r, *a, **k))) for op in ops}
+    return {op: bind_continuation(bind_result(lambda r, reflect, *a, **k: reflect(r, *a, **k))) for op in ops}
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
@@ -43,7 +43,7 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_cont(bind_result(lambda r, fwd, *a, **k: fwd(r, *a, **k) * n)) for op in ops}
+    return {op: bind_continuation(bind_result(lambda r, fwd, *a, **k: fwd(r, *a, **k) * n)) for op in ops}
 
 
 OPERATION_CASES = (
@@ -59,7 +59,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: bind_cont(bind_result(lambda r, reflect, *a, **k: reflect(reflect(r, *a, **k), *a, **k)))}
+    h_twice = {op: bind_continuation(bind_result(lambda r, reflect, *a, **k: reflect(reflect(r, *a, **k), *a, **k)))}
 
     assert (
         interpreter(defaults(op))(f)()
@@ -162,7 +162,7 @@ def test_using_runner_to_implement_trailing_state():
 
 def test_runner_outer_reflect():
     def plus_two_calling_plus_one():
-        @bind_cont
+        @bind_continuation
         def plus_minus_one_then_reflect(reflect, v):
             r = plus_1(v)
             return reflect(r - 1, v)
@@ -177,7 +177,7 @@ def test_runner_outer_reflect():
 
 def test_runner_outer_reflect_1():
     @bind_result
-    @bind_cont
+    @bind_continuation
     def plus_two_impl_inner(reflect, r, v):
         assert r is None
         r = plus_1(v)
@@ -251,7 +251,7 @@ def test_runner_outer_reflect_2():
         assert plus_2(2) == "+2-impl_inner(2)"
         check_log("plus_two_impl_inner")
 
-    with interpreter(product(product(intp_even_more_outer, intp_outer), intp_inner)):
+    with interpreter(product(intp_even_more_outer, product(intp_outer, intp_inner))):
         assert plus_1(1) == "+1-impl_inner(+1-even_outer(+2-impl_outer(1)))"
         check_log(
             "plus_one_impl_inner",
