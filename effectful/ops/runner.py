@@ -3,7 +3,6 @@ from typing import Callable, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import bind_continuation, bind_result, compose_continuation
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.interpreter import interpreter
 from effectful.ops.handler import coproduct
@@ -21,7 +20,7 @@ def product(
     if len(intps) == 0:  # unit
         return intp
     elif len(intps) > 1:  # associativity
-        return product(product(intp, *intps[:-1]), intps[-1])
+        return product(intp, product(*intps))
 
     (intp2,) = intps
 
