@@ -35,7 +35,7 @@ def union(
 def interpreter(intp: Interpretation):
     from ..internals.runtime import swap_interpretation
 
-    old_intp = swap_interpretation(intp)
+    old_intp: Interpretation = swap_interpretation(intp)
     try:
         yield intp
     finally:

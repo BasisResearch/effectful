@@ -3,7 +3,8 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import compose_continuation, get_interpretation
+from effectful.internals.prompts import compose_continuation
+from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter, union
 

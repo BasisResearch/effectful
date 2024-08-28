@@ -6,8 +6,7 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-# from effectful.internals.prompts import bind_result
-from effectful.internals.runtime import bind_continuation, bind_result
+from effectful.internals.prompts import bind_continuation, bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, handler

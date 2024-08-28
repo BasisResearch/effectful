@@ -2,9 +2,9 @@ import dataclasses
 import functools
 import typing
 import weakref
-from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
+from typing import Callable, Generic, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 Q = ParamSpec("Q")
 P = ParamSpec("P")
@@ -20,17 +20,11 @@ if typing.TYPE_CHECKING:
 @dataclasses.dataclass
 class Runtime(Generic[S, T]):
     interpretation: "Interpretation[S, T]"
-    result_state: "_LinearState"
-    continuation_state: "_LinearState"
 
 
 @functools.lru_cache(maxsize=1)
 def get_runtime() -> Runtime:
-    return Runtime(
-        interpretation={},
-        result_state=_LinearState(),
-        continuation_state=_LinearState(),
-    )
+    return Runtime(interpretation={})
 
 
 def get_interpretation():
@@ -61,61 +55,3 @@ def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
             return result
 
     return wrapper
-
-
-class _LinearState(Generic[S]):
-    _state: list[S]
-
-    def __init__(self):
-        self._state = []
-
-    def sets(self, fn: Callable[P, T]) -> Callable[Concatenate[S, P], T]:
-        def _wrapper(state: S, *args: P.args, **kwargs: P.kwargs) -> T:
-            self._state.append(state)
-            try:
-                return fn(*args, **kwargs)
-            finally:
-                if self._state:
-                    self._state.pop()
-
-        return functools.wraps(fn)(_wrapper)
-
-    def gets(self, fn: Callable[Concatenate[S, P], T], *, default: S) -> Callable[P, T]:
-        def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            return fn(
-                default if not self._state else self._state.pop(), *args, **kwargs
-            )
-
-        return functools.wraps(fn)(_wrapper)
-
-
-def bind_result(
-    fn: Optional[Callable[Concatenate[S, P], T]] = None,
-    *,
-    default: Optional[S] = None,
-):
-    if fn is None:
-        return functools.partial(bind_result, default=default)
-    else:
-        return get_runtime().result_state.gets(fn, default=default)
-
-
-def bind_continuation(
-    fn: Optional[Callable[Concatenate[Callable[Concatenate[S, P], T], P], T]] = None,
-    *,
-    default: Callable[Concatenate[S, P], T] = lambda r, *_, **__: r,
-):
-    if fn is None:
-        return functools.partial(bind_continuation, default=default)
-    else:
-        cc = get_runtime().continuation_state.gets(
-            lambda c, *a, **k: c(*a, **k), default=default
-        )
-        return functools.wraps(fn)(functools.partial(fn, cc))
-
-
-def compose_continuation(cont: Callable[P, T], fn: Callable[P, T]) -> Callable[P, T]:
-    r = get_runtime()
-    return functools.wraps(fn)(
-        functools.partial(r.continuation_state.sets(fn), r.result_state.sets(cont))
-    )
