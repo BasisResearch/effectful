@@ -1,11 +1,11 @@
 import contextlib
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import compose_continuation, get_interpretation
-from effectful.ops.core import Interpretation, Operation
-from effectful.ops.interpreter import interpreter
+from effectful.ops.core import Interpretation
+from effectful.ops.interpreter import interpreter, union
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -38,6 +38,6 @@ def coproduct(
 
 
 @contextlib.contextmanager
-def handler(intp: Interpretation[S, T]):
-    with interpreter(coproduct(get_interpretation(), intp)):
+def handler(intp: Interpretation[S, T], *, closed: bool = False):
+    with interpreter((union if closed else coproduct)(get_interpretation(), intp)):
         yield intp

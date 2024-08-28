@@ -40,7 +40,12 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_continuation(bind_result(lambda r, fwd, *args, **kwargs: fwd(r, *args, **kwargs) * n)) for op in ops}
+    return {
+        op: bind_continuation(
+            bind_result(lambda r, fwd, *args, **kwargs: fwd(r, *args, **kwargs) * n)
+        )
+        for op in ops
+    }
 
 
 OPERATION_CASES = (
@@ -56,7 +61,11 @@ def test_affine_continuation_compose(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: bind_continuation(bind_result(lambda r, fwd, *a, **k: fwd(fwd(r, *a, **k), *a, **k)))}
+    h_twice = {
+        op: bind_continuation(
+            bind_result(lambda r, fwd, *a, **k: fwd(fwd(r, *a, **k), *a, **k))
+        )
+    }
 
     assert (
         interpreter(defaults(op))(f)()

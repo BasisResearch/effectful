@@ -26,7 +26,11 @@ class Runtime(Generic[S, T]):
 
 @functools.lru_cache(maxsize=1)
 def get_runtime() -> Runtime:
-    return Runtime(interpretation={}, result_state=_LinearState(), continuation_state=_LinearState())
+    return Runtime(
+        interpretation={},
+        result_state=_LinearState(),
+        continuation_state=_LinearState(),
+    )
 
 
 def get_interpretation():
@@ -78,7 +82,9 @@ class _LinearState(Generic[S]):
 
     def gets(self, fn: Callable[Concatenate[S, P], T], *, default: S) -> Callable[P, T]:
         def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            return fn(default if not self._state else self._state.pop(), *args, **kwargs)
+            return fn(
+                default if not self._state else self._state.pop(), *args, **kwargs
+            )
 
         return functools.wraps(fn)(_wrapper)
 
@@ -102,10 +108,14 @@ def bind_continuation(
     if fn is None:
         return functools.partial(bind_continuation, default=default)
     else:
-        cc = get_runtime().continuation_state.gets(lambda c, *a, **k: c(*a, **k), default=default)
+        cc = get_runtime().continuation_state.gets(
+            lambda c, *a, **k: c(*a, **k), default=default
+        )
         return functools.wraps(fn)(functools.partial(fn, cc))
 
 
 def compose_continuation(cont: Callable[P, T], fn: Callable[P, T]) -> Callable[P, T]:
     r = get_runtime()
-    return functools.wraps(fn)(functools.partial(r.continuation_state.sets(fn), r.result_state.sets(cont)))
+    return functools.wraps(fn)(
+        functools.partial(r.continuation_state.sets(fn), r.result_state.sets(cont))
+    )

@@ -1,11 +1,11 @@
 import contextlib
-from typing import Callable, TypeVar, cast
+from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.core import Interpretation, Operation
+from effectful.ops.core import Interpretation
+from effectful.ops.handler import coproduct, handler
 from effectful.ops.interpreter import interpreter
-from effectful.ops.handler import coproduct
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -26,8 +26,8 @@ def product(
 
     # on prompt, jump to the outer interpretation and interpret it using itself
     return coproduct(
-        {op: interpreter(intp)(intp[op]) for op in intp if op in intp2},
-        {op: interpreter(intp)(intp2[op]) for op in intp2},
+        {op: handler(intp, closed=True)(intp[op]) for op in intp if op in intp2},
+        {op: handler(intp, closed=True)(intp2[op]) for op in intp2},
     )
 
 
