@@ -63,7 +63,8 @@ def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tenso
 def param(
     var_name: str,
     initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
-    constraint: Optional[Constraint] = None,
+    *,
+    constraint: Constraint = distributions.constraints.real,
     event_dim: Optional[int] = None,
 ) -> Tensor:
     raise RuntimeError("No default implementation of param")
