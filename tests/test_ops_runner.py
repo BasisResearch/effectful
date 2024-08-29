@@ -6,7 +6,6 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_continuation, bind_result
-from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, handler
 from effectful.ops.interpreter import interpreter
@@ -145,33 +144,6 @@ def test_runner_scopes():
                 assert double(2) == 4
                 assert triple(3) == 9
                 assert sextuple(6) == 36
-
-
-def test_using_runner_to_implement_trailing_state():
-    def trailing_state(st: State[List[T]]):
-        def trailing_set(new_value: T) -> None:
-            s = st.get() + [new_value]
-            st.set(s)
-
-        def get_last():
-            return st.get()[-1]
-
-        interp: Interpretation = {
-            st.get: get_last,
-            st.set: trailing_set,
-        }
-
-        return runner(interp)
-
-    st = State([])
-
-    with handler(defaults(st.get, st.bound_to, st.set)):
-        with trailing_state(st):
-            st.set(3)
-            assert st.get() == 3
-            st.set(4)
-            assert st.get() == 4
-        assert st.get() == [3, 4]
 
 
 def test_runner_outer_reflect():

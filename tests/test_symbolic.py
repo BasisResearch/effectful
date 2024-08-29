@@ -148,9 +148,7 @@ def test_bind_with_handler():
         if not getattr(var, "_fresh", False):
             mangled_var = gensym(object)
             setattr(mangled_var, "_fresh", True)
-            return Lam(
-                mangled_var, handler({var: mangled_var}, closed=True)(evaluate)(body)
-            )
+            return Lam(mangled_var, handler({var: mangled_var})(evaluate)(body))
         else:
             return fwd(None, var, body)
 
@@ -169,7 +167,7 @@ def test_bind_with_handler():
         """beta reduction"""
         if f.op == Lam:
             var, body = f.args
-            return handler({var: lambda: arg}, closed=True)(evaluate)(body)  # type: ignore
+            return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         else:
             return fwd(None, f, arg)
 
