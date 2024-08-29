@@ -35,27 +35,20 @@ class Neutral(Generic[T]):
 
 @interpreter({apply: lambda op, *args, **kwargs: Term(op, args, tuple(kwargs.items()))})
 def reflect(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> Neutral[T]:
-    return reify(Neutral(Term(op, args, tuple(kwargs.items())), {}))
+    args_: Sequence[Neutral[T]] = [reify(a) for a in args]
+    kwargs_: Sequence[Tuple[str, Neutral[T]]] = [
+        (k, reify(v)) for k, v in kwargs.items()
+    ]
+    val: Term[T] = Term(
+        op, [a.value for a in args_], [(k, v.value) for k, v in kwargs_]
+    )
+    env = {k: v for a in (*args_, *(v for _, v in kwargs_)) for k, v in a.env.items()}
+    return Neutral(val, env)
 
 
 @functools.singledispatch
 def reify(x) -> Neutral:
     return Neutral(x, {})
-
-
-@reify.register
-def _reify_neutral(x: Neutral):
-    reified_args = [reify(a) for a in x.value.args]
-    reified_kwargs = [(k, reify(v)) for k, v in x.value.kwargs]
-    val = Term(
-        x.value.op,
-        [a.value for a in reified_args],
-        [(k, v.value) for k, v in reified_kwargs]
-    )
-    env = {**x.env}
-    for v in (*reified_args, *(v for _, v in reified_kwargs)):
-        env.update(v.env)
-    return Neutral(val, env)
 
 
 @reify.register
@@ -76,7 +69,7 @@ def _reify_tuple(xs: tuple):
 def _reify_dict(xs: dict):
     xs_reified = [(reify(k), reify(v)) for k, v in xs.items()]
     val = define(dict)(*((k.value, v.value) for k, v in xs_reified))
-    env = {}
+    env: MutableMapping = {}
     for k, v in xs_reified:
         env.update(k.env)
         env.update(v.env)

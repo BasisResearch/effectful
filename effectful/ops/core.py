@@ -32,8 +32,11 @@ class Operation(Generic[Q, V]):
         from effectful.ops.handler import handler
 
         neutral = reflect(self, *args, **kwargs)
-        with handler({k: functools.partial(lambda x: x, v) for k, v in neutral.env.items()}, closed=True):
-            return evaluate(neutral.value)
+        with handler(
+            {k: functools.partial(lambda x: x, v) for k, v in neutral.env.items()},
+            closed=True,
+        ):
+            return evaluate(neutral.value)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -87,7 +90,7 @@ def evaluate(term: Term[T]) -> T:
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))
+    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
     JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op
 
