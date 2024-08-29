@@ -7,6 +7,7 @@ Table of Contents
 
    getting_started
    introduction
+   minipyro
 
 
 Indices and tables
