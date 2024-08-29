@@ -4,7 +4,7 @@ from typing import Callable, Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_continuation, compose_continuation
+from effectful.internals.prompts import bind_continuation, set_continuation
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter
@@ -31,7 +31,7 @@ def fwd(
         if args or kwargs
         else cont
     )  # type: ignore
-    cont_ = functools.partial(_RESULT_STATE.sets(cont_), s) if s is not None else cont_  # type: ignore
+    cont_ = functools.partial(_RESULT_STATE.sets(cont_), s)  # type: ignore
     return cont_()
 
 
@@ -51,7 +51,7 @@ def coproduct(
     for op, i2 in intp2.items():
         i1 = intp.get(op)
         if i1:
-            res[op] = compose_continuation(i1, i2)
+            res[op] = set_continuation(i1, i2)
         else:
             res[op] = i2
 
