@@ -28,7 +28,12 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return evaluate(Term(self, args, tuple(kwargs.items())))  # type: ignore
+        from effectful.internals.reification import reflect
+        from effectful.ops.handler import handler
+
+        neutral = reflect(self, *args, **kwargs)
+        with handler({k: functools.partial(lambda x: x, v) for k, v in neutral.env.items()}, closed=True):
+            return evaluate(neutral.value)
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -68,10 +73,11 @@ def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 def evaluate(term: Term[T]) -> T:
     from effectful.internals.runtime import get_interpretation
 
-    intp = get_interpretation()
     op = term.op
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
     kwargs = {k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs}
+
+    intp = get_interpretation()
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
@@ -81,7 +87,7 @@ def evaluate(term: Term[T]) -> T:
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = define(Operation)(lambda: Term(op, (), ()))
+    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))
     JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op
 
