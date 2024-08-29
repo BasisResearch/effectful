@@ -4,7 +4,6 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_continuation
 from effectful.ops.core import (
     BINDINGS,
     JUDGEMENTS,
@@ -14,7 +13,7 @@ from effectful.ops.core import (
     evaluate,
     gensym,
 )
-from effectful.ops.handler import coproduct, handler
+from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -38,8 +37,7 @@ def test_lazy_1():
         int,
     )
 
-    @bind_continuation
-    def eager_add(fwd, x, y):
+    def eager_add(x, y):
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
@@ -47,8 +45,7 @@ def test_lazy_1():
 
     eager = {Add: eager_add}
 
-    @bind_continuation
-    def simplify_add(fwd, x, y):
+    def simplify_add(x, y):
         if isinstance(x, Term) and not isinstance(y, Term):
             # x + c -> c + x
             return Add(y, x)
@@ -60,8 +57,7 @@ def test_lazy_1():
 
     simplify_assoc_commut = {Add: simplify_add}
 
-    @bind_continuation
-    def unit_add(fwd, x, y):
+    def unit_add(x, y):
         if x == zero:
             return y
         elif y == zero:
@@ -142,8 +138,7 @@ def test_bind_with_handler():
         int,
     )
 
-    @bind_continuation
-    def alpha_lam(fwd, var: Operation, body: Term):
+    def alpha_lam(var: Operation, body: Term):
         """alpha reduction"""
         if not getattr(var, "_fresh", False):
             mangled_var = gensym(object)
@@ -154,16 +149,14 @@ def test_bind_with_handler():
 
     BINDINGS[Lam] = alpha_lam
 
-    @bind_continuation
-    def eager_add(fwd, x, y):
+    def eager_add(x, y):
         """integer addition"""
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
             return fwd(None, x, y)
 
-    @bind_continuation
-    def eager_app(fwd, f: Term, arg: Term | int):
+    def eager_app(f: Term, arg: Term | int):
         """beta reduction"""
         if f.op == Lam:
             var, body = f.args
@@ -171,8 +164,7 @@ def test_bind_with_handler():
         else:
             return fwd(None, f, arg)
 
-    @bind_continuation
-    def eta_lam(fwd, var: Operation, body: Term):
+    def eta_lam(var: Operation, body: Term):
         """eta reduction"""
         if var not in interpreter(JUDGEMENTS)(evaluate)(body).context:
             return body
