@@ -12,25 +12,6 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-def union(
-    intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
-) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return union(intp, union(*intps))
-
-    (intp2,) = intps
-
-    res = dict(intp)
-
-    for op, i2 in intp2.items():
-        res[op] = i2
-
-    return res
-
-
 @contextlib.contextmanager
 def interpreter(intp: Interpretation):
     from ..internals.runtime import swap_interpretation
