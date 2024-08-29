@@ -180,7 +180,13 @@ def test_lazy_1():
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    JUDGEMENTS[Add] = lambda x, y: TypeInContext({**(x.context if isinstance(x, TypeInContext) else {}), **(y.context if isinstance(y, TypeInContext) else {})}, int)
+    JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+        {
+            **(x.context if isinstance(x, TypeInContext) else {}),
+            **(y.context if isinstance(y, TypeInContext) else {}),
+        },
+        int,
+    )
 
     def eager_add(x, y):
         if not isinstance(x, Term) and not isinstance(y, Term):
@@ -226,7 +232,9 @@ def test_lazy_1():
 
     with interpreter(lazy):
         assert Add(one, two) == Term(Add, (one, two), {})
-        assert Add(one, Add(two, three)) == Term(Add, (one, Term(Add, (two, three), {})), {})
+        assert Add(one, Add(two, three)) == Term(
+            Add, (one, Term(Add, (two, three), {})), {}
+        )
         assert Add(x, y) == Term(Add, (x, y), {})
         assert Add(x, one) != Add(y, one)
 
@@ -244,16 +252,26 @@ def test_lazy_1():
         assert Add(one, Add(Add(x, y), two)) == Add(Add(x, y), three)
         assert Add(one, Add(Add(x, Add(y, one)), one)) == Add(Add(x, y), three)
 
-        assert Add(Add(Add(x, x), Add(x, x)), Add(Add(x, x), Add(x, x))) == \
-            Add(Add(Add(Add(Add(Add(Add(x, x), x), x), x), x), x), x) == \
-            Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, x)))))))
+        assert (
+            Add(Add(Add(x, x), Add(x, x)), Add(Add(x, x), Add(x, x)))
+            == Add(Add(Add(Add(Add(Add(Add(x, x), x), x), x), x), x), x)
+            == Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, x)))))))
+        )
 
         assert Add(x, zero) == x
 
 
 def test_bind_with_handler():
     import functools
-    from effectful.ops.core import Term, TypeInContext, evaluate, gensym, BINDINGS, JUDGEMENTS
+
+    from effectful.ops.core import (
+        BINDINGS,
+        JUDGEMENTS,
+        Term,
+        TypeInContext,
+        evaluate,
+        gensym,
+    )
 
     @Operation
     def Add(x: int, y: int) -> int:
@@ -266,15 +284,25 @@ def test_bind_with_handler():
     @Operation
     def Lam(var: Operation, body: Term) -> Term:
         raise NotImplementedError
-    
-    JUDGEMENTS[Lam] = lambda var, body: TypeInContext({v: t for v, t in body.context.items() if v != var}, body.type)
-    JUDGEMENTS[App] = lambda f, arg: TypeInContext({**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type)
-    JUDGEMENTS[Add] = lambda x, y: TypeInContext({**(x.context if isinstance(x, TypeInContext) else {}), **(y.context if isinstance(y, TypeInContext) else {})}, int)
+
+    JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
+        {v: t for v, t in body.context.items() if v != var}, body.type
+    )
+    JUDGEMENTS[App] = lambda f, arg: TypeInContext(
+        {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
+    )
+    JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+        {
+            **(x.context if isinstance(x, TypeInContext) else {}),
+            **(y.context if isinstance(y, TypeInContext) else {}),
+        },
+        int,
+    )
 
     def alpha_lam(var: Operation, body: Term):
         """alpha reduction"""
         if not getattr(var, "_fresh", False):
-            mangled_var = gensym()
+            mangled_var = gensym(object)
             mangled_var._fresh = True
             return Lam(mangled_var, interpreter({var: mangled_var})(evaluate)(body))
         else:
@@ -304,12 +332,15 @@ def test_bind_with_handler():
         else:
             return fwd(None)
 
-    free = {op: functools.partial(lambda op, *a, **k: Term(op, a, k), op) for op in (Add, App, Lam)}
+    free = {
+        op: functools.partial(lambda op, *a, **k: Term(op, a, k), op)
+        for op in (Add, App, Lam)
+    }
     free_alpha = coproduct(free, BINDINGS)
     eager = {Add: eager_add, App: eager_app, Lam: eta_lam}
     eager_mixed = coproduct(free_alpha, eager)
 
-    x, y, z = gensym(), gensym(), gensym()
+    x, y, z = gensym(object), gensym(object), gensym(object)
     zero, one, two, three = 0, 1, 2, 3
 
     with interpreter(eager_mixed):

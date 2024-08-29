@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result, value_or_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, define, register
+from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -81,23 +81,6 @@ def test_op_times_n_interpretation(op, args, n):
     assert new_op not in times_n(n, op)
 
     assert op(*args) * n == times_n(n, op)[op](*args)
-
-
-@pytest.mark.parametrize("op,args", OPERATION_CASES)
-@pytest.mark.parametrize("n", N_CASES)
-def test_op_register_new_op(op, args, n):
-    new_op = define(Operation)(lambda *args: op(*args) + 3)
-    intp = times_n(n, op)
-
-    with interpreter(intp):
-        new_value = new_op(*args)
-        assert new_value == op.default(*args) * n + 3
-
-        register(new_op, intp, times_n(n, new_op)[new_op])
-        assert new_op(*args) == new_value
-
-    with interpreter(intp):
-        assert new_op(*args) == (op.default(*args) * n + 3) * n
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
