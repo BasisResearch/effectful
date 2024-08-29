@@ -52,6 +52,10 @@ def _unflatten_args(fn: Callable[[ArgSet], V]) -> Callable[Q, V]:
     return lambda *a, **k: fn(typing.cast(ArgSet, (a, k)))
 
 
+def _dup_arg(f: Callable[[S, S], V]) -> Callable[[S], V]:
+    return lambda x: f(x, x)
+
+
 def bind_args(fn: Callable[P, T]) -> Callable[[], T]:
     return _ARG_STATE.gets(_flatten_args(fn), default=((), {}))
 
@@ -74,7 +78,7 @@ def bind_result_to_method(fn):
 def bind_continuation(
     fn: Optional[Callable[Concatenate[Callable[Concatenate[S, P], T], P], T]] = None,
     *,
-    default: Callable[Concatenate[S, P], T] = lambda r, *_, **__: r,
+    default: Callable[Concatenate[S, P], T] = bind_result(lambda r: r),
 ):
     if fn is None:
         return functools.partial(bind_continuation, default=default)
@@ -84,13 +88,7 @@ def bind_continuation(
 
 
 def compose_continuation(cont: Callable[P, T], fn: Callable[P, T]) -> Callable[P, T]:
-
-    def _dup(f: Callable[[S, S], V]) -> Callable[[S], V]:
-        return lambda x: f(x, x)
-
-    fn_ = _unflatten_args(_dup(_ARG_STATE.sets(_flatten_args(fn))))
-    cont_ = _unflatten_args(_dup(_ARG_STATE.sets(_flatten_args(cont))))
-
+    fn_ = _unflatten_args(_dup_arg(_ARG_STATE.sets(_flatten_args(fn))))
     return functools.wraps(fn)(
-        functools.partial(_CONTINUATION_STATE.sets(fn_), _RESULT_STATE.sets(cont_))
+        functools.partial(_CONTINUATION_STATE.sets(fn_), bind_args(cont))
     )

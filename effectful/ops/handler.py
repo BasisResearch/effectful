@@ -2,14 +2,9 @@ import contextlib
 import functools
 from typing import Callable, Optional, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import (
-    bind_args,
-    bind_continuation,
-    bind_result,
-    compose_continuation,
-)
+from effectful.internals.prompts import bind_continuation, compose_continuation
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter
@@ -23,17 +18,20 @@ V = TypeVar("V")
 
 @bind_continuation
 def fwd(
-    cont: Callable[Concatenate[S, P], T],
+    cont: Callable[[], T],
     s: Optional[S],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> T:
-    cont_ = functools.partial(cont, s) if s is not None else bind_result(cont)
+    from effectful.internals.prompts import _ARG_STATE, _RESULT_STATE
+
+    cont_: Callable[[], T]
     cont_ = (
-        functools.partial(cont_, *args, **kwargs)
+        functools.partial(_ARG_STATE.sets(cont), (args, kwargs))  # type: ignore
         if args or kwargs
-        else bind_args(cont_)
-    )
+        else cont
+    )  # type: ignore
+    cont_ = functools.partial(_RESULT_STATE.sets(cont_), s) if s is not None else cont_  # type: ignore
     return cont_()
 
 
