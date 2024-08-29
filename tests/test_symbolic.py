@@ -71,7 +71,7 @@ def test_lazy_1():
 
     simplify_unit = {Add: unit_add}
 
-    lazy = {Add: lambda x, y: Term(Add, (x, y), {})}
+    lazy = {Add: lambda x, y: Term(Add, (x, y), ())}
     mixed = coproduct(lazy, eager)
     simplified = coproduct(simplify_assoc_commut, simplify_unit)
     mixed_simplified = coproduct(mixed, simplified)
@@ -84,16 +84,16 @@ def test_lazy_1():
         assert Add(one, two) == three
 
     with interpreter(lazy):
-        assert Add(one, two) == Term(Add, (one, two), {})
+        assert Add(one, two) == Term(Add, (one, two), ())
         assert Add(one, Add(two, three)) == Term(
-            Add, (one, Term(Add, (two, three), {})), {}
+            Add, (one, Term(Add, (two, three), ())), ()
         )
-        assert Add(x, y) == Term(Add, (x, y), {})
+        assert Add(x, y) == Term(Add, (x, y), ())
         assert Add(x, one) != Add(y, one)
 
     with interpreter(mixed):
         assert Add(one, two) == three
-        assert Add(Add(one, two), x) == Term(Add, (three, x), {})
+        assert Add(Add(one, two), x) == Term(Add, (three, x), ())
 
     with interpreter(mixed_simplified):
         assert Add(one, two) == three
@@ -180,7 +180,7 @@ def test_bind_with_handler():
             return fwd(None, var, body)
 
     free = {
-        op: functools.partial(lambda op, *a, **k: Term(op, a, k), op)
+        op: functools.partial(lambda op, *a, **k: Term(op, a, tuple(k.items())), op)
         for op in (Add, App, Lam)
     }
     free_alpha = coproduct(free, BINDINGS)

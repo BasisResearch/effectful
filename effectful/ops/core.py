@@ -8,6 +8,8 @@ from typing import (
     Iterable,
     Mapping,
     MutableMapping,
+    Sequence,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -33,8 +35,8 @@ class Operation(Generic[Q, V]):
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Term(Generic[T]):
     op: Operation[..., T]
-    args: Iterable[Union["Term[T]", T]]
-    kwargs: Mapping[str, Union["Term[T]", T]]
+    args: Sequence[Union["Term[T]", T]]
+    kwargs: Sequence[Tuple[str, Union["Term[T]", T]]]
 
 
 Context: TypeAlias = Mapping[Operation[..., S], T]
@@ -70,9 +72,7 @@ def evaluate(term: Term[T]) -> T:
     intp = get_interpretation()
     op = term.op
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
-    kwargs = {
-        k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs.items()
-    }
+    kwargs = {k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs}
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
@@ -82,7 +82,7 @@ def evaluate(term: Term[T]) -> T:
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = define(Operation)(lambda: Term(op, (), {}))
+    op: Operation[[], T] = define(Operation)(lambda: Term(op, (), ()))
     JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op
 
