@@ -5,7 +5,6 @@ import weakref
 from typing import (
     Callable,
     Generic,
-    Iterable,
     Mapping,
     MutableMapping,
     Sequence,
