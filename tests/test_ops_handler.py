@@ -174,13 +174,13 @@ def test_sugar_subclassing():
 
 
 def test_lazy_1():
-    from effectful.ops.core import JUDGEMENTS, Term, gensym
+    from effectful.ops.core import JUDGEMENTS, Term, TypeInContext, gensym
 
     @Operation
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    JUDGEMENTS[Add] = lambda x, y: ({**(x[0] if isinstance(x, tuple) else {}), **(y[0] if isinstance(y, tuple) else {})}, int)
+    JUDGEMENTS[Add] = lambda x, y: TypeInContext({**(x.context if isinstance(x, TypeInContext) else {}), **(y.context if isinstance(y, TypeInContext) else {})}, int)
 
     def eager_add(x, y):
         if not isinstance(x, Term) and not isinstance(y, Term):
@@ -253,7 +253,7 @@ def test_lazy_1():
 
 def test_bind_with_handler():
     import functools
-    from effectful.ops.core import Term, evaluate, gensym, BINDINGS, JUDGEMENTS
+    from effectful.ops.core import Term, TypeInContext, evaluate, gensym, BINDINGS, JUDGEMENTS
 
     @Operation
     def Add(x: int, y: int) -> int:
@@ -267,9 +267,9 @@ def test_bind_with_handler():
     def Lam(var: Operation, body: Term) -> Term:
         raise NotImplementedError
     
-    JUDGEMENTS[Lam] = lambda var, body: ({v: t for v, t in body[0].items() if v != var}, body[1])
-    JUDGEMENTS[App] = lambda f, arg: ({**f[0], **(arg[0] if isinstance(arg, tuple) else {})}, f[1])
-    JUDGEMENTS[Add] = lambda x, y: ({**(x[0] if isinstance(x, tuple) else {}), **(y[0] if isinstance(y, tuple) else {})}, int)
+    JUDGEMENTS[Lam] = lambda var, body: TypeInContext({v: t for v, t in body.context.items() if v != var}, body.type)
+    JUDGEMENTS[App] = lambda f, arg: TypeInContext({**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type)
+    JUDGEMENTS[Add] = lambda x, y: TypeInContext({**(x.context if isinstance(x, TypeInContext) else {}), **(y.context if isinstance(y, TypeInContext) else {})}, int)
 
     def alpha_lam(var: Operation, body: Term):
         """alpha reduction"""
@@ -299,7 +299,7 @@ def test_bind_with_handler():
 
     def eta_lam(var: Operation, body: Term):
         """eta reduction"""
-        if var not in interpreter(JUDGEMENTS)(evaluate)(body)[0]:
+        if var not in interpreter(JUDGEMENTS)(evaluate)(body).context:
             return body
         else:
             return fwd(None)
