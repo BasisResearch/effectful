@@ -2,7 +2,16 @@ import dataclasses
 import functools
 import typing
 import weakref
-from typing import Callable, Generic, Iterable, Mapping, Type, TypeVar, Union
+from typing import (
+    Callable,
+    Generic,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec, TypeAlias
 
@@ -18,7 +27,7 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return evaluate(Term(self, args, kwargs))
+        return evaluate(Term(self, args, kwargs))  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -47,12 +56,12 @@ def define(m: Type[T]) -> Operation[..., T]:
         if typing.get_origin(m) not in (m, None):
             return define(typing.get_origin(m))
 
-    return m(m) if m is Operation else define(Operation)(m)  # type: ignore
+    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
 @Operation
 def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    return op.default(*args, **kwargs)
+    return op.default(*args, **kwargs)  # type: ignore
 
 
 def evaluate(term: Term[T]) -> T:
@@ -73,10 +82,12 @@ def evaluate(term: Term[T]) -> T:
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op = define(Operation)(lambda: Term(op, (), {}))
+    op: Operation[[], T] = define(Operation)(lambda: Term(op, (), {}))
     JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op
 
 
-JUDGEMENTS: Interpretation[T, TypeInContext[T]] = weakref.WeakKeyDictionary()
-BINDINGS: Interpretation[T, T] = weakref.WeakKeyDictionary()
+JUDGEMENTS: MutableMapping[Operation, Callable[..., TypeInContext]] = (
+    weakref.WeakKeyDictionary()
+)
+BINDINGS: MutableMapping[Operation, Callable] = weakref.WeakKeyDictionary()
