@@ -6,6 +6,8 @@ Table of Contents
    :caption: Getting Started
 
    getting_started
+   introduction
+
 
 Indices and tables
 ==================
