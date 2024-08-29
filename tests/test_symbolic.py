@@ -41,7 +41,7 @@ def test_lazy_1():
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
-            return fwd(None, x, y)
+            return fwd(None)
 
     eager = {Add: eager_add}
 
@@ -53,7 +53,7 @@ def test_lazy_1():
             # a + (b + c) -> (a + b) + c
             return Add(Add(x, y.args[0]), y.args[1])
         else:
-            return fwd(None, x, y)
+            return fwd(None)
 
     simplify_assoc_commut = {Add: simplify_add}
 
@@ -63,7 +63,7 @@ def test_lazy_1():
         elif y == zero:
             return x
         else:
-            return fwd(None, x, y)
+            return fwd(None)
 
     simplify_unit = {Add: unit_add}
 
@@ -145,7 +145,7 @@ def test_bind_with_handler():
             setattr(mangled_var, "_fresh", True)
             return Lam(mangled_var, handler({var: mangled_var})(evaluate)(body))
         else:
-            return fwd(None, var, body)
+            return fwd(None)
 
     BINDINGS[Lam] = alpha_lam
 
@@ -154,7 +154,7 @@ def test_bind_with_handler():
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
-            return fwd(None, x, y)
+            return fwd(None)
 
     def eager_app(f: Term, arg: Term | int):
         """beta reduction"""
@@ -162,14 +162,14 @@ def test_bind_with_handler():
             var, body = f.args
             return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         else:
-            return fwd(None, f, arg)
+            return fwd(None)
 
     def eta_lam(var: Operation, body: Term):
         """eta reduction"""
         if var not in interpreter(JUDGEMENTS)(evaluate)(body).context:
             return body
         else:
-            return fwd(None, var, body)
+            return fwd(None)
 
     free = {
         op: functools.partial(lambda op, *a, **k: Term(op, a, tuple(k.items())), op)
