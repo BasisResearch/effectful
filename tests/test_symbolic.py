@@ -4,6 +4,7 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
+from effectful.internals.prompts import bind_continuation
 from effectful.ops.core import (
     BINDINGS,
     JUDGEMENTS,
@@ -13,7 +14,7 @@ from effectful.ops.core import (
     evaluate,
     gensym,
 )
-from effectful.ops.handler import coproduct, fwd
+from effectful.ops.handler import coproduct, handler
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -37,15 +38,17 @@ def test_lazy_1():
         int,
     )
 
-    def eager_add(x, y):
+    @bind_continuation
+    def eager_add(fwd, x, y):
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
-            return fwd(None)
+            return fwd(None, x, y)
 
     eager = {Add: eager_add}
 
-    def simplify_add(x, y):
+    @bind_continuation
+    def simplify_add(fwd, x, y):
         if isinstance(x, Term) and not isinstance(y, Term):
             # x + c -> c + x
             return Add(y, x)
@@ -53,17 +56,18 @@ def test_lazy_1():
             # a + (b + c) -> (a + b) + c
             return Add(Add(x, y.args[0]), y.args[1])
         else:
-            return fwd(None)
+            return fwd(None, x, y)
 
     simplify_assoc_commut = {Add: simplify_add}
 
-    def unit_add(x, y):
+    @bind_continuation
+    def unit_add(fwd, x, y):
         if x == zero:
             return y
         elif y == zero:
             return x
         else:
-            return fwd(None)
+            return fwd(None, x, y)
 
     simplify_unit = {Add: unit_add}
 
@@ -138,38 +142,44 @@ def test_bind_with_handler():
         int,
     )
 
-    def alpha_lam(var: Operation, body: Term):
+    @bind_continuation
+    def alpha_lam(fwd, var: Operation, body: Term):
         """alpha reduction"""
         if not getattr(var, "_fresh", False):
             mangled_var = gensym(object)
             setattr(mangled_var, "_fresh", True)
-            return Lam(mangled_var, interpreter({var: mangled_var})(evaluate)(body))
+            return Lam(
+                mangled_var, handler({var: mangled_var}, closed=True)(evaluate)(body)
+            )
         else:
-            return fwd(None)
+            return fwd(None, var, body)
 
     BINDINGS[Lam] = alpha_lam
 
-    def eager_add(x, y):
+    @bind_continuation
+    def eager_add(fwd, x, y):
         """integer addition"""
         if not isinstance(x, Term) and not isinstance(y, Term):
             return x + y
         else:
-            return fwd(None)
+            return fwd(None, x, y)
 
-    def eager_app(f: Term, arg: Term | int):
+    @bind_continuation
+    def eager_app(fwd, f: Term, arg: Term | int):
         """beta reduction"""
         if f.op == Lam:
             var, body = f.args
-            return interpreter({var: lambda: arg})(evaluate)(body)  # type: ignore
+            return handler({var: lambda: arg}, closed=True)(evaluate)(body)  # type: ignore
         else:
-            return fwd(None)
+            return fwd(None, f, arg)
 
-    def eta_lam(var: Operation, body: Term):
+    @bind_continuation
+    def eta_lam(fwd, var: Operation, body: Term):
         """eta reduction"""
         if var not in interpreter(JUDGEMENTS)(evaluate)(body).context:
             return body
         else:
-            return fwd(None)
+            return fwd(None, var, body)
 
     free = {
         op: functools.partial(lambda op, *a, **k: Term(op, a, k), op)
@@ -184,8 +194,8 @@ def test_bind_with_handler():
 
     with interpreter(eager_mixed):
         f1 = Lam(x, Add(x(), one))
-        assert interpreter({x: lambda: one})(evaluate)(f1) == f1
-        assert interpreter({y: lambda: one})(evaluate)(f1) == f1
+        assert handler({x: lambda: one})(evaluate)(f1) == f1
+        assert handler({y: lambda: one})(evaluate)(f1) == f1
         assert App(f1, one) == two
         assert Lam(y, f1) == f1
 

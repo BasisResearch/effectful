@@ -6,10 +6,10 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result, value_or_result
+from effectful.internals.prompts import bind_continuation, bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
-from effectful.ops.handler import coproduct, fwd, handler
+from effectful.ops.handler import coproduct, handler
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -35,11 +35,16 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(value_or_result(op.default)) for op in ops}
+    return {op: op.default for op in ops}
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(lambda v, *args, **kwargs: fwd(v) * n) for op in ops}
+    return {
+        op: bind_continuation(
+            bind_result(lambda r, fwd, *args, **kwargs: fwd(r, *args, **kwargs) * n)
+        )
+        for op in ops
+    }
 
 
 OPERATION_CASES = (
@@ -55,7 +60,11 @@ def test_affine_continuation_compose(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: bind_result(lambda v, *a, **k: fwd(fwd(v)))}
+    h_twice = {
+        op: bind_continuation(
+            bind_result(lambda r, fwd, *a, **k: fwd(fwd(r, *a, **k), *a, **k))
+        )
+    }
 
     assert (
         interpreter(defaults(op))(f)()

@@ -2,14 +2,15 @@ import contextlib
 import functools
 import itertools
 import logging
-from typing import Optional, TypeVar
+from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result, value_or_result
+from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.handler import handler
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -36,12 +37,11 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    def _op_times_n(
-        n: int, op: Operation[..., int], result: Optional[int], *args: int
-    ) -> int:
-        return value_or_result(op.default)(result, *args) * n
+    @bind_result
+    def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
+        return (res or op.default(*args)) * n
 
-    return {op: bind_result(functools.partial(_op_times_n, n, op)) for op in ops}
+    return {op: functools.partial(_op_times_n, n, op) for op in ops}
 
 
 OPERATION_CASES = (
@@ -119,8 +119,8 @@ def test_op_interpreter_new_op_3(op, args, n):
 def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, op)):
+    with handler(times_n(n_outer, op, new_op), closed=True):
+        with handler(times_n(n_inner, op), closed=True):
             assert op(*args) == op.default(*args) * n_inner
             assert new_op(*args) == (op.default(*args) * n_inner + 3) * n_outer
 
@@ -131,8 +131,8 @@ def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
 def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, new_op)):
+    with handler(times_n(n_outer, op, new_op), closed=True):
+        with handler(times_n(n_inner, new_op), closed=True):
             assert op(*args) == op.default(*args) * n_outer
             assert new_op(*args) == (op.default(*args) * n_outer + 3) * n_inner
 
@@ -143,8 +143,8 @@ def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
 def test_op_nest_interpreter_3(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, op, new_op)):
+    with handler(times_n(n_outer, op, new_op), closed=True):
+        with handler(times_n(n_inner, op, new_op), closed=True):
             assert op(*args) == op.default(*args) * n_inner
             assert new_op(*args) == (op.default(*args) * n_inner + 3) * n_inner
 
@@ -158,7 +158,7 @@ def test_op_repeat_nest_interpreter(op, args, n, depth):
     intp = times_n(n, new_op)
     with contextlib.ExitStack() as stack:
         for _ in range(depth):
-            stack.enter_context(interpreter(intp))
+            stack.enter_context(handler(intp, closed=True))
 
         assert op(*args) == op.default(*args)
         assert new_op(*args) == intp[new_op](*args)
@@ -178,7 +178,7 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
         try:
             with contextlib.ExitStack() as stack:
                 for _ in range(depth):
-                    stack.enter_context(interpreter(intp))
+                    stack.enter_context(handler(intp, closed=True))
 
                 try:
                     fail_op(*args)

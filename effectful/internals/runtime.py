@@ -6,6 +6,7 @@ from typing import Callable, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
+Q = ParamSpec("Q")
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")

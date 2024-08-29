@@ -27,8 +27,8 @@ from typing_extensions import Concatenate, ParamSpec
 from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
-from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.runner import product, reflect
+from effectful.ops.handler import coproduct, handler
+from effectful.ops.runner import product
 
 
 @dataclass
@@ -90,41 +90,34 @@ def set_rng_seed(seed: Union[int, Seed]):
 
 
 class Tracer(ObjectInterpretation):
+    TRACE: OrderedDict[str, Message]
+
     def __init__(self):
         self.TRACE = OrderedDict()
 
     @implements(sample)
     @bind_result_to_method
-    def sample(
-        self, result: Optional[Tensor], var_name: str, dist: Distribution, **kwargs
-    ):
-        res = fwd(result)
+    def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+        res: Tensor = fwd(ires)
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
+        return res
 
     @implements(param)
     @bind_result_to_method
     def param(
         self,
-        result: Optional[Tensor],
+        ires,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
         event_dim: Optional[int] = None,
     ) -> Tensor:
-        res = fwd(result)
+        res: Tensor = fwd(ires)
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
-
-
-@contextmanager
-def trace():
-    t = Tracer()
-
-    with handler(t):
-        yield t.TRACE
 
 
 class Replay(ObjectInterpretation):
@@ -133,7 +126,7 @@ class Replay(ObjectInterpretation):
 
     @implements(sample)
     @bind_result_to_method
-    def sample(self, res: Optional[Tensor], var_name: str, *args, **kwargs):
+    def sample(self, res, var_name: str, *args, **kwargs):
         if var_name in self.trace:
             return self.trace[var_name].val
         else:
@@ -142,6 +135,14 @@ class Replay(ObjectInterpretation):
 
 def replay(trace: Trace):
     return handler(Replay(trace))
+
+
+@contextmanager
+def trace():
+    t = Tracer()
+
+    with handler(t):
+        yield t.TRACE
 
 
 class NativeSeed(ObjectInterpretation):
@@ -244,9 +245,7 @@ class Plate(ObjectInterpretation):
 
     @implements(sample)
     @bind_result_to_method
-    def do_sample(
-        self, result: Optional[Tensor], sampled_name: str, dist: Distribution, **kwargs
-    ) -> Tensor:
+    def do_sample(self, res, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
@@ -254,7 +253,7 @@ class Plate(ObjectInterpretation):
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
-            return fwd(result)
+            return fwd(res)
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):
@@ -268,20 +267,21 @@ default_runner = product(
 
 
 def block(
-    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
 ):
-    def blocking(fn: Operation, result, *args, **kwargs):
-        if hide_fn(fn, result, *args, **kwargs):
-            return reflect(result)
+    @bind_result
+    def blocking(res, fn: Operation, *args, **kwargs):
+        if hide_fn(fn, res, *args, **kwargs):
+            return reflect(res)
         else:
-            return fwd(result)
+            return fwd(res)
 
     return handler(
         product(
             default_runner,
             {
-                sample: bind_result(partial(blocking, sample)),
-                param: bind_result(partial(blocking, param)),
+                sample: partial(blocking, sample),
+                param: partial(blocking, param),
             },
         )
     )
