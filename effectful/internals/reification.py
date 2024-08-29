@@ -28,33 +28,35 @@ V = TypeVar("V")
 
 
 @dataclasses.dataclass
-class Neutral(Generic[T]):
+class _Neutral(Generic[T]):
     value: Term[T] | T
     env: Context[T, Term[T]]
 
 
 @interpreter({apply: lambda op, *args, **kwargs: Term(op, args, tuple(kwargs.items()))})
-def reflect(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> Neutral[T]:
-    args_: Sequence[Neutral[T]] = [reify(a) for a in args]
-    kwargs_: Sequence[Tuple[str, Neutral[T]]] = [
+def reflect(
+    op: Operation[P, T], *args: P.args, **kwargs: P.kwargs
+) -> Tuple[Term[T], Context[T, Term[T]]]:
+    args_: Sequence[_Neutral[T]] = [reify(a) for a in args]
+    kwargs_: Sequence[Tuple[str, _Neutral[T]]] = [
         (k, reify(v)) for k, v in kwargs.items()
     ]
     val: Term[T] = Term(
         op, [a.value for a in args_], [(k, v.value) for k, v in kwargs_]
     )
     env = {k: v for a in (*args_, *(v for _, v in kwargs_)) for k, v in a.env.items()}
-    return Neutral(val, env)
+    return val, env
 
 
 @functools.singledispatch
-def reify(x) -> Neutral:
-    return Neutral(x, {})
+def reify(x) -> _Neutral:
+    return _Neutral(x, {})
 
 
 @reify.register
 def _reify_term(x: Term):
     syn = gensym(object)
-    return Neutral(syn(), {syn: x})
+    return _Neutral(syn(), {syn: x})
 
 
 @reify.register
@@ -62,7 +64,7 @@ def _reify_tuple(xs: tuple):
     xs_reified = [reify(x) for x in xs]
     val = define(tuple)(*[x.value for x in xs_reified])
     env = {syn: sem for x in xs_reified for syn, sem in x.env.items()}
-    return Neutral(val, env)
+    return _Neutral(val, env)
 
 
 @reify.register
@@ -73,4 +75,4 @@ def _reify_dict(xs: dict):
     for k, v in xs_reified:
         env.update(k.env)
         env.update(v.env)
-    return Neutral(val, env)
+    return _Neutral(val, env)

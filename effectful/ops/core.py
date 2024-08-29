@@ -31,9 +31,9 @@ class Operation(Generic[Q, V]):
         from effectful.internals.reification import reflect
         from effectful.ops.handler import handler
 
-        x = reflect(self, *args, **kwargs)
-        with handler({k: functools.partial(lambda x: x, v) for k, v in x.env.items()}):
-            return evaluate(x.value)  # type: ignore
+        term, env = reflect(self, *args, **kwargs)
+        with handler({k: functools.partial(lambda x: x, v) for k, v in env.items()}):
+            return evaluate(term)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
