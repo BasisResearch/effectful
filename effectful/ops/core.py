@@ -63,7 +63,7 @@ def define(m: Type[T]) -> Operation[..., T]:
 
 @Operation
 def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    return op.default(*args, **kwargs)  # type: ignore
+    return op.default(*args, **kwargs)
 
 
 def evaluate(term: Term[T]) -> T:

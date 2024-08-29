@@ -71,7 +71,7 @@ def bind_result_to_method(fn):
 def bind_continuation(
     fn: Callable[Concatenate[Callable[[], T], P], T]
 ) -> Callable[P, T]:
-    cc = _CONTINUATION_STATE.gets(lambda c: c(), default=bind_result(lambda r: r))
+    cc = _CONTINUATION_STATE.gets(lambda c: c(), default=bind_result(lambda r: r))  # type: ignore
     return functools.wraps(fn)(functools.partial(fn, cc))
 
 

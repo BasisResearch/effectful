@@ -17,12 +17,7 @@ V = TypeVar("V")
 
 
 @bind_continuation
-def fwd(
-    cont: Callable[[], T],
-    s: Optional[S],
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> T:
+def fwd(cont: Callable[[], T], s: Optional[S], *args, **kwargs) -> T:
     from effectful.internals.prompts import _ARG_STATE, _RESULT_STATE
 
     cont_: Callable[[], T]
@@ -30,9 +25,8 @@ def fwd(
         functools.partial(_ARG_STATE.sets(cont), (args, kwargs))  # type: ignore
         if args or kwargs
         else cont
-    )  # type: ignore
-    cont_ = functools.partial(_RESULT_STATE.sets(cont_), s)  # type: ignore
-    return cont_()
+    )
+    return _RESULT_STATE.sets(cont_)(s)
 
 
 def coproduct(
