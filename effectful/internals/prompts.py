@@ -1,7 +1,8 @@
 import functools
-from typing import Callable, Generic, Optional, TypeVar
+import typing
+from typing import Callable, Generic, MutableMapping, Optional, Tuple, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import Concatenate, ParamSpec, TypeAlias
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -36,8 +37,23 @@ class _LinearState(Generic[S]):
         return functools.wraps(fn)(_wrapper)
 
 
+_ARG_STATE: _LinearState = _LinearState()
 _RESULT_STATE: _LinearState = _LinearState()
 _CONTINUATION_STATE: _LinearState = _LinearState()
+
+ArgSet = TypeVar("ArgSet", bound=Tuple[Tuple, MutableMapping])
+
+
+def _flatten_args(fn: Callable[Q, V]) -> Callable[[ArgSet], V]:
+    return lambda ak: fn(*ak[0], **typing.cast(MutableMapping, ak[1]))
+
+
+def _unflatten_args(fn: Callable[[ArgSet], V]) -> Callable[Q, V]:
+    return lambda *a, **k: fn(typing.cast(ArgSet, (a, k)))
+
+
+def bind_args(fn: Callable[P, T]) -> Callable[[], T]:
+    return _ARG_STATE.gets(_flatten_args(fn), default=((), {}))
 
 
 def bind_result(
@@ -68,6 +84,13 @@ def bind_continuation(
 
 
 def compose_continuation(cont: Callable[P, T], fn: Callable[P, T]) -> Callable[P, T]:
+
+    def _dup(f: Callable[[S, S], V]) -> Callable[[S], V]:
+        return lambda x: f(x, x)
+
+    fn_ = _unflatten_args(_dup(_ARG_STATE.sets(_flatten_args(fn))))
+    cont_ = _unflatten_args(_dup(_ARG_STATE.sets(_flatten_args(cont))))
+
     return functools.wraps(fn)(
-        functools.partial(_CONTINUATION_STATE.sets(fn), _RESULT_STATE.sets(cont))
+        functools.partial(_CONTINUATION_STATE.sets(fn_), _RESULT_STATE.sets(cont_))
     )

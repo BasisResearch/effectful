@@ -1,9 +1,15 @@
 import contextlib
-from typing import Callable, TypeVar
+import functools
+from typing import Callable, Optional, TypeVar
 
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import bind_continuation, compose_continuation
+from effectful.internals.prompts import (
+    bind_args,
+    bind_continuation,
+    bind_result,
+    compose_continuation,
+)
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter
@@ -16,8 +22,19 @@ V = TypeVar("V")
 
 
 @bind_continuation
-def fwd(cont: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    return cont(*args, **kwargs)
+def fwd(
+    cont: Callable[Concatenate[S, P], T],
+    s: Optional[S],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+    cont_ = functools.partial(cont, s) if s is not None else bind_result(cont)
+    cont_ = (
+        functools.partial(cont_, *args, **kwargs)
+        if args or kwargs
+        else bind_args(cont_)
+    )
+    return cont_()
 
 
 def coproduct(
