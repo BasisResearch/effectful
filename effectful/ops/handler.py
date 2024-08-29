@@ -1,9 +1,9 @@
 import contextlib
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import compose_continuation
+from effectful.internals.prompts import bind_continuation, compose_continuation
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter, union
@@ -13,6 +13,11 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+
+
+@bind_continuation
+def fwd(cont: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    return cont(*args, **kwargs)
 
 
 def coproduct(

@@ -29,7 +29,7 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return evaluate(Term(self, args, kwargs))  # type: ignore
+        return evaluate(Term(self, args, tuple(kwargs.items())))  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)

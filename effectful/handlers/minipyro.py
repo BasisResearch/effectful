@@ -27,7 +27,7 @@ from typing_extensions import Concatenate, ParamSpec
 from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
-from effectful.ops.handler import coproduct, handler
+from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.runner import product
 
 
@@ -98,7 +98,7 @@ class Tracer(ObjectInterpretation):
     @implements(sample)
     @bind_result_to_method
     def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd(ires, var_name, dist, **kwargs)
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
@@ -111,10 +111,17 @@ class Tracer(ObjectInterpretation):
         ires,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
-        constraint: Optional[Constraint] = None,
+        *,
+        constraint: Constraint = distributions.constraints.real,
         event_dim: Optional[int] = None,
     ) -> Tensor:
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd(
+            ires,
+            var_name,
+            initial_value=initial_value,
+            constraint=constraint,
+            event_dim=event_dim,
+        )
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
@@ -130,7 +137,7 @@ class Replay(ObjectInterpretation):
         if var_name in self.trace:
             return self.trace[var_name].val
         else:
-            return fwd(res)
+            return fwd(res, var_name, *args, **kwargs)
 
 
 def replay(trace: Trace):
@@ -160,7 +167,7 @@ class NativeSeed(ObjectInterpretation):
             set_rng_state(seed[0])
             random.setstate(seed[1])
             np.random.set_state(seed[2])
-        return fwd(None)
+        return fwd(None, seed)
 
     @implements(sample)
     def sample(self, name: str, dist: Distribution, obs=None, **kwargs):
@@ -221,7 +228,13 @@ class NativeParam(ObjectInterpretation):
             constrained_value.unconstrained = ref(unconstrained_value)
             return constrained_value
 
-        return fwd(fn(initial_value, constraint))
+        return fwd(
+            fn(initial_value, constraint),
+            name,
+            initial_value=initial_value,
+            constraint=constraint,
+            event_dim=event_dim,
+        )
 
     @implements(get_param_store)
     def get_param_store(self):
@@ -253,7 +266,7 @@ class Plate(ObjectInterpretation):
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
         else:
-            return fwd(res)
+            return fwd(res, sampled_name, dist, **kwargs)
 
 
 def plate(name: str, size: int, dim: Optional[int] = None):
@@ -262,7 +275,8 @@ def plate(name: str, size: int, dim: Optional[int] = None):
 
 base_runner = coproduct(NativeSeed(), NativeParam())
 default_runner = product(
-    base_runner, {k: bind_result(lambda r, *_, **__: reflect(r)) for k in base_runner}
+    base_runner,
+    {k: bind_result(lambda r, *a, **k: fwd(r, *a, **k)) for k in base_runner},
 )
 
 
@@ -270,11 +284,11 @@ def block(
     hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
 ):
     @bind_result
-    def blocking(res, fn: Operation, *args, **kwargs):
-        if hide_fn(fn, res, *args, **kwargs):
-            return reflect(res)
+    def blocking(res, op: Operation, *args, **kwargs):
+        if hide_fn(op, res, *args, **kwargs):
+            return res if res is not None else op(*args, **kwargs)
         else:
-            return fwd(res)
+            return fwd(res, *args, **kwargs)
 
     return handler(
         product(
