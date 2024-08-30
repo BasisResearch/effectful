@@ -43,8 +43,6 @@ def bind_result_to_method(fn):
 
 @bind_continuation
 def fwd(cont: Callable[[], T], s: Optional[S], *args, **kwargs) -> T:
-    from effectful.internals.prompts import _ARG_STATE, _RESULT_STATE
-
     cont_: Callable[[], T]
     cont_ = (
         functools.partial(_ARG_STATE.sets(cont), (args, kwargs))  # type: ignore
