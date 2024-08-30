@@ -21,14 +21,6 @@ def test_lazy_1():
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    get_runtime()._JUDGEMENTS[Add] = lambda x, y: TypeInContext(
-        {
-            **(x.context if isinstance(x, TypeInContext) else {}),
-            **(y.context if isinstance(y, TypeInContext) else {}),
-        },
-        int,
-    )
-
     def eager_add(x, y):
         match x, y:
             case int(_), int(_):
