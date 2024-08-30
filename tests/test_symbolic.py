@@ -89,6 +89,7 @@ def test_lazy_1():
         assert Add(three, x) == Add(x, three)
         assert Add(Add(one, two), x) == Add(x, three)
         assert Add(one, Add(x, two)) == Add(x, three)
+        assert Add(Add(x, one), two) == Add(x, three)
         assert Add(Add(one, Add(y, one)), Add(one, Add(x, one))) == Add(Add(y, x), four)
 
         assert Add(one, Add(Add(x, y), two)) == Add(Add(x, y), three)
