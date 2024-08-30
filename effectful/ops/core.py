@@ -33,7 +33,8 @@ class Operation(Generic[Q, V]):
 
         term, env = reflect(self, *args, **kwargs)
         with handler({k: functools.partial(lambda x: x, v) for k, v in env.items()}):
-            return evaluate(term)  # type: ignore
+            with handler(BINDINGS):
+                return evaluate(term)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)

@@ -10,6 +10,7 @@ from effectful.ops.core import (
     Operation,
     Term,
     TypeInContext,
+    apply,
     evaluate,
     gensym,
 )
@@ -140,12 +141,11 @@ def test_bind_with_handler():
 
     def alpha_lam(var: Operation, body: Term):
         """alpha reduction"""
-        if not getattr(var, "_fresh", False):
-            mangled_var = gensym(object)
-            setattr(mangled_var, "_fresh", True)
-            return Lam(mangled_var, handler({var: mangled_var})(evaluate)(body))
-        else:
-            return fwd(None)
+        mangled_var = gensym(object)
+        rename = interpreter(
+            {var: mangled_var, apply: lambda op, *a, **k: Term(op, a, tuple(k.items()))}
+        )(evaluate)
+        return fwd(None, mangled_var, rename(body))
 
     BINDINGS[Lam] = alpha_lam
 
@@ -175,9 +175,8 @@ def test_bind_with_handler():
         op: functools.partial(lambda op, *a, **k: Term(op, a, tuple(k.items())), op)
         for op in (Add, App, Lam)
     }
-    free_alpha = coproduct(free, BINDINGS)
     eager = {Add: eager_add, App: eager_app, Lam: eta_lam}
-    eager_mixed = coproduct(free_alpha, eager)
+    eager_mixed = coproduct(free, eager)
 
     x, y, z = gensym(object), gensym(object), gensym(object)
     zero, one, two, three = 0, 1, 2, 3
