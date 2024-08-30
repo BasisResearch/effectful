@@ -57,16 +57,8 @@ def union(
 
 
 def coproduct(
-    intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp: Interpretation[S, T], intp2: Interpretation[S, T]
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return coproduct(intp, coproduct(*intps))
-
-    (intp2,) = intps
-
     res = dict(intp)
 
     for op, i2 in intp2.items():
@@ -80,17 +72,8 @@ def coproduct(
 
 
 def product(
-    intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp: Interpretation[S, T], intp2: Interpretation[S, T]
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return product(intp, product(*intps))
-
-    (intp2,) = intps
-
-    # on prompt, jump to the outer interpretation and interpret it using itself
     return coproduct(
         {op: handler(intp, closed=True)(intp[op]) for op in intp if op in intp2},
         {op: handler(intp, closed=True)(intp2[op]) for op in intp2},
@@ -99,5 +82,5 @@ def product(
 
 @contextlib.contextmanager
 def handler(intp: Interpretation[S, T], *, closed: bool = False):
-    with interpreter((union if closed else coproduct)(get_interpretation(), intp)):  # type: ignore
+    with interpreter((union if closed else coproduct)(get_interpretation(), intp)):
         yield intp

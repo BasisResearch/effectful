@@ -92,8 +92,8 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     h1 = times_n_handler(n1, op)
     h2 = times_n_handler(n2, new_op)
 
-    intp1 = coproduct(h0, h1, h2)
-    intp2 = coproduct(h0, h2, h1)
+    intp1 = coproduct(h0, coproduct(h1, h2))
+    intp2 = coproduct(h0, coproduct(h2, h1))
 
     assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
 
@@ -109,7 +109,7 @@ def test_handler_associative(op, args, n1, n2):
     h1 = times_n_handler(n1, op)
     h2 = times_n_handler(n2, op)
 
-    expected = interpreter(coproduct(h0, h1, h2))(f)()
+    expected = interpreter(coproduct(h0, coproduct(h1, h2)))(f)()
 
     with handler(h0), handler(h1), handler(h2):
         assert f() == expected
