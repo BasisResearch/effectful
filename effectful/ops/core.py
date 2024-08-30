@@ -1,20 +1,16 @@
 import dataclasses
 import functools
 import typing
-import weakref
-from typing import (
-    Callable,
-    Generic,
-    Mapping,
-    MutableMapping,
-    Sequence,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec, TypeAlias
+
+from effectful.internals.runtime import (
+    _BINDINGS,
+    _JUDGEMENTS,
+    get_interpretation,
+    weak_memoize,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -23,7 +19,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
@@ -33,7 +29,7 @@ class Operation(Generic[Q, V]):
 
         term, env = reflect(self, *args, **kwargs)
         with handler({k: functools.partial(lambda x: x, v) for k, v in env.items()}):
-            with handler(BINDINGS):
+            with handler(_BINDINGS):
                 return evaluate(term)  # type: ignore
 
 
@@ -54,7 +50,7 @@ class TypeInContext(Generic[T]):
     type: Type[T]
 
 
-@functools.cache
+@weak_memoize
 def define(m: Type[T]) -> Operation[..., T]:
     """
     Scott encoding of a type as its constructor.
@@ -67,13 +63,11 @@ def define(m: Type[T]) -> Operation[..., T]:
 
 
 @Operation
-def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+def apply(op: Operation[P, T], *args, **kwargs) -> T:
     return op.default(*args, **kwargs)
 
 
 def evaluate(term: Term[T]) -> T:
-    from effectful.internals.runtime import get_interpretation
-
     op = term.op
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
     kwargs = {k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs}
@@ -89,11 +83,5 @@ def evaluate(term: Term[T]) -> T:
 
 def gensym(t: Type[T]) -> Operation[[], T]:
     op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
-    JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
+    _JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op
-
-
-JUDGEMENTS: MutableMapping[Operation, Callable[..., TypeInContext]] = (
-    weakref.WeakKeyDictionary()
-)
-BINDINGS: MutableMapping[Operation, Callable] = weakref.WeakKeyDictionary()

@@ -52,6 +52,12 @@ def fwd(cont: Callable[[], T], s: Optional[S], *args, **kwargs) -> T:
     return _RESULT_STATE.sets(cont_)(s)
 
 
+def union(
+    intp: Interpretation[S, T], intp2: Interpretation[S, T]
+) -> Interpretation[S, T]:
+    return {**intp, **intp2}
+
+
 def coproduct(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
@@ -73,12 +79,6 @@ def coproduct(
             res[op] = i2
 
     return res
-
-
-def union(
-    intp: Interpretation[S, T], intp2: Interpretation[S, T]
-) -> Interpretation[S, T]:
-    return {**intp, **intp2}
 
 
 @contextlib.contextmanager

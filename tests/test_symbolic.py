@@ -4,16 +4,8 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.core import (
-    BINDINGS,
-    JUDGEMENTS,
-    Operation,
-    Term,
-    TypeInContext,
-    apply,
-    evaluate,
-    gensym,
-)
+from effectful.internals.runtime import _BINDINGS, _JUDGEMENTS
+from effectful.ops.core import Operation, Term, TypeInContext, apply, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
 
@@ -30,7 +22,7 @@ def test_lazy_1():
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+    _JUDGEMENTS[Add] = lambda x, y: TypeInContext(
         {
             **(x.context if isinstance(x, TypeInContext) else {}),
             **(y.context if isinstance(y, TypeInContext) else {}),
@@ -74,8 +66,8 @@ def test_lazy_1():
     simplified = coproduct(simplify_assoc_commut, simplify_unit)
     mixed_simplified = coproduct(mixed, simplified)
 
-    x_, y_, z_ = gensym(int), gensym(int), gensym(int)
-    x, y, z = x_(), y_(), z_()
+    x_, y_ = gensym(int), gensym(int)
+    x, y = x_(), y_()
     zero, one, two, three, four = 0, 1, 2, 3, 4
 
     with interpreter(eager):
@@ -126,13 +118,13 @@ def test_bind_with_handler():
     def Lam(var: Operation, body: Term) -> Term:
         raise NotImplementedError
 
-    JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
+    _JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
         {v: t for v, t in body.context.items() if v != var}, body.type
     )
-    JUDGEMENTS[App] = lambda f, arg: TypeInContext(
+    _JUDGEMENTS[App] = lambda f, arg: TypeInContext(
         {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
     )
-    JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+    _JUDGEMENTS[Add] = lambda x, y: TypeInContext(
         {
             **(x.context if isinstance(x, TypeInContext) else {}),
             **(y.context if isinstance(y, TypeInContext) else {}),
@@ -148,7 +140,7 @@ def test_bind_with_handler():
         )(evaluate)
         return fwd(None, mangled_var, rename(body))
 
-    BINDINGS[Lam] = alpha_lam
+    _BINDINGS[Lam] = alpha_lam
 
     def eager_add(x, y):
         """integer addition"""
@@ -168,7 +160,7 @@ def test_bind_with_handler():
 
     def eta_lam(var: Operation, body: Term):
         """eta reduction"""
-        if var not in interpreter(JUDGEMENTS)(evaluate)(body).context:
+        if var not in interpreter(_JUDGEMENTS)(evaluate)(body).context:
             return body
         else:
             return fwd(None)
@@ -181,7 +173,7 @@ def test_bind_with_handler():
     eager_mixed = coproduct(free, eager)
 
     x, y, z = gensym(object), gensym(object), gensym(object)
-    zero, one, two, three = 0, 1, 2, 3
+    one, two, three = 1, 2, 3
 
     with interpreter(eager_mixed):
         f1 = Lam(x, Add(x(), one))

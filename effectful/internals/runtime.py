@@ -106,3 +106,6 @@ def set_continuation(cont: Callable[P, T], fn: Callable[P, T]) -> Callable[P, T]
 _ARG_STATE: _LinearState = _LinearState()
 _RESULT_STATE: _LinearState = _LinearState()
 _CONTINUATION_STATE: _LinearState = _LinearState()
+
+_JUDGEMENTS = weakref.WeakKeyDictionary()  # type: ignore
+_BINDINGS = weakref.WeakKeyDictionary()  # type: ignore

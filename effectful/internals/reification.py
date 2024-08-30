@@ -1,19 +1,6 @@
 import dataclasses
 import functools
-import typing
-import weakref
-from typing import (
-    Callable,
-    Generic,
-    Mapping,
-    MutableMapping,
-    NamedTuple,
-    Sequence,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Generic, MutableMapping, Sequence, Tuple, TypeVar
 
 from typing_extensions import ParamSpec
 
