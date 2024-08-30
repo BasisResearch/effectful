@@ -82,3 +82,6 @@ def program_2():
 
 def program_3():
     return choose(1, choose(2, 3), 4)
+
+def program_4():
+    return thermometer(choose(program_1, program_2))
