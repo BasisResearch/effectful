@@ -40,7 +40,7 @@ def test_lazy_1():
 
     def eager_add(x, y):
         match x, y:
-            case int(x), int(y):
+            case int(_), int(_):
                 return x + y
             case _:
                 return fwd(None)
@@ -153,7 +153,7 @@ def test_bind_with_handler():
     def eager_add(x, y):
         """integer addition"""
         match x, y:
-            case int(x), int(y):
+            case int(_), int(_):
                 return x + y
             case _:
                 return fwd(None)
