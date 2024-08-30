@@ -39,32 +39,33 @@ def test_lazy_1():
     )
 
     def eager_add(x, y):
-        if not isinstance(x, Term) and not isinstance(y, Term):
-            return x + y
-        else:
-            return fwd(None)
+        match x, y:
+            case int(x), int(y):
+                return x + y
+            case _:
+                return fwd(None)
 
     eager = {Add: eager_add}
 
     def simplify_add(x, y):
-        if isinstance(x, Term) and not isinstance(y, Term):
-            # x + c -> c + x
-            return Add(y, x)
-        elif isinstance(y, Term) and y.op == Add:
-            # a + (b + c) -> (a + b) + c
-            return Add(Add(x, y.args[0]), y.args[1])
-        else:
-            return fwd(None)
+        match x, y:
+            case Term(_, _, _), int(_):
+                return Add(y, x)
+            case _, Term(_, (a, b), ()):
+                return Add(Add(x, a), b)
+            case _:
+                return fwd(None)
 
     simplify_assoc_commut = {Add: simplify_add}
 
     def unit_add(x, y):
-        if x == zero:
-            return y
-        elif y == zero:
-            return x
-        else:
-            return fwd(None)
+        match x, y:
+            case _, 0:
+                return x
+            case 0, _:
+                return y
+            case _:
+                return fwd(None)
 
     simplify_unit = {Add: unit_add}
 
@@ -151,18 +152,19 @@ def test_bind_with_handler():
 
     def eager_add(x, y):
         """integer addition"""
-        if not isinstance(x, Term) and not isinstance(y, Term):
-            return x + y
-        else:
-            return fwd(None)
+        match x, y:
+            case int(x), int(y):
+                return x + y
+            case _:
+                return fwd(None)
 
     def eager_app(f: Term, arg: Term | int):
         """beta reduction"""
-        if f.op == Lam:
-            var, body = f.args
-            return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
-        else:
-            return fwd(None)
+        match f, arg:
+            case Term(op, (var, body), ()), _ if op == Lam:
+                return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
+            case _:
+                return fwd(None)
 
     def eta_lam(var: Operation, body: Term):
         """eta reduction"""
