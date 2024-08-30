@@ -1,9 +1,24 @@
+"""
+effectful-minipyro
+------------------
+
+This file is a minimal implementation of the Pyro Programming Language,
+similar in spirit to the minipyro implementation shipped with Pyro.
+It adapts the API of minipyro (method signatures, etc.) to use the
+newer Effectful system. Like the original minipyro, this file is
+independent of the rest of Pyro, with the exception of the
+:mod:`pyro.distributions` module.
+
+This implementation conforms to the :mod:`pyroapi` module's interface, which
+allows effectful-minipyro to be run against `pyroapi`'s test suite.
+"""
+
 import random
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Optional, OrderedDict, Tuple, TypeVar, Union
+from typing import Callable, NamedTuple, Optional, OrderedDict, TypeVar, Union
 from weakref import ref
 
 import numpy as np
@@ -35,6 +50,18 @@ from effectful.ops.handler import (
     product,
 )
 
+P = ParamSpec("P")
+T = TypeVar("T")
+
+# Poutine has a notion of 'messages', which are dictionaries
+# that are passed between handlers (or 'Messengers') in order
+# to facilitate coordination and composition using "magic" slots.
+# When an effect is triggered, it has a corresponding message which
+# is sent up and down the effect stack.
+
+# Effectful does not coordinate between handlers this way, but we
+# can use them in order to provide the tracing functionality of minipyro
+
 
 @dataclass
 class SampleMsg:
@@ -53,10 +80,22 @@ class ParamMsg:
 Message = Union[ParamMsg, SampleMsg]
 Trace = OrderedDict[str, Message]
 
-P = ParamSpec("P")
-T = TypeVar("T")
 
-Seed = Tuple[Tensor, tuple, dict]
+class Seed(NamedTuple):
+    """
+    All the seeds for the random-number systems generators
+    used by minipyro
+    """
+
+    torch: Tensor
+    python: tuple
+    numpy: dict
+
+
+# The following definitions are all `Operations`, which are functions
+# whose meanings are dependent on the context.
+# They have no inherent meaning, so their default implementations
+# just throw `RuntimeError`s.
 
 
 @Operation
@@ -73,6 +112,12 @@ def param(
     event_dim: Optional[int] = None,
 ) -> Tensor:
     raise RuntimeError("No default implementation of param")
+
+
+# These next two pairs of effects of the form `set_X`/`get_X` should
+# likely be implemented using `effectful.internals.State`, a built-in
+# state handler.
+# To keep with the minipyro API, we write them explicitly.
 
 
 @Operation
@@ -95,8 +140,22 @@ def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
+# What follows is an `Interpretation`, which is a `Mapping` from
+# `Operation`s to meanings for those `Operation`s.
+# It is written in the form of an `ObjectInterpretation`, which
+# maps each `Operation` to a method on an `object`, allowing the
+# `Operation`s to share state.
+
+
 class Tracer(ObjectInterpretation):
-    TRACE: OrderedDict[str, Message]
+    """
+    An `Interpretation` which handles the `sample` and `param` `Operation`s,
+    which are immediately forwarded, but their arguments and results are recorded.
+
+    This record is the 'trace', which is stored in the `TRACE` field.
+    """
+
+    TRACE: Trace
 
     def __init__(self):
         self.TRACE = OrderedDict()
@@ -104,10 +163,16 @@ class Tracer(ObjectInterpretation):
     @implements(sample)
     @bind_result_to_method
     def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+        # When we recieve a sample message, we don't know how to
+        # handle it ourselves, so we forward it to the next handler:
         res: Tensor = fwd(ires)
+
+        # Once we've seen the result, we record it, along with the argument
+        # that caused it
         self.TRACE[var_name] = SampleMsg(
             name=var_name, val=res, dist=dist, obs=kwargs.get("obs")
         )
+
         return res
 
     @implements(param)
@@ -121,6 +186,8 @@ class Tracer(ObjectInterpretation):
         constraint: Constraint = distributions.constraints.real,
         event_dim: Optional[int] = None,
     ) -> Tensor:
+        # Similar to `Tracer.sample`
+
         res: Tensor = fwd(ires)
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
@@ -128,6 +195,13 @@ class Tracer(ObjectInterpretation):
 
 
 class Replay(ObjectInterpretation):
+    """
+    An `Interpretation` which takes a `Trace` as its argument.
+
+    It ensures that any call to `sample` is handled the same way it
+    was handled in the trace.
+    """
+
     def __init__(self, trace: Trace):
         self.trace = trace
 
@@ -140,22 +214,38 @@ class Replay(ObjectInterpretation):
             return fwd(res)
 
 
+# In minipyro, `Messenger`s can only be used has handlers,
+# but we have to make that choice explicit in Effectful.
+# These helpers do that.
+
+
 def replay(trace: Trace):
     return handler(Replay(trace))
 
 
 @contextmanager
 def trace():
-    t = Tracer()
-
-    with handler(t):
+    with handler(Tracer()) as t:
         yield t.TRACE
 
 
 class NativeSeed(ObjectInterpretation):
+    """
+    This is an interpretation which handles the
+    `[get/set]_rng_seed` operations.
+
+    It also provides a base case for `sample`.
+    """
+
     @implements(get_rng_seed)
     def get_rng_seed(self):
-        return fwd((get_rng_state(), random.getstate(), np.random.get_state()))
+        return fwd(
+            Seed(
+                torch=get_rng_state(),
+                python=random.getstate(),
+                numpy=np.random.get_state(),
+            )
+        )
 
     @implements(set_rng_seed)
     def set_rng_seed(self, seed: Union[int, Seed]):
@@ -164,9 +254,9 @@ class NativeSeed(ObjectInterpretation):
             random.seed(seed)
             np.random.seed(seed)
         else:
-            set_rng_state(seed[0])
-            random.setstate(seed[1])
-            np.random.set_state(seed[2])
+            set_rng_state(seed.torch)
+            random.setstate(seed.python)
+            np.random.set_state(seed.numpy)
         return fwd(None)
 
     @implements(sample)
@@ -182,6 +272,10 @@ class NativeSeed(ObjectInterpretation):
 
 @contextmanager
 def seed(seed: int):
+    """
+    `contextmanager` for installing/uninstalling a seed value.
+    Helpful for fixing an RNG state when calling a model.
+    """
     old_seed = get_rng_seed()
     try:
         set_rng_seed(seed)
@@ -191,6 +285,14 @@ def seed(seed: int):
 
 
 class NativeParam(ObjectInterpretation):
+    """
+    Provides a base implementation for the `param` `Operation`.
+
+    Stores the parameter store in the `PARAM_STORE` field, which
+    are accessible through the `get_param_store` and `clear_param_store`
+    `Operation`s.
+    """
+
     def __init__(self, initial_store=None):
         self.PARAM_STORE = initial_store or {}
 
@@ -228,6 +330,7 @@ class NativeParam(ObjectInterpretation):
             constrained_value.unconstrained = ref(unconstrained_value)
             return constrained_value
 
+        # Forward our value to any potential upstream transformations
         return fwd(fn(initial_value, constraint))
 
     @implements(get_param_store)
@@ -240,10 +343,14 @@ class NativeParam(ObjectInterpretation):
 
 
 class Plate(ObjectInterpretation):
+    """
+    An `Interpretation` which automatically broadcasts the `sample` `Operation`
+    """
+
     def __init__(self, name: str, size: int, dim: Optional[int]):
         if dim is None:
             raise NotImplementedError(
-                "mini-pyro doesn't implement the `dim` argument to `plate`"
+                "mini-pyro requires the `dim` argument to `plate`"
             )
 
         self.name = name
@@ -263,20 +370,31 @@ class Plate(ObjectInterpretation):
             return fwd(res)
 
 
+# Helper for using `Plate` as a `handler`
 def plate(name: str, size: int, dim: Optional[int] = None):
     return handler(Plate(name, size, dim))
 
 
-base_runner = coproduct(NativeSeed(), NativeParam())
-default_runner = product(
-    base_runner,
-    {k: bind_result(lambda r, *a, **k: fwd(r)) for k in base_runner},
-)
+# This is the "default runner", which contains the base implementations
+# of `sample` and `param`.
+# These must be installed (using `handler`) before running a minipyro
+# program.
+default_runner = coproduct(NativeSeed(), NativeParam())
 
 
 def block(
     hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
 ):
+    """
+    Block is a helper for masking out a subset of calls to either
+    `sample` or `param`.
+
+    Whenever `sample` or `param` are called, `hide_fn` is called with the operation
+    and its arguments. If `hide_fn` returns true, then the operation is "blocked",
+    and interpreted directly by the `default_runner`. Otherwise, they are handled
+    normally.
+    """
+
     @bind_result
     def blocking(res, op: Operation, *args, **kwargs):
         if hide_fn(op, res, *args, **kwargs):

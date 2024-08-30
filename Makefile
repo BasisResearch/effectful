@@ -14,6 +14,6 @@ test: lint FORCE
 	./scripts/test.sh
 
 test-notebooks: lint FORCE
-	./scripts/test-notebooks.sh
+	./scripts/test_notebooks.sh
 
 FORCE:

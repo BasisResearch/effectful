@@ -87,3 +87,4 @@ docs/build
 site/
 out
 *.matrix.gz
+/docs/source/.ipynb_checkpoints/
