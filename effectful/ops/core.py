@@ -5,12 +5,7 @@ from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, U
 
 from typing_extensions import ParamSpec, TypeAlias
 
-from effectful.internals.runtime import (
-    _BINDINGS,
-    _JUDGEMENTS,
-    get_interpretation,
-    weak_memoize,
-)
+from effectful.internals.runtime import get_interpretation, get_runtime, weak_memoize
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -29,7 +24,7 @@ class Operation(Generic[Q, V]):
 
         term, env = reflect(self, *args, **kwargs)
         with handler({k: functools.partial(lambda x: x, v) for k, v in env.items()}):
-            with handler(_BINDINGS):
+            with handler(get_runtime()._BINDINGS):
                 return evaluate(term)  # type: ignore
 
 
@@ -83,5 +78,5 @@ def evaluate(term: Term[T]) -> T:
 
 def gensym(t: Type[T]) -> Operation[[], T]:
     op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
-    _JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
+    get_runtime()._JUDGEMENTS[op] = lambda: TypeInContext(context={op: t}, type=t)
     return op

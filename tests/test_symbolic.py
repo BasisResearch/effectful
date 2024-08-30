@@ -4,7 +4,7 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import _BINDINGS, _JUDGEMENTS, interpreter
+from effectful.internals.runtime import get_runtime, interpreter
 from effectful.ops.core import Operation, Term, TypeInContext, apply, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
@@ -21,7 +21,7 @@ def test_lazy_1():
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    _JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+    get_runtime()._JUDGEMENTS[Add] = lambda x, y: TypeInContext(
         {
             **(x.context if isinstance(x, TypeInContext) else {}),
             **(y.context if isinstance(y, TypeInContext) else {}),
@@ -117,13 +117,13 @@ def test_bind_with_handler():
     def Lam(var: Operation, body: Term) -> Term:
         raise NotImplementedError
 
-    _JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
+    get_runtime()._JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
         {v: t for v, t in body.context.items() if v != var}, body.type
     )
-    _JUDGEMENTS[App] = lambda f, arg: TypeInContext(
+    get_runtime()._JUDGEMENTS[App] = lambda f, arg: TypeInContext(
         {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
     )
-    _JUDGEMENTS[Add] = lambda x, y: TypeInContext(
+    get_runtime()._JUDGEMENTS[Add] = lambda x, y: TypeInContext(
         {
             **(x.context if isinstance(x, TypeInContext) else {}),
             **(y.context if isinstance(y, TypeInContext) else {}),
@@ -139,7 +139,7 @@ def test_bind_with_handler():
         )(evaluate)
         return fwd(None, mangled_var, rename(body))
 
-    _BINDINGS[Lam] = alpha_lam
+    get_runtime()._BINDINGS[Lam] = alpha_lam
 
     def eager_add(x, y):
         """integer addition"""
@@ -159,7 +159,7 @@ def test_bind_with_handler():
 
     def eta_lam(var: Operation, body: Term):
         """eta reduction"""
-        if var not in interpreter(_JUDGEMENTS)(evaluate)(body).context:
+        if var not in interpreter(get_runtime()._JUDGEMENTS)(evaluate)(body).context:
             return body
         else:
             return fwd(None)

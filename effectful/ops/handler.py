@@ -5,11 +5,9 @@ from typing import Callable, Optional, TypeVar
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.runtime import (
-    _ARG_STATE,
-    _CONTINUATION_STATE,
-    _RESULT_STATE,
     _flatten_args,
     get_interpretation,
+    get_runtime,
     interpreter,
     set_continuation,
 )
@@ -25,16 +23,16 @@ V = TypeVar("V")
 def bind_continuation(
     fn: Callable[Concatenate[Callable[[], T], P], T]
 ) -> Callable[P, T]:
-    cc = _CONTINUATION_STATE.gets(lambda c: c(), default=bind_result(lambda r: r))  # type: ignore
+    cc = get_runtime()._CONTINUATION_STATE.gets(lambda c: c(), default=bind_result(lambda r: r))  # type: ignore
     return functools.wraps(fn)(functools.partial(fn, cc))
 
 
 def bind_args(fn: Callable[P, T]) -> Callable[[], T]:
-    return _ARG_STATE.gets(_flatten_args(fn), default=((), {}))
+    return get_runtime()._ARG_STATE.gets(_flatten_args(fn), default=((), {}))
 
 
 def bind_result(fn: Callable[Concatenate[Optional[S], P], T]) -> Callable[P, T]:
-    return _RESULT_STATE.gets(fn, default=None)
+    return get_runtime()._RESULT_STATE.gets(fn, default=None)
 
 
 def bind_result_to_method(fn):
@@ -45,11 +43,11 @@ def bind_result_to_method(fn):
 def fwd(cont: Callable[[], T], s: Optional[S], *args, **kwargs) -> T:
     cont_: Callable[[], T]
     cont_ = (
-        functools.partial(_ARG_STATE.sets(cont), (args, kwargs))  # type: ignore
+        functools.partial(get_runtime()._ARG_STATE.sets(cont), (args, kwargs))  # type: ignore
         if args or kwargs
         else cont
     )
-    return _RESULT_STATE.sets(cont_)(s)
+    return get_runtime()._RESULT_STATE.sets(cont_)(s)
 
 
 def union(
