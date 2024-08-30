@@ -6,6 +6,9 @@ Table of Contents
    :caption: Getting Started
 
    getting_started
+   introduction
+   minipyro
+
 
 Indices and tables
 ==================
