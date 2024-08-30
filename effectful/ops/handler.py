@@ -78,22 +78,9 @@ def coproduct(
 
 
 def union(
-    intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp: Interpretation[S, T], intp2: Interpretation[S, T]
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return union(intp, union(*intps))
-
-    (intp2,) = intps
-
-    res = dict(intp)
-
-    for op, i2 in intp2.items():
-        res[op] = i2
-
-    return res
+    return {**intp, **intp2}
 
 
 @contextlib.contextmanager
