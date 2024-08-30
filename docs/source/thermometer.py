@@ -3,6 +3,7 @@ This is an implementation of Koppel et. al's 2018 paper "Capturing the Future by
 """
 
 from dataclasses import dataclass
+from collections import deque
 
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
@@ -19,10 +20,17 @@ def fail():
     raise NotImplementedError
 
 
+def choose(*options):
+    for option in options:
+        if flip():
+            return option
+
+    return fail()
+
+
 @dataclass
 class Thermometer(ObjectInterpretation):
-    future: list[bool]
-    past: list[bool]
+    route: list[bool]
 
     class Flip(BaseException):
         pass
@@ -32,34 +40,45 @@ class Thermometer(ObjectInterpretation):
 
     @implements(flip)
     def do_flip(self):
-        if self.future:
-            pass
+        if not self.route:
+            raise Thermometer.Flip
+        else:
+            return self.route.popleft()
 
     @implements(fail)
     def do_fail(self):
         raise Thermometer.Fail
 
-
-def choose(*objs):
-    for o in objs:
-        if flip():
-            return o
-
-    return fail()
-
-
 def thermometer(thunk):
+    routes = [deque()]
     results = []
 
-    for lhs in [True, False]:
+    while routes:
+        route = routes.pop()
+
         try:
-            with handler(Thermometer(lhs)):
+            with handler(Thermometer(route.copy())):
                 results.append(thunk())
+        except Thermometer.Flip:
+            r1 = route.copy()
+            r1.append(False)
+
+            r2 = route
+            r2.append(True)
+
+            routes.append(r1)
+            routes.append(r2)
         except Thermometer.Fail:
             pass
 
-    return results
+    return list(results)
 
 
 def program_1():
-    return 3 * (5 if flip() else 7)
+    return 3 * choose(7, 5)
+
+def program_2():
+    return choose(1, 2) if flip() else choose(3, 4)
+
+def program_3():
+    return choose(1, choose(2, 3), 4)
