@@ -32,8 +32,8 @@ from effectful.ops.handler import (
     coproduct,
     fwd,
     handler,
+    product,
 )
-from effectful.ops.runner import product
 
 
 @dataclass

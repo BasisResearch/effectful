@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import typing
@@ -33,10 +34,15 @@ def get_interpretation():
     return get_runtime().interpretation
 
 
-def swap_interpretation(intp: "Interpretation[S, V]") -> "Interpretation[S, T]":
-    old_intp = get_runtime().interpretation
-    get_runtime().interpretation = intp
-    return old_intp
+@contextlib.contextmanager
+def interpreter(intp: "Interpretation"):
+    r = get_runtime()
+    old_intp = r.interpretation
+    try:
+        r.interpretation = intp
+        yield intp
+    finally:
+        r.interpretation = old_intp
 
 
 def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:

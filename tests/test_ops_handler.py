@@ -6,10 +6,10 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
+from effectful.internals.runtime import interpreter
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import bind_result, coproduct, fwd, handler
-from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
 

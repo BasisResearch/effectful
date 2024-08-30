@@ -4,10 +4,9 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import _BINDINGS, _JUDGEMENTS
+from effectful.internals.runtime import _BINDINGS, _JUDGEMENTS, interpreter
 from effectful.ops.core import Operation, Term, TypeInContext, apply, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
 

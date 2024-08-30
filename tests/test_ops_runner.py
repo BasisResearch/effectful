@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 import logging
 from typing import TypeVar
@@ -5,10 +6,9 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
+from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Interpretation, Operation, define
-from effectful.ops.handler import bind_result, coproduct, fwd, handler
-from effectful.ops.interpreter import interpreter
-from effectful.ops.runner import product, runner
+from effectful.ops.handler import bind_result, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +111,15 @@ def test_runner_scopes():
             }
         )
 
+    @contextlib.contextmanager
     def sextuple_as_double_triple(mode):
         interp = {sextuple: lambda v: double(triple(v))}
         if mode == "runner":
-            return runner(interp)
+            with interpreter(product(get_interpretation(), interp)):
+                yield
         elif mode == "handler":
-            return handler(interp)
+            with handler(interp):
+                yield
 
     with multiply_in_length():
         with sextuple_as_double_triple("runner"):
@@ -173,7 +176,7 @@ def test_runner_outer_reflect_1():
 
     with interpreter(intp_outer):
         assert plus_1(1) == 1 + 2 + 3
-        with runner(intp_inner):
+        with interpreter(product(intp_outer, intp_inner)):
             assert plus_2(2) == 2 + (2 + 3) + 1
 
 

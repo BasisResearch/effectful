@@ -4,8 +4,8 @@ from typing import Generic, MutableMapping, Sequence, Tuple, TypeVar
 
 from typing_extensions import ParamSpec
 
+from effectful.internals.runtime import interpreter
 from effectful.ops.core import Context, Operation, Term, apply, define, gensym
-from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
