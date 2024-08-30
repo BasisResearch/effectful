@@ -4,14 +4,14 @@ from typing import Callable, Optional, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import (
+from effectful.internals.runtime import (
     _ARG_STATE,
     _CONTINUATION_STATE,
     _RESULT_STATE,
     _flatten_args,
+    get_interpretation,
     set_continuation,
 )
-from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation
 from effectful.ops.interpreter import interpreter
 
@@ -83,5 +83,5 @@ def union(
 
 @contextlib.contextmanager
 def handler(intp: Interpretation[S, T], *, closed: bool = False):
-    with interpreter((union if closed else coproduct)(get_interpretation(), intp)):
+    with interpreter((union if closed else coproduct)(get_interpretation(), intp)):  # type: ignore
         yield intp
