@@ -1,11 +1,12 @@
 import functools
 import logging
-from typing import TypeVar
+from typing import Annotated, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import get_runtime, interpreter
-from effectful.ops.core import Operation, Term, TypeInContext, apply, evaluate, gensym
+from effectful.internals.sugar import Bound, defop
+from effectful.ops.core import Operation, Term, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -15,9 +16,9 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-def test_lazy_1():
+def test_lazy_addition():
 
-    @Operation
+    @defop
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
@@ -96,43 +97,18 @@ def test_lazy_1():
         assert Add(x, zero) == x
 
 
-def test_bind_with_handler():
-
-    @Operation
+def test_lambda_calculus():
+    @defop
     def Add(x: int, y: int) -> int:
         raise NotImplementedError
 
-    @Operation
+    @defop
     def App(f: Term, arg: Term) -> Term:
         raise NotImplementedError
 
-    @Operation
-    def Lam(var: Operation, body: Term) -> Term:
+    @defop
+    def Lam(var: Annotated[Term, Bound()], body: Term) -> Term:
         raise NotImplementedError
-
-    get_runtime()._JUDGEMENTS[Lam] = lambda var, body: TypeInContext(
-        {v: t for v, t in body.context.items() if v != var}, body.type
-    )
-    get_runtime()._JUDGEMENTS[App] = lambda f, arg: TypeInContext(
-        {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
-    )
-    get_runtime()._JUDGEMENTS[Add] = lambda x, y: TypeInContext(
-        {
-            **(x.context if isinstance(x, TypeInContext) else {}),
-            **(y.context if isinstance(y, TypeInContext) else {}),
-        },
-        int,
-    )
-
-    def alpha_lam(var: Operation, body: Term):
-        """alpha reduction"""
-        mangled_var = gensym(object)
-        rename = interpreter(
-            {var: mangled_var, apply: lambda op, *a, **k: Term(op, a, tuple(k.items()))}
-        )(evaluate)
-        return fwd(None, mangled_var, rename(body))
-
-    get_runtime()._BINDINGS[Lam] = alpha_lam
 
     def eager_add(x, y):
         """integer addition"""

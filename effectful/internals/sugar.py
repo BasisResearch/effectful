@@ -1,6 +1,19 @@
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar
+import functools
+import inspect
+import typing
+from typing import Callable, Generic, Mapping, Optional, ParamSpec, Sequence, TypeVar
 
-from effectful.ops.core import Interpretation, Operation
+from effectful.internals.runtime import get_runtime, interpreter
+from effectful.ops.core import (
+    Interpretation,
+    Operation,
+    Term,
+    TypeInContext,
+    apply,
+    evaluate,
+    gensym,
+)
+from effectful.ops.handler import fwd, handler
 
 P = ParamSpec("P")
 V = TypeVar("V")
@@ -122,3 +135,136 @@ def implements(op: Operation[P, V]):
     method as the implementation of the given `Operation`.
     """
     return _ImplementedOperation(op)
+
+
+class Annotation(Generic[T]):
+
+    @classmethod
+    def extract(cls, bound_sig: inspect.BoundArguments) -> Mapping[str, T]:
+        annotations = {}
+        for name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, cls):
+                        annotations[name] = bound_sig.arguments[name]
+        return annotations
+
+    @classmethod
+    def check(
+        cls, bound_sig: inspect.BoundArguments, anno: T, tp: TypeInContext | Operation
+    ) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    def check_all(cls, bound_sig: inspect.BoundArguments) -> bool:
+        return all(
+            cls.check(bound_sig, anno, bound_sig.arguments[name])
+            for name, anno in cls.extract(bound_sig).items()
+        )
+
+
+class Bound(Annotation[Operation | Sequence[Operation]]):
+
+    @classmethod
+    def check(
+        cls, bound_sig: inspect.BoundArguments, anno: Operation, tp: Operation
+    ) -> bool:
+        return anno not in set(Fresh.extract(bound_sig).values())
+
+
+class Fresh(Annotation[Operation | Sequence[Operation]]):
+
+    @classmethod
+    def check(
+        cls, bound_sig: inspect.BoundArguments, anno: Operation, tp: Operation
+    ) -> bool:
+        return anno not in set(Bound.extract(bound_sig).values())
+
+
+class Has(Annotation[Mapping[Operation, bool]]):
+    vars: Mapping[str, bool]
+
+    def __init__(self, **vars: bool):
+        self.vars = vars
+
+    @classmethod
+    def extract(
+        cls, bound_sig: inspect.BoundArguments
+    ) -> Mapping[str, Mapping[Operation, bool]]:
+        annotations = {}
+        for name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, cls):
+                        annotations[name] = {
+                            bound_sig.arguments[k]: v for k, v in anno.vars.items()
+                        }
+        return annotations
+
+    @classmethod
+    def check(
+        cls,
+        bound_sig: inspect.BoundArguments,
+        anno: Mapping[Operation, bool],
+        tp: TypeInContext,
+    ) -> bool:
+        return all(has_var == (var in tp.context) for var, has_var in anno.items())
+
+
+def defop(fn: Callable[P, T]) -> Operation[P, T]:
+
+    def rename(subs: Mapping[Operation[[], T], Operation[[], T]]):
+        free = {apply: lambda op, *a, **k: Term(op, a, tuple(k.items()))}
+        return interpreter({**free, **subs})(evaluate)
+
+    sig = inspect.signature(fn)
+
+    def __judgement__(
+        sig: inspect.Signature,
+        *arg_types: TypeInContext | Operation,
+        **kwarg_types: TypeInContext | Operation
+    ) -> TypeInContext:
+        bound_sig = sig.bind(*arg_types, **kwarg_types)
+
+        bound_vars = Bound.extract(bound_sig)
+        fresh_vars = Fresh.extract(bound_sig)
+
+        assert Bound.check_all(bound_sig)
+        assert Fresh.check_all(bound_sig)
+        assert Has.check_all(bound_sig)
+
+        ctx = {}
+        for name, arg_type in bound_sig.arguments.items():
+            if isinstance(arg_type, TypeInContext):
+                ctx.update(
+                    {v: t for v, t in arg_type.context.items() if v not in bound_vars}
+                )
+            elif isinstance(arg_type, Operation):
+                if arg_type in fresh_vars:
+                    ctx[arg_type] = typing.get_args(sig.parameters[name].annotation)[0]
+            else:
+                continue
+
+        return TypeInContext(context=ctx, type=sig.return_annotation)
+
+    def __binding__(sig: inspect.Signature, *args: P.args, **kwargs: P.kwargs) -> T:
+
+        bound_sig = sig.bind(*args, **kwargs)
+
+        bound_vars = Bound.extract(bound_sig)
+
+        renaming_map = {
+            var: gensym(get_runtime()._JUDGEMENTS[var]()) for var in bound_vars.values()
+        }
+        for argname, argval in tuple(bound_sig.arguments.items()):
+            if argname in bound_vars:
+                bound_sig.arguments[argname] = renaming_map[bound_vars[argname]]
+            else:
+                bound_sig.arguments[argname] = rename(renaming_map)(argval)
+
+        return fwd(None, *bound_sig.args, **bound_sig.kwargs)
+
+    op = Operation(fn)
+    get_runtime()._JUDGEMENTS[op] = functools.partial(__judgement__, sig)
+    get_runtime()._BINDINGS[op] = functools.partial(__binding__, sig)
+    return op

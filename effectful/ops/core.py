@@ -62,7 +62,21 @@ def apply(op: Operation[P, T], *args, **kwargs) -> T:
     return op.default(*args, **kwargs)
 
 
-def evaluate(term: Term[T]) -> T:
+def evaluate(term: T | Term[T]) -> T:
+    if not isinstance(term, Term):
+        from effectful.internals.reification import reify
+        from effectful.ops.handler import handler
+
+        tm_env = reify(term)
+        with handler(
+            {k: functools.partial(evaluate, v) for k, v in tm_env.env.items()}
+        ):
+            return (
+                evaluate(tm_env.value)
+                if isinstance(tm_env.value, Term)
+                else tm_env.value
+            )
+
     op = term.op
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
     kwargs = {k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs}
