@@ -88,9 +88,11 @@ def test_lazy_addition():
         assert 1 + ((x + y) + 2) == (x + y) + 3
         assert 1 + ((x + (y + 1)) + 1) == (x + y) + 3
 
-        assert ((x + x) + (x + x)) + ((x + x) + (x + x)) == \
-            x + (x + (x + (x + (x + (x + (x + x)))))) == \
-            ((((((x + x) + x) + x) + x) + x) + x) + x
+        assert (
+            ((x + x) + (x + x)) + ((x + x) + (x + x))
+            == x + (x + (x + (x + (x + (x + (x + x))))))
+            == ((((((x + x) + x) + x) + x) + x) + x) + x
+        )
 
         assert x + 0 == 0 + x == x
 

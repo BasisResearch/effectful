@@ -2,7 +2,16 @@ import functools
 import inspect
 import operator
 import typing
-from typing import Callable, Generic, Mapping, Optional, ParamSpec, Sequence, Type, TypeVar
+from typing import (
+    Callable,
+    Generic,
+    Mapping,
+    Optional,
+    ParamSpec,
+    Sequence,
+    Type,
+    TypeVar,
+)
 
 import wrapt
 
@@ -221,8 +230,6 @@ def defop(fn: Callable[P, T]) -> Operation[P, T]:
         free = {apply: lambda op, *a, **k: Term(op, a, tuple(k.items()))}
         return interpreter({**free, **subs})(evaluate)
 
-    sig = inspect.signature(fn)
-
     def __judgement__(
         sig: inspect.Signature,
         *arg_types: TypeInContext | Operation,
@@ -268,6 +275,7 @@ def defop(fn: Callable[P, T]) -> Operation[P, T]:
 
         return fwd(None, *bound_sig.args, **bound_sig.kwargs)
 
+    sig = inspect.signature(fn)
     op = Operation(fn)
     get_runtime()._JUDGEMENTS[op] = functools.partial(__judgement__, sig)
     get_runtime()._BINDINGS[op] = functools.partial(__binding__, sig)
@@ -278,13 +286,17 @@ class Box(Generic[T], wrapt.ObjectProxy):
     __wrapped__: Term[T] | T
 
     def __add__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
-        return type(self)(defop(operator.__add__)(
-            self if not isinstance(self, Box) else self.__wrapped__,
-            other if not isinstance(other, Box) else other.__wrapped__,
-        ))
+        return type(self)(
+            defop(operator.__add__)(
+                self if not isinstance(self, Box) else self.__wrapped__,
+                other if not isinstance(other, Box) else other.__wrapped__,
+            )
+        )
 
     def __radd__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
-        return type(self)(defop(operator.__add__)(
-            other if not isinstance(other, Box) else other.__wrapped__,
-            self if not isinstance(self, Box) else self.__wrapped__,
-        ))
+        return type(self)(
+            defop(operator.__add__)(
+                other if not isinstance(other, Box) else other.__wrapped__,
+                self if not isinstance(self, Box) else self.__wrapped__,
+            )
+        )
