@@ -1,11 +1,12 @@
 import functools
 import logging
+import operator
 from typing import Annotated, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import get_runtime, interpreter
-from effectful.internals.sugar import Bound, defop
+from effectful.internals.sugar import Bound, Box, defop
 from effectful.ops.core import Operation, Term, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
@@ -18,29 +19,27 @@ T = TypeVar("T")
 
 def test_lazy_addition():
 
-    @defop
-    def Add(x: int, y: int) -> int:
-        raise NotImplementedError
+    add = defop(operator.add)
 
     def eager_add(x, y):
         match x, y:
-            case int(_), int(_):
-                return x + y
+            case int(x_), int(y_):
+                return x_ + y_
             case _:
                 return fwd(None)
 
-    eager = {Add: eager_add}
+    eager = {add: eager_add}
 
     def simplify_add(x, y):
         match x, y:
             case Term(_, _, _), int(_):
-                return Add(y, x)
+                return y + Box(x)
             case _, Term(_, (a, b), ()):
-                return Add(Add(x, a), b)
+                return (Box(x) + a) + b
             case _:
                 return fwd(None)
 
-    simplify_assoc_commut = {Add: simplify_add}
+    simplify_assoc_commut = {add: simplify_add}
 
     def unit_add(x, y):
         match x, y:
@@ -51,50 +50,49 @@ def test_lazy_addition():
             case _:
                 return fwd(None)
 
-    simplify_unit = {Add: unit_add}
+    simplify_unit = {add: unit_add}
 
-    lazy = {Add: lambda x, y: Term(Add, (x, y), ())}
+    lazy = {add: lambda x, y: Term(add, (x, y), ())}
     mixed = coproduct(lazy, eager)
     simplified = coproduct(simplify_assoc_commut, simplify_unit)
     mixed_simplified = coproduct(mixed, simplified)
 
     x_, y_ = gensym(int), gensym(int)
-    x, y = x_(), y_()
-    zero, one, two, three, four = 0, 1, 2, 3, 4
+    x, y = Box(x_()), Box(y_())
+    one, two, three = Box(1), Box(2), Box(3)
 
     with interpreter(eager):
-        assert Add(one, two) == three
+        assert one + two == three
 
     with interpreter(lazy):
-        assert Add(one, two) == Term(Add, (one, two), ())
-        assert Add(one, Add(two, three)) == Term(
-            Add, (one, Term(Add, (two, three), ())), ()
+        assert one + two == Term(add, (one, two), ())
+        assert add(one, add(two, three)) == Term(
+            add, (one, Term(add, (two, three), ())), ()
         )
-        assert Add(x, y) == Term(Add, (x, y), ())
-        assert Add(x, one) != Add(y, one)
+        assert x + y == Term(add, (x, y), ())
+        assert not (x + 1 == y + 1)
 
     with interpreter(mixed):
-        assert Add(one, two) == three
-        assert Add(Add(one, two), x) == Term(Add, (three, x), ())
+        assert one + two == three
+        assert (one + two) + x == 3 + x
 
     with interpreter(mixed_simplified):
-        assert Add(one, two) == three
-        assert Add(three, x) == Add(x, three)
-        assert Add(Add(one, two), x) == Add(x, three)
-        assert Add(one, Add(x, two)) == Add(x, three)
-        assert Add(Add(x, one), two) == Add(x, three)
-        assert Add(Add(one, Add(y, one)), Add(one, Add(x, one))) == Add(Add(y, x), four)
+        assert one + two == three
+        assert (one + two) + x == x + 3
 
-        assert Add(one, Add(Add(x, y), two)) == Add(Add(x, y), three)
-        assert Add(one, Add(Add(x, Add(y, one)), one)) == Add(Add(x, y), three)
+        assert 3 + x == x + 3
+        assert 1 + (x + 2) == x + 3
+        assert (x + 1) + 2 == x + 3
+        assert (1 + (y + 1)) + (1 + (x + 1)) == (y + x) + 4
 
-        assert (
-            Add(Add(Add(x, x), Add(x, x)), Add(Add(x, x), Add(x, x)))
-            == Add(Add(Add(Add(Add(Add(Add(x, x), x), x), x), x), x), x)
-            == Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, Add(x, x)))))))
-        )
+        assert 1 + ((x + y) + 2) == (x + y) + 3
+        assert 1 + ((x + (y + 1)) + 1) == (x + y) + 3
 
-        assert Add(x, zero) == x
+        assert ((x + x) + (x + x)) + ((x + x) + (x + x)) == \
+            x + (x + (x + (x + (x + (x + (x + x)))))) == \
+            ((((((x + x) + x) + x) + x) + x) + x) + x
+
+        assert x + 0 == 0 + x == x
 
 
 def test_lambda_calculus():
