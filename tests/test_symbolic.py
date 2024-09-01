@@ -1,8 +1,9 @@
 import functools
 import logging
 import operator
-from typing import Annotated, TypeVar
+from typing import Annotated, Generic, TypeVar
 
+import wrapt
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import get_runtime, interpreter
@@ -18,6 +19,25 @@ T = TypeVar("T")
 
 
 def test_lazy_addition():
+
+    class Box(Generic[T], wrapt.ObjectProxy):
+        __wrapped__: Term[T] | T
+
+        def __add__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
+            return type(self)(
+                defop(operator.__add__)(
+                    self if not isinstance(self, Box) else self.__wrapped__,
+                    other if not isinstance(other, Box) else other.__wrapped__,
+                )
+            )
+
+        def __radd__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
+            return type(self)(
+                defop(operator.__add__)(
+                    other if not isinstance(other, Box) else other.__wrapped__,
+                    self if not isinstance(self, Box) else self.__wrapped__,
+                )
+            )
 
     add = defop(operator.add)
 

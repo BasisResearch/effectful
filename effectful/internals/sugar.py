@@ -1,6 +1,5 @@
 import functools
 import inspect
-import operator
 import typing
 from typing import (
     Callable,
@@ -12,8 +11,6 @@ from typing import (
     Type,
     TypeVar,
 )
-
-import wrapt
 
 from effectful.internals.runtime import get_runtime, interpreter, weak_memoize
 from effectful.ops.core import (
@@ -280,23 +277,3 @@ def defop(fn: Callable[P, T]) -> Operation[P, T]:
     get_runtime()._JUDGEMENTS[op] = functools.partial(__judgement__, sig)
     get_runtime()._BINDINGS[op] = functools.partial(__binding__, sig)
     return op
-
-
-class Box(Generic[T], wrapt.ObjectProxy):
-    __wrapped__: Term[T] | T
-
-    def __add__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
-        return type(self)(
-            defop(operator.__add__)(
-                self if not isinstance(self, Box) else self.__wrapped__,
-                other if not isinstance(other, Box) else other.__wrapped__,
-            )
-        )
-
-    def __radd__(self, other: T | Term[T] | "Box[T]") -> "Box[T]":
-        return type(self)(
-            defop(operator.__add__)(
-                other if not isinstance(other, Box) else other.__wrapped__,
-                self if not isinstance(self, Box) else self.__wrapped__,
-            )
-        )
