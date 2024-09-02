@@ -74,10 +74,20 @@ def coproduct(
 def product(
     intp: Interpretation[S, T], intp2: Interpretation[S, T]
 ) -> Interpretation[S, T]:
-    return coproduct(
-        {op: handler(intp, closed=True)(intp[op]) for op in intp if op in intp2},
-        {op: handler(intp, closed=True)(intp2[op]) for op in intp2},
-    )
+    # implicit fixpoint semantics
+    intp_ = {op: handler(intp, closed=True)(intp[op]) for op in intp}
+    intp2_ = {op: handler(coproduct(intp_, intp2), closed=True)(intp2[op]) for op in intp2}
+    # # explicit fixpoint semantics
+    # h_outer = lambda f: lambda *a, **k: handler(coproduct(intp2_, intp_), closed=True)(f)(*a, **k)
+    # h_inner = lambda f: lambda *a, **k: handler(coproduct(intp_, intp2_), closed=True)(f)(*a, **k)
+    # intp_: Interpretation[S, T] = {op: h_outer(intp[op]) for op in intp}
+    # intp2_: Interpretation[S, T] = {op: h_inner(intp2[op]) for op in intp2}
+    return {op: fn for op, fn in coproduct(intp_, intp2_).items() if op in intp2_}
+    # previous definition (incorrect?)
+    # return coproduct(
+    #     {op: handler(intp, closed=True)(intp[op]) for op in intp if op in intp2},
+    #     {op: handler(intp, closed=True)(intp2[op]) for op in intp2},
+    # )
 
 
 @contextlib.contextmanager
