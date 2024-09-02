@@ -7,7 +7,7 @@ import wrapt
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import get_runtime, interpreter
-from effectful.internals.sugar import Bound, Box, defop
+from effectful.internals.sugar import Bound, defop
 from effectful.ops.core import Operation, Term, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
