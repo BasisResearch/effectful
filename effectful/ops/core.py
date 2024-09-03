@@ -1,7 +1,11 @@
 import collections.abc
+import dataclasses
+import typing
 from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
 
-from typing_extensions import ParamSpec, dataclass_transform
+from typing_extensions import ParamSpec
+
+from effectful.internals.runtime import weak_memoize
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -10,17 +14,19 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclass_transform()
+@weak_memoize
 def define(m: Type[T]) -> "Operation[..., T]":
     """
     Scott encoding of a type as its constructor.
     """
-    from effectful.internals.bootstrap import base_define
+    if not typing.TYPE_CHECKING:
+        if typing.get_origin(m) not in (m, None):
+            return define(typing.get_origin(m))
 
-    return base_define(m)  # type: ignore
+    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
-@define
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
@@ -31,23 +37,23 @@ class Operation(Generic[Q, V]):
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-@define
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Symbol:
     name: str
 
 
-@define
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Variable(Generic[T]):
     symbol: Symbol
     type: Type[T]
 
 
-@define
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Constant(Generic[T]):
     value: T
 
 
-@define
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Term(Generic[T]):
     op: Operation[..., T]
     args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
