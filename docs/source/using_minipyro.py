@@ -10,7 +10,7 @@ from effectful.handlers.minipyro import (
     param,
     sample,
 )
-from effectful.internals.runtime import interpreter
+from effectful.ops.handler import handler
 
 
 def test_optimizer():
@@ -21,7 +21,7 @@ def test_optimizer():
     def guide(data):
         pass
 
-    with interpreter(default_runner):
+    with handler(default_runner):
         data = tensor(0.0)
         get_param_store().clear()
         elbo = Trace_ELBO(ignore_jit_warnings=True)
