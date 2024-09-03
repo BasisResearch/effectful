@@ -10,7 +10,7 @@ from effectful.handlers.minipyro import (
     param,
     sample,
 )
-from effectful.ops.interpreter import interpreter
+from effectful.internals.runtime import interpreter
 
 
 def test_optimizer():

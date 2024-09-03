@@ -5,7 +5,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompt
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -32,15 +32,15 @@ def product(
     (intp2,) = intps
 
     # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {op: interpreter(intp)(op) for op in intp}
+    refls = {op: closed_handler(intp)(op) for op in intp}
 
     return {
-        op: interpreter(refls)(
+        op: closed_handler(refls)(
             intp2[op]
             if op not in intp
             else bind_prompt(
                 prompt,
-                interpreter(intp)(cast(Callable[..., T], op)),
+                closed_handler(intp)(cast(Callable[..., T], op)),
                 intp2[op],
             )
         )
@@ -64,8 +64,8 @@ def runner(
             prompt is not handler_prompt
         ), f"runner prompt and handler prompt must be distinct, but got {handler_prompt}"
         h2r = {handler_prompt: prompt}
-        curr_intp = {op: interpreter(h2r)(curr_intp[op]) for op in curr_intp.keys()}
-        next_intp = {op: interpreter(h2r)(next_intp[op]) for op in next_intp.keys()}
+        curr_intp = {op: closed_handler(h2r)(curr_intp[op]) for op in curr_intp.keys()}
+        next_intp = {op: closed_handler(h2r)(next_intp[op]) for op in next_intp.keys()}
 
-    with interpreter(product(curr_intp, next_intp, prompt=prompt)):
+    with closed_handler(product(curr_intp, next_intp, prompt=prompt)):
         yield intp
