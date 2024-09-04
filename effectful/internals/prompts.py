@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
+from typing import Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
@@ -109,9 +109,9 @@ def bind_prompt(
 
     @wraps(prompt)
     def prompt_wrapper(res: Optional[T], *a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
+        a, k = (a, k) if a or k else _get_args()  # type: ignore
         res = res if res is not None else _get_result()
-        with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):
+        with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
             return prompt_impl(*a, **k)
 
     @wraps(wrapped)
