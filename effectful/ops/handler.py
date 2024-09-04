@@ -1,10 +1,9 @@
 import contextlib
-import functools
 from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt
+from effectful.internals.prompts import Prompt, bind_prompt, bind_result
 from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Interpretation, Operation
 
@@ -45,26 +44,17 @@ def coproduct(
     return res
 
 
-def union(
-    intp: Interpretation[S, T], intp2: Interpretation[S, T]
-) -> Interpretation[S, T]:
-    return {**intp, **intp2}
-
-
 @contextlib.contextmanager
 def handler(
     intp: Interpretation[S, T],
     *,
     prompt: Prompt[T] = fwd,  # type: ignore
-    closed: bool = False,
 ):
-    new_intp = (
-        union(get_interpretation(), intp)
-        if closed
-        else coproduct(get_interpretation(), intp, prompt=prompt)
-    )
-    with interpreter(new_intp):
+    with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
         yield intp
 
 
-closed_handler = functools.partial(handler, closed=True)
+@contextlib.contextmanager
+def closed_handler(intp: Interpretation[S, T]):
+    with interpreter({**get_interpretation(), **intp}):
+        yield intp
