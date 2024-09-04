@@ -15,7 +15,7 @@ V = TypeVar("V")
 
 
 @Operation
-def fwd(__result: Optional[S]) -> S:
+def fwd(__result: Optional[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
 

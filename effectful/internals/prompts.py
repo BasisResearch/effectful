@@ -4,7 +4,6 @@ from typing import Any, Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation
 
 P = ParamSpec("P")
@@ -33,18 +32,24 @@ def shallow_interpreter(intp: Interpretation):
         yield intp
 
 
-result = State[Any](None)
-args = State[Args](State._Empty())
+@Operation
+def _get_result() -> Optional[T]:
+    return None
+
+
+@Operation
+def _get_args() -> Args:
+    return ((), {})
 
 
 def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
-    return lambda *a, **k: fn(result(), *a, **k)
+    return lambda *a, **k: fn(_get_result(), *a, **k)
 
 
 def bind_result_to_method(
     fn: Callable[Concatenate[V, Optional[T], P], T]
 ) -> Callable[Concatenate[V, P], T]:
-    return lambda s, *a, **k: fn(s, result(), *a, **k)
+    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
 
 
 def bind_prompt(
@@ -103,14 +108,16 @@ def bind_prompt(
     from effectful.ops.handler import closed_handler
 
     @wraps(prompt)
-    def prompt_wrapper(res: Optional[T]) -> T:
-        with closed_handler(result.bound_to(res)):
-            return prompt_impl(*args()[0], **args()[1])
+    def prompt_wrapper(res: Optional[T], *a: P.args, **k: P.kwargs) -> T:
+        a, k = (a, k) if a or k else _get_args()
+        res = res if res is not None else _get_result()
+        with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):
+            return prompt_impl(*a, **k)
 
     @wraps(wrapped)
+    @shallow_interpreter({prompt: prompt_wrapper})
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with shallow_interpreter({prompt: prompt_wrapper}):
-            with closed_handler(args.bound_to((a, k))):
-                return wrapped(*a, **k)
+        with closed_handler({_get_args: lambda: (a, k)}):
+            return wrapped(*a, **k)
 
     return wrapper
