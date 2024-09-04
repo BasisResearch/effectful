@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, define, register
+from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.interpreter import interpreter
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def test_op_register_new_op(op, args, n):
         new_value = new_op(*args)
         assert new_value == op.default(*args) * n + 3
 
-        register(new_op, intp, times_n(n, new_op)[new_op])
+        intp[new_op] = times_n(n, new_op)[new_op]
         assert new_op(*args) == new_value
 
     with interpreter(intp):

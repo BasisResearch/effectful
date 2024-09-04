@@ -1,7 +1,7 @@
 import collections.abc
 import dataclasses
 import typing
-from typing import Callable, Generic, Iterable, Mapping, Optional, Type, TypeVar, Union
+from typing import Callable, Generic, Iterable, Mapping, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -81,18 +81,3 @@ def evaluate(term: Term[T]) -> T:
             for k, v in term.kwargs.items()
         },
     )
-
-
-@Operation
-def register(
-    op: Operation[P, T],
-    intp: Optional[Interpretation[T, V]],
-    interpret_op: Callable[Q, V],
-) -> Callable[Q, V]:
-    if intp is None:
-        setattr(op, "default", interpret_op)
-        return interpret_op
-    elif isinstance(intp, collections.abc.MutableMapping):
-        intp.__setitem__(op, interpret_op)
-        return interpret_op
-    raise NotImplementedError(f"Cannot register {op} in {intp}")
