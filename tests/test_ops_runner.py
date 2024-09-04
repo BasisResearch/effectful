@@ -8,7 +8,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.prompts import bind_result
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import closed_handler, coproduct, fwd, handler
-from effectful.ops.runner import product, reflect, runner
+from effectful.ops.runner import product, runner
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(lambda r, *_, **__: reflect(r)) for op in ops}
+    return {op: bind_result(lambda r, *_, **__: fwd(r)) for op in ops}
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
@@ -57,7 +57,7 @@ def test_affine_continuation_product(op, args):
     def f():
         return op(*args)
 
-    h_twice = {op: bind_result(lambda r, *a, **k: reflect(reflect(r)))}
+    h_twice = {op: bind_result(lambda r, *a, **k: fwd(fwd(r)))}
 
     assert (
         closed_handler(defaults(op))(f)()
@@ -131,11 +131,11 @@ def test_runner_scopes():
                 assert sextuple(6) == 36
 
 
-def test_runner_outer_reflect():
+def test_runner_outer_fwd():
     def plus_two_calling_plus_one():
         def plus_minus_one_then_reflect(v):
             r = plus_1(v)
-            return reflect(r - 1)
+            return fwd(r - 1)
 
         return {plus_2: plus_minus_one_then_reflect}
 
@@ -150,7 +150,7 @@ def test_runner_outer_reflect_1():
     def plus_two_impl_inner(r, v):
         assert r is None
         r = plus_1(v)
-        return reflect(r + 1)
+        return fwd(r + 1)
 
     @bind_result
     def plus_two_impl_outer(res, v):

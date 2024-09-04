@@ -1,11 +1,12 @@
 import contextlib
-from typing import Callable, Optional, TypeVar, cast
+from typing import Callable, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_prompt
+from effectful.internals.runtime import get_interpretation
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import closed_handler
+from effectful.ops.handler import closed_handler, fwd
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -14,20 +15,14 @@ T = TypeVar("T")
 
 
 @Operation
-def reflect(__result: Optional[S], *args, **kwargs) -> S:
-    return __result  # type: ignore
-
-
-@Operation
 def product(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
-    prompt: Operation[..., T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
     elif len(intps) > 1:  # associativity
-        return product(intp, product(*intps, prompt=prompt), prompt=prompt)
+        return product(intp, product(*intps))
 
     (intp2,) = intps
 
@@ -39,7 +34,7 @@ def product(
             intp2[op]
             if op not in intp
             else bind_prompt(
-                prompt,
+                fwd,  # type: ignore
                 closed_handler(intp)(cast(Callable[..., T], op)),
                 intp2[op],
             )
@@ -49,23 +44,7 @@ def product(
 
 
 @contextlib.contextmanager
-def runner(
-    intp: Interpretation[S, T],
-    *,
-    prompt: Operation[..., T] = reflect,  # type: ignore
-    handler_prompt: Optional[Operation[..., T]] = None,
-):
-    from effectful.internals.runtime import get_interpretation
+def runner(intp: Interpretation[S, T]):
 
-    curr_intp, next_intp = get_interpretation(), intp
-
-    if handler_prompt is not None:
-        assert (
-            prompt is not handler_prompt
-        ), f"runner prompt and handler prompt must be distinct, but got {handler_prompt}"
-        h2r = {handler_prompt: prompt}
-        curr_intp = {op: closed_handler(h2r)(curr_intp[op]) for op in curr_intp.keys()}
-        next_intp = {op: closed_handler(h2r)(next_intp[op]) for op in next_intp.keys()}
-
-    with closed_handler(product(curr_intp, next_intp, prompt=prompt)):
+    with closed_handler(product(get_interpretation(), intp)):
         yield intp
