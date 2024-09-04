@@ -1,4 +1,3 @@
-import collections.abc
 import dataclasses
 import typing
 from typing import Callable, Generic, Iterable, Mapping, Type, TypeVar, Union
