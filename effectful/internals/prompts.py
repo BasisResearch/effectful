@@ -4,7 +4,8 @@ from typing import Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.core import Interpretation, Operation
+from effectful.internals.runtime import get_interpretation, get_runtime
+from effectful.ops.core import Operation
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -15,21 +16,6 @@ V = TypeVar("V")
 
 Prompt: TypeAlias = Operation[[Optional[S]], S]
 Args: TypeAlias = Tuple[Tuple, Mapping]
-
-
-@contextmanager
-def shallow_interpreter(intp: Interpretation):
-    from effectful.internals.runtime import get_interpretation, interpreter
-
-    # destructive update: calling any op in intp should remove intp from active
-    active_intp = get_interpretation()
-    prev_intp = {op: active_intp.get(op, op.default) for op in intp}
-    next_intp = {
-        op: interpreter(prev_intp, unset=False)(impl) for op, impl in intp.items()
-    }
-
-    with interpreter(next_intp):
-        yield intp
 
 
 @Operation
@@ -107,17 +93,23 @@ def bind_prompt(
     """
     from effectful.ops.handler import closed_handler
 
+    @contextmanager
+    def _unset_cont(prompt, orig):
+        r = get_runtime()
+        r.interpretation = {**r.interpretation, prompt: orig}
+        yield
+
     @wraps(prompt)
-    def prompt_wrapper(res: Optional[T], *a: P.args, **k: P.kwargs) -> T:
+    def _cont_wrapper(res: Optional[T], *a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
         res = res if res is not None else _get_result()
         with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
             return prompt_impl(*a, **k)
 
     @wraps(wrapped)
-    @shallow_interpreter({prompt: prompt_wrapper})
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with closed_handler({_get_args: lambda: (a, k)}):
+        unset = _unset_cont(prompt, get_interpretation().get(prompt, prompt.default))
+        with closed_handler({prompt: unset(_cont_wrapper), _get_args: lambda: (a, k)}):  # type: ignore
             return wrapped(*a, **k)
 
     return wrapper
