@@ -57,11 +57,7 @@ def interpreter(intp: "Interpretation"):
     r = get_runtime()
     old_intp = r.interpretation
     try:
-        new_intp = {
-            op: intp[op] if op in intp else old_intp[op]
-            for op in set(intp.keys()) | set(old_intp.keys())
-        }
-        old_intp, r.interpretation = r.interpretation, new_intp
+        old_intp, r.interpretation = r.interpretation, dict(intp)
         yield intp
     finally:
         r.interpretation = old_intp
