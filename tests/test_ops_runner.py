@@ -131,7 +131,7 @@ def test_runner_scopes():
                 assert sextuple(6) == 36
 
 
-def test_runner_outer_fwd():
+def test_runner_outer_reflect():
     def plus_two_calling_plus_one():
         def plus_minus_one_then_reflect(v):
             r = plus_1(v)
