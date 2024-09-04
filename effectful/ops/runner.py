@@ -3,7 +3,7 @@ from typing import Callable, Optional, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt
+from effectful.internals.prompts import bind_prompt
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler
 
@@ -14,7 +14,7 @@ T = TypeVar("T")
 
 
 @Operation
-def reflect(__result: Optional[S]) -> S:
+def reflect(__result: Optional[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
 
@@ -22,7 +22,7 @@ def reflect(__result: Optional[S]) -> S:
 def product(
     intp: Interpretation[S, T],
     *intps: Interpretation[S, T],
-    prompt: Prompt[T] = reflect,  # type: ignore
+    prompt: Operation[..., T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
     if len(intps) == 0:  # unit
         return intp
@@ -52,8 +52,8 @@ def product(
 def runner(
     intp: Interpretation[S, T],
     *,
-    prompt: Prompt[T] = reflect,  # type: ignore
-    handler_prompt: Optional[Prompt[T]] = None,
+    prompt: Operation[..., T] = reflect,  # type: ignore
+    handler_prompt: Optional[Operation[..., T]] = None,
 ):
     from effectful.internals.runtime import get_interpretation
 

@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from functools import wraps
-from typing import Callable, Mapping, Optional, Tuple, TypeAlias, TypeVar
+from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
@@ -14,17 +14,13 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-Prompt: TypeAlias = Operation[[Optional[S]], S]
-Args: TypeAlias = Tuple[Tuple, Mapping]
-
-
 @Operation
 def _get_result() -> Optional[T]:
     return None
 
 
 @Operation
-def _get_args() -> Args:
+def _get_args() -> Tuple[Tuple, Mapping]:
     return ((), {})
 
 
@@ -39,7 +35,9 @@ def bind_result_to_method(
 
 
 def bind_prompt(
-    prompt: Prompt[S], prompt_impl: Callable[P, T], wrapped: Callable[P, T]
+    prompt: Operation[Concatenate[S, P], T],
+    prompt_impl: Callable[P, T],
+    wrapped: Callable[P, T],
 ) -> Callable[P, T]:
     """
     Bind a :py:type:`Prompt` to a particular implementation in a particular function.
@@ -94,13 +92,15 @@ def bind_prompt(
     from effectful.ops.handler import closed_handler
 
     @contextmanager
-    def _unset_cont(prompt, orig):
+    def _unset_cont(
+        prompt: Operation[Concatenate[S, P], T], orig: Callable[Concatenate[S, P], T]
+    ):
         r = get_runtime()
         r.interpretation = {**r.interpretation, prompt: orig}
         yield
 
     @wraps(prompt)
-    def _cont_wrapper(res: Optional[T], *a: P.args, **k: P.kwargs) -> T:
+    def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
         res = res if res is not None else _get_result()
         with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
