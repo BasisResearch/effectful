@@ -3,7 +3,7 @@ from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt, bind_result
+from effectful.internals.prompts import Prompt, bind_prompt
 from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Interpretation, Operation
 
