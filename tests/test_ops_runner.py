@@ -10,7 +10,7 @@ from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import coproduct, fwd, handler
 from effectful.ops.interpreter import interpreter
-from effectful.ops.runner import product, reflect, runner
+from effectful.ops.runner import product, reflect
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,10 @@ def test_product_block_associative(op, args, n1, n2):
     assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
 
 
-def test_runner_scopes():
+@pytest.mark.parametrize(
+    "combinator,expected", [(coproduct, 36), (product, [[6, 6, 6], [6, 6, 6]])]
+)
+def test_runner_scopes(combinator, expected):
     @define(Operation)
     def double(v):
         raise RuntimeError("No Defaults")
@@ -97,40 +100,17 @@ def test_runner_scopes():
     def sextuple(v):
         raise RuntimeError("No Defaults")
 
-    def multiply_in_length():
-        return handler(
-            {
-                double: lambda v: [v, v],
-                triple: lambda v: [v, v, v],
-            }
-        )
+    multiply_in_length = {double: lambda v: [v, v], triple: lambda v: [v, v, v]}
+    multiply_in_value = {double: lambda v: v + v, triple: lambda v: v + v + v}
+    sextuple_as_double_triple = {sextuple: lambda v: double(triple(v))}
 
-    def multiply_in_value():
-        return handler(
-            {
-                double: lambda v: v + v,
-                triple: lambda v: v + v + v,
-            }
-        )
-
-    def sextuple_as_double_triple(mode):
-        interp = {sextuple: lambda v: double(triple(v))}
-        if mode == "runner":
-            return runner(interp)
-        elif mode == "handler":
-            return handler(interp)
-
-    with multiply_in_length():
-        with sextuple_as_double_triple("runner"):
-            with multiply_in_value():
-                assert double(2) == 4
-                assert triple(3) == 9
-                assert sextuple(6) == [[6, 6, 6], [6, 6, 6]]
-        with sextuple_as_double_triple("handler"):
-            with multiply_in_value():
-                assert double(2) == 4
-                assert triple(3) == 9
-                assert sextuple(6) == 36
+    intp = coproduct(
+        combinator(multiply_in_length, sextuple_as_double_triple), multiply_in_value
+    )
+    with handler(intp):
+        assert double(2) == 4
+        assert triple(3) == 9
+        assert sextuple(6) == expected
 
 
 def test_using_runner_to_implement_trailing_state():
@@ -142,22 +122,19 @@ def test_using_runner_to_implement_trailing_state():
         def get_last():
             return st.get()[-1]
 
-        interp: Interpretation = {
-            st.get: get_last,
-            st.set: trailing_set,
-        }
-
-        return runner(interp)
+        return {st.get: get_last, st.set: trailing_set}
 
     st = State([])
 
-    with handler(defaults(st.get, st.bound_to, st.set)):
-        with trailing_state(st):
-            st.set(3)
-            assert st.get() == 3
-            st.set(4)
-            assert st.get() == 4
-        assert st.get() == [3, 4]
+    defaults_st = defaults(st.get, st.set, st.bound_to)
+
+    with handler(product(defaults_st, trailing_state(st))):
+        st.set(3)
+        assert st.get() == 3
+        st.set(4)
+        assert st.get() == 4
+
+    assert st.get() == [3, 4]
 
 
 def test_runner_outer_reflect():
@@ -202,7 +179,7 @@ def test_runner_outer_reflect_1():
 
     with interpreter(intp_outer):
         assert plus_1(1) == 1 + 2 + 3
-        with runner(intp_inner):
+        with interpreter(product(intp_outer, intp_inner)):
             assert plus_2(2) == 2 + (2 + 3) + 1
 
 
