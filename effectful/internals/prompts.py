@@ -6,7 +6,6 @@ from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -21,7 +20,7 @@ Args: TypeAlias = Tuple[Tuple, Mapping]
 
 @contextmanager
 def shallow_interpreter(intp: Interpretation):
-    from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation, interpreter
 
     # destructive update: calling any op in intp should remove intp from active
     active_intp = get_interpretation()
@@ -101,16 +100,17 @@ def bind_prompt(
     Manager: No need to be hasty, have your refund!
     Clerk: Great, here's your refund.
     """
+    from effectful.ops.handler import closed_handler
 
     @wraps(prompt)
     def prompt_wrapper(res: Optional[T]) -> T:
-        with interpreter(result.bound_to(res)):
+        with closed_handler(result.bound_to(res)):
             return prompt_impl(*args()[0], **args()[1])
 
     @wraps(wrapped)
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
         with shallow_interpreter({prompt: prompt_wrapper}):
-            with interpreter(args.bound_to((a, k))):
+            with closed_handler(args.bound_to((a, k))):
                 return wrapped(*a, **k)
 
     return wrapper

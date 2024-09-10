@@ -9,8 +9,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
-from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler, coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +57,8 @@ def test_affine_continuation_compose(op, args):
     h_twice = {op: bind_result(lambda r, *a, **k: fwd(fwd(r)))}
 
     assert (
-        interpreter(defaults(op))(f)()
-        == interpreter(coproduct(defaults(op), h_twice))(f)()
+        closed_handler(defaults(op))(f)()
+        == closed_handler(coproduct(defaults(op), h_twice))(f)()
     )
 
 
@@ -77,7 +76,7 @@ def test_compose_associative(op, args, n1, n2):
     intp1 = coproduct(h0, coproduct(h1, h2))
     intp2 = coproduct(coproduct(h0, h1), h2)
 
-    assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
+    assert closed_handler(intp1)(f)() == closed_handler(intp2)(f)()
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -96,7 +95,7 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     intp1 = coproduct(h0, h1, h2)
     intp2 = coproduct(h0, h2, h1)
 
-    assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
+    assert closed_handler(intp1)(f)() == closed_handler(intp2)(f)()
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -110,7 +109,7 @@ def test_handler_associative(op, args, n1, n2):
     h1 = times_n_handler(n1, op)
     h2 = times_n_handler(n2, op)
 
-    expected = interpreter(coproduct(h0, h1, h2))(f)()
+    expected = closed_handler(coproduct(h0, h1, h2))(f)()
 
     with handler(h0), handler(h1), handler(h2):
         assert f() == expected

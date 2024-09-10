@@ -10,7 +10,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation, define
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +88,14 @@ def test_op_register_new_op(op, args, n):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
     intp = times_n(n, op)
 
-    with interpreter(intp):
+    with closed_handler(intp):
         new_value = new_op(*args)
         assert new_value == op.default(*args) * n + 3
 
         intp[new_op] = times_n(n, new_op)[new_op]
         assert new_op(*args) == new_value
 
-    with interpreter(intp):
+    with closed_handler(intp):
         assert new_op(*args) == (op.default(*args) * n + 3) * n
 
 
@@ -104,7 +104,7 @@ def test_op_register_new_op(op, args, n):
 def test_op_interpreter_new_op_1(op, args, n):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n, new_op)):
+    with closed_handler(times_n(n, new_op)):
         assert op(*args) == op.default(*args)
         assert new_op(*args) == (op.default(*args) + 3) * n == (op(*args) + 3) * n
 
@@ -114,7 +114,7 @@ def test_op_interpreter_new_op_1(op, args, n):
 def test_op_interpreter_new_op_2(op, args, n):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n, op)):
+    with closed_handler(times_n(n, op)):
         assert op(*args) == op.default(*args) * n
         assert new_op(*args) == op.default(*args) * n + 3
 
@@ -124,7 +124,7 @@ def test_op_interpreter_new_op_2(op, args, n):
 def test_op_interpreter_new_op_3(op, args, n):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n, op, new_op)):
+    with closed_handler(times_n(n, op, new_op)):
         assert op(*args) == op.default(*args) * n
         assert new_op(*args) == (op.default(*args) * n + 3) * n
 
@@ -135,8 +135,8 @@ def test_op_interpreter_new_op_3(op, args, n):
 def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, op)):
+    with closed_handler(times_n(n_outer, op, new_op)):
+        with closed_handler(times_n(n_inner, op)):
             assert op(*args) == op.default(*args) * n_inner
             assert new_op(*args) == (op.default(*args) * n_inner + 3) * n_outer
 
@@ -147,8 +147,8 @@ def test_op_nest_interpreter_1(op, args, n_outer, n_inner):
 def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, new_op)):
+    with closed_handler(times_n(n_outer, op, new_op)):
+        with closed_handler(times_n(n_inner, new_op)):
             assert op(*args) == op.default(*args) * n_outer
             assert new_op(*args) == (op.default(*args) * n_outer + 3) * n_inner
 
@@ -159,8 +159,8 @@ def test_op_nest_interpreter_2(op, args, n_outer, n_inner):
 def test_op_nest_interpreter_3(op, args, n_outer, n_inner):
     new_op = define(Operation)(lambda *args: op(*args) + 3)
 
-    with interpreter(times_n(n_outer, op, new_op)):
-        with interpreter(times_n(n_inner, op, new_op)):
+    with closed_handler(times_n(n_outer, op, new_op)):
+        with closed_handler(times_n(n_inner, op, new_op)):
             assert op(*args) == op.default(*args) * n_inner
             assert new_op(*args) == (op.default(*args) * n_inner + 3) * n_inner
 
@@ -174,7 +174,7 @@ def test_op_repeat_nest_interpreter(op, args, n, depth):
     intp = times_n(n, new_op)
     with contextlib.ExitStack() as stack:
         for _ in range(depth):
-            stack.enter_context(interpreter(intp))
+            stack.enter_context(closed_handler(intp))
 
         assert op(*args) == op.default(*args)
         assert new_op(*args) == intp[new_op](*args)
@@ -194,7 +194,7 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
         try:
             with contextlib.ExitStack() as stack:
                 for _ in range(depth):
-                    stack.enter_context(interpreter(intp))
+                    stack.enter_context(closed_handler(intp))
 
                 try:
                     fail_op(*args)
@@ -258,14 +258,14 @@ def test_object_interpretation_inheretance():
         # no new implementation of op4, but will its behavior change through redefinition of another_op_impl?
 
     my_handler = MyHandler()
-    with interpreter(my_handler):
+    with closed_handler(my_handler):
         assert op1() == "MyHandler.op1_impl"
         assert op2() == "MyHandler.op2_impl"
         assert op3() == "MyHandler.an_op_impl"
         assert op4() == "MyHandler.another_op_impl"
 
     my_handler_subclass = MyHandlerSubclass()
-    with interpreter(my_handler_subclass):
+    with closed_handler(my_handler_subclass):
         assert op1() == "MyHandlerSubclass.op1_impl"
         assert op2() == "MyHandlerSubclass.another_op2_impl"
         assert op3() == "MyHandlerSubclass.another_op_impl"

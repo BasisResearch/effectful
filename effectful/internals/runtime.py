@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import functools
 import typing
@@ -30,12 +31,6 @@ def get_interpretation():
     return get_runtime().interpretation
 
 
-def swap_interpretation(intp: "Interpretation[S, V]") -> "Interpretation[S, T]":
-    old_intp = get_runtime().interpretation
-    get_runtime().interpretation = intp
-    return old_intp
-
-
 def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
     """
     Memoize a one-argument function using a dictionary
@@ -54,3 +49,23 @@ def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
             return result
 
     return wrapper
+
+
+@contextlib.contextmanager
+def interpreter(intp: "Interpretation", *, unset: bool = True):
+
+    r = get_runtime()
+    old_intp = r.interpretation
+    try:
+        new_intp = {
+            op: intp[op] if op in intp else old_intp[op]
+            for op in set(intp.keys()) | set(old_intp.keys())
+        }
+        old_intp, r.interpretation = r.interpretation, new_intp
+        yield intp
+    finally:
+        if unset:
+            r.interpretation = old_intp
+        else:
+            if len(list(old_intp.keys())) == 0 and len(list(intp.keys())) > 0:
+                raise RuntimeError(f"Dangling interpretation on stack: {intp}")

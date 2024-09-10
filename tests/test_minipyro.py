@@ -2,7 +2,7 @@ import pytest
 from pyroapi import pyro_backend
 
 from effectful.handlers.minipyro import default_runner
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def jit():
 @pytest.fixture
 def backend():
     with pyro_backend("effectful-minipyro"):
-        with interpreter(default_runner):
+        with closed_handler(default_runner):
             yield
 
 
