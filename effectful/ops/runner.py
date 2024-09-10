@@ -4,7 +4,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompt
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -31,15 +31,15 @@ def product(
     (intp2,) = intps
 
     # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {op: interpreter(intp)(op) for op in intp}
+    refls = {op: closed_handler(intp)(op) for op in intp}
 
     return {
-        op: interpreter(refls)(
+        op: closed_handler(refls)(
             intp2[op]
             if op not in intp
             else bind_prompt(
                 prompt,
-                interpreter(intp)(cast(Callable[..., T], op)),
+                closed_handler(intp)(cast(Callable[..., T], op)),
                 intp2[op],
             )
         )

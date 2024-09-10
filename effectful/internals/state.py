@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Generic, ParamSpec, TypeVar
 
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 
 T = TypeVar("T")
 V = TypeVar("V")
@@ -20,12 +20,12 @@ class Box(Generic[T]):
         return self.contents
 
 
-@define
+@dataclass
 class State(Generic[T]):
     """
     A generic mutable state effect with an optional default value.
 
-    >>> from effectful.ops.interpreter import interpreter
+    >>> from effectful.ops.handler import handler
     >>> debug = State(False)
     >>> def log(value):
     ...     if debug.get():
@@ -36,7 +36,7 @@ class State(Generic[T]):
     ...     return 1 if value == 0 else value * factorial(value - 1)
     >>> factorial(3)
     6
-    >>> with interpreter(debug.bound_to(True)):
+    >>> with handler(debug.bound_to(True)):
     ...     print(factorial(3))
     LOG: 3
     LOG: 2

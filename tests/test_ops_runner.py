@@ -8,8 +8,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.prompts import bind_result
 from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
-from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.interpreter import interpreter
+from effectful.ops.handler import closed_handler, coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
 
 logger = logging.getLogger(__name__)
@@ -62,8 +61,8 @@ def test_affine_continuation_product(op, args):
     h_twice = {op: bind_result(lambda r, *a, **k: reflect(reflect(r)))}
 
     assert (
-        interpreter(defaults(op))(f)()
-        == interpreter(product(defaults(op), h_twice))(f)()
+        closed_handler(defaults(op))(f)()
+        == closed_handler(product(defaults(op), h_twice))(f)()
     )
 
 
@@ -81,7 +80,7 @@ def test_product_block_associative(op, args, n1, n2):
     intp1 = product(h0, product(h1, h2))
     intp2 = product(product(h0, h1), h2)
 
-    assert interpreter(intp1)(f)() == interpreter(intp2)(f)()
+    assert closed_handler(intp1)(f)() == closed_handler(intp2)(f)()
 
 
 @pytest.mark.parametrize(
@@ -146,7 +145,7 @@ def test_runner_outer_reflect():
         return {plus_2: plus_minus_one_then_reflect}
 
     defs = {plus_1: plus_1.default, plus_2: plus_2.default}
-    with interpreter(product(defs, plus_two_calling_plus_one())):
+    with closed_handler(product(defs, plus_two_calling_plus_one())):
         assert plus_1(1) == 2
         assert plus_2(2) == 4
 
@@ -170,14 +169,14 @@ def test_runner_outer_reflect_1():
     intp_inner = {plus_2: plus_two_impl_inner}
     intp_outer = {plus_1: plus_one_to_plus_five, plus_2: plus_two_impl_outer}
 
-    with interpreter(intp_inner):
+    with closed_handler(intp_inner):
         assert plus_2(2) == 4
 
-    with interpreter(product(intp_outer, intp_inner)):
+    with closed_handler(product(intp_outer, intp_inner)):
         assert plus_1(1) == 2
         assert plus_2(2) == 2 + (2 + 3) + 1
 
-    with interpreter(intp_outer):
+    with closed_handler(intp_outer):
         assert plus_1(1) == 1 + 2 + 3
         with interpreter(product(intp_outer, intp_inner)):
             assert plus_2(2) == 2 + (2 + 3) + 1
@@ -222,11 +221,11 @@ def test_runner_outer_reflect_2():
     intp_inner = {plus_1: plus_one_impl_inner, plus_2: plus_two_impl_inner}
     intp_outer = {plus_2: plus_two_impl_outer}
 
-    with interpreter(intp_inner):
+    with closed_handler(intp_inner):
         assert plus_2(2) == "+2-impl_inner(2)"
         check_log("plus_two_impl_inner")
 
-    with interpreter(product(intp_even_more_outer, product(intp_outer, intp_inner))):
+    with closed_handler(product(intp_even_more_outer, product(intp_outer, intp_inner))):
         assert plus_1(1) == "+1-impl_inner(+1-even_outer(+2-impl_outer(1)))"
         check_log(
             "plus_one_impl_inner",
