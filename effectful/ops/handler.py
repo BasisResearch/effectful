@@ -4,9 +4,8 @@ from typing import Optional, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import Prompt, bind_prompt
-from effectful.internals.runtime import get_interpretation
+from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.interpreter import interpreter
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -44,4 +43,10 @@ def handler(
     prompt: Prompt[T] = fwd,  # type: ignore
 ):
     with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
+        yield intp
+
+
+@contextlib.contextmanager
+def closed_handler(intp: Interpretation[S, T]):
+    with interpreter({**get_interpretation(), **intp}):
         yield intp
