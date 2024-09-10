@@ -1,11 +1,9 @@
-import contextlib
 from typing import Callable, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_prompt
-from effectful.internals.runtime import get_interpretation
-from effectful.ops.core import Interpretation, Operation
+from effectful.ops.core import Interpretation
 from effectful.ops.handler import closed_handler, fwd
 
 P = ParamSpec("P")
@@ -14,18 +12,10 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@Operation
 def product(
     intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return product(intp, product(*intps))
-
-    (intp2,) = intps
-
     # on prompt, jump to the outer interpretation and interpret it using itself
     refls = {op: closed_handler(intp)(op) for op in intp}
 
@@ -41,10 +31,3 @@ def product(
         )
         for op in intp2
     }
-
-
-@contextlib.contextmanager
-def runner(intp: Interpretation[S, T]):
-
-    with closed_handler(product(get_interpretation(), intp)):
-        yield intp
