@@ -1,10 +1,10 @@
-import contextlib
-import functools
+from contextlib import contextmanager
+from functools import wraps
 from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.runtime import get_interpretation, get_runtime, interpreter
+from effectful.internals.runtime import get_interpretation, get_runtime
 from effectful.ops.core import Operation
 
 P = ParamSpec("P")
@@ -89,8 +89,9 @@ def bind_prompt(
     Manager: No need to be hasty, have your refund!
     Clerk: Great, here's your refund.
     """
+    from effectful.ops.handler import closed_handler
 
-    @contextlib.contextmanager
+    @contextmanager
     def _unset_cont(
         prompt: Operation[Concatenate[S, P], T], orig: Callable[Concatenate[S, P], T]
     ):
@@ -98,19 +99,17 @@ def bind_prompt(
         r.interpretation = {**r.interpretation, prompt: orig}
         yield
 
-    @functools.wraps(prompt)
+    @wraps(prompt)
     def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
         res = res if res is not None else _get_result()
-        state_intp = {_get_result: lambda: res, _get_args: lambda: (a, k)}
-        with interpreter({**get_interpretation(), **state_intp}):  # type: ignore
+        with closed_handler({_get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
             return prompt_impl(*a, **k)
 
-    @functools.wraps(wrapped)
+    @wraps(wrapped)
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        reset = _unset_cont(prompt, get_interpretation().get(prompt, prompt.default))
-        state_intp = {prompt: reset(_cont_wrapper), _get_args: lambda: (a, k)}
-        with interpreter({**get_interpretation(), **state_intp}):  # type: ignore
+        unset = _unset_cont(prompt, get_interpretation().get(prompt, prompt.default))
+        with closed_handler({prompt: unset(_cont_wrapper), _get_args: lambda: (a, k)}):  # type: ignore
             return wrapped(*a, **k)
 
     return wrapper
