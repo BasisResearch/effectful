@@ -17,19 +17,11 @@ def reflect(__result: Optional[S]) -> S:
     return __result  # type: ignore
 
 
-@Operation
 def product(
     intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp2: Interpretation[S, T],
     prompt: Prompt[T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return product(intp, product(*intps, prompt=prompt), prompt=prompt)
-
-    (intp2,) = intps
-
     # on prompt, jump to the outer interpretation and interpret it using itself
     refls = {op: closed_handler(intp)(op) for op in intp}
 

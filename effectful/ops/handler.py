@@ -19,19 +19,11 @@ def fwd(__result: Optional[S]) -> S:
     return __result  # type: ignore
 
 
-@Operation
 def coproduct(
     intp: Interpretation[S, T],
-    *intps: Interpretation[S, T],
+    intp2: Interpretation[S, T],
     prompt: Prompt[T] = fwd,  # type: ignore
 ) -> Interpretation[S, T]:
-    if len(intps) == 0:  # unit
-        return intp
-    elif len(intps) > 1:  # associativity
-        return coproduct(intp, coproduct(*intps, prompt=prompt), prompt=prompt)
-
-    (intp2,) = intps
-
     res = dict(intp)
 
     for op, i2 in intp2.items():
