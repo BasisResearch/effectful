@@ -1,4 +1,3 @@
-import contextlib
 from typing import Callable, Optional, TypeVar, cast
 
 from typing_extensions import ParamSpec
@@ -46,26 +45,3 @@ def product(
         )
         for op in intp2
     }
-
-
-@contextlib.contextmanager
-def runner(
-    intp: Interpretation[S, T],
-    *,
-    prompt: Prompt[T] = reflect,  # type: ignore
-    handler_prompt: Optional[Prompt[T]] = None,
-):
-    from effectful.internals.runtime import get_interpretation
-
-    curr_intp, next_intp = get_interpretation(), intp
-
-    if handler_prompt is not None:
-        assert (
-            prompt is not handler_prompt
-        ), f"runner prompt and handler prompt must be distinct, but got {handler_prompt}"
-        h2r = {handler_prompt: prompt}
-        curr_intp = {op: closed_handler(h2r)(curr_intp[op]) for op in curr_intp.keys()}
-        next_intp = {op: closed_handler(h2r)(next_intp[op]) for op in next_intp.keys()}
-
-    with closed_handler(product(curr_intp, next_intp, prompt=prompt)):
-        yield intp
