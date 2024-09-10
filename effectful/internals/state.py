@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Generic, ParamSpec, TypeVar
 
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 
 T = TypeVar("T")
 V = TypeVar("V")
@@ -20,7 +20,7 @@ class Box(Generic[T]):
         return self.contents
 
 
-@define
+@dataclass
 class State(Generic[T]):
     """
     A generic mutable state effect with an optional default value.
