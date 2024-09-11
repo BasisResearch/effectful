@@ -83,8 +83,14 @@ free = {
     App: lambda f, arg: Term(App, (f, arg), ()),
     Lam: lambda var, body: Term(Lam, (var, body), ()),
 }
-lazy = coproduct({Lam: alpha_lam}, {Lam: eta_lam})
-eager = {Add: eager_add, App: eager_app}
+lazy = coproduct(
+    {Lam: alpha_lam},
+    {Lam: eta_lam},
+)
+eager = {
+    Add: eager_add,
+    App: eager_app,
+}
 
 
 def test_lambda_calculus_1():
