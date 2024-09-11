@@ -45,7 +45,7 @@ Interpretation = Context[T, Callable[..., V]]
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
+    op: Operation[[], T] = Operation(lambda: op())  # type: ignore
     return op
 
 
@@ -56,7 +56,7 @@ def apply(
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](op, *args, **kwargs)  # type: ignore
+        return intp[apply](intp, op, *args, **kwargs)  # type: ignore
     else:
         return op.default(*args, **kwargs)
 

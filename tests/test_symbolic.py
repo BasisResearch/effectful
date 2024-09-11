@@ -32,10 +32,7 @@ def Lam(var: Operation, body: Term) -> Term:
 def alpha_lam(var: Operation, body: Term):
     """alpha reduction"""
     mangled_var = gensym(object)
-    rename = interpreter(
-        {var: mangled_var, apply: lambda op, *a, **k: Term(op, a, tuple(k.items()))}
-    )(evaluate)
-    return fwd(None, mangled_var, rename(body))
+    return fwd(None, mangled_var, handler({var: mangled_var})(evaluate)(body))
 
 
 def eta_lam(var: Operation, body: Term):
@@ -79,6 +76,7 @@ def eager_app(f: Term, arg: Term | int):
 
 
 free = {
+    apply: lambda _, op, *a, **k: Term(op, a, tuple(k.items())),
     Add: lambda x, y: Term(Add, (x, y), ()),
     App: lambda f, arg: Term(App, (f, arg), ()),
     Lam: lambda var, body: Term(Lam, (var, body), ()),
