@@ -1,11 +1,10 @@
 import dataclasses
 import typing
-import weakref
 from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import get_interpretation, interpreter, weak_memoize
+from effectful.internals.runtime import get_interpretation, weak_memoize
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
