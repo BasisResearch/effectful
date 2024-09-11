@@ -45,7 +45,7 @@ Interpretation = Context[T, Callable[..., V]]
 
 
 def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = Operation(lambda: op())  # type: ignore
+    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
     return op
 
 

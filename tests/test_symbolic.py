@@ -3,8 +3,7 @@ from typing import TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import interpreter
-from effectful.ops.core import Operation, Term, apply, evaluate, gensym
+from effectful.ops.core import Operation, Term, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -76,7 +75,6 @@ def eager_app(f: Term, arg: Term | int):
 
 
 free = {
-    apply: lambda _, op, *a, **k: Term(op, a, tuple(k.items())),
     Add: lambda x, y: Term(Add, (x, y), ()),
     App: lambda f, arg: Term(App, (f, arg), ()),
     Lam: lambda var, body: Term(Lam, (var, body), ()),
