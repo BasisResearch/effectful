@@ -1,4 +1,3 @@
-import functools
 import logging
 from typing import TypeVar
 
@@ -80,8 +79,9 @@ def eager_app(f: Term, arg: Term | int):
 
 
 free = {
-    op: functools.partial(lambda op, *a, **k: Term(op, a, tuple(k.items())), op)
-    for op in (Add, App, Lam)
+    Add: lambda x, y: Term(Add, (x, y), ()),
+    App: lambda f, arg: Term(App, (f, arg), ()),
+    Lam: lambda var, body: Term(Lam, (var, body), ()),
 }
 lazy = coproduct({Lam: alpha_lam}, {Lam: eta_lam})
 eager = {Add: eager_add, App: eager_app}
