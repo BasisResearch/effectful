@@ -39,6 +39,28 @@ def alpha_lam(var: Operation, body: Term):
     return fwd(None, mangled_var, rename(body))
 
 
+def eta_lam(var: Operation, body: Term):
+    """eta reduction"""
+
+    def _fvs(term) -> set[Operation]:
+        match term:
+            case Term(op, (var, body), ()) if op == Lam:
+                return _fvs(body) - {var}  # type: ignore
+            case Term(op, args, kwargs):
+                return set().union(
+                    *(_fvs(a) for a in (op, *args, *(v for _, v in kwargs)))
+                )
+            case op if isinstance(op, Operation):
+                return {op}
+            case _:
+                return set()
+
+    if var not in _fvs(body):
+        return body
+    else:
+        return fwd(None)
+
+
 def eager_add(x, y):
     """integer addition"""
     match x, y:
@@ -55,26 +77,6 @@ def eager_app(f: Term, arg: Term | int):
             return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         case _:
             return fwd(None)
-
-
-def _fvs(term) -> set[Operation]:
-    match term:
-        case Term(op, (var, body), ()) if op == Lam:
-            return _fvs(body) - {var}  # type: ignore
-        case Term(op, args, kwargs):
-            return set().union(*(_fvs(a) for a in (op, *args, *(v for _, v in kwargs))))
-        case op if isinstance(op, Operation):
-            return {op}
-        case _:
-            return set()
-
-
-def eta_lam(var: Operation, body: Term):
-    """eta reduction"""
-    if var not in _fvs(body):
-        return body
-    else:
-        return fwd(None)
 
 
 free = {
