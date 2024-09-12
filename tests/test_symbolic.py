@@ -35,10 +35,10 @@ def ctxof(term: Term[T]) -> set[Operation[..., T]]:
         def scope_rule(*args, **kwargs):
             fresh, bound = ctxof_rule(*args, **kwargs)
             _scope.add(op)
-            for v in fresh:
-                _scope.add(v)
             for v in bound:
                 _scope.remove(v)
+            for v in fresh:
+                _scope.add(v)
             return fwd(None)
 
         return scope_rule
