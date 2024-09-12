@@ -1,9 +1,12 @@
+import dataclasses
 import logging
-from typing import TypeVar
+import weakref
+from typing import Callable, Generic, Type, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.core import Operation, Term, evaluate, gensym
+from effectful.internals.runtime import interpreter
+from effectful.ops.core import Context, Operation, Term, evaluate, gensym
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -11,6 +14,27 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
+
+
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
+class TypeInContext(Generic[T]):
+    context: Context[T, Type[T]]
+    type: Type[T]
+
+
+TYPEOF_RULES: weakref.WeakKeyDictionary[Operation, Callable[..., TypeInContext]]
+TYPEOF_RULES = weakref.WeakKeyDictionary()
+
+
+def gensym_(t: Type[T]) -> Operation[[], T]:
+    op = gensym(t)
+    TYPEOF_RULES[op] = lambda: TypeInContext({op: t}, t)
+    return op
+
+
+def typeof(term: Term[T]) -> TypeInContext[T]:
+    with interpreter(TYPEOF_RULES):
+        return evaluate(term)  # type: ignore
 
 
 @Operation
@@ -28,29 +52,32 @@ def Lam(var: Operation, body: Term) -> Term:
     raise NotImplementedError
 
 
+TYPEOF_RULES[Add] = lambda x, y: TypeInContext(
+    {
+        **(x.context if isinstance(x, TypeInContext) else {}),
+        **(y.context if isinstance(y, TypeInContext) else {}),
+    },
+    int,
+)
+
+TYPEOF_RULES[App] = lambda f, arg: TypeInContext(
+    {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
+)
+
+TYPEOF_RULES[Lam] = lambda var, body: TypeInContext(
+    {v: t for v, t in body.context.items() if v != var}, body.type
+)
+
+
 def alpha_lam(var: Operation, body: Term):
     """alpha reduction"""
-    mangled_var = gensym(object)
+    mangled_var = gensym_(object)
     return fwd(None, mangled_var, handler({var: mangled_var})(evaluate)(body))
 
 
 def eta_lam(var: Operation, body: Term):
     """eta reduction"""
-
-    def _fvs(term) -> set[Operation]:
-        match term:
-            case Term(op, (var, body), ()) if op == Lam:
-                return _fvs(body) - {var}  # type: ignore
-            case Term(op, args, kwargs):
-                return set().union(
-                    *(_fvs(a) for a in (op, *args, *(v for _, v in kwargs)))
-                )
-            case op if isinstance(op, Operation):
-                return {op}
-            case _:
-                return set()
-
-    if var not in _fvs(body):
+    if var not in typeof(body).context:
         return body
     else:
         return fwd(None)
@@ -91,7 +118,7 @@ eager = {
 
 def test_lambda_calculus_1():
 
-    x, y, z = gensym(object), gensym(object), gensym(object)
+    x, y, z = gensym_(object), gensym_(object), gensym_(object)
 
     with handler(free), handler(lazy), handler(eager):
         f1 = Lam(x, Add(x(), 1))
