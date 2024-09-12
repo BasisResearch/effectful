@@ -15,13 +15,14 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-CTXOF_RULES: weakref.WeakKeyDictionary[Operation, Callable[..., Context]]
-CTXOF_RULES = weakref.WeakKeyDictionary()
+CTXOF_RULES: weakref.WeakKeyDictionary[
+    Operation, Callable[..., tuple[set[Operation], set[Operation]]]
+] = weakref.WeakKeyDictionary()
 
 
 def gensym_(t: Type[T]) -> Operation[[], T]:
     op = gensym(t)
-    CTXOF_RULES[op] = lambda: set()
+    CTXOF_RULES[op] = lambda: (set(), set())
     return op
 
 
@@ -32,8 +33,10 @@ def ctxof(term: Term[T]) -> set[Operation[..., T]]:
     def make_scope_rule(op, ctxof_rule):
 
         def scope_rule(*args, **kwargs):
-            bound = ctxof_rule(*args, **kwargs)
+            fresh, bound = ctxof_rule(*args, **kwargs)
             _scope.add(op)
+            for v in fresh:
+                _scope.add(v)
             for v in bound:
                 _scope.remove(v)
             return fwd(None)
@@ -61,9 +64,9 @@ def Lam(var: Operation, body: Term) -> Term:
     raise NotImplementedError
 
 
-CTXOF_RULES[Add] = lambda x, y: set()
-CTXOF_RULES[App] = lambda f, arg: set()
-CTXOF_RULES[Lam] = lambda var, body: {var}
+CTXOF_RULES[Add] = lambda x, y: (set(), set())
+CTXOF_RULES[App] = lambda f, arg: (set(), set())
+CTXOF_RULES[Lam] = lambda var, body: (set(), {var})
 
 
 def alpha_lam(var: Operation, body: Term):
