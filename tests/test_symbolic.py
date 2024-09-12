@@ -1,7 +1,6 @@
-import dataclasses
 import logging
 import weakref
-from typing import Callable, Generic, Type, TypeVar
+from typing import Callable, Type, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -16,25 +15,35 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
-class TypeInContext(Generic[T]):
-    context: Context[T, Type[T]]
-    type: Type[T]
-
-
-TYPEOF_RULES: weakref.WeakKeyDictionary[Operation, Callable[..., TypeInContext]]
-TYPEOF_RULES = weakref.WeakKeyDictionary()
+CTXOF_RULES: weakref.WeakKeyDictionary[Operation, Callable[..., Context]]
+CTXOF_RULES = weakref.WeakKeyDictionary()
 
 
 def gensym_(t: Type[T]) -> Operation[[], T]:
     op = gensym(t)
-    TYPEOF_RULES[op] = lambda: TypeInContext({op: t}, t)
+    CTXOF_RULES[op] = lambda: set()
     return op
 
 
-def typeof(term: Term[T]) -> TypeInContext[T]:
-    with interpreter(TYPEOF_RULES):
-        return evaluate(term)  # type: ignore
+def ctxof(term: Term[T]) -> set[Operation[..., T]]:
+
+    _scope = set()
+
+    def make_scope_rule(op, ctxof_rule):
+
+        def scope_rule(*args, **kwargs):
+            bound = ctxof_rule(*args, **kwargs)
+            _scope.add(op)
+            for v in bound:
+                _scope.remove(v)
+            return fwd(None)
+
+        return scope_rule
+
+    with interpreter({op: make_scope_rule(op, rule) for op, rule in CTXOF_RULES.items()}):  # type: ignore
+        evaluate(term)
+
+    return _scope
 
 
 @Operation
@@ -52,21 +61,9 @@ def Lam(var: Operation, body: Term) -> Term:
     raise NotImplementedError
 
 
-TYPEOF_RULES[Add] = lambda x, y: TypeInContext(
-    {
-        **(x.context if isinstance(x, TypeInContext) else {}),
-        **(y.context if isinstance(y, TypeInContext) else {}),
-    },
-    int,
-)
-
-TYPEOF_RULES[App] = lambda f, arg: TypeInContext(
-    {**f.context, **(arg.context if isinstance(arg, TypeInContext) else {})}, f.type
-)
-
-TYPEOF_RULES[Lam] = lambda var, body: TypeInContext(
-    {v: t for v, t in body.context.items() if v != var}, body.type
-)
+CTXOF_RULES[Add] = lambda x, y: set()
+CTXOF_RULES[App] = lambda f, arg: set()
+CTXOF_RULES[Lam] = lambda var, body: {var}
 
 
 def alpha_lam(var: Operation, body: Term):
@@ -77,7 +74,7 @@ def alpha_lam(var: Operation, body: Term):
 
 def eta_lam(var: Operation, body: Term):
     """eta reduction"""
-    if var not in typeof(body).context:
+    if var not in ctxof(body):  # typeof(body).context:
         return body
     else:
         return fwd(None)
