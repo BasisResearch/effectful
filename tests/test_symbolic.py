@@ -74,7 +74,7 @@ def alpha_lam(var: Operation, body: Term):
 
 def eta_lam(var: Operation, body: Term):
     """eta reduction"""
-    if var not in ctxof(body):  # typeof(body).context:
+    if var not in ctxof(body):
         return body
     else:
         return fwd(None)
