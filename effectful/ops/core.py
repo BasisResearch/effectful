@@ -52,19 +52,16 @@ def gensym(t: Type[T]) -> Operation[[], T]:
 @Operation  # type: ignore
 def apply(
     intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
-) -> S | T:
+) -> T:
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)  # type: ignore
     else:
-        return op.default(*args, **kwargs)
+        return op.default(*args, **kwargs)  # type: ignore
 
 
-def evaluate(term: T | Term[T]) -> T:
-    if isinstance(term, Term):
-        args = [evaluate(a) for a in term.args]
-        kwargs = {k: evaluate(v) for k, v in term.kwargs}
-        return term.op(*args, **kwargs)
-    else:
-        return term
+def evaluate(term: Term[T]) -> T:
+    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]
+    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}
+    return term.op(*args, **kwargs)  # type: ignore
