@@ -5,7 +5,7 @@ import typing
 import weakref
 from typing import Callable, Generic, TypeVar
 
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -29,6 +29,16 @@ def get_runtime() -> Runtime:
 
 def get_interpretation():
     return get_runtime().interpretation
+
+
+def bind_interpretation(
+    fn: Callable[Concatenate["Interpretation[S, T]", P], V]
+) -> Callable[P, V]:
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        return fn(get_interpretation(), *args, **kwargs)
+
+    return _wrapper
 
 
 def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:

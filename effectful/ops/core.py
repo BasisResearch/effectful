@@ -7,6 +7,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.runtime import (
     _CTXOF_RULES,
     _TYPEOF_RULES,
+    bind_interpretation,
     get_interpretation,
     interpreter,
     weak_memoize,
@@ -36,7 +37,8 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply(self, *args, **kwargs)  # type: ignore
+        intp = get_interpretation()
+        return apply.default(intp, apply, intp, self, *args, **kwargs)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -55,17 +57,18 @@ def gensym(t: Type[T]) -> Operation[[], T]:
     return op
 
 
-def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    return get_interpretation().get(op, op.default)(*args, **kwargs)
+@Operation  # type: ignore
+def apply(
+    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    return intp.get(op, op.default)(*args, **kwargs)  # type: ignore
 
 
-@Operation
-def evaluate(term: Term[T]) -> T:
-    return apply(
-        term.op,
-        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs},
-    )
+@bind_interpretation
+def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
+    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
+    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
+    return apply.default(intp, apply, intp, term.op, *args, **kwargs)  # type: ignore
 
 
 def ctxof(term: Term[T]) -> set[Operation[..., T]]:
@@ -86,7 +89,7 @@ def ctxof(term: Term[T]) -> set[Operation[..., T]]:
     with interpreter(
         {op: make_scope_rule(op, rule) for op, rule in _CTXOF_RULES.items()}
     ):
-        evaluate(term)
+        evaluate(term)  # type: ignore
 
     return _scope
 
