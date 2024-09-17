@@ -1,11 +1,10 @@
 import logging
-import weakref
-from typing import Callable, Type, TypeVar
+from typing import Type, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import interpreter
-from effectful.ops.core import Context, Operation, Term, evaluate, gensym
+from effectful.internals.runtime import _CTXOF_RULES, _TYPEOF_RULES
+from effectful.ops.core import Operation, Term, ctxof, evaluate, gensym, typeof
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -15,35 +14,11 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-CTXOF_RULES: weakref.WeakKeyDictionary[Operation, Callable[..., Context]]
-CTXOF_RULES = weakref.WeakKeyDictionary()
-
-
 def gensym_(t: Type[T]) -> Operation[[], T]:
     op = gensym(t)
-    CTXOF_RULES[op] = lambda: set()
+    _CTXOF_RULES[op] = lambda: set()
+    _TYPEOF_RULES[op] = lambda: t
     return op
-
-
-def ctxof(term: Term[T]) -> set[Operation[..., T]]:
-
-    _scope = set()
-
-    def make_scope_rule(op, ctxof_rule):
-
-        def scope_rule(*args, **kwargs):
-            bound = ctxof_rule(*args, **kwargs)
-            _scope.add(op)
-            for v in bound:
-                _scope.remove(v)
-            return fwd(None)
-
-        return scope_rule
-
-    with interpreter({op: make_scope_rule(op, rule) for op, rule in CTXOF_RULES.items()}):  # type: ignore
-        evaluate(term)
-
-    return _scope
 
 
 @Operation
@@ -51,19 +26,26 @@ def Add(x: int, y: int) -> int:
     raise NotImplementedError
 
 
-@Operation
-def App(f: Term, arg: Term) -> Term:
-    raise NotImplementedError
+_CTXOF_RULES[Add] = lambda x, y: set()
+_TYPEOF_RULES[Add] = lambda x, y: int
 
 
 @Operation
-def Lam(var: Operation, body: Term) -> Term:
+def App(f: T, arg: S) -> T:
     raise NotImplementedError
 
 
-CTXOF_RULES[Add] = lambda x, y: set()
-CTXOF_RULES[App] = lambda f, arg: set()
-CTXOF_RULES[Lam] = lambda var, body: {var}
+_CTXOF_RULES[App] = lambda f, arg: set()
+_TYPEOF_RULES[App] = lambda f, arg: f
+
+
+@Operation
+def Lam(var: Operation, body: T) -> T:
+    raise NotImplementedError
+
+
+_CTXOF_RULES[Lam] = lambda var, body: {var}
+_TYPEOF_RULES[Lam] = lambda var, body: body
 
 
 def alpha_lam(var: Operation, body: Term):
@@ -118,9 +100,12 @@ def test_lambda_calculus_1():
     x, y, z = gensym_(object), gensym_(object), gensym_(object)
 
     with handler(free), handler(lazy), handler(eager):
-        f1 = Lam(x, Add(x(), 1))
+        e1 = Add(x(), 1)
+        f1 = Lam(x, e1)
         assert App(f1, 1) == 2
         assert Lam(y, f1) == f1
+
+        assert typeof(e1) == int
 
         f2 = Lam(x, Lam(y, Add(x(), y())))
         assert App(App(f2, 1), 2) == 3

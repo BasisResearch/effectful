@@ -4,7 +4,13 @@ from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, U
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import weak_memoize
+from effectful.internals.runtime import (
+    _CTXOF_RULES,
+    _TYPEOF_RULES,
+    get_interpretation,
+    interpreter,
+    weak_memoize,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -50,8 +56,6 @@ def gensym(t: Type[T]) -> Operation[[], T]:
 
 
 def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    from effectful.internals.runtime import get_interpretation
-
     return get_interpretation().get(op, op.default)(*args, **kwargs)
 
 
@@ -62,3 +66,31 @@ def evaluate(term: Term[T]) -> T:
         *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
         **{k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs},
     )
+
+
+def ctxof(term: Term[T]) -> set[Operation[..., T]]:
+
+    _scope = set()
+
+    def make_scope_rule(op, ctxof_rule):
+
+        def scope_rule(*args, **kwargs):
+            bound = ctxof_rule(*args, **kwargs)
+            _scope.add(op)
+            for v in bound:
+                _scope.remove(v)
+            return Term(op, args, tuple(kwargs.items()))
+
+        return scope_rule
+
+    with interpreter(
+        {op: make_scope_rule(op, rule) for op, rule in _CTXOF_RULES.items()}
+    ):
+        evaluate(term)
+
+    return _scope
+
+
+def typeof(term: Term[T]) -> Type[T]:
+    with interpreter(_TYPEOF_RULES):
+        return evaluate(term)  # type: ignore
