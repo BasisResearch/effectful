@@ -37,8 +37,7 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        intp = get_interpretation()
-        return apply.default(intp, apply, intp, self, *args, **kwargs)  # type: ignore
+        return apply.default(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -61,14 +60,19 @@ def gensym(t: Type[T]) -> Operation[[], T]:
 def apply(
     intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:
-    return intp.get(op, op.default)(*args, **kwargs)  # type: ignore
+    if op in intp:
+        return intp[op](*args, **kwargs)
+    elif apply in intp:
+        return intp[apply](intp, op, *args, **kwargs)
+    else:
+        return op.default(*args, **kwargs)  # type: ignore
 
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
-    return apply.default(intp, apply, intp, term.op, *args, **kwargs)  # type: ignore
+    return apply.default(intp, term.op, *args, **kwargs)  # type: ignore
 
 
 def ctxof(term: Term[T]) -> set[Operation[..., T]]:
