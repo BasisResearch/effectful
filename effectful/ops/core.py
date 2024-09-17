@@ -77,25 +77,18 @@ def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
 
 def ctxof(term: Term[T]) -> set[Operation[..., T]]:
 
-    _scope = set()
+    _ctx_set = set()
 
-    def make_scope_rule(op, ctxof_rule):
+    def _update_ctx(_, op, *args, **kwargs):
+        _ctx_set.add(op)
+        for bound_var in _CTXOF_RULES[op](*args, **kwargs):
+            _ctx_set.remove(bound_var)
+        return Term(op, args, tuple(kwargs.items()))
 
-        def scope_rule(*args, **kwargs):
-            bound = ctxof_rule(*args, **kwargs)
-            _scope.add(op)
-            for v in bound:
-                _scope.remove(v)
-            return Term(op, args, tuple(kwargs.items()))
-
-        return scope_rule
-
-    with interpreter(
-        {op: make_scope_rule(op, rule) for op, rule in _CTXOF_RULES.items()}
-    ):
+    with interpreter({apply: _update_ctx}):
         evaluate(term)  # type: ignore
 
-    return _scope
+    return _ctx_set
 
 
 def typeof(term: Term[T]) -> Type[T]:
