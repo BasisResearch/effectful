@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
-          cache-dependency-path: setup.py
+          cache-dependency-path: test-requirements.txt
 
       - run: pip install -r test-requirements.txt
 
