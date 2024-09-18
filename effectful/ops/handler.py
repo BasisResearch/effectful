@@ -3,7 +3,7 @@ from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt
+from effectful.internals.prompts import bind_prompt
 from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Interpretation, Operation
 
@@ -15,14 +15,14 @@ V = TypeVar("V")
 
 
 @Operation
-def fwd(__result: Optional[S]) -> S:
+def fwd(__result: Optional[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
 
 def coproduct(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
-    prompt: Prompt[T] = fwd,  # type: ignore
+    prompt: Operation[..., T] = fwd,  # type: ignore
 ) -> Interpretation[S, T]:
     res = dict(intp)
 
@@ -40,7 +40,7 @@ def coproduct(
 def handler(
     intp: Interpretation[S, T],
     *,
-    prompt: Prompt[T] = fwd,  # type: ignore
+    prompt: Operation[..., T] = fwd,  # type: ignore
 ):
     with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
         yield intp

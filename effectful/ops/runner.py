@@ -2,7 +2,7 @@ from typing import Callable, Optional, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import Prompt, bind_prompt
+from effectful.internals.prompts import bind_prompt
 from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler
 
@@ -13,14 +13,14 @@ T = TypeVar("T")
 
 
 @Operation
-def reflect(__result: Optional[S]) -> S:
+def reflect(__result: Optional[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
 
 def product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
-    prompt: Prompt[T] = reflect,  # type: ignore
+    prompt: Operation[..., T] = reflect,  # type: ignore
 ) -> Interpretation[S, T]:
     # on prompt, jump to the outer interpretation and interpret it using itself
     refls = {op: closed_handler(intp)(op) for op in intp}

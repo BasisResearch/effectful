@@ -52,20 +52,12 @@ def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
 
 
 @contextlib.contextmanager
-def interpreter(intp: "Interpretation", *, unset: bool = True):
+def interpreter(intp: "Interpretation"):
 
     r = get_runtime()
     old_intp = r.interpretation
     try:
-        new_intp = {
-            op: intp[op] if op in intp else old_intp[op]
-            for op in set(intp.keys()) | set(old_intp.keys())
-        }
-        old_intp, r.interpretation = r.interpretation, new_intp
+        old_intp, r.interpretation = r.interpretation, dict(intp)
         yield intp
     finally:
-        if unset:
-            r.interpretation = old_intp
-        else:
-            if len(list(old_intp.keys())) == 0 and len(list(intp.keys())) > 0:
-                raise RuntimeError(f"Dangling interpretation on stack: {intp}")
+        r.interpretation = old_intp

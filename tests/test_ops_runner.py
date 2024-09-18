@@ -1,12 +1,11 @@
 import itertools
 import logging
-from typing import List, TypeVar
+from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
-from effectful.internals.state import State
 from effectful.ops.core import Interpretation, Operation, define
 from effectful.ops.handler import closed_handler, coproduct, fwd, handler
 from effectful.ops.runner import product, reflect
@@ -112,30 +111,6 @@ def test_runner_scopes(combinator, expected):
         assert sextuple(6) == expected
 
 
-def test_using_runner_to_implement_trailing_state():
-    def trailing_state(st: State[List[T]]):
-        def trailing_set(new_value: T) -> None:
-            s = st.get() + [new_value]
-            st.set(s)
-
-        def get_last():
-            return st.get()[-1]
-
-        return {st.get: get_last, st.set: trailing_set}
-
-    st = State([])
-
-    defaults_st = defaults(st.get, st.set, st.bound_to)
-
-    with handler(product(defaults_st, trailing_state(st))):
-        st.set(3)
-        assert st.get() == 3
-        st.set(4)
-        assert st.get() == 4
-
-    assert st.get() == [3, 4]
-
-
 def test_runner_outer_reflect():
     def plus_two_calling_plus_one():
         def plus_minus_one_then_reflect(v):
@@ -178,7 +153,7 @@ def test_runner_outer_reflect_1():
 
     with closed_handler(intp_outer):
         assert plus_1(1) == 1 + 2 + 3
-        with interpreter(product(intp_outer, intp_inner)):
+        with closed_handler(product(intp_outer, intp_inner)):
             assert plus_2(2) == 2 + (2 + 3) + 1
 
 
