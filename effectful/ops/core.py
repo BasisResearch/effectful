@@ -4,7 +4,11 @@ from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, U
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import weak_memoize
+from effectful.internals.runtime import (
+    bind_interpretation,
+    get_interpretation,
+    weak_memoize,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -30,7 +34,7 @@ class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply(self, *args, **kwargs)  # type: ignore
+        return apply.default(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -49,16 +53,20 @@ def gensym(t: Type[T]) -> Operation[[], T]:
     return op
 
 
-def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    from effectful.internals.runtime import get_interpretation
+@Operation  # type: ignore
+def apply(
+    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    if op in intp:
+        return intp[op](*args, **kwargs)
+    elif apply in intp:
+        return intp[apply](intp, op, *args, **kwargs)  # type: ignore
+    else:
+        return op.default(*args, **kwargs)  # type: ignore
 
-    return get_interpretation().get(op, op.default)(*args, **kwargs)
 
-
-@Operation
-def evaluate(term: Term[T]) -> T:
-    return apply(
-        term.op,
-        *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs},
-    )
+@bind_interpretation
+def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
+    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
+    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
+    return apply.default(intp, term.op, *args, **kwargs)  # type: ignore
