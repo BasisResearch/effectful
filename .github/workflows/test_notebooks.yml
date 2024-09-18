@@ -21,25 +21,16 @@ jobs:
     steps:
         - uses: actions/checkout@v2
 
-        - name: pip cache
-          uses: actions/cache@v2
-          with:
-            path: ~/.cache/pip
-            key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-
-
         - name: Set up Python ${{ matrix.python-version }}
-          uses: actions/setup-python@v1
+          uses: actions/setup-python@v5
           with:
             python-version: ${{ matrix.python-version }}
+            cache: 'pip'
+            cache-dependency-path: setup.py
+          run: pip install -e '.[test]'
 
         - name: Setup Graphviz
           uses: ts-graphviz/setup-graphviz@v1
-
-        - name: Install Python packages from requirements.txt
-          run: |
-            pip install --upgrade pip
-            pip install -e .[test]
     
         - name: Run Notebook Test
           run: | 
