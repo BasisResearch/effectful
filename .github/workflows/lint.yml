@@ -22,7 +22,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: setup.py
 
-      - run: pip install -e '.[test]'
+      - run: pip install -r test-requirements.txt
 
       - name: Lint
         run: ./scripts/lint.sh

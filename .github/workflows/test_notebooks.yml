@@ -28,7 +28,7 @@ jobs:
             cache: 'pip'
             cache-dependency-path: setup.py
 
-        - run: pip install -e '.[test]'
+        - run: pip install -r test-requirements.txt
 
         - name: Setup Graphviz
           uses: ts-graphviz/setup-graphviz@v1
