@@ -5,8 +5,11 @@ from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, U
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import (
+    _CTXOF_RULES,
+    _TYPEOF_RULES,
     bind_interpretation,
     get_interpretation,
+    interpreter,
     weak_memoize,
 )
 
@@ -60,7 +63,7 @@ def apply(
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)  # type: ignore
+        return intp[apply](intp, op, *args, **kwargs)
     else:
         return op.default(*args, **kwargs)  # type: ignore
 
@@ -70,3 +73,24 @@ def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.default(intp, term.op, *args, **kwargs)  # type: ignore
+
+
+def ctxof(term: Term[T]) -> set[Operation[..., T]]:
+
+    _ctx_set = set()
+
+    def _update_ctx(_, op, *args, **kwargs):
+        _ctx_set.add(op)
+        for bound_var in _CTXOF_RULES[op](*args, **kwargs):
+            _ctx_set.remove(bound_var)
+        return Term(op, args, tuple(kwargs.items()))
+
+    with interpreter({apply: _update_ctx}):
+        evaluate(term)  # type: ignore
+
+    return _ctx_set
+
+
+def typeof(term: Term[T]) -> Type[T]:
+    with interpreter(_TYPEOF_RULES):
+        return evaluate(term)  # type: ignore

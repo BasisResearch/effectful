@@ -14,7 +14,7 @@ V = TypeVar("V")
 T_co = TypeVar("T_co", covariant=True)
 
 if typing.TYPE_CHECKING:
-    from ..ops.core import Interpretation
+    from ..ops.core import Interpretation, Operation
 
 
 @dataclasses.dataclass
@@ -71,3 +71,15 @@ def interpreter(intp: "Interpretation"):
         yield intp
     finally:
         r.interpretation = old_intp
+
+
+# TODO store this information in Operation objects
+_CTXOF_RULES: weakref.WeakKeyDictionary[
+    "Operation", Callable[..., set["Operation"]]
+] = weakref.WeakKeyDictionary()
+
+
+# TODO store this information in Operation objects
+_TYPEOF_RULES: weakref.WeakKeyDictionary["Operation", Callable[..., type]] = (
+    weakref.WeakKeyDictionary()
+)
