@@ -1,6 +1,6 @@
 import dataclasses
 import typing
-from typing import Callable, Generic, Iterable, Mapping, Type, TypeVar, Union
+from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -33,35 +33,20 @@ class Operation(Generic[Q, V]):
         return apply(self, *args, **kwargs)  # type: ignore
 
 
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
-
-
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
-class Symbol:
-    name: str
-
-
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
-class Variable(Generic[T]):
-    symbol: Symbol
-    type: Type[T]
-
-
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
-class Constant(Generic[T]):
-    value: T
-
-
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Term(Generic[T]):
     op: Operation[..., T]
-    args: Iterable[Union["Term[T]", Constant[T], Variable[T]]]
-    kwargs: Mapping[str, Union["Term[T]", Constant[T], Variable[T]]]
+    args: Sequence[Union["Term[T]", T]]
+    kwargs: Sequence[Tuple[str, Union["Term[T]", T]]]
 
 
-Context = Mapping[Symbol, T]
-TypeContext = Context[Type[T]]
-TermContext = Context[Term[T]]
+Context = Mapping[Operation[..., T], V]
+Interpretation = Context[T, Callable[..., V]]
+
+
+def gensym(t: Type[T]) -> Operation[[], T]:
+    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
+    return op
 
 
 def apply(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
@@ -75,8 +60,5 @@ def evaluate(term: Term[T]) -> T:
     return apply(
         term.op,
         *(evaluate(a) if isinstance(a, Term) else a for a in term.args),
-        **{
-            k: (evaluate(v) if isinstance(v, Term) else v)
-            for k, v in term.kwargs.items()
-        },
+        **{k: (evaluate(v) if isinstance(v, Term) else v) for k, v in term.kwargs},
     )
