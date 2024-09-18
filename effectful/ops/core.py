@@ -60,7 +60,7 @@ def apply(
     if op in intp:
         return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
+        return intp[apply](intp, op, *args, **kwargs)  # type: ignore
     else:
         return op.default(*args, **kwargs)  # type: ignore
 
