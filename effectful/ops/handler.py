@@ -22,14 +22,13 @@ def fwd(__result: Optional[S], *args, **kwargs) -> S:
 def coproduct(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
-    prompt: Operation[..., T] = fwd,  # type: ignore
 ) -> Interpretation[S, T]:
     res = dict(intp)
 
     for op, i2 in intp2.items():
         i1 = intp.get(op)
         if i1:
-            res[op] = bind_prompt(prompt, i1, i2)
+            res[op] = bind_prompt(fwd, i1, i2)  # type: ignore
         else:
             res[op] = i2
 
@@ -37,12 +36,8 @@ def coproduct(
 
 
 @contextlib.contextmanager
-def handler(
-    intp: Interpretation[S, T],
-    *,
-    prompt: Operation[..., T] = fwd,  # type: ignore
-):
-    with interpreter(coproduct(get_interpretation(), intp, prompt=prompt)):
+def handler(intp: Interpretation[S, T]):
+    with interpreter(coproduct(get_interpretation(), intp)):
         yield intp
 
 

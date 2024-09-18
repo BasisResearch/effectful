@@ -43,7 +43,7 @@ from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
 from effectful.ops.handler import coproduct, fwd, handler
-from effectful.ops.runner import product, reflect
+from effectful.ops.runner import product
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -389,9 +389,9 @@ def block(
     """
 
     @bind_result
-    def blocking(res, fn: Operation, *args, **kwargs):
-        if hide_fn(fn, res, *args, **kwargs):
-            return reflect(res)
+    def blocking(res, op: Operation, *args, **kwargs):
+        if hide_fn(op, res, *args, **kwargs):
+            return res if res is not None else op(*args, **kwargs)
         else:
             return fwd(res)
 
