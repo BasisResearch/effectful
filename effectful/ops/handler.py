@@ -1,5 +1,5 @@
 import contextlib
-from typing import Optional, TypeVar
+from typing import Callable, Optional, TypeVar, cast
 
 from typing_extensions import ParamSpec
 
@@ -33,6 +33,27 @@ def coproduct(
             res[op] = i2
 
     return res
+
+
+def product(
+    intp: Interpretation[S, T],
+    intp2: Interpretation[S, T],
+) -> Interpretation[S, T]:
+    # on prompt, jump to the outer interpretation and interpret it using itself
+    refls = {op: closed_handler(intp)(op) for op in intp}
+
+    return {
+        op: closed_handler(refls)(
+            intp2[op]
+            if op not in intp
+            else bind_prompt(
+                fwd,  # type: ignore
+                closed_handler(intp)(cast(Callable[..., T], op)),
+                intp2[op],
+            )
+        )
+        for op in intp2
+    }
 
 
 @contextlib.contextmanager
