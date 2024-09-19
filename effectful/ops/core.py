@@ -1,16 +1,24 @@
 import dataclasses
-import typing
-from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar, Union
+import inspect
+import tree
+from typing import (
+    Callable,
+    Dict,
+    Generic,
+    Mapping,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import (
-    _CTXOF_RULES,
-    _TYPEOF_RULES,
     bind_interpretation,
     get_interpretation,
     interpreter,
-    weak_memoize,
 )
 
 P = ParamSpec("P")
@@ -20,24 +28,33 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@weak_memoize
-def define(m: Type[T]) -> "Operation[..., T]":
-    """
-    Scott encoding of a type as its constructor.
-    """
-    if not typing.TYPE_CHECKING:
-        if typing.get_origin(m) not in (m, None):
-            return define(typing.get_origin(m))
-
-    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
-
-
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
+@dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
-    default: Callable[Q, V]
+    signature: Callable[Q, V]
+
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        return self.signature(*args, **kwargs)
+
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Term[V]":
+        return Term(self, args, tuple(kwargs.items()))
+
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
+        return object
+
+    def __scope_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Interpretation[T, Type[T]]":
+        return {}
+
+    def __post_init__(self):
+        try:
+            from effectful.internals.sugar import infer_free_rule, infer_scope_rule, infer_type_rule
+            self.__free_rule__ = infer_free_rule(self)
+            self.__scope_rule__ = infer_scope_rule(self)
+            self.__type_rule__ = infer_type_rule(self)
+        except ImportError:
+            pass
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return apply.default(get_interpretation(), self, *args, **kwargs)  # type: ignore
+        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -47,13 +64,7 @@ class Term(Generic[T]):
     kwargs: Sequence[Tuple[str, Union["Term[T]", T]]]
 
 
-Context = Mapping[Operation[..., T], V]
-Interpretation = Context[T, Callable[..., V]]
-
-
-def gensym(t: Type[T]) -> Operation[[], T]:
-    op: Operation[[], T] = Operation(lambda: Term(op, (), ()))  # type: ignore
-    return op
+Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
 @Operation  # type: ignore
@@ -65,32 +76,33 @@ def apply(
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:
-        return op.default(*args, **kwargs)  # type: ignore
+        return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
-    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
-    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
-    return apply.default(intp, term.op, *args, **kwargs)  # type: ignore
+    _eval_leaf = lambda v: evaluate(v) if isinstance(v, Term) else v
+    args = [tree.map_structure(_eval_leaf, arg) for arg in term.args]
+    kwargs = {k: tree.map_structure(_eval_leaf, v) for k, v in term.kwargs}
+    return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
-def ctxof(term: Term[T]) -> set[Operation[..., T]]:
+def ctxof(term: Term[S]) -> Interpretation[Operation[..., T], Type[T]]:
 
-    _ctx_set = set()
+    _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
-        _ctx_set.add(op)
-        for bound_var in _CTXOF_RULES[op](*args, **kwargs):
-            _ctx_set.remove(bound_var)
+        _ctx.setdefault(op, op.__type_rule__)
+        for bound_var in op.__scope_rule__(*args, **kwargs):
+            _ctx.pop(bound_var, None)
         return Term(op, args, tuple(kwargs.items()))
 
-    with interpreter({apply: _update_ctx}):
-        evaluate(term)  # type: ignore
+    with interpreter({apply: _update_ctx}):  # type: ignore
+        evaluate(term)
 
-    return _ctx_set
+    return _ctx
 
 
 def typeof(term: Term[T]) -> Type[T]:
-    with interpreter(_TYPEOF_RULES):
+    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term)  # type: ignore

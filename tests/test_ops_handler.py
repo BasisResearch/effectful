@@ -8,7 +8,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler, coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -18,23 +18,23 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Operation)
+@Operation
 def plus_1(x: int) -> int:
     return x + 1
 
 
-@define(Operation)
+@Operation
 def plus_2(x: int) -> int:
     return x + 2
 
 
-@define(Operation)
+@Operation
 def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: op.default for op in ops}
+    return {op: op.__default_rule__ for op in ops}
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
@@ -86,7 +86,7 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     def f():
         return op(*args) + new_op(*args)
 
-    new_op = define(Operation)(lambda *args: op(*args) + 3)
+    new_op = Operation(lambda *args: op(*args) + 3)
 
     h0 = defaults(op, new_op)
     h1 = times_n_handler(n1, op)

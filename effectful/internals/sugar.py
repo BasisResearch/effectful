@@ -1,6 +1,16 @@
-from typing import Callable, Generic, Optional, ParamSpec, TypeVar
+import collections
+import collections.abc
+import dataclasses
+import functools
+import inspect
+import tree
+import typing
+from typing import Callable, Generic, Mapping, Optional, Sequence, Type, TypeVar, Union
 
-from effectful.ops.core import Interpretation, Operation
+from typing_extensions import ParamSpec
+
+from effectful.internals.runtime import interpreter
+from effectful.ops.core import Interpretation, Operation, Term, apply, evaluate, typeof
 
 P = ParamSpec("P")
 V = TypeVar("V")
@@ -122,3 +132,137 @@ def implements(op: Operation[P, V]):
     method as the implementation of the given `Operation`.
     """
     return _ImplementedOperation(op)
+
+
+def gensym(t: Type[T]) -> Operation[[], T]:
+    @Operation
+    def op() -> t:  # type: ignore
+        return Term(op, (), ())
+    return op
+
+
+@functools.singledispatch
+def unembed(expr: T) -> Union[T, Term[T]]:
+    return expr
+
+
+def embed(expr: Union[T, Term[T]]) -> T:
+    if isinstance(expr, Term):
+        impl: Callable[[Term[T]], T] = _embed_registry.dispatch(typeof(expr))
+        return impl(expr)
+    else:
+        return expr
+
+
+@functools.singledispatch
+def _embed_registry(expr):
+    ...  # return Neutral(expr)
+
+
+embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
+
+
+class Annotation:
+    pass
+
+
+@dataclasses.dataclass
+class Bound(Annotation):
+    scope: int = 0
+
+
+@dataclasses.dataclass
+class Scoped(Annotation):
+    scope: int = 0
+
+
+def infer_free_rule(op: Operation[P, T]) -> Callable[P, T]:
+    sig = inspect.signature(op.signature)
+
+    def rename(subs: Mapping[Operation[[], T], Operation[[], T]], expr: V) -> V:
+
+        def _rename_leaf(leaf_value: Union[T, Term[T], Operation[[], T]]):
+            if isinstance(leaf_value, Operation):
+                return subs.get(leaf_value, leaf_value)
+            elif isinstance(leaf_value, Term):
+                with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
+                    return evaluate(leaf_value)
+            else:
+                return leaf_value
+
+        return tree.map_structure(_rename_leaf, expr)
+
+    @functools.wraps(op.signature)
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> T:
+        bound_sig = sig.bind(*args, **kwargs)
+
+        bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
+        scoped_args: dict[int, set[str]] = collections.defaultdict(set)
+        for param_name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, Bound):
+                        bound_vars[anno.scope].add(bound_sig.arguments[param_name])
+                        scoped_args[anno.scope].add(param_name)
+                    elif isinstance(anno, Scoped):
+                        scoped_args[anno.scope].add(param_name)
+            else:
+                scoped_args[0].add(param_name)
+
+        # TODO finish
+        # # propagate scoped args to inner scopes
+        # scopes = set(scoped_args.keys()) | set(bound_vars.keys())
+        # for scope in sorted(scoped_args.keys()):
+        #     for inner_scope in (s for s in scopes if s > scope):
+        #         scoped_args[inner_scope].update(scoped_args[scope])
+
+        # recursively rename bound variables from innermost to outermost scope
+        for scope in sorted(bound_vars.keys()):
+            # create fresh variables for each bound variable in the scope
+            renaming_map = {var: gensym(var.__type_rule__()) for var in bound_vars[scope]}  # TODO support finitary operations
+            # get just the arguments that are in the scope
+            arguments_to_rename = {name: bound_sig.arguments[name] for name in scoped_args[scope]}
+            # substitute the fresh names into the arguments
+            renamed_arguments = rename(renaming_map, arguments_to_rename)
+            # update the arguments with the renamed values
+            bound_sig.arguments.update(renamed_arguments)
+
+        return Term(op, bound_sig.args, tuple(bound_sig.kwargs.items()))
+
+    return _rule
+
+
+def infer_scope_rule(op: Operation[P, T]) -> Callable[P, Interpretation[V, Type[V]]]:
+    sig = inspect.signature(op.signature)
+
+    @functools.wraps(op.signature)
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> Interpretation[V, Type[V]]:
+        bound_sig = sig.bind(*args, **kwargs)
+
+        bound_vars: dict[Operation[..., V], Callable[..., Type[V]]] = {}
+        for param_name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, Bound):
+                        bound_var = bound_sig.arguments[param_name]
+                        bound_vars[bound_var] = bound_var.__type_rule__
+
+        return bound_vars
+
+    return _rule
+
+
+def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
+    sig = inspect.signature(op.signature)
+
+    @functools.wraps(op.signature)
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> Type[T]:
+        anno = sig.return_annotation
+        if anno is inspect.Signature.empty or isinstance(anno, typing.TypeVar):
+            return object
+        elif typing.get_origin(anno) is not None:
+            return typing.get_origin(anno)
+        else:
+            return anno
+
+    return _rule
