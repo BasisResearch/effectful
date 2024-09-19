@@ -43,7 +43,7 @@ class SemiRingDict(collections.abc.Mapping):
 
 
 @Operation
-def Sum(e1, x, e2):
+def Sum(e1, k, v, e2):
     raise NotImplementedError
 
 
@@ -101,12 +101,12 @@ def eager_field(r, k):
             return fwd(None)
 
 
-def eager_sum(e1, x, e2):
+def eager_sum(e1, k, v, e2):
     match e1, e2:
         case SemiRingDict(), Term():
             new_d = SemiRingDict()
             for key, value in e1.items():
-                new_d += handler({x: lambda: Record(key=key, val=value)})(evaluate)(e2)
+                new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
             return new_d
         case SemiRingDict(), SemiRingDict():
             new_d = SemiRingDict()
@@ -128,12 +128,13 @@ def eager_let(e1, x, e2):
 
 
 free = {
-    Sum: lambda e1, x, e2: Term(Sum, (e1, x, e2), ()),
+    Sum: lambda *args: Term(Sum, args, ()),
     Let: lambda x, e1, e2: Term(Let, (x, e1, e2), ()),
     Record: lambda **kwargs: Term(Record, (), list(kwargs.items())),
     Dict: lambda *contents: Term(Dict, contents, ()),
     Field: lambda r, k: Term(Field, (r, k), ()),
 }
+
 eager = {
     Dict: eager_dict,
     Record: eager_record,
@@ -145,9 +146,11 @@ eager = {
 
 def test_simple_sum():
     x = gensym(object)
+    k = gensym(object)
+    v = gensym(object)
 
     with handler(free), handler(eager):
-        e = Sum(Dict("a", 1, "b", 2), x, Dict("v", Field(x(), "val")))
+        e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
         assert e["v"] == 3
 
     with handler(free), handler(eager):
