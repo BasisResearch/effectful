@@ -48,6 +48,11 @@ def Sum(e1, x, e2):
 
 
 @Operation
+def Let(x, e1, e2):
+    raise NotImplementedError
+
+
+@Operation
 def Record(**kwargs):
     raise NotImplementedError
 
@@ -88,8 +93,10 @@ def eager_record(**kwargs):
 
 def eager_field(r, k):
     match r, k:
-        case dict() as d, str() as k:
-            return d[k]
+        case dict(), str():
+            return r[k]
+        case SemiRingDict(), _ if is_value(k):
+            return r[k]
         case _:
             return fwd(None)
 
@@ -110,13 +117,30 @@ def eager_sum(e1, x, e2):
             return fwd(None)
 
 
+def eager_let(e1, x, e2):
+    match e1, e2:
+        case SemiRingDict(), Term():
+            return handler({x: lambda: e1})(evaluate)(e2)
+        case _, SemiRingDict():
+            return e2
+        case _:
+            return fwd(None)
+
+
 free = {
     Sum: lambda e1, x, e2: Term(Sum, (e1, x, e2), ()),
+    Let: lambda x, e1, e2: Term(Let, (x, e1, e2), ()),
     Record: lambda **kwargs: Term(Record, (), list(kwargs.items())),
     Dict: lambda *contents: Term(Dict, contents, ()),
     Field: lambda r, k: Term(Field, (r, k), ()),
 }
-eager = {Dict: eager_dict, Record: eager_record, Sum: eager_sum, Field: eager_field}
+eager = {
+    Dict: eager_dict,
+    Record: eager_record,
+    Sum: eager_sum,
+    Field: eager_field,
+    Let: eager_let,
+}
 
 
 def test_simple_sum():
@@ -125,3 +149,7 @@ def test_simple_sum():
     with handler(free), handler(eager):
         e = Sum(Dict("a", 1, "b", 2), x, Dict("v", Field(x(), "val")))
         assert e["v"] == 3
+
+    with handler(free), handler(eager):
+        e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
+        assert e == 2
