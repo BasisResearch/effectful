@@ -67,6 +67,11 @@ def Field(record, key):
     raise NotImplementedError
 
 
+@Operation
+def App(f, x):
+    raise NotImplementedError
+
+
 def is_value(v):
     return not (isinstance(v, Term) or isinstance(v, Operation))
 
@@ -87,6 +92,13 @@ def eager_dict(*contents):
 def eager_record(**kwargs):
     if all(is_value(v) for v in kwargs.values()):
         return dict(**kwargs)
+    else:
+        return fwd(None)
+
+
+def eager_app(f, x):
+    if is_value(f) and is_value(x):
+        return f(x)
     else:
         return fwd(None)
 
