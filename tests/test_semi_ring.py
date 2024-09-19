@@ -1,4 +1,6 @@
 import collections.abc
+import random
+import types
 
 from effectful.ops.core import Operation, Term, evaluate, gensym
 from effectful.ops.handler import fwd, handler
@@ -39,7 +41,7 @@ class SemiRingDict(collections.abc.Mapping):
                 new_dict[key] += value
             else:
                 new_dict[key] = value
-        return SemiRingDict(**new_dict)
+        return SemiRingDict(new_dict)
 
 
 @Operation
@@ -70,6 +72,15 @@ def Field(record, key):
 @Operation
 def App(f, x):
     raise NotImplementedError
+
+
+ops = types.SimpleNamespace()
+ops.Sum = Sum
+ops.Let = Let
+ops.Record = Record
+ops.Dict = Dict
+ops.Field = Field
+ops.App = App
 
 
 def is_value(v):
@@ -139,12 +150,40 @@ def eager_let(e1, x, e2):
             return fwd(None)
 
 
+def vertical_fusion(e1, x, e2):
+    match e1, e2:
+        case (
+            Term(
+                ops.Sum,
+                (
+                    e_sum,
+                    k1,
+                    v1,
+                    Term(ops.Dict, (Term(k1a), Term(ops.App, (f1, Term(v1a))))),
+                ),
+            ),
+            Term(
+                ops.Sum,
+                (
+                    Term(xa),
+                    k2,
+                    v2,
+                    Term(ops.Dict, (Term(k2a), Term(ops.App, (f2, Term(v2a))))),
+                ),
+            ),
+        ) if k1 == k1a and v1 == v1a and x == xa and k2 == k2a and v2 == v2a:
+            return Sum(e_sum, k2, v2, Dict(k2(), App(f2, App(f1, v2()))))
+        case _:
+            return fwd(None)
+
+
 free = {
     Sum: lambda *args: Term(Sum, args, ()),
     Let: lambda x, e1, e2: Term(Let, (x, e1, e2), ()),
     Record: lambda **kwargs: Term(Record, (), list(kwargs.items())),
     Dict: lambda *contents: Term(Dict, contents, ()),
     Field: lambda r, k: Term(Field, (r, k), ()),
+    App: lambda f, x: Term(App, (f, x), ()),
 }
 
 eager = {
@@ -153,6 +192,11 @@ eager = {
     Sum: eager_sum,
     Field: eager_field,
     Let: eager_let,
+    App: eager_app,
+}
+
+opt = {
+    Let: vertical_fusion,
 }
 
 
@@ -168,3 +212,66 @@ def test_simple_sum():
     with handler(free), handler(eager):
         e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
         assert e == 2
+
+    def add1(v):
+        return v + 1
+
+    with handler(free), handler(eager):
+        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
+        assert e["a"] == 3
+        assert e["b"] == 4
+
+    with handler(free), handler(eager), handler(opt):
+        e = Let(
+            Dict("a", 1, "b", 2),
+            x,
+            Let(
+                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                x,
+                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+            ),
+        )
+        assert e["a"] == 3
+        assert e["b"] == 4
+
+
+def add1(v):
+    return v + 1
+
+
+def fusion_test(d):
+    x = gensym(object)
+    k = gensym(object)
+    v = gensym(object)
+
+    return Let(
+        d,
+        x,
+        Let(
+            Sum(x(), k, v, Dict(k(), App(add1, v()))),
+            x,
+            Sum(x(), k, v, Dict(k(), App(add1, v()))),
+        ),
+    )
+
+
+def make_dict(n):
+    kv = []
+    for i in range(n):
+        kv.append(i)
+        kv.append(random.randint(1, 10))
+    return Dict(*kv)
+
+
+def test_fusion_unopt(benchmark):
+    @benchmark
+    def run():
+        with handler(free), handler(eager):
+            return fusion_test(make_dict(100))
+
+
+def test_fusion_opt(benchmark):
+    @benchmark
+    def run():
+        with handler(free), handler(eager), handler(opt):
+            return fusion_test(make_dict(100))
