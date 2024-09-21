@@ -36,6 +36,9 @@ def define(m: Type[T]) -> "Operation[..., T]":
 class Operation(Generic[Q, V]):
     default: Callable[Q, V]
 
+    def __str__(self):
+        return self.default.__name__
+
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         return apply.default(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
@@ -45,6 +48,14 @@ class Term(Generic[T]):
     op: Operation[..., T]
     args: Sequence[Union["Term[T]", T]]
     kwargs: Sequence[Tuple[str, Union["Term[T]", T]]]
+
+    def __str__(self):
+        params_str = ""
+        if len(self.args) > 0:
+            params_str += ", ".join(str(x) for x in self.args)
+        if len(self.kwargs) > 0:
+            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
+        return f"{str(self.op)}({params_str})"
 
 
 Context = Mapping[Operation[..., T], V]
