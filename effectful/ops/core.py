@@ -73,7 +73,7 @@ class Operation(Generic[Q, V]):
             pass
 
     def __str__(self):
-        return self.default.__name__
+        return self.signature.__name__
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
