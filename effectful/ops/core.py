@@ -66,10 +66,11 @@ class Operation(Generic[Q, V]):
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Term(Generic[T]):
     op: Operation[..., T]
-    args: Sequence[Union["Term[T]", T]]
-    kwargs: Sequence[Tuple[str, Union["Term[T]", T]]]
+    args: Sequence["Expr[T]"]
+    kwargs: Sequence[Tuple[str, "Expr[T]"]]
 
 
+Expr = Union[Term[T], T]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
@@ -86,7 +87,7 @@ def apply(
 
 
 @bind_interpretation
-def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
+def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
     args = [evaluate(arg) if isinstance(arg, Term) else arg for arg in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore

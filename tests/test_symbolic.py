@@ -5,7 +5,15 @@ from typing import Annotated, Callable, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import Bound, Scoped, gensym
-from effectful.ops.core import Interpretation, Operation, Term, ctxof, evaluate, typeof
+from effectful.ops.core import (
+    Expr,
+    Interpretation,
+    Operation,
+    Term,
+    ctxof,
+    evaluate,
+    typeof,
+)
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -39,7 +47,7 @@ def Let(
     raise NotImplementedError
 
 
-def eta_lam(var: Operation[[], S], body: Term[T]) -> Term[Callable[[S], T]] | Term[T]:
+def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
     if var not in ctxof(body):  # type: ignore
         return body
@@ -47,7 +55,7 @@ def eta_lam(var: Operation[[], S], body: Term[T]) -> Term[Callable[[S], T]] | Te
         return fwd(None)
 
 
-def eta_let(var: Operation[[], S], val: Term[S], body: Term[T]) -> Term[T]:
+def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """eta reduction"""
     if var not in ctxof(body):  # type: ignore
         return body
@@ -55,7 +63,7 @@ def eta_let(var: Operation[[], S], val: Term[S], body: Term[T]) -> Term[T]:
         return fwd(None)
 
 
-def eager_add(x: Term[int] | int, y: Term[int] | int) -> Term[int] | int:
+def eager_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
     match x, y:
         case int(_), int(_):
@@ -64,7 +72,7 @@ def eager_add(x: Term[int] | int, y: Term[int] | int) -> Term[int] | int:
             return fwd(None)
 
 
-def eager_app(f: Term[Callable[[S], T]], arg: Term[S]) -> Term[T]:
+def eager_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
     match f, arg:
         case Term(op, (var, body), ()), _ if op == Lam:
@@ -73,7 +81,7 @@ def eager_app(f: Term[Callable[[S], T]], arg: Term[S]) -> Term[T]:
             return fwd(None)
 
 
-def eager_let(var: Operation[[], S], val: Term[S], body: Term[T]) -> Term[T]:
+def eager_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """let binding"""
     return handler({var: lambda: val})(evaluate)(body)  # type: ignore
 
