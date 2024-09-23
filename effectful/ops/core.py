@@ -18,6 +18,7 @@ from effectful.internals.runtime import (
     bind_interpretation,
     get_interpretation,
     interpreter,
+    weak_memoize,
 )
 
 P = ParamSpec("P")
@@ -25,6 +26,18 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+
+
+@weak_memoize
+def define(m: Type[T]) -> "Operation[..., T]":
+    """
+    Scott encoding of a type as its constructor.
+    """
+    if not typing.TYPE_CHECKING:
+        if typing.get_origin(m) not in (m, None):
+            return define(typing.get_origin(m))
+
+    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
 @dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
@@ -72,6 +85,14 @@ class Term(Generic[T]):
     args: Sequence["Expr[T]"]
     kwargs: Sequence[Tuple[str, "Expr[T]"]]
 
+    def __str__(self):
+        params_str = ""
+        if len(self.args) > 0:
+            params_str += ", ".join(str(x) for x in self.args)
+        if len(self.kwargs) > 0:
+            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
+        return f"{str(self.op)}({params_str})"
+
 
 Expr = Union[Term[T], T]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
@@ -91,7 +112,7 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
-    args = [evaluate(arg) if isinstance(arg, Term) else arg for arg in term.args]  # type: ignore
+    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
