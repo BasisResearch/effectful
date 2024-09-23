@@ -139,7 +139,7 @@ def gensym(t: Type[T]) -> Operation[[], T]:
     def op() -> t:  # type: ignore
         return Term(op, (), ())
 
-    return op
+    return typing.cast(Operation[[], T], op)
 
 
 class Annotation:
