@@ -6,15 +6,15 @@ import inspect
 import typing
 from typing import Callable, Generic, Mapping, Optional, Type, TypeVar, Union
 
-import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
 from effectful.ops.core import Interpretation, Operation, Term, apply, evaluate
 
 P = ParamSpec("P")
-V = TypeVar("V")
+S = TypeVar("S")
 T = TypeVar("T")
+V = TypeVar("V")
 
 
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
@@ -159,18 +159,17 @@ class Scoped(Annotation):
 def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
     sig = inspect.signature(op.signature)
 
-    def rename(subs: Mapping[Operation[[], T], Operation[[], T]], expr: V) -> V:
-
-        def _rename_leaf(leaf_value: Union[T, Term[T], Operation[[], T]]):
-            if isinstance(leaf_value, Operation):
-                return subs.get(leaf_value, leaf_value)
-            elif isinstance(leaf_value, Term):
-                with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
-                    return evaluate(leaf_value)  # type: ignore
-            else:
-                return leaf_value
-
-        return tree.map_structure(_rename_leaf, expr)
+    def rename(
+        subs: Mapping[Operation[..., S], Operation[..., S]],
+        leaf_value: Union[Term[V], Operation[..., V], V],
+    ) -> Union[Term[V], Operation[..., V], V]:
+        if isinstance(leaf_value, Operation):
+            return subs.get(leaf_value, leaf_value)  # type: ignore
+        elif isinstance(leaf_value, Term):
+            with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
+                return evaluate(leaf_value)  # type: ignore
+        else:
+            return leaf_value
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
@@ -207,7 +206,10 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 name: bound_sig.arguments[name] for name in scoped_args[scope]
             }
             # substitute the fresh names into the arguments
-            renamed_arguments = rename(renaming_map, arguments_to_rename)
+            renamed_arguments = {
+                name: rename(renaming_map, arg)
+                for name, arg in arguments_to_rename.items()
+            }
             # update the arguments with the renamed values
             bound_sig.arguments.update(renamed_arguments)
 
