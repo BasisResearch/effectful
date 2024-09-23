@@ -1,13 +1,12 @@
 import collections
 import logging
-import typing
-from typing import Annotated, Callable, Type, TypeVar
+from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import Bound, Scoped, gensym
-from effectful.ops.core import Operation, Term, ctxof, evaluate, typeof
-from effectful.ops.handler import coproduct, fwd, handler, product
+from effectful.ops.core import Interpretation, Operation, Term, ctxof, evaluate, typeof
+from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +26,7 @@ def App(f: Callable[[S], T], arg: S) -> T:
 
 
 @Operation
-def Lam(
-    var: Annotated[Operation[[], S], Bound()],
-    body: T
-) -> Callable[[S], T]:
+def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
     raise NotImplementedError
 
 
@@ -43,23 +39,23 @@ def Let(
     raise NotImplementedError
 
 
-def eta_lam(var: Operation[[], S], body: T) -> Callable[[S], T]:
+def eta_lam(var: Operation[[], S], body: Term[T]) -> Term[Callable[[S], T]] | Term[T]:
     """eta reduction"""
-    if var not in ctxof(body):
+    if var not in ctxof(body):  # type: ignore
         return body
     else:
         return fwd(None)
 
 
-def eta_let(var: Operation[[], S], val: S, body: T) -> T:
+def eta_let(var: Operation[[], S], val: Term[S], body: Term[T]) -> Term[T]:
     """eta reduction"""
-    if var not in ctxof(body):
+    if var not in ctxof(body):  # type: ignore
         return body
     else:
         return fwd(None)
 
 
-def eager_add(x: int, y: int) -> int:
+def eager_add(x: Term[int] | int, y: Term[int] | int) -> Term[int] | int:
     """integer addition"""
     match x, y:
         case int(_), int(_):
@@ -68,7 +64,7 @@ def eager_add(x: int, y: int) -> int:
             return fwd(None)
 
 
-def eager_app(f: Callable[[S], T], arg: S) -> T:
+def eager_app(f: Term[Callable[[S], T]], arg: Term[S]) -> Term[T]:
     """beta reduction"""
     match f, arg:
         case Term(op, (var, body), ()), _ if op == Lam:
@@ -77,22 +73,22 @@ def eager_app(f: Callable[[S], T], arg: S) -> T:
             return fwd(None)
 
 
-def eager_let(var: Operation[[], S], val: S, body: T) -> T:
+def eager_let(var: Operation[[], S], val: Term[S], body: Term[T]) -> Term[T]:
     """let binding"""
-    return handler({var: lambda: val})(evaluate)(body)
+    return handler({var: lambda: val})(evaluate)(body)  # type: ignore
 
 
-free = {
-    Add: Add.__free_rule__,  # lambda x, y: Term(Add, (x, y), ()),
-    App: App.__free_rule__,  # lambda f, arg: Term(App, (f, arg), ()),
-    Lam: Lam.__free_rule__,  # lambda var, body: Term(Lam, (var, body), ()),
-    Let: Let.__free_rule__,  # lambda var, val, body: Term(Let, (var, val, body), ()),
+free: Interpretation = {
+    Add: Add.__free_rule__,
+    App: App.__free_rule__,
+    Lam: Lam.__free_rule__,
+    Let: Let.__free_rule__,
 }
-lazy = {
+lazy: Interpretation = {
     Lam: eta_lam,
     Let: eta_let,
 }
-eager = {
+eager: Interpretation = {
     Add: eager_add,
     App: eager_app,
     Let: eager_let,

@@ -1,6 +1,5 @@
 import dataclasses
-import inspect
-import tree
+import typing
 from typing import (
     Callable,
     Dict,
@@ -36,17 +35,24 @@ class Operation(Generic[Q, V]):
         return self.signature(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Term[V]":
-        return Term(self, args, tuple(kwargs.items()))
+        return Term(self, tuple(args), tuple(kwargs.items()))  # type: ignore
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
-        return object
+        return typing.cast(Type[V], object)
 
-    def __scope_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Interpretation[T, Type[T]]":
+    def __scope_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> "Interpretation[T, Type[T]]":
         return {}
 
     def __post_init__(self):
         try:
-            from effectful.internals.sugar import infer_free_rule, infer_scope_rule, infer_type_rule
+            from effectful.internals.sugar import (
+                infer_free_rule,
+                infer_scope_rule,
+                infer_type_rule,
+            )
+
             self.__free_rule__ = infer_free_rule(self)
             self.__scope_rule__ = infer_scope_rule(self)
             self.__type_rule__ = infer_type_rule(self)
@@ -81,13 +87,12 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Term[T] | T:
-    _eval_leaf = lambda v: evaluate(v) if isinstance(v, Term) else v
-    args = [tree.map_structure(_eval_leaf, arg) for arg in term.args]
-    kwargs = {k: tree.map_structure(_eval_leaf, v) for k, v in term.kwargs}
+    args = [evaluate(arg) if isinstance(arg, Term) else arg for arg in term.args]  # type: ignore
+    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
-def ctxof(term: Term[S]) -> Interpretation[Operation[..., T], Type[T]]:
+def ctxof(term: Term[S]) -> Interpretation[T, Type[T]]:
 
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
@@ -98,7 +103,7 @@ def ctxof(term: Term[S]) -> Interpretation[Operation[..., T], Type[T]]:
         return Term(op, args, tuple(kwargs.items()))
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term)
+        evaluate(term)  # type: ignore
 
     return _ctx
 

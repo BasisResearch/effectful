@@ -3,14 +3,14 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
-import tree
 import typing
-from typing import Callable, Generic, Mapping, Optional, Sequence, Type, TypeVar, Union
+from typing import Callable, Generic, Mapping, Optional, Type, TypeVar, Union
 
+import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.core import Interpretation, Operation, Term, apply, evaluate, typeof
+from effectful.ops.core import Interpretation, Operation, Term, apply, evaluate
 
 P = ParamSpec("P")
 V = TypeVar("V")
@@ -138,28 +138,8 @@ def gensym(t: Type[T]) -> Operation[[], T]:
     @Operation
     def op() -> t:  # type: ignore
         return Term(op, (), ())
+
     return op
-
-
-@functools.singledispatch
-def unembed(expr: T) -> Union[T, Term[T]]:
-    return expr
-
-
-def embed(expr: Union[T, Term[T]]) -> T:
-    if isinstance(expr, Term):
-        impl: Callable[[Term[T]], T] = _embed_registry.dispatch(typeof(expr))
-        return impl(expr)
-    else:
-        return expr
-
-
-@functools.singledispatch
-def _embed_registry(expr):
-    ...  # return Neutral(expr)
-
-
-embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
 
 
 class Annotation:
@@ -176,7 +156,7 @@ class Scoped(Annotation):
     scope: int = 0
 
 
-def infer_free_rule(op: Operation[P, T]) -> Callable[P, T]:
+def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
     sig = inspect.signature(op.signature)
 
     def rename(subs: Mapping[Operation[[], T], Operation[[], T]], expr: V) -> V:
@@ -186,14 +166,14 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, T]:
                 return subs.get(leaf_value, leaf_value)
             elif isinstance(leaf_value, Term):
                 with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
-                    return evaluate(leaf_value)
+                    return evaluate(leaf_value)  # type: ignore
             else:
                 return leaf_value
 
         return tree.map_structure(_rename_leaf, expr)
 
     @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> T:
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
         bound_sig = sig.bind(*args, **kwargs)
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
@@ -219,15 +199,19 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, T]:
         # recursively rename bound variables from innermost to outermost scope
         for scope in sorted(bound_vars.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {var: gensym(var.__type_rule__()) for var in bound_vars[scope]}  # TODO support finitary operations
+            renaming_map = {
+                var: gensym(var.__type_rule__()) for var in bound_vars[scope]
+            }  # TODO support finitary operations
             # get just the arguments that are in the scope
-            arguments_to_rename = {name: bound_sig.arguments[name] for name in scoped_args[scope]}
+            arguments_to_rename = {
+                name: bound_sig.arguments[name] for name in scoped_args[scope]
+            }
             # substitute the fresh names into the arguments
             renamed_arguments = rename(renaming_map, arguments_to_rename)
             # update the arguments with the renamed values
             bound_sig.arguments.update(renamed_arguments)
 
-        return Term(op, bound_sig.args, tuple(bound_sig.kwargs.items()))
+        return Term(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
 
     return _rule
 
@@ -259,7 +243,7 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Type[T]:
         anno = sig.return_annotation
         if anno is inspect.Signature.empty or isinstance(anno, typing.TypeVar):
-            return object
+            return typing.cast(Type[T], object)
         elif typing.get_origin(anno) is not None:
             return typing.get_origin(anno)
         else:
