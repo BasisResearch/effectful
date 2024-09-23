@@ -3,13 +3,22 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import operator
 import typing
-from typing import Callable, Generic, Mapping, Optional, Type, TypeVar, Union
+from typing import Callable, Generic, Mapping, Optional, Protocol, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.core import Interpretation, Operation, Term, apply, evaluate
+from effectful.ops.core import (
+    Expr,
+    Interpretation,
+    Operation,
+    Term,
+    apply,
+    evaluate,
+    typeof,
+)
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -250,3 +259,86 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
             return anno
 
     return _rule
+
+
+def infer_default_rule(op: Operation[P, T]) -> Callable[P, T]:
+
+    @functools.wraps(op.signature)
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> T:
+        try:
+            return op.signature(*args, **kwargs)
+        except NotImplementedError:
+            tm_args = tuple(unembed(a) for a in args)
+            tm_kwargs = {k: unembed(v) for k, v in kwargs.items()}
+            return embed(op.__free_rule__(*tm_args, **tm_kwargs))
+
+    return _rule
+
+
+@typing.runtime_checkable
+class _StuckNeutral(Protocol[T]):
+    __stuck_term__: Expr[T]
+
+
+@functools.cache
+def syntax_op(sig_fn: Callable[P, T]) -> Operation[P, T]:
+    return Operation(sig_fn)
+
+
+_NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
+
+
+def embed(expr: Expr[T]) -> Union[T, _StuckNeutral[T]]:
+    if isinstance(expr, Term):
+        impl = _embed_registry.dispatch(typeof(expr))
+        return impl(expr)
+    else:
+        return expr
+
+
+_embed_registry = functools.singledispatch(lambda v: v)
+embed.register = _embed_registry.register  # type: ignore
+
+
+@embed.register(object)  # type: ignore
+def _embed_default(value: Term[T]) -> _StuckNeutral[T]:
+    return Rep(value)
+
+
+class Rep(Generic[T], _StuckNeutral[T]):
+    __stuck_term__: Expr[T]
+
+    def __init__(self, term: Expr[T]):
+        self.__stuck_term__ = term
+
+    #######################################################################
+    # arithmetic binary operators
+    #######################################################################
+    def __add__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return syntax_op(operator.add)(self, embed(other))
+
+    def __radd__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return embed(other).__add__(self)
+
+    #######################################################################
+    # comparisons
+    #######################################################################
+    def __eq__(self, other: _NeutralExpr[T]) -> bool:
+        return embed(operator.eq(unembed(self), unembed(other)))
+
+
+def unembed(value: Union[T, _StuckNeutral[T]]) -> Expr[T]:
+    if isinstance(value, _StuckNeutral):
+        return value.__stuck_term__
+    else:
+        impl = _unembed_registry.dispatch(type(value))
+        return impl(value)
+
+
+_unembed_registry = functools.singledispatch(lambda v: v)
+unembed.register = _unembed_registry.register  # type: ignore
+
+
+@unembed.register(object)
+def _unembed_default(value: T) -> T:
+    return value

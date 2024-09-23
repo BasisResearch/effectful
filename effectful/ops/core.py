@@ -61,11 +61,13 @@ class Operation(Generic[Q, V]):
     def __post_init__(self):
         try:
             from effectful.internals.sugar import (
+                infer_default_rule,
                 infer_free_rule,
                 infer_scope_rule,
                 infer_type_rule,
             )
 
+            self.__default_rule__ = infer_default_rule(self)
             self.__free_rule__ = infer_free_rule(self)
             self.__scope_rule__ = infer_scope_rule(self)
             self.__type_rule__ = infer_type_rule(self)
@@ -112,6 +114,9 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
+    from effectful.internals.sugar import unembed
+
+    term = unembed(term)
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore

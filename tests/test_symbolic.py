@@ -4,7 +4,7 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import Bound, Scoped, gensym
+from effectful.internals.sugar import Bound, Scoped, gensym, unembed
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -74,7 +74,7 @@ def eager_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 def eager_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
-    match f, arg:
+    match unembed(f), arg:
         case Term(op, (var, body), ()), _ if op == Lam:
             return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         case _:
@@ -115,7 +115,7 @@ def test_lambda_calculus_1():
 
         assert App(f1, 1) == 2
         assert Lam(y, f1) == f1
-        assert Lam(x, f1.args[1]) == f1.args[1]
+        assert Lam(x, unembed(f1).args[1]) == unembed(f1).args[1]
 
         assert typeof(e1) is int
         assert typeof(f1) is collections.abc.Callable
@@ -161,10 +161,10 @@ def test_lambda_calculus_5():
         f_add1 = Lam(x, e_add1)
 
         assert x in ctxof(e_add1)
-        assert e_add1.args[0] != x
+        assert unembed(e_add1).args[0] != x
 
         assert x not in ctxof(f_add1)
-        assert f_add1.args[0] != f_add1.args[1].args[0]
+        assert unembed(f_add1).args[0] != unembed(f_add1).args[1].args[0]
 
         assert App(f_add1, 1) == 2
         assert Let(x, 1, e_add1) == 2
