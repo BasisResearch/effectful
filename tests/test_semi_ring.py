@@ -2,7 +2,8 @@ import collections.abc
 import random
 import types
 
-from effectful.ops.core import Operation, Term, evaluate, gensym
+from effectful.internals.sugar import gensym
+from effectful.ops.core import Operation, Term, evaluate
 from effectful.ops.handler import fwd, handler
 
 

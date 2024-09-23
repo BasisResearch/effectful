@@ -6,7 +6,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
@@ -16,17 +16,17 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@define(Operation)
+@Operation
 def plus_1(x: int) -> int:
     return x + 1
 
 
-@define(Operation)
+@Operation
 def plus_2(x: int) -> int:
     return x + 2
 
 
-@define(Operation)
+@Operation
 def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
@@ -36,7 +36,7 @@ def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: op.default for op in ops}
+    return {op: op.__default_rule__ for op in ops}
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
@@ -85,15 +85,15 @@ def test_product_block_associative(op, args, n1, n2):
     "combinator,expected", [(coproduct, 36), (product, [[6, 6, 6], [6, 6, 6]])]
 )
 def test_runner_scopes(combinator, expected):
-    @define(Operation)
+    @Operation
     def double(v):
         raise RuntimeError("No Defaults")
 
-    @define(Operation)
+    @Operation
     def triple(v):
         raise RuntimeError("No Defaults")
 
-    @define(Operation)
+    @Operation
     def sextuple(v):
         raise RuntimeError("No Defaults")
 
@@ -118,7 +118,7 @@ def test_runner_outer_reflect():
 
         return {plus_2: plus_minus_one_then_reflect}
 
-    defs = {plus_1: plus_1.default, plus_2: plus_2.default}
+    defs = {plus_1: plus_1.__default_rule__, plus_2: plus_2.__default_rule__}
     with closed_handler(product(defs, plus_two_calling_plus_one())):
         assert plus_1(1) == 2
         assert plus_2(2) == 4

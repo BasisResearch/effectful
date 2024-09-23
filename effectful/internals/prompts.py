@@ -108,7 +108,9 @@ def bind_prompt(
 
     @wraps(wrapped)
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        unset = _unset_cont(prompt, get_interpretation().get(prompt, prompt.default))
+        unset = _unset_cont(
+            prompt, get_interpretation().get(prompt, prompt.__default_rule__)
+        )
         state_intp = {prompt: unset(_cont_wrapper), _get_args: lambda: (a, k)}
         with interpreter({**get_interpretation(), **state_intp}):  # type: ignore
             return wrapped(*a, **k)
