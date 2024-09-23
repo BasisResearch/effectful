@@ -188,12 +188,10 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
             else:
                 scoped_args[0].add(param_name)
 
-        # TODO finish
-        # # propagate scoped args to inner scopes
-        # scopes = set(scoped_args.keys()) | set(bound_vars.keys())
-        # for scope in sorted(scoped_args.keys()):
-        #     for inner_scope in (s for s in scopes if s > scope):
-        #         scoped_args[inner_scope].update(scoped_args[scope])
+        # TODO replace this temporary check with more general scope level propagation
+        if bound_vars:
+            max_scope = max(bound_vars.keys(), default=0)
+            assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
         for scope in sorted(bound_vars.keys()):
