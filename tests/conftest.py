@@ -8,9 +8,11 @@ UNIMPLEMENTED_SUBSTRINGS = [
 ]
 
 
+@pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item):
     try:
-        item.runtest()
+        output = yield
+        return output
     except NotImplementedError as e:
         if any(s in str(e) for s in UNIMPLEMENTED_SUBSTRINGS):
             pytest.xfail(str(e))
