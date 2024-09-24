@@ -441,6 +441,8 @@ class BaseNeutral(Generic[T], _StuckNeutral[T]):
     def __eq__(self, other: _NeutralExpr[T]) -> bool:
         return OPERATORS[operator.eq](self, embed(other))
 
+
+class _BinopResolutionMixin(Generic[T]):
     #######################################################################
     # binary operator method resolution
     #######################################################################
@@ -542,7 +544,9 @@ _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
 @embed.register(numbers.Number)  # type: ignore
-class NumberNeutral(Generic[_T_Number], BaseNeutral[_T_Number]):
+class NumberNeutral(
+    Generic[_T_Number], BaseNeutral[_T_Number], _BinopResolutionMixin[_T_Number]
+):
 
     #######################################################################
     # arithmetic binary operators
