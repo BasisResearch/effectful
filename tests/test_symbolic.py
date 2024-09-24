@@ -4,7 +4,7 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import Bound, Scoped, gensym, unembed
+from effectful.internals.sugar import Bound, Scoped, embed, gensym, unembed
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -168,3 +168,11 @@ def test_lambda_calculus_5():
 
         assert App(f_add1, 1) == 2
         assert Let(x, 1, e_add1) == 2
+
+
+def test_arithmetic_1():
+
+    x, y = gensym(int), gensym(int)
+
+    assert x() + y() == x() + y()
+    assert x() + 1 == x() + 1

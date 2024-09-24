@@ -3,9 +3,20 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import numbers
 import operator
 import typing
-from typing import Callable, Generic, Mapping, Optional, Protocol, Type, TypeVar, Union
+from typing import (
+    Annotated,
+    Callable,
+    Generic,
+    Mapping,
+    Optional,
+    Protocol,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from typing_extensions import ParamSpec
 
@@ -146,7 +157,7 @@ def implements(op: Operation[P, V]):
 def gensym(t: Type[T]) -> Operation[[], T]:
     @Operation
     def op() -> t:  # type: ignore
-        return Term(op, (), ())
+        raise NotImplementedError
 
     return typing.cast(Operation[[], T], op)
 
@@ -182,6 +193,8 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
+        args = tuple(unembed(a) for a in args)
+        kwargs = {k: unembed(v) for k, v in kwargs.items()}
         bound_sig = sig.bind(*args, **kwargs)
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
@@ -280,31 +293,126 @@ class _StuckNeutral(Protocol[T]):
     __stuck_term__: Expr[T]
 
 
-@functools.cache
-def syntax_op(sig_fn: Callable[P, T]) -> Operation[P, T]:
-    return Operation(sig_fn)
-
-
-_NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
-
-
 def embed(expr: Expr[T]) -> Union[T, _StuckNeutral[T]]:
     if isinstance(expr, Term):
-        impl = _embed_registry.dispatch(typeof(expr))
+        impl: Callable[[Term[T]], Union[T, _StuckNeutral[T]]]
+        impl = embed.dispatch(typeof(expr))  # type: ignore
         return impl(expr)
     else:
         return expr
 
 
 _embed_registry = functools.singledispatch(lambda v: v)
-embed.register = _embed_registry.register  # type: ignore
+embed.dispatch = _embed_registry.dispatch  # type: ignore
+embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
 
 
-@embed.register(object)  # type: ignore
-def _embed_default(value: Term[T]) -> _StuckNeutral[T]:
-    return Rep(value)
+def unembed(value: Union[T, _StuckNeutral[T]]) -> Expr[T]:
+    if isinstance(value, _StuckNeutral):
+        return value.__stuck_term__
+    else:
+        impl: Callable[[T], Expr[T]]
+        impl = unembed.dispatch(type(value))  # type: ignore
+        return impl(value)
 
 
+_unembed_registry = functools.singledispatch(lambda v: v)
+unembed.dispatch = _unembed_registry.dispatch  # type: ignore
+unembed.register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
+
+
+def hx(value: T):
+    return embed(unembed(value))
+
+
+OPERATORS = {}
+
+
+def register_syntax_op(
+    syntax_fn: Callable[P, T], syntax_op_fn: Optional[Callable[P, T]] = None
+):
+    if syntax_op_fn is None:
+        return functools.partial(register_syntax_op, syntax_fn)
+
+    OPERATORS[syntax_fn] = Operation(syntax_op_fn)
+    return OPERATORS[syntax_fn]
+
+
+for _arithmetic_binop in (
+    operator.add,
+    operator.sub,
+    operator.mul,
+    operator.truediv,
+    operator.floordiv,
+    operator.mod,
+    operator.pow,
+    operator.matmul,
+    operator.lshift,
+    operator.rshift,
+    operator.and_,
+    operator.or_,
+    operator.xor,
+):
+
+    @register_syntax_op(_arithmetic_binop)
+    def _fail(__x: numbers.Number, __y: numbers.Number) -> numbers.Number:
+        raise NotImplementedError
+
+
+for _arithmethic_unop in (
+    operator.neg,
+    operator.pos,
+    operator.abs,
+    operator.invert,
+):
+
+    @register_syntax_op(_arithmethic_unop)
+    def _fail(__x: numbers.Number) -> numbers.Number:
+        raise NotImplementedError
+
+
+for _other_builtin_op in (
+    operator.not_,
+    operator.lt,
+    operator.le,
+    operator.gt,
+    operator.ge,
+    operator.is_,
+    operator.is_not,
+    operator.contains,
+    operator.index,
+    operator.getitem,
+    operator.setitem,
+    operator.delitem,
+    # getattr,
+    # setattr,
+    # delattr,
+    # len,
+    # iter,
+    # next,
+    # reversed,
+):
+
+    @register_syntax_op(_other_builtin_op)
+    @functools.wraps(_other_builtin_op)
+    def _fail(*args, **kwargs):
+        raise NotImplementedError
+
+
+@register_syntax_op(operator.eq)
+def _eq_op(a: T, b: T) -> bool:
+    return embed(operator.eq(unembed(a), unembed(b)))
+
+
+@register_syntax_op(operator.ne)
+def _ne_op(a: T, b: T) -> bool:
+    return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))
+
+
+_NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
+
+
+@embed.register(object)
 class Rep(Generic[T], _StuckNeutral[T]):
     __stuck_term__: Expr[T]
 
@@ -312,33 +420,179 @@ class Rep(Generic[T], _StuckNeutral[T]):
         self.__stuck_term__ = term
 
     #######################################################################
+    # binary operator method resolution
+    #######################################################################
+    # arithmetic
+    def __radd__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.add(embed(other), self)
+
+    def __rsub__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.sub(embed(other), self)
+
+    def __rmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.mul(embed(other), self)
+
+    def __rtruediv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.truediv(embed(other), self)
+
+    def __rfloordiv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.floordiv(embed(other), self)
+
+    def __rmod__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.mod(embed(other), self)
+
+    def __rpow__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.pow(embed(other), self)
+
+    def __rmatmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.matmul(embed(other), self)
+
+    # bitwise
+    def __rand__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.and_(embed(other), self)
+
+    def __ror__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.or_(embed(other), self)
+
+    def __rxor__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.xor(embed(other), self)
+
+    def __rrshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.rshift(embed(other), self)
+
+    def __rlshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+        return operator.lshift(embed(other), self)
+
+
+_T_Number = TypeVar("_T_Number", bound=numbers.Number)
+
+
+@embed.register(numbers.Number)  # type: ignore
+class NumberRep(Generic[_T_Number], Rep[_T_Number]):
+
+    #######################################################################
     # arithmetic binary operators
     #######################################################################
-    def __add__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return syntax_op(operator.add)(self, embed(other))
+    def __add__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.add](self, embed(other))
 
-    def __radd__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return embed(other).__add__(self)
+    def __sub__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.sub](self, embed(other))
+
+    def __mul__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.mul](self, embed(other))
+
+    def __truediv__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.truediv](self, embed(other))
+
+    def __floordiv__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.floordiv](self, embed(other))
+
+    def __mod__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.mod](self, embed(other))
+
+    def __pow__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.pow](self, embed(other))
+
+    def __matmul__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.matmul](self, embed(other))
+
+    #######################################################################
+    # unary operators
+    #######################################################################
+    def __neg__(self) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.neg](self)
+
+    def __pos__(self) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.pos](self)
+
+    def __abs__(self) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.abs](self)
+
+    def __invert__(self) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.invert](self)
 
     #######################################################################
     # comparisons
     #######################################################################
-    def __eq__(self, other: _NeutralExpr[T]) -> bool:
-        return embed(operator.eq(unembed(self), unembed(other)))
+    def __eq__(self, other: _NeutralExpr[_T_Number]) -> bool:
+        return OPERATORS[operator.eq](self, embed(other))
+
+    def __ne__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
+        return OPERATORS[operator.ne](self, embed(other))
+
+    def __lt__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
+        return OPERATORS[operator.lt](self, embed(other))
+
+    def __le__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
+        return OPERATORS[operator.le](self, embed(other))
+
+    def __gt__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
+        return OPERATORS[operator.gt](self, embed(other))
+
+    def __ge__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
+        return OPERATORS[operator.ge](self, embed(other))
+
+    #######################################################################
+    # bitwise operators
+    #######################################################################
+    def __and__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.and_](self, embed(other))
+
+    def __or__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.or_](self, embed(other))
+
+    def __xor__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.xor](self, embed(other))
+
+    def __rshift__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.rshift](self, embed(other))
+
+    def __lshift__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
+        return OPERATORS[operator.lshift](self, embed(other))
 
 
-def unembed(value: Union[T, _StuckNeutral[T]]) -> Expr[T]:
-    if isinstance(value, _StuckNeutral):
-        return value.__stuck_term__
-    else:
-        impl = _unembed_registry.dispatch(type(value))
-        return impl(value)
+@embed.register(collections.abc.Sequence)
+class SequenceRep(
+    Generic[T], collections.abc.Sequence[T], Rep[collections.abc.Sequence[T]]
+):
+    def __getitem__(self, key: _NeutralExpr[int]) -> _NeutralExpr[T]:
+        return OPERATORS[operator.getitem](self, embed(key))
+
+    def __reversed__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
+        return OPERATORS[reversed](self)
+
+    def __contains__(self, other: _NeutralExpr[T]) -> bool:
+        return OPERATORS[operator.contains](self, embed(other))
+
+    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
+        return OPERATORS[iter](self)
+
+    def __len__(self) -> _NeutralExpr[int]:
+        return OPERATORS[len](self)
 
 
-_unembed_registry = functools.singledispatch(lambda v: v)
-unembed.register = _unembed_registry.register  # type: ignore
+@embed.register(collections.abc.Mapping)
+class MappingRep(
+    Generic[S, T], collections.abc.Mapping[S, T], Rep[collections.abc.Mapping[S, T]]
+):
+    def __getitem__(self, other: _NeutralExpr[S]) -> _NeutralExpr[T]:
+        return OPERATORS[operator.getitem](self, embed(other))
+
+    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
+        return OPERATORS[iter](self)
+
+    def __len__(self) -> _NeutralExpr[int]:
+        return OPERATORS[len](self)
 
 
-@unembed.register(object)
-def _unembed_default(value: T) -> T:
-    return value
+@embed.register(collections.abc.Set)
+class SetRep(Generic[T], collections.abc.Set[T], Rep[collections.abc.Set[T]]):
+    def __contains__(self, other: _NeutralExpr[T]) -> bool:
+        return OPERATORS[operator.contains](self, embed(other))
+
+    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
+        return OPERATORS[iter](self)
+
+    def __len__(self) -> _NeutralExpr[int]:
+        return OPERATORS[len](self)
