@@ -429,7 +429,7 @@ _NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
 
 
 @embed.register(object)
-class BaseNeutral(Generic[T], _StuckNeutral[T]):
+class _BaseNeutral(Generic[T], _StuckNeutral[T]):
     __stuck_term__: Expr[T]
 
     def __init__(self, term: Expr[T]):
@@ -544,8 +544,8 @@ _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
 @embed.register(numbers.Number)  # type: ignore
-class NumberNeutral(
-    Generic[_T_Number], BaseNeutral[_T_Number], _BinopResolutionMixin[_T_Number]
+class _NumberNeutral(
+    Generic[_T_Number], _BaseNeutral[_T_Number], _BinopResolutionMixin[_T_Number]
 ):
 
     #######################################################################
@@ -631,8 +631,8 @@ class NumberNeutral(
 
 
 @embed.register(collections.abc.Sequence)
-class SequenceNeutral(
-    Generic[T], collections.abc.Sequence[T], BaseNeutral[collections.abc.Sequence[T]]
+class _SequenceNeutral(
+    Generic[T], collections.abc.Sequence[T], _BaseNeutral[collections.abc.Sequence[T]]
 ):
     def __getitem__(self, key: _NeutralExpr[int]) -> _NeutralExpr[T]:
         return OPERATORS[operator.getitem](self, embed(key))
