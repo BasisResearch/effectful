@@ -387,7 +387,7 @@ for _arithmethic_unop in (
         raise NotImplementedError
 
 
-for _other_builtin_op in (
+for _other_operator_op in (
     operator.not_,
     operator.lt,
     operator.le,
@@ -409,8 +409,8 @@ for _other_builtin_op in (
     # reversed,
 ):
 
-    @register_syntax_op(_other_builtin_op)
-    @functools.wraps(_other_builtin_op)
+    @register_syntax_op(_other_operator_op)
+    @functools.wraps(_other_operator_op)
     def _fail(*args, **kwargs):
         raise NotImplementedError
 
