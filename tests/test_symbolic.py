@@ -24,9 +24,7 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@Operation
-def Add(x: int, y: int) -> int:
-    raise NotImplementedError
+add = OPERATORS[operator.add]
 
 
 @Operation
@@ -66,7 +64,7 @@ def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 
 def eager_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
-    match x, y:
+    match unembed(x), unembed(y):
         case int(_), int(_):
             return x + y
         case _:
@@ -88,7 +86,7 @@ def eager_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 
 
 free: Interpretation = {
-    Add: Add.__default_rule__,
+    add: add.__default_rule__,
     App: App.__default_rule__,
     Lam: Lam.__default_rule__,
     Let: Let.__default_rule__,
@@ -98,7 +96,7 @@ lazy: Interpretation = {
     Let: eta_let,
 }
 eager: Interpretation = {
-    Add: eager_add,
+    add: eager_add,
     App: eager_app,
     Let: eager_let,
 }
@@ -111,7 +109,7 @@ def test_lambda_calculus_1():
     x, y = gensym(int), gensym(int)
 
     with handler(eager_mixed):
-        e1 = Add(x(), 1)
+        e1 = x() + 1
         f1 = Lam(x, e1)
 
         assert App(f1, 1) == 2
@@ -127,7 +125,7 @@ def test_lambda_calculus_2():
     x, y = gensym(int), gensym(int)
 
     with handler(eager_mixed):
-        f2 = Lam(x, Lam(y, Add(x(), y())))
+        f2 = Lam(x, Lam(y, (x() + y())))
         assert App(App(f2, 1), 2) == 3
         assert Lam(y, f2) == f2
 
@@ -137,7 +135,7 @@ def test_lambda_calculus_3():
     x, y, z = gensym(int), gensym(int), gensym(object)
 
     with handler(eager_mixed):
-        f2 = Lam(x, Lam(y, Add(x(), y())))
+        f2 = Lam(x, Lam(y, (x() + y())))
         app2 = Lam(z, Lam(x, Lam(y, App(App(z(), x()), y()))))
         assert App(App(App(app2, f2), 1), 2) == 3
 
@@ -147,7 +145,7 @@ def test_lambda_calculus_4():
     x, y, z = gensym(int), gensym(object), gensym(object)
 
     with handler(eager_mixed):
-        add1 = Lam(x, Add(x(), 1))
+        add1 = Lam(x, (x() + 1))
         compose = Lam(x, Lam(y, Lam(z, App(x(), App(y(), z())))))
         f1_twice = App(App(compose, add1), add1)
         assert App(f1_twice, 1) == 3
@@ -158,7 +156,7 @@ def test_lambda_calculus_5():
     x = gensym(int)
 
     with handler(eager_mixed):
-        e_add1 = Let(x, x(), Add(x(), 1))
+        e_add1 = Let(x, x(), (x() + 1))
         f_add1 = Lam(x, e_add1)
 
         assert x in ctxof(e_add1)
@@ -172,15 +170,6 @@ def test_lambda_calculus_5():
 
 
 def test_arithmetic_1():
-
-    add = OPERATORS[operator.add]
-
-    def eager_add(x, y):
-        match unembed(x), unembed(y):
-            case int(x_), int(y_):
-                return x_ + y_
-            case _:
-                return fwd(None)
 
     def simplify_add(x, y):
         match unembed(x), unembed(y):
