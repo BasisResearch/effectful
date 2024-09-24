@@ -263,8 +263,22 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Type[T]:
+        bound_sig = sig.bind(*args, **kwargs)
+
         anno = sig.return_annotation
-        if anno is inspect.Signature.empty or isinstance(anno, typing.TypeVar):
+        if anno is inspect.Signature.empty:
+            return typing.cast(Type[T], object)
+        elif isinstance(anno, typing.TypeVar):
+            # rudimentary but sound special-case type inference sufficient for syntax ops:
+            # if the return type annotation is a TypeVar,
+            # look for a parameter with the same annotation and return its type,
+            # otherwise give up and return Any/object
+            for name, param in bound_sig.signature.parameters.items():
+                if param.annotation is anno:
+                    arg = bound_sig.arguments[name]
+                    assert not isinstance(arg, _StuckNeutral)  # DEBUG
+                    tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
+                    return tp
             return typing.cast(Type[T], object)
         elif typing.get_origin(anno) is not None:
             return typing.get_origin(anno)
@@ -310,6 +324,8 @@ embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type:
 def unembed(value: Union[T, _StuckNeutral[T]]) -> Expr[T]:
     if isinstance(value, _StuckNeutral):
         return value.__stuck_term__
+    elif isinstance(value, (Term, Operation)):
+        return value
     else:
         impl: Callable[[T], Expr[T]]
         impl = unembed.dispatch(type(value))  # type: ignore
@@ -355,7 +371,7 @@ for _arithmetic_binop in (
 ):
 
     @register_syntax_op(_arithmetic_binop)
-    def _fail(__x: numbers.Number, __y: numbers.Number) -> numbers.Number:
+    def _fail(__x: T, __y: T) -> T:
         raise NotImplementedError
 
 
@@ -367,7 +383,7 @@ for _arithmethic_unop in (
 ):
 
     @register_syntax_op(_arithmethic_unop)
-    def _fail(__x: numbers.Number) -> numbers.Number:
+    def _fail(__x: T) -> T:
         raise NotImplementedError
 
 
