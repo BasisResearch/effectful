@@ -413,62 +413,120 @@ _NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
 
 
 @embed.register(object)
-class Rep(Generic[T], _StuckNeutral[T]):
+class BaseNeutral(Generic[T], _StuckNeutral[T]):
     __stuck_term__: Expr[T]
 
     def __init__(self, term: Expr[T]):
         self.__stuck_term__ = term
 
     #######################################################################
+    # equality
+    #######################################################################
+    def __eq__(self, other: _NeutralExpr[T]) -> bool:
+        return OPERATORS[operator.eq](self, embed(other))
+
+    #######################################################################
     # binary operator method resolution
     #######################################################################
     # arithmetic
     def __radd__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.add(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.add(emb_other, self)
+        else:
+            return OPERATORS[operator.add](emb_other, self)
 
     def __rsub__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.sub(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.sub(emb_other, self)
+        else:
+            return OPERATORS[operator.sub](emb_other, self)
 
     def __rmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.mul(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.mul(emb_other, self)
+        else:
+            return OPERATORS[operator.mul](emb_other, self)
 
     def __rtruediv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.truediv(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.truediv(emb_other, self)
+        else:
+            return OPERATORS[operator.truediv](emb_other, self)
 
     def __rfloordiv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.floordiv(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.floordiv(emb_other, self)
+        else:
+            return OPERATORS[operator.floordiv](emb_other, self)
 
     def __rmod__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.mod(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.mod(emb_other, self)
+        else:
+            return OPERATORS[operator.mod](emb_other, self)
 
     def __rpow__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.pow(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.pow(emb_other, self)
+        else:
+            return OPERATORS[operator.pow](emb_other, self)
 
     def __rmatmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.matmul(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.matmul(emb_other, self)
+        else:
+            return OPERATORS[operator.matmul](emb_other, self)
 
     # bitwise
     def __rand__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.and_(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.and_(emb_other, self)
+        else:
+            return OPERATORS[operator.and_](emb_other, self)
 
     def __ror__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.or_(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.or_(emb_other, self)
+        else:
+            return OPERATORS[operator.or_](emb_other, self)
 
     def __rxor__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.xor(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.xor(emb_other, self)
+        else:
+            return OPERATORS[operator.xor](emb_other, self)
 
     def __rrshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.rshift(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.rshift(emb_other, self)
+        else:
+            return OPERATORS[operator.rshift](emb_other, self)
 
     def __rlshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
-        return operator.lshift(embed(other), self)
+        emb_other = embed(other)
+        if emb_other is not other:
+            return operator.lshift(emb_other, self)
+        else:
+            return OPERATORS[operator.lshift](emb_other, self)
 
 
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
 @embed.register(numbers.Number)  # type: ignore
-class NumberRep(Generic[_T_Number], Rep[_T_Number]):
+class NumberNeutral(Generic[_T_Number], BaseNeutral[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
@@ -553,8 +611,8 @@ class NumberRep(Generic[_T_Number], Rep[_T_Number]):
 
 
 @embed.register(collections.abc.Sequence)
-class SequenceRep(
-    Generic[T], collections.abc.Sequence[T], Rep[collections.abc.Sequence[T]]
+class SequenceNeutral(
+    Generic[T], collections.abc.Sequence[T], BaseNeutral[collections.abc.Sequence[T]]
 ):
     def __getitem__(self, key: _NeutralExpr[int]) -> _NeutralExpr[T]:
         return OPERATORS[operator.getitem](self, embed(key))

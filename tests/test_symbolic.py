@@ -1,10 +1,11 @@
 import collections
 import logging
+import operator
 from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import Bound, Scoped, embed, gensym, unembed
+from effectful.internals.sugar import OPERATORS, Bound, Scoped, embed, gensym, unembed
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -87,10 +88,10 @@ def eager_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 
 
 free: Interpretation = {
-    Add: Add.__free_rule__,
-    App: App.__free_rule__,
-    Lam: Lam.__free_rule__,
-    Let: Let.__free_rule__,
+    Add: Add.__default_rule__,
+    App: App.__default_rule__,
+    Lam: Lam.__default_rule__,
+    Let: Let.__default_rule__,
 }
 lazy: Interpretation = {
     Lam: eta_lam,
@@ -172,7 +173,58 @@ def test_lambda_calculus_5():
 
 def test_arithmetic_1():
 
-    x, y = gensym(int), gensym(int)
+    add = OPERATORS[operator.add]
 
-    assert x() + y() == x() + y()
-    assert x() + 1 == x() + 1
+    def eager_add(x, y):
+        match unembed(x), unembed(y):
+            case int(x_), int(y_):
+                return x_ + y_
+            case _:
+                return fwd(None)
+
+    def simplify_add(x, y):
+        match unembed(x), unembed(y):
+            case Term(_, _, _), int(_):
+                return y + x
+            case _, Term(_, (a, b), ()):
+                return (x + embed(a)) + embed(b)
+            case _:
+                return fwd(None)
+
+    def unit_add(x, y):
+        match unembed(x), unembed(y):
+            case _, 0:
+                return x
+            case 0, _:
+                return y
+            case _:
+                return fwd(None)
+
+    eager_mixed = coproduct(
+        coproduct({add: add.__default_rule__}, {add: eager_add}),
+        coproduct({add: simplify_add}, {add: unit_add}),
+    )
+
+    x_, y_ = gensym(int), gensym(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        assert (1 + 2) + x == x + 3
+
+        assert not (x + 1 == y + 1)
+
+        assert 3 + x == x + 3
+        assert 1 + (x + 2) == x + 3
+        assert (x + 1) + 2 == x + 3
+        assert (1 + (y + 1)) + (1 + (x + 1)) == (y + x) + 4
+
+        assert 1 + ((x + y) + 2) == (x + y) + 3
+        assert 1 + ((x + (y + 1)) + 1) == (x + y) + 3
+
+        assert (
+            ((x + x) + (x + x)) + ((x + x) + (x + x))
+            == x + (x + (x + (x + (x + (x + (x + x))))))
+            == ((((((x + x) + x) + x) + x) + x) + x) + x
+        )
+
+        assert x + 0 == 0 + x == x
