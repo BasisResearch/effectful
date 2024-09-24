@@ -570,29 +570,3 @@ class SequenceRep(
 
     def __len__(self) -> _NeutralExpr[int]:
         return OPERATORS[len](self)
-
-
-@embed.register(collections.abc.Mapping)
-class MappingRep(
-    Generic[S, T], collections.abc.Mapping[S, T], Rep[collections.abc.Mapping[S, T]]
-):
-    def __getitem__(self, other: _NeutralExpr[S]) -> _NeutralExpr[T]:
-        return OPERATORS[operator.getitem](self, embed(other))
-
-    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
-        return OPERATORS[iter](self)
-
-    def __len__(self) -> _NeutralExpr[int]:
-        return OPERATORS[len](self)
-
-
-@embed.register(collections.abc.Set)
-class SetRep(Generic[T], collections.abc.Set[T], Rep[collections.abc.Set[T]]):
-    def __contains__(self, other: _NeutralExpr[T]) -> bool:
-        return OPERATORS[operator.contains](self, embed(other))
-
-    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
-        return OPERATORS[iter](self)
-
-    def __len__(self) -> _NeutralExpr[int]:
-        return OPERATORS[len](self)
