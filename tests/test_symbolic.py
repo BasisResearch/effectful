@@ -6,7 +6,15 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, Bound, Scoped, embed, gensym, unembed
+from effectful.internals.sugar import (
+    OPERATORS,
+    Bound,
+    Scoped,
+    embed,
+    gensym,
+    hoas,
+    unembed,
+)
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -164,6 +172,22 @@ eager_mixed = functools.reduce(
         sort_rules,
     ),
 )
+
+
+def test_defun_1():
+
+    x = gensym(int)
+
+    with handler(eager_mixed):
+
+        @hoas
+        def f1(x: int) -> int:
+            return x + 1
+
+        assert typeof(f1) is collections.abc.Callable
+
+        assert f1(1) == 2
+        assert f1(x()) == x() + 1
 
 
 def test_lambda_calculus_1():

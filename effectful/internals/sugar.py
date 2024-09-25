@@ -30,6 +30,7 @@ from effectful.ops.core import (
     evaluate,
     typeof,
 )
+from effectful.ops.handler import handler
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -196,6 +197,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
         args = tuple(unembed(a) for a in args)
         kwargs = {k: unembed(v) for k, v in kwargs.items()}
         bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
         scoped_args: dict[int, set[str]] = collections.defaultdict(set)
@@ -203,8 +205,19 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
             if typing.get_origin(param.annotation) is typing.Annotated:
                 for anno in param.annotation.__metadata__:
                     if isinstance(anno, Bound):
-                        bound_vars[anno.scope].add(bound_sig.arguments[param_name])
                         scoped_args[anno.scope].add(param_name)
+                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                            assert isinstance(bound_sig.arguments[param_name], tuple)
+                            bound_vars[anno.scope] |= set(
+                                bound_sig.arguments[param_name]
+                            )
+                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                            assert isinstance(bound_sig.arguments[param_name], dict)
+                            bound_vars[anno.scope] |= set(
+                                bound_sig.arguments[param_name].values()
+                            )
+                        else:
+                            bound_vars[anno.scope].add(bound_sig.arguments[param_name])
                     elif isinstance(anno, Scoped):
                         scoped_args[anno.scope].add(param_name)
             else:
@@ -226,8 +239,22 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 name: bound_sig.arguments[name] for name in scoped_args[scope]
             }
             # substitute the fresh names into the arguments
+            # renamed_arguments = {
+            #     name: rename(renaming_map, arg)
+            #     for name, arg in arguments_to_rename.items()
+            # }
             renamed_arguments = {
-                name: rename(renaming_map, arg)
+                name: (
+                    tuple(rename(renaming_map, a) for a in arg)
+                    if bound_sig.signature.parameters[name].kind
+                    is inspect.Parameter.VAR_POSITIONAL
+                    else (
+                        {k: rename(renaming_map, v) for k, v in arg.items()}
+                        if bound_sig.signature.parameters[name].kind
+                        is inspect.Parameter.VAR_KEYWORD
+                        else rename(renaming_map, arg)
+                    )
+                )
                 for name, arg in arguments_to_rename.items()
             }
             # update the arguments with the renamed values
@@ -244,14 +271,22 @@ def infer_scope_rule(op: Operation[P, T]) -> Callable[P, Interpretation[V, Type[
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Interpretation[V, Type[V]]:
         bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
 
         bound_vars: dict[Operation[..., V], Callable[..., Type[V]]] = {}
         for param_name, param in bound_sig.signature.parameters.items():
             if typing.get_origin(param.annotation) is typing.Annotated:
                 for anno in param.annotation.__metadata__:
                     if isinstance(anno, Bound):
-                        bound_var = bound_sig.arguments[param_name]
-                        bound_vars[bound_var] = bound_var.__type_rule__
+                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                            for bound_var in bound_sig.arguments[param_name]:
+                                bound_vars[bound_var] = bound_var.__type_rule__
+                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                            for bound_var in bound_sig.arguments[param_name].values():
+                                bound_vars[bound_var] = bound_var.__type_rule__
+                        else:
+                            bound_var = bound_sig.arguments[param_name]
+                            bound_vars[bound_var] = bound_var.__type_rule__
 
         return bound_vars
 
@@ -264,6 +299,7 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Type[T]:
         bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
 
         anno = sig.return_annotation
         if anno is inspect.Signature.empty:
@@ -274,7 +310,10 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
             # look for a parameter with the same annotation and return its type,
             # otherwise give up and return Any/object
             for name, param in bound_sig.signature.parameters.items():
-                if param.annotation is anno:
+                if param.annotation is anno and param.kind not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
                     arg = bound_sig.arguments[name]
                     assert not isinstance(arg, _StuckNeutral)  # DEBUG
                     tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
@@ -337,7 +376,7 @@ unembed.dispatch = _unembed_registry.dispatch  # type: ignore
 unembed.register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
 
 
-def hx(value: T):
+def hoas(value: T):
     return embed(unembed(value))
 
 
@@ -630,21 +669,63 @@ class _NumberNeutral(
         return OPERATORS[operator.lshift](self, embed(other))
 
 
-@embed.register(collections.abc.Sequence)
-class _SequenceNeutral(
-    Generic[T], collections.abc.Sequence[T], _BaseNeutral[collections.abc.Sequence[T]]
+@Operation
+def defun(
+    body: T,
+    *args: Annotated[Operation, Bound()],
+    **kwargs: Annotated[Operation, Bound()],
+) -> Callable[..., T]:
+    raise NotImplementedError
+
+
+def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    match unembed(fn):
+        case Term(defun_, (body, *argvars), kwargvars) if defun_ == defun:
+            kwargvars = dict(kwargvars)
+            subs = {
+                **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
+                **{
+                    kwargvars[k]: functools.partial(lambda x: x, kwargs[k])
+                    for k in kwargs
+                },
+            }
+            with handler(subs):
+                return embed(evaluate(unembed(body)))
+        case fn_literal if not isinstance(fn_literal, Term):
+            return fn(*args, **kwargs)
+        case _:
+            raise NotImplementedError
+
+
+register_syntax_op(call, call)
+
+
+@embed.register(collections.abc.Callable)
+class _CallableNeutral(
+    Generic[P, T],
+    collections.abc.Callable[P, T],
+    _BaseNeutral[collections.abc.Callable[P, T]],
 ):
-    def __getitem__(self, key: _NeutralExpr[int]) -> _NeutralExpr[T]:
-        return OPERATORS[operator.getitem](self, embed(key))
+    def __call__(self, *args: _NeutralExpr, **kwargs: _NeutralExpr) -> _NeutralExpr[T]:
+        return OPERATORS[call](
+            self, *[embed(a) for a in args], **{k: embed(v) for k, v in kwargs.items()}
+        )
 
-    def __reversed__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
-        return OPERATORS[reversed](self)
 
-    def __contains__(self, other: _NeutralExpr[T]) -> bool:
-        return OPERATORS[operator.contains](self, embed(other))
-
-    def __iter__(self) -> collections.abc.Iterator[_NeutralExpr[T]]:
-        return OPERATORS[iter](self)
-
-    def __len__(self) -> _NeutralExpr[int]:
-        return OPERATORS[len](self)
+@unembed.register(collections.abc.Callable)
+def _unembed_callable(value: Callable[P, T]) -> Term[Callable[P, T]]:
+    sig = inspect.signature(value)
+    bound_sig = sig.bind(
+        **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
+    # TODO defer evaluation of body until application
+    # body = OPERATORS[call].__free_rule__(
+    #     value,
+    #     *[a() for a in bound_sig.args],
+    #     **{k: v() for k, v in bound_sig.kwargs.items()}
+    # )
+    body = value(
+        *[a() for a in bound_sig.args], **{k: v() for k, v in bound_sig.kwargs.items()}
+    )
+    return defun(body, *bound_sig.args, **bound_sig.kwargs)
