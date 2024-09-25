@@ -8,8 +8,6 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import (
     OPERATORS,
-    Bound,
-    Scoped,
     call,
     defun,
     embed,
@@ -116,7 +114,7 @@ eager_mixed = functools.reduce(
 )
 
 
-def test_defun_1():
+def test_hoas_1():
 
     x, y = gensym(int), gensym(int)
 
@@ -132,3 +130,67 @@ def test_defun_1():
 
         assert f1(1) == y() + 2
         assert f1(x()) == x() + y() + 1
+
+
+def test_hoas_2():
+
+    with handler(eager_mixed):
+
+        @hoas
+        def f1(x: int, y: int) -> int:
+            return x + y
+
+        @hoas
+        def f2(x: int, y: int) -> int:
+
+            @hoas
+            def f2_inner(y: int) -> int:
+                return x + y
+
+            return f2_inner(y)
+
+        assert f1(1, 2) == f2(1, 2) == 3
+
+
+def test_hoas_3():
+
+    with handler(eager_mixed):
+
+        @hoas
+        def f2(x: int, y: int) -> int:
+            return x + y
+
+        @hoas
+        def app2(f: Callable, x: int, y: int) -> int:
+            return f(x, y)
+
+        assert app2(f2, 1, 2) == 3
+
+
+def test_hoas_4():
+
+    x = gensym(int)
+
+    with handler(eager_mixed):
+
+        @hoas
+        def compose(
+            f: Callable[[int], int], g: Callable[[int], int]
+        ) -> Callable[[int], int]:
+
+            @hoas
+            def fg(x: int) -> int:
+                return f(g(x))
+
+            return fg
+
+        @hoas
+        def add1(x: int) -> int:
+            return x + 1
+
+        @hoas
+        def add1_twice(x: int) -> int:
+            return compose(add1, add1)(x)
+
+        assert add1_twice(1) == compose(add1, add1)(1) == 3
+        assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2

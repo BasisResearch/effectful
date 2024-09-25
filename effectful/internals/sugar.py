@@ -697,9 +697,6 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             raise NotImplementedError
 
 
-register_syntax_op(call, call)
-
-
 @embed.register(collections.abc.Callable)
 class _CallableNeutral(
     Generic[P, T],
@@ -722,7 +719,12 @@ def _unembed_callable(value: Callable[P, T]) -> Term[Callable[P, T]]:
     )
     bound_sig.apply_defaults()
 
-    with interpreter({apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k))}):
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k)),
+            call: call.__default_rule__,
+        }
+    ):
         body = value(
             *[a() for a in bound_sig.args],
             **{k: v() for k, v in bound_sig.kwargs.items()},
