@@ -238,19 +238,39 @@ def test_arithmetic_1():
 
     with handler(eager_mixed):
         assert (1 + 2) + x == x + 3
-
         assert not (x + 1 == y + 1)
+        assert x + 0 == 0 + x == x
 
+
+def test_arithmetic_2():
+
+    x_, y_ = gensym(int), gensym(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
         assert x + y == y + x
-
         assert 3 + x == x + 3
         assert 1 + (x + 2) == x + 3
         assert (x + 1) + 2 == x + 3
-        assert (1 + (y + 1)) + (1 + (x + 1)) == (y + x) + 4
 
+
+def test_arithmetic_3():
+
+    x_, y_ = gensym(int), gensym(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        assert (1 + (y + 1)) + (1 + (x + 1)) == (y + x) + 4
         assert 1 + ((x + y) + 2) == (x + y) + 3
         assert 1 + ((x + (y + 1)) + 1) == (x + y) + 3
 
+
+def test_arithmetic_4():
+
+    x_, y_ = gensym(int), gensym(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
         assert (
             ((x + x) + (x + x)) + ((x + x) + (x + x))
             == x + (x + (x + (x + (x + (x + (x + x))))))
@@ -259,4 +279,13 @@ def test_arithmetic_1():
 
         assert (x + y) + (y + x) == (y + (x + x)) + y == y + (x + (y + x))
 
-        assert x + 0 == 0 + x == x
+
+def test_arithmetic_5():
+
+    x, y = gensym(int), gensym(int)
+
+    with handler(eager_mixed):
+        assert Let(x, x() + 3, x() + 1) == x() + 4
+        assert Let(x, x() + 3, x() + y() + 1) == y() + x() + 4
+
+        assert Let(x, x() + 3, Let(x, x() + 4, x() + y())) == x() + y() + 7
