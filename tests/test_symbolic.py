@@ -194,7 +194,7 @@ def test_lambda_calculus_2():
 
 def test_lambda_calculus_3():
 
-    x, y, f = gensym(int), gensym(int), gensym(object)
+    x, y, f = gensym(int), gensym(int), gensym(Callable)
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
@@ -204,7 +204,7 @@ def test_lambda_calculus_3():
 
 def test_lambda_calculus_4():
 
-    x, f, g = gensym(int), gensym(object), gensym(object)
+    x, f, g = gensym(int), gensym(Callable), gensym(Callable)
 
     with handler(eager_mixed):
         add1 = Lam(x, (x() + 1))
