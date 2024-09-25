@@ -305,6 +305,9 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
                     tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
                     return tp
             return typing.cast(Type[T], object)
+        elif typing.get_origin(anno) is typing.Annotated:
+            tp = typing.get_args(anno)[0]
+            return tp if typing.get_origin(tp) is None else typing.get_origin(tp)
         elif typing.get_origin(anno) is not None:
             return typing.get_origin(anno)
         else:
