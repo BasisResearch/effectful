@@ -114,15 +114,14 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
-    from effectful.internals.sugar import unembed
-
-    term = unembed(term)
+    assert isinstance(term, Term)
     args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
     kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
 def ctxof(term: Term[S]) -> Interpretation[T, Type[T]]:
+    from effectful.internals.sugar import unembed
 
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
@@ -133,11 +132,13 @@ def ctxof(term: Term[S]) -> Interpretation[T, Type[T]]:
         return Term(op, args, tuple(kwargs.items()))
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term)  # type: ignore
+        evaluate(unembed(term))  # type: ignore
 
     return _ctx
 
 
 def typeof(term: Term[T]) -> Type[T]:
+    from effectful.internals.sugar import unembed
+
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
-        return evaluate(term)  # type: ignore
+        return evaluate(unembed(term))  # type: ignore

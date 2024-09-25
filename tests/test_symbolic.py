@@ -1,4 +1,5 @@
 import collections
+import functools
 import logging
 import operator
 from typing import Annotated, Callable, TypeVar
@@ -46,6 +47,29 @@ def Let(
     raise NotImplementedError
 
 
+def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    """integer addition"""
+    match unembed(x), unembed(y):
+        case int(_), int(_):
+            return x + y
+        case _:
+            return fwd(None)
+
+
+def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
+    """beta reduction"""
+    match unembed(f), arg:
+        case Term(op, (var, body), ()), _ if op == Lam:
+            return handler({var: lambda: arg})(evaluate)(unembed(body))  # type: ignore
+        case _:
+            return fwd(None)
+
+
+def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
+    """let binding"""
+    return handler({var: lambda: val})(evaluate)(unembed(body))  # type: ignore
+
+
 def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
     if var not in ctxof(body):  # type: ignore
@@ -62,46 +86,69 @@ def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
         return fwd(None)
 
 
-def eager_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    """integer addition"""
+def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match unembed(x), unembed(y):
-        case int(_), int(_):
-            return x + y
+        case Term(_, _, _), int(_):
+            return y + x
         case _:
             return fwd(None)
 
 
-def eager_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
-    """beta reduction"""
-    match unembed(f), arg:
-        case Term(op, (var, body), ()), _ if op == Lam:
-            return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
+def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match unembed(x), unembed(y):
+        case _, Term(op, (a, b), ()) if op == add:
+            return (x + embed(a)) + embed(b)
         case _:
             return fwd(None)
 
 
-def eager_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
-    """let binding"""
-    return handler({var: lambda: val})(evaluate)(body)  # type: ignore
+def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match unembed(x), unembed(y):
+        case _, 0:
+            return x
+        case 0, _:
+            return y
+        case _:
+            return fwd(None)
 
 
-free: Interpretation = {
+alpha_rules: Interpretation = {
     add: add.__default_rule__,
     App: App.__default_rule__,
     Lam: Lam.__default_rule__,
     Let: Let.__default_rule__,
 }
-lazy: Interpretation = {
+eta_rules: Interpretation = {
     Lam: eta_lam,
     Let: eta_let,
 }
-eager: Interpretation = {
-    add: eager_add,
-    App: eager_app,
-    Let: eager_let,
+beta_rules: Interpretation = {
+    add: beta_add,
+    App: beta_app,
+    Let: beta_let,
+}
+commute_rules: Interpretation = {
+    add: commute_add,
+}
+assoc_rules: Interpretation = {
+    add: assoc_add,
+}
+unit_rules: Interpretation = {
+    add: unit_add,
 }
 
-eager_mixed = coproduct(free, coproduct(lazy, eager))
+
+eager_mixed = functools.reduce(
+    coproduct,
+    (
+        alpha_rules,
+        eta_rules,
+        beta_rules,
+        commute_rules,
+        assoc_rules,
+        unit_rules,
+    ),
+)
 
 
 def test_lambda_calculus_1():
@@ -132,21 +179,21 @@ def test_lambda_calculus_2():
 
 def test_lambda_calculus_3():
 
-    x, y, z = gensym(int), gensym(int), gensym(object)
+    x, y, f = gensym(int), gensym(int), gensym(object)
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
-        app2 = Lam(z, Lam(x, Lam(y, App(App(z(), x()), y()))))
+        app2 = Lam(f, Lam(x, Lam(y, App(App(f(), x()), y()))))
         assert App(App(App(app2, f2), 1), 2) == 3
 
 
 def test_lambda_calculus_4():
 
-    x, y, z = gensym(int), gensym(object), gensym(object)
+    x, f, g = gensym(int), gensym(object), gensym(object)
 
     with handler(eager_mixed):
         add1 = Lam(x, (x() + 1))
-        compose = Lam(x, Lam(y, Lam(z, App(x(), App(y(), z())))))
+        compose = Lam(f, Lam(g, Lam(x, App(f(), App(g(), x())))))
         f1_twice = App(App(compose, add1), add1)
         assert App(f1_twice, 1) == 3
 
@@ -170,29 +217,6 @@ def test_lambda_calculus_5():
 
 
 def test_arithmetic_1():
-
-    def simplify_add(x, y):
-        match unembed(x), unembed(y):
-            case Term(_, _, _), int(_):
-                return y + x
-            case _, Term(_, (a, b), ()):
-                return (x + embed(a)) + embed(b)
-            case _:
-                return fwd(None)
-
-    def unit_add(x, y):
-        match unembed(x), unembed(y):
-            case _, 0:
-                return x
-            case 0, _:
-                return y
-            case _:
-                return fwd(None)
-
-    eager_mixed = coproduct(
-        coproduct({add: add.__default_rule__}, {add: eager_add}),
-        coproduct({add: simplify_add}, {add: unit_add}),
-    )
 
     x_, y_ = gensym(int), gensym(int)
     x, y = x_(), y_()
