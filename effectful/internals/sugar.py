@@ -439,6 +439,7 @@ for _other_operator_op in (
     operator.getitem,
     operator.setitem,
     operator.delitem,
+    # TODO handle these builtin functions
     # getattr,
     # setattr,
     # delattr,
