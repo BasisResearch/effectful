@@ -678,21 +678,21 @@ def defun(
     raise NotImplementedError
 
 
+@Operation
 def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     match unembed(fn):
-        case Term(defun_, (body, *argvars), kwargvars) if defun_ == defun:
-            kwargvars = dict(kwargvars)
+        case Term(defun_, (body, *argvars), kwvars) if defun_ == defun:
+            kwvars = dict(kwvars)
             subs = {
                 **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
                 **{
-                    kwargvars[k]: functools.partial(lambda x: x, kwargs[k])
-                    for k in kwargs
+                    kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs
                 },
             }
             with handler(subs):
                 return embed(evaluate(unembed(body)))
         case fn_literal if not isinstance(fn_literal, Term):
-            return fn(*args, **kwargs)
+            return fn_literal(*args, **kwargs)
         case _:
             raise NotImplementedError
 
@@ -707,25 +707,25 @@ class _CallableNeutral(
     _BaseNeutral[collections.abc.Callable[P, T]],
 ):
     def __call__(self, *args: _NeutralExpr, **kwargs: _NeutralExpr) -> _NeutralExpr[T]:
-        return OPERATORS[call](
+        return call(
             self, *[embed(a) for a in args], **{k: embed(v) for k, v in kwargs.items()}
         )
 
 
 @unembed.register(collections.abc.Callable)
 def _unembed_callable(value: Callable[P, T]) -> Term[Callable[P, T]]:
+    assert not isinstance(value, _StuckNeutral)
+
     sig = inspect.signature(value)
     bound_sig = sig.bind(
         **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
     )
     bound_sig.apply_defaults()
-    # TODO defer evaluation of body until application
-    # body = OPERATORS[call].__free_rule__(
-    #     value,
-    #     *[a() for a in bound_sig.args],
-    #     **{k: v() for k, v in bound_sig.kwargs.items()}
-    # )
-    body = value(
-        *[a() for a in bound_sig.args], **{k: v() for k, v in bound_sig.kwargs.items()}
-    )
+
+    with interpreter({apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k))}):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
+
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
