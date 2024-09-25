@@ -714,6 +714,16 @@ def _unembed_callable(value: Callable[P, T]) -> Term[Callable[P, T]]:
     assert not isinstance(value, _StuckNeutral)
 
     sig = inspect.signature(value)
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
+            )
+
     bound_sig = sig.bind(
         **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
     )

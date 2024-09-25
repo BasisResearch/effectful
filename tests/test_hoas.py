@@ -4,6 +4,7 @@ import logging
 import operator
 from typing import Callable, TypeVar
 
+import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import (
@@ -194,3 +195,18 @@ def test_hoas_4():
 
         assert add1_twice(1) == compose(add1, add1)(1) == 3
         assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2
+
+
+def test_hoas_5():
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        hoas(lambda *xs: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        hoas(lambda **ys: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        hoas(lambda y=1, **ys: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        hoas(lambda x, *xs, y=1, **ys: None)
