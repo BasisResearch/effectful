@@ -201,6 +201,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
         scoped_args: dict[int, set[str]] = collections.defaultdict(set)
+        unscoped_args: set[str] = set()
         for param_name, param in bound_sig.signature.parameters.items():
             if typing.get_origin(param.annotation) is typing.Annotated:
                 for anno in param.annotation.__metadata__:
@@ -208,23 +209,23 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                         scoped_args[anno.scope].add(param_name)
                         if param.kind is inspect.Parameter.VAR_POSITIONAL:
                             assert isinstance(bound_sig.arguments[param_name], tuple)
-                            bound_vars[anno.scope] |= set(
-                                bound_sig.arguments[param_name]
-                            )
+                            for bound_var in bound_sig.arguments[param_name]:
+                                bound_vars[anno.scope].add(bound_var)
                         elif param.kind is inspect.Parameter.VAR_KEYWORD:
                             assert isinstance(bound_sig.arguments[param_name], dict)
-                            bound_vars[anno.scope] |= set(
-                                bound_sig.arguments[param_name].values()
-                            )
+                            for bound_var in bound_sig.arguments[param_name].values():
+                                bound_vars[anno.scope].add(bound_var)
                         else:
                             bound_vars[anno.scope].add(bound_sig.arguments[param_name])
                     elif isinstance(anno, Scoped):
                         scoped_args[anno.scope].add(param_name)
             else:
-                scoped_args[0].add(param_name)
+                unscoped_args.add(param_name)
 
         # TODO replace this temporary check with more general scope level propagation
         if bound_vars:
+            min_scope = min(bound_vars.keys(), default=0)
+            scoped_args[min_scope] |= unscoped_args
             max_scope = max(bound_vars.keys(), default=0)
             assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
@@ -235,30 +236,15 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 var: gensym(var.__type_rule__()) for var in bound_vars[scope]
             }  # TODO support finitary operations
             # get just the arguments that are in the scope
-            arguments_to_rename = {
-                name: bound_sig.arguments[name] for name in scoped_args[scope]
-            }
-            # substitute the fresh names into the arguments
-            # renamed_arguments = {
-            #     name: rename(renaming_map, arg)
-            #     for name, arg in arguments_to_rename.items()
-            # }
-            renamed_arguments = {
-                name: (
-                    tuple(rename(renaming_map, a) for a in arg)
-                    if bound_sig.signature.parameters[name].kind
-                    is inspect.Parameter.VAR_POSITIONAL
-                    else (
-                        {k: rename(renaming_map, v) for k, v in arg.items()}
-                        if bound_sig.signature.parameters[name].kind
-                        is inspect.Parameter.VAR_KEYWORD
-                        else rename(renaming_map, arg)
-                    )
-                )
-                for name, arg in arguments_to_rename.items()
-            }
-            # update the arguments with the renamed values
-            bound_sig.arguments.update(renamed_arguments)
+            for name in scoped_args[scope]:
+                arg = bound_sig.arguments[name]
+                if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
+                    renamed_arg = tuple(rename(renaming_map, a) for a in arg)
+                elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
+                    renamed_arg = {k: rename(renaming_map, v) for k, v in arg.items()}
+                else:
+                    renamed_arg = rename(renaming_map, arg)
+                bound_sig.arguments.update({name: renamed_arg})
 
         return Term(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
 
