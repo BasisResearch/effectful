@@ -112,6 +112,18 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
             return fwd(None)
 
 
+def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match unembed(x), unembed(y):
+        case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
+            return y + x
+        case Term(add_, (a, Term(vx, (), ())), ()), Term(
+            vy, (), ()
+        ) if add_ == add and id(vx) > id(vy):
+            return (embed(a) + vy()) + vx()
+        case _:
+            return fwd(None)
+
+
 alpha_rules: Interpretation = {
     add: add.__default_rule__,
     App: App.__default_rule__,
@@ -136,7 +148,9 @@ assoc_rules: Interpretation = {
 unit_rules: Interpretation = {
     add: unit_add,
 }
-
+sort_rules: Interpretation = {
+    add: sort_add,
+}
 
 eager_mixed = functools.reduce(
     coproduct,
@@ -147,6 +161,7 @@ eager_mixed = functools.reduce(
         commute_rules,
         assoc_rules,
         unit_rules,
+        sort_rules,
     ),
 )
 
@@ -226,6 +241,8 @@ def test_arithmetic_1():
 
         assert not (x + 1 == y + 1)
 
+        assert x + y == y + x
+
         assert 3 + x == x + 3
         assert 1 + (x + 2) == x + 3
         assert (x + 1) + 2 == x + 3
@@ -239,5 +256,7 @@ def test_arithmetic_1():
             == x + (x + (x + (x + (x + (x + (x + x))))))
             == ((((((x + x) + x) + x) + x) + x) + x) + x
         )
+
+        assert (x + y) + (y + x) == (y + (x + x)) + y == y + (x + (y + x))
 
         assert x + 0 == 0 + x == x
