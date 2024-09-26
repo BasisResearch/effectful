@@ -7,24 +7,9 @@ from typing import Callable, TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import (
-    OPERATORS,
-    call,
-    defun,
-    embed,
-    gensym,
-    hoas,
-    unembed,
-)
-from effectful.ops.core import (
-    Expr,
-    Interpretation,
-    Operation,
-    Term,
-    ctxof,
-    evaluate,
-    typeof,
-)
+from effectful.internals.sugar import OPERATORS, embed, gensym, hoas, unembed
+from effectful.ops.core import Expr, Interpretation, Term, ctxof, typeof
+from effectful.ops.function import call, defun
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
