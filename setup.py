@@ -41,6 +41,7 @@ setup(
         # add them to `docs/source/requirements.txt`
         "typing_extensions",
         "pyro-ppl",
+        "dm-tree",
     ],
     extras_require={
         "extras": EXTRAS_REQUIRE,
