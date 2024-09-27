@@ -13,7 +13,6 @@ from typing_extensions import ParamSpec
 from effectful.internals.runtime import interpreter, weak_memoize
 from effectful.ops.core import (
     Box,
-    BoxExpr,
     Expr,
     Interpretation,
     Neutral,

@@ -99,7 +99,6 @@ class Neutral(Protocol[T]):
 
 Expr = Union[T, Term[T]]
 Box = Union[T, Neutral[T]]
-BoxExpr = Union[Box[T], Expr[T]]
 
 
 @Operation  # type: ignore
@@ -122,7 +121,7 @@ def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
-def ctxof(term: BoxExpr[S]) -> Interpretation[T, Type[T]]:
+def ctxof(term: Union[Box[S], Term[S]]) -> Interpretation[T, Type[T]]:
 
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
@@ -138,7 +137,7 @@ def ctxof(term: BoxExpr[S]) -> Interpretation[T, Type[T]]:
     return _ctx
 
 
-def typeof(term: BoxExpr[T]) -> Type[T]:
+def typeof(term: Union[Box[T], Term[T]]) -> Type[T]:
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
