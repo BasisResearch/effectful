@@ -10,7 +10,7 @@ from typing import Callable, Generic, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import interpreter
+from effectful.internals.runtime import interpreter, weak_memoize
 from effectful.ops.core import (
     Box,
     BoxExpr,
@@ -151,7 +151,7 @@ def implements(op: Operation[P, V]):
 def gensym(t: Type[T]) -> Operation[[], T]:
     @Operation
     def op() -> t:  # type: ignore
-        raise NotImplementedError
+        raise NoDefaultRule
 
     return typing.cast(Operation[[], T], op)
 
@@ -170,6 +170,7 @@ class Scoped(Annotation):
     scope: int = 0
 
 
+@weak_memoize
 def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
     sig = inspect.signature(op.signature)
 
@@ -247,6 +248,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
     return _rule
 
 
+@weak_memoize
 def infer_scope_rule(op: Operation[P, T]) -> Callable[P, Interpretation[V, Type[V]]]:
     sig = inspect.signature(op.signature)
 
@@ -275,6 +277,7 @@ def infer_scope_rule(op: Operation[P, T]) -> Callable[P, Interpretation[V, Type[
     return _rule
 
 
+@weak_memoize
 def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
     sig = inspect.signature(op.signature)
 
@@ -314,13 +317,18 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
     return _rule
 
 
+class NoDefaultRule(Exception):
+    pass
+
+
+@weak_memoize
 def infer_default_rule(op: Operation[P, T]) -> Callable[P, Box[T]]:
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Box[T]:
         try:
             return op.signature(*args, **kwargs)
-        except NotImplementedError:
+        except NoDefaultRule:
             return embed(
                 op.__free_rule__(
                     *tuple(unembed(a) for a in args),  # type: ignore
@@ -372,7 +380,7 @@ for _arithmetic_binop in (
 
     @register_syntax_op(_arithmetic_binop)
     def _fail(__x: T, __y: T) -> T:
-        raise NotImplementedError
+        raise NoDefaultRule
 
 
 for _arithmethic_unop in (
@@ -384,7 +392,7 @@ for _arithmethic_unop in (
 
     @register_syntax_op(_arithmethic_unop)
     def _fail(__x: T) -> T:
-        raise NotImplementedError
+        raise NoDefaultRule
 
 
 for _other_operator_op in (
@@ -413,7 +421,7 @@ for _other_operator_op in (
     @register_syntax_op(_other_operator_op)
     @functools.wraps(_other_operator_op)
     def _fail(*args, **kwargs):
-        raise NotImplementedError
+        raise NoDefaultRule
 
 
 @register_syntax_op(operator.eq)
@@ -428,9 +436,10 @@ def _ne_op(a: T, b: T) -> bool:
 
 @embed.register(object)  # type: ignore
 class _BaseNeutral(Generic[T], Neutral[T]):
-    __stuck_term__: Expr[T]
+    __stuck_term__: Term[T]
 
-    def __init__(self, term: Expr[T]):
+    def __init__(self, term: Term[T]):
+        assert isinstance(term, Term)
         self.__stuck_term__ = term
 
     #######################################################################

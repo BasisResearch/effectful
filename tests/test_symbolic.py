@@ -6,7 +6,7 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, Bound, Scoped, gensym
+from effectful.internals.sugar import OPERATORS, Bound, NoDefaultRule, Scoped, gensym
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -32,12 +32,12 @@ add = OPERATORS[operator.add]
 
 @Operation
 def App(f: Callable[[S], T], arg: S) -> T:
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
@@ -46,7 +46,7 @@ def Let(
     val: Annotated[S, Scoped(1)],
     body: Annotated[T, Scoped(0)],
 ) -> T:
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:

@@ -2,8 +2,8 @@ import collections.abc
 import random
 import types
 
-from effectful.internals.sugar import gensym
-from effectful.ops.core import Operation, Term, evaluate
+from effectful.internals.sugar import NoDefaultRule, gensym
+from effectful.ops.core import Operation, Term, embed, evaluate, unembed
 from effectful.ops.handler import fwd, handler
 
 
@@ -35,47 +35,44 @@ class SemiRingDict(collections.abc.Mapping):
             self._hash = hash_
         return self._hash
 
-    def __add__(self, other):
-        new_dict = self._d.copy()
-        for key, value in other.items():
-            if key in new_dict:
-                new_dict[key] += value
-            else:
-                new_dict[key] = value
-        return SemiRingDict(new_dict)
+
+@Operation
+def Add(x, y):
+    raise NoDefaultRule
 
 
 @Operation
 def Sum(e1, k, v, e2):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Let(x, e1, e2):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Record(**kwargs):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Dict(*contents):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Field(record, key):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def App(f, x):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 ops = types.SimpleNamespace()
+ops.Add = Add
 ops.Sum = Sum
 ops.Let = Let
 ops.Record = Record
@@ -108,6 +105,21 @@ def eager_record(**kwargs):
         return fwd(None)
 
 
+def eager_add(x, y):
+    if isinstance(x, SemiRingDict) and isinstance(y, SemiRingDict):
+        new_dict = x._d.copy()
+        for key, value in y.items():
+            if key in new_dict:
+                new_dict[key] = Add(new_dict[key], value)
+            else:
+                new_dict[key] = value
+        return SemiRingDict(new_dict)
+    elif isinstance(x, int) and isinstance(y, int):
+        return x + y
+    else:
+        return fwd(None)
+
+
 def eager_app(f, x):
     if is_value(f) and is_value(x):
         return f(x)
@@ -126,16 +138,18 @@ def eager_field(r, k):
 
 
 def eager_sum(e1, k, v, e2):
-    match e1, e2:
+    match unembed(e1), unembed(e2):
         case SemiRingDict(), Term():
             new_d = SemiRingDict()
             for key, value in e1.items():
-                new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
+                new_d = Add(
+                    new_d, handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
+                )
             return new_d
         case SemiRingDict(), SemiRingDict():
             new_d = SemiRingDict()
             for _ in e1.items():
-                new_d += e2
+                new_d = Add(new_d, e2)
             return new_d
         case _:
             return fwd(None)
@@ -179,12 +193,12 @@ def vertical_fusion(e1, x, e2):
 
 
 free = {
-    Sum: lambda *args: Term(Sum, args, ()),
-    Let: lambda x, e1, e2: Term(Let, (x, e1, e2), ()),
-    Record: lambda **kwargs: Term(Record, (), list(kwargs.items())),
-    Dict: lambda *contents: Term(Dict, contents, ()),
-    Field: lambda r, k: Term(Field, (r, k), ()),
-    App: lambda f, x: Term(App, (f, x), ()),
+    Sum: Sum.__free_rule__,
+    Let: Let.__free_rule__,
+    Record: Record.__free_rule__,
+    Dict: Dict.__free_rule__,
+    Field: Field.__free_rule__,
+    App: App.__free_rule__,
 }
 
 eager = {
@@ -215,7 +229,7 @@ def test_simple_sum():
         assert e == 2
 
     def add1(v):
-        return v + 1
+        return Add(v, 1)
 
     with handler(free), handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
@@ -237,7 +251,7 @@ def test_simple_sum():
 
 
 def add1(v):
-    return v + 1
+    return Add(v, 1)
 
 
 def fusion_test(d):

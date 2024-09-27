@@ -36,7 +36,7 @@ def block(*ops: Operation[..., int]) -> Interpretation[int, int]:
 
 
 def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: op.__default_rule__ for op in ops}
+    return {op: op.__default_rule__ for op in ops}  # type: ignore
 
 
 def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:

@@ -41,39 +41,31 @@ def define(m: Type[T]) -> "Operation[..., T]":
     return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
-@dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
+@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
 
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return self.signature(*args, **kwargs)
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Box[V]":
+        from effectful.internals.sugar import infer_default_rule
 
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Term[V]":
-        return Term(self, tuple(args), tuple(kwargs.items()))  # type: ignore
+        return infer_default_rule(self)(*args, **kwargs)
+
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        from effectful.internals.sugar import infer_free_rule
+
+        return infer_free_rule(self)(*args, **kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
-        return typing.cast(Type[V], object)
+        from effectful.internals.sugar import infer_type_rule
+
+        return infer_type_rule(self)(*args, **kwargs)
 
     def __scope_rule__(
         self, *args: Q.args, **kwargs: Q.kwargs
     ) -> "Interpretation[T, Type[T]]":
-        return {}
+        from effectful.internals.sugar import infer_scope_rule
 
-    def __post_init__(self):
-        try:
-            from effectful.internals.sugar import (
-                infer_default_rule,
-                infer_free_rule,
-                infer_scope_rule,
-                infer_type_rule,
-            )
-
-            self.__default_rule__ = infer_default_rule(self)
-            self.__free_rule__ = infer_free_rule(self)
-            self.__scope_rule__ = infer_scope_rule(self)
-            self.__type_rule__ = infer_type_rule(self)
-        except ImportError:
-            pass
+        return infer_scope_rule(self)(*args, **kwargs)  # type: ignore
 
     def __str__(self):
         return self.signature.__name__

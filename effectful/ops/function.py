@@ -8,7 +8,7 @@ from typing import Annotated, Callable, Generic, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
-from effectful.internals.sugar import Bound, _BaseNeutral, gensym
+from effectful.internals.sugar import Bound, NoDefaultRule, _BaseNeutral, gensym
 from effectful.ops.core import (
     Box,
     BoxExpr,
@@ -35,7 +35,7 @@ def defun(
     *args: Annotated[Operation, Bound()],
     **kwargs: Annotated[Operation, Bound()],
 ) -> Callable[..., T]:
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation  # type: ignore
@@ -60,7 +60,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         case fn_literal if not isinstance(fn_literal, Term):
             return fn_literal(*args, **kwargs)
         case _:
-            raise NotImplementedError
+            raise NoDefaultRule
 
 
 @embed.register(collections.abc.Callable)  # type: ignore

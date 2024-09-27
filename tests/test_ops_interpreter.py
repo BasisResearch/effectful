@@ -38,7 +38,7 @@ def times_plus_1(x: int, y: int) -> int:
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
     @bind_result
     def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
-        return (res or op.__default_rule__(*args)) * n
+        return (res or op.__default_rule__(*args)) * n  # type: ignore
 
     return {op: functools.partial(_op_times_n, n, op) for op in ops}
 
