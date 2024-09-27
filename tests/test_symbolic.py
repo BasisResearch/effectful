@@ -6,15 +6,17 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, Bound, Scoped, embed, gensym, unembed
+from effectful.internals.sugar import OPERATORS, Bound, Scoped, gensym
 from effectful.ops.core import (
     Expr,
     Interpretation,
     Operation,
     Term,
     ctxof,
+    embed,
     evaluate,
     typeof,
+    unembed,
 )
 from effectful.ops.handler import coproduct, fwd, handler
 

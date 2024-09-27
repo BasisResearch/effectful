@@ -7,8 +7,17 @@ from typing import Callable, TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, embed, gensym, hoas, unembed
-from effectful.ops.core import Expr, Interpretation, Term, ctxof, typeof
+from effectful.internals.sugar import OPERATORS, gensym
+from effectful.ops.core import (
+    Box,
+    Interpretation,
+    Term,
+    ctxof,
+    embed,
+    hoas,
+    typeof,
+    unembed,
+)
 from effectful.ops.function import call, defun
 from effectful.ops.handler import coproduct, fwd, handler
 
@@ -22,23 +31,23 @@ T = TypeVar("T")
 add = OPERATORS[operator.add]
 
 
-def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+def beta_add(x: Box[int], y: Box[int]) -> Box[int]:
     match unembed(x), unembed(y):
-        case int(_), int(_):
-            return x + y
+        case int(x_), int(y_):
+            return x_ + y_
         case _:
             return fwd(None)
 
 
-def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+def commute_add(x: Box[int], y: Box[int]) -> Box[int]:
     match unembed(x), unembed(y):
-        case Term(_, _, _), int(_):
-            return y + x
+        case Term(_, _, _), int(y_):
+            return y_ + x
         case _:
             return fwd(None)
 
 
-def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+def assoc_add(x: Box[int], y: Box[int]) -> Box[int]:
     match unembed(x), unembed(y):
         case _, Term(op, (a, b), ()) if op == add:
             return (x + embed(a)) + embed(b)
@@ -46,7 +55,7 @@ def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
             return fwd(None)
 
 
-def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+def unit_add(x: Box[int], y: Box[int]) -> Box[int]:
     match unembed(x), unembed(y):
         case _, 0:
             return x
@@ -56,7 +65,7 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
             return fwd(None)
 
 
-def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+def sort_add(x: Box[int], y: Box[int]) -> Box[int]:
     match unembed(x), unembed(y):
         case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
             return y + x

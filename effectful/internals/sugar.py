@@ -6,31 +6,24 @@ import inspect
 import numbers
 import operator
 import typing
-from typing import (
-    Annotated,
-    Callable,
-    Generic,
-    Mapping,
-    Optional,
-    Protocol,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Callable, Generic, Mapping, Optional, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
 from effectful.ops.core import (
+    Box,
+    BoxExpr,
     Expr,
     Interpretation,
+    Neutral,
     Operation,
     Term,
     apply,
+    embed,
     evaluate,
-    typeof,
+    unembed,
 )
-from effectful.ops.handler import handler
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -182,8 +175,8 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
 
     def rename(
         subs: Mapping[Operation[..., S], Operation[..., S]],
-        leaf_value: Union[Term[V], Operation[..., V], V],
-    ) -> Union[Term[V], Operation[..., V], V]:
+        leaf_value: V,  # Union[Term[V], Operation[..., V], V],
+    ) -> V:  # Union[Term[V], Operation[..., V], V]:
         if isinstance(leaf_value, Operation):
             return subs.get(leaf_value, leaf_value)  # type: ignore
         elif isinstance(leaf_value, Term):
@@ -194,9 +187,9 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
-        args = tuple(unembed(a) for a in args)
-        kwargs = {k: unembed(v) for k, v in kwargs.items()}
-        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig = sig.bind(
+            *(unembed(a) for a in args), **{k: unembed(v) for k, v in kwargs.items()}
+        )
         bound_sig.apply_defaults()
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
@@ -239,12 +232,15 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
             for name in scoped_args[scope]:
                 arg = bound_sig.arguments[name]
                 if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
-                    renamed_arg = tuple(rename(renaming_map, a) for a in arg)
+                    bound_sig.arguments[name] = tuple(
+                        rename(renaming_map, a) for a in arg
+                    )
                 elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
-                    renamed_arg = {k: rename(renaming_map, v) for k, v in arg.items()}
+                    bound_sig.arguments[name] = {
+                        k: rename(renaming_map, v) for k, v in arg.items()
+                    }
                 else:
-                    renamed_arg = rename(renaming_map, arg)
-                bound_sig.arguments.update({name: renamed_arg})
+                    bound_sig.arguments[name] = rename(renaming_map, arg)
 
         return Term(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
 
@@ -301,13 +297,15 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    assert not isinstance(arg, _StuckNeutral)  # DEBUG
+                    assert not isinstance(arg, Neutral)  # DEBUG
                     tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
                     return tp
             return typing.cast(Type[T], object)
         elif typing.get_origin(anno) is typing.Annotated:
             tp = typing.get_args(anno)[0]
-            return tp if typing.get_origin(tp) is None else typing.get_origin(tp)
+            if not typing.TYPE_CHECKING:
+                tp = tp if typing.get_origin(tp) is None else typing.get_origin(tp)
+            return tp
         elif typing.get_origin(anno) is not None:
             return typing.get_origin(anno)
         else:
@@ -316,32 +314,21 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
     return _rule
 
 
-def infer_default_rule(op: Operation[P, T]) -> Callable[P, T]:
+def infer_default_rule(op: Operation[P, T]) -> Callable[P, Box[T]]:
 
     @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> T:
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> Box[T]:
         try:
             return op.signature(*args, **kwargs)
         except NotImplementedError:
-            tm_args = tuple(unembed(a) for a in args)
-            tm_kwargs = {k: unembed(v) for k, v in kwargs.items()}
-            return embed(op.__free_rule__(*tm_args, **tm_kwargs))
+            return embed(
+                op.__free_rule__(
+                    *tuple(unembed(a) for a in args),  # type: ignore
+                    **{k: unembed(v) for k, v in kwargs.items()}  # type: ignore
+                )
+            )
 
     return _rule
-
-
-@typing.runtime_checkable
-class _StuckNeutral(Protocol[T]):
-    __stuck_term__: Expr[T]
-
-
-def embed(expr: Expr[T]) -> Union[T, _StuckNeutral[T]]:
-    if isinstance(expr, Term):
-        impl: Callable[[Term[T]], Union[T, _StuckNeutral[T]]]
-        impl = embed.dispatch(typeof(expr))  # type: ignore
-        return impl(expr)
-    else:
-        return expr
 
 
 _embed_registry = functools.singledispatch(lambda v: v)
@@ -349,24 +336,9 @@ embed.dispatch = _embed_registry.dispatch  # type: ignore
 embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
 
 
-def unembed(value: Union[T, _StuckNeutral[T]]) -> Expr[T]:
-    if isinstance(value, _StuckNeutral):
-        return value.__stuck_term__
-    elif isinstance(value, (Term, Operation)):
-        return value
-    else:
-        impl: Callable[[T], Expr[T]]
-        impl = unembed.dispatch(type(value))  # type: ignore
-        return impl(value)
-
-
 _unembed_registry = functools.singledispatch(lambda v: v)
 unembed.dispatch = _unembed_registry.dispatch  # type: ignore
 unembed.register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
-
-
-def hoas(value: T):
-    return embed(unembed(value))
 
 
 OPERATORS = {}
@@ -446,19 +418,16 @@ for _other_operator_op in (
 
 @register_syntax_op(operator.eq)
 def _eq_op(a: T, b: T) -> bool:
-    return embed(operator.eq(unembed(a), unembed(b)))
+    return embed(operator.eq(unembed(a), unembed(b)))  # type: ignore
 
 
 @register_syntax_op(operator.ne)
 def _ne_op(a: T, b: T) -> bool:
-    return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))
+    return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
-_NeutralExpr = Union[Expr[T], _StuckNeutral[T]]
-
-
-@embed.register(object)
-class _BaseNeutral(Generic[T], _StuckNeutral[T]):
+@embed.register(object)  # type: ignore
+class _BaseNeutral(Generic[T], Neutral[T]):
     __stuck_term__: Expr[T]
 
     def __init__(self, term: Expr[T]):
@@ -467,8 +436,11 @@ class _BaseNeutral(Generic[T], _StuckNeutral[T]):
     #######################################################################
     # equality
     #######################################################################
-    def __eq__(self, other: _NeutralExpr[T]) -> bool:
-        return OPERATORS[operator.eq](self, embed(other))
+    def __hash__(self):
+        return self.__stuck_term__.__hash__()
+
+    def __eq__(self, other) -> bool:
+        return OPERATORS[operator.eq](self, embed(other))  # type: ignore
 
 
 class _BinopResolutionMixin(Generic[T]):
@@ -476,56 +448,56 @@ class _BinopResolutionMixin(Generic[T]):
     # binary operator method resolution
     #######################################################################
     # arithmetic
-    def __radd__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __radd__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.add(emb_other, self)
         else:
             return OPERATORS[operator.add](emb_other, self)
 
-    def __rsub__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rsub__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.sub(emb_other, self)
         else:
             return OPERATORS[operator.sub](emb_other, self)
 
-    def __rmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rmul__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.mul(emb_other, self)
         else:
             return OPERATORS[operator.mul](emb_other, self)
 
-    def __rtruediv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rtruediv__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.truediv(emb_other, self)
         else:
             return OPERATORS[operator.truediv](emb_other, self)
 
-    def __rfloordiv__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rfloordiv__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.floordiv(emb_other, self)
         else:
             return OPERATORS[operator.floordiv](emb_other, self)
 
-    def __rmod__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rmod__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.mod(emb_other, self)
         else:
             return OPERATORS[operator.mod](emb_other, self)
 
-    def __rpow__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rpow__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.pow(emb_other, self)
         else:
             return OPERATORS[operator.pow](emb_other, self)
 
-    def __rmatmul__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rmatmul__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.matmul(emb_other, self)
@@ -533,35 +505,35 @@ class _BinopResolutionMixin(Generic[T]):
             return OPERATORS[operator.matmul](emb_other, self)
 
     # bitwise
-    def __rand__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rand__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.and_(emb_other, self)
         else:
             return OPERATORS[operator.and_](emb_other, self)
 
-    def __ror__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __ror__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.or_(emb_other, self)
         else:
             return OPERATORS[operator.or_](emb_other, self)
 
-    def __rxor__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rxor__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.xor(emb_other, self)
         else:
             return OPERATORS[operator.xor](emb_other, self)
 
-    def __rrshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rrshift__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.rshift(emb_other, self)
         else:
             return OPERATORS[operator.rshift](emb_other, self)
 
-    def __rlshift__(self, other: _NeutralExpr[T]) -> _NeutralExpr[T]:
+    def __rlshift__(self, other: BoxExpr[T]) -> BoxExpr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.lshift(emb_other, self)
@@ -580,80 +552,77 @@ class _NumberNeutral(
     #######################################################################
     # arithmetic binary operators
     #######################################################################
-    def __add__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.add](self, embed(other))
+    def __add__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.add](self, embed(other))  # type: ignore
 
-    def __sub__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.sub](self, embed(other))
+    def __sub__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.sub](self, embed(other))  # type: ignore
 
-    def __mul__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.mul](self, embed(other))
+    def __mul__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.mul](self, embed(other))  # type: ignore
 
-    def __truediv__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.truediv](self, embed(other))
+    def __truediv__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.truediv](self, embed(other))  # type: ignore
 
-    def __floordiv__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.floordiv](self, embed(other))
+    def __floordiv__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.floordiv](self, embed(other))  # type: ignore
 
-    def __mod__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.mod](self, embed(other))
+    def __mod__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.mod](self, embed(other))  # type: ignore
 
-    def __pow__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.pow](self, embed(other))
+    def __pow__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.pow](self, embed(other))  # type: ignore
 
-    def __matmul__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.matmul](self, embed(other))
+    def __matmul__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.matmul](self, embed(other))  # type: ignore
 
     #######################################################################
     # unary operators
     #######################################################################
-    def __neg__(self) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.neg](self)
+    def __neg__(self) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.neg](self)  # type: ignore
 
-    def __pos__(self) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.pos](self)
+    def __pos__(self) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.pos](self)  # type: ignore
 
-    def __abs__(self) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.abs](self)
+    def __abs__(self) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.abs](self)  # type: ignore
 
-    def __invert__(self) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.invert](self)
+    def __invert__(self) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.invert](self)  # type: ignore
 
     #######################################################################
     # comparisons
     #######################################################################
-    def __eq__(self, other: _NeutralExpr[_T_Number]) -> bool:
-        return OPERATORS[operator.eq](self, embed(other))
+    def __ne__(self, other) -> bool:
+        return OPERATORS[operator.ne](self, embed(other))  # type: ignore
 
-    def __ne__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
-        return OPERATORS[operator.ne](self, embed(other))
+    def __lt__(self, other: BoxExpr[_T_Number]) -> BoxExpr[bool]:
+        return OPERATORS[operator.lt](self, embed(other))  # type: ignore
 
-    def __lt__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
-        return OPERATORS[operator.lt](self, embed(other))
+    def __le__(self, other: BoxExpr[_T_Number]) -> BoxExpr[bool]:
+        return OPERATORS[operator.le](self, embed(other))  # type: ignore
 
-    def __le__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
-        return OPERATORS[operator.le](self, embed(other))
+    def __gt__(self, other: BoxExpr[_T_Number]) -> BoxExpr[bool]:
+        return OPERATORS[operator.gt](self, embed(other))  # type: ignore
 
-    def __gt__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
-        return OPERATORS[operator.gt](self, embed(other))
-
-    def __ge__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[bool]:
-        return OPERATORS[operator.ge](self, embed(other))
+    def __ge__(self, other: BoxExpr[_T_Number]) -> BoxExpr[bool]:
+        return OPERATORS[operator.ge](self, embed(other))  # type: ignore
 
     #######################################################################
     # bitwise operators
     #######################################################################
-    def __and__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.and_](self, embed(other))
+    def __and__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.and_](self, embed(other))  # type: ignore
 
-    def __or__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.or_](self, embed(other))
+    def __or__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.or_](self, embed(other))  # type: ignore
 
-    def __xor__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.xor](self, embed(other))
+    def __xor__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.xor](self, embed(other))  # type: ignore
 
-    def __rshift__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.rshift](self, embed(other))
+    def __rshift__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.rshift](self, embed(other))  # type: ignore
 
-    def __lshift__(self, other: _NeutralExpr[_T_Number]) -> _NeutralExpr[_T_Number]:
-        return OPERATORS[operator.lshift](self, embed(other))
+    def __lshift__(self, other: BoxExpr[_T_Number]) -> BoxExpr[_T_Number]:
+        return OPERATORS[operator.lshift](self, embed(other))  # type: ignore

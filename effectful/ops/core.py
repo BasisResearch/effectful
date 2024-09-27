@@ -5,6 +5,7 @@ from typing import (
     Dict,
     Generic,
     Mapping,
+    Protocol,
     Sequence,
     Tuple,
     Type,
@@ -96,8 +97,17 @@ class Term(Generic[T]):
         return f"{str(self.op)}({params_str})"
 
 
-Expr = Union[Term[T], T]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+
+
+@typing.runtime_checkable
+class Neutral(Protocol[T]):
+    __stuck_term__: "Expr[T]"
+
+
+Expr = Union[T, Term[T]]
+Box = Union[T, Neutral[T]]
+BoxExpr = Union[Box[T], Expr[T]]
 
 
 @Operation  # type: ignore
@@ -120,8 +130,7 @@ def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
-def ctxof(term: Term[S]) -> Interpretation[T, Type[T]]:
-    from effectful.internals.sugar import unembed
+def ctxof(term: BoxExpr[S]) -> Interpretation[T, Type[T]]:
 
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
@@ -132,13 +141,40 @@ def ctxof(term: Term[S]) -> Interpretation[T, Type[T]]:
         return Term(op, args, tuple(kwargs.items()))
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(unembed(term))  # type: ignore
+        evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
 
     return _ctx
 
 
-def typeof(term: Term[T]) -> Type[T]:
-    from effectful.internals.sugar import unembed
+def typeof(term: BoxExpr[T]) -> Type[T]:
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
-        return evaluate(unembed(term))  # type: ignore
+        return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
+
+
+def unembed(value: Box[T]) -> Expr[T]:
+    from effectful.internals.sugar import _unembed_registry
+
+    if isinstance(value, Neutral):
+        return value.__stuck_term__
+    elif isinstance(value, (Term, Operation)):
+        return value  # type: ignore
+    else:
+        impl: Callable[[T], Expr[T]]
+        impl = _unembed_registry.dispatch(type(value))  # type: ignore
+        return impl(value)
+
+
+def embed(expr: Expr[T]) -> Box[T]:
+    from effectful.internals.sugar import _embed_registry
+
+    if isinstance(expr, Term):
+        impl: Callable[[Term[T]], Box[T]]
+        impl = _embed_registry.dispatch(typeof(expr))  # type: ignore
+        return impl(expr)
+    else:
+        return expr
+
+
+def hoas(value: T):
+    return embed(unembed(value))

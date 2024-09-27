@@ -1,46 +1,25 @@
 import collections
 import collections.abc
-import dataclasses
 import functools
 import inspect
-import numbers
-import operator
 import typing
-from typing import (
-    Annotated,
-    Callable,
-    Generic,
-    Mapping,
-    Optional,
-    Protocol,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Annotated, Callable, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter
-from effectful.internals.sugar import (
-    Annotation,
-    Bound,
-    Scoped,
-    _BaseNeutral,
-    _NeutralExpr,
-    _StuckNeutral,
-    embed,
-    gensym,
-    hoas,
-    unembed,
-)
+from effectful.internals.sugar import Bound, _BaseNeutral, gensym
 from effectful.ops.core import (
+    Box,
+    BoxExpr,
     Expr,
-    Interpretation,
+    Neutral,
     Operation,
     Term,
     apply,
+    embed,
     evaluate,
-    typeof,
+    unembed,
 )
 from effectful.ops.handler import handler
 
@@ -59,11 +38,17 @@ def defun(
     raise NotImplementedError
 
 
-@Operation
+@Operation  # type: ignore
 def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     match unembed(fn):
-        case Term(defun_, (body, *argvars), kwvars) if defun_ == defun:
-            kwvars = dict(kwvars)
+        case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == defun:
+            body: Expr[Callable[P, T]] = body_
+            argvars: tuple[Operation, ...] = typing.cast(
+                tuple[Operation, ...], argvars_
+            )
+            kwvars: dict[str, Operation] = typing.cast(
+                dict[str, Operation], dict(kwvars_)
+            )
             subs = {
                 **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
                 **{
@@ -71,28 +56,26 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
                 },
             }
             with handler(subs):
-                return embed(evaluate(unembed(body)))
+                return embed(evaluate(body) if isinstance(body, Term) else body)  # type: ignore
         case fn_literal if not isinstance(fn_literal, Term):
             return fn_literal(*args, **kwargs)
         case _:
             raise NotImplementedError
 
 
-@embed.register(collections.abc.Callable)
-class _CallableNeutral(
-    Generic[P, T],
-    collections.abc.Callable[P, T],
-    _BaseNeutral[collections.abc.Callable[P, T]],
-):
-    def __call__(self, *args: _NeutralExpr, **kwargs: _NeutralExpr) -> _NeutralExpr[T]:
+@embed.register(collections.abc.Callable)  # type: ignore
+class _CallableNeutral(Generic[P, T], _BaseNeutral[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: BoxExpr, **kwargs: BoxExpr) -> Box[T]:
         return call(
-            self, *[embed(a) for a in args], **{k: embed(v) for k, v in kwargs.items()}
+            self,  # type: ignore
+            *[embed(a) for a in args],  # type: ignore
+            **{k: embed(v) for k, v in kwargs.items()},  #  type: ignore
         )
 
 
-@unembed.register(collections.abc.Callable)
-def _unembed_callable(value: Callable[P, T]) -> Term[Callable[P, T]]:
-    assert not isinstance(value, _StuckNeutral)
+@unembed.register(collections.abc.Callable)  # type: ignore
+def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+    assert not isinstance(value, Neutral)
 
     sig = inspect.signature(value)
 
