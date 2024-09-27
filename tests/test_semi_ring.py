@@ -3,7 +3,7 @@ import random
 import types
 
 from effectful.internals.sugar import NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, embed, evaluate, unembed
+from effectful.ops.core import Neutral, Operation, Term, embed, evaluate, unembed
 from effectful.ops.handler import fwd, handler
 
 
@@ -82,7 +82,7 @@ ops.App = App
 
 
 def is_value(v):
-    return not (isinstance(v, Term) or isinstance(v, Operation))
+    return not isinstance(v, (Operation, Term, Neutral))
 
 
 def eager_dict(*contents):
@@ -121,7 +121,7 @@ def eager_add(x, y):
 
 
 def eager_app(f, x):
-    if is_value(f) and is_value(x):
+    if is_value(x):
         return f(x)
     else:
         return fwd(None)
@@ -143,7 +143,8 @@ def eager_sum(e1, k, v, e2):
             new_d = SemiRingDict()
             for key, value in e1.items():
                 new_d = Add(
-                    new_d, handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
+                    new_d,
+                    handler({k: lambda: key, v: lambda: value})(evaluate)(unembed(e2)),
                 )
             return new_d
         case SemiRingDict(), SemiRingDict():
@@ -156,9 +157,9 @@ def eager_sum(e1, k, v, e2):
 
 
 def eager_let(e1, x, e2):
-    match e1, e2:
+    match unembed(e1), unembed(e2):
         case SemiRingDict(), Term():
-            return handler({x: lambda: e1})(evaluate)(e2)
+            return handler({x: lambda: e1})(evaluate)(unembed(e2))
         case _, SemiRingDict():
             return e2
         case _:
@@ -193,15 +194,17 @@ def vertical_fusion(e1, x, e2):
 
 
 free = {
-    Sum: Sum.__free_rule__,
-    Let: Let.__free_rule__,
-    Record: Record.__free_rule__,
-    Dict: Dict.__free_rule__,
-    Field: Field.__free_rule__,
-    App: App.__free_rule__,
+    Add: Add.__default_rule__,
+    Sum: Sum.__default_rule__,
+    Let: Let.__default_rule__,
+    Record: Record.__default_rule__,
+    Dict: Dict.__default_rule__,
+    Field: Field.__default_rule__,
+    App: App.__default_rule__,
 }
 
 eager = {
+    Add: eager_add,
     Dict: eager_dict,
     Record: eager_record,
     Sum: eager_sum,
@@ -217,6 +220,7 @@ opt = {
 
 def test_simple_sum():
     x = gensym(object)
+    y = gensym(object)
     k = gensym(object)
     v = gensym(object)
 
@@ -242,8 +246,8 @@ def test_simple_sum():
             x,
             Let(
                 Sum(x(), k, v, Dict(k(), App(add1, v()))),
-                x,
-                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                y,
+                Sum(y(), k, v, Dict(k(), App(add1, v()))),
             ),
         )
         assert e["a"] == 3
@@ -256,6 +260,7 @@ def add1(v):
 
 def fusion_test(d):
     x = gensym(object)
+    y = gensym(object)
     k = gensym(object)
     v = gensym(object)
 
@@ -264,8 +269,8 @@ def fusion_test(d):
         x,
         Let(
             Sum(x(), k, v, Dict(k(), App(add1, v()))),
-            x,
-            Sum(x(), k, v, Dict(k(), App(add1, v()))),
+            y,
+            Sum(y(), k, v, Dict(k(), App(add1, v()))),
         ),
     )
 

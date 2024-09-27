@@ -18,7 +18,6 @@ from effectful.ops.core import (
     typeof,
     unembed,
 )
-from effectful.ops.function import call, defun
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)

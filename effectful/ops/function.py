@@ -1,26 +1,11 @@
-import collections
-import collections.abc
 import functools
-import inspect
 import typing
-from typing import Annotated, Callable, Generic, TypeVar
+from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import interpreter
-from effectful.internals.sugar import Bound, NoDefaultRule, _BaseNeutral, gensym
-from effectful.ops.core import (
-    Box,
-    BoxExpr,
-    Expr,
-    Neutral,
-    Operation,
-    Term,
-    apply,
-    embed,
-    evaluate,
-    unembed,
-)
+from effectful.internals.sugar import Bound, NoDefaultRule
+from effectful.ops.core import Expr, Operation, Term, embed, evaluate, unembed
 from effectful.ops.handler import handler
 
 P = ParamSpec("P")
@@ -61,47 +46,3 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             return fn_literal(*args, **kwargs)
         case _:
             raise NoDefaultRule
-
-
-@embed.register(collections.abc.Callable)  # type: ignore
-class _CallableNeutral(Generic[P, T], _BaseNeutral[collections.abc.Callable[P, T]]):
-    def __call__(self, *args: BoxExpr, **kwargs: BoxExpr) -> Box[T]:
-        return call(
-            self,  # type: ignore
-            *[embed(a) for a in args],  # type: ignore
-            **{k: embed(v) for k, v in kwargs.items()},  #  type: ignore
-        )
-
-
-@unembed.register(collections.abc.Callable)  # type: ignore
-def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
-    assert not isinstance(value, Neutral)
-
-    sig = inspect.signature(value)
-
-    for name, param in sig.parameters.items():
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise NotImplementedError(
-                f"cannot unembed {value}: parameter {name} is variadic"
-            )
-
-    bound_sig = sig.bind(
-        **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
-    )
-    bound_sig.apply_defaults()
-
-    with interpreter(
-        {
-            apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k)),
-            call: call.__default_rule__,
-        }
-    ):
-        body = value(
-            *[a() for a in bound_sig.args],
-            **{k: v() for k, v in bound_sig.kwargs.items()},
-        )
-
-    return defun(body, *bound_sig.args, **bound_sig.kwargs)
