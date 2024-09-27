@@ -109,7 +109,7 @@ eager_mixed = functools.reduce(
 )
 
 
-def test_hoas_1():
+def test_defun_1():
 
     x, y = gensym(int), gensym(int)
 
@@ -127,7 +127,7 @@ def test_hoas_1():
         assert f1(x()) == x() + y() + 1
 
 
-def test_hoas_2():
+def test_defun_2():
 
     with handler(eager_mixed):
 
@@ -147,7 +147,7 @@ def test_hoas_2():
         assert f1(1, 2) == f2(1, 2) == 3
 
 
-def test_hoas_3():
+def test_defun_3():
 
     with handler(eager_mixed):
 
@@ -162,7 +162,7 @@ def test_hoas_3():
         assert app2(f2, 1, 2) == 3
 
 
-def test_hoas_4():
+def test_defun_4():
 
     x = gensym(int)
 
@@ -191,7 +191,7 @@ def test_hoas_4():
         assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2
 
 
-def test_hoas_5():
+def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
         hoas(lambda *xs: None)
