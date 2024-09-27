@@ -176,5 +176,5 @@ def embed(expr: Expr[T]) -> Box[T]:
         return expr
 
 
-def hoas(value: T):
+def hoas(value: Box[T]):
     return embed(unembed(value))
