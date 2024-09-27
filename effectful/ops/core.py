@@ -113,6 +113,7 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
+    """Evaluate `term` in interpretation `intp`, producing either a value or another term."""
     (args, kwargs) = tree.map_structure(
         lambda a: evaluate(a) if isinstance(a, Term) else a, (term.args, term.kwargs)
     )
