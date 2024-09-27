@@ -1,6 +1,6 @@
+from effectful.internals.sugar import Operation, Term, gensym
 from effectful.ops.core import evaluate
 from effectful.ops.handler import handler
-from effectful.internals.sugar import gensym, Operation, Term
 
 
 def test_evaluate():

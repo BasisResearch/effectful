@@ -1,4 +1,3 @@
-import tree
 import dataclasses
 import typing
 from typing import (
@@ -13,6 +12,7 @@ from typing import (
     Union,
 )
 
+import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import (
