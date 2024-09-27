@@ -634,3 +634,51 @@ class _NumberNeutral(
 
     def __lshift__(self, other: Box[_T_Number]) -> Box[_T_Number]:
         return OPERATORS[operator.lshift](self, embed(other))  # type: ignore
+
+
+@embed.register(collections.abc.Callable)  # type: ignore
+class _CallableNeutral(Generic[P, T], _BaseNeutral[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Box, **kwargs: Box) -> Box[T]:
+        from effectful.ops.function import call
+
+        return call(
+            self,  # type: ignore
+            *[embed(a) for a in args],  # type: ignore
+            **{k: embed(v) for k, v in kwargs.items()},  #  type: ignore
+        )
+
+
+@unembed.register(collections.abc.Callable)  # type: ignore
+def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+    from effectful.ops.function import call, defun
+
+    assert not isinstance(value, Neutral)
+
+    sig = inspect.signature(value)
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
+            )
+
+    bound_sig = sig.bind(
+        **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
+
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k)),
+            call: call.__default_rule__,
+        }
+    ):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
+
+    return defun(body, *bound_sig.args, **bound_sig.kwargs)
