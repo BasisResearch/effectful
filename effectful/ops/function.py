@@ -42,7 +42,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             }
             with handler(subs):
                 return embed(evaluate(body) if isinstance(body, Term) else body)  # type: ignore
-        case fn_literal if not isinstance(fn_literal, Term):
-            return fn_literal(*args, **kwargs)
+        case Operation(_):  # probably shouldn't be here, but whatever
+            return fn(*args, **kwargs)
         case _:
             raise NoDefaultRule

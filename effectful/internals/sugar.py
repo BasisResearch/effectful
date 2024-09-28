@@ -654,7 +654,10 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 
     assert not isinstance(value, Neutral)
 
-    sig = inspect.signature(value)
+    try:
+        sig = inspect.signature(value)
+    except ValueError:
+        return value
 
     for name, param in sig.parameters.items():
         if param.kind in (
