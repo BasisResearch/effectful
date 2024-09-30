@@ -1,4 +1,4 @@
-from effectful.internals.sugar import Operation, Term, gensym
+from effectful.internals.sugar import Operation, gensym
 from effectful.ops.core import evaluate
 from effectful.ops.handler import handler
 
