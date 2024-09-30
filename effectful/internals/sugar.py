@@ -685,3 +685,56 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+import torch
+
+
+@weak_memoize
+def torch_op(torch_fn: Callable[P, torch.Tensor]) -> Operation[P, torch.Tensor]:
+
+    @Operation
+    def _op(*args: P.args, **kwargs: P.kwargs) -> torch.Tensor:
+        if any(isinstance(arg, Neutral) for arg in (*args, *kwargs.values())):
+            raise NoDefaultRule
+        return torch_fn(*args, **kwargs)
+
+    return _op
+
+
+@embed.register(torch.Tensor)
+def _embed_tensor(term: Term[torch.Tensor]) -> Box[torch.Tensor]:
+    fvs = ctxof(term)
+    if all(issubclass(v(), int) for v in fvs.values()):
+        return TensorBroadcastingNeutral(term)
+    else:
+        return TensorNeutral(term)
+
+
+# @embed.register(torch.Tensor)  # type: ignore
+class TensorNeutral:
+    __stuck_term__: Term[torch.Tensor]
+
+    def __init__(self, term: Term[torch.Tensor]):
+        assert isinstance(term, Term)
+        self.__stuck_term__ = term
+
+    def __getitem__(self, index: Box) -> Box[torch.Tensor]:
+        return torch.ops.aten.index(self, [index])
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        return torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+
+class TensorBroadcastingNeutral(torch.Tensor, Neutral[torch.Tensor]):
+    __stuck_term__: Term[torch.Tensor]
+
+    def __init__(self, term: Term[torch.Tensor]):
+        assert isinstance(term, Term)
+        self.__stuck_term__ = term
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        # TODO use broadcasting to partially evaluate to a tensor literal
+        return torch_op(func)(*args, **({} if kwargs is None else kwargs))
