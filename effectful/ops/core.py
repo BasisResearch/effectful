@@ -12,6 +12,7 @@ from typing import (
     Union,
 )
 
+import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import (
@@ -112,8 +113,11 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
-    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
-    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
+    """Evaluate `term` in interpretation `intp`, producing either a value or another term."""
+    (args, kwargs) = tree.map_structure(
+        lambda a: evaluate(a) if isinstance(a, Term) else a, (term.args, term.kwargs)
+    )
+    kwargs = {k: v for (k, v) in kwargs}
     return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
 
 
