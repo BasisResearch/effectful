@@ -3,7 +3,7 @@ import random
 import types
 
 from effectful.internals.sugar import NoDefaultRule, gensym
-from effectful.ops.core import Neutral, Operation, Term, embed, evaluate, unembed
+from effectful.ops.core import Operation, Term, embed, evaluate, unembed
 from effectful.ops.handler import fwd, handler
 
 
@@ -82,7 +82,7 @@ ops.App = App
 
 
 def is_value(v):
-    return not isinstance(v, (Operation, Term, Neutral))
+    return not isinstance(v, (Operation, Term))
 
 
 def eager_dict(*contents):

@@ -6,16 +6,24 @@ import inspect
 import numbers
 import operator
 import typing
-from typing import Callable, Generic, Mapping, Optional, Type, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+)
 
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter, weak_memoize
 from effectful.ops.core import (
-    Box,
     Expr,
     Interpretation,
-    Neutral,
     Operation,
     Term,
     apply,
@@ -242,7 +250,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 else:
                     bound_sig.arguments[name] = rename(renaming_map, arg)
 
-        return Term(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
+        return BaseTerm(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
 
     return _rule
 
@@ -299,7 +307,6 @@ def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    assert not isinstance(arg, Neutral)  # DEBUG
                     tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
                     return tp
             return typing.cast(Type[T], object)
@@ -321,10 +328,10 @@ class NoDefaultRule(Exception):
 
 
 @weak_memoize
-def infer_default_rule(op: Operation[P, T]) -> Callable[P, Box[T]]:
+def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
 
     @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> Box[T]:
+    def _rule(*args: P.args, **kwargs: P.kwargs) -> Expr[T]:
         try:
             return op.signature(*args, **kwargs)
         except NoDefaultRule:
@@ -424,8 +431,15 @@ for _other_operator_op in (
 
 
 @register_syntax_op(operator.eq)
-def _eq_op(a: T, b: T) -> bool:
-    return embed(operator.eq(unembed(a), unembed(b)))  # type: ignore
+def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
+    x = unembed(a)
+    y = unembed(b)
+
+    if isinstance(x, Term) and isinstance(y, Term):
+        return embed(x.syntactic_eq(y))
+    if isinstance(a, Term) or isinstance(b, Term):
+        return embed(False)
+    return embed(operator.eq(a, b))  # type: ignore
 
 
 @register_syntax_op(operator.ne)
@@ -433,19 +447,12 @@ def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
-@embed.register(object)  # type: ignore
-class _BaseNeutral(Generic[T], Neutral[T]):
-    __stuck_term__: Term[T]
-
-    def __init__(self, term: Term[T]):
-        assert isinstance(term, Term)
-        self.__stuck_term__ = term
-
-    #######################################################################
-    # equality
-    #######################################################################
-    def __hash__(self):
-        return self.__stuck_term__.__hash__()
+@embed.register(object)
+@dataclasses.dataclass(frozen=True, repr=True, unsafe_hash=True)
+class BaseTerm(Term[T]):
+    op: Operation[..., T]
+    args: Sequence["Expr[Any]"]
+    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, embed(other))  # type: ignore
@@ -456,56 +463,56 @@ class _BinopResolutionMixin(Generic[T]):
     # binary operator method resolution
     #######################################################################
     # arithmetic
-    def __radd__(self, other: Box[T]) -> Box[T]:
+    def __radd__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.add(emb_other, self)
         else:
             return OPERATORS[operator.add](emb_other, self)
 
-    def __rsub__(self, other: Box[T]) -> Box[T]:
+    def __rsub__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.sub(emb_other, self)
         else:
             return OPERATORS[operator.sub](emb_other, self)
 
-    def __rmul__(self, other: Box[T]) -> Box[T]:
+    def __rmul__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.mul(emb_other, self)
         else:
             return OPERATORS[operator.mul](emb_other, self)
 
-    def __rtruediv__(self, other: Box[T]) -> Box[T]:
+    def __rtruediv__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.truediv(emb_other, self)
         else:
             return OPERATORS[operator.truediv](emb_other, self)
 
-    def __rfloordiv__(self, other: Box[T]) -> Box[T]:
+    def __rfloordiv__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.floordiv(emb_other, self)
         else:
             return OPERATORS[operator.floordiv](emb_other, self)
 
-    def __rmod__(self, other: Box[T]) -> Box[T]:
+    def __rmod__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.mod(emb_other, self)
         else:
             return OPERATORS[operator.mod](emb_other, self)
 
-    def __rpow__(self, other: Box[T]) -> Box[T]:
+    def __rpow__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.pow(emb_other, self)
         else:
             return OPERATORS[operator.pow](emb_other, self)
 
-    def __rmatmul__(self, other: Box[T]) -> Box[T]:
+    def __rmatmul__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.matmul(emb_other, self)
@@ -513,35 +520,35 @@ class _BinopResolutionMixin(Generic[T]):
             return OPERATORS[operator.matmul](emb_other, self)
 
     # bitwise
-    def __rand__(self, other: Box[T]) -> Box[T]:
+    def __rand__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.and_(emb_other, self)
         else:
             return OPERATORS[operator.and_](emb_other, self)
 
-    def __ror__(self, other: Box[T]) -> Box[T]:
+    def __ror__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.or_(emb_other, self)
         else:
             return OPERATORS[operator.or_](emb_other, self)
 
-    def __rxor__(self, other: Box[T]) -> Box[T]:
+    def __rxor__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.xor(emb_other, self)
         else:
             return OPERATORS[operator.xor](emb_other, self)
 
-    def __rrshift__(self, other: Box[T]) -> Box[T]:
+    def __rrshift__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.rshift(emb_other, self)
         else:
             return OPERATORS[operator.rshift](emb_other, self)
 
-    def __rlshift__(self, other: Box[T]) -> Box[T]:
+    def __rlshift__(self, other: Expr[T]) -> Expr[T]:
         emb_other = embed(other)
         if emb_other is not other:
             return operator.lshift(emb_other, self)
@@ -552,51 +559,49 @@ class _BinopResolutionMixin(Generic[T]):
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
-@embed.register(numbers.Number)  # type: ignore
-class _NumberNeutral(
-    Generic[_T_Number], _BaseNeutral[_T_Number], _BinopResolutionMixin[_T_Number]
-):
+@embed.register(numbers.Number)
+class NumberTerm(BaseTerm[_T_Number], _BinopResolutionMixin[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
     #######################################################################
-    def __add__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __add__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.add](self, embed(other))  # type: ignore
 
-    def __sub__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __sub__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.sub](self, embed(other))  # type: ignore
 
-    def __mul__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __mul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.mul](self, embed(other))  # type: ignore
 
-    def __truediv__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __truediv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.truediv](self, embed(other))  # type: ignore
 
-    def __floordiv__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __floordiv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.floordiv](self, embed(other))  # type: ignore
 
-    def __mod__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __mod__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.mod](self, embed(other))  # type: ignore
 
-    def __pow__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __pow__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.pow](self, embed(other))  # type: ignore
 
-    def __matmul__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __matmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.matmul](self, embed(other))  # type: ignore
 
     #######################################################################
     # unary operators
     #######################################################################
-    def __neg__(self) -> Box[_T_Number]:
+    def __neg__(self) -> Expr[_T_Number]:
         return OPERATORS[operator.neg](self)  # type: ignore
 
-    def __pos__(self) -> Box[_T_Number]:
+    def __pos__(self) -> Expr[_T_Number]:
         return OPERATORS[operator.pos](self)  # type: ignore
 
-    def __abs__(self) -> Box[_T_Number]:
+    def __abs__(self) -> Expr[_T_Number]:
         return OPERATORS[operator.abs](self)  # type: ignore
 
-    def __invert__(self) -> Box[_T_Number]:
+    def __invert__(self) -> Expr[_T_Number]:
         return OPERATORS[operator.invert](self)  # type: ignore
 
     #######################################################################
@@ -605,32 +610,32 @@ class _NumberNeutral(
     def __ne__(self, other) -> bool:
         return OPERATORS[operator.ne](self, embed(other))  # type: ignore
 
-    def __lt__(self, other: Box[_T_Number]) -> Box[bool]:
+    def __lt__(self, other: Expr[_T_Number]) -> Expr[bool]:
         return OPERATORS[operator.lt](self, embed(other))  # type: ignore
 
-    def __le__(self, other: Box[_T_Number]) -> Box[bool]:
+    def __le__(self, other: Expr[_T_Number]) -> Expr[bool]:
         return OPERATORS[operator.le](self, embed(other))  # type: ignore
 
-    def __gt__(self, other: Box[_T_Number]) -> Box[bool]:
+    def __gt__(self, other: Expr[_T_Number]) -> Expr[bool]:
         return OPERATORS[operator.gt](self, embed(other))  # type: ignore
 
-    def __ge__(self, other: Box[_T_Number]) -> Box[bool]:
+    def __ge__(self, other: Expr[_T_Number]) -> Expr[bool]:
         return OPERATORS[operator.ge](self, embed(other))  # type: ignore
 
     #######################################################################
     # bitwise operators
     #######################################################################
-    def __and__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __and__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.and_](self, embed(other))  # type: ignore
 
-    def __or__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __or__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.or_](self, embed(other))  # type: ignore
 
-    def __xor__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __xor__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.xor](self, embed(other))  # type: ignore
 
-    def __rshift__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __rshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.rshift](self, embed(other))  # type: ignore
 
-    def __lshift__(self, other: Box[_T_Number]) -> Box[_T_Number]:
+    def __lshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.lshift](self, embed(other))  # type: ignore

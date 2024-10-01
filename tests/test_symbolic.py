@@ -8,7 +8,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import OPERATORS, Bound, NoDefaultRule, Scoped, gensym
 from effectful.ops.core import (
-    Box,
+    Expr,
     Interpretation,
     Operation,
     Term,
@@ -49,7 +49,7 @@ def Let(
     raise NoDefaultRule
 
 
-def beta_add(x: Box[int], y: Box[int]) -> Box[int]:
+def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
     match unembed(x), unembed(y):
         case int(_), int(_):
@@ -58,7 +58,7 @@ def beta_add(x: Box[int], y: Box[int]) -> Box[int]:
             return fwd(None)
 
 
-def beta_app(f: Box[Callable[[S], T]], arg: Box[S]) -> Box[T]:
+def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
     match unembed(f), arg:
         case Term(op, (var, body), ()), _ if op == Lam:
@@ -67,12 +67,12 @@ def beta_app(f: Box[Callable[[S], T]], arg: Box[S]) -> Box[T]:
             return fwd(None)
 
 
-def beta_let(var: Operation[[], S], val: Box[S], body: Box[T]) -> Box[T]:
+def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """let binding"""
     return handler({var: lambda: val})(evaluate)(unembed(body))  # type: ignore
 
 
-def eta_lam(var: Operation[[], S], body: Box[T]) -> Box[Callable[[S], T]] | Box[T]:
+def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
     if var not in ctxof(body):  # type: ignore
         return body
@@ -80,7 +80,7 @@ def eta_lam(var: Operation[[], S], body: Box[T]) -> Box[Callable[[S], T]] | Box[
         return fwd(None)
 
 
-def eta_let(var: Operation[[], S], val: Box[S], body: Box[T]) -> Box[T]:
+def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """eta reduction"""
     if var not in ctxof(body):  # type: ignore
         return body
@@ -88,7 +88,7 @@ def eta_let(var: Operation[[], S], val: Box[S], body: Box[T]) -> Box[T]:
         return fwd(None)
 
 
-def commute_add(x: Box[int], y: Box[int]) -> Box[int]:
+def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match unembed(x), unembed(y):
         case Term(_, _, _), int(_):
             return y + x
@@ -96,7 +96,7 @@ def commute_add(x: Box[int], y: Box[int]) -> Box[int]:
             return fwd(None)
 
 
-def assoc_add(x: Box[int], y: Box[int]) -> Box[int]:
+def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match unembed(x), unembed(y):
         case _, Term(op, (a, b), ()) if op == add:
             return (x + embed(a)) + embed(b)
@@ -104,7 +104,7 @@ def assoc_add(x: Box[int], y: Box[int]) -> Box[int]:
             return fwd(None)
 
 
-def unit_add(x: Box[int], y: Box[int]) -> Box[int]:
+def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match unembed(x), unembed(y):
         case _, 0:
             return x
@@ -114,7 +114,7 @@ def unit_add(x: Box[int], y: Box[int]) -> Box[int]:
             return fwd(None)
 
 
-def sort_add(x: Box[int], y: Box[int]) -> Box[int]:
+def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match unembed(x), unembed(y):
         case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
             return y + x

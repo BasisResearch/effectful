@@ -1,6 +1,7 @@
 import dataclasses
 import typing
 from typing import (
+    Any,
     Callable,
     Dict,
     Generic,
@@ -27,6 +28,15 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+
+
+def trace(func):
+    def traced(*args, **kwargs):
+        ret = func(*args, **kwargs)
+        print(func.__name__, args, kwargs, ret)
+        return ret
+
+    return traced
 
 
 @weak_memoize
@@ -74,13 +84,14 @@ class Operation(Generic[Q, V]):
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
-class Term(Generic[T]):
+@typing.runtime_checkable
+class Term(Protocol[T]):
     op: Operation[..., T]
-    args: Sequence["Expr[T]"]
-    kwargs: Sequence[Tuple[str, "Expr[T]"]]
+    args: Sequence["Expr[Any]"]
+    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
+    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
 
-    def __str__(self):
+    def __str__(self: "Term[T]") -> str:
         params_str = ""
         if len(self.args) > 0:
             params_str += ", ".join(str(x) for x in self.args)
@@ -88,17 +99,15 @@ class Term(Generic[T]):
             params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
         return f"{str(self.op)}({params_str})"
 
-
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
-
-
-@typing.runtime_checkable
-class Neutral(Protocol[T]):
-    __stuck_term__: "Expr[T]"
+    def syntactic_eq(self, other: "Term[T]") -> bool:
+        """Syntactic equality, ignoring the interpretation of the terms."""
+        return (self.op, self.args, self.kwargs) == (other.op, other.args, other.kwargs)
 
 
 Expr = Union[T, Term[T]]
-Box = Union[T, Neutral[T]]
+
+
+Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
 @Operation  # type: ignore
@@ -114,14 +123,17 @@ def apply(
 
 
 @bind_interpretation
-def evaluate(intp: Interpretation[S, T], term: Term[S]) -> Expr[T]:
-    assert isinstance(term, Term)
-    args = [evaluate(a) if isinstance(a, Term) else a for a in term.args]  # type: ignore
-    kwargs = {k: evaluate(v) if isinstance(v, Term) else v for k, v in term.kwargs}  # type: ignore
-    return apply.__default_rule__(intp, term.op, *args, **kwargs)  # type: ignore
+def evaluate(intp: Interpretation[S, T], expr: Expr[S]) -> Expr[T]:
+    match expr:
+        case Term(op, args, kwargs):
+            args = [evaluate(a) for a in args]  # type: ignore
+            kwargs = {k: evaluate(v) for k, v in kwargs}  # type: ignore
+            return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
+        case _:
+            return expr
 
 
-def ctxof(term: Union[Box[S], Term[S]]) -> Interpretation[T, Type[T]]:
+def ctxof(term: Union[Expr[S], Term[S]]) -> Interpretation[T, Type[T]]:
 
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
@@ -129,7 +141,6 @@ def ctxof(term: Union[Box[S], Term[S]]) -> Interpretation[T, Type[T]]:
         _ctx.setdefault(op, op.__type_rule__)
         for bound_var in op.__scope_rule__(*args, **kwargs):
             _ctx.pop(bound_var, None)
-        return Term(op, args, tuple(kwargs.items()))
 
     with interpreter({apply: _update_ctx}):  # type: ignore
         evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
@@ -137,18 +148,17 @@ def ctxof(term: Union[Box[S], Term[S]]) -> Interpretation[T, Type[T]]:
     return _ctx
 
 
-def typeof(term: Union[Box[T], Term[T]]) -> Type[T]:
-
+@trace
+def typeof(term: Union[Expr[T], Term[T]]) -> Type[T]:
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
 
 
-def unembed(value: Box[T]) -> Expr[T]:
+@trace
+def unembed(value: Expr[T]) -> Term[T]:
     from effectful.internals.sugar import _unembed_registry
 
-    if isinstance(value, Neutral):
-        return value.__stuck_term__
-    elif isinstance(value, (Term, Operation)):
+    if isinstance(value, Term):
         return value  # type: ignore
     else:
         impl: Callable[[T], Expr[T]]
@@ -156,16 +166,17 @@ def unembed(value: Box[T]) -> Expr[T]:
         return impl(value)
 
 
-def embed(expr: Expr[T]) -> Box[T]:
+@trace
+def embed(expr: Expr[T]) -> Expr[T]:
     from effectful.internals.sugar import _embed_registry
 
     if isinstance(expr, Term):
-        impl: Callable[[Term[T]], Box[T]]
+        impl: Callable[[Term[T]], Expr[T]]
         impl = _embed_registry.dispatch(typeof(expr))  # type: ignore
-        return impl(expr)
+        return impl(expr.op, expr.args, expr.kwargs)
     else:
         return expr
 
 
-def hoas(value: Box[T]):
+def hoas(value: Expr[T]):
     return embed(unembed(value))
