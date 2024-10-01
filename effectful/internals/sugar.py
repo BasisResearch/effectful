@@ -346,16 +346,14 @@ def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
 
 
 _embed_registry = functools.singledispatch(lambda v: v)
-embed.dispatch = _embed_registry.dispatch  # type: ignore
-embed.register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
+embed_register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
 
 
 _unembed_registry = functools.singledispatch(lambda v: v)
-unembed.dispatch = _unembed_registry.dispatch  # type: ignore
-unembed.register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
+unembed_register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
 
 
-OPERATORS = {}
+OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
 
 
 def register_syntax_op(
@@ -432,14 +430,18 @@ for _other_operator_op in (
 
 @register_syntax_op(operator.eq)
 def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
+    """Default implementation of equality for terms. As a special case, equality defaults to syntactic equality rather
+    than producing a free term.
+
+    """
     x = unembed(a)
     y = unembed(b)
 
     if isinstance(x, Term) and isinstance(y, Term):
-        return embed(x.syntactic_eq(y))
+        return x.syntactic_eq(y)
     if isinstance(a, Term) or isinstance(b, Term):
-        return embed(False)
-    return embed(operator.eq(a, b))  # type: ignore
+        return False
+    return operator.eq(a, b)
 
 
 @register_syntax_op(operator.ne)
@@ -447,7 +449,7 @@ def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
-@embed.register(object)
+@embed_register(object)
 @dataclasses.dataclass(frozen=True, repr=True, unsafe_hash=True)
 class BaseTerm(Term[T]):
     op: Operation[..., T]
@@ -458,136 +460,38 @@ class BaseTerm(Term[T]):
         return OPERATORS[operator.eq](self, embed(other))  # type: ignore
 
 
-class _BinopResolutionMixin(Generic[T]):
-    #######################################################################
-    # binary operator method resolution
-    #######################################################################
-    # arithmetic
-    def __radd__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.add(emb_other, self)
-        else:
-            return OPERATORS[operator.add](emb_other, self)
-
-    def __rsub__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.sub(emb_other, self)
-        else:
-            return OPERATORS[operator.sub](emb_other, self)
-
-    def __rmul__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.mul(emb_other, self)
-        else:
-            return OPERATORS[operator.mul](emb_other, self)
-
-    def __rtruediv__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.truediv(emb_other, self)
-        else:
-            return OPERATORS[operator.truediv](emb_other, self)
-
-    def __rfloordiv__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.floordiv(emb_other, self)
-        else:
-            return OPERATORS[operator.floordiv](emb_other, self)
-
-    def __rmod__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.mod(emb_other, self)
-        else:
-            return OPERATORS[operator.mod](emb_other, self)
-
-    def __rpow__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.pow(emb_other, self)
-        else:
-            return OPERATORS[operator.pow](emb_other, self)
-
-    def __rmatmul__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.matmul(emb_other, self)
-        else:
-            return OPERATORS[operator.matmul](emb_other, self)
-
-    # bitwise
-    def __rand__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.and_(emb_other, self)
-        else:
-            return OPERATORS[operator.and_](emb_other, self)
-
-    def __ror__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.or_(emb_other, self)
-        else:
-            return OPERATORS[operator.or_](emb_other, self)
-
-    def __rxor__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.xor(emb_other, self)
-        else:
-            return OPERATORS[operator.xor](emb_other, self)
-
-    def __rrshift__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.rshift(emb_other, self)
-        else:
-            return OPERATORS[operator.rshift](emb_other, self)
-
-    def __rlshift__(self, other: Expr[T]) -> Expr[T]:
-        emb_other = embed(other)
-        if emb_other is not other:
-            return operator.lshift(emb_other, self)
-        else:
-            return OPERATORS[operator.lshift](emb_other, self)
-
-
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
-@embed.register(numbers.Number)
-class NumberTerm(BaseTerm[_T_Number], _BinopResolutionMixin[_T_Number]):
+@embed_register(numbers.Number)
+class NumberTerm(BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
     #######################################################################
     def __add__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.add](self, embed(other))  # type: ignore
+        return OPERATORS[operator.add](self, other)  # type: ignore
 
     def __sub__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.sub](self, embed(other))  # type: ignore
+        return OPERATORS[operator.sub](self, other)  # type: ignore
 
     def __mul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mul](self, embed(other))  # type: ignore
+        return OPERATORS[operator.mul](self, other)  # type: ignore
 
     def __truediv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.truediv](self, embed(other))  # type: ignore
+        return OPERATORS[operator.truediv](self, other)  # type: ignore
 
     def __floordiv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.floordiv](self, embed(other))  # type: ignore
+        return OPERATORS[operator.floordiv](self, other)  # type: ignore
 
     def __mod__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mod](self, embed(other))  # type: ignore
+        return OPERATORS[operator.mod](self, other)  # type: ignore
 
     def __pow__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.pow](self, embed(other))  # type: ignore
+        return OPERATORS[operator.pow](self, other)  # type: ignore
 
     def __matmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.matmul](self, embed(other))  # type: ignore
+        return OPERATORS[operator.matmul](self, other)  # type: ignore
 
     #######################################################################
     # unary operators
@@ -608,34 +512,77 @@ class NumberTerm(BaseTerm[_T_Number], _BinopResolutionMixin[_T_Number]):
     # comparisons
     #######################################################################
     def __ne__(self, other) -> bool:
-        return OPERATORS[operator.ne](self, embed(other))  # type: ignore
+        return OPERATORS[operator.ne](self, other)  # type: ignore
 
     def __lt__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.lt](self, embed(other))  # type: ignore
+        return OPERATORS[operator.lt](self, other)  # type: ignore
 
     def __le__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.le](self, embed(other))  # type: ignore
+        return OPERATORS[operator.le](self, other)  # type: ignore
 
     def __gt__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.gt](self, embed(other))  # type: ignore
+        return OPERATORS[operator.gt](self, other)  # type: ignore
 
     def __ge__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.ge](self, embed(other))  # type: ignore
+        return OPERATORS[operator.ge](self, other)  # type: ignore
 
     #######################################################################
     # bitwise operators
     #######################################################################
     def __and__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.and_](self, embed(other))  # type: ignore
+        return OPERATORS[operator.and_](self, other)  # type: ignore
 
     def __or__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.or_](self, embed(other))  # type: ignore
+        return OPERATORS[operator.or_](self, other)  # type: ignore
 
     def __xor__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.xor](self, embed(other))  # type: ignore
+        return OPERATORS[operator.xor](self, other)  # type: ignore
 
     def __rshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.rshift](self, embed(other))  # type: ignore
+        return OPERATORS[operator.rshift](self, other)  # type: ignore
 
     def __lshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.lshift](self, embed(other))  # type: ignore
+        return OPERATORS[operator.lshift](self, other)  # type: ignore
+
+    #######################################################################
+    # reflected operators
+    #######################################################################
+    def __radd__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.add](other, self)  # type: ignore
+
+    def __rsub__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.sub](other, self)  # type: ignore
+
+    def __rmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.mul](other, self)  # type: ignore
+
+    def __rtruediv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.truediv](other, self)  # type: ignore
+
+    def __rfloordiv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.floordiv](other, self)  # type: ignore
+
+    def __rmod__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.mod](other, self)  # type: ignore
+
+    def __rpow__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.pow](other, self)  # type: ignore
+
+    def __rmatmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.matmul](other, self)  # type: ignore
+
+    # bitwise
+    def __rand__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.and_](other, self)  # type: ignore
+
+    def __ror__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.or_](other, self)  # type: ignore
+
+    def __rxor__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.xor](other, self)  # type: ignore
+
+    def __rrshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.rshift](other, self)  # type: ignore
+
+    def __rlshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
+        return OPERATORS[operator.lshift](other, self)  # type: ignore

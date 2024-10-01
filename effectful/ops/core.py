@@ -30,15 +30,6 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-def trace(func):
-    def traced(*args, **kwargs):
-        ret = func(*args, **kwargs)
-        print(func.__name__, args, kwargs, ret)
-        return ret
-
-    return traced
-
-
 @weak_memoize
 def define(m: Type[T]) -> "Operation[..., T]":
     """
@@ -55,7 +46,7 @@ def define(m: Type[T]) -> "Operation[..., T]":
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
 
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Box[V]":
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.internals.sugar import infer_default_rule
 
         return infer_default_rule(self)(*args, **kwargs)
@@ -123,7 +114,7 @@ def apply(
 
 
 @bind_interpretation
-def evaluate(intp: Interpretation[S, T], expr: Expr[S]) -> Expr[T]:
+def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
     match expr:
         case Term(op, args, kwargs):
             args = [evaluate(a) for a in args]  # type: ignore
@@ -134,7 +125,6 @@ def evaluate(intp: Interpretation[S, T], expr: Expr[S]) -> Expr[T]:
 
 
 def ctxof(term: Union[Expr[S], Term[S]]) -> Interpretation[T, Type[T]]:
-
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
@@ -148,13 +138,11 @@ def ctxof(term: Union[Expr[S], Term[S]]) -> Interpretation[T, Type[T]]:
     return _ctx
 
 
-@trace
 def typeof(term: Union[Expr[T], Term[T]]) -> Type[T]:
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
 
 
-@trace
 def unembed(value: Expr[T]) -> Term[T]:
     from effectful.internals.sugar import _unembed_registry
 
@@ -166,7 +154,6 @@ def unembed(value: Expr[T]) -> Term[T]:
         return impl(value)
 
 
-@trace
 def embed(expr: Expr[T]) -> Expr[T]:
     from effectful.internals.sugar import _embed_registry
 
