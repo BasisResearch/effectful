@@ -13,10 +13,8 @@ from effectful.ops.core import (
     Operation,
     Term,
     ctxof,
-    embed,
     evaluate,
     typeof,
-    unembed,
 )
 from effectful.ops.handler import coproduct, fwd, handler
 
@@ -51,8 +49,8 @@ def Let(
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
-    match unembed(x), unembed(y):
-        case int(_), int(_):
+    match x, y:
+        case int(), int():
             return x + y
         case _:
             return fwd(None)
@@ -60,16 +58,16 @@ def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
-    match unembed(f), arg:
+    match f, arg:
         case Term(op, (var, body), ()), _ if op == Lam:
-            return handler({var: lambda: arg})(evaluate)(unembed(body))  # type: ignore
+            return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         case _:
             return fwd(None)
 
 
 def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """let binding"""
-    return handler({var: lambda: val})(evaluate)(unembed(body))  # type: ignore
+    return handler({var: lambda: val})(evaluate)(body)  # type: ignore
 
 
 def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
@@ -89,23 +87,23 @@ def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 
 
 def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    match unembed(x), unembed(y):
-        case Term(_, _, _), int(_):
+    match x, y:
+        case Term(), int():
             return y + x
         case _:
             return fwd(None)
 
 
 def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    match unembed(x), unembed(y):
+    match x, y:
         case _, Term(op, (a, b), ()) if op == add:
-            return (x + embed(a)) + embed(b)
+            return (x + a) + b
         case _:
             return fwd(None)
 
 
 def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    match unembed(x), unembed(y):
+    match x, y:
         case _, 0:
             return x
         case 0, _:
@@ -115,13 +113,13 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 
 def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    match unembed(x), unembed(y):
+    match x, y:
         case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
             return y + x
         case Term(add_, (a, Term(vx, (), ())), ()), Term(
             vy, (), ()
         ) if add_ == add and id(vx) > id(vy):
-            return (embed(a) + vy()) + vx()
+            return (a + vy()) + vx()
         case _:
             return fwd(None)
 
@@ -178,7 +176,7 @@ def test_lambda_calculus_1():
 
         assert App(f1, 1) == 2
         assert Lam(y, f1) == f1
-        assert Lam(x, unembed(f1).args[1]) == unembed(f1).args[1]
+        assert Lam(x, f1.args[1]) == f1.args[1]
 
         assert typeof(e1) is int
         assert typeof(f1) is collections.abc.Callable
@@ -224,10 +222,10 @@ def test_lambda_calculus_5():
         f_add1 = Lam(x, e_add1)
 
         assert x in ctxof(e_add1)
-        assert unembed(e_add1).args[0] != x
+        assert e_add1.args[0] != x
 
         assert x not in ctxof(f_add1)
-        assert unembed(f_add1).args[0] != unembed(f_add1).args[1].args[0]
+        assert f_add1.args[0] != f_add1.args[1].args[0]
 
         assert App(f_add1, 1) == 2
         assert Let(x, 1, e_add1) == 2
