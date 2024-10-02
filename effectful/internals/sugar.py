@@ -458,6 +458,21 @@ class BaseTerm(Generic[T], Term[T]):
         return OPERATORS[operator.eq](self, other)  # type: ignore
 
 
+@unembed_register(object)
+def _unembed_literal(value: T) -> T:
+    return value
+
+
+@embed_register(Operation)
+def _embed_literal_op(expr: Operation[P, T]) -> Operation[P, T]:
+    return expr
+
+
+@unembed_register(Operation)
+def _unembed_literal_op(value: Operation[P, T]) -> Operation[P, T]:
+    return value
+
+
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
