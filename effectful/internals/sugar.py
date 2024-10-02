@@ -646,8 +646,3 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
-
-
-@unembed_register(Operation)
-def _unembed_operation(value: Operation[P, T]) -> Operation[P, T]:
-    return value
