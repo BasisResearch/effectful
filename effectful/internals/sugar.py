@@ -27,11 +27,11 @@ from effectful.ops.core import (
     Operation,
     Term,
     apply,
+    embed,
     evaluate,
     syntactic_eq,
     unembed,
 )
-from effectful.ops.core import embed
 
 P = ParamSpec("P")
 S = TypeVar("S")
