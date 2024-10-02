@@ -100,21 +100,17 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     match x, other:
         case Term(op, args, kwargs), Term(op2, args2, kwargs2):
             kwargs, kwargs2 = dict(kwargs), dict(kwargs2)
-            return (
-                op == op2
-                and len(args) == len(args2)
-                and kwargs.keys() == kwargs2.keys()
-                and all(
-                    all(tree.flatten(tree.map_structure(syntactic_eq, a, a2)))
-                    for a, a2 in zip(args, args2)
+            try:
+                tree.assert_same_structure(
+                    (op, args, kwargs), (op2, args2, kwargs2), check_types=True
                 )
-                and all(
-                    all(
-                        tree.flatten(
-                            tree.map_structure(syntactic_eq, kwargs[k], kwargs2[k])
-                        )
+            except (TypeError, ValueError):
+                return False
+            return all(
+                tree.flatten(
+                    tree.map_structure(
+                        syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
                     )
-                    for k in kwargs
                 )
             )
         case Term(_, _, _), _:
@@ -123,6 +119,7 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
             return False
         case _, _:
             return x == other
+    return False
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
