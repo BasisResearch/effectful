@@ -30,7 +30,6 @@ from effectful.ops.core import (
     evaluate,
     syntactic_eq,
     typeof,
-    unembed,
 )
 
 P = ParamSpec("P")
@@ -196,9 +195,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
 
     @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
-        bound_sig = sig.bind(
-            *(unembed(a) for a in args), **{k: unembed(v) for k, v in kwargs.items()}
-        )
+        bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
         bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)

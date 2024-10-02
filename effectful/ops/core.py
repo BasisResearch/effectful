@@ -139,12 +139,12 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
-    match expr:
+    match unembed(expr):
         case Term(op, args, kwargs):
             (args, kwargs) = tree.map_structure(evaluate, (args, dict(kwargs)))
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
-        case _:
-            return expr
+        case literal:
+            return literal
 
 
 def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
@@ -156,14 +156,14 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
             _ctx.pop(bound_var, None)
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
+        evaluate(term)  # type: ignore
 
     return _ctx
 
 
 def typeof(term: Expr[T]) -> Type[T]:
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
-        return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
+        return evaluate(term)  # type: ignore
 
 
 def unembed(value: Expr[T]) -> Expr[T]:
