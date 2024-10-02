@@ -97,23 +97,21 @@ Expr = Union[T, Term[T]]
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
-    if isinstance(x, Term) and isinstance(other, Term):
-        if not x.op == other.op:
+    match x, other:
+        case Term(op, args, kwargs), Term(op2, args2, kwargs2):
+            return op == op2 and all(
+                tree.flatten(
+                    tree.map_structure(
+                        syntactic_eq, (args, dict(kwargs)), (args2, dict(kwargs2))
+                    )
+                )
+            )
+        case Term(_, _, _), _:
             return False
-        if not len(x.args) == len(other.args):
+        case _, Term(_, _, _):
             return False
-        if not all(syntactic_eq(ax, ay) for (ax, ay) in zip(x.args, other.args)):
-            return False
-        x_kwargs, other_kwargs = dict(x.kwargs), dict(other.kwargs)
-        if not x_kwargs.keys() == other_kwargs.keys():
-            return False
-        if not all(syntactic_eq(x_kwargs[k], other_kwargs[k]) for k in x_kwargs):
-            return False
-        return True
-    elif isinstance(x, Term) or isinstance(other, Term):
-        return False
-    else:
-        return x == other
+        case _, _:
+            return x == other
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
@@ -135,10 +133,7 @@ def apply(
 def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
     match expr:
         case Term(op, args, kwargs):
-            (args, kwargs) = tree.map_structure(
-                lambda a: evaluate(a) if isinstance(a, Term) else a,
-                (args, dict(kwargs)),
-            )
+            (args, kwargs) = tree.map_structure(evaluate, (args, dict(kwargs)))
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
         case _:
             return expr
