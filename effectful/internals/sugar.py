@@ -27,11 +27,11 @@ from effectful.ops.core import (
     Operation,
     Term,
     apply,
-    embed,
     evaluate,
     syntactic_eq,
     unembed,
 )
+from effectful.ops.core import embed
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -251,7 +251,9 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 else:
                     bound_sig.arguments[name] = rename(renaming_map, arg)
 
-        tm = BaseTerm(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
+        tm = _embed_registry.dispatch(object)(
+            op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
+        )
         return embed(tm)  # type: ignore
 
     return _rule

@@ -175,7 +175,7 @@ def embed(expr: Expr[T]) -> Expr[T]:
     from effectful.internals.sugar import _embed_registry
 
     if isinstance(expr, Term):
-        impl: Callable[[Operation[P, T], Sequence, Sequence[tuple]], Term[T]]
+        impl: Callable[[Operation[..., T], Sequence, Sequence[tuple]], Term[T]]
         impl = _embed_registry.dispatch(typeof(expr))  # type: ignore
         return impl(expr.op, expr.args, expr.kwargs)
     else:
