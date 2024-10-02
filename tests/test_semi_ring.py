@@ -3,7 +3,7 @@ import random
 import types
 
 from effectful.internals.sugar import NoDefaultRule, gensym
-from effectful.ops.core import Neutral, Operation, Term, embed, evaluate, unembed
+from effectful.ops.core import Operation, Term, evaluate
 from effectful.ops.handler import fwd, handler
 
 
@@ -82,7 +82,7 @@ ops.App = App
 
 
 def is_value(v):
-    return not isinstance(v, (Operation, Term, Neutral))
+    return not isinstance(v, (Operation, Term))
 
 
 def eager_dict(*contents):
@@ -138,13 +138,13 @@ def eager_field(r, k):
 
 
 def eager_sum(e1, k, v, e2):
-    match unembed(e1), unembed(e2):
+    match e1, e2:
         case SemiRingDict(), Term():
             new_d = SemiRingDict()
             for key, value in e1.items():
                 new_d = Add(
                     new_d,
-                    handler({k: lambda: key, v: lambda: value})(evaluate)(unembed(e2)),
+                    handler({k: lambda: key, v: lambda: value})(evaluate)(e2),
                 )
             return new_d
         case SemiRingDict(), SemiRingDict():
@@ -157,9 +157,9 @@ def eager_sum(e1, k, v, e2):
 
 
 def eager_let(e1, x, e2):
-    match unembed(e1), unembed(e2):
+    match e1, e2:
         case SemiRingDict(), Term():
-            return handler({x: lambda: e1})(evaluate)(unembed(e2))
+            return handler({x: lambda: e1})(evaluate)(e2)
         case _, SemiRingDict():
             return e2
         case _:

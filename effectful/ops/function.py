@@ -5,7 +5,7 @@ from typing import Annotated, Callable, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import Bound, NoDefaultRule
-from effectful.ops.core import Expr, Operation, Term, embed, evaluate, unembed
+from effectful.ops.core import Expr, Operation, Term, evaluate, unembed
 from effectful.ops.handler import handler
 
 P = ParamSpec("P")
@@ -41,7 +41,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
                 },
             }
             with handler(subs):
-                return embed(evaluate(body) if isinstance(body, Term) else body)  # type: ignore
+                return evaluate(body)  # type: ignore
         case Operation(_):  # probably shouldn't be here, but whatever
             return fn(*args, **kwargs)
         case _:

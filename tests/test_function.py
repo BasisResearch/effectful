@@ -8,16 +8,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import OPERATORS, gensym
-from effectful.ops.core import (
-    Box,
-    Interpretation,
-    Term,
-    ctxof,
-    embed,
-    hoas,
-    typeof,
-    unembed,
-)
+from effectful.ops.core import Expr, Interpretation, Term, ctxof, typeof, unembed
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -30,32 +21,32 @@ T = TypeVar("T")
 add = OPERATORS[operator.add]
 
 
-def beta_add(x: Box[int], y: Box[int]) -> Box[int]:
-    match unembed(x), unembed(y):
+def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match x, y:
         case int(x_), int(y_):
             return x_ + y_
         case _:
             return fwd(None)
 
 
-def commute_add(x: Box[int], y: Box[int]) -> Box[int]:
-    match unembed(x), unembed(y):
+def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match x, y:
         case Term(_, _, _), int(y_):
-            return y_ + x
+            return y_ + x  # type: ignore
         case _:
             return fwd(None)
 
 
-def assoc_add(x: Box[int], y: Box[int]) -> Box[int]:
-    match unembed(x), unembed(y):
+def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match x, y:
         case _, Term(op, (a, b), ()) if op == add:
-            return (x + embed(a)) + embed(b)
+            return (x + a) + b
         case _:
             return fwd(None)
 
 
-def unit_add(x: Box[int], y: Box[int]) -> Box[int]:
-    match unembed(x), unembed(y):
+def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match x, y:
         case _, 0:
             return x
         case 0, _:
@@ -64,14 +55,14 @@ def unit_add(x: Box[int], y: Box[int]) -> Box[int]:
             return fwd(None)
 
 
-def sort_add(x: Box[int], y: Box[int]) -> Box[int]:
-    match unembed(x), unembed(y):
+def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
+    match x, y:
         case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
             return y + x
         case Term(add_, (a, Term(vx, (), ())), ()), Term(
             vy, (), ()
         ) if add_ == add and id(vx) > id(vy):
-            return (embed(a) + vy()) + vx()
+            return (a + vy()) + vx()
         case _:
             return fwd(None)
 
@@ -114,7 +105,7 @@ def test_defun_1():
 
     with handler(eager_mixed):
 
-        @hoas
+        @unembed
         def f1(x: int) -> int:
             return x + y() + 1
 
@@ -130,14 +121,14 @@ def test_defun_2():
 
     with handler(eager_mixed):
 
-        @hoas
+        @unembed
         def f1(x: int, y: int) -> int:
             return x + y
 
-        @hoas
+        @unembed
         def f2(x: int, y: int) -> int:
 
-            @hoas
+            @unembed
             def f2_inner(y: int) -> int:
                 return x + y
 
@@ -150,11 +141,11 @@ def test_defun_3():
 
     with handler(eager_mixed):
 
-        @hoas
+        @unembed
         def f2(x: int, y: int) -> int:
             return x + y
 
-        @hoas
+        @unembed
         def app2(f: Callable, x: int, y: int) -> int:
             return f(x, y)
 
@@ -167,22 +158,22 @@ def test_defun_4():
 
     with handler(eager_mixed):
 
-        @hoas
+        @unembed
         def compose(
             f: Callable[[int], int], g: Callable[[int], int]
         ) -> Callable[[int], int]:
 
-            @hoas
+            @unembed
             def fg(x: int) -> int:
                 return f(g(x))
 
             return fg
 
-        @hoas
+        @unembed
         def add1(x: int) -> int:
             return x + 1
 
-        @hoas
+        @unembed
         def add1_twice(x: int) -> int:
             return compose(add1, add1)(x)
 
@@ -193,13 +184,13 @@ def test_defun_4():
 def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        hoas(lambda *xs: None)
+        unembed(lambda *xs: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        hoas(lambda **ys: None)
+        unembed(lambda **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        hoas(lambda y=1, **ys: None)
+        unembed(lambda y=1, **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        hoas(lambda x, *xs, y=1, **ys: None)
+        unembed(lambda x, *xs, y=1, **ys: None)
