@@ -18,6 +18,7 @@ from typing import (
     TypeVar,
 )
 
+import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter, weak_memoize
@@ -236,17 +237,10 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
             }  # TODO support finitary operations
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
-                arg = bound_sig.arguments[name]
-                if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
-                    bound_sig.arguments[name] = tuple(
-                        rename(renaming_map, a) for a in arg
-                    )
-                elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
-                    bound_sig.arguments[name] = {
-                        k: rename(renaming_map, v) for k, v in arg.items()
-                    }
-                else:
-                    bound_sig.arguments[name] = rename(renaming_map, arg)
+                bound_sig.arguments[name] = tree.map_structure(
+                    lambda a: rename(renaming_map, a),
+                    bound_sig.arguments[name],
+                )
 
         tm = _embed_registry.dispatch(object)(
             op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
