@@ -97,19 +97,22 @@ Expr = Union[T, Term[T]]
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
     if isinstance(x, Term) and isinstance(other, Term):
-        return (
-            x.op == other.op
-            and len(x.args) == len(other.args)
-            and all(syntactic_eq(ax, ay) for (ax, ay) in zip(x.args, other.args))
-            and len(x.kwargs) == len(other.kwargs)
-            and all(
-                kx == ky and syntactic_eq(vx, vy)
-                for ((kx, vx), (ky, vy)) in zip(x.kwargs, other.kwargs)
-            )
-        )
-    if isinstance(x, Term) or isinstance(other, Term):
+        if not x.op == other.op:
+            return False
+        if not len(x.args) == len(other.args):
+            return False
+        if not all(syntactic_eq(ax, ay) for (ax, ay) in zip(x.args, other.args)):
+            return False
+        x_kwargs, other_kwargs = dict(x.kwargs), dict(other.kwargs)
+        if not x_kwargs.keys() == other_kwargs.keys():
+            return False
+        if not all(syntactic_eq(x_kwargs[k], other_kwargs[k]) for k in x_kwargs):
+            return False
+        return True
+    elif isinstance(x, Term) or isinstance(other, Term):
         return False
-    return x == other
+    else:
+        return x == other
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
@@ -138,7 +141,7 @@ def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
             return expr
 
 
-def ctxof(term: Union[Expr[S], Term[S]]) -> Interpretation[T, Type[T]]:
+def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
@@ -152,12 +155,12 @@ def ctxof(term: Union[Expr[S], Term[S]]) -> Interpretation[T, Type[T]]:
     return _ctx
 
 
-def typeof(term: Union[Expr[T], Term[T]]) -> Type[T]:
+def typeof(term: Expr[T]) -> Type[T]:
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term if isinstance(term, Term) else unembed(term))  # type: ignore
 
 
-def unembed(value: Expr[T]) -> Term[T]:
+def unembed(value: Expr[T]) -> Expr[T]:
     from effectful.internals.sugar import _unembed_registry
 
     if isinstance(value, Term):
@@ -172,12 +175,8 @@ def embed(expr: Expr[T]) -> Expr[T]:
     from effectful.internals.sugar import _embed_registry
 
     if isinstance(expr, Term):
-        impl: Callable[[Term[T]], Expr[T]]
+        impl: Callable[[Operation[P, T], Sequence, Sequence[tuple]], Term[T]]
         impl = _embed_registry.dispatch(typeof(expr))  # type: ignore
         return impl(expr.op, expr.args, expr.kwargs)
     else:
         return expr
-
-
-def hoas(value: Expr[T]):
-    return embed(unembed(value))

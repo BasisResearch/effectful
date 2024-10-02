@@ -251,7 +251,8 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
                 else:
                     bound_sig.arguments[name] = rename(renaming_map, arg)
 
-        return BaseTerm(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
+        tm = BaseTerm(op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items()))
+        return embed(tm)  # type: ignore
 
     return _rule
 
@@ -336,22 +337,17 @@ def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
         try:
             return op.signature(*args, **kwargs)
         except NoDefaultRule:
-            return embed(
-                op.__free_rule__(
-                    *tuple(unembed(a) for a in args),  # type: ignore
-                    **{k: unembed(v) for k, v in kwargs.items()},  # type: ignore
-                )
-            )
+            return op.__free_rule__(*args, **kwargs)
 
     return _rule
 
 
 _embed_registry = functools.singledispatch(lambda v: v)
-embed_register = lambda tp: lambda fn: _embed_registry.register(tp)(fn)  # type: ignore
+embed_register = _embed_registry.register
 
 
 _unembed_registry = functools.singledispatch(lambda v: v)
-unembed_register = lambda tp: lambda fn: _unembed_registry.register(tp)(fn)  # type: ignore
+unembed_register = _unembed_registry.register
 
 
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
@@ -384,7 +380,7 @@ for _arithmetic_binop in (
 ):
 
     @register_syntax_op(_arithmetic_binop)
-    def _fail(__x: T, __y: T) -> T:
+    def _(__x: T, __y: T) -> T:
         raise NoDefaultRule
 
 
@@ -396,7 +392,7 @@ for _arithmethic_unop in (
 ):
 
     @register_syntax_op(_arithmethic_unop)
-    def _fail(__x: T) -> T:
+    def _(__x: T) -> T:
         raise NoDefaultRule
 
 
@@ -425,7 +421,7 @@ for _other_operator_op in (
 
     @register_syntax_op(_other_operator_op)
     @functools.wraps(_other_operator_op)
-    def _fail(*args, **kwargs):
+    def _(*args, **kwargs):
         raise NoDefaultRule
 
 
@@ -445,20 +441,20 @@ def _ne_op(a: T, b: T) -> bool:
 
 @embed_register(object)
 @dataclasses.dataclass(frozen=True, repr=True, unsafe_hash=True)
-class BaseTerm(Term[T]):
+class BaseTerm(Generic[T], Term[T]):
     op: Operation[..., T]
     args: Sequence["Expr[Any]"]
     kwargs: Sequence[Tuple[str, "Expr[Any]"]]
 
     def __eq__(self, other) -> bool:
-        return OPERATORS[operator.eq](self, embed(other))  # type: ignore
+        return OPERATORS[operator.eq](self, other)  # type: ignore
 
 
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 
 
 @embed_register(numbers.Number)
-class NumberTerm(BaseTerm[_T_Number]):
+class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators

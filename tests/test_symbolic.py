@@ -89,7 +89,7 @@ def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match x, y:
         case Term(), int():
-            return y + x
+            return y + x  # type: ignore
         case _:
             return fwd(None)
 
