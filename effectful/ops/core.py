@@ -99,11 +99,22 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
     match x, other:
         case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            return op == op2 and all(
-                tree.flatten(
-                    tree.map_structure(
-                        syntactic_eq, (args, dict(kwargs)), (args2, dict(kwargs2))
+            kwargs, kwargs2 = dict(kwargs), dict(kwargs2)
+            return (
+                op == op2
+                and len(args) == len(args2)
+                and kwargs.keys() == kwargs2.keys()
+                and all(
+                    all(tree.flatten(tree.map_structure(syntactic_eq, a, a2)))
+                    for a, a2 in zip(args, args2)
+                )
+                and all(
+                    all(
+                        tree.flatten(
+                            tree.map_structure(syntactic_eq, kwargs[k], kwargs2[k])
+                        )
                     )
+                    for k in kwargs
                 )
             )
         case Term(_, _, _), _:
