@@ -27,9 +27,9 @@ from effectful.ops.core import (
     Operation,
     Term,
     apply,
-    embed,
     evaluate,
     syntactic_eq,
+    typeof,
     unembed,
 )
 
@@ -342,6 +342,15 @@ def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
             return op.__free_rule__(*args, **kwargs)
 
     return _rule
+
+
+def embed(expr: Expr[T]) -> Expr[T]:
+    if isinstance(expr, Term):
+        impl: Callable[[Operation[..., T], Sequence, Sequence[tuple]], Term[T]]
+        impl = _embed_registry.dispatch(typeof(expr))
+        return impl(expr.op, expr.args, expr.kwargs)
+    else:
+        return expr
 
 
 _embed_registry = functools.singledispatch(lambda v: v)
