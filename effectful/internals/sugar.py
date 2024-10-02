@@ -29,6 +29,7 @@ from effectful.ops.core import (
     apply,
     embed,
     evaluate,
+    syntactic_eq,
     unembed,
 )
 
@@ -434,14 +435,7 @@ def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
     than producing a free term.
 
     """
-    x = unembed(a)
-    y = unembed(b)
-
-    if isinstance(x, Term) and isinstance(y, Term):
-        return x.syntactic_eq(y)
-    if isinstance(a, Term) or isinstance(b, Term):
-        return False
-    return operator.eq(a, b)
+    return syntactic_eq(a, b)
 
 
 @register_syntax_op(operator.ne)

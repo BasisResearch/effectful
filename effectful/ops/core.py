@@ -90,12 +90,26 @@ class Term(Protocol[T]):
             params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
         return f"{str(self.op)}({params_str})"
 
-    def syntactic_eq(self, other: "Term[T]") -> bool:
-        """Syntactic equality, ignoring the interpretation of the terms."""
-        return (self.op, self.args, self.kwargs) == (other.op, other.args, other.kwargs)
-
 
 Expr = Union[T, Term[T]]
+
+
+def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
+    """Syntactic equality, ignoring the interpretation of the terms."""
+    if isinstance(x, Term) and isinstance(other, Term):
+        return (
+            x.op == other.op
+            and len(x.args) == len(other.args)
+            and all(syntactic_eq(ax, ay) for (ax, ay) in zip(x.args, other.args))
+            and len(x.kwargs) == len(other.kwargs)
+            and all(
+                kx == ky and syntactic_eq(vx, vy)
+                for ((kx, vx), (ky, vy)) in zip(x.kwargs, other.kwargs)
+            )
+        )
+    if isinstance(x, Term) or isinstance(other, Term):
+        return False
+    return x == other
 
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
