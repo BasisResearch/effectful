@@ -119,7 +119,7 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
-    match unembed(expr):
+    match as_term(expr):
         case Term(op, args, kwargs):
             (args, kwargs) = tree.map_structure(evaluate, (args, dict(kwargs)))
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
@@ -146,12 +146,12 @@ def typeof(term: Expr[T]) -> Type[T]:
         return evaluate(term)  # type: ignore
 
 
-def unembed(value: Expr[T]) -> Expr[T]:
-    from effectful.internals.sugar import _unembed_registry
+def as_term(value: Expr[T]) -> Expr[T]:
+    from effectful.internals.sugar import _as_term_registry
 
     if isinstance(value, Term):
         return value  # type: ignore
     else:
         impl: Callable[[T], Expr[T]]
-        impl = _unembed_registry.dispatch(type(value))  # type: ignore
+        impl = _as_term_registry.dispatch(type(value))  # type: ignore
         return impl(value)

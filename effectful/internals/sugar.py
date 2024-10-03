@@ -347,8 +347,8 @@ _embed_registry = functools.singledispatch(lambda v: v)
 embed_register = _embed_registry.register
 
 
-_unembed_registry = functools.singledispatch(lambda v: v)
-unembed_register = _unembed_registry.register
+_as_term_registry = functools.singledispatch(lambda v: v)
+as_term_register = _as_term_registry.register
 
 
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
@@ -468,7 +468,7 @@ class BaseTerm(Generic[T], Term[T]):
         return OPERATORS[operator.eq](self, other)  # type: ignore
 
 
-@unembed_register(object)
+@as_term_register(object)
 def _unembed_literal(value: T) -> T:
     return value
 
@@ -478,7 +478,7 @@ def _embed_literal_op(expr: Operation[P, T]) -> Operation[P, T]:
     return expr
 
 
-@unembed_register(Operation)
+@as_term_register(Operation)
 def _unembed_literal_op(value: Operation[P, T]) -> Operation[P, T]:
     return value
 
