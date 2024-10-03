@@ -5,7 +5,7 @@ import types
 from typing import TypeVar
 
 from effectful.internals.sugar import OPERATORS, NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, evaluate
+from effectful.ops.core import Operation, Term, as_term, evaluate
 from effectful.ops.handler import fwd, handler
 
 K = TypeVar("K")
@@ -224,7 +224,8 @@ opt = {
 }
 
 
-def add1(v):
+@as_term
+def add1(v: int) -> int:
     return v + 1
 
 

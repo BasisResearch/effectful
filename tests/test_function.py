@@ -132,7 +132,7 @@ def test_defun_2():
             def f2_inner(y: int) -> int:
                 return x + y
 
-            return f2_inner(y)
+            return f2_inner(y)  # type: ignore
 
         assert f1(1, 2) == f2(1, 2) == 3
 
@@ -167,7 +167,7 @@ def test_defun_4():
             def fg(x: int) -> int:
                 return f(g(x))
 
-            return fg
+            return fg  # type: ignore
 
         @as_term
         def add1(x: int) -> int:

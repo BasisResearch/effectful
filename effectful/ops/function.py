@@ -42,7 +42,5 @@ def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             }
             with handler(subs):
                 return evaluate(body)  # type: ignore
-        case Operation(_):  # probably shouldn't be here, but whatever
-            return fn(*args, **kwargs)
         case _:
             raise NoDefaultRule
