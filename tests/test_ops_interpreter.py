@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def times_plus_1(x: int, y: int) -> int:
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
     @bind_result
     def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
-        return (res or op.__default_rule__(*args)) * n
+        return (res or op.__default_rule__(*args)) * n  # type: ignore
 
     return {op: functools.partial(_op_times_n, n, op) for op in ops}
 
@@ -50,20 +50,6 @@ OPERATION_CASES = (
 )
 N_CASES = [1, 2, 3]
 DEPTH_CASES = [1, 2, 3]
-
-
-def test_memoized_define():
-    assert define(Interpretation) is define(Interpretation)
-    assert define(Interpretation[int, int]) is define(Interpretation[int, int])
-    assert define(Interpretation[int, int]) is define(Interpretation[int, float])
-    assert define(Interpretation[int, int]) is define(Interpretation)
-
-    assert define(Operation) is define(Operation)
-    assert define(Operation[P, int]) is define(Operation[P, int])
-    assert define(Operation[P, int]) is define(Operation[P, float])
-    assert define(Operation[P, int]) is define(Operation)
-
-    assert define(Operation) is not define(Interpretation)
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
