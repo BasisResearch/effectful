@@ -56,7 +56,7 @@ def Sum(e1, k, v, e2):
 
 
 @Operation
-def Let(x, e1, e2):
+def Let(e1, x, e2):
     raise NoDefaultRule
 
 
@@ -267,14 +267,17 @@ def fusion_test(d):
     k = gensym(object)
     v = gensym(object)
 
-    return Let(
-        d,
-        x,
+    return (
         Let(
-            Sum(x(), k, v, Dict(k(), App(add1, v()))),
-            y,
-            Sum(y(), k, v, Dict(k(), App(add1, v()))),
+            d,
+            x,
+            Let(
+                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                y,
+                Sum(y(), k, v, Dict(k(), App(add1, v()))),
+            ),
         ),
+        (x, y, k, v),
     )
 
 
@@ -284,6 +287,17 @@ def make_dict(n):
         kv.append(i)
         kv.append(random.randint(1, 10))
     return Dict(*kv)
+
+
+def test_fusion_term():
+    d = gensym(object)
+    with handler(free), handler(opt):
+        result, (x, _, k, v) = fusion_test(d)
+    assert result == Let(
+        d,
+        x,
+        Sum(x(), k, v, Dict(k(), App(add1, App(add1, v())))),
+    )
 
 
 def test_fusion_unopt(benchmark):
