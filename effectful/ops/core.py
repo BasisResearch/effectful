@@ -81,15 +81,8 @@ class Term(Protocol[T]):
     op: Operation[..., T]
     args: Sequence["Expr[Any]"]
     kwargs: Sequence[Tuple[str, "Expr[Any]"]]
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
 
-    def __str__(self: "Term[T]") -> str:
-        params_str = ""
-        if len(self.args) > 0:
-            params_str += ", ".join(str(x) for x in self.args)
-        if len(self.kwargs) > 0:
-            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
-        return f"{str(self.op)}({params_str})"
+    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
 
 
 Expr = Union[T, Term[T]]

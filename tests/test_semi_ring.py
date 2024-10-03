@@ -4,7 +4,7 @@ import random
 import types
 from typing import TypeVar
 
-from effectful.internals.sugar import NoDefaultRule, gensym, OPERATORS
+from effectful.internals.sugar import OPERATORS, NoDefaultRule, gensym
 from effectful.ops.core import Operation, Term, evaluate
 from effectful.ops.handler import fwd, handler
 

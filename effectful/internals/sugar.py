@@ -442,11 +442,28 @@ def _ne_op(a: T, b: T) -> bool:
 
 
 @embed_register(object)
-@dataclasses.dataclass(frozen=True, repr=True, unsafe_hash=True)
 class BaseTerm(Generic[T], Term[T]):
     op: Operation[..., T]
-    args: Sequence["Expr[Any]"]
-    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
+    args: Sequence[Expr]
+    kwargs: Sequence[Tuple[str, Expr]]
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        args: Sequence[Expr],
+        kwargs: Sequence[Tuple[str, Expr]],
+    ):
+        self.op = op
+        self.args = args
+        self.kwargs = kwargs
+
+    def __str__(self: "Term[T]") -> str:
+        params_str = ""
+        if len(self.args) > 0:
+            params_str += ", ".join(str(x) for x in self.args)
+        if len(self.kwargs) > 0:
+            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
+        return f"{str(self.op)}({params_str})"
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
