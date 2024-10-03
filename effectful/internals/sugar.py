@@ -609,3 +609,50 @@ class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 
     def __rlshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.lshift](other, self)  # type: ignore
+
+
+@embed_register(collections.abc.Callable)  # type: ignore
+class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+        from effectful.ops.function import funcall
+
+        return funcall(self, *args, **kwargs)  # type: ignore
+
+
+@as_term_register(collections.abc.Callable)  # type: ignore
+def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+    from effectful.ops.function import defun, funcall
+
+    assert not isinstance(value, Term)
+
+    try:
+        sig = inspect.signature(value)
+    except ValueError:
+        return value
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
+            )
+
+    bound_sig = sig.bind(
+        **{name: gensym(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
+
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            funcall: funcall.__default_rule__,
+        }
+    ):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
+
+    return defun(body, *bound_sig.args, **bound_sig.kwargs)
