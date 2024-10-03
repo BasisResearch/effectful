@@ -21,7 +21,6 @@ from effectful.internals.runtime import (
     bind_interpretation,
     get_interpretation,
     interpreter,
-    weak_memoize,
 )
 
 P = ParamSpec("P")
@@ -29,18 +28,6 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-
-
-@weak_memoize
-def define(m: Type[T]) -> "Operation[..., T]":
-    """
-    Scott encoding of a type as its constructor.
-    """
-    if not typing.TYPE_CHECKING:
-        if typing.get_origin(m) not in (m, None):
-            return define(typing.get_origin(m))
-
-    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
@@ -81,15 +68,8 @@ class Term(Protocol[T]):
     op: Operation[..., T]
     args: Sequence["Expr[Any]"]
     kwargs: Sequence[Tuple[str, "Expr[Any]"]]
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
 
-    def __str__(self: "Term[T]") -> str:
-        params_str = ""
-        if len(self.args) > 0:
-            params_str += ", ".join(str(x) for x in self.args)
-        if len(self.kwargs) > 0:
-            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
-        return f"{str(self.op)}({params_str})"
+    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
 
 
 Expr = Union[T, Term[T]]
@@ -139,7 +119,7 @@ def apply(
 
 @bind_interpretation
 def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
-    match unembed(expr):
+    match as_term(expr):
         case Term(op, args, kwargs):
             (args, kwargs) = tree.map_structure(evaluate, (args, dict(kwargs)))
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
@@ -166,12 +146,12 @@ def typeof(term: Expr[T]) -> Type[T]:
         return evaluate(term)  # type: ignore
 
 
-def unembed(value: Expr[T]) -> Expr[T]:
-    from effectful.internals.sugar import _unembed_registry
+def as_term(value: Expr[T]) -> Expr[T]:
+    from effectful.internals.sugar import _as_term_registry
 
     if isinstance(value, Term):
         return value  # type: ignore
     else:
         impl: Callable[[T], Expr[T]]
-        impl = _unembed_registry.dispatch(type(value))  # type: ignore
+        impl = _as_term_registry.dispatch(type(value))  # type: ignore
         return impl(value)

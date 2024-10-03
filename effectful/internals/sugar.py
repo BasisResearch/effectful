@@ -18,6 +18,7 @@ from typing import (
     TypeVar,
 )
 
+import tree
 from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter, weak_memoize
@@ -47,7 +48,6 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
     using the :func:`implements` decorator. The :class:`ObjectInterpretation` object itself is an :type:`Interpretation`
     (mapping from :type:`Operation` to :type:`Callable`)
 
-    >>> from effectful.ops.core import define
     >>> from effectful.ops.handler import handler
     >>> @Operation
     ... def read_box():
@@ -236,17 +236,10 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
             }  # TODO support finitary operations
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
-                arg = bound_sig.arguments[name]
-                if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
-                    bound_sig.arguments[name] = tuple(
-                        rename(renaming_map, a) for a in arg
-                    )
-                elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
-                    bound_sig.arguments[name] = {
-                        k: rename(renaming_map, v) for k, v in arg.items()
-                    }
-                else:
-                    bound_sig.arguments[name] = rename(renaming_map, arg)
+                bound_sig.arguments[name] = tree.map_structure(
+                    lambda a: rename(renaming_map, a),
+                    bound_sig.arguments[name],
+                )
 
         tm = _embed_registry.dispatch(object)(
             op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
@@ -354,8 +347,8 @@ _embed_registry = functools.singledispatch(lambda v: v)
 embed_register = _embed_registry.register
 
 
-_unembed_registry = functools.singledispatch(lambda v: v)
-unembed_register = _unembed_registry.register
+_as_term_registry = functools.singledispatch(lambda v: v)
+as_term_register = _as_term_registry.register
 
 
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
@@ -448,17 +441,34 @@ def _ne_op(a: T, b: T) -> bool:
 
 
 @embed_register(object)
-@dataclasses.dataclass(frozen=True, repr=True, unsafe_hash=True)
 class BaseTerm(Generic[T], Term[T]):
     op: Operation[..., T]
-    args: Sequence["Expr[Any]"]
-    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
+    args: Sequence[Expr]
+    kwargs: Sequence[Tuple[str, Expr]]
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        args: Sequence[Expr],
+        kwargs: Sequence[Tuple[str, Expr]],
+    ):
+        self.op = op
+        self.args = args
+        self.kwargs = kwargs
+
+    def __str__(self: "Term[T]") -> str:
+        params_str = ""
+        if len(self.args) > 0:
+            params_str += ", ".join(str(x) for x in self.args)
+        if len(self.kwargs) > 0:
+            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
+        return f"{str(self.op)}({params_str})"
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
 
 
-@unembed_register(object)
+@as_term_register(object)
 def _unembed_literal(value: T) -> T:
     return value
 
@@ -468,7 +478,7 @@ def _embed_literal_op(expr: Operation[P, T]) -> Operation[P, T]:
     return expr
 
 
-@unembed_register(Operation)
+@as_term_register(Operation)
 def _unembed_literal_op(value: Operation[P, T]) -> Operation[P, T]:
     return value
 
