@@ -24,7 +24,7 @@ def defun(
 
 
 @Operation  # type: ignore
-def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     match unembed(fn):
         case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == defun:
             body: Expr[Callable[P, T]] = body_

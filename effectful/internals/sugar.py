@@ -604,14 +604,14 @@ class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 @embed_register(collections.abc.Callable)  # type: ignore
 class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
     def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.function import call
+        from effectful.ops.function import funcall
 
-        return call(self, *args, **kwargs)  # type: ignore
+        return funcall(self, *args, **kwargs)  # type: ignore
 
 
 @unembed_register(collections.abc.Callable)  # type: ignore
 def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
-    from effectful.ops.function import call, defun
+    from effectful.ops.function import defun, funcall
 
     assert not isinstance(value, Term)
 
@@ -636,8 +636,8 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 
     with interpreter(
         {
-            apply: lambda _, op, *a, **k: embed(op.__free_rule__(*a, **k)),
-            call: call.__default_rule__,
+            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            funcall: funcall.__default_rule__,
         }
     ):
         body = value(
