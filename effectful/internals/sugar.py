@@ -619,7 +619,7 @@ class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
         return funcall(self, *args, **kwargs)  # type: ignore
 
 
-@unembed_register(collections.abc.Callable)  # type: ignore
+@as_term_register(collections.abc.Callable)  # type: ignore
 def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     from effectful.ops.function import defun, funcall
 

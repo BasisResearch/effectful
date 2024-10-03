@@ -8,7 +8,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import OPERATORS, gensym
-from effectful.ops.core import Expr, Interpretation, Term, ctxof, typeof, unembed
+from effectful.ops.core import Expr, Interpretation, Term, as_term, ctxof, typeof
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def test_defun_1():
 
     with handler(eager_mixed):
 
-        @unembed
+        @as_term
         def f1(x: int) -> int:
             return x + y() + 1
 
@@ -121,14 +121,14 @@ def test_defun_2():
 
     with handler(eager_mixed):
 
-        @unembed
+        @as_term
         def f1(x: int, y: int) -> int:
             return x + y
 
-        @unembed
+        @as_term
         def f2(x: int, y: int) -> int:
 
-            @unembed
+            @as_term
             def f2_inner(y: int) -> int:
                 return x + y
 
@@ -141,11 +141,11 @@ def test_defun_3():
 
     with handler(eager_mixed):
 
-        @unembed
+        @as_term
         def f2(x: int, y: int) -> int:
             return x + y
 
-        @unembed
+        @as_term
         def app2(f: Callable, x: int, y: int) -> int:
             return f(x, y)
 
@@ -158,22 +158,22 @@ def test_defun_4():
 
     with handler(eager_mixed):
 
-        @unembed
+        @as_term
         def compose(
             f: Callable[[int], int], g: Callable[[int], int]
         ) -> Callable[[int], int]:
 
-            @unembed
+            @as_term
             def fg(x: int) -> int:
                 return f(g(x))
 
             return fg
 
-        @unembed
+        @as_term
         def add1(x: int) -> int:
             return x + 1
 
-        @unembed
+        @as_term
         def add1_twice(x: int) -> int:
             return compose(add1, add1)(x)
 
@@ -184,13 +184,13 @@ def test_defun_4():
 def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        unembed(lambda *xs: None)
+        as_term(lambda *xs: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        unembed(lambda **ys: None)
+        as_term(lambda **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        unembed(lambda y=1, **ys: None)
+        as_term(lambda y=1, **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        unembed(lambda x, *xs, y=1, **ys: None)
+        as_term(lambda x, *xs, y=1, **ys: None)
