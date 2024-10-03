@@ -48,7 +48,6 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
     using the :func:`implements` decorator. The :class:`ObjectInterpretation` object itself is an :type:`Interpretation`
     (mapping from :type:`Operation` to :type:`Callable`)
 
-    >>> from effectful.ops.core import define
     >>> from effectful.ops.handler import handler
     >>> @Operation
     ... def read_box():

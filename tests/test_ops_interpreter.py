@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, define
+from effectful.ops.core import Interpretation, Operation
 from effectful.ops.handler import closed_handler
 
 logger = logging.getLogger(__name__)
@@ -50,20 +50,6 @@ OPERATION_CASES = (
 )
 N_CASES = [1, 2, 3]
 DEPTH_CASES = [1, 2, 3]
-
-
-def test_memoized_define():
-    assert define(Interpretation) is define(Interpretation)
-    assert define(Interpretation[int, int]) is define(Interpretation[int, int])
-    assert define(Interpretation[int, int]) is define(Interpretation[int, float])
-    assert define(Interpretation[int, int]) is define(Interpretation)
-
-    assert define(Operation) is define(Operation)
-    assert define(Operation[P, int]) is define(Operation[P, int])
-    assert define(Operation[P, int]) is define(Operation[P, float])
-    assert define(Operation[P, int]) is define(Operation)
-
-    assert define(Operation) is not define(Interpretation)
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)

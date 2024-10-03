@@ -21,7 +21,6 @@ from effectful.internals.runtime import (
     bind_interpretation,
     get_interpretation,
     interpreter,
-    weak_memoize,
 )
 
 P = ParamSpec("P")
@@ -29,18 +28,6 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-
-
-@weak_memoize
-def define(m: Type[T]) -> "Operation[..., T]":
-    """
-    Scott encoding of a type as its constructor.
-    """
-    if not typing.TYPE_CHECKING:
-        if typing.get_origin(m) not in (m, None):
-            return define(typing.get_origin(m))
-
-    return m(m) if m is Operation else define(Operation[..., m])(m)  # type: ignore
 
 
 @dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
