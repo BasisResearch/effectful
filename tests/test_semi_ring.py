@@ -1,14 +1,19 @@
 import collections.abc
+import operator
 import random
 import types
+from typing import TypeVar
 
-from effectful.internals.sugar import NoDefaultRule, gensym
+from effectful.internals.sugar import NoDefaultRule, gensym, OPERATORS
 from effectful.ops.core import Operation, Term, evaluate
 from effectful.ops.handler import fwd, handler
 
+K = TypeVar("K")
+V = TypeVar("V")
+
 
 # https://stackoverflow.com/questions/2703599/what-would-a-frozen-dict-be
-class SemiRingDict(collections.abc.Mapping):
+class SemiRingDict(collections.abc.Mapping[K, V]):
     def __init__(self, *args, **kwargs):
         self._d = dict(*args, **kwargs)
         self._hash = None
@@ -16,13 +21,13 @@ class SemiRingDict(collections.abc.Mapping):
     def __iter__(self):
         return iter(self._d)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._d)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: K) -> V:
         return self._d[key]
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         # It would have been simpler and maybe more obvious to
         # use hash(tuple(sorted(self._d.iteritems()))) from this discussion
         # so far, but this solution is O(n). I don't know what kind of
@@ -35,10 +40,14 @@ class SemiRingDict(collections.abc.Mapping):
             self._hash = hash_
         return self._hash
 
-
-@Operation
-def Add(x, y):
-    raise NoDefaultRule
+    def __add__(self, other: "SemiRingDict") -> "SemiRingDict":
+        new_dict = self._d.copy()
+        for key, value in other.items():
+            if key in new_dict:
+                new_dict[key] += value
+            else:
+                new_dict[key] = value
+        return SemiRingDict(new_dict)
 
 
 @Operation
@@ -72,7 +81,6 @@ def App(f, x):
 
 
 ops = types.SimpleNamespace()
-ops.Add = Add
 ops.Sum = Sum
 ops.Let = Let
 ops.Record = Record
@@ -110,7 +118,7 @@ def eager_add(x, y):
         new_dict = x._d.copy()
         for key, value in y.items():
             if key in new_dict:
-                new_dict[key] = Add(new_dict[key], value)
+                new_dict[key] += value
             else:
                 new_dict[key] = value
         return SemiRingDict(new_dict)
@@ -142,15 +150,12 @@ def eager_sum(e1, k, v, e2):
         case SemiRingDict(), Term():
             new_d = SemiRingDict()
             for key, value in e1.items():
-                new_d = Add(
-                    new_d,
-                    handler({k: lambda: key, v: lambda: value})(evaluate)(e2),
-                )
+                new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
             return new_d
         case SemiRingDict(), SemiRingDict():
             new_d = SemiRingDict()
             for _ in e1.items():
-                new_d = Add(new_d, e2)
+                new_d += e2
             return new_d
         case _:
             return fwd(None)
@@ -193,8 +198,9 @@ def vertical_fusion(e1, x, e2):
             return fwd(None)
 
 
+add = OPERATORS[operator.add]
 free = {
-    Add: Add.__default_rule__,
+    add: add.__default_rule__,
     Sum: Sum.__default_rule__,
     Let: Let.__default_rule__,
     Record: Record.__default_rule__,
@@ -204,7 +210,7 @@ free = {
 }
 
 eager = {
-    Add: eager_add,
+    add: eager_add,
     Dict: eager_dict,
     Record: eager_record,
     Sum: eager_sum,
@@ -216,6 +222,10 @@ eager = {
 opt = {
     Let: vertical_fusion,
 }
+
+
+def add1(v):
+    return v + 1
 
 
 def test_simple_sum():
@@ -231,9 +241,6 @@ def test_simple_sum():
     with handler(free), handler(eager):
         e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
         assert e == 2
-
-    def add1(v):
-        return Add(v, 1)
 
     with handler(free), handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
@@ -252,10 +259,6 @@ def test_simple_sum():
         )
         assert e["a"] == 3
         assert e["b"] == 4
-
-
-def add1(v):
-    return Add(v, 1)
 
 
 def fusion_test(d):
