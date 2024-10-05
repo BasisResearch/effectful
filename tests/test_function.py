@@ -8,7 +8,8 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import OPERATORS, gensym
-from effectful.ops.core import Expr, Interpretation, Term, as_term, ctxof, typeof
+from effectful.ops.core import Expr, Interpretation, Operation, Term, as_term, ctxof, evaluate, typeof
+from effectful.ops.function import defun, funcall
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)
@@ -194,3 +195,40 @@ def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
         as_term(lambda x, *xs, y=1, **ys: None)
+
+
+def test_defun_6():
+    import torch
+    from effectful.internals.sugar import TORCH_OPS, Sized
+
+    getitem = TORCH_OPS[operator.getitem]
+
+    def subs(val: Expr[T], subs: dict[Operation[[], S], Expr[S]]) -> Expr[T]:
+        with handler({var: functools.partial(lambda x: x, evaluate(sub)) for var, sub in subs.items()}):
+            return evaluate(val)
+
+    x = gensym(torch.Tensor)
+
+    with handler(eager_mixed):
+        assert as_term(torch.add) is torch.add
+        assert as_term(torch.gather) is torch.gather
+
+        xval = torch.rand(2, 3)
+
+        xx = torch.add(x(), torch.ones(2))
+        i, j = gensym(Sized(2)), gensym(Sized(3))
+        xx_ij = xx[i(), j()]
+
+        i, j = gensym(Sized(2)), gensym(Sized(3))
+        y_ij = torch.add(getitem(torch.ones(2, 3), (i(), j())), getitem(torch.tensor([2, 3]), (i(),)))
+        y_ij = torch.add(y_ij, getitem(torch.tensor([3, 4]), (j(),)))
+
+        assert subs(xx_ij, {x: xval, i: 0, j: 1}) == (xval + 1)[0, 1]
+
+
+        x1_ij = getitem(torch.rand(3, 2), (i(), j()))
+        x2_ji = getitem(torch.rand(2, 3), (j(), i()))
+
+        # y_ij = bind_dims(torch.add(x1_ij, x2_ji), i, j)[i(), j()]
+
+        # assert y_ij == torch.add(bind_dims(x1_ij, i, j), bind_dims(x2_ji, i, j))[i(), j()]

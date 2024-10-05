@@ -656,3 +656,80 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+import torch
+
+
+TORCH_OPS = {}
+
+def register_torch_op(torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P, T]] = None):
+    if torch_op_fn is None:
+        return functools.partial(register_torch_op, torch_fn)
+
+    @Operation
+    def _torch_op(*args, **kwargs) -> torch.Tensor:
+        from effectful.ops.core import ctxof
+        from effectful.ops.function import defun
+
+        def _is_sized_fv(v):
+            tp = v.__type_rule__()
+            return issubclass(tp, int) and hasattr(tp, "_size")
+
+        def _sized_fvsof(value):
+            return [op for op in _fvs_of(value) if _is_sized_fv(op)]
+
+        def _fvs_of(value):
+            return list(set(tree.flatten(tree.map_structure(lambda v: list(op for op in ctxof(v)), value))))
+
+        @Operation
+        def _free_tuple(a, b):
+            raise NoDefaultRule
+
+        if all(_is_sized_fv(v) for v in _fvs_of((args, kwargs))):
+
+            sized_fvs = _sized_fvsof((args, kwargs))
+
+            tpe_args_kwargs = defun(_free_tuple(args, kwargs), *sized_fvs)
+
+            def _tpe_result_fn(*inds):
+                args, kwargs = tpe_args_kwargs(*inds).args
+                return torch_op_fn(*args, **kwargs)
+
+            for i in range(len(sized_fvs)):
+                in_dims = [None] * len(sized_fvs)
+                in_dims[i] = 0
+                _tpe_result_fn = torch.func.vmap(_tpe_result_fn, in_dims=tuple(in_dims))
+
+            tpe_result = _tpe_result_fn(*(torch.arange(v.__type_rule__()._size) for v in sized_fvs))
+
+            return TORCH_OPS[operator.getitem](tpe_result, [v() for v in sized_fvs])
+        elif not any(tree.flatten(tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs)))):
+            return torch_op_fn(*args, **kwargs)
+        else:
+            raise NoDefaultRule
+
+    TORCH_OPS[torch_fn] = _torch_op
+    return TORCH_OPS[torch_fn]
+
+
+register_torch_op(operator.getitem, operator.getitem)
+
+
+def Sized(size: int) -> type[int]:
+    class _Sized(int):
+        _size = size
+
+    return _Sized
+
+
+@embed_register(torch.Tensor)
+class TensorTerm(BaseTerm[torch.Tensor]):
+    def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
+        return TORCH_OPS[operator.getitem](self, key)  # type: ignore
+
+    @classmethod
+    def __torch_function__(cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None) -> Expr[torch.Tensor]:
+        if func not in TORCH_OPS:
+            register_torch_op(func, func)
+        return TORCH_OPS[func](*args, **({} if kwargs is None else kwargs))
