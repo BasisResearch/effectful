@@ -20,7 +20,7 @@ from typing import (
 
 import torch
 import tree
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, TypeGuard
 
 from effectful.internals.runtime import interpreter, weak_memoize
 from effectful.ops.core import (
@@ -663,110 +663,101 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
 
 
-TORCH_OPS = {}
+import torch
 
 
-def register_torch_op(
-    torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P, T]] = None
-):
-    if torch_op_fn is None:
-        return functools.partial(register_torch_op, torch_fn)
+@weak_memoize
+def _register_torch_op(torch_fn: Callable[P, T]):
+
+    if torch_fn is torch.ops.aten.index:
+        return torch_getitem
 
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
-        from effectful.ops.core import ctxof
 
-        def sized_fvsof(value):
+        def _is_sized_fv(v: Operation) -> TypeGuard[Operation[[], int]]:
+            try:
+                tp = v.__type_rule__()
+                return issubclass(tp, int) and hasattr(tp, "_size")
+            except TypeError:
+                return False
+
+        def _fvs_of(value: Expr) -> Sequence[Operation]:
+            from effectful.ops.core import ctxof
+
             return list(
                 set(
                     tree.flatten(
-                        tree.map_structure(
-                            lambda v: list(
-                                op
-                                for op in ctxof(v)
-                                if issubclass(op.__type_rule__(), int)
-                            ),
-                            value,
-                        )
+                        tree.map_structure(lambda v: list(op for op in ctxof(v)), value)
                     )
                 )
             )
 
-        if torch_fn is not operator.getitem and (
-            sized_fvs := sized_fvsof((args, kwargs))
+        if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(
+            _is_sized_fv(v) for v in sized_fvs
         ):
-            tpe_args, tpe_kwargs = bind_dims((args, kwargs), *sized_fvs)
-            tpe_result = _torch_op(*tpe_args, **tpe_kwargs)
-            return TORCH_OPS[operator.getitem](tpe_result, [v() for v in sized_fvs])
+
+            @torch.func.vmap
+            def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
+                from effectful.ops.handler import handler
+
+                with handler(
+                    {
+                        var: functools.partial(lambda x: x, ind)
+                        for var, ind in zip(sized_fvs, inds)
+                    }
+                ):
+                    args, kwargs = tree.map_structure(evaluate, (args, kwargs))
+                return torch_fn(*args, **kwargs)
+
+            sizes = {v: v.__type_rule__()._size for v in sized_fvs}
+            inds = [
+                torch.arange(sizes[v])[(...,) + (None,) * i]
+                for i, v in enumerate(sized_fvs)
+            ]
+
+            flat_inds = [ind.reshape(-1) for ind in torch.broadcast_tensors(*inds)]
+            flat_tpe_result = _tpe_result_fn(*flat_inds)
+
+            tpe_result: torch.Tensor = flat_tpe_result.reshape(
+                *(tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:])
+            )
+
+            return torch_getitem(tpe_result, [v() for v in sized_fvs])
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
             )
         ):
-            return torch_op_fn(*args, **kwargs)
+            return torch_fn(*args, **kwargs)
         else:
             raise NoDefaultRule
 
-    TORCH_OPS[torch_fn] = _torch_op
-    return TORCH_OPS[torch_fn]
+    return _torch_op
 
 
-register_torch_op(operator.getitem, operator.getitem)
+@Operation
+def torch_getitem(x: torch.Tensor, key: Sequence[torch.Tensor]) -> torch.Tensor:
+    if not any(isinstance(k, Term) for k in (x, *key)):
+        return torch.ops.aten.index(x, key)
+    else:
+        raise NoDefaultRule
 
 
-def bind_dims(
-    value: Expr[torch.Tensor], *dimvars: Operation[[], int]
-) -> Expr[torch.Tensor]:
-    from effectful.ops.handler import handler
+def Sized(size: int) -> type[int]:
+    class _Sized(int):
+        _size = size
 
-    assert len(dimvars) == len(set(dimvars)), "dimvars must be unique"
-
-    dimvals = {dimvar: slice(None) for dimvar in dimvars}
-
-    with handler(
-        {
-            dimvar: functools.partial(lambda x: x, dimval)
-            for dimvar, dimval in dimvals.items()
-        }
-    ):
-        return tree.map_structure(evaluate, value)
+    return _Sized
 
 
 @embed_register(torch.Tensor)
-class TensorTerm(torch.Tensor):
-    op: Operation[..., Any]
-    args: Sequence[Expr]
-    kwargs: Sequence[Tuple[str, Expr]]
-
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
-
-    def __init__(
-        self,
-        op: Operation[..., T],
-        args: Sequence[Expr],
-        kwargs: Sequence[Tuple[str, Expr]],
-    ):
-        super().__init__()
-        self.op = op
-        self.args = args
-        self.kwargs = kwargs
-
-    def __new__(cls, _1, _2, _3):
-        return super().__new__(cls, [])
-
+class TensorTerm(BaseTerm[torch.Tensor]):
     def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
-        return TORCH_OPS[operator.getitem](self, key)  # type: ignore
-
-    def __str__(self):
-        return term_to_str(self)
-
-    def __repr__(self):
-        return term_to_str(self)
+        return torch_getitem(self, key)
 
     @classmethod
     def __torch_function__(
         cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None
     ) -> Expr[torch.Tensor]:
-        if func not in TORCH_OPS:
-            register_torch_op(func, func)
-        return TORCH_OPS[func](*args, **({} if kwargs is None else kwargs))
+        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
