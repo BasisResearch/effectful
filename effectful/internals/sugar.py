@@ -662,7 +662,7 @@ import torch
 
 
 @weak_memoize
-def _register_torch_op(torch_fn: Callable[P, T]):
+def _register_torch_op(torch_fn: Callable[P, T]) -> Operation[P, T]:
 
     if torch_fn is torch.ops.aten.index:
         return torch_getitem
@@ -692,15 +692,26 @@ def _register_torch_op(torch_fn: Callable[P, T]):
                     args, kwargs = tree.map_structure(evaluate, (args, kwargs))
                 return torch_fn(*args, **kwargs)
 
-            sizes = {v: v.__type_rule__()._size for v in sized_fvs}
-            inds = [torch.arange(sizes[v])[(...,) + (None,) * i] for i, v in enumerate(sized_fvs)] 
+            def _unflatten_tpe_result(flat_tpe_result: torch.Tensor) -> torch.Tensor:
+                unflat_shape = tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:]
+                tpe_result = flat_tpe_result.reshape(unflat_shape)
+                return torch_getitem(tpe_result, [v() for v in sized_fvs])
 
-            flat_inds = [ind.reshape(-1) for ind in torch.broadcast_tensors(*inds)]
+            sizes = {v: v.__type_rule__()._size for v in sized_fvs}
+
+            # [(N1,), (N2,), (N3,), ...]
+            inds = [torch.arange(sizes[v]) for i, v in enumerate(sized_fvs)] 
+            # [(N1,), (N2, 1), (N3, 1, 1), ...]
+            inds = [ind[(...,) + (None,) * i] for i, ind in enumerate(inds)] 
+            # [(N3, N2, N1), (N3, N2, N1), (N3, N2, N1), ...]
+            inds = torch.broadcast_tensors(*inds)
+            # [(N3 * N2 * N1,), (N3 * N2 * N1,), (N3 * N2 * N1,), ...]
+            flat_inds = [ind.reshape(-1) for ind in inds]
+
+            # (N3 * N2 * N1,)
             flat_tpe_result = _tpe_result_fn(*flat_inds)
 
-            tpe_result: torch.Tensor = flat_tpe_result.reshape(*(tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:]))
-
-            return torch_getitem(tpe_result, [v() for v in sized_fvs])
+            return tree.map_structure(_unflatten_tpe_result, flat_tpe_result)
         elif not any(tree.flatten(tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs)))):
             return torch_fn(*args, **kwargs)
         else:
