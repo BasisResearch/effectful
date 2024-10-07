@@ -685,16 +685,16 @@ def _register_torch_op(torch_fn: Callable[P, T]) -> Operation[P, T]:
         if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(_is_sized_fv(v) for v in sized_fvs):
 
             @torch.func.vmap
-            def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
+            def _tpe_result_fn(*inds: torch.Tensor) -> T:
                 from effectful.ops.handler import handler
 
                 with handler({var: functools.partial(lambda x: x, ind) for var, ind in zip(sized_fvs, inds)}):
                     args, kwargs = tree.map_structure(evaluate, (args, kwargs))
                 return torch_fn(*args, **kwargs)
 
-            def _unflatten_tpe_result(flat_tpe_result: torch.Tensor) -> torch.Tensor:
-                unflat_shape = tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:]
-                tpe_result = flat_tpe_result.reshape(unflat_shape)
+            def _unflatten_tpe_result(flat_tpe_result_leaf: torch.Tensor) -> torch.Tensor:
+                unflat_shape = tuple(sizes[v] for v in sized_fvs) + flat_tpe_result_leaf.shape[1:]
+                tpe_result = flat_tpe_result_leaf.reshape(unflat_shape)
                 return torch_getitem(tpe_result, [v() for v in sized_fvs])
 
             sizes = {v: v.__type_rule__()._size for v in sized_fvs}
