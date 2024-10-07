@@ -197,38 +197,75 @@ def test_defun_5():
         as_term(lambda x, *xs, y=1, **ys: None)
 
 
-def test_defun_6():
+def test_tpe_1():
     import torch
     from effectful.internals.sugar import TORCH_OPS, Sized
 
-    getitem = TORCH_OPS[operator.getitem]
-
-    def subs(val: Expr[T], subs: dict[Operation[[], S], Expr[S]]) -> Expr[T]:
-        with handler({var: functools.partial(lambda x: x, evaluate(sub)) for var, sub in subs.items()}):
-            return evaluate(val)
-
-    x = gensym(torch.Tensor)
+    getitem = TORCH_OPS[torch.ops.aten.index]
 
     with handler(eager_mixed):
-        assert as_term(torch.add) is torch.add
-        assert as_term(torch.gather) is torch.gather
-
-        xval = torch.rand(2, 3)
-
-        xx = torch.add(x(), torch.ones(2))
         i, j = gensym(Sized(2)), gensym(Sized(3))
-        xx_ij = xx[i(), j()]
+        xval, y1_val, y2_val = torch.rand(2, 3), torch.rand(2), torch.rand(3)
+        expected = torch.add(torch.add(xval, y1_val[..., None]), y2_val[None])
+
+        x_ij = getitem(xval, (i(), j()))
+        x_plus_y1_ij = torch.add(x_ij, getitem(y1_val, (i(),)))
+        x_plus_y1_plus_y2_ij = torch.add(x_plus_y1_ij, getitem(y2_val, (j(),)))
+        f_actual = defun(x_plus_y1_plus_y2_ij, i, j)
+        for ii in range(2):
+            for jj in range(3):
+                assert f_actual(torch.tensor(ii), torch.tensor(jj)) == expected[ii, jj]
+
+
+def test_tpe_2():
+    import torch
+    from effectful.internals.sugar import TORCH_OPS, Sized
+
+    getitem = TORCH_OPS[torch.ops.aten.index]
+
+    with handler(eager_mixed):
+        xval, ival = torch.rand(2, 3), torch.arange(2)
+        expected = torch.sum(xval[ival, :], dim=0)
 
         i, j = gensym(Sized(2)), gensym(Sized(3))
-        y_ij = torch.add(getitem(torch.ones(2, 3), (i(), j())), getitem(torch.tensor([2, 3]), (i(),)))
-        y_ij = torch.add(y_ij, getitem(torch.tensor([3, 4]), (j(),)))
+        x_j = getitem(xval, (ival, j(),))
+        sum_x_j = torch.sum(x_j, dim=0)
+        f_actual = defun(sum_x_j, j)
+        for jj in range(3):
+            assert f_actual(torch.tensor(jj)) == expected[jj]
 
-        assert subs(xx_ij, {x: xval, i: 0, j: 1}) == (xval + 1)[0, 1]
+
+def test_tpe_3():
+    import torch
+    from effectful.internals.sugar import TORCH_OPS, Sized
+
+    getitem = TORCH_OPS[torch.ops.aten.index]
+
+    with handler(eager_mixed):
+        xval, ival = torch.rand(4, 2, 3), torch.arange(2)
+        expected = torch.sum(xval, dim=1)
+
+        i, j, k = gensym(Sized(2)), gensym(Sized(3)), gensym(Sized(4))
+        x_j = getitem(xval, (k(), ival, j(),))
+        sum_x_j = torch.sum(x_j, dim=0)
+        f_actual = defun(sum_x_j, j, k)
+        for jj in range(3):
+            for kk in range(4):
+                assert f_actual(torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
 
 
-        x1_ij = getitem(torch.rand(3, 2), (i(), j()))
-        x2_ji = getitem(torch.rand(2, 3), (j(), i()))
+def test_tpe_4():
+    import torch
+    from effectful.internals.sugar import Sized
 
-        # y_ij = bind_dims(torch.add(x1_ij, x2_ji), i, j)[i(), j()]
+    with handler(eager_mixed):
+        xval, ival = torch.rand(4, 2, 3), torch.arange(2)
+        expected = torch.sum(xval, dim=1)
 
-        # assert y_ij == torch.add(bind_dims(x1_ij, i, j), bind_dims(x2_ji, i, j))[i(), j()]
+        @as_term
+        def f_actual(x: torch.Tensor, j: Sized(3), k: Sized(4)) -> torch.Tensor:  # type: ignore
+            return torch.sum(x[k, ival, j], dim=0)
+
+        for jj in range(3):
+            for kk in range(4):
+                assert f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
