@@ -661,26 +661,28 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 import torch
 
 
-TORCH_OPS = {}
+@weak_memoize
+def _register_torch_op(torch_fn: Callable[P, T]):
 
-
-def register_torch_op(torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P, T]] = None):
-    if torch_op_fn is None:
-        return functools.partial(register_torch_op, torch_fn)
+    if torch_fn is torch.ops.aten.index:
+        return torch_getitem
 
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
         def _is_sized_fv(v: Operation) -> TypeGuard[Operation[[], int]]:
-            tp = v.__type_rule__()
-            return issubclass(tp, int) and hasattr(tp, "_size")
+            try:
+                tp = v.__type_rule__()
+                return issubclass(tp, int) and hasattr(tp, "_size")
+            except TypeError:
+                return False
 
         def _fvs_of(value: Expr) -> Sequence[Operation]:
             from effectful.ops.core import ctxof
 
             return list(set(tree.flatten(tree.map_structure(lambda v: list(op for op in ctxof(v)), value))))
 
-        if torch_fn is not torch.ops.aten.index and len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(_is_sized_fv(v) for v in sized_fvs):
+        if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(_is_sized_fv(v) for v in sized_fvs):
 
             @torch.func.vmap
             def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
@@ -688,7 +690,7 @@ def register_torch_op(torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P
 
                 with handler({var: functools.partial(lambda x: x, ind) for var, ind in zip(sized_fvs, inds)}):
                     args, kwargs = tree.map_structure(evaluate, (args, kwargs))
-                return torch_op_fn(*args, **kwargs)
+                return torch_fn(*args, **kwargs)
 
             sizes = {v: v.__type_rule__()._size for v in sized_fvs}
             inds = [torch.arange(sizes[v])[(...,) + (None,) * i] for i, v in enumerate(sized_fvs)] 
@@ -698,17 +700,21 @@ def register_torch_op(torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P
 
             tpe_result: torch.Tensor = flat_tpe_result.reshape(*(tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:]))
 
-            return TORCH_OPS[torch.ops.aten.index](tpe_result, [v() for v in sized_fvs])
+            return torch_getitem(tpe_result, [v() for v in sized_fvs])
         elif not any(tree.flatten(tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs)))):
-            return torch_op_fn(*args, **kwargs)
+            return torch_fn(*args, **kwargs)
         else:
             raise NoDefaultRule
 
-    TORCH_OPS[torch_fn] = _torch_op
-    return TORCH_OPS[torch_fn]
+    return _torch_op
 
 
-register_torch_op(torch.ops.aten.index, torch.ops.aten.index)
+@Operation
+def torch_getitem(x: torch.Tensor, key: Sequence[torch.Tensor]) -> torch.Tensor:
+    if not any(isinstance(k, Term) for k in (x, *key)):
+        return torch.ops.aten.index(x, key)
+    else:
+        raise NoDefaultRule
 
 
 def Sized(size: int) -> type[int]:
@@ -721,10 +727,8 @@ def Sized(size: int) -> type[int]:
 @embed_register(torch.Tensor)
 class TensorTerm(BaseTerm[torch.Tensor]):
     def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
-        return torch.ops.aten.index(self, key)  # type: ignore
+        return torch_getitem(self, key)
 
     @classmethod
     def __torch_function__(cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None) -> Expr[torch.Tensor]:
-        if func not in TORCH_OPS:
-            register_torch_op(func, func)
-        return TORCH_OPS[func](*args, **({} if kwargs is None else kwargs))
+        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))

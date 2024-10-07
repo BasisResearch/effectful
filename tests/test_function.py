@@ -199,18 +199,16 @@ def test_defun_5():
 
 def test_tpe_1():
     import torch
-    from effectful.internals.sugar import TORCH_OPS, Sized
-
-    getitem = TORCH_OPS[torch.ops.aten.index]
+    from effectful.internals.sugar import torch_getitem, Sized
 
     with handler(eager_mixed):
         i, j = gensym(Sized(2)), gensym(Sized(3))
         xval, y1_val, y2_val = torch.rand(2, 3), torch.rand(2), torch.rand(3)
         expected = torch.add(torch.add(xval, y1_val[..., None]), y2_val[None])
 
-        x_ij = getitem(xval, (i(), j()))
-        x_plus_y1_ij = torch.add(x_ij, getitem(y1_val, (i(),)))
-        x_plus_y1_plus_y2_ij = torch.add(x_plus_y1_ij, getitem(y2_val, (j(),)))
+        x_ij = torch_getitem(xval, (i(), j()))
+        x_plus_y1_ij = torch.add(x_ij, torch_getitem(y1_val, (i(),)))
+        x_plus_y1_plus_y2_ij = torch.add(x_plus_y1_ij, torch_getitem(y2_val, (j(),)))
         f_actual = defun(x_plus_y1_plus_y2_ij, i, j)
         for ii in range(2):
             for jj in range(3):
@@ -219,16 +217,14 @@ def test_tpe_1():
 
 def test_tpe_2():
     import torch
-    from effectful.internals.sugar import TORCH_OPS, Sized
-
-    getitem = TORCH_OPS[torch.ops.aten.index]
+    from effectful.internals.sugar import torch_getitem, Sized
 
     with handler(eager_mixed):
         xval, ival = torch.rand(2, 3), torch.arange(2)
         expected = torch.sum(xval[ival, :], dim=0)
 
         i, j = gensym(Sized(2)), gensym(Sized(3))
-        x_j = getitem(xval, (ival, j(),))
+        x_j = torch_getitem(xval, (ival, j(),))
         sum_x_j = torch.sum(x_j, dim=0)
         f_actual = defun(sum_x_j, j)
         for jj in range(3):
@@ -237,16 +233,14 @@ def test_tpe_2():
 
 def test_tpe_3():
     import torch
-    from effectful.internals.sugar import TORCH_OPS, Sized
-
-    getitem = TORCH_OPS[torch.ops.aten.index]
+    from effectful.internals.sugar import torch_getitem, Sized
 
     with handler(eager_mixed):
         xval, ival = torch.rand(4, 2, 3), torch.arange(2)
         expected = torch.sum(xval, dim=1)
 
         i, j, k = gensym(Sized(2)), gensym(Sized(3)), gensym(Sized(4))
-        x_j = getitem(xval, (k(), ival, j(),))
+        x_j = torch_getitem(xval, (k(), ival, j(),))
         sum_x_j = torch.sum(x_j, dim=0)
         f_actual = defun(sum_x_j, j, k)
         for jj in range(3):
