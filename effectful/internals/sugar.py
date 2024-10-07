@@ -18,6 +18,7 @@ from typing import (
     TypeVar,
 )
 
+import torch
 import tree
 from typing_extensions import ParamSpec
 
@@ -440,11 +441,20 @@ def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
+def term_to_str(term: Term[object]) -> str:
+    params_str = ""
+    if len(term.args) > 0:
+        params_str += ", ".join(str(x) for x in term.args)
+    if len(term.kwargs) > 0:
+        params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in term.kwargs)
+    return f"{str(term.op)}({params_str})"
+
+
 @embed_register(object)
 class BaseTerm(Generic[T], Term[T]):
     op: Operation[..., T]
-    args: Sequence[Expr]
-    kwargs: Sequence[Tuple[str, Expr]]
+    args: Sequence[Expr[Any]]
+    kwargs: Sequence[Tuple[str, Expr[Any]]]
 
     def __init__(
         self,
@@ -457,12 +467,7 @@ class BaseTerm(Generic[T], Term[T]):
         self.kwargs = kwargs
 
     def __str__(self: "Term[T]") -> str:
-        params_str = ""
-        if len(self.args) > 0:
-            params_str += ", ".join(str(x) for x in self.args)
-        if len(self.kwargs) > 0:
-            params_str += ", " + ", ".join(f"{k}={str(v)}" for (k, v) in self.kwargs)
-        return f"{str(self.op)}({params_str})"
+        return term_to_str(self)
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
@@ -656,3 +661,112 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+TORCH_OPS = {}
+
+
+def register_torch_op(
+    torch_fn: Callable[P, T], torch_op_fn: Optional[Callable[P, T]] = None
+):
+    if torch_op_fn is None:
+        return functools.partial(register_torch_op, torch_fn)
+
+    @Operation
+    def _torch_op(*args, **kwargs) -> torch.Tensor:
+        from effectful.ops.core import ctxof
+
+        def sized_fvsof(value):
+            return list(
+                set(
+                    tree.flatten(
+                        tree.map_structure(
+                            lambda v: list(
+                                op
+                                for op in ctxof(v)
+                                if issubclass(op.__type_rule__(), int)
+                            ),
+                            value,
+                        )
+                    )
+                )
+            )
+
+        if torch_fn is not operator.getitem and (
+            sized_fvs := sized_fvsof((args, kwargs))
+        ):
+            tpe_args, tpe_kwargs = bind_dims((args, kwargs), *sized_fvs)
+            tpe_result = _torch_op(*tpe_args, **tpe_kwargs)
+            return TORCH_OPS[operator.getitem](tpe_result, [v() for v in sized_fvs])
+        elif not any(
+            tree.flatten(
+                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
+            )
+        ):
+            return torch_op_fn(*args, **kwargs)
+        else:
+            raise NoDefaultRule
+
+    TORCH_OPS[torch_fn] = _torch_op
+    return TORCH_OPS[torch_fn]
+
+
+register_torch_op(operator.getitem, operator.getitem)
+
+
+def bind_dims(
+    value: Expr[torch.Tensor], *dimvars: Operation[[], int]
+) -> Expr[torch.Tensor]:
+    from effectful.ops.handler import handler
+
+    assert len(dimvars) == len(set(dimvars)), "dimvars must be unique"
+
+    dimvals = {dimvar: slice(None) for dimvar in dimvars}
+
+    with handler(
+        {
+            dimvar: functools.partial(lambda x: x, dimval)
+            for dimvar, dimval in dimvals.items()
+        }
+    ):
+        return tree.map_structure(evaluate, value)
+
+
+@embed_register(torch.Tensor)
+class TensorTerm(torch.Tensor):
+    op: Operation[..., Any]
+    args: Sequence[Expr]
+    kwargs: Sequence[Tuple[str, Expr]]
+
+    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        args: Sequence[Expr],
+        kwargs: Sequence[Tuple[str, Expr]],
+    ):
+        super().__init__()
+        self.op = op
+        self.args = args
+        self.kwargs = kwargs
+
+    def __new__(cls, _1, _2, _3):
+        return super().__new__(cls, [])
+
+    def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
+        return TORCH_OPS[operator.getitem](self, key)  # type: ignore
+
+    def __str__(self):
+        return term_to_str(self)
+
+    def __repr__(self):
+        return term_to_str(self)
+
+    @classmethod
+    def __torch_function__(
+        cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None
+    ) -> Expr[torch.Tensor]:
+        if func not in TORCH_OPS:
+            register_torch_op(func, func)
+        return TORCH_OPS[func](*args, **({} if kwargs is None else kwargs))

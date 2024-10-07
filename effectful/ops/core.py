@@ -131,12 +131,12 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
-        _ctx.setdefault(op, op.__type_rule__)
+        _ctx.setdefault(op, op.__type_rule__(*args, **kwargs))
         for bound_var in op.__scope_rule__(*args, **kwargs):
             _ctx.pop(bound_var, None)
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term)  # type: ignore
+        evaluate(term if isinstance(term, Term) else as_term(term))  # type: ignore
 
     return _ctx
 
