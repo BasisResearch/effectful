@@ -13,6 +13,7 @@ from effectful.indexed.handlers import *
 from effectful.indexed.ops import *
 from effectful.ops.core import *
 from effectful.ops.handler import *
+from effectful.ops.function import *
 from effectful.internals.prompts import *
 from effectful.internals.runtime import *
 from effectful.internals.sugar import *
@@ -65,6 +66,33 @@ SHAPE_CASES = list(
 )
 
 
+# def test_torch_getitem():
+#     t = torch.randn(2, 3, 6)
+#     ks = [
+#         # [0, 0, 0],
+#         [..., 0],
+#         [0, ...],
+#         [0, ..., 0],
+#         [slice(None), 0, 0],
+#         [0, slice(None), 0],
+#         [0, 0, slice(None)],
+#     ]
+
+#     for k in ks:
+#         actual = torch_getitem(t, k)
+#         expected = t[*k]
+#         assert (actual == expected).all()
+
+
+def test_lift_tensor():
+    raw_value = torch.randn(2, 3, 4)
+    name_to_dim = {"dim1": -2}
+    lifted_value, vars_ = lift_tensor(raw_value, event_dim=1, name_to_dim=name_to_dim)
+
+    f_lifted = defun(lifted_value, *vars_)
+    assert (f_lifted(0) == raw_value[0]).all()
+
+
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -84,7 +112,6 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
         **{
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
-            if full_batch_shape[dim] > 1
         }
     )
 
@@ -151,9 +178,10 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         else:
             _name_to_dim = name_to_dim
 
-        actual = gather(
-            value, world, event_dim=len(event_shape), name_to_dim=_name_to_dim
+        lifted_value, vars_ = lift_tensor(
+            value, event_dim=len(event_shape), name_to_dim=_name_to_dim
         )
+        actual = gather(lifted_value, world)
 
     mask = indexset_as_mask(
         world,
@@ -165,10 +193,16 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
     _, mask = torch.broadcast_tensors(value, mask)
 
     assert mask.shape == value.shape
-    expected = value[mask].reshape((-1,) + event_shape)
 
-    assert actual.numel() == expected.numel()
-    assert (actual.reshape((-1,) + event_shape) == expected).all()
+    f_actual = defun(actual, *vars_)
+
+    world_dims = [enumerate(world.get(v.__type_rule__()._name, {0})) for v in vars_]
+    for idx in itertools.product(*world_dims):
+        actual_idx = tuple(i[0] for i in idx)
+        value_idx = (slice(None),) * len(enum_shape) + tuple(i[1] for i in idx)
+        actual_v = f_actual(*actual_idx)
+        value_v = value[value_idx]
+        assert (actual_v == value_v).all()
 
 
 @pytest.mark.parametrize(

@@ -739,7 +739,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @Operation
 def torch_getitem(x: torch.Tensor, key: Sequence[torch.Tensor]) -> torch.Tensor:
     if not any(isinstance(k, Term) for k in (x, *key)):
-        return torch.ops.aten.index(x, key)
+        return x[*key]
     else:
         raise NoDefaultRule
 

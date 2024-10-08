@@ -15,7 +15,7 @@ from typing import (
 
 from ..ops.core import evaluate, Expr, Operation, Term, ctxof
 from ..ops.handler import handler, fwd, coproduct
-from ..internals.sugar import NoDefaultRule, gensym, torch_getitem
+from ..internals.sugar import NoDefaultRule, gensym, torch_getitem, embed, TensorTerm
 
 import pyro
 import torch
@@ -152,17 +152,18 @@ def lift_tensor(tensor, **kwargs):
     # drop the event dimensions from the end of the shape
     batch_shape = tensor.shape[: len(tensor.shape) - event_dim]
 
-    # create an index expression where each dimension mentioned in name_to_dim is indexed by a fresh symbol and the
-    # other dimensions are indexed by the full slice :
-    index_expr = [None] * len(tensor.shape)
+    index_expr = [slice(None)] * len(tensor.shape)
     for name, dim in name_to_dim.items():
-        if -dim <= len(batch_shape) and batch_shape[dim] > 1:
-            sym = gensym(Dim(name, batch_shape[dim]))
-            index_expr[dim - event_dim] = sym()
+        sym = gensym(Dim(name, batch_shape[dim]))
+        index_expr[dim - event_dim] = sym()
+
+    vars_ = [v.op for v in index_expr if isinstance(v, Term)]
 
     result = torch_getitem(tensor, list(index_expr))
 
-    return result
+    assert type(result) is TensorTerm
+
+    return result, vars_
 
 
 def indices_of(value, **kwargs) -> IndexSet:
@@ -223,7 +224,7 @@ def indices_of(value, **kwargs) -> IndexSet:
     :return: A :class:`IndexSet` containing the indices on which the value is supported.
     """
     if isinstance(value, torch.Tensor) and not isinstance(value, Term):
-        value = lift_tensor(value, **kwargs)
+        value, _ = lift_tensor(value, **kwargs)
 
     return IndexSet(
         **{v._name: set(range(v._size)) for (_, v) in sized_fvs(value).items()}
@@ -233,13 +234,6 @@ def indices_of(value, **kwargs) -> IndexSet:
 @Operation
 def indexed(tensor: torch.Tensor, indexes) -> torch.Tensor:
     raise NoDefaultRule
-
-
-def eager_indexed(tensor: Expr[torch.Tensor], indexes):
-    if isinstance(tensor, Term) or any(isinstance(i, Term) for i in indexes):
-        return fwd(None)
-
-    return tensor[indexes]
 
 
 def gather(value, indexset, **kwargs):
@@ -304,23 +298,18 @@ def gather(value, indexset, **kwargs):
     :return: A new value containing entries of ``value`` from ``indexset``.
     """
     if isinstance(value, torch.Tensor) and not isinstance(value, Term):
-        value = lift_tensor(value, **kwargs)
+        value, _ = lift_tensor(value, **kwargs)
 
     binding = {
-        k: functools.partial(lambda v: v, torch.tensor(list(indexset[v._name])))
+        k: functools.partial(
+            lambda v: v, torch_getitem(torch.tensor(list(indexset[v._name])), [k()])
+        )
         for k, v in sized_fvs(value).items()
         if v._name in indexset
     }
 
-    with handler(
-        coproduct(
-            {indexed: indexed.__default_rule__},
-            binding | {indexed: eager_indexed},
-        )
-    ):
-        result = evaluate(value)
-        print("gather", value, sized_fvs(value), binding, indexset, kwargs, result)
-        return result
+    with handler(binding):
+        return evaluate(value)
 
 
 @functools.singledispatch
