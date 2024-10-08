@@ -358,6 +358,20 @@ def scatter_n(values: Dict[IndexSet, T], *, result: Optional[T] = None, **kwargs
     return result
 
 
+def stack(values, name, **kwargs):
+    """Stack a sequence of indexed values, creating a new dimension. The new dimension is indexed by `name`. The
+    indexed values in the stack must have identical shapes.
+
+    """
+    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs) for v in values]
+
+    tensors = [v.args[0] for v in values]
+    stacked = torch.stack(tensors)
+
+    sym = gensym(Dim(name, len(tensors)))
+    return torch_getitem(stacked, [sym()] + values[0].args[1])
+
+
 @functools.singledispatch
 def cond(fst, snd, case: Optional[T] = None, **kwargs):
     """

@@ -205,6 +205,26 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         assert (actual_v == value_v).all()
 
 
+def test_stack():
+    t1 = torch.randn(2, 3)
+    t2 = torch.randn(2, 3)
+
+    l1, _ = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
+    l2, _ = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
+    l3 = stack([l1, l2], "x")
+
+    vars_ = sized_fvs(l3)
+    [x, a, b] = [
+        [v for v in vars_ if v.__type_rule__()._name == n][0] for n in ["x", "a", "b"]
+    ]
+    f = defun(l3, x, a, b)
+
+    for i in range(2):
+        for j in range(3):
+            assert f(0, i, j) == t1[i, j]
+            assert f(1, i, j) == t2[i, j]
+
+
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
