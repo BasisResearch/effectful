@@ -205,6 +205,14 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         assert (actual_v == value_v).all()
 
 
+def indexed_to_defun(value, names):
+    vars_ = sized_fvs(value)
+    ordered_vars = [
+        [v for v in vars_ if v.__type_rule__()._name == n][0] for n in names
+    ]
+    return defun(value, *ordered_vars)
+
+
 def test_stack():
     t1 = torch.randn(2, 3)
     t2 = torch.randn(2, 3)
@@ -213,11 +221,7 @@ def test_stack():
     l2, _ = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
     l3 = stack([l1, l2], "x")
 
-    vars_ = sized_fvs(l3)
-    [x, a, b] = [
-        [v for v in vars_ if v.__type_rule__()._name == n][0] for n in ["x", "a", "b"]
-    ]
-    f = defun(l3, x, a, b)
+    f = indexed_to_defun(l3, ["x", "a", "b"])
 
     for i in range(2):
         for j in range(3):
@@ -527,7 +531,13 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
             == indices_of(actual_right, event_dim=event_dim)
         )
 
-    assert actual_full.shape == enum_shape + batch_shape + plate_shape + event_shape
-    assert actual_full.shape == actual_left.shape == actual_right.shape
-    assert (actual_full == actual_left).all()
-    assert (actual_left == actual_right).all()
+    name_to_dim = list(name_to_dim.items())
+    names = [i[0] for i in name_to_dim]
+
+    f_actual_full = indexed_to_defun(actual_full, names)
+    f_actual_left = indexed_to_defun(actual_left, names)
+    f_actual_right = indexed_to_defun(actual_right, names)
+
+    for idx in itertools.product(*[range(d[1]) for d in name_to_dim]):
+        assert (f_actual_full(*idx) == f_actual_left(*idx)).all()
+        assert (f_actual_left(*idx) == f_actual_right(*idx)).all()

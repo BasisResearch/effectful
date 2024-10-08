@@ -365,15 +365,20 @@ def stack(values, name, **kwargs):
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs) for v in values]
 
-    tensors = [v.args[0] for v in values]
-    stacked = torch.stack(tensors)
+    stacked = torch.stack(values)
 
-    sym = gensym(Dim(name, len(tensors)))
-    return torch_getitem(stacked, [sym()] + values[0].args[1])
+    sym = gensym(Dim(name, len(values)))
+    return torch_getitem(stacked, [sym()])
 
 
-@functools.singledispatch
-def cond(fst, snd, case: Optional[T] = None, **kwargs):
+def cond(
+    fst,
+    snd,
+    case: Optional[T] = None,
+    *,
+    event_dim: int = 0,
+    **kwargs,
+):
     """
     Selection operation that is the sum-type analogue of :func:`scatter`
     in the sense that where :func:`scatter` propagates both of its arguments,
@@ -400,10 +405,14 @@ def cond(fst, snd, case: Optional[T] = None, **kwargs):
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
     :param kwargs: Additional keyword arguments used by specific implementations.
     """
-    raise NotImplementedError(f"cond not implemented for {type(fst)}")
+    case_ = case if isinstance(case, Term) else lift_tensor(case, event_dim=0)[0]
+    [fst, snd] = [
+        v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in [fst, snd]
+    ]
+
+    return torch.where(case_[(...,) + (None,) * event_dim], snd, fst)
 
 
-@pyro.poutine.runtime.effectful(type="cond_n")
 def cond_n(values: Dict[IndexSet, T], case: Union[bool, torch.Tensor], **kwargs):
     assert len(values) > 0
     assert all(isinstance(k, IndexSet) for k in values.keys())

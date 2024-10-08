@@ -87,32 +87,6 @@ def _scatter_tensor(
     return result
 
 
-@cond.register(int)
-@cond.register(float)
-@cond.register(bool)
-def _cond_number(
-    fst: Union[bool, numbers.Number],
-    snd: Union[bool, numbers.Number, torch.Tensor],
-    case: Union[bool, torch.Tensor],
-    **kwargs,
-) -> torch.Tensor:
-    return cond(
-        torch.as_tensor(fst), torch.as_tensor(snd), torch.as_tensor(case), **kwargs
-    )
-
-
-@cond.register
-def _cond_tensor(
-    fst: torch.Tensor,
-    snd: torch.Tensor,
-    case: torch.Tensor,
-    *,
-    event_dim: int = 0,
-    **kwargs,
-) -> torch.Tensor:
-    return torch.where(case[(...,) + (None,) * event_dim], snd, fst)
-
-
 class _LazyPlateMessenger(IndepMessenger):
     prefix: str = "__index_plate__"
 
