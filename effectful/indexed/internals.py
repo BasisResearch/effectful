@@ -20,62 +20,6 @@ K = TypeVar("K")
 T = TypeVar("T")
 
 
-# # Note that `gather` is defined using a `@functools.singledispatch` decorator,
-# # which in turn defines the `@gather.register` decorator used here
-# @gather.register
-# def _gather_number(
-#     value: numbers.Number,
-#     indexset: IndexSet,
-#     *,
-#     event_dim: Optional[int] = None,
-#     name_to_dim: Optional[Dict[Hashable, int]] = None,
-#     **kwargs,
-# ) -> Union[numbers.Number, torch.Tensor]:
-#     assert event_dim is None or event_dim == 0
-#     return gather(
-#         torch.as_tensor(value), indexset, event_dim=event_dim, name_to_dim=name_to_dim
-#     )
-
-
-# @gather.register
-# def _gather_tensor(
-#     value: torch.Tensor,
-#     indexset: IndexSet,
-#     *,
-#     event_dim: Optional[int] = None,
-#     name_to_dim: Optional[Dict[Hashable, int]] = None,
-#     **kwargs,
-# ) -> torch.Tensor:
-#     if event_dim is None:
-#         event_dim = 0
-
-#     if name_to_dim is None:
-#         name_to_dim = {name: f.dim for name, f in get_index_plates().items()}
-
-#     result = value
-#     for name, indices in indexset.items():
-#         if name not in name_to_dim:
-#             continue
-#         dim = name_to_dim[name] - event_dim
-#         if len(result.shape) < -dim or result.shape[dim] == 1:
-#             continue
-#         result = result.index_select(
-#             name_to_dim[name] - event_dim,
-#             torch.tensor(list(sorted(indices)), device=value.device, dtype=torch.long),
-#         )
-#     return result
-
-
-# @gather.register(dict)
-# def _gather_state(
-#     value: Dict[K, T], indices: IndexSet, *, event_dim: int = 0, **kwargs
-# ) -> Dict[K, T]:
-#     return {
-#         k: gather(value[k], indices, event_dim=event_dim, **kwargs)
-#         for k in value.keys()
-#     }
-
-
 @scatter.register
 def _scatter_number(
     value: numbers.Number,

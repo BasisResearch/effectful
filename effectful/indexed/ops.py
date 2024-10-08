@@ -15,14 +15,12 @@ from typing import (
 
 from ..ops.core import evaluate, Expr, Operation, Term, ctxof
 from ..ops.handler import handler, fwd, coproduct
-from ..internals.sugar import NoDefaultRule, gensym, TORCH_OPS
+from ..internals.sugar import NoDefaultRule, gensym, torch_getitem
 
 import pyro
 import torch
 
 T = TypeVar("T")
-
-getitem = TORCH_OPS[operator.getitem]
 
 
 def Dim(name: str, size: int) -> type:
@@ -156,15 +154,14 @@ def lift_tensor(tensor, **kwargs):
 
     # create an index expression where each dimension mentioned in name_to_dim is indexed by a fresh symbol and the
     # other dimensions are indexed by the full slice :
-    index_expr = [slice(None)] * len(tensor.shape)
+    index_expr = [None] * len(tensor.shape)
     for name, dim in name_to_dim.items():
         if -dim <= len(batch_shape) and batch_shape[dim] > 1:
             sym = gensym(Dim(name, batch_shape[dim]))
             index_expr[dim - event_dim] = sym()
 
-    result = getitem(tensor, tuple(index_expr))
+    result = torch_getitem(tensor, list(index_expr))
 
-    print("lift_tensor", tensor, name_to_dim, result)
     return result
 
 
