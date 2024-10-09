@@ -1,14 +1,19 @@
 import collections.abc
+import operator
 import random
 import types
+from typing import TypeVar
 
-from effectful.internals.sugar import gensym
-from effectful.ops.core import Operation, Term, evaluate
+from effectful.internals.sugar import OPERATORS, NoDefaultRule, gensym
+from effectful.ops.core import Operation, Term, as_term, evaluate
 from effectful.ops.handler import fwd, handler
+
+K = TypeVar("K")
+V = TypeVar("V")
 
 
 # https://stackoverflow.com/questions/2703599/what-would-a-frozen-dict-be
-class SemiRingDict(collections.abc.Mapping):
+class SemiRingDict(collections.abc.Mapping[K, V]):
     def __init__(self, *args, **kwargs):
         self._d = dict(*args, **kwargs)
         self._hash = None
@@ -16,13 +21,13 @@ class SemiRingDict(collections.abc.Mapping):
     def __iter__(self):
         return iter(self._d)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._d)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: K) -> V:
         return self._d[key]
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         # It would have been simpler and maybe more obvious to
         # use hash(tuple(sorted(self._d.iteritems()))) from this discussion
         # so far, but this solution is O(n). I don't know what kind of
@@ -35,7 +40,7 @@ class SemiRingDict(collections.abc.Mapping):
             self._hash = hash_
         return self._hash
 
-    def __add__(self, other):
+    def __add__(self, other: "SemiRingDict") -> "SemiRingDict":
         new_dict = self._d.copy()
         for key, value in other.items():
             if key in new_dict:
@@ -47,32 +52,32 @@ class SemiRingDict(collections.abc.Mapping):
 
 @Operation
 def Sum(e1, k, v, e2):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
-def Let(x, e1, e2):
-    raise NotImplementedError
+def Let(e1, x, e2):
+    raise NoDefaultRule
 
 
 @Operation
 def Record(**kwargs):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Dict(*contents):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def Field(record, key):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 @Operation
 def App(f, x):
-    raise NotImplementedError
+    raise NoDefaultRule
 
 
 ops = types.SimpleNamespace()
@@ -85,7 +90,7 @@ ops.App = App
 
 
 def is_value(v):
-    return not (isinstance(v, Term) or isinstance(v, Operation))
+    return not isinstance(v, (Operation, Term))
 
 
 def eager_dict(*contents):
@@ -108,8 +113,23 @@ def eager_record(**kwargs):
         return fwd(None)
 
 
+def eager_add(x, y):
+    if isinstance(x, SemiRingDict) and isinstance(y, SemiRingDict):
+        new_dict = x._d.copy()
+        for key, value in y.items():
+            if key in new_dict:
+                new_dict[key] += value
+            else:
+                new_dict[key] = value
+        return SemiRingDict(new_dict)
+    elif isinstance(x, int) and isinstance(y, int):
+        return x + y
+    else:
+        return fwd(None)
+
+
 def eager_app(f, x):
-    if is_value(f) and is_value(x):
+    if is_value(x):
         return f(x)
     else:
         return fwd(None)
@@ -178,16 +198,19 @@ def vertical_fusion(e1, x, e2):
             return fwd(None)
 
 
+add = OPERATORS[operator.add]
 free = {
-    Sum: lambda *args: Term(Sum, args, ()),
-    Let: lambda x, e1, e2: Term(Let, (x, e1, e2), ()),
-    Record: lambda **kwargs: Term(Record, (), list(kwargs.items())),
-    Dict: lambda *contents: Term(Dict, contents, ()),
-    Field: lambda r, k: Term(Field, (r, k), ()),
-    App: lambda f, x: Term(App, (f, x), ()),
+    add: add.__default_rule__,
+    Sum: Sum.__default_rule__,
+    Let: Let.__default_rule__,
+    Record: Record.__default_rule__,
+    Dict: Dict.__default_rule__,
+    Field: Field.__default_rule__,
+    App: App.__default_rule__,
 }
 
 eager = {
+    add: eager_add,
     Dict: eager_dict,
     Record: eager_record,
     Sum: eager_sum,
@@ -201,8 +224,14 @@ opt = {
 }
 
 
+@as_term
+def add1(v: int) -> int:
+    return v + 1
+
+
 def test_simple_sum():
     x = gensym(object)
+    y = gensym(object)
     k = gensym(object)
     v = gensym(object)
 
@@ -213,9 +242,6 @@ def test_simple_sum():
     with handler(free), handler(eager):
         e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
         assert e == 2
-
-    def add1(v):
-        return v + 1
 
     with handler(free), handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
@@ -228,31 +254,31 @@ def test_simple_sum():
             x,
             Let(
                 Sum(x(), k, v, Dict(k(), App(add1, v()))),
-                x,
-                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                y,
+                Sum(y(), k, v, Dict(k(), App(add1, v()))),
             ),
         )
         assert e["a"] == 3
         assert e["b"] == 4
 
 
-def add1(v):
-    return v + 1
-
-
 def fusion_test(d):
     x = gensym(object)
+    y = gensym(object)
     k = gensym(object)
     v = gensym(object)
 
-    return Let(
-        d,
-        x,
+    return (
         Let(
-            Sum(x(), k, v, Dict(k(), App(add1, v()))),
+            d,
             x,
-            Sum(x(), k, v, Dict(k(), App(add1, v()))),
+            Let(
+                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                y,
+                Sum(y(), k, v, Dict(k(), App(add1, v()))),
+            ),
         ),
+        (x, y, k, v),
     )
 
 
@@ -262,6 +288,17 @@ def make_dict(n):
         kv.append(i)
         kv.append(random.randint(1, 10))
     return Dict(*kv)
+
+
+def test_fusion_term():
+    d = gensym(object)
+    with handler(free), handler(opt):
+        result, (x, _, k, v) = fusion_test(d)
+    assert result == Let(
+        d,
+        x,
+        Sum(x(), k, v, Dict(k(), App(add1, App(add1, v())))),
+    )
 
 
 def test_fusion_unopt(benchmark):
