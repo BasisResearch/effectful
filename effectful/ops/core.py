@@ -141,6 +141,14 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
     return _ctx
 
 
+def to_string(term: Expr[S]) -> str:
+    def _to_str(_, op, *args, **kwargs):
+        return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
+
+    with interpreter({apply: _to_str}):  # type: ignore
+        return evaluate(term if isinstance(term, Term) else as_term(term))  # type: ignore
+
+
 def typeof(term: Expr[T]) -> Type[T]:
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term)  # type: ignore
