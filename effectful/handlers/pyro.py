@@ -29,8 +29,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     Handler for Pyro that wraps all sample sites in a custom effectful type.
     """
 
-    pyro_type_prefix: str = "__effectful"
-
     _current_site: Optional[str]
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
@@ -39,16 +37,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             or pyro.poutine.util.site_is_subsample(msg)
             or pyro.poutine.util.site_is_factor(msg)
         ):
-            if (
-                "_markov_scope" in msg["infer"]
-                and getattr(self, "_current_site", None) is not None
-            ):
+            if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
             return
-
-        msg["type"] = f"{self.pyro_type_prefix}_{msg['type']}"
-        msg["stop"] = True
-        msg["done"] = True
 
         try:
             self._current_site = msg["name"]
@@ -57,7 +48,14 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 msg["fn"],
                 obs=msg["value"] if msg["is_observed"] else None,
                 obs_mask=msg.get("obs_mask", None),
-                infer=msg["infer"],
+                infer=msg["infer"].copy(),
             )
         finally:
             self._current_site = None
+
+        # flags to guarantee commutativity of condition, intervene, trace
+        msg["stop"] = True
+        msg["done"] = True
+        msg["mask"] = False
+        msg["infer"]["is_auxiliary"] = True
+        msg["infer"]["_do_not_trace"] = True
