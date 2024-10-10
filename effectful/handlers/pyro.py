@@ -34,8 +34,12 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if typing.TYPE_CHECKING:
+            assert msg["type"] == "sample"
             assert msg["name"] is not None
             assert msg["infer"] is not None
+            assert isinstance(
+                msg["fn"], pyro.distributions.torch_distribution.TorchDistributionMixin
+            )
 
         if (
             getattr(self, "_current_site", None) == msg["name"]
