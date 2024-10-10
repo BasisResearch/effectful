@@ -57,5 +57,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["stop"] = True
         msg["done"] = True
         msg["mask"] = False
+        msg["is_observed"] = True
         msg["infer"]["is_auxiliary"] = True
         msg["infer"]["_do_not_trace"] = True
