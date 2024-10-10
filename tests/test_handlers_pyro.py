@@ -18,10 +18,9 @@ logger = logging.getLogger(__name__)
 
 @Operation
 def chirho_observe_dist(
-    rv: pyro.distributions.Distribution,
+    name: str,
+    rv: pyro.distributions.torch_distribution.TorchDistributionMixin,
     obs: Optional[torch.Tensor] = None,
-    *,
-    name: Optional[str] = None,
     **kwargs,
 ) -> torch.Tensor:
     return pyro.sample(name, rv, obs=obs, **kwargs)
@@ -39,9 +38,9 @@ def chirho_condition(data: Mapping[str, torch.Tensor]):
         if name in data:
             assert obs is None
             return chirho_observe_dist(
+                name,
                 fn,
                 obs=data[name],
-                name=name,
                 **kwargs,
             )
         else:
@@ -53,7 +52,7 @@ def chirho_condition(data: Mapping[str, torch.Tensor]):
 
 
 class HMM(pyro.nn.PyroModule):
-    @pyro.nn.PyroParam(constraint=dist.constraints.simplex)
+    @pyro.nn.PyroParam(constraint=dist.constraints.simplex)  # type: ignore
     def trans_probs(self):
         return torch.tensor([[0.75, 0.25], [0.25, 0.75]])
 

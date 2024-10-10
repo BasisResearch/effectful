@@ -1,3 +1,4 @@
+import typing
 from typing import Optional
 
 import pyro
@@ -32,6 +33,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     _current_site: Optional[str]
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
+        if typing.TYPE_CHECKING:
+            assert msg["name"] is not None
+            assert msg["infer"] is not None
+
         if (
             getattr(self, "_current_site", None) == msg["name"]
             or pyro.poutine.util.site_is_subsample(msg)
@@ -47,7 +52,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 msg["name"],
                 msg["fn"],
                 obs=msg["value"] if msg["is_observed"] else None,
-                obs_mask=msg.get("obs_mask", None),
                 infer=msg["infer"].copy(),
             )
         finally:
