@@ -1,9 +1,11 @@
 import collections.abc
+import operator
 import random
 import types
+import pdb
 
-from effectful.internals.sugar import NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, evaluate
+from effectful.internals.sugar import NoDefaultRule, gensym, OPERATORS
+from effectful.ops.core import Operation, Term, evaluate, as_term
 from effectful.ops.handler import fwd, handler
 
 
@@ -112,7 +114,7 @@ def eager_multiply(e1, e2):
             return fwd(None)
 
 
-def eager_add_(e1, e2):
+def eager_add(e1, e2):
     match e1, e2:
         case (int() | float()), (int() | float()):
             return e1 + e2
@@ -129,14 +131,8 @@ def eager_add_(e1, e2):
                     new_dict[key] = value
             return SemiRingDict(new_dict)
         case _:
+            print("failed to add", e1, e2, type(e1), type(e2))
             return fwd(None)
-
-
-def eager_add(e1, e2):
-    ret = eager_add_(e1, e2)
-    print()
-    print("Add", e1, e2, ret)
-    return ret
 
 
 def eager_dict(*contents):
@@ -182,8 +178,7 @@ def eager_sum(e1, k, v, e2):
             new_d = SemiRingDict()
             for key, value in e1.items():
                 with handler({k: lambda: key, v: lambda: value}):
-                    new_v = evaluate(b2)
-                new_d = Add(new_d, new_v)
+                    new_d = Add(new_d, evaluate(b2))
             return new_d
         case _:
             return fwd(None)
@@ -242,6 +237,7 @@ free = {
     Dict: Dict.__default_rule__,
     Field: Field.__default_rule__,
     App: App.__default_rule__,
+    Multiply: Multiply.__default_rule__,
 }
 
 eager = {
@@ -253,7 +249,6 @@ eager = {
     Let: eager_let,
     App: eager_app,
     Multiply: eager_multiply,
-    Add: eager_add,
 }
 
 opt = {
@@ -309,18 +304,14 @@ def test_simple_sum():
 
     with handler(free), handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
-        print(e)
         assert e["v"] == 3
 
     with handler(free), handler(eager):
         e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
         assert e == 2
 
-    def add1(v):
-        return Add(v, 1)
-
     with handler(free), handler(eager):
-        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
+        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), Add(1, Add(1, v()))))
         assert e["a"] == 3
         assert e["b"] == 4
 
@@ -329,17 +320,13 @@ def test_simple_sum():
             Dict("a", 1, "b", 2),
             x,
             Let(
-                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                Sum(x(), k, v, Dict(k(), Add(1, v()))),
                 y,
-                Sum(y(), k, v, Dict(k(), App(add1, v()))),
+                Sum(y(), k, v, Dict(k(), Add(1, v()))),
             ),
         )
         assert e["a"] == 3
         assert e["b"] == 4
-
-
-def add1(v):
-    return Add(v, 1)
 
 
 def fusion_test(d):
@@ -348,14 +335,17 @@ def fusion_test(d):
     k = gensym(object)
     v = gensym(object)
 
-    return Let(
-        d,
-        x,
+    return (
         Let(
-            Sum(x(), k, v, Dict(k(), App(add1, v()))),
-            y,
-            Sum(y(), k, v, Dict(k(), App(add1, v()))),
+            d,
+            x,
+            Let(
+                Sum(x(), k, v, Dict(k(), Add(1, v()))),
+                y,
+                Sum(y(), k, v, Dict(k(), Add(1, v()))),
+            ),
         ),
+        (x, y, k, v),
     )
 
 
@@ -365,6 +355,17 @@ def make_dict(n):
         kv.append(i)
         kv.append(random.randint(1, 10))
     return Dict(*kv)
+
+
+def test_fusion_term():
+    d = gensym(object)
+    with handler(free), handler(opt):
+        result, (x, _, k, v) = fusion_test(d)
+    assert result == Let(
+        d,
+        x,
+        Sum(x(), k, v, Dict(k(), Add(1, Add(1, v())))),
+    )
 
 
 def test_fusion_unopt(benchmark):
