@@ -765,7 +765,7 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
 
         # Convert non-tensor args to tensors
         key = list(key)
-        for i, arg in reversed(list(enumerate(key))):
+        for i, arg in list(enumerate(key)):
             if isinstance(arg, slice):
                 if arg == slice(None):
                     key[i] = None
@@ -779,9 +779,8 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
             elif isinstance(arg, int):
                 key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
             elif isinstance(arg, (list, tuple)):
-                assert all(isinstance(a, int) for a in arg)
                 flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
-                key[i] = flat_arg.reshape((-1,) + (1,) * i)
+                key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
         return torch.ops.aten.index(x, key)
     else:
