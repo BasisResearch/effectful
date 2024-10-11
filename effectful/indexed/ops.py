@@ -130,6 +130,11 @@ def sized_fvs(value):
     return result
 
 
+@functools.lru_cache(maxsize=None)
+def name_to_sym(name: str, size: int) -> Operation:
+    return gensym(Dim(name, size))
+
+
 def lift_tensor(tensor, **kwargs):
     """Lift a tensor to an indexed tensor using the plate structure.
 
@@ -154,8 +159,8 @@ def lift_tensor(tensor, **kwargs):
 
     index_expr = [slice(None)] * len(tensor.shape)
     for name, dim in name_to_dim.items():
-        sym = gensym(Dim(name, batch_shape[dim]))
-        index_expr[dim - event_dim] = sym()
+        # ensure that lifted tensors use the same free variables for the same name
+        index_expr[dim - event_dim] = name_to_sym(name, batch_shape[dim])()
 
     vars_ = [v.op for v in index_expr if isinstance(v, Term)]
 
@@ -363,7 +368,7 @@ def stack(values, name, **kwargs):
     indexed values in the stack must have identical shapes.
 
     """
-    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs) for v in values]
+    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
 
     stacked = torch.stack(values)
 
