@@ -5,12 +5,20 @@ import operator
 from typing import Callable, TypeVar
 
 import pytest
+import torch
 from typing_extensions import ParamSpec
 
-import torch
-from effectful.internals.sugar import torch_getitem, Sized
-from effectful.internals.sugar import OPERATORS, gensym
-from effectful.ops.core import Expr, Interpretation, Operation, Term, as_term, ctxof, evaluate, typeof
+from effectful.internals.sugar import OPERATORS, Sized, gensym, torch_getitem
+from effectful.ops.core import (
+    Expr,
+    Interpretation,
+    Operation,
+    Term,
+    as_term,
+    ctxof,
+    evaluate,
+    typeof,
+)
 from effectful.ops.function import defun, funcall
 from effectful.ops.handler import coproduct, fwd, handler
 
@@ -40,7 +48,13 @@ def test_tpe_2():
     expected = torch.sum(xval[ival, :], dim=0)
 
     i, j = gensym(Sized(2)), gensym(Sized(3))
-    x_j = torch_getitem(xval, (ival, j(),))
+    x_j = torch_getitem(
+        xval,
+        (
+            ival,
+            j(),
+        ),
+    )
     sum_x_j = torch.sum(x_j, dim=0)
     f_actual = defun(sum_x_j, j)
     for jj in range(3):
@@ -52,7 +66,14 @@ def test_tpe_3():
     expected = torch.sum(xval, dim=1)
 
     i, j, k = gensym(Sized(2)), gensym(Sized(3)), gensym(Sized(4))
-    x_j = torch_getitem(xval, (k(), ival, j(),))
+    x_j = torch_getitem(
+        xval,
+        (
+            k(),
+            ival,
+            j(),
+        ),
+    )
     sum_x_j = torch.sum(x_j, dim=0)
     f_actual = defun(sum_x_j, j, k)
     for jj in range(3):
@@ -70,4 +91,6 @@ def test_tpe_4():
 
     for jj in range(3):
         for kk in range(4):
-            assert f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+            assert (
+                f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+            )

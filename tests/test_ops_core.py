@@ -1,5 +1,5 @@
-from effectful.internals.sugar import Operation, gensym, NoDefaultRule
-from effectful.ops.core import evaluate, ctxof
+from effectful.internals.sugar import NoDefaultRule, Operation, gensym
+from effectful.ops.core import ctxof, evaluate
 from effectful.ops.handler import handler
 
 

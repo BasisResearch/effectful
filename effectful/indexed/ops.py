@@ -1,7 +1,6 @@
 import functools
 import operator
 from typing import (
-    cast,
     Dict,
     Hashable,
     Iterable,
@@ -11,14 +10,15 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
+    cast,
 )
-
-from ..ops.core import evaluate, Expr, Operation, Term, ctxof
-from ..ops.handler import handler, fwd, coproduct
-from ..internals.sugar import NoDefaultRule, gensym, torch_getitem, embed, TensorTerm
 
 import pyro
 import torch
+
+from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, torch_getitem
+from ..ops.core import Expr, Operation, Term, ctxof, evaluate
+from ..ops.handler import coproduct, fwd, handler
 
 T = TypeVar("T")
 

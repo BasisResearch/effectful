@@ -6,15 +6,7 @@ import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from .ops import (
-    IndexSet,
-    cond,
-    gather,
-    get_index_plates,
-    indices_of,
-    scatter,
-    union,
-)
+from .ops import IndexSet, cond, gather, get_index_plates, indices_of, scatter, union
 
 K = TypeVar("K")
 T = TypeVar("T")

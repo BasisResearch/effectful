@@ -6,11 +6,7 @@ import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from .internals import (
-    _LazyPlateMessenger,
-    add_indices,
-    get_sample_msg_device,
-)
+from .internals import _LazyPlateMessenger, add_indices, get_sample_msg_device
 from .ops import union
 
 P = ParamSpec("P")

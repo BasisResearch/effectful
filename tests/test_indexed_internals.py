@@ -8,15 +8,15 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.indexed.internals import *
 from effectful.indexed.handlers import *
+from effectful.indexed.internals import *
 from effectful.indexed.ops import *
-from effectful.ops.core import *
-from effectful.ops.handler import *
-from effectful.ops.function import *
 from effectful.internals.prompts import *
 from effectful.internals.runtime import *
 from effectful.internals.sugar import *
+from effectful.ops.core import *
+from effectful.ops.function import *
+from effectful.ops.handler import *
 
 logger = logging.getLogger(__name__)
 
