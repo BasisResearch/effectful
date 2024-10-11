@@ -740,7 +740,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @Operation
 def torch_getitem(
     x: torch.Tensor,
-    key: Tuple[Union[None, int, slice, ellipsis, Sequence[int], torch.Tensor], ...],
+    key: Tuple[Union[None, int, slice, Sequence[int], torch.Tensor], ...],
 ) -> torch.Tensor:
     if not any(isinstance(k, Term) for k in (x, *key)):
         # fast path for simple cases
