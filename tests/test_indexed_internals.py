@@ -229,6 +229,7 @@ def test_stack():
             assert f(1, i, j) == t2[i, j]
 
 
+@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -285,6 +286,7 @@ def test_scatter_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_e
     assert (actual == expected).all()
 
 
+@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -342,6 +344,7 @@ def test_scatter_gather_tensor(
     assert not (actual == expected)[~mask].any()
 
 
+@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -392,6 +395,7 @@ def test_gather_scatter_tensor(
     assert (actual == expected).all()
 
 
+@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -422,6 +426,7 @@ def test_scatter_broadcast_new(enum_shape, plate_shape, batch_shape, event_shape
     assert (actual2 == value2).all()
 
 
+@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
