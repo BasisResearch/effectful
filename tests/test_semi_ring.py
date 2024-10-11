@@ -211,7 +211,7 @@ def vertical_fusion(e1, x, e2):
                     e_sum,
                     k1,
                     v1,
-                    Term(ops.Dict, (Term(k1a), Term(ops.App, (f1, Term(v1a))))),
+                    Term(ops.Dict, (Term(k1a), t1)),
                 ),
             ),
             Term(
@@ -220,11 +220,14 @@ def vertical_fusion(e1, x, e2):
                     Term(xa),
                     k2,
                     v2,
-                    Term(ops.Dict, (Term(k2a), Term(ops.App, (f2, Term(v2a))))),
+                    Term(ops.Dict, (Term(k2a), t2)),
                 ),
             ),
-        ) if k1 == k1a and v1 == v1a and x == xa and k2 == k2a and v2 == v2a:
-            return Sum(e_sum, k2, v2, Dict(k2(), App(f2, App(f1, v2()))))
+        ) if k1 == k1a and x == xa and k2 == k2a:
+            # subtitute v in t2 with t1
+            with handler({v2: lambda: t1}):
+                t3 = evaluate(t2)
+            return Sum(e_sum, k2, v2, Dict(k2(), t3))
         case _:
             return fwd(None)
 
