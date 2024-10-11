@@ -16,6 +16,7 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
+    Union,
 )
 
 import torch
@@ -737,9 +738,62 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
 
 @Operation
-def torch_getitem(x: torch.Tensor, key: Sequence[torch.Tensor]) -> torch.Tensor:
+def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tensor:
     if not any(isinstance(k, Term) for k in (x, *key)):
-        return x[*key]
+        # fast path for simple cases
+        if len(key) == 0:
+            return x
+        elif not any(isinstance(k, torch.Tensor) for k in key):
+            return x[key]
+        elif all(isinstance(k, torch.Tensor) for k in key):
+            return torch.ops.aten.index(x, key)
+
+        orig_key = tuple(key)
+
+        # handle None separately
+        if any(k is None for k in key):
+            none_key = tuple(k if k in (Ellipsis, None) else slice(None) for k in key)
+            slice_key = []
+            for i, k in enumerate(key):
+                if k is None and 0 < i < len(key) - 1:
+                    slice_key += [slice(None), slice(None)]
+                else:
+                    slice_key += [k]
+            x, key = x[none_key], tuple(slice_key)
+
+        # handle Ellipsis or missing dimensions by padding with slice(None)
+        if any(k is Ellipsis for k in key):
+            for i, k in enumerate(key):
+                if k is Ellipsis:
+                    assert not any(k is Ellipsis for k in key[i + 1 :]), "only one Ellipsis allowed"
+                    key = key[:i] + (slice(None),) * (len(x.shape) - len(key) + 1) + key[i + 1 :]
+                    break
+        elif len(key) < len(x.shape):
+            key = key + (slice(None),) * (len(x.shape) - len(key))
+
+        assert len(x.shape) == len(key)
+
+        # Convert non-tensor args to tensors
+        key = list(key)
+        for i, arg in reversed(list(enumerate(key))):
+            if isinstance(arg, slice):
+                if arg == slice(None):
+                    key[i] = None
+                else:
+                    # Convert slices to torch.arange()s.
+                    start = arg.start if arg.start is not None else 0
+                    stop = arg.stop if arg.stop is not None else x.shape[i]
+                    step = arg.step if arg.step is not None else 1
+                    flat_arg = torch.arange(start, stop, step, dtype=torch.long, device=x.device)
+                    key[i] = flat_arg.reshape((-1,) + (1,) * i)
+            elif isinstance(arg, int):
+                key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
+            elif isinstance(arg, (list, tuple)):
+                assert all(isinstance(a, int) for a in arg)
+                flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
+                key[i] = flat_arg.reshape((-1,) + (1,) * i)
+
+        return torch.ops.aten.index(x, key)
     else:
         raise NoDefaultRule
 
@@ -753,7 +807,9 @@ def Sized(size: int) -> type[int]:
 
 @embed_register(torch.Tensor)
 class TensorTerm(BaseTerm[torch.Tensor]):
-    def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
+    def __getitem__(self, key: Union[Expr, Tuple[Expr, ...]]) -> Expr[torch.Tensor]:
+        if not isinstance(key, tuple):
+            key = (key,)
         return torch_getitem(self, key)
 
     @classmethod
