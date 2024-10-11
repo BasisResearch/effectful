@@ -748,18 +748,10 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
         elif all(isinstance(k, torch.Tensor) for k in key):
             return torch.ops.aten.index(x, key)
 
-        orig_key = tuple(key)
-
         # handle None separately
         if any(k is None for k in key):
-            none_key = tuple(k if k in (Ellipsis, None) else slice(None) for k in key)
-            slice_key = []
-            for i, k in enumerate(key):
-                if k is None and 0 < i < len(key) - 1:
-                    slice_key += [slice(None), slice(None)]
-                else:
-                    slice_key += [k]
-            x, key = x[none_key], tuple(slice_key)
+            x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
+            key = tuple(slice(None) if k is None else k for k in key)
 
         # handle Ellipsis or missing dimensions by padding with slice(None)
         if any(k is Ellipsis for k in key):
@@ -770,8 +762,6 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
                     break
         elif len(key) < len(x.shape):
             key = key + (slice(None),) * (len(x.shape) - len(key))
-
-        assert len(x.shape) == len(key)
 
         # Convert non-tensor args to tensors
         key = list(key)

@@ -128,6 +128,7 @@ INDEXING_CASES = [
     (torch.randn(4, 5, 6), (None, torch.arange(4)[..., None, None], None, slice(None))),
     (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None])),
     (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, 1)),
+    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, slice(None))),
 ]
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
