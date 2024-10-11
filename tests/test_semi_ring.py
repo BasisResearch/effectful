@@ -110,6 +110,14 @@ def eager_multiply(e1, e2):
             return Multiply(e2, e1)
         case SemiRingDict(), (int() | float() | SemiRingDict()):
             return SemiRingDict({k: Multiply(v, e2) for k, v in e1.items()})
+        case Term(ops.Dict, args), _:
+            new_args = []
+            for i in range(0, len(args), 2):
+                new_args.append(args[i])
+                new_args.append(Multiply(args[i + 1], e2))
+            return Dict(*new_args)
+        case _, Term(ops.Dict, args):
+            return Multiply(e2, e1)
         case _:
             return fwd(None)
 
@@ -168,6 +176,12 @@ def eager_field(r, k):
             return r[k]
         case SemiRingDict(), _ if is_value(k):
             return r[k]
+        case Term(ops.Dict, args), _:
+            if is_value(k):
+                for i in range(0, len(args), 2):
+                    if is_value(args[i]) and args[i] == k:
+                        return args[i + 1]
+            return fwd(None)
         case _:
             return fwd(None)
 
@@ -289,14 +303,14 @@ def test_multiply():
         assert result1 == result2
 
 
-# def test_multiply_free():
-#     with handler(free), handler(eager):
-#         a = gensym(object)
-#         d = Dict("x", 5, "y", a)
-#         result = Multiply(d, d)
-#         assert result["x"]["x"] == 25
-#         assert result["x"]["y"] == Multiply(a, 5)
-#         assert result["y"] == Multiply(a, d)
+def test_multiply_free():
+    with handler(free), handler(eager):
+        a = gensym(object)
+        d = Dict("x", 5, "y", a)
+        result = Multiply(d, d)
+        assert Field(Field(result, "x"), "x") == 25
+        assert Field(Field(result, "x"), "y") == Multiply(a, 5)
+        assert Field(result, "y") == Multiply(a, d)
 
 
 def test_simple_sum():
