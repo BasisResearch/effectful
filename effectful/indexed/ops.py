@@ -369,11 +369,7 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-
-    stacked = torch.stack(values)
-
-    sym = gensym(Dim(name, len(values)))
-    return torch_getitem(stacked, [sym()])
+    return torch_getitem(torch.stack(values), [name_to_sym(name, len(values))()])
 
 
 def cond(
