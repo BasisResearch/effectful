@@ -738,7 +738,10 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
 
 @Operation
-def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tensor:
+def torch_getitem(
+    x: torch.Tensor,
+    key: Tuple[Union[None, int, slice, ellipsis, Sequence[int], torch.Tensor], ...],
+) -> torch.Tensor:
     if not any(isinstance(k, Term) for k in (x, *key)):
         # fast path for simple cases
         if len(key) == 0:
@@ -757,8 +760,14 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
         if any(k is Ellipsis for k in key):
             for i, k in enumerate(key):
                 if k is Ellipsis:
-                    assert not any(k is Ellipsis for k in key[i + 1 :]), "only one Ellipsis allowed"
-                    key = key[:i] + (slice(None),) * (len(x.shape) - len(key) + 1) + key[i + 1 :]
+                    assert not any(
+                        k is Ellipsis for k in key[i + 1 :]
+                    ), "only one Ellipsis allowed"
+                    key = (
+                        key[:i]
+                        + (slice(None),) * (len(x.shape) - len(key) + 1)
+                        + key[i + 1 :]
+                    )
                     break
         elif len(key) < len(x.shape):
             key = key + (slice(None),) * (len(x.shape) - len(key))
@@ -774,7 +783,9 @@ def torch_getitem(x: torch.Tensor, key: Tuple[torch.Tensor, ...]) -> torch.Tenso
                     start = arg.start if arg.start is not None else 0
                     stop = arg.stop if arg.stop is not None else x.shape[i]
                     step = arg.step if arg.step is not None else 1
-                    flat_arg = torch.arange(start, stop, step, dtype=torch.long, device=x.device)
+                    flat_arg = torch.arange(
+                        start, stop, step, dtype=torch.long, device=x.device
+                    )
                     key[i] = flat_arg.reshape((-1,) + (1,) * i)
             elif isinstance(arg, int):
                 key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)

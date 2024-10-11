@@ -91,7 +91,9 @@ def test_tpe_4():
 
     for jj in range(3):
         for kk in range(4):
-            assert f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+            assert (
+                f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+            )
 
 
 INDEXING_CASES = [
@@ -121,29 +123,53 @@ INDEXING_CASES = [
     # Indexing with multiple None
     (torch.randn(4, 5, 6), (None, None, 1, slice(None), None)),
     # Additional complex cases
-    (torch.randn(4, 5, 6), (torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2], [3, 4]]), slice(None))),
+    (
+        torch.randn(4, 5, 6),
+        (torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2], [3, 4]]), slice(None)),
+    ),
     (torch.randn(4, 5, 6), (Ellipsis, None, torch.tensor([0, 2]))),
     (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None],)),
     (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], None, slice(None))),
     (torch.randn(4, 5, 6), (None, torch.arange(4)[..., None, None], None, slice(None))),
-    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None])),
-    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, 1)),
-    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, slice(None))),
+    (
+        torch.randn(4, 5, 6),
+        (torch.arange(4)[..., None, None], torch.arange(5)[..., None]),
+    ),
+    (
+        torch.randn(4, 5, 6),
+        (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, 1),
+    ),
+    (
+        torch.randn(4, 5, 6),
+        (
+            torch.arange(4)[..., None, None],
+            torch.arange(5)[..., None],
+            None,
+            slice(None),
+        ),
+    ),
 ]
+
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_custom_getitem(tensor, idx):
     expected = tensor[idx]
     result = torch_getitem(tensor, idx)
     assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
-    assert result.shape == expected.shape, f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert (
+        result.shape == expected.shape
+    ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
 
 
 def test_vmap_custom_getitem():
     tensor = torch.randn(4, 5, 6)
     idx = (torch.tensor([0, 2]), slice(None), torch.tensor([0, 2]))
-    result = torch.vmap(lambda i, k: torch_getitem(tensor, (i, slice(None), k)))(idx[0], idx[2])
+    result = torch.vmap(lambda i, k: torch_getitem(tensor, (i, slice(None), k)))(
+        idx[0], idx[2]
+    )
     assert isinstance(result, torch.Tensor)
     for i in range(2):
-        idx_i = tuple(idxe[i] if isinstance(idxe, torch.Tensor) else idxe for idxe in idx)
+        idx_i = tuple(
+            idxe[i] if isinstance(idxe, torch.Tensor) else idxe for idxe in idx
+        )
         assert torch.allclose(result[i], tensor[idx_i])
