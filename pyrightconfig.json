@@ -1,0 +1,21 @@
+{
+  "include": [
+    "effectful"
+  ],
+
+  "ignore": [
+    "effectful/handlers/minipyro.py"
+  ],
+
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": false,
+
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Linux",
+
+  "executionEnvironments": [
+    {
+      "root": "."
+    }
+  ]
+}

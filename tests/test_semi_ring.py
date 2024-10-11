@@ -5,7 +5,7 @@ import types
 import pdb
 
 from effectful.internals.sugar import NoDefaultRule, gensym, OPERATORS
-from effectful.ops.core import Operation, Term, evaluate, as_term
+from effectful.ops.core import Operation, Term, evaluate, as_term, ctxof
 from effectful.ops.handler import fwd, handler
 
 
@@ -208,12 +208,24 @@ def eager_let(e1, x, e2):
             return fwd(None)
 
 
-def loop_factorization(e1, e2):
+def loop_factorization(t1, k, v, t2):
     """
     sum(x in e1) e2 * f(x) -> e2 * sum(x in e1) f(x)
     sum(x in e1) f(x) * e2 -> (sum(x in e1) f(x)) * e2
     """
-    pass
+    match t2:
+        case Term(ops.Multiply, (tl, tr)):
+            free_l = ctxof(tl)
+            if k not in free_l and v not in free_l:
+                return Multiply(tl, Sum(t1, k, v, tr))
+            
+            free_r = ctxof(tr)
+            if k not in free_r and v not in free_r:
+                return Multiply(Sum(t1, k, v, tl), tr)
+            
+            return fwd(None)
+        case _:
+            return fwd(None)
 
 
 def vertical_fusion(e1, x, e2):
@@ -271,6 +283,34 @@ eager = {
 opt = {
     Let: vertical_fusion,
 }
+
+
+def test_loop_factorization():
+    x = gensym(object)
+    y = gensym(object)
+    k = gensym(object)
+    v = gensym(object)
+
+    with handler(free), handler(eager), handler({Sum: loop_factorization}):
+        lhs = Sum(y(), k, v, Multiply(v(), x()))
+        rhs = Multiply(Sum(y(), k, v, v()), x())
+        assert lhs == rhs
+
+        assert Sum(y(), k, v, Multiply(x(), v())) == Multiply(x(), Sum(y(), k, v, v()))
+
+        assert Multiply(1,2) == 2
+
+    with handler(free), handler(eager):
+        #Factor out a constant
+        e1 = Sum(Dict("a", 1, "b", 2), k, v, Multiply(Dict(k(), v()), 2))
+        e2 = Multiply(Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), v())), 2)
+        assert e1 == e2, "Failed to factor out constant"
+
+        #Factor out a dictionary
+        d = Dict("x", 3, "y", 4)
+        e1 = Sum(Dict("a", 1, "b", 2), k, v, Multiply(Dict(k(), v()), d))
+        e2 = Multiply(Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), v())), d)
+        assert e1 == e2, "Failed to factor out dictionary"
 
 
 def test_multiply():
