@@ -695,8 +695,9 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             )
 
         if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(
-            _is_sized_fv(v) for v in sized_fvs
+            _is_sized_fv(v) or v == torch_getitem for v in sized_fvs
         ):
+            sized_fvs = [v for v in sized_fvs if _is_sized_fv(v)]
 
             @torch.func.vmap
             def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
@@ -708,12 +709,12 @@ def _register_torch_op(torch_fn: Callable[P, T]):
                         for var, ind in zip(sized_fvs, inds)
                     }
                 ):
-                    args, kwargs = tree.map_structure(evaluate, (args, kwargs))
-                return torch_fn(*args, **kwargs)
+                    args_, kwargs_ = tree.map_structure(evaluate, (args, kwargs))
+                return torch_fn(*args_, **kwargs_)
 
             sizes = {v: v.__type_rule__()._size for v in sized_fvs}
             inds = [
-                torch.arange(sizes[v])[(...,) + (None,) * i]
+                torch.arange(sizes[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
                 for i, v in enumerate(sized_fvs)
             ]
 
@@ -721,7 +722,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             flat_tpe_result = _tpe_result_fn(*flat_inds)
 
             tpe_result: torch.Tensor = flat_tpe_result.reshape(
-                *(tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:])
+                torch.broadcast_shapes(*(ind.shape for ind in inds)) + flat_tpe_result.shape[1:]
             )
 
             return torch_getitem(tpe_result, [v() for v in sized_fvs])
@@ -740,7 +741,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @Operation
 def torch_getitem(
     x: torch.Tensor,
-    key: Tuple[Union[None, int, slice, Sequence[int], torch.Tensor], ...],
+    key: Tuple[Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...],
 ) -> torch.Tensor:
     if not any(isinstance(k, Term) for k in (x, *key)):
         # fast path for simple cases

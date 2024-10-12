@@ -36,8 +36,13 @@ def test_tpe_1():
 
     x_ij = torch_getitem(xval, (i(), j()))
     x_plus_y1_ij = torch.add(x_ij, torch_getitem(y1_val, (i(),)))
-    x_plus_y1_plus_y2_ij = torch.add(x_plus_y1_ij, torch_getitem(y2_val, (j(),)))
-    f_actual = defun(x_plus_y1_plus_y2_ij, i, j)
+    actual = torch.add(x_plus_y1_ij, torch_getitem(y2_val, (j(),)))
+
+    assert actual.op == torch_getitem
+    assert isinstance(actual.args[0], torch.Tensor)
+    assert set(a.op for a in actual.args[1]) == {i, j}
+
+    f_actual = defun(actual, i, j)
     for ii in range(2):
         for jj in range(3):
             assert f_actual(torch.tensor(ii), torch.tensor(jj)) == expected[ii, jj]
@@ -55,8 +60,13 @@ def test_tpe_2():
             j(),
         ),
     )
-    sum_x_j = torch.sum(x_j, dim=0)
-    f_actual = defun(sum_x_j, j)
+    actual = torch.sum(x_j, dim=0)
+
+    assert actual.op == torch_getitem
+    assert isinstance(actual.args[0], torch.Tensor)
+    assert set(a.op for a in actual.args[1]) == {j}
+
+    f_actual = defun(actual, j)
     for jj in range(3):
         assert f_actual(torch.tensor(jj)) == expected[jj]
 
@@ -74,8 +84,13 @@ def test_tpe_3():
             j(),
         ),
     )
-    sum_x_j = torch.sum(x_j, dim=0)
-    f_actual = defun(sum_x_j, j, k)
+    actual = torch.sum(x_j, dim=0)
+
+    assert actual.op == torch_getitem
+    assert isinstance(actual.args[0], torch.Tensor)
+    assert set(a.op for a in actual.args[1]) == {j, k}
+
+    f_actual = defun(actual, j, k)
     for jj in range(3):
         for kk in range(4):
             assert f_actual(torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
