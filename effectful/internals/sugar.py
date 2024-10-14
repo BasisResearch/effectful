@@ -693,10 +693,15 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
-        tm = (torch_getitem if torch_fn.__name__ == "torch_getitem" else _torch_op).__free_rule__(*args, **kwargs)
+        tm = _torch_op.__free_rule__(*args, **kwargs)
         sized_fvs = _sizes_of(tm)
 
-        if sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
+        if _torch_op is torch_getitem and \
+                not isinstance(args[0], Term) and \
+                sized_fvs and args[1] and \
+                all(k.op in sized_fvs for k in args[1] if isinstance(k, Term)):
+            raise NoDefaultRule
+        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
             from effectful.ops.function import defun
 
             tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
@@ -722,84 +727,62 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     return _torch_op
 
 
-@Operation
+@_register_torch_op
 def torch_getitem(
     x: torch.Tensor,
     key: Tuple[Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...],
 ) -> torch.Tensor:
-    if not any(isinstance(k, Term) for k in (x, *key)):
-        # fast path for simple cases
-        if len(key) == 0:
-            return x
-        elif not any(isinstance(k, torch.Tensor) for k in key):
-            return x[key]
-        elif all(isinstance(k, torch.Tensor) for k in key):
-            return torch.ops.aten.index(x, key)
-
-        # handle None separately
-        if any(k is None for k in key):
-            x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-            key = tuple(slice(None) if k is None else k for k in key)
-
-        # handle Ellipsis or missing dimensions by padding with slice(None)
-        if any(k is Ellipsis for k in key):
-            for i, k in enumerate(key):
-                if k is Ellipsis:
-                    assert not any(
-                        k is Ellipsis for k in key[i + 1 :]
-                    ), "only one Ellipsis allowed"
-                    key = (
-                        key[:i]
-                        + (slice(None),) * (len(x.shape) - len(key) + 1)
-                        + key[i + 1 :]
-                    )
-                    break
-        elif len(key) < len(x.shape):
-            key = key + (slice(None),) * (len(x.shape) - len(key))
-
-        # Convert non-tensor args to tensors
-        key = list(key)
-        for i, arg in list(enumerate(key)):
-            if isinstance(arg, slice):
-                if arg == slice(None):
-                    key[i] = None
-                else:
-                    # Convert slices to torch.arange()s.
-                    start = arg.start if arg.start is not None else 0
-                    stop = arg.stop if arg.stop is not None else x.shape[i]
-                    step = arg.step if arg.step is not None else 1
-                    flat_arg = torch.arange(
-                        start, stop, step, dtype=torch.long, device=x.device
-                    )
-                    key[i] = flat_arg.reshape((-1,) + (1,) * i)
-            elif isinstance(arg, int):
-                key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
-            elif isinstance(arg, (list, tuple)):
-                flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
-                key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
-
+    # fast path for simple cases
+    if len(key) == 0:
+        return x
+    elif not any(isinstance(k, torch.Tensor) for k in key):
+        return x[key]
+    elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
-    elif not isinstance(x, Term) and any(isinstance(k, Term) for k in key):
-        def _is_var(v):
-            match v:
-                case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                    return True
-                case _:
-                    return False
 
-        if not all(_is_var(k) or not isinstance(k, Term) for k in key):
-            return _register_torch_op(torch_getitem.signature).__default_rule__(x, key)
-        else:
-            raise NoDefaultRule
-    else:
-        raise NoDefaultRule
+    # handle None separately
+    if any(k is None for k in key):
+        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
+        key = tuple(slice(None) if k is None else k for k in key)
 
+    # handle Ellipsis or missing dimensions by padding with slice(None)
+    if any(k is Ellipsis for k in key):
+        for i, k in enumerate(key):
+            if k is Ellipsis:
+                assert not any(
+                    k is Ellipsis for k in key[i + 1 :]
+                ), "only one Ellipsis allowed"
+                key = (
+                    key[:i]
+                    + (slice(None),) * (len(x.shape) - len(key) + 1)
+                    + key[i + 1 :]
+                )
+                break
+    elif len(key) < len(x.shape):
+        key = key + (slice(None),) * (len(x.shape) - len(key))
 
-def Sized(size: int) -> type[int]:
-    class _Sized(int):
-        _size = size
+    # Convert non-tensor args to tensors
+    key = list(key)
+    for i, arg in list(enumerate(key)):
+        if isinstance(arg, slice):
+            if arg == slice(None):
+                key[i] = None
+            else:
+                # Convert slices to torch.arange()s.
+                start = arg.start if arg.start is not None else 0
+                stop = arg.stop if arg.stop is not None else x.shape[i]
+                step = arg.step if arg.step is not None else 1
+                flat_arg = torch.arange(
+                    start, stop, step, dtype=torch.long, device=x.device
+                )
+                key[i] = flat_arg.reshape((-1,) + (1,) * i)
+        elif isinstance(arg, int):
+            key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
+        elif isinstance(arg, (list, tuple)):
+            flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
+            key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
-    return _Sized
+    return torch.ops.aten.index(x, key)
 
 
 @embed_register(torch.Tensor)

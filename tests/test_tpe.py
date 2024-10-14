@@ -8,7 +8,7 @@ import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, Sized, gensym, torch_getitem
+from effectful.internals.sugar import OPERATORS, gensym, torch_getitem
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -30,7 +30,7 @@ T = TypeVar("T")
 
 
 def test_tpe_1():
-    i, j = gensym(Sized(2)), gensym(Sized(3))
+    i, j = gensym(int), gensym(int)
     xval, y1_val, y2_val = torch.rand(2, 3), torch.rand(2), torch.rand(3)
     expected = torch.add(torch.add(xval, y1_val[..., None]), y2_val[None])
 
@@ -52,7 +52,7 @@ def test_tpe_2():
     xval, ival = torch.rand(2, 3), torch.arange(2)
     expected = torch.sum(xval[ival, :], dim=0)
 
-    i, j = gensym(Sized(2)), gensym(Sized(3))
+    i, j = gensym(int), gensym(int)
     x_j = torch_getitem(
         xval,
         (
@@ -75,7 +75,7 @@ def test_tpe_3():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    i, j, k = gensym(Sized(2)), gensym(Sized(3)), gensym(Sized(4))
+    i, j, k = gensym(int), gensym(int), gensym(int)
     x_j = torch_getitem(
         xval,
         (
@@ -101,7 +101,7 @@ def test_tpe_4():
     expected = torch.sum(xval, dim=1)
 
     @as_term
-    def f_actual(x: torch.Tensor, j: Sized(3), k: Sized(4)) -> torch.Tensor:  # type: ignore
+    def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:  # type: ignore
         return torch.sum(x[k, ival, j], dim=0)
 
     for jj in range(3):
