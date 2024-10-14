@@ -30,6 +30,7 @@ from effectful.ops.core import (
     Operation,
     Term,
     apply,
+    ctxof,
     evaluate,
     syntactic_eq,
     typeof,
@@ -670,62 +671,45 @@ import torch
 @weak_memoize
 def _register_torch_op(torch_fn: Callable[P, T]):
 
-    if torch_fn is torch.ops.aten.index:
-        return torch_getitem
+    def _sizes_of(value: Expr) -> Mapping[Operation[[], int], int]:
+        sizes = {}
+
+        def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
+            if not isinstance(x, Term):
+                for i, k in enumerate(key):
+                    match k:
+                        case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
+                            sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
+                        case _:
+                            continue
+
+            return torch_getitem.__free_rule__(x, key)
+
+        with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
+            evaluate(value)
+
+        return sizes
 
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
-        def _is_sized_fv(v: Operation) -> TypeGuard[Operation[[], int]]:
-            try:
-                tp = v.__type_rule__()
-                return issubclass(tp, int) and hasattr(tp, "_size")
-            except TypeError:
-                return False
+        tm = (torch_getitem if torch_fn.__name__ == "torch_getitem" else _torch_op).__free_rule__(*args, **kwargs)
+        sized_fvs = _sizes_of(tm)
 
-        def _fvs_of(value: Expr) -> Sequence[Operation]:
-            from effectful.ops.core import ctxof
+        if sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
+            from effectful.ops.function import defun
 
-            return list(
-                set(
-                    tree.flatten(
-                        tree.map_structure(lambda v: list(op for op in ctxof(v)), value)
-                    )
-                )
-            )
+            tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
 
-        if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(
-            _is_sized_fv(v) or v == torch_getitem for v in sized_fvs
-        ):
-            sized_fvs = [v for v in sized_fvs if _is_sized_fv(v)]
-
-            @torch.func.vmap
-            def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
-                from effectful.ops.handler import handler
-
-                with handler(
-                    {
-                        var: functools.partial(lambda x: x, ind)
-                        for var, ind in zip(sized_fvs, inds)
-                    }
-                ):
-                    args_, kwargs_ = tree.map_structure(evaluate, (args, kwargs))
-                return torch_fn(*args_, **kwargs_)
-
-            sizes = {v: v.__type_rule__()._size for v in sized_fvs}
-            inds = [
-                torch.arange(sizes[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
+            inds = torch.broadcast_tensors(*(
+                torch.arange(sized_fvs[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
                 for i, v in enumerate(sized_fvs)
-            ]
+            ))
 
-            flat_inds = [ind.reshape(-1) for ind in torch.broadcast_tensors(*inds)]
-            flat_tpe_result = _tpe_result_fn(*flat_inds)
+            flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
+            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
 
-            tpe_result: torch.Tensor = flat_tpe_result.reshape(
-                torch.broadcast_shapes(*(ind.shape for ind in inds)) + flat_tpe_result.shape[1:]
-            )
-
-            return torch_getitem(tpe_result, [v() for v in sized_fvs])
+            return torch_getitem(result, [v() for v in sized_fvs])
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -795,6 +779,18 @@ def torch_getitem(
                 key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
         return torch.ops.aten.index(x, key)
+    elif not isinstance(x, Term) and any(isinstance(k, Term) for k in key):
+        def _is_var(v):
+            match v:
+                case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
+                    return True
+                case _:
+                    return False
+
+        if not all(_is_var(k) or not isinstance(k, Term) for k in key):
+            return _register_torch_op(torch_getitem.signature).__default_rule__(x, key)
+        else:
+            raise NoDefaultRule
     else:
         raise NoDefaultRule
 

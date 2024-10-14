@@ -163,6 +163,14 @@ INDEXING_CASES = [
             slice(None),
         ),
     ),
+    (
+        torch.randn(3, 4, 5, 6), (
+            Ellipsis,
+            torch.arange(4)[..., None, None],
+            torch.arange(5)[..., None],
+            slice(None),
+        )
+    )
 ]
 
 
@@ -170,10 +178,10 @@ INDEXING_CASES = [
 def test_custom_getitem(tensor, idx):
     expected = tensor[idx]
     result = torch_getitem(tensor, idx)
-    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
     assert (
         result.shape == expected.shape
     ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 
 def test_vmap_custom_getitem():

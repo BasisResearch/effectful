@@ -196,6 +196,11 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
 
     f_actual = defun(actual, *vars_)
 
+    assert isinstance(actual, Term)
+    assert actual.op == torch_getitem
+    assert isinstance(actual.args[0], torch.Tensor)
+    assert all(not isinstance(arg, Term) or issubclass(typeof(arg), int) for arg in actual.args[1])
+
     world_dims = [enumerate(world.get(v.__type_rule__()._name, {0})) for v in vars_]
     for idx in itertools.product(*world_dims):
         actual_idx = tuple(i[0] for i in idx)
