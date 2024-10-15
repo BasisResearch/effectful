@@ -16,7 +16,18 @@ from typing import (
 import pyro
 import torch
 
+<<<<<<< HEAD
 from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, sizesof, torch_getitem
+=======
+from ..internals.sugar import (
+    NoDefaultRule,
+    TensorTerm,
+    embed,
+    gensym,
+    sizesof,
+    torch_getitem,
+)
+>>>>>>> jf-add-indexed
 from ..ops.core import Expr, Operation, Term, ctxof, evaluate
 from ..ops.function import defun
 from ..ops.handler import coproduct, fwd, handler
@@ -218,9 +229,7 @@ def indices_of(value, **kwargs) -> IndexSet:
     if isinstance(value, torch.Tensor) and not isinstance(value, Term):
         value, _ = lift_tensor(value, **kwargs)
 
-    return IndexSet(
-        **{k._name: set(range(v)) for (k, v) in sizesof(value).items()}
-    )
+    return IndexSet(**{k._name: set(range(v)) for (k, v) in sizesof(value).items()})
 
 
 @Operation
@@ -356,7 +365,12 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-    return torch_getitem(torch.stack(values), [name_to_sym(name)()])
+    stacked = torch.stack(values)
+    match stacked:
+        case Term(op, [torch.Tensor() as t, key]) if op is torch_getitem:
+            return torch_getitem(t, tuple(key) + (name_to_sym(name)(),))
+        case _:
+            return torch_getitem(stacked, (name_to_sym(name)(),))
 
 
 def cond(
@@ -393,9 +407,12 @@ def cond(
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
     :param kwargs: Additional keyword arguments used by specific implementations.
     """
-    case_ = case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs)[0]
+    case_ = (
+        case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs)[0]
+    )
     [fst_, snd_] = [
-        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)[0] for v in [fst, snd]
+        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)[0]
+        for v in [fst, snd]
     ]
 
     return torch.where(case_[(...,) + (None,) * event_dim], snd_, fst_)
