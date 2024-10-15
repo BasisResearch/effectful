@@ -679,6 +679,7 @@ def _getitem_ellipsis_and_none(
 
     # handle None separately
     if any(k is None for k in key):
+        # TODO unsqueeze instead of getitem
         x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
         key = tuple(slice(None) if k is None else k for k in key)
 
@@ -836,11 +837,13 @@ def torch_getitem(
 @embed_register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
     match op, args, kwargs:
-        case torch_getitem_, (torch.Tensor() as x, tuple() as key), () if (
-            torch_getitem_ is torch_getitem 
+        case torch_getitem_, (torch.Tensor() as x, (k1, *ks) as key), () if (
+            torch_getitem_ is torch_getitem
             and not isinstance(x, Term)
             and all(
-                typeof(k) is int and not k.args and not k.kwargs for k in key if isinstance(k, Term)
+                typeof(k) is int and not k.args and not k.kwargs
+                for k in key
+                if isinstance(k, Term)
             )
         ):
             return TPETensor(x, key)
@@ -856,8 +859,8 @@ class TensorTerm(BaseTerm[torch.Tensor]):
 
     @classmethod
     def __torch_function__(
-        cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None
-    ) -> Expr[torch.Tensor]:
+        cls, func: Callable[..., T], types, args=(), kwargs=None
+    ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
 
@@ -872,7 +875,9 @@ class TPETensor(torch.Tensor):
     def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
         assert not isinstance(x, Term)
         assert all(
-            typeof(k) is int and not k.args and not k.kwargs for k in key if isinstance(k, Term)
+            typeof(k) is int and not k.args and not k.kwargs
+            for k in key
+            if isinstance(k, Term)
         )
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
