@@ -41,6 +41,9 @@ def test_tpe_1():
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {i, j}
+    assert actual.shape == ()
+    assert actual.numel() == 1
+    assert actual.dim() == actual.ndim == 0
 
     f_actual = defun(actual, i, j)
     for ii in range(2):
@@ -60,11 +63,15 @@ def test_tpe_2():
             j(),
         ),
     )
+    assert x_j.shape == (2,)
+    assert x_j.size(0) == x_j.shape[0]
     actual = torch.sum(x_j, dim=0)
 
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {j}
+    assert actual.shape == ()
+    assert actual.numel() == 1
 
     f_actual = defun(actual, j)
     for jj in range(3):
@@ -89,6 +96,8 @@ def test_tpe_3():
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {j, k}
+    assert actual.shape == ()
+    assert actual.numel() == 1
 
     f_actual = defun(actual, j, k)
     for jj in range(3):

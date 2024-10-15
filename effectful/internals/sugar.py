@@ -3,6 +3,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import math
 import numbers
 import operator
 import typing
@@ -733,7 +734,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-@weak_memoize
+@functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
 
     @Operation
@@ -775,7 +776,10 @@ def _register_torch_op(torch_fn: Callable[P, T]):
                 )
 
             result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            result = torch_getitem(result, [v() for v in sized_fvs])
+            result = torch_getitem(result, tuple(v() for v in sized_fvs))
+
+            assert isinstance(result, TPETensor)  # DEBUG
+
             return result
         elif not any(
             tree.flatten(
@@ -830,16 +834,79 @@ def torch_getitem(
 
 
 @embed_register(torch.Tensor)
+def _embed_tensor(op, args, kwargs):
+    match op, args, kwargs:
+        case torch_getitem_, (torch.Tensor() as x, tuple() as key), () if (
+            torch_getitem_ is torch_getitem 
+            and not isinstance(x, Term)
+            and all(
+                typeof(k) is int and not k.args and not k.kwargs for k in key if isinstance(k, Term)
+            )
+        ):
+            return TPETensor(x, key)
+        case _:
+            return TensorTerm(op, args, kwargs)
+
+
 class TensorTerm(BaseTerm[torch.Tensor]):
     def __getitem__(
         self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
     ) -> Expr[torch.Tensor]:
-        if not isinstance(key, tuple):
-            key = (key,)
-        return torch_getitem(self, key)
+        return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
     @classmethod
     def __torch_function__(
         cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None
     ) -> Expr[torch.Tensor]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+
+class TPETensor(torch.Tensor):
+
+    op: Operation[..., torch.Tensor] = torch_getitem
+    args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
+    kwargs: Tuple = ()
+
+    __match_args__ = ("op", "args", "kwargs")
+
+    def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
+        assert not isinstance(x, Term)
+        assert all(
+            typeof(k) is int and not k.args and not k.kwargs for k in key if isinstance(k, Term)
+        )
+        x, key = _getitem_ellipsis_and_none(x, key)
+        ret = x.as_subclass(cls)
+        ret.args = (x, key)
+        return ret
+
+    def __repr__(self) -> str:
+        return f"TPETensor({term_to_str(self)})"
+
+    @classmethod
+    def __torch_function__(
+        cls, func: Callable[..., T], types, args=(), kwargs=None
+    ) -> Expr[T]:
+        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+    def __getitem__(
+        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
+    ) -> Expr[torch.Tensor]:
+        return torch_getitem(self, key if isinstance(key, tuple) else (key,))
+
+    @property
+    def shape(self) -> torch.Size:
+        x, key = self.args
+        return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
+
+    def size(self, dim: int) -> int:
+        return self.shape[dim]
+
+    def numel(self) -> int:
+        return self.shape.numel()
+
+    def dim(self) -> int:
+        return len(self.shape)
+
+    @property
+    def ndim(self) -> int:
+        return self.dim()
