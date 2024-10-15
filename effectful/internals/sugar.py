@@ -779,7 +779,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
             result = torch_getitem(result, tuple(v() for v in sized_fvs))
 
-            assert isinstance(result, TPETensor)  # DEBUG
+            assert isinstance(result, EagerTensorTerm)  # DEBUG
 
             return result
         elif not any(
@@ -846,7 +846,7 @@ def _embed_tensor(op, args, kwargs):
                 if isinstance(k, Term)
             )
         ):
-            return TPETensor(x, key)
+            return EagerTensorTerm(x, key)
         case _:
             return TensorTerm(op, args, kwargs)
 
@@ -864,7 +864,7 @@ class TensorTerm(BaseTerm[torch.Tensor]):
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
 
-class TPETensor(torch.Tensor):
+class EagerTensorTerm(torch.Tensor):
 
     op: Operation[..., torch.Tensor] = torch_getitem
     args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
