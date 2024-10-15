@@ -111,6 +111,31 @@ def test_tpe_4():
             )
 
 
+def test_tpe_stack():
+    xval, yval = torch.rand(10, 5), torch.rand(10, 5)
+
+    i = gensym(int)
+    j = gensym(int)
+    x_ij = torch_getitem(
+        xval,
+        (i(), j()),
+    )
+    y_ij = torch_getitem(
+        yval,
+        (i(), j()),
+    )
+    actual = torch.stack((x_ij, y_ij))
+    f_actual = defun(actual, i, j)
+
+    for ii in range(10):
+        for jj in range(5):
+            actual = f_actual(ii, jj)
+            expected = torch.stack(
+                (defun(x_ij, i, j)(ii, jj), defun(y_ij, i, j)(ii, jj))
+            )
+            assert torch.equal(actual, expected)
+
+
 INDEXING_CASES = [
     # Simple integer indexing
     (torch.randn(4, 5, 6), (0,)),
