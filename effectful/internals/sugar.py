@@ -674,18 +674,27 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     def _sizes_of(value: Expr) -> Mapping[Operation[[], int], int]:
         sizes = {}
 
-        def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
+        def _torch_getitem_sizeof(
+            x: Expr[torch.Tensor], key: Tuple[Expr, ...]
+        ) -> Expr[torch.Tensor]:
             if not isinstance(x, Term):
                 for i, k in enumerate(key):
                     match k:
                         case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                            sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
+                            sizes[op] = x.shape[
+                                i
+                            ]  # TODO handle cases with None, ellipsis, etc.
                         case _:
                             continue
 
             return torch_getitem.__free_rule__(x, key)
 
-        with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
+        with interpreter(
+            {
+                torch_getitem: _torch_getitem_sizeof,
+                apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            }
+        ):
             evaluate(value)
 
         return sizes
@@ -696,20 +705,30 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         tm = _torch_op.__free_rule__(*args, **kwargs)
         sized_fvs = _sizes_of(tm)
 
-        if _torch_op is torch_getitem and \
-                not isinstance(args[0], Term) and \
-                sized_fvs and args[1] and \
-                all(k.op in sized_fvs for k in args[1] if isinstance(k, Term)):
+        if (
+            _torch_op is torch_getitem
+            and not isinstance(args[0], Term)
+            and sized_fvs
+            and args[1]
+            and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
+        ):
             raise NoDefaultRule
-        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
+        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
+            torch_getitem,
+            _torch_op,
+        }:
             from effectful.ops.function import defun
 
             tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
 
-            inds = torch.broadcast_tensors(*(
-                torch.arange(sized_fvs[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
-                for i, v in enumerate(sized_fvs)
-            ))
+            inds = torch.broadcast_tensors(
+                *(
+                    torch.arange(sized_fvs[v])[
+                        (...,) + (None,) * (len(sized_fvs) - i - 1)
+                    ]
+                    for i, v in enumerate(sized_fvs)
+                )
+            )
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
             result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
@@ -730,7 +749,9 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @_register_torch_op
 def torch_getitem(
     x: torch.Tensor,
-    key: Tuple[Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...],
+    key: Tuple[
+        Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...
+    ],
 ) -> torch.Tensor:
     # fast path for simple cases
     if len(key) == 0:

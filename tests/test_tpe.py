@@ -189,13 +189,14 @@ INDEXING_CASES = [
         ),
     ),
     (
-        torch.randn(3, 4, 5, 6), (
+        torch.randn(3, 4, 5, 6),
+        (
             Ellipsis,
             torch.arange(4)[..., None, None],
             torch.arange(5)[..., None],
             slice(None),
-        )
-    )
+        ),
+    ),
 ]
 
 
