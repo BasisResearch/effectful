@@ -668,33 +668,54 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 import torch
 
 
+def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
+    sizes = {}
+
+    def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
+        if not isinstance(x, Term):
+
+            # handle None separately
+            if any(k is None for k in key):
+                x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
+                key = tuple(slice(None) if k is None else k for k in key)
+
+            # handle Ellipsis or missing dimensions by padding with slice(None)
+            if any(k is Ellipsis for k in key):
+                for i, k in enumerate(key):
+                    if k is Ellipsis:
+                        assert not any(
+                            k is Ellipsis for k in key[i + 1 :]
+                        ), "only one Ellipsis allowed"
+                        key = (
+                            key[:i]
+                            + (slice(None),) * (len(x.shape) - len(key) + 1)
+                            + key[i + 1 :]
+                        )
+                        break
+
+            for i, k in enumerate(key):
+                match k:
+                    case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
+                        sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
+                    case _:
+                        continue
+
+        return torch_getitem.__free_rule__(x, key)
+
+    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
+        evaluate(value)
+
+    return sizes
+
+
 @weak_memoize
 def _register_torch_op(torch_fn: Callable[P, T]):
-
-    def _sizes_of(value: Expr) -> Mapping[Operation[[], int], int]:
-        sizes = {}
-
-        def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
-            if not isinstance(x, Term):
-                for i, k in enumerate(key):
-                    match k:
-                        case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                            sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
-                        case _:
-                            continue
-
-            return torch_getitem.__free_rule__(x, key)
-
-        with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
-            evaluate(value)
-
-        return sizes
 
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
         tm = _torch_op.__free_rule__(*args, **kwargs)
-        sized_fvs = _sizes_of(tm)
+        sized_fvs = sizesof(tm)
 
         if _torch_op is torch_getitem and \
                 not isinstance(args[0], Term) and \
@@ -712,9 +733,12 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             ))
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
-            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
 
-            return torch_getitem(result, [v() for v in sized_fvs])
+            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+            result = torch_getitem(result, [v() for v in sized_fvs])
+            #result = tree.map_structure(lambda r: torch_getitem(r.reshape(inds[0].shape + r.shape[1:]), [v() for v in sized_fvs]) if isinstance(r, torch.Tensor) else r, flat_result)
+
+            return result
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))

@@ -16,20 +16,12 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, torch_getitem
+from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, sizesof, torch_getitem
 from ..ops.core import Expr, Operation, Term, ctxof, evaluate
 from ..ops.function import defun
 from ..ops.handler import coproduct, fwd, handler
 
 T = TypeVar("T")
-
-
-def Dim(name: str, size: int) -> type:
-    class Size(int):
-        _size = size
-        _name = name
-
-    return Size
 
 
 class IndexSet(Dict[str, Set[int]]):
@@ -123,17 +115,11 @@ def union(*indexsets: IndexSet) -> IndexSet:
     )
 
 
-def sized_fvs(value):
-    result = {}
-    for k, v in ctxof(value).items():
-        if hasattr(v, "_size"):
-            result[k] = v
-    return result
-
-
 @functools.lru_cache(maxsize=None)
-def name_to_sym(name: str, size: int) -> Operation:
-    return gensym(Dim(name, size))
+def name_to_sym(name: str) -> Operation[[], int]:
+    sym = gensym(int)
+    sym._name = name
+    return sym
 
 
 def lift_tensor(tensor, **kwargs):
@@ -161,11 +147,11 @@ def lift_tensor(tensor, **kwargs):
     index_expr = [slice(None)] * len(tensor.shape)
     for name, dim in name_to_dim.items():
         # ensure that lifted tensors use the same free variables for the same name
-        index_expr[dim - event_dim] = name_to_sym(name, batch_shape[dim])()
+        index_expr[dim - event_dim] = name_to_sym(name)()
 
     vars_ = [v.op for v in index_expr if isinstance(v, Term)]
 
-    result = torch_getitem(tensor, list(index_expr))
+    result = torch_getitem(tensor, tuple(index_expr))
 
     assert type(result) is TensorTerm
 
@@ -233,7 +219,7 @@ def indices_of(value, **kwargs) -> IndexSet:
         value, _ = lift_tensor(value, **kwargs)
 
     return IndexSet(
-        **{v._name: set(range(v._size)) for (_, v) in sized_fvs(value).items()}
+        **{k._name: set(range(v)) for (k, v) in sizesof(value).items()}
     )
 
 
@@ -306,12 +292,13 @@ def gather(value, indexset, **kwargs):
     if isinstance(value, torch.Tensor) and not isinstance(value, Term):
         value, _ = lift_tensor(value, **kwargs)
 
+    indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
         k: functools.partial(
-            lambda v: v, torch_getitem(torch.tensor(list(indexset[v._name])), [k()])
+            lambda v: v, torch_getitem(torch.tensor(list(indexset_vars[k])), [k()])
         )
-        for k, v in sized_fvs(value).items()
-        if v._name in indexset
+        for k in sizesof(value).keys()
+        if k in indexset_vars
     }
 
     return defun(value, *binding.keys())(*[v() for v in binding.values()])
@@ -369,7 +356,7 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-    return torch_getitem(torch.stack(values), [name_to_sym(name, len(values))()])
+    return torch_getitem(torch.stack(values), [name_to_sym(name)()])
 
 
 def cond(
@@ -406,12 +393,12 @@ def cond(
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
     :param kwargs: Additional keyword arguments used by specific implementations.
     """
-    case_ = case if isinstance(case, Term) else lift_tensor(case, event_dim=0)[0]
-    [fst, snd] = [
-        v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in [fst, snd]
+    case_ = case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs)[0]
+    [fst_, snd_] = [
+        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)[0] for v in [fst, snd]
     ]
 
-    return torch.where(case_[(...,) + (None,) * event_dim], snd, fst)
+    return torch.where(case_[(...,) + (None,) * event_dim], snd_, fst_)
 
 
 def cond_n(values: Dict[IndexSet, T], case: Union[bool, torch.Tensor], **kwargs):
