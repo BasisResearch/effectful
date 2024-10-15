@@ -221,8 +221,8 @@ def indexed_to_defun(value, names):
 
 
 def test_stack():
-    t1 = torch.randn(2, 3)
-    t2 = torch.randn(2, 3)
+    t1 = torch.randn(5, 3)
+    t2 = torch.randn(5, 3)
 
     l1, _ = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
     l2, _ = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
@@ -230,7 +230,7 @@ def test_stack():
 
     f = indexed_to_defun(l3, ["x", "a", "b"])
 
-    for i in range(2):
+    for i in range(5):
         for j in range(3):
             assert f(0, i, j) == t1[i, j]
             assert f(1, i, j) == t2[i, j]
