@@ -667,14 +667,14 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 
 import torch
 
-
 IndexElement = Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor]
 
 
 def _getitem_ellipsis_and_none(
-    x: Expr[torch.Tensor],
-    key: Tuple[Expr[IndexElement], ...]
-) -> Tuple[Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]]:
+    x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
+) -> Tuple[
+    Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
+]:
 
     # handle None separately
     if any(k is None for k in key):
@@ -706,7 +706,9 @@ def _getitem_ellipsis_and_none(
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     sizes = {}
 
-    def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]) -> Expr[torch.Tensor]:
+    def _torch_getitem_sizeof(
+        x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
+    ) -> Expr[torch.Tensor]:
         if not isinstance(x, Term):
 
             x_, key_ = _getitem_ellipsis_and_none(x, key)
@@ -720,7 +722,12 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
 
         return torch_getitem.__free_rule__(x, key)
 
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
+    with interpreter(
+        {
+            torch_getitem: _torch_getitem_sizeof,
+            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+        }
+    ):
         evaluate(value)
 
     return sizes
@@ -735,25 +742,35 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         tm = _torch_op.__free_rule__(*args, **kwargs)
         sized_fvs = sizesof(tm)
 
-        if _torch_op is torch_getitem and \
-                not isinstance(args[0], Term) and \
-                sized_fvs and args[1] and \
-                all(k.op in sized_fvs for k in args[1] if isinstance(k, Term)):
+        if (
+            _torch_op is torch_getitem
+            and not isinstance(args[0], Term)
+            and sized_fvs
+            and args[1]
+            and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
+        ):
             raise NoDefaultRule
-        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
+        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
+            torch_getitem,
+            _torch_op,
+        }:
             from effectful.ops.function import defun
 
             tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
 
-            inds = torch.broadcast_tensors(*(
-                torch.arange(sized_fvs[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
-                for i, v in enumerate(sized_fvs)
-            ))
+            inds = torch.broadcast_tensors(
+                *(
+                    torch.arange(sized_fvs[v])[
+                        (...,) + (None,) * (len(sized_fvs) - i - 1)
+                    ]
+                    for i, v in enumerate(sized_fvs)
+                )
+            )
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
-            #result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            #result = torch_getitem(result, [v() for v in sized_fvs])
+            # result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+            # result = torch_getitem(result, [v() for v in sized_fvs])
 
             def _unflatten_result(flat_result: S) -> S:
                 if isinstance(flat_result, torch.Tensor):
@@ -819,7 +836,9 @@ def torch_getitem(
 
 @embed_register(torch.Tensor)
 class TensorTerm(BaseTerm[torch.Tensor]):
-    def __getitem__(self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]) -> Expr[torch.Tensor]:
+    def __getitem__(
+        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
+    ) -> Expr[torch.Tensor]:
         if not isinstance(key, tuple):
             key = (key,)
         return torch_getitem(self, key)

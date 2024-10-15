@@ -16,9 +16,6 @@ from typing import (
 import pyro
 import torch
 
-<<<<<<< HEAD
-from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, sizesof, torch_getitem
-=======
 from ..internals.sugar import (
     NoDefaultRule,
     TensorTerm,
@@ -27,7 +24,6 @@ from ..internals.sugar import (
     sizesof,
     torch_getitem,
 )
->>>>>>> jf-add-indexed
 from ..ops.core import Expr, Operation, Term, ctxof, evaluate
 from ..ops.function import defun
 from ..ops.handler import coproduct, fwd, handler
