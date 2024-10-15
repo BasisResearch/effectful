@@ -668,35 +668,53 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 import torch
 
 
+IndexElement = Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor]
+
+
+def _getitem_ellipsis_and_none(
+    x: Expr[torch.Tensor],
+    key: Tuple[Expr[IndexElement], ...]
+) -> Tuple[Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]]:
+
+    # handle None separately
+    if any(k is None for k in key):
+        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
+        key = tuple(slice(None) if k is None else k for k in key)
+
+    # handle Ellipsis or missing dimensions by padding with slice(None)
+    if any(k is Ellipsis for k in key):
+        for i, k in enumerate(key):
+            if k is Ellipsis:
+                assert not any(
+                    k is Ellipsis for k in key[i + 1 :]
+                ), "only one Ellipsis allowed"
+                key = (
+                    key[:i]
+                    + (slice(None),) * (len(x.shape) - len(key) + 1)
+                    + key[i + 1 :]
+                )
+                break
+    elif len(key) < len(x.shape):
+        key = key + (slice(None),) * (len(x.shape) - len(key))
+
+    assert not any(k in (Ellipsis, None) for k in key)
+    assert len(key) == len(x.shape)
+
+    return x, key
+
+
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     sizes = {}
 
-    def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
+    def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]) -> Expr[torch.Tensor]:
         if not isinstance(x, Term):
 
-            # handle None separately
-            if any(k is None for k in key):
-                x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-                key = tuple(slice(None) if k is None else k for k in key)
+            x_, key_ = _getitem_ellipsis_and_none(x, key)
 
-            # handle Ellipsis or missing dimensions by padding with slice(None)
-            if any(k is Ellipsis for k in key):
-                for i, k in enumerate(key):
-                    if k is Ellipsis:
-                        assert not any(
-                            k is Ellipsis for k in key[i + 1 :]
-                        ), "only one Ellipsis allowed"
-                        key = (
-                            key[:i]
-                            + (slice(None),) * (len(x.shape) - len(key) + 1)
-                            + key[i + 1 :]
-                        )
-                        break
-
-            for i, k in enumerate(key):
+            for i, k in enumerate(key_):
                 match k:
                     case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                        sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
+                        sizes[op] = x_.shape[i]
                     case _:
                         continue
 
@@ -734,10 +752,18 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
-            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            result = torch_getitem(result, [v() for v in sized_fvs])
-            #result = tree.map_structure(lambda r: torch_getitem(r.reshape(inds[0].shape + r.shape[1:]), [v() for v in sized_fvs]) if isinstance(r, torch.Tensor) else r, flat_result)
+            #result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+            #result = torch_getitem(result, [v() for v in sized_fvs])
 
+            def _unflatten_result(flat_result: S) -> S:
+                if isinstance(flat_result, torch.Tensor):
+                    result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+                    result = torch_getitem(result, [v() for v in sized_fvs])
+                    return result
+                else:
+                    return flat_result
+
+            result = tree.map_structure(_unflatten_result, flat_result)
             return result
         elif not any(
             tree.flatten(
@@ -754,7 +780,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @_register_torch_op
 def torch_getitem(
     x: torch.Tensor,
-    key: Tuple[Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...],
+    key: Tuple[IndexElement, ...],
 ) -> torch.Tensor:
     # fast path for simple cases
     if len(key) == 0:
@@ -764,26 +790,8 @@ def torch_getitem(
     elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
 
-    # handle None separately
-    if any(k is None for k in key):
-        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-        key = tuple(slice(None) if k is None else k for k in key)
-
-    # handle Ellipsis or missing dimensions by padding with slice(None)
-    if any(k is Ellipsis for k in key):
-        for i, k in enumerate(key):
-            if k is Ellipsis:
-                assert not any(
-                    k is Ellipsis for k in key[i + 1 :]
-                ), "only one Ellipsis allowed"
-                key = (
-                    key[:i]
-                    + (slice(None),) * (len(x.shape) - len(key) + 1)
-                    + key[i + 1 :]
-                )
-                break
-    elif len(key) < len(x.shape):
-        key = key + (slice(None),) * (len(x.shape) - len(key))
+    # handle None, Ellipsis, and missing dimensions
+    x, key = _getitem_ellipsis_and_none(x, key)
 
     # Convert non-tensor args to tensors
     key = list(key)
@@ -811,7 +819,7 @@ def torch_getitem(
 
 @embed_register(torch.Tensor)
 class TensorTerm(BaseTerm[torch.Tensor]):
-    def __getitem__(self, key: Union[Expr, Tuple[Expr, ...]]) -> Expr[torch.Tensor]:
+    def __getitem__(self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]) -> Expr[torch.Tensor]:
         if not isinstance(key, tuple):
             key = (key,)
         return torch_getitem(self, key)
