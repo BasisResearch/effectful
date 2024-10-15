@@ -697,7 +697,7 @@ def _getitem_ellipsis_and_none(
     elif len(key) < len(x.shape):
         key = key + (slice(None),) * (len(x.shape) - len(key))
 
-    assert not any(k in (Ellipsis, None) for k in key)
+    assert not any(k in (Ellipsis, None) for k in key if not isinstance(k, Term))
     assert len(key) == len(x.shape)
 
     return x, key
@@ -775,7 +775,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             def _unflatten_result(flat_result: S) -> S:
                 if isinstance(flat_result, torch.Tensor):
                     result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-                    result = torch_getitem(result, [v() for v in sized_fvs])
+                    result = torch_getitem(result, tuple(v() for v in sized_fvs))
                     return result
                 else:
                     return flat_result
@@ -831,7 +831,7 @@ def torch_getitem(
             flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
             key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
-    return torch.ops.aten.index(x, key)
+    return torch.ops.aten.index(x, tuple(key))
 
 
 @embed_register(torch.Tensor)
