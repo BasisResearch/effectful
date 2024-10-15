@@ -714,7 +714,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
             result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
 
-            return torch_getitem(result, [v() for v in sized_fvs])
+            return torch_getitem(result, tuple([v() for v in sized_fvs]))
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -736,7 +736,7 @@ def torch_getitem(
     if len(key) == 0:
         return x
     elif not any(isinstance(k, torch.Tensor) for k in key):
-        return x[tuple(key)]
+        return x[key]
     elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
 

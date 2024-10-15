@@ -165,7 +165,7 @@ def lift_tensor(tensor, **kwargs):
 
     vars_ = [v.op for v in index_expr if isinstance(v, Term)]
 
-    result = torch_getitem(tensor, list(index_expr))
+    result = torch_getitem(tensor, tuple(index_expr))
 
     assert type(result) is TensorTerm
 
@@ -308,7 +308,7 @@ def gather(value, indexset, **kwargs):
 
     binding = {
         k: functools.partial(
-            lambda v: v, torch_getitem(torch.tensor(list(indexset[v._name])), [k()])
+            lambda v: v, torch_getitem(torch.tensor(list(indexset[v._name])), (k(),))
         )
         for k, v in sized_fvs(value).items()
         if v._name in indexset
@@ -369,7 +369,7 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-    return torch_getitem(torch.stack(values), [name_to_sym(name, len(values))()])
+    return torch_getitem(torch.stack(values), (name_to_sym(name, len(values))(),))
 
 
 def cond(
