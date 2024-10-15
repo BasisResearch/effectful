@@ -211,10 +211,8 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
 
 
 def indexed_to_defun(value, names):
-    vars_ = sized_fvs(value)
-    ordered_vars = [
-        [v for v in vars_ if v.__type_rule__()._name == n][0] for n in names
-    ]
+    vars_ = {t._name: v for (v, t) in sized_fvs(value).items()}
+    ordered_vars = [vars_[n] for n in names]
     return defun(value, *ordered_vars)
 
 
