@@ -769,18 +769,13 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
-            # result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            # result = torch_getitem(result, [v() for v in sized_fvs])
+            if not isinstance(flat_result, torch.Tensor):
+                raise NotImplementedError(
+                    f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
+                )
 
-            def _unflatten_result(flat_result: S) -> S:
-                if isinstance(flat_result, torch.Tensor):
-                    result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-                    result = torch_getitem(result, tuple(v() for v in sized_fvs))
-                    return result
-                else:
-                    return flat_result
-
-            result = tree.map_structure(_unflatten_result, flat_result)
+            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+            result = torch_getitem(result, [v() for v in sized_fvs])
             return result
         elif not any(
             tree.flatten(
