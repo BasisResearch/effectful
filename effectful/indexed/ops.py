@@ -18,13 +18,14 @@ import torch
 
 from ..internals.sugar import NoDefaultRule, TensorTerm, embed, gensym, torch_getitem
 from ..ops.core import Expr, Operation, Term, ctxof, evaluate
+from ..ops.function import defun
 from ..ops.handler import coproduct, fwd, handler
 
 T = TypeVar("T")
 
 
 def Dim(name: str, size: int) -> type:
-    class Size:
+    class Size(int):
         _size = size
         _name = name
 
@@ -313,8 +314,7 @@ def gather(value, indexset, **kwargs):
         if v._name in indexset
     }
 
-    with handler(binding):
-        return evaluate(value)
+    return defun(value, *binding.keys())(*[v() for v in binding.values()])
 
 
 @functools.singledispatch

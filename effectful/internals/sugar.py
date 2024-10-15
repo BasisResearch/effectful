@@ -16,6 +16,7 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
+    Union,
 )
 
 import torch
@@ -29,6 +30,7 @@ from effectful.ops.core import (
     Operation,
     Term,
     apply,
+    ctxof,
     evaluate,
     syntactic_eq,
     typeof,
@@ -669,61 +671,50 @@ import torch
 @weak_memoize
 def _register_torch_op(torch_fn: Callable[P, T]):
 
-    if torch_fn is torch.ops.aten.index:
-        return torch_getitem
+    def _sizes_of(value: Expr) -> Mapping[Operation[[], int], int]:
+        sizes = {}
+
+        def _torch_getitem_sizeof(x: Expr[torch.Tensor], key: Tuple[Expr, ...]) -> Expr[torch.Tensor]:
+            if not isinstance(x, Term):
+                for i, k in enumerate(key):
+                    match k:
+                        case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
+                            sizes[op] = x.shape[i]  # TODO handle cases with None, ellipsis, etc.
+                        case _:
+                            continue
+
+            return torch_getitem.__free_rule__(x, key)
+
+        with interpreter({torch_getitem: _torch_getitem_sizeof, apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k)}):
+            evaluate(value)
+
+        return sizes
 
     @Operation
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
-        def _is_sized_fv(v: Operation) -> TypeGuard[Operation[[], int]]:
-            try:
-                tp = v.__type_rule__()
-                return issubclass(tp, int) and hasattr(tp, "_size")
-            except TypeError:
-                return False
+        tm = _torch_op.__free_rule__(*args, **kwargs)
+        sized_fvs = _sizes_of(tm)
 
-        def _fvs_of(value: Expr) -> Sequence[Operation]:
-            from effectful.ops.core import ctxof
+        if _torch_op is torch_getitem and \
+                not isinstance(args[0], Term) and \
+                sized_fvs and args[1] and \
+                all(k.op in sized_fvs for k in args[1] if isinstance(k, Term)):
+            raise NoDefaultRule
+        elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {torch_getitem, _torch_op}:
+            from effectful.ops.function import defun
 
-            return list(
-                set(
-                    tree.flatten(
-                        tree.map_structure(lambda v: list(op for op in ctxof(v)), value)
-                    )
-                )
-            )
+            tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
 
-        if len(sized_fvs := _fvs_of((args, kwargs))) > 0 and all(
-            _is_sized_fv(v) for v in sized_fvs
-        ):
-
-            @torch.func.vmap
-            def _tpe_result_fn(*inds: torch.Tensor) -> torch.Tensor:
-                from effectful.ops.handler import handler
-
-                with handler(
-                    {
-                        var: functools.partial(lambda x: x, ind)
-                        for var, ind in zip(sized_fvs, inds)
-                    }
-                ):
-                    args, kwargs = tree.map_structure(evaluate, (args, kwargs))
-                return torch_fn(*args, **kwargs)
-
-            sizes = {v: v.__type_rule__()._size for v in sized_fvs}
-            inds = [
-                torch.arange(sizes[v])[(...,) + (None,) * i]
+            inds = torch.broadcast_tensors(*(
+                torch.arange(sized_fvs[v])[(...,) + (None,) * (len(sized_fvs) - i - 1)]
                 for i, v in enumerate(sized_fvs)
-            ]
+            ))
 
-            flat_inds = [ind.reshape(-1) for ind in torch.broadcast_tensors(*inds)]
-            flat_tpe_result = _tpe_result_fn(*flat_inds)
+            flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
+            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
 
-            tpe_result: torch.Tensor = flat_tpe_result.reshape(
-                *(tuple(sizes[v] for v in sized_fvs) + flat_tpe_result.shape[1:])
-            )
-
-            return torch_getitem(tpe_result, [v() for v in sized_fvs])
+            return torch_getitem(result, [v() for v in sized_fvs])
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -736,24 +727,69 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     return _torch_op
 
 
-@Operation
-def torch_getitem(x: torch.Tensor, key: Sequence[torch.Tensor]) -> torch.Tensor:
-    if not any(isinstance(k, Term) for k in (x, *key)):
-        return x[*key]
-    else:
-        raise NoDefaultRule
+@_register_torch_op
+def torch_getitem(
+    x: torch.Tensor,
+    key: Tuple[Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...],
+) -> torch.Tensor:
+    # fast path for simple cases
+    if len(key) == 0:
+        return x
+    elif not any(isinstance(k, torch.Tensor) for k in key):
+        return x[key]
+    elif all(isinstance(k, torch.Tensor) for k in key):
+        return torch.ops.aten.index(x, key)
 
+    # handle None separately
+    if any(k is None for k in key):
+        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
+        key = tuple(slice(None) if k is None else k for k in key)
 
-def Sized(size: int) -> type[int]:
-    class _Sized(int):
-        _size = size
+    # handle Ellipsis or missing dimensions by padding with slice(None)
+    if any(k is Ellipsis for k in key):
+        for i, k in enumerate(key):
+            if k is Ellipsis:
+                assert not any(
+                    k is Ellipsis for k in key[i + 1 :]
+                ), "only one Ellipsis allowed"
+                key = (
+                    key[:i]
+                    + (slice(None),) * (len(x.shape) - len(key) + 1)
+                    + key[i + 1 :]
+                )
+                break
+    elif len(key) < len(x.shape):
+        key = key + (slice(None),) * (len(x.shape) - len(key))
 
-    return _Sized
+    # Convert non-tensor args to tensors
+    key = list(key)
+    for i, arg in list(enumerate(key)):
+        if isinstance(arg, slice):
+            if arg == slice(None):
+                key[i] = None
+            else:
+                # Convert slices to torch.arange()s.
+                start = arg.start if arg.start is not None else 0
+                stop = arg.stop if arg.stop is not None else x.shape[i]
+                step = arg.step if arg.step is not None else 1
+                flat_arg = torch.arange(
+                    start, stop, step, dtype=torch.long, device=x.device
+                )
+                key[i] = flat_arg.reshape((-1,) + (1,) * i)
+        elif isinstance(arg, int):
+            key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
+        elif isinstance(arg, (list, tuple)):
+            flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
+            key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
+
+    return torch.ops.aten.index(x, key)
 
 
 @embed_register(torch.Tensor)
 class TensorTerm(BaseTerm[torch.Tensor]):
-    def __getitem__(self, key: Sequence[Expr]) -> Expr[torch.Tensor]:
+    def __getitem__(self, key: Union[Expr, Tuple[Expr, ...]]) -> Expr[torch.Tensor]:
+        if not isinstance(key, tuple):
+            key = (key,)
         return torch_getitem(self, key)
 
     @classmethod
