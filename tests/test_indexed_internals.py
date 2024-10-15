@@ -199,9 +199,13 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
     assert isinstance(actual, Term)
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
-    assert all(not isinstance(arg, Term) or issubclass(typeof(arg), int) for arg in actual.args[1])
+    assert all(
+        not isinstance(arg, Term) or issubclass(typeof(arg), int)
+        for arg in actual.args[1]
+    )
 
-    world_dims = [enumerate(world.get(v.__type_rule__()._name, {0})) for v in vars_]
+    world_vars = {name_to_sym(name): inds for name, inds in world.items()}
+    world_dims = [enumerate(world_vars.get(v, {0})) for v in vars_]
     for idx in itertools.product(*world_dims):
         actual_idx = tuple(i[0] for i in idx)
         value_idx = (slice(None),) * len(enum_shape) + tuple(i[1] for i in idx)
@@ -211,14 +215,14 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
 
 
 def indexed_to_defun(value, names):
-    vars_ = {t._name: v for (v, t) in sized_fvs(value).items()}
-    ordered_vars = [vars_[n] for n in names]
+    vars_ = sizesof(value)
+    ordered_vars = [[v for v in vars_ if v is name_to_sym(n)][0] for n in names]
     return defun(value, *ordered_vars)
 
 
 def test_stack():
-    t1 = torch.randn(2, 3)
-    t2 = torch.randn(2, 3)
+    t1 = torch.randn(5, 3)
+    t2 = torch.randn(5, 3)
 
     l1, _ = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
     l2, _ = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
@@ -226,7 +230,7 @@ def test_stack():
 
     f = indexed_to_defun(l3, ["x", "a", "b"])
 
-    for i in range(2):
+    for i in range(5):
         for j in range(3):
             assert f(0, i, j) == t1[i, j]
             assert f(1, i, j) == t2[i, j]

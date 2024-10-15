@@ -30,7 +30,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
+@dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
 
