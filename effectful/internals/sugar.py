@@ -736,7 +736,7 @@ def torch_getitem(
     if len(key) == 0:
         return x
     elif not any(isinstance(k, torch.Tensor) for k in key):
-        return x[key]
+        return x[tuple(key)]
     elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
 
