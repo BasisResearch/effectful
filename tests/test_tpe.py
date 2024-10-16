@@ -41,6 +41,9 @@ def test_tpe_1():
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {i, j}
+    assert actual.shape == ()
+    assert actual.numel() == 1
+    assert actual.dim() == actual.ndim == 0
 
     f_actual = defun(actual, i, j)
     for ii in range(2):
@@ -60,11 +63,15 @@ def test_tpe_2():
             j(),
         ),
     )
+    assert x_j.shape == (2,)
+    assert x_j.size(0) == x_j.shape[0]
     actual = torch.sum(x_j, dim=0)
 
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {j}
+    assert actual.shape == ()
+    assert actual.numel() == 1
 
     f_actual = defun(actual, j)
     for jj in range(3):
@@ -89,6 +96,8 @@ def test_tpe_3():
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
     assert set(a.op for a in actual.args[1]) == {j, k}
+    assert actual.shape == ()
+    assert actual.numel() == 1
 
     f_actual = defun(actual, j, k)
     for jj in range(3):
@@ -125,6 +134,8 @@ def test_tpe_stack():
         (i(), j()),
     )
     actual = torch.stack((x_ij, y_ij))
+    assert isinstance(actual, torch.Tensor)
+    assert actual.shape == (2,)
     f_actual = defun(actual, i, j)
 
     for ii in range(10):
@@ -198,6 +209,24 @@ INDEXING_CASES = [
         ),
     ),
 ]
+
+
+@pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
+def test_getitem_ellipsis_and_none(tensor, idx):
+    from effectful.internals.sugar import _getitem_ellipsis_and_none
+
+    expected = tensor[idx]
+    t, i = _getitem_ellipsis_and_none(tensor, idx)
+
+    if any(k is Ellipsis or k is None for k in idx):
+        assert t.shape != tensor.shape or idx != i
+    assert not any(k is Ellipsis or k is None for k in i)
+
+    result = t[i]
+    assert (
+        result.shape == expected.shape
+    ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)

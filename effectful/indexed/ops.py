@@ -24,7 +24,7 @@ from ..internals.sugar import (
     sizesof,
     torch_getitem,
 )
-from ..ops.core import Expr, Operation, Term, ctxof, evaluate
+from ..ops.core import Expr, Operation, Term, ctxof, evaluate, typeof
 from ..ops.function import defun
 from ..ops.handler import coproduct, fwd, handler
 
@@ -160,7 +160,7 @@ def lift_tensor(tensor, **kwargs):
 
     result = torch_getitem(tensor, tuple(index_expr))
 
-    assert type(result) is TensorTerm
+    assert isinstance(result, Term) and issubclass(typeof(result), torch.Tensor)
 
     return result, vars_
 
@@ -361,12 +361,7 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-    stacked = torch.stack(values)
-    match stacked:
-        case Term(op, [torch.Tensor() as t, key]) if op is torch_getitem:
-            return torch_getitem(t, tuple(key) + (name_to_sym(name)(),))
-        case _:
-            return torch_getitem(stacked, (name_to_sym(name)(),))
+    return torch.stack(values)[name_to_sym(name)()]
 
 
 def cond(

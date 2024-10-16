@@ -3,6 +3,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import math
 import numbers
 import operator
 import typing
@@ -667,40 +668,71 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 
 import torch
 
+IndexElement = Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor]
+
+
+def _desugar_tensor_index(shape, key):
+    new_shape = []
+    new_key = []
+
+    def extra_dims(key):
+        return sum(1 for k in key if k is None)
+
+    # handle any missing dimensions by adding a trailing Ellipsis
+    if not any(k is Ellipsis for k in key):
+        key = tuple(key) + (...,)
+
+    for i, k in enumerate(key):
+        if k is None:  # add a new singleton dimension
+            new_shape.append(1)
+            new_key.append(slice(None))
+        elif k is Ellipsis:
+            assert not any(
+                k is Ellipsis for k in key[i + 1 :]
+            ), "only one Ellipsis allowed"
+
+            # determine which of the original dimensions this ellipsis refers to
+            pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
+            elided_dims = (
+                len(shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
+            )  #
+            new_shape += shape[pre_dims : pre_dims + elided_dims]
+            new_key += [slice(None)] * elided_dims
+        else:
+            new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
+            new_key.append(k)
+
+    return new_shape, new_key
+
+
+def _getitem_ellipsis_and_none(
+    x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
+) -> Tuple[
+    Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
+]:
+    """Eliminate ellipses and None in an index expression x[key].
+
+    Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
+
+    """
+
+    new_shape, new_key = _desugar_tensor_index(x.shape, key)
+    return torch.reshape(x, new_shape), new_key
+
 
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     sizes = {}
 
     def _torch_getitem_sizeof(
-        x: Expr[torch.Tensor], key: Tuple[Expr, ...]
+        x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
     ) -> Expr[torch.Tensor]:
-        if not isinstance(x, Term):
+        if isinstance(x, torch.Tensor):
+            shape, key_ = _desugar_tensor_index(x.shape, key)
 
-            # handle None separately
-            if any(k is None for k in key):
-                x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-                key = tuple(slice(None) if k is None else k for k in key)
-
-            # handle Ellipsis or missing dimensions by padding with slice(None)
-            if any(k is Ellipsis for k in key):
-                for i, k in enumerate(key):
-                    if k is Ellipsis:
-                        assert not any(
-                            k is Ellipsis for k in key[i + 1 :]
-                        ), "only one Ellipsis allowed"
-                        key = (
-                            key[:i]
-                            + (slice(None),) * (len(x.shape) - len(key) + 1)
-                            + key[i + 1 :]
-                        )
-                        break
-
-            for i, k in enumerate(key):
+            for i, k in enumerate(key_):
                 match k:
                     case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                        sizes[op] = x.shape[
-                            i
-                        ]  # TODO handle cases with None, ellipsis, etc.
+                        sizes[op] = shape[i]
                     case _:
                         continue
 
@@ -717,7 +749,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-@weak_memoize
+@functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
 
     @Operation
@@ -733,6 +765,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
         ):
+            print(f"{torch_fn}: first arg is not a term")
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
@@ -753,10 +786,13 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
-            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            result = torch_getitem(result, [v() for v in sized_fvs])
-            # result = tree.map_structure(lambda r: torch_getitem(r.reshape(inds[0].shape + r.shape[1:]), [v() for v in sized_fvs]) if isinstance(r, torch.Tensor) else r, flat_result)
+            if not isinstance(flat_result, torch.Tensor):
+                raise NotImplementedError(
+                    f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
+                )
 
+            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
+            result = torch_getitem(result, tuple(v() for v in sized_fvs))
             return result
         elif not any(
             tree.flatten(
@@ -765,6 +801,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return torch_fn(*args, **kwargs)
         else:
+            print(f"{torch_fn}: no default rule")
             raise NoDefaultRule
 
     return _torch_op
@@ -773,38 +810,18 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 @_register_torch_op
 def torch_getitem(
     x: torch.Tensor,
-    key: Tuple[
-        Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor], ...
-    ],
+    key: Tuple[IndexElement, ...],
 ) -> torch.Tensor:
     # fast path for simple cases
     if len(key) == 0:
         return x
     elif not any(isinstance(k, torch.Tensor) for k in key):
-        return x[key]
+        return x[tuple(key)]
     elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
 
-    # handle None separately
-    if any(k is None for k in key):
-        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-        key = tuple(slice(None) if k is None else k for k in key)
-
-    # handle Ellipsis or missing dimensions by padding with slice(None)
-    if any(k is Ellipsis for k in key):
-        for i, k in enumerate(key):
-            if k is Ellipsis:
-                assert not any(
-                    k is Ellipsis for k in key[i + 1 :]
-                ), "only one Ellipsis allowed"
-                key = (
-                    key[:i]
-                    + (slice(None),) * (len(x.shape) - len(key) + 1)
-                    + key[i + 1 :]
-                )
-                break
-    elif len(key) < len(x.shape):
-        key = key + (slice(None),) * (len(x.shape) - len(key))
+    # handle None, Ellipsis, and missing dimensions
+    x, key = _getitem_ellipsis_and_none(x, key)
 
     # Convert non-tensor args to tensors
     key = list(key)
@@ -827,18 +844,90 @@ def torch_getitem(
             flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
             key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
-    return torch.ops.aten.index(x, key)
+    return torch.ops.aten.index(x, tuple(key))
 
 
 @embed_register(torch.Tensor)
+def _embed_tensor(op, args, kwargs):
+    match op, args, kwargs:
+        case torch_getitem_, (torch.Tensor() as x, (k1, *ks) as key), () if (
+            torch_getitem_ is torch_getitem
+            and not isinstance(x, Term)
+            and all(
+                typeof(k) is int and not k.args and not k.kwargs
+                for k in key
+                if isinstance(k, Term)
+            )
+        ):
+            return EagerTensorTerm(x, key)
+        case _:
+            return TensorTerm(op, args, kwargs)
+
+
 class TensorTerm(BaseTerm[torch.Tensor]):
-    def __getitem__(self, key: Union[Expr, Tuple[Expr, ...]]) -> Expr[torch.Tensor]:
-        if not isinstance(key, tuple):
-            key = (key,)
-        return torch_getitem(self, key)
+    def __getitem__(
+        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
+    ) -> Expr[torch.Tensor]:
+        return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
     @classmethod
     def __torch_function__(
-        cls, func: Callable[..., torch.Tensor], types, args=(), kwargs=None
-    ) -> Expr[torch.Tensor]:
+        cls, func: Callable[..., T], types, args=(), kwargs=None
+    ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+
+class EagerTensorTerm(torch.Tensor):
+
+    op: Operation[..., torch.Tensor] = torch_getitem
+    args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
+    kwargs: Tuple = ()
+
+    __match_args__ = ("op", "args", "kwargs")
+
+    def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
+        assert not isinstance(x, Term)
+        assert all(
+            typeof(k) is int and not k.args and not k.kwargs
+            for k in key
+            if isinstance(k, Term)
+        )
+        x, key = _getitem_ellipsis_and_none(x, key)
+        ret = x.as_subclass(cls)
+        ret.args = (x, key)
+        return ret
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({term_to_str(self)})"
+
+    @classmethod
+    def __torch_function__(
+        cls, func: Callable[..., T], types, args=(), kwargs=None
+    ) -> Expr[T]:
+        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+    def __getitem__(
+        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
+    ) -> Expr[torch.Tensor]:
+        return torch_getitem(self, key if isinstance(key, tuple) else (key,))
+
+    @property
+    def shape(self) -> torch.Size:
+        x, key = self.args
+        return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
+
+    def size(self, dim: int) -> int:
+        return self.shape[dim]
+
+    def numel(self) -> int:
+        return self.shape.numel()
+
+    def dim(self) -> int:
+        return len(self.shape)
+
+    @property
+    def ndim(self) -> int:
+        return self.dim()
+
+    def item(self):
+        raise ValueError(f"cannot convert {self} to a Python scalar")
