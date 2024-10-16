@@ -778,9 +778,6 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
             result = torch_getitem(result, tuple(v() for v in sized_fvs))
-
-            assert isinstance(result, EagerTensorTerm)  # DEBUG
-
             return result
         elif not any(
             tree.flatten(
@@ -915,3 +912,6 @@ class EagerTensorTerm(torch.Tensor):
     @property
     def ndim(self) -> int:
         return self.dim()
+
+    def item(self):
+        raise ValueError(f"cannot convert {self} to a Python scalar")
