@@ -676,33 +676,43 @@ def _getitem_ellipsis_and_none(
 ) -> Tuple[
     Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
 ]:
+    """Eliminate ellipses and None in an index expression x[key].
 
-    # handle None separately
-    if any(k is None for k in key):
-        # TODO unsqueeze instead of getitem
-        x = x[tuple(k if k in (Ellipsis, None) else slice(None) for k in key)]
-        key = tuple(slice(None) if k is None else k for k in key)
+    Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
 
-    # handle Ellipsis or missing dimensions by padding with slice(None)
-    if any(k is Ellipsis for k in key):
-        for i, k in enumerate(key):
-            if k is Ellipsis:
-                assert not any(
-                    k is Ellipsis for k in key[i + 1 :]
-                ), "only one Ellipsis allowed"
-                key = (
-                    key[:i]
-                    + (slice(None),) * (len(x.shape) - len(key) + 1)
-                    + key[i + 1 :]
-                )
-                break
-    elif len(key) < len(x.shape):
-        key = key + (slice(None),) * (len(x.shape) - len(key))
+    """
 
-    assert not any(k in (Ellipsis, None) for k in key if not isinstance(k, Term))
-    assert len(key) == len(x.shape)
+    new_shape = []
+    new_key = []
 
-    return x, key
+    def extra_dims(key):
+        return sum(1 for k in key if k is None)
+
+    # handle any missing dimensions by adding a trailing Ellipsis
+    if not any(k is Ellipsis for k in key):
+        key = tuple(key) + (...,)
+
+    for i, k in enumerate(key):
+        if k is None:  # add a new singleton dimension
+            new_shape.append(1)
+            new_key.append(slice(None))
+        elif k is Ellipsis:
+            assert not any(
+                k is Ellipsis for k in key[i + 1 :]
+            ), "only one Ellipsis allowed"
+
+            # determine which of the original dimensions this ellipsis refers to
+            pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
+            elided_dims = (
+                len(x.shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
+            )  #
+            new_shape += x.shape[pre_dims : pre_dims + elided_dims]
+            new_key += [slice(None)] * elided_dims
+        else:
+            new_shape.append(x.shape[len(new_shape) - extra_dims(key[:i])])
+            new_key.append(k)
+
+    return torch.reshape(x, new_shape), new_key
 
 
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
@@ -711,8 +721,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     def _torch_getitem_sizeof(
         x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
     ) -> Expr[torch.Tensor]:
-        if not isinstance(x, Term):
-
+        if isinstance(x, torch.Tensor):
             x_, key_ = _getitem_ellipsis_and_none(x, key)
 
             for i, k in enumerate(key_):
@@ -751,6 +760,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
         ):
+            print(f"{torch_fn}: first arg is not a term")
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
@@ -786,6 +796,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return torch_fn(*args, **kwargs)
         else:
+            print(f"{torch_fn}: no default rule")
             raise NoDefaultRule
 
     return _torch_op
@@ -882,7 +893,7 @@ class EagerTensorTerm(torch.Tensor):
         return ret
 
     def __repr__(self) -> str:
-        return f"TPETensor({term_to_str(self)})"
+        return f"{self.__class__.__name__}({term_to_str(self)})"
 
     @classmethod
     def __torch_function__(

@@ -212,6 +212,24 @@ INDEXING_CASES = [
 
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
+def test_getitem_ellipsis_and_none(tensor, idx):
+    from effectful.internals.sugar import _getitem_ellipsis_and_none
+
+    expected = tensor[idx]
+    t, i = _getitem_ellipsis_and_none(tensor, idx)
+
+    if any(k is Ellipsis or k is None for k in idx):
+        assert t.shape != tensor.shape or idx != i
+    assert not any(k is Ellipsis or k is None for k in i)
+
+    result = t[i]
+    assert (
+        result.shape == expected.shape
+    ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
+
+
+@pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_custom_getitem(tensor, idx):
     expected = tensor[idx]
     result = torch_getitem(tensor, idx)
