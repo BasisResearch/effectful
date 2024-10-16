@@ -134,6 +134,8 @@ def test_tpe_stack():
         (i(), j()),
     )
     actual = torch.stack((x_ij, y_ij))
+    assert isinstance(actual, torch.Tensor)
+    assert actual.shape == (2,)
     f_actual = defun(actual, i, j)
 
     for ii in range(10):
