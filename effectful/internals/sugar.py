@@ -671,17 +671,7 @@ import torch
 IndexElement = Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor]
 
 
-def _getitem_ellipsis_and_none(
-    x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
-) -> Tuple[
-    Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
-]:
-    """Eliminate ellipses and None in an index expression x[key].
-
-    Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
-
-    """
-
+def _desugar_tensor_index(shape, key):
     new_shape = []
     new_key = []
 
@@ -704,14 +694,29 @@ def _getitem_ellipsis_and_none(
             # determine which of the original dimensions this ellipsis refers to
             pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
             elided_dims = (
-                len(x.shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
+                len(shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
             )  #
-            new_shape += x.shape[pre_dims : pre_dims + elided_dims]
+            new_shape += shape[pre_dims : pre_dims + elided_dims]
             new_key += [slice(None)] * elided_dims
         else:
-            new_shape.append(x.shape[len(new_shape) - extra_dims(key[:i])])
+            new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
             new_key.append(k)
 
+    return new_shape, new_key
+
+
+def _getitem_ellipsis_and_none(
+    x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
+) -> Tuple[
+    Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
+]:
+    """Eliminate ellipses and None in an index expression x[key].
+
+    Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
+
+    """
+
+    new_shape, new_key = _desugar_tensor_index(x.shape, key)
     return torch.reshape(x, new_shape), new_key
 
 
@@ -722,12 +727,12 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
         x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
     ) -> Expr[torch.Tensor]:
         if isinstance(x, torch.Tensor):
-            x_, key_ = _getitem_ellipsis_and_none(x, key)
+            shape, key_ = _desugar_tensor_index(x.shape, key)
 
             for i, k in enumerate(key_):
                 match k:
                     case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                        sizes[op] = x_.shape[i]
+                        sizes[op] = shape[i]
                     case _:
                         continue
 
@@ -811,7 +816,7 @@ def torch_getitem(
     if len(key) == 0:
         return x
     elif not any(isinstance(k, torch.Tensor) for k in key):
-        return x[key]
+        return x[tuple(key)]
     elif all(isinstance(k, torch.Tensor) for k in key):
         return torch.ops.aten.index(x, key)
 
