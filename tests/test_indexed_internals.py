@@ -236,6 +236,15 @@ def test_stack():
             assert f(1, i, j) == t2[i, j]
 
 
+def test_index_incompatible():
+    """Check that using the same index in two incompatible dimensions raises an error."""
+    i = gensym(int)
+    with pytest.raises(ValueError):
+        torch_getitem(torch.randn(2, 3), (i(), i()))
+
+    torch_getitem(torch.randn(2, 2), (i(), i()))
+
+
 @pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str

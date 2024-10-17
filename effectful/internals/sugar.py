@@ -732,6 +732,10 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
             for i, k in enumerate(key_):
                 match k:
                     case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
+                        if op in sizes and sizes[op] != shape[i]:
+                            raise ValueError(
+                                f"Named index {op} used in incompatible dimensions of size {sizes[op]} and {shape[i]}"
+                            )
                         sizes[op] = shape[i]
                     case _:
                         continue
