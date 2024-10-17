@@ -235,6 +235,15 @@ def test_index_incompatible():
     torch_getitem(torch.randn(2, 2), (i(), i()))
 
 
+def test_simple_distribution():
+    i = gensym(int)
+    t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
+
+    d1 = dist.Beta(t, t)
+
+    # d = dist.Bernoulli(t)
+
+
 def test_index_plate_names():
     with IndexPlatesMessenger(-1):
         add_indices(IndexSet(a={0, 1}))

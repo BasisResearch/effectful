@@ -790,14 +790,19 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
+            def reindex_flat_tensor(t):
+                result = t.reshape(inds[0].shape + t.shape[1:])
+                return torch_getitem(result, tuple(v() for v in sized_fvs))
+
+            if torch_fn is torch.broadcast_tensors:
+                return tree.map_structure(reindex_flat_tensor, flat_result)
+
             if not isinstance(flat_result, torch.Tensor):
                 raise NotImplementedError(
                     f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
                 )
 
-            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            result = torch_getitem(result, tuple(v() for v in sized_fvs))
-            return result
+            return reindex_flat_tensor(flat_result)
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -920,7 +925,9 @@ class EagerTensorTerm(torch.Tensor):
         x, key = self.args
         return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
 
-    def size(self, dim: int) -> int:
+    def size(self, dim: Optional[int] = None) -> int:
+        if dim is None:
+            return self.shape
         return self.shape[dim]
 
     def numel(self) -> int:
