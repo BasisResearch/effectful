@@ -239,9 +239,9 @@ def test_simple_distribution():
     i = gensym(int)
     t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
 
-    d1 = dist.Beta(t, t)
+    d1 = dist.Beta(t, t, validate_args=False)
 
-    # d = dist.Bernoulli(t)
+    d = dist.Bernoulli(t, validate_args=False)
 
 
 def test_index_plate_names():

@@ -769,7 +769,6 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
         ):
-            print(f"{torch_fn}: first arg is not a term")
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
@@ -777,7 +776,9 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         }:
             from effectful.ops.function import defun
 
-            tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
+            tpe_torch_fn = torch.func.vmap(
+                defun(tm, *sized_fvs), randomness="different"
+            )
 
             inds = torch.broadcast_tensors(
                 *(
@@ -810,7 +811,6 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return torch_fn(*args, **kwargs)
         else:
-            print(f"{torch_fn}: no default rule")
             raise NoDefaultRule
 
     return _torch_op

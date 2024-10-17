@@ -156,8 +156,6 @@ def lift_tensor(tensor, **kwargs):
 
     result = torch_getitem(tensor, tuple(index_expr))
 
-    assert isinstance(result, Term) and issubclass(typeof(result), torch.Tensor)
-
     return result, vars_
 
 
