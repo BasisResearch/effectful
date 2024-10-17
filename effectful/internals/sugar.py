@@ -821,6 +821,9 @@ def torch_getitem(
     x: torch.Tensor,
     key: Tuple[IndexElement, ...],
 ) -> torch.Tensor:
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"expected a tensor but got {type(x)}")
+
     # fast path for simple cases
     if len(key) == 0:
         return x
@@ -942,3 +945,11 @@ class EagerTensorTerm(torch.Tensor):
 
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
+
+    @property
+    def dtype(self):
+        return self.args[0].dtype
+
+    @property
+    def device(self):
+        return self.args[0].device

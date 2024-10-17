@@ -43,10 +43,14 @@ class DistTestCase:
 
     def get_dist(self):
         Case = namedtuple("Case", tuple(name for name, _ in self.raw_params))
-        self.params = {
-            name: to_indexed(eval(raw_param), len(self.batch_shape))
-            for name, raw_param in self.raw_params
-        }
+
+        self.params = {}
+        for name, raw_param in self.raw_params:
+            param = eval(raw_param)
+            if isinstance(param, torch.Tensor):
+                param = to_indexed(param, len(self.batch_shape))
+            self.params[name] = param
+
         case = Case(**self.params)
         return eval(self.raw_dist)
 
@@ -66,7 +70,8 @@ def test_dist_indexes(case_):
     t = d.sample()
     sample_indices = indices_of(t)
     for param in case_.params.values():
-        assert indices_of(param) == sample_indices
+        if isinstance(param, torch.Tensor):
+            assert indices_of(param) == sample_indices
 
 
 for batch_shape in [(5,), (2, 3), ()]:
