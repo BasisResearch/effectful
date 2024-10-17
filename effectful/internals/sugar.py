@@ -943,6 +943,9 @@ class EagerTensorTerm(torch.Tensor):
     def ndim(self) -> int:
         return self.dim()
 
+    def ndimension(self):
+        return self.dim()
+
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
 
