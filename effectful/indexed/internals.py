@@ -1,82 +1,14 @@
-import numbers
-from typing import Dict, Hashable, Optional, TypeVar, Union
+from typing import Optional, TypeVar, Union
 
 import pyro
 import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from .ops import IndexSet, cond, gather, get_index_plates, indices_of, scatter, union
+from .ops import IndexSet, indices_of, union
 
 K = TypeVar("K")
 T = TypeVar("T")
-
-
-@scatter.register
-def _scatter_number(
-    value: numbers.Number,
-    indexset: IndexSet,
-    *,
-    result: Optional[torch.Tensor] = None,
-    event_dim: Optional[int] = None,
-    name_to_dim: Optional[Dict[Hashable, int]] = None,
-) -> Union[numbers.Number, torch.Tensor]:
-    assert event_dim is None or event_dim == 0
-    return scatter(
-        torch.as_tensor(value),
-        indexset,
-        result=result,
-        event_dim=event_dim,
-        name_to_dim=name_to_dim,
-    )
-
-
-@scatter.register
-def _scatter_tensor(
-    value: torch.Tensor,
-    indexset: IndexSet,
-    *,
-    result: Optional[torch.Tensor] = None,
-    event_dim: Optional[int] = None,
-    name_to_dim: Optional[Dict[Hashable, int]] = None,
-) -> torch.Tensor:
-    if event_dim is None:
-        event_dim = 0
-
-    if name_to_dim is None:
-        name_to_dim = {name: f.dim for name, f in get_index_plates().items()}
-
-    value = gather(value, indexset, event_dim=event_dim, name_to_dim=name_to_dim)
-    indexset = union(
-        indexset, indices_of(value, event_dim=event_dim, name_to_dim=name_to_dim)
-    )
-
-    if result is None:
-        index_plates = get_index_plates()
-        result_shape = list(
-            torch.broadcast_shapes(
-                value.shape,
-                (1,) * max([event_dim - f.dim for f in index_plates.values()] + [0]),
-            )
-        )
-        for name, indices in indexset.items():
-            result_shape[name_to_dim[name] - event_dim] = index_plates[name].size
-        result = value.new_zeros(result_shape)
-
-    index = [
-        torch.arange(0, result.shape[i], dtype=torch.long).reshape(
-            (-1,) + (1,) * (len(result.shape) - 1 - i)
-        )
-        for i in range(len(result.shape))
-    ]
-    for name, indices in indexset.items():
-        if result.shape[name_to_dim[name] - event_dim] > 1:
-            index[name_to_dim[name] - event_dim] = torch.tensor(
-                list(sorted(indices)), device=value.device, dtype=torch.long
-            ).reshape((-1,) + (1,) * (event_dim - name_to_dim[name] - 1))
-
-    result[tuple(index)] = value
-    return result
 
 
 class _LazyPlateMessenger(IndepMessenger):

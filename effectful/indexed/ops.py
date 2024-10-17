@@ -17,16 +17,12 @@ import pyro
 import torch
 
 from ..internals.sugar import (
-    NoDefaultRule,
-    TensorTerm,
-    embed,
     gensym,
     sizesof,
     torch_getitem,
 )
-from ..ops.core import Expr, Operation, Term, ctxof, evaluate, typeof
+from ..ops.core import Operation, Term, typeof
 from ..ops.function import defun
-from ..ops.handler import coproduct, fwd, handler
 
 T = TypeVar("T")
 
@@ -228,11 +224,6 @@ def indices_of(value, **kwargs) -> IndexSet:
     return IndexSet(**{k._name: set(range(v)) for (k, v) in sizesof(value).items()})
 
 
-@Operation
-def indexed(tensor: torch.Tensor, indexes) -> torch.Tensor:
-    raise NoDefaultRule
-
-
 def gather(value, indexset, **kwargs):
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
@@ -307,52 +298,6 @@ def gather(value, indexset, **kwargs):
     }
 
     return defun(value, *binding.keys())(*[v() for v in binding.values()])
-
-
-@functools.singledispatch
-def scatter(
-    value, indexset: Optional[IndexSet] = None, *, result: Optional[T] = None, **kwargs
-):
-    """
-    Assigns entries from an indexed value to entries in a larger indexed value.
-    :func:`scatter` is primarily used internally in :class:`MultiWorldCounterfactual`
-    for concisely and extensibly defining the semantics of counterfactuals.
-
-    It also satisfies some equations with :func:`gather` and :func:`indices_of`
-    that are useful for testing and debugging.
-
-    Like :func:`torch.scatter` and assignment in term rewriting,
-    :func:`scatter` is defined extensionally, meaning that values
-    are treated as constant functions of variables not in their support.
-
-    .. note::
-
-        :func:`scatter` can be extended to new value types by registering
-        an implementation for the type using :func:`functools.singledispatch` .
-
-    :param value: The value to scatter.
-    :param IndexSet indexset: The :class:`IndexSet` of entries of ``result`` to fill.
-    :param Optional[T] result: The result to store the scattered value in.
-    :param kwargs: Additional keyword arguments used by specific implementations.
-    :return: The ``result``, with ``value`` scattered into the indices in ``indexset``.
-    """
-    raise NotImplementedError
-
-
-@pyro.poutine.runtime.effectful(type="scatter_n")
-def scatter_n(values: Dict[IndexSet, T], *, result: Optional[T] = None, **kwargs):
-    """
-    Scatters a dictionary of disjoint masked values into a single value
-    using repeated calls to :func:``scatter``.
-
-    :param partitioned_values: A dictionary mapping index sets to values.
-    :return: A single value.
-    """
-    assert len(values) > 0
-    assert all(isinstance(k, IndexSet) for k in values)
-    for indices, value in values.items():
-        result = scatter(value, indices, result=result, **kwargs)
-    return result
 
 
 def stack(values, name, **kwargs):
