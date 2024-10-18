@@ -949,10 +949,16 @@ class EagerTensorTerm(torch.Tensor):
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
 
+    def to_tensor(self):
+        return self.args[0]
+
     @property
     def dtype(self):
-        return self.args[0].dtype
+        return self.to_tensor().dtype
 
     @property
     def device(self):
-        return self.args[0].device
+        return self.to_tensor().device
+
+    def new(self, *args, **kwargs):
+        return self.to_tensor().new(*args, **kwargs)

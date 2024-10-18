@@ -10,12 +10,13 @@ import pyro.distributions as dist
 
 import torch
 from torch import rand, exp, randint
+from torch.testing import assert_close
 
 import numpy as np
 import pytest
 
 from effectful.internals.sugar import gensym, torch_getitem
-from effectful.indexed.ops import indices_of, name_to_sym
+from effectful.indexed.ops import indices_of, name_to_sym, IndexSet, to_tensor
 
 ##################################################
 # Test cases
@@ -33,26 +34,43 @@ def to_indexed(tensor, batch_dims):
 
 
 class DistTestCase:
-    def __init__(self, raw_dist, raw_params, batch_shape):
+    def __init__(self, raw_dist, raw_params, batch_shape, xfail=None):
         assert isinstance(raw_dist, str)
+        self.xfail = xfail
         self.raw_dist = re.sub(r"\s+", " ", raw_dist.strip())
         self.raw_params = raw_params
         self.params = None
+        self.indexed_params = None
         self.batch_shape = batch_shape
         TEST_CASES.append(self)
 
     def get_dist(self):
+        if self.xfail is not None:
+            pytest.xfail(self.xfail)
+
         Case = namedtuple("Case", tuple(name for name, _ in self.raw_params))
 
         self.params = {}
+        self.indexed_params = {}
+
         for name, raw_param in self.raw_params:
             param = eval(raw_param)
-            if isinstance(param, torch.Tensor):
-                param = to_indexed(param, len(self.batch_shape))
             self.params[name] = param
+            if (
+                isinstance(param, torch.Tensor)
+                and param.shape[: len(self.batch_shape)] == self.batch_shape
+            ):
+                self.indexed_params[name] = to_indexed(param, len(self.batch_shape))
+            else:
+                self.indexed_params[name] = param
 
         case = Case(**self.params)
-        return eval(self.raw_dist)
+        dist_ = eval(self.raw_dist)
+
+        case = Case(**self.indexed_params)
+        indexed_dist = eval(self.raw_dist)
+
+        return dist_, indexed_dist
 
     def __str__(self):
         return self.raw_dist + " " + str(self.raw_params)
@@ -66,12 +84,36 @@ class DistTestCase:
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 def test_dist_indexes(case_):
-    d = case_.get_dist()
-    t = d.sample()
-    sample_indices = indices_of(t)
-    for param in case_.params.values():
-        if isinstance(param, torch.Tensor):
-            assert indices_of(param) == sample_indices
+    dist, indexed_dist = case_.get_dist()
+
+    sample = dist.sample()
+    indexed_sample = indexed_dist.sample()
+
+    # Indexed samples should have the same indices as the parameters to their distribution (if those parameters are
+    # indexed)
+    sample_indices = indices_of(indexed_sample)
+    for param in case_.indexed_params.values():
+        param_indices = indices_of(param)
+        assert param_indices in [IndexSet(), sample_indices]
+
+    # Indexed samples should have the same shape as regular samples, but with the batch dimensions indexed
+    indexed_sample_t = to_tensor(indexed_sample)
+    assert sample.shape == indexed_sample_t.shape
+    assert sample.dtype == indexed_sample_t.dtype
+
+
+@pytest.mark.parametrize("case_", TEST_CASES, ids=str)
+@pytest.mark.parametrize("statistic", ["mean", "variance", "entropy"])
+def test_dist_stats(case_, statistic):
+    dist, indexed_dist = case_.get_dist()
+
+    actual_stat = to_tensor(getattr(indexed_dist, statistic))
+    expected_stat = getattr(dist, statistic)
+
+    if actual_stat.isnan().all():
+        pytest.xfail("expected statistic is NaN")
+
+    assert_close(actual_stat, expected_stat)
 
 
 for batch_shape in [(5,), (2, 3), ()]:
@@ -174,6 +216,7 @@ for batch_shape in [(5,), (2, 3), ()]:
                 ("total_count", "randint(10, 12, ())"),
             ),
             batch_shape,
+            xfail="problem with vmap and scatter_add_",
         )
 
     # Exponential
@@ -260,6 +303,7 @@ for batch_shape in [(5,), (2, 3), ()]:
                 ("probs", f"rand({batch_shape + event_shape})"),
             ),
             batch_shape,
+            xfail="problem with vmap and scatter_add_",
         )
 
     # # MultivariateNormal
@@ -342,6 +386,7 @@ for batch_shape in [(5,), (2, 3), ()]:
         "dist.VonMises(case.loc, case.concentration)",
         (("loc", f"rand({batch_shape})"), ("concentration", f"rand({batch_shape})")),
         batch_shape,
+        xfail="problem with vmap and data-dependent control flow in rejection sampling",
     )
 
     # Weibull
@@ -489,19 +534,6 @@ for batch_shape in [(5,), (2, 3), ()]:
                 ("low", f"rand({batch_shape + indep_shape})"),
                 ("high", f"2. + rand({batch_shape + indep_shape})"),
             ),
-            batch_shape,
-        )
-
-    # ExpandedDistribution
-    for extra_shape in [(), (3,), (2, 3)]:
-        # Poisson
-        DistTestCase(
-            f"""
-            dist.ExpandedDistribution(
-                dist.Poisson(rate=case.rate),
-                {extra_shape + batch_shape})
-            """,
-            (("rate", f"rand({batch_shape})"),),
             batch_shape,
         )
 

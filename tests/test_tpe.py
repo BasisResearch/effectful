@@ -120,6 +120,16 @@ def test_tpe_4():
             )
 
 
+def test_tpe_mask():
+    xval = torch.range(0, 9)
+    i = gensym(int)
+    x = torch_getitem(xval, (i(),))
+
+    mask = x > 2
+    x_masked = x[mask]
+    assert x_masked.shape == (7,)
+
+
 def test_tpe_stack():
     xval, yval = torch.rand(10, 5), torch.rand(10, 5)
 

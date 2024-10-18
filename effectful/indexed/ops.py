@@ -16,12 +16,8 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import (
-    gensym,
-    sizesof,
-    torch_getitem,
-)
-from ..ops.core import Operation, Term, typeof
+from ..internals.sugar import gensym, sizesof, torch_getitem, EagerTensorTerm
+from ..ops.core import Operation, Term
 from ..ops.function import defun
 
 T = TypeVar("T")
@@ -397,3 +393,12 @@ def indexset_as_mask(
     mask = torch.zeros(tuple(batch_shape), dtype=torch.bool, device=device)
     mask[tuple(inds)] = True
     return mask[(...,) + (None,) * event_dim]
+
+
+def to_tensor(t: Term[torch.Tensor], indexes=None):
+    if indexes is None:
+        if isinstance(t, EagerTensorTerm):
+            return t.to_tensor()
+        return t
+
+    raise NotImplementedError()
