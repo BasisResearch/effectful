@@ -20,6 +20,7 @@ from effectful.indexed.ops import indices_of, name_to_sym, IndexSet, to_tensor
 
 ##################################################
 # Test cases
+# Based on https://github.com/pyro-ppl/funsor/blob/master/test/test_distribution_generic.py
 ##################################################
 
 torch.distributions.Distribution.set_default_validate_args(False)
