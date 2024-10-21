@@ -123,6 +123,29 @@ def test_dist_indexes(case_):
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
+def test_dist_randomness(case_):
+    """Test that indexed samples differ across the batch dimensions."""
+    pos_dist, indexed_dist = case_.get_dist()
+
+    # Skip discrete distributions
+    if pos_dist.has_enumerate_support:
+        return
+
+    indexed_sample = indexed_dist.sample()
+    pos_sample = pos_dist.sample()
+
+    indexed_sample_t = to_tensor(indexed_sample)
+
+    new_shape = (-1, *pos_sample.shape[len(case_.batch_shape) :])
+    flat_sample = pos_sample.reshape(new_shape)
+    flat_indexed_sample = indexed_sample_t.reshape(new_shape)
+
+    # with high probability, samples should differ across batch dimensions
+    if flat_sample.unique(dim=0).shape[0] > 1:
+        assert flat_indexed_sample.unique(dim=0).shape[0] > 1
+
+
+@pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 @pytest.mark.parametrize("statistic", ["mean", "variance", "entropy"])
 def test_dist_stats(case_, statistic):
     dist, indexed_dist = case_.get_dist()
