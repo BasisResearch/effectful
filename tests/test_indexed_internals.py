@@ -8,23 +8,23 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.indexed.ops import (
-    lift_tensor,
-    indices_of,
-    gather,
-    IndexSet,
-    indexset_as_mask,
-    name_to_sym,
-    cond,
-    cond_n,
-    stack,
-    get_index_plates,
-)
 from effectful.indexed.handlers import IndexPlatesMessenger
 from effectful.indexed.internals import add_indices
+from effectful.indexed.ops import (
+    IndexSet,
+    cond,
+    cond_n,
+    gather,
+    get_index_plates,
+    indexset_as_mask,
+    indices_of,
+    lift_tensor,
+    name_to_sym,
+    stack,
+)
+from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, typeof
 from effectful.ops.function import defun
-from effectful.internals.sugar import torch_getitem, sizesof, gensym
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +233,15 @@ def test_index_incompatible():
         torch_getitem(torch.randn(2, 3), (i(), i()))
 
     torch_getitem(torch.randn(2, 2), (i(), i()))
+
+
+def test_simple_distribution():
+    i = gensym(int)
+    t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
+
+    d1 = dist.Beta(t, t, validate_args=False)
+
+    d = dist.Bernoulli(t, validate_args=False)
 
 
 def test_index_plate_names():

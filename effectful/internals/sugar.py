@@ -769,7 +769,6 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
         ):
-            print(f"{torch_fn}: first arg is not a term")
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
@@ -777,7 +776,9 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         }:
             from effectful.ops.function import defun
 
-            tpe_torch_fn = torch.func.vmap(defun(tm, *sized_fvs))
+            tpe_torch_fn = torch.func.vmap(
+                defun(tm, *sized_fvs), randomness="different"
+            )
 
             inds = torch.broadcast_tensors(
                 *(
@@ -790,14 +791,19 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
+            def reindex_flat_tensor(t):
+                result = t.reshape(inds[0].shape + t.shape[1:])
+                return torch_getitem(result, tuple(v() for v in sized_fvs))
+
+            if torch_fn in (torch.broadcast_tensors, torch._C.TensorBase.max):
+                return tree.map_structure(reindex_flat_tensor, flat_result)
+
             if not isinstance(flat_result, torch.Tensor):
                 raise NotImplementedError(
                     f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
                 )
 
-            result = flat_result.reshape(inds[0].shape + flat_result.shape[1:])
-            result = torch_getitem(result, tuple(v() for v in sized_fvs))
-            return result
+            return reindex_flat_tensor(flat_result)
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -805,7 +811,6 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return torch_fn(*args, **kwargs)
         else:
-            print(f"{torch_fn}: no default rule")
             raise NoDefaultRule
 
     return _torch_op
@@ -816,6 +821,9 @@ def torch_getitem(
     x: torch.Tensor,
     key: Tuple[IndexElement, ...],
 ) -> torch.Tensor:
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"expected a tensor but got {type(x)}")
+
     # fast path for simple cases
     if len(key) == 0:
         return x
@@ -915,12 +923,22 @@ class EagerTensorTerm(torch.Tensor):
     ) -> Expr[torch.Tensor]:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
+    def __format__(self, format_spec: str) -> str:
+        return (
+            format(torch.Tensor(self), format_spec)
+            + "["
+            + ", ".join(str(a) for a in self.args[1])
+            + "]"
+        )
+
     @property
     def shape(self) -> torch.Size:
         x, key = self.args
         return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
 
-    def size(self, dim: int) -> int:
+    def size(self, dim: Optional[int] = None) -> int:
+        if dim is None:
+            return self.shape
         return self.shape[dim]
 
     def numel(self) -> int:
@@ -933,5 +951,22 @@ class EagerTensorTerm(torch.Tensor):
     def ndim(self) -> int:
         return self.dim()
 
+    def ndimension(self):
+        return self.dim()
+
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
+
+    def to_tensor(self):
+        return self.args[0]
+
+    @property
+    def dtype(self):
+        return self.to_tensor().dtype
+
+    @property
+    def device(self):
+        return self.to_tensor().device
+
+    def new(self, *args, **kwargs):
+        return self.to_tensor().new(*args, **kwargs)
