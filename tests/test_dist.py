@@ -123,7 +123,8 @@ def test_dist_indexes(case_):
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
-def test_dist_randomness(case_):
+@pytest.mark.parametrize("sample_shape", [(), (2,), (3, 2)])
+def test_dist_randomness(case_, sample_shape):
     """Test that indexed samples differ across the batch dimensions."""
     pos_dist, indexed_dist = case_.get_dist()
 
@@ -131,8 +132,8 @@ def test_dist_randomness(case_):
     if pos_dist.has_enumerate_support:
         return
 
-    indexed_sample = indexed_dist.sample()
-    pos_sample = pos_dist.sample()
+    indexed_sample = indexed_dist.sample(sample_shape)
+    pos_sample = pos_dist.sample(sample_shape)
 
     indexed_sample_t = to_tensor(indexed_sample)
 
