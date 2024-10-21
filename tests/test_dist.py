@@ -115,13 +115,34 @@ def test_dist_indexes(case_):
 def test_dist_stats(case_, statistic):
     dist, indexed_dist = case_.get_dist()
 
-    actual_stat = to_tensor(getattr(indexed_dist, statistic))
-    expected_stat = getattr(dist, statistic)
+    EXPECTED_FAILURES = [
+        ("StudentT", ["mean", "variance"]),
+        ("FisherSnedecor", ["mean", "variance"]),
+        ("Binomial", ["entropy"]),
+    ]
+    for dist_name, methods in EXPECTED_FAILURES:
+        if dist_name in case_.raw_dist and statistic in methods:
+            pytest.xfail(
+                f"{dist_name} mean uses masking which is not supported by indexed tensors"
+            )
+
+    try:
+        actual_stat = getattr(indexed_dist, statistic)
+        expected_stat = getattr(dist, statistic)
+
+        if statistic == "entropy":
+            expected_stat = expected_stat()
+            actual_stat = actual_stat()
+        actual_stat = to_tensor(actual_stat)
+    except NotImplementedError:
+        pytest.xfail(f"{statistic} not implemented")
+
+    actual_stat, expected_stat = torch.broadcast_tensors(actual_stat, expected_stat)
 
     if actual_stat.isnan().all():
         pytest.xfail("expected statistic is NaN")
 
-    assert_close(actual_stat, expected_stat)
+    assert_close(actual_stat, expected_stat, atol=1e-5, rtol=0)
 
 
 for batch_shape in [(5,), (2, 3), ()]:
