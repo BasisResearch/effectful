@@ -124,16 +124,24 @@ def test_dist_indexes(case_):
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 @pytest.mark.parametrize("sample_shape", [(), (2,), (3, 2)])
-def test_dist_randomness(case_, sample_shape):
+@pytest.mark.parametrize("use_rsample", [False, True])
+def test_dist_randomness(case_, sample_shape, use_rsample):
     """Test that indexed samples differ across the batch dimensions."""
     pos_dist, indexed_dist = case_.get_dist()
 
-    # Skip discrete distributions
-    if pos_dist.has_enumerate_support:
+    # Skip discrete distributions (and Poisson, which is discrete but has no enumerate support)
+    if pos_dist.has_enumerate_support or "Poisson" in case_.raw_dist:
         return
 
-    indexed_sample = indexed_dist.sample(sample_shape)
-    pos_sample = pos_dist.sample(sample_shape)
+    if use_rsample:
+        try:
+            indexed_sample = indexed_dist.rsample(sample_shape)
+            pos_sample = pos_dist.rsample(sample_shape)
+        except NotImplementedError:
+            return
+    else:
+        indexed_sample = indexed_dist.sample(sample_shape)
+        pos_sample = pos_dist.sample(sample_shape)
 
     indexed_sample_t = to_tensor(indexed_sample)
 
