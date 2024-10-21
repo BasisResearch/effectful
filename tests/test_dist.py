@@ -28,6 +28,17 @@ torch.distributions.Distribution.set_default_validate_args(False)
 TEST_CASES = []
 
 
+def random_scale_tril(*args):
+    if isinstance(args[0], tuple):
+        assert len(args) == 1
+        shape = args[0]
+    else:
+        shape = args
+
+    data = torch.randn(shape)
+    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
+
+
 def to_indexed(tensor, batch_dims):
     return torch_getitem(
         tensor, tuple(name_to_sym(str(i))() for i in range(batch_dims))
@@ -313,18 +324,19 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # # LowRankMultivariateNormal
-    # for event_shape in [(3,), (4,)]:
-    #     DistTestCase(
-    #         "dist.LowRankMultivariateNormal(loc=case.loc, cov_factor=case.cov_factor, cov_diag=case.cov_diag)",
-    #         (
-    #             ("loc", f"rand({batch_shape + event_shape})"),
-    #             ("cov_factor", f"rand({batch_shape + event_shape + (2,)})"),
-    #             ("cov_diag", f"rand({batch_shape + event_shape})"),
-    #         ),
-    #         batch_shape,
-    #     )
+    for event_shape in [(3,), (4,)]:
+        DistTestCase(
+            "dist.LowRankMultivariateNormal(loc=case.loc, cov_factor=case.cov_factor, cov_diag=case.cov_diag)",
+            (
+                ("loc", f"rand({batch_shape + event_shape})"),
+                ("cov_factor", f"rand({batch_shape + event_shape + (2,)})"),
+                ("cov_diag", f"rand({batch_shape + event_shape})"),
+            ),
+            batch_shape,
+            xfail="Requires support for setitem",
+        )
 
-    # Multinomial
+    # multinomial
     for event_shape in [(1,), (4,)]:
         DistTestCase(
             "dist.Multinomial(case.total_count, probs=case.probs)",
@@ -337,15 +349,15 @@ for batch_shape in [(5,), (2, 3), ()]:
         )
 
     # # MultivariateNormal
-    # for event_shape in [(1,), (3,)]:
-    #     DistTestCase(
-    #         "dist.MultivariateNormal(loc=case.loc, scale_tril=case.scale_tril)",
-    #         (
-    #             ("loc", f"rand({batch_shape + event_shape})"),
-    #             ("scale_tril", f"random_scale_tril({batch_shape + event_shape * 2})"),
-    #         ),
-    #         batch_shape,
-    #     )
+    for event_shape in [(1,), (3,)]:
+        DistTestCase(
+            "dist.MultivariateNormal(loc=case.loc, scale_tril=case.scale_tril)",
+            (
+                ("loc", f"rand({batch_shape + event_shape})"),
+                ("scale_tril", f"random_scale_tril({batch_shape + event_shape * 2})"),
+            ),
+            batch_shape,
+        )
 
     # NegativeBinomial
     DistTestCase(
