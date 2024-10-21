@@ -16,7 +16,7 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import gensym, sizesof, torch_getitem, EagerTensorTerm
+from ..internals.sugar import EagerTensorTerm, gensym, sizesof, torch_getitem
 from ..ops.core import Operation, Term
 from ..ops.function import defun
 

@@ -1,19 +1,17 @@
+import functools
 import re
 from collections import OrderedDict, namedtuple
-import functools
 from importlib import import_module
 
+import numpy as np
 import pyro.distributions as dist
-
+import pytest
 import torch
-from torch import rand, exp, randint
+from torch import exp, rand, randint
 from torch.testing import assert_close
 
-import numpy as np
-import pytest
-
+from effectful.indexed.ops import IndexSet, indices_of, name_to_sym, to_tensor
 from effectful.internals.sugar import gensym, torch_getitem
-from effectful.indexed.ops import indices_of, name_to_sym, IndexSet, to_tensor
 
 ##################################################
 # Test cases
