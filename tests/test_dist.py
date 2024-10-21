@@ -1,6 +1,3 @@
-# Copyright Contributors to the Pyro project.
-# SPDX-License-Identifier: Apache-2.0
-
 import re
 from collections import OrderedDict, namedtuple
 import functools
@@ -96,6 +93,7 @@ class DistTestCase:
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 def test_dist_indexes(case_):
+    """Test that indexed samples and logprobs have the correct shape and indices."""
     dist, indexed_dist = case_.get_dist()
 
     sample = dist.sample()
@@ -131,14 +129,14 @@ def test_dist_randomness(case_, sample_shape, use_rsample):
 
     # Skip discrete distributions (and Poisson, which is discrete but has no enumerate support)
     if pos_dist.has_enumerate_support or "Poisson" in case_.raw_dist:
-        return
+        pytest.xpass("Discrete distributions not supported")
 
     if use_rsample:
         try:
             indexed_sample = indexed_dist.rsample(sample_shape)
             pos_sample = pos_dist.rsample(sample_shape)
         except NotImplementedError:
-            return
+            pytest.xfail("Distributions without rsample not supported")
     else:
         indexed_sample = indexed_dist.sample(sample_shape)
         pos_sample = pos_dist.sample(sample_shape)
@@ -157,6 +155,7 @@ def test_dist_randomness(case_, sample_shape, use_rsample):
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 @pytest.mark.parametrize("statistic", ["mean", "variance", "entropy"])
 def test_dist_stats(case_, statistic):
+    """Test that indexed distributions have the same statistics as their unindexed counterparts."""
     dist, indexed_dist = case_.get_dist()
 
     EXPECTED_FAILURES = [
