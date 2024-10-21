@@ -151,10 +151,10 @@ def test_dist_stats(case_, statistic):
 
     actual_stat, expected_stat = torch.broadcast_tensors(actual_stat, expected_stat)
 
-    if actual_stat.isnan().all():
-        pytest.xfail("expected statistic is NaN")
-
-    assert_close(actual_stat, expected_stat)
+    if expected_stat.isnan().all():
+        assert actual_stat.isnan().all()
+    else:
+        assert_close(actual_stat, expected_stat)
 
 
 for batch_shape in [(5,), (2, 3), ()]:
