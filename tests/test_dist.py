@@ -101,6 +101,14 @@ def test_dist_indexes(case_):
     assert sample.shape == indexed_sample_t.shape
     assert sample.dtype == indexed_sample_t.dtype
 
+    lprob = dist.log_prob(sample)
+    indexed_lprob = indexed_dist.log_prob(indexed_sample)
+
+    # Indexed logprobs should have the same shape as regular logprobs, but with the batch dimensions indexed
+    indexed_lprob_t = to_tensor(indexed_lprob)
+    assert lprob.shape == indexed_lprob_t.shape
+    assert lprob.dtype == indexed_lprob_t.dtype
+
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 @pytest.mark.parametrize("statistic", ["mean", "variance", "entropy"])

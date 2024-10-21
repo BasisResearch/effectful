@@ -795,7 +795,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
                 result = t.reshape(inds[0].shape + t.shape[1:])
                 return torch_getitem(result, tuple(v() for v in sized_fvs))
 
-            if torch_fn is torch.broadcast_tensors:
+            if torch_fn in (torch.broadcast_tensors, torch._C.TensorBase.max):
                 return tree.map_structure(reindex_flat_tensor, flat_result)
 
             if not isinstance(flat_result, torch.Tensor):
