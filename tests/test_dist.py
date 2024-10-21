@@ -154,7 +154,7 @@ def test_dist_stats(case_, statistic):
     if actual_stat.isnan().all():
         pytest.xfail("expected statistic is NaN")
 
-    assert_close(actual_stat, expected_stat, atol=1e-5, rtol=0)
+    assert_close(actual_stat, expected_stat)
 
 
 for batch_shape in [(5,), (2, 3), ()]:
