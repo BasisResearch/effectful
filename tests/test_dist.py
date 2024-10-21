@@ -92,7 +92,33 @@ class DistTestCase:
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
-def test_dist_indexes(case_):
+@pytest.mark.parametrize("sample_shape", [(), (3, 2)])
+@pytest.mark.parametrize("indexed_sample_shape", [(), (3, 2)])
+@pytest.mark.parametrize("extra_batch_shape", [(), (3, 2)])
+def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shape):
+    _, indexed_dist = case_.get_dist()
+
+    expanded = indexed_dist.expand(extra_batch_shape + indexed_dist.batch_shape)
+    sample = expanded.sample(indexed_sample_shape + sample_shape)
+    indexed_sample = torch_getitem(
+        sample, tuple(gensym(int)() for _ in range(len(indexed_sample_shape)))
+    )
+
+    assert (
+        indexed_sample.shape
+        == sample_shape
+        + extra_batch_shape
+        + indexed_dist.batch_shape
+        + indexed_dist.event_shape
+    )
+
+    assert expanded.log_prob(indexed_sample).shape == extra_batch_shape + sample_shape
+
+
+@pytest.mark.parametrize("case_", TEST_CASES, ids=str)
+@pytest.mark.parametrize("sample_shape", [(), (2,), (3, 2)])
+@pytest.mark.parametrize("extra_batch_shape", [(), (2,), (3, 2)])
+def test_dist_indexes(case_, sample_shape, extra_batch_shape):
     """Test that indexed samples and logprobs have the correct shape and indices."""
     dist, indexed_dist = case_.get_dist()
 
@@ -128,8 +154,12 @@ def test_dist_randomness(case_, sample_shape, use_rsample):
     pos_dist, indexed_dist = case_.get_dist()
 
     # Skip discrete distributions (and Poisson, which is discrete but has no enumerate support)
-    if pos_dist.has_enumerate_support or "Poisson" in case_.raw_dist:
-        pytest.xpass("Discrete distributions not supported")
+    if (
+        pos_dist.has_enumerate_support
+        or "Poisson" in case_.raw_dist
+        or "Geometric" in case_.raw_dist
+    ):
+        pytest.xfail("Discrete distributions not supported")
 
     if use_rsample:
         try:

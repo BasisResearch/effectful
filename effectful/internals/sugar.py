@@ -923,6 +923,14 @@ class EagerTensorTerm(torch.Tensor):
     ) -> Expr[torch.Tensor]:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
+    def __format__(self, format_spec: str) -> str:
+        return (
+            format(torch.Tensor(self), format_spec)
+            + "["
+            + ", ".join(str(a) for a in self.args[1])
+            + "]"
+        )
+
     @property
     def shape(self) -> torch.Size:
         x, key = self.args
