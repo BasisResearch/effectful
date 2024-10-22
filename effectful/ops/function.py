@@ -2,17 +2,16 @@ import functools
 import typing
 from typing import Annotated, Callable, TypeVar
 
-from typing_extensions import ParamSpec
-import tree
-
 import torch
+import tree
+from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import (
     Bound,
-    NoDefaultRule,
-    torch_getitem,
-    _register_torch_op,
     EagerTensorTerm,
+    NoDefaultRule,
+    _register_torch_op,
+    torch_getitem,
 )
 from effectful.ops.core import Expr, Operation, Term, as_term, evaluate
 from effectful.ops.handler import handler

@@ -24,14 +24,9 @@ from effectful.indexed.ops import (
     stack,
     to_tensor,
 )
-from effectful.internals.sugar import (
-    gensym,
-    sizesof,
-    torch_getitem,
-    _register_torch_op,
-)
-from effectful.ops.core import Term, typeof, ctxof
-from effectful.ops.function import defun, grad, jacfwd, jacrev, hessian
+from effectful.internals.sugar import _register_torch_op, gensym, sizesof, torch_getitem
+from effectful.ops.core import Term, ctxof, typeof
+from effectful.ops.function import defun, grad, hessian, jacfwd, jacrev
 
 logger = logging.getLogger(__name__)
 
