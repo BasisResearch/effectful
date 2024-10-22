@@ -31,7 +31,7 @@ from effectful.internals.sugar import (
     _register_torch_op,
 )
 from effectful.ops.core import Term, typeof, ctxof
-from effectful.ops.function import defun, grad, jacfwd, jacrev
+from effectful.ops.function import defun, grad, jacfwd, jacrev, hessian
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +361,15 @@ def test_jacrev_1():
     expected = torch.diag(torch.cos(x))
 
     assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+
+
+def test_hessian_1():
+    def f(x):
+        return x.sin().sum()
+
+    x = torch_getitem(torch.randn(11, 5), [name_to_sym("i")()])
+    hess = hessian(f)(x)  # equivalent to jacfwd(jacrev(f))(x)
+    assert torch.allclose(to_tensor(hess), to_tensor(torch.diag(-x.sin())))
 
 
 def test_jvp_1():

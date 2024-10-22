@@ -103,3 +103,7 @@ def jacfwd(func, *args, **kwargs):
 
 def jacrev(func, *args, **kwargs):
     return torch_func_wrapper(torch.func.jacrev, func, *args, **kwargs)
+
+
+def hessian(func, *args, **kwargs):
+    return torch_func_wrapper(torch.func.hessian, func, *args, **kwargs)
