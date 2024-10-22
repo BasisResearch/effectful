@@ -970,3 +970,14 @@ class EagerTensorTerm(torch.Tensor):
 
     def new(self, *args, **kwargs):
         return self.to_tensor().new(*args, **kwargs)
+
+    def indices(self):
+        return [a for a in self.args[1] if isinstance(a, Term)]
+
+    @property
+    def requires_grad(self):
+        return self.to_tensor().requires_grad
+
+    @property
+    def grad_fn(self):
+        return self.to_tensor().grad_fn

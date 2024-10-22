@@ -3,8 +3,17 @@ import typing
 from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
+import tree
 
-from effectful.internals.sugar import Bound, NoDefaultRule
+import torch
+
+from effectful.internals.sugar import (
+    Bound,
+    NoDefaultRule,
+    torch_getitem,
+    _register_torch_op,
+    EagerTensorTerm,
+)
 from effectful.ops.core import Expr, Operation, Term, as_term, evaluate
 from effectful.ops.handler import handler
 
@@ -44,3 +53,41 @@ def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
                 return evaluate(body)  # type: ignore
         case _:
             raise NoDefaultRule
+
+
+def grad(func, has_aux=False, **kwargs):
+    """Compute the gradient of a function with respect to its arguments. This is
+    a wrapper around `torch.func.grad` that allows for the function to be called
+    with indexed arguments.
+
+    """
+
+    def add_indexes(func, unindexed, indexed):
+        def add_single_index(u, i):
+            """Given an unindexed tensor and an index expression, expand the
+            tensor to have leading dimensions corresponding to the named indexes
+            and create an index expression.
+
+            """
+            if isinstance(i, EagerTensorTerm):
+                indexes = i.indices()
+                return torch_getitem(
+                    u[(None,) * len(indexes) + (slice(None),) * len(i.shape)],
+                    tuple(indexes),
+                )
+            return u
+
+        reindexed = tree.map_structure(add_single_index, unindexed, indexed)
+        reindexed_args, reindexed_kwargs = reindexed
+        ret = func(*reindexed_args, **reindexed_kwargs)
+        return ret.to_tensor().reshape(ret.shape)
+
+    return lambda *indexed_args, **indexed_kwargs: _register_torch_op(
+        torch.func.grad(
+            lambda *unindexed_args, **unindexed_kwargs: add_indexes(
+                func, (unindexed_args, unindexed_kwargs), (indexed_args, indexed_kwargs)
+            ),
+            has_aux=has_aux,
+            **kwargs,
+        )
+    )(*indexed_args, **indexed_kwargs)

@@ -7,6 +7,7 @@ import pyro
 import pyro.distributions as dist
 import pytest
 import torch
+import tree
 
 from effectful.indexed.handlers import IndexPlatesMessenger
 from effectful.indexed.internals import add_indices
@@ -21,10 +22,16 @@ from effectful.indexed.ops import (
     lift_tensor,
     name_to_sym,
     stack,
+    to_tensor,
 )
-from effectful.internals.sugar import gensym, sizesof, torch_getitem
-from effectful.ops.core import Term, typeof
-from effectful.ops.function import defun
+from effectful.internals.sugar import (
+    gensym,
+    sizesof,
+    torch_getitem,
+    _register_torch_op,
+)
+from effectful.ops.core import Term, typeof, ctxof
+from effectful.ops.function import defun, grad
 
 logger = logging.getLogger(__name__)
 
@@ -316,3 +323,25 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     for idx in itertools.product(*[range(d[1]) for d in name_to_dim]):
         assert (f_actual_full(*idx) == f_actual_left(*idx)).all()
         assert (f_actual_left(*idx) == f_actual_right(*idx)).all()
+
+
+def test_grad_1():
+    def sin(x):
+        return torch.sin(x)
+
+    grad_sin = grad(sin)
+    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
+    cos_x_actual = grad_sin(x)
+
+    assert isinstance(cos_x_actual, Term)
+    assert indices_of(cos_x_actual) == IndexSet(i=(set(range(10))))
+
+    cos_x_expected = x.cos()
+
+    assert torch.allclose(to_tensor(cos_x_actual), to_tensor(cos_x_expected))
+
+    # Second-order gradients
+    neg_sin_x_actual = grad(grad(lambda x: torch.sin(x)))(x)
+    neg_sin_x_expected = -x.sin()
+
+    assert torch.allclose(to_tensor(neg_sin_x_actual), to_tensor(neg_sin_x_expected))
