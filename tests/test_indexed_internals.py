@@ -31,7 +31,7 @@ from effectful.internals.sugar import (
     _register_torch_op,
 )
 from effectful.ops.core import Term, typeof, ctxof
-from effectful.ops.function import defun, grad, jacfwd
+from effectful.ops.function import defun, grad, jacfwd, jacrev
 
 logger = logging.getLogger(__name__)
 
@@ -354,3 +354,21 @@ def test_jacfwd_1():
 
     assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
 
+
+def test_jacrev_1():
+    x = torch_getitem(torch.randn(11, 5), [name_to_sym("i")()])
+    jacobian = jacrev(torch.sin)(x)
+    expected = torch.diag(torch.cos(x))
+
+    assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+
+
+def test_jvp_1():
+    from torch.func import jvp
+
+    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
+    f = lambda x: x * torch.tensor([1.0, 2.0, 3])
+    value, grad = jvp(f, (x,), (torch.tensor(1.0),))
+
+    assert torch.allclose(to_tensor(value), to_tensor(f(x)))
+    assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))

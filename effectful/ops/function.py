@@ -76,26 +76,9 @@ def add_indexes(func, unindexed, indexed):
     return ret.to_tensor().reshape(ret.shape)
 
 
-def grad(func, has_aux=False, **kwargs):
-    """Compute the gradient of a function with respect to its arguments. This is
-    a wrapper around `torch.func.grad` that allows the function to be called
-    with indexed arguments.
-
-    """
+def torch_func_wrapper(torch_func, func, *args, **kwargs):
     return lambda *indexed_args, **indexed_kwargs: _register_torch_op(
-        torch.func.grad(
-            lambda *unindexed_args, **unindexed_kwargs: add_indexes(
-                func, (unindexed_args, unindexed_kwargs), (indexed_args, indexed_kwargs)
-            ),
-            has_aux=has_aux,
-            **kwargs,
-        )
-    )(*indexed_args, **indexed_kwargs)
-
-
-def jacfwd(func, *args, **kwargs):
-    return lambda *indexed_args, **indexed_kwargs: _register_torch_op(
-        torch.func.jacfwd(
+        torch_func(
             lambda *unindexed_args, **unindexed_kwargs: add_indexes(
                 func, (unindexed_args, unindexed_kwargs), (indexed_args, indexed_kwargs)
             ),
@@ -103,3 +86,20 @@ def jacfwd(func, *args, **kwargs):
             **kwargs,
         )
     )(*indexed_args, **indexed_kwargs)
+
+
+def grad(func, *args, **kwargs):
+    """Compute the gradient of a function with respect to its arguments. This is
+    a wrapper around `torch.func.grad` that allows the function to be called
+    with indexed arguments.
+
+    """
+    return torch_func_wrapper(torch.func.grad, func, *args, **kwargs)
+
+
+def jacfwd(func, *args, **kwargs):
+    return torch_func_wrapper(torch.func.jacfwd, func, *args, **kwargs)
+
+
+def jacrev(func, *args, **kwargs):
+    return torch_func_wrapper(torch.func.jacrev, func, *args, **kwargs)
