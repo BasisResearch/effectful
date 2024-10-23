@@ -26,7 +26,8 @@ from effectful.indexed.ops import (
 )
 from effectful.internals.sugar import _register_torch_op, gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, ctxof, typeof
-from effectful.ops.function import defun, grad, hessian, jacfwd, jacrev
+from effectful.ops.function import defun
+from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp
 
 logger = logging.getLogger(__name__)
 
@@ -368,11 +369,20 @@ def test_hessian_1():
 
 
 def test_jvp_1():
-    from torch.func import jvp
-
     x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
     f = lambda x: x * torch.tensor([1.0, 2.0, 3])
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
     assert torch.allclose(to_tensor(value), to_tensor(f(x)))
     assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
+
+
+def test_vjp_1():
+    x = torch_getitem(torch.randn([10, 5]), [name_to_sym("i")()])
+    y = torch_getitem(torch.ones([10, 5]), [name_to_sym("i")()])
+    z = torch_getitem(torch.ones([10, 5]), [name_to_sym("i")()])
+
+    f = lambda x: (x.sin(), x.cos())
+    (_, vjpfunc) = vjp(f, x)
+    vjps = vjpfunc((y, z))
+    assert torch.allclose(to_tensor(vjps[0]), to_tensor(x.cos() + -x.sin()))

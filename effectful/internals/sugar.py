@@ -792,18 +792,15 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
             def reindex_flat_tensor(t):
+                if not isinstance(t, torch.Tensor):
+                    raise NotImplementedError(
+                        f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
+                    )
+
                 result = t.reshape(inds[0].shape + t.shape[1:])
                 return torch_getitem(result, tuple(v() for v in sized_fvs))
 
-            if torch_fn in (torch.broadcast_tensors, torch._C.TensorBase.max):
-                return tree.map_structure(reindex_flat_tensor, flat_result)
-
-            if not isinstance(flat_result, torch.Tensor):
-                raise NotImplementedError(
-                    f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
-                )
-
-            return reindex_flat_tensor(flat_result)
+            return tree.map_structure(reindex_flat_tensor, flat_result)
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
