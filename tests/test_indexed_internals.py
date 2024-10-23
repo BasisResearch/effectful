@@ -377,6 +377,15 @@ def test_jvp_1():
     assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
 
 
+def test_jvp_nested():
+    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
+    f = lambda x: x * torch_getitem(torch.tensor([1.0, 2.0, 3]), [name_to_sym("j")()])
+    value, grad = jvp(f, (x,), (torch.tensor(1.0),))
+
+    assert torch.allclose(to_tensor(value), to_tensor(f(x)))
+    assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
+
+
 def test_vjp_1():
     x = torch_getitem(torch.randn([10, 5]), [name_to_sym("i")()])
     y = torch_getitem(torch.ones([10, 5]), [name_to_sym("i")()])
@@ -386,3 +395,16 @@ def test_vjp_1():
     (_, vjpfunc) = vjp(f, x)
     vjps = vjpfunc((y, z))
     assert torch.allclose(to_tensor(vjps[0]), to_tensor(x.cos() + -x.sin()))
+
+
+def test_vjp_nested():
+    x = torch_getitem(torch.randn([10, 5]), [name_to_sym("i")()])
+    a = torch_getitem(torch.ones([7, 5]), [name_to_sym("a")()])
+    y = torch_getitem(torch.ones([7, 10, 5]), [name_to_sym("a")(), name_to_sym("i")()])
+
+    def f(x):
+        return x.sin() + a
+
+    (_, vjpfunc) = vjp(f, x)
+    vjps = vjpfunc(y)
+    assert torch.allclose(to_tensor(vjps[0]), to_tensor(x.cos()))
