@@ -9,6 +9,7 @@ import pytest
 import torch
 import tree
 
+from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp
 from effectful.indexed.handlers import IndexPlatesMessenger
 from effectful.indexed.internals import add_indices
 from effectful.indexed.ops import (
@@ -27,7 +28,6 @@ from effectful.indexed.ops import (
 from effectful.internals.sugar import _register_torch_op, gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, ctxof, typeof
 from effectful.ops.function import defun
-from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp
 
 logger = logging.getLogger(__name__)
 

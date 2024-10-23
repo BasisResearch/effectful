@@ -3,11 +3,7 @@ import functools
 import torch
 import tree
 
-from ..internals.sugar import (
-    EagerTensorTerm,
-    _register_torch_op,
-    torch_getitem,
-)
+from ..internals.sugar import EagerTensorTerm, _register_torch_op, torch_getitem
 from .ops import to_tensor
 
 
