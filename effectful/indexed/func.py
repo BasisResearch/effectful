@@ -28,6 +28,40 @@ def add_indexes(func, unindexed, indexed):
     return tree.map_structure(lambda t: t.to_tensor().reshape(t.shape), ret)
 
 
+def indexed_func_wrapper(func):
+    # index expressions for the result of the function
+    indexes = None
+
+    # hide index lists from tree.map_structure
+    class Indexes:
+        def __init__(self, indexes):
+            self.indexes = indexes
+
+    # strip named indexes from the result of the function and store them
+    def deindexed(*args, **kwargs):
+        nonlocal indexes
+        ret = func(*args, **kwargs)
+        indexes = tree.map_structure(
+            lambda t: Indexes(t.indices()) if isinstance(t, EagerTensorTerm) else None,
+            ret,
+        )
+        return tree.map_structure(to_tensor, ret)
+
+    # reapply the stored indexes to a result
+    def reindex(ret):
+        if tree.is_nested(ret):
+            return tree.map_structure(
+                lambda t, i: torch_getitem(t, i.indexes) if i is not None else t,
+                ret,
+                indexes,
+            )
+        if indexes is not None:
+            return torch_getitem(ret, indexes.indexes)
+        return ret
+
+    return deindexed, reindex
+
+
 def torch_func_wrapper(torch_func, func, *args, **kwargs):
     return lambda *indexed_args, **indexed_kwargs: _register_torch_op(
         torch_func(
@@ -50,15 +84,21 @@ def grad(func, *args, **kwargs):
 
 
 def jacfwd(func, *args, **kwargs):
-    return torch_func_wrapper(torch.func.jacfwd, func, *args, **kwargs)
+    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    jacobian = _register_torch_op(torch.func.jacfwd(deindexed_func, *args, **kwargs))
+    return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
 def jacrev(func, *args, **kwargs):
-    return torch_func_wrapper(torch.func.jacrev, func, *args, **kwargs)
+    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    jacobian = _register_torch_op(torch.func.jacrev(deindexed_func, *args, **kwargs))
+    return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
 def hessian(func, *args, **kwargs):
-    return torch_func_wrapper(torch.func.hessian, func, *args, **kwargs)
+    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    h = _register_torch_op(torch.func.hessian(deindexed_func, *args, **kwargs))
+    return lambda *a, **k: reindex(h(*a, *k))
 
 
 def jvp(func, indexed_primals, indexed_tangents, **kwargs):
