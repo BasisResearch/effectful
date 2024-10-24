@@ -91,12 +91,14 @@ def test_jvp_1():
 
 
 def test_jvp_nested():
-    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
-    a = torch_getitem(torch.ones([7]), [name_to_sym("a")()])
+    i = name_to_sym("i")
+    j = name_to_sym("j")
+    x = torch_getitem(torch.randn([10]), [i()])
+    a = torch_getitem(torch.ones([7]), [j()])
     f = lambda x: a + x * torch.tensor([1.0, 2.0, 3])
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
-    assert torch.allclose(to_tensor(value), to_tensor(f(x)))
+    assert torch.allclose(to_tensor(value, [i, j]), to_tensor(f(x), [i, j]))
     assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
 
 
