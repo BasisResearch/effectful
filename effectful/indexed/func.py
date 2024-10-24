@@ -101,22 +101,13 @@ def hessian(func, *args, **kwargs):
     return lambda *a, **k: reindex(h(*a, *k))
 
 
-def jvp(func, indexed_primals, indexed_tangents, **kwargs):
-    # unembed doesn't like this lambda, so hide it by partially applying
-    jvp_func = functools.partial(
-        torch.func.jvp,
-        lambda *unindexed_primals: add_indexes(
-            func,
-            (unindexed_primals, {}),
-            (indexed_primals, {}),
-        ),
-    )
+def jvp(func, *args, **kwargs):
+    (deindexed_func, reindex) = indexed_func_wrapper(func)
 
-    return _register_torch_op(jvp_func)(
-        indexed_primals,
-        indexed_tangents,
-        **kwargs,
-    )
+    # hide deindexed_func from _register_torch_op
+    jvp_func = functools.partial(torch.func.jvp, deindexed_func)
+    ret = _register_torch_op(jvp_func)(*args, **kwargs)
+    return tree.map_structure(reindex, ret)
 
 
 def vjp(func, *indexed_primals, **kwargs):
