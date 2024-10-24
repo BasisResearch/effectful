@@ -319,3 +319,17 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     for idx in itertools.product(*[range(d[1]) for d in name_to_dim]):
         assert (f_actual_full(*idx) == f_actual_left(*idx)).all()
         assert (f_actual_left(*idx) == f_actual_right(*idx)).all()
+
+
+def test_to_tensor():
+    i = name_to_sym("i")
+    j = name_to_sym("j")
+    k = name_to_sym("k")
+
+    t = torch.randn([2, 3, 4])
+    t1 = torch_getitem(t, [i(), j(), k()]).to_tensor()
+    t2 = torch_getitem(t.permute((2, 0, 1)), [k(), i(), j()]).to_tensor([i, j, k])
+    t3 = torch_getitem(t.permute((1, 0, 2)), [j(), i(), k()]).to_tensor([i, j, k])
+
+    assert torch.allclose(t1, t2)
+    assert torch.allclose(t1, t3)
