@@ -112,13 +112,15 @@ def test_vjp_1():
 
 
 def test_vjp_nested():
-    x = torch_getitem(torch.randn([10, 5]), [name_to_sym("i")()])
-    a = torch_getitem(torch.ones([7, 5]), [name_to_sym("a")()])
-    y = torch_getitem(torch.ones([7, 10, 5]), [name_to_sym("a")(), name_to_sym("i")()])
+    i = name_to_sym("i")
+    a = name_to_sym("a")
+    x = torch_getitem(torch.randn([10, 5]), [i()])
+    z = torch_getitem(torch.ones([7, 5]), [a()])
+    y = torch_getitem(torch.ones([10, 7, 5]), [i(), a()])
 
     def f(x):
-        return x.sin() + a
+        return x * z
 
-    (_, vjpfunc) = vjp(f, x)
+    (result, vjpfunc) = vjp(f, x)
     vjps = vjpfunc(y)
-    assert torch.allclose(to_tensor(vjps[0]), to_tensor(x.cos()))
+    assert torch.allclose(to_tensor(vjps[0]), torch.tensor(7.0))
