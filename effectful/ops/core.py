@@ -30,9 +30,23 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclasses.dataclass(eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
+
+    def __init__(self, signature: Callable[Q, V]):
+        super().__init__()
+        self.signature = signature
+
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, Operation) and self.signature == other.signature
+
+    def __hash__(self) -> int:
+        if not hasattr(self, "signature"):
+            return 0
+        return hash(self.signature)
+
+    def __repr__(self) -> str:
+        return f"Operation({self.signature})"
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.internals.sugar import infer_default_rule
@@ -65,11 +79,7 @@ class Operation(Generic[Q, V]):
 
 @typing.runtime_checkable
 class Term(Protocol[T]):
-    op: Operation[..., T]
-    args: Sequence["Expr[Any]"]
-    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
-
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
+    def i_am_a_term(self) -> None: ...
 
 
 Expr = Union[T, Term[T]]

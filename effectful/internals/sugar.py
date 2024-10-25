@@ -328,7 +328,6 @@ class NoDefaultRule(Exception):
 @weak_memoize
 def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
 
-    @functools.wraps(op.signature)
     def _rule(*args: P.args, **kwargs: P.kwargs) -> Expr[T]:
         try:
             return op.signature(*args, **kwargs)
@@ -474,6 +473,8 @@ class BaseTerm(Generic[T], Term[T]):
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
+
+    def i_am_a_term(self): ...
 
 
 @as_term_register(object)
@@ -676,10 +677,10 @@ def _desugar_tensor_index(shape, key):
     new_key = []
 
     def extra_dims(key):
-        return sum(1 for k in key if k is None)
+        return sum([1 for k in key if k is None])
 
     # handle any missing dimensions by adding a trailing Ellipsis
-    if not any(k is Ellipsis for k in key):
+    if not any([k is Ellipsis for k in key]):
         key = tuple(key) + (...,)
 
     for i, k in enumerate(key):
@@ -688,7 +689,7 @@ def _desugar_tensor_index(shape, key):
             new_key.append(slice(None))
         elif k is Ellipsis:
             assert not any(
-                k is Ellipsis for k in key[i + 1 :]
+                [k is Ellipsis for k in key[i + 1 :]]
             ), "only one Ellipsis allowed"
 
             # determine which of the original dimensions this ellipsis refers to
@@ -810,6 +811,8 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         else:
             raise NoDefaultRule
 
+    assert hasattr(_torch_op, "signature")
+
     return _torch_op
 
 
@@ -858,19 +861,23 @@ def torch_getitem(
 
 @embed_register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
-    match op, args, kwargs:
-        case torch_getitem_, (torch.Tensor() as x, (k1, *ks) as key), () if (
-            torch_getitem_ is torch_getitem
-            and not isinstance(x, Term)
-            and all(
+    if (
+        op is torch_getitem
+        and len(args) == 2
+        and isinstance(args[0], torch.Tensor)
+        and not isinstance(args[0], Term)
+        and len(args[1]) > 0
+        and len(kwargs) == 0
+        and all(
+            [
                 typeof(k) is int and not k.args and not k.kwargs
-                for k in key
+                for k in args[1]
                 if isinstance(k, Term)
-            )
-        ):
-            return EagerTensorTerm(x, key)
-        case _:
-            return TensorTerm(op, args, kwargs)
+            ]
+        )
+    ):
+        return EagerTensorTerm(args[0], args[1])
+    return TensorTerm(op, args, kwargs)
 
 
 class TensorTerm(BaseTerm[torch.Tensor]):
@@ -893,6 +900,8 @@ class EagerTensorTerm(torch.Tensor):
     kwargs: Tuple = ()
 
     __match_args__ = ("op", "args", "kwargs")
+
+    def i_am_a_term(self): ...
 
     def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
         assert not isinstance(x, Term)

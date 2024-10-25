@@ -28,14 +28,14 @@ def add_indexes(func, unindexed, indexed):
     return tree.map_structure(lambda t: t.to_tensor().reshape(t.shape), ret)
 
 
+class Indexes:
+    def __init__(self, indexes):
+        self.indexes = indexes
+
+
 def indexed_func_wrapper(func):
     # index expressions for the result of the function
     indexes = None
-
-    # hide index lists from tree.map_structure
-    class Indexes:
-        def __init__(self, indexes):
-            self.indexes = indexes
 
     # strip named indexes from the result of the function and store them
     def deindexed(*args, **kwargs):
@@ -85,7 +85,8 @@ def grad(func, *args, **kwargs):
 
 def jacfwd(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
-    jacobian = _register_torch_op(torch.func.jacfwd(deindexed_func, *args, **kwargs))
+    j = torch.func.jacfwd(deindexed_func, *args, **kwargs)
+    jacobian = _register_torch_op(j)
     return lambda *a, **k: reindex(jacobian(*a, *k))
 
 

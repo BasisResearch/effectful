@@ -36,6 +36,22 @@ def test_jacfwd_1():
     assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
 
 
+def test_jacfwd_compile():
+    import os
+
+    os.environ["TORCH_LOGS"] = "+dynamo"
+    os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+
+    @torch.compile
+    def body(x):
+        return jacfwd(torch.sin)(x)
+
+    x = torch_getitem(torch.randn(100, 5), [name_to_sym("i")()])
+    actual = body(x)
+    expected = torch.diag(torch.cos(x))
+    assert torch.allclose(to_tensor(actual), to_tensor(expected))
+
+
 def test_jacfwd_nested_1():
     i = name_to_sym("i")
     a = torch_getitem(torch.randn(7, 5), [name_to_sym("a")()])
