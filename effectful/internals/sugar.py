@@ -957,8 +957,24 @@ class EagerTensorTerm(torch.Tensor):
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
 
-    def to_tensor(self):
-        return self.args[0]
+    def to_tensor(self, indexes=None):
+        tensor = self.args[0]
+
+        if indexes is None:
+            return tensor
+
+        this_indexes = {
+            idx.op: i for (i, idx) in enumerate(self.indices()) if isinstance(idx, Term)
+        }
+        if any(i not in this_indexes for i in indexes):
+            raise ValueError(f"unknown named index {i}")
+
+        named_dims = [this_indexes[i] for i in indexes]
+        pos_dims = [i for i in range(len(tensor.shape)) if i not in named_dims]
+        return tensor.permute(named_dims + pos_dims)
+
+    def indices(self):
+        return self.args[1]
 
     @property
     def dtype(self):

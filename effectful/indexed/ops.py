@@ -396,9 +396,6 @@ def indexset_as_mask(
 
 
 def to_tensor(t: Term[torch.Tensor], indexes=None):
-    if indexes is None:
-        if isinstance(t, EagerTensorTerm):
-            return t.to_tensor()
-        return t
-
-    raise NotImplementedError()
+    if isinstance(t, EagerTensorTerm):
+        return t.to_tensor(indexes=indexes)
+    return t
