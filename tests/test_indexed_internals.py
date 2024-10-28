@@ -1,9 +1,7 @@
 import contextlib
 import itertools
 import logging
-from typing import Annotated
 
-import pyro
 import pyro.distributions as dist
 import pytest
 import torch
@@ -21,6 +19,7 @@ from effectful.indexed.ops import (
     lift_tensor,
     name_to_sym,
     stack,
+    to_tensor,
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, typeof
@@ -324,9 +323,9 @@ def test_to_tensor():
     k = name_to_sym("k")
 
     t = torch.randn([2, 3, 4])
-    t1 = torch_getitem(t, [i(), j(), k()]).to_tensor()
-    t2 = torch_getitem(t.permute((2, 0, 1)), [k(), i(), j()]).to_tensor([i, j, k])
-    t3 = torch_getitem(t.permute((1, 0, 2)), [j(), i(), k()]).to_tensor([i, j, k])
+    t1 = to_tensor(torch_getitem(t, [i(), j(), k()]), [i, j, k])
+    t2 = to_tensor(torch_getitem(t.permute((2, 0, 1)), [k(), i(), j()]), [i, j, k])
+    t3 = to_tensor(torch_getitem(t.permute((1, 0, 2)), [j(), i(), k()]), [i, j, k])
 
     assert torch.allclose(t1, t2)
     assert torch.allclose(t1, t3)
