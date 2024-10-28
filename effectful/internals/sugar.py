@@ -762,6 +762,9 @@ def partial_eval(t: Term[torch.Tensor], order=None) -> torch.Tensor:
     """
     from effectful.ops.function import defun
 
+    if order is None:
+        order = []
+
     sized_fvs = sizesof(t)
 
     if any(x for x in order if x not in sized_fvs):
