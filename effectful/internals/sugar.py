@@ -770,6 +770,10 @@ def partial_eval(t: Term[torch.Tensor], order=None) -> torch.Tensor:
     if any(x for x in order if x not in sized_fvs):
         raise ValueError("sized must be a subset of the term's sized free variables")
 
+    # if there are no sized free variables, then nothing to do
+    if len(sized_fvs) == 0:
+        return t
+
     order_set = set(order)
     reindex_fvs = [
         (var, size) for var, size in sized_fvs.items() if var not in order_set

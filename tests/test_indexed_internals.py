@@ -345,3 +345,8 @@ def test_to_tensor():
     assert set(sizesof(t_).keys()) == set([])
     assert t_.shape == torch.Size([2, 3, 4])
     assert torch.allclose(t_, t)
+
+    t__ = to_tensor(t_, [])
+    assert set(sizesof(t__).keys()) == set([])
+    assert t__.shape == torch.Size([2, 3, 4])
+    assert torch.allclose(t_, t__)
