@@ -753,6 +753,56 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
+def partial_eval(t: Term[torch.Tensor], order=None) -> torch.Tensor:
+    """Partially evaluate a term with respect to its sized free variables.
+
+    Variables in `order` are converted to positional dimensions in the result
+    tensor, in the order they appear. All other variables remain free.
+
+    """
+    from effectful.ops.function import defun
+
+    if order is None:
+        order = []
+
+    sized_fvs = sizesof(t)
+
+    if any(x for x in order if x not in sized_fvs):
+        raise ValueError("sized must be a subset of the term's sized free variables")
+
+    # if there are no sized free variables, then nothing to do
+    if len(sized_fvs) == 0:
+        return t
+
+    order_set = set(order)
+    reindex_fvs = [
+        (var, size) for var, size in sized_fvs.items() if var not in order_set
+    ]
+    ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
+
+    tpe_torch_fn = torch.func.vmap(
+        defun(t, *[var for (var, _) in ordered_sized_fvs]), randomness="different"
+    )
+
+    inds = torch.broadcast_tensors(
+        *(
+            torch.arange(size)[(...,) + (None,) * (len(ordered_sized_fvs) - i - 1)]
+            for i, (_, size) in enumerate(ordered_sized_fvs)
+        )
+    )
+
+    flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
+
+    def reindex_flat_tensor(t):
+        if not isinstance(t, torch.Tensor):
+            return t
+
+        result = t.reshape(inds[0].shape + t.shape[1:])
+        return torch_getitem(result, tuple(var() for (var, _) in reindex_fvs))
+
+    return tree.map_structure(reindex_flat_tensor, flat_result)
+
+
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
 
@@ -774,33 +824,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             torch_getitem,
             _torch_op,
         }:
-            from effectful.ops.function import defun
-
-            tpe_torch_fn = torch.func.vmap(
-                defun(tm, *sized_fvs), randomness="different"
-            )
-
-            inds = torch.broadcast_tensors(
-                *(
-                    torch.arange(sized_fvs[v])[
-                        (...,) + (None,) * (len(sized_fvs) - i - 1)
-                    ]
-                    for i, v in enumerate(sized_fvs)
-                )
-            )
-
-            flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
-
-            def reindex_flat_tensor(t):
-                if not isinstance(t, torch.Tensor):
-                    raise NotImplementedError(
-                        f"_register_torch_op does not yet support {torch_fn}'s non-tensor return type"
-                    )
-
-                result = t.reshape(inds[0].shape + t.shape[1:])
-                return torch_getitem(result, tuple(v() for v in sized_fvs))
-
-            return tree.map_structure(reindex_flat_tensor, flat_result)
+            return partial_eval(tm)
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -953,22 +977,6 @@ class EagerTensorTerm(torch.Tensor):
 
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
-
-    def to_tensor(self, indexes=None):
-        tensor = self.args[0]
-
-        if indexes is None:
-            return tensor
-
-        this_indexes = {
-            idx.op: i for (i, idx) in enumerate(self.indices()) if isinstance(idx, Term)
-        }
-        if any(i not in this_indexes for i in indexes):
-            raise ValueError(f"unknown named index {i}")
-
-        named_dims = [this_indexes[i] for i in indexes]
-        pos_dims = [i for i in range(len(tensor.shape)) if i not in named_dims]
-        return tensor.permute(named_dims + pos_dims)
 
     @property
     def dtype(self):
