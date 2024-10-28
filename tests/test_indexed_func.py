@@ -11,7 +11,8 @@ def test_grad_1():
         return torch.sin(x)
 
     grad_sin = grad(sin)
-    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn([10]), [i()])
     cos_x_actual = grad_sin(x)
 
     assert isinstance(cos_x_actual, Term)
@@ -19,75 +20,83 @@ def test_grad_1():
 
     cos_x_expected = x.cos()
 
-    assert torch.allclose(to_tensor(cos_x_actual), to_tensor(cos_x_expected))
+    assert torch.allclose(to_tensor(cos_x_actual, [i]), to_tensor(cos_x_expected, [i]))
 
     # Second-order gradients
     neg_sin_x_actual = grad(grad(lambda x: torch.sin(x)))(x)
     neg_sin_x_expected = -x.sin()
 
-    assert torch.allclose(to_tensor(neg_sin_x_actual), to_tensor(neg_sin_x_expected))
+    assert torch.allclose(
+        to_tensor(neg_sin_x_actual, [i]), to_tensor(neg_sin_x_expected, [i])
+    )
 
 
 def test_jacfwd_1():
-    x = torch_getitem(torch.randn(11, 5), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn(11, 5), [i()])
     jacobian = jacfwd(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
 
 
 def test_jacfwd_nested_1():
     i = name_to_sym("i")
-    a = torch_getitem(torch.randn(7, 5), [name_to_sym("a")()])
+    a = name_to_sym("a")
+    y = torch_getitem(torch.randn(7, 5), [a()])
     x = torch_getitem(torch.randn(11, 5), [i()])
 
     def sin(x):
-        return torch.sin(x) + a
+        return torch.sin(x) + y
 
     jacobian = jacfwd(sin)(x)
-    expected = torch.diag(torch.cos(x) + 0 * a)
+    expected = torch.diag(torch.cos(x) + 0 * y)
 
-    assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+    assert torch.allclose(to_tensor(jacobian, [i, a]), to_tensor(expected, [i, a]))
 
 
 def test_jacfwd_nested_2():
     i = name_to_sym("i")
-    a = torch_getitem(torch.randn(7, 5), [name_to_sym("a")()])
+    a = name_to_sym("a")
+    y = torch_getitem(torch.randn(7, 5), [a()])
     x = torch_getitem(torch.randn(11, 5), [i()])
 
     def sin(x):
-        return [torch.sin(x), a]
+        return [torch.sin(x), y]
 
     jacobian = jacfwd(sin)(x)[0]
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
 
 
 def test_jacrev_1():
-    x = torch_getitem(torch.randn(11, 5), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn(11, 5), [i()])
     jacobian = jacrev(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian), to_tensor(expected))
+    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
 
 
 def test_hessian_1():
     def f(x):
         return x.sin().sum()
 
-    x = torch_getitem(torch.randn(11, 5), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn(11, 5), [i()])
     hess = hessian(f)(x)  # equivalent to jacfwd(jacrev(f))(x)
-    assert torch.allclose(to_tensor(hess), to_tensor(torch.diag(-x.sin())))
+    assert torch.allclose(to_tensor(hess, [i]), to_tensor(torch.diag(-x.sin()), [i]))
 
 
 def test_jvp_1():
-    x = torch_getitem(torch.randn([10]), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn([10]), [i()])
     f = lambda x: x * torch.tensor([1.0, 2.0, 3])
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
-    assert torch.allclose(to_tensor(value), to_tensor(f(x)))
-    assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
+    assert torch.allclose(to_tensor(value, [i]), to_tensor(f(x), [i]))
+    assert torch.allclose(to_tensor(grad, [i]), torch.tensor([1.0, 2, 3]))
 
 
 def test_jvp_nested():
@@ -99,18 +108,19 @@ def test_jvp_nested():
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
     assert torch.allclose(to_tensor(value, [i, j]), to_tensor(f(x), [i, j]))
-    assert torch.allclose(to_tensor(grad), torch.tensor([1.0, 2, 3]))
+    assert torch.allclose(to_tensor(grad, [i, j]), torch.tensor([1.0, 2, 3]))
 
 
 def test_vjp_1():
-    x = torch_getitem(torch.randn([10, 5]), [name_to_sym("i")()])
-    y = torch_getitem(torch.ones([10, 5]), [name_to_sym("i")()])
-    z = torch_getitem(torch.ones([10, 5]), [name_to_sym("i")()])
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn([10, 5]), [i()])
+    y = torch_getitem(torch.ones([10, 5]), [i()])
+    z = torch_getitem(torch.ones([10, 5]), [i()])
 
     f = lambda x: (x.sin(), x.cos())
     (_, vjpfunc) = vjp(f, x)
     vjps = vjpfunc((y, z))
-    assert torch.allclose(to_tensor(vjps[0]), to_tensor(x.cos() + -x.sin()))
+    assert torch.allclose(to_tensor(vjps[0], [i]), to_tensor(x.cos() + -x.sin(), [i]))
 
 
 def test_vjp_nested():
@@ -125,4 +135,4 @@ def test_vjp_nested():
 
     (result, vjpfunc) = vjp(f, x)
     vjps = vjpfunc(y)
-    assert torch.allclose(to_tensor(vjps[0]), torch.tensor(7.0))
+    assert torch.allclose(to_tensor(vjps[0], [i]), torch.tensor(7.0))
