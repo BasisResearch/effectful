@@ -1,9 +1,7 @@
 import contextlib
 import itertools
 import logging
-from typing import Annotated
 
-import pyro
 import pyro.distributions as dist
 import pytest
 import torch
@@ -21,6 +19,7 @@ from effectful.indexed.ops import (
     lift_tensor,
     name_to_sym,
     stack,
+    to_tensor,
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, typeof
@@ -316,3 +315,38 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     for idx in itertools.product(*[range(d[1]) for d in name_to_dim]):
         assert (f_actual_full(*idx) == f_actual_left(*idx)).all()
         assert (f_actual_left(*idx) == f_actual_right(*idx)).all()
+
+
+def test_to_tensor():
+    i = name_to_sym("i")
+    j = name_to_sym("j")
+    k = name_to_sym("k")
+
+    # test that named dimensions can be removed and reordered
+    t = torch.randn([2, 3, 4])
+    t1 = to_tensor(torch_getitem(t, [i(), j(), k()]), [i, j, k])
+    t2 = to_tensor(torch_getitem(t.permute((2, 0, 1)), [k(), i(), j()]), [i, j, k])
+    t3 = to_tensor(torch_getitem(t.permute((1, 0, 2)), [j(), i(), k()]), [i, j, k])
+
+    assert torch.allclose(t1, t2)
+    assert torch.allclose(t1, t3)
+
+    # test that to_tensor can remove some but not all named dimensions
+    t_ijk = torch_getitem(t, [i(), j(), k()])
+    t_ij = to_tensor(t_ijk, [k])
+    assert set(sizesof(t_ij).keys()) == set([i, j])
+    assert t_ij.shape == torch.Size([4])
+
+    t_i = to_tensor(t_ij, [j])
+    assert set(sizesof(t_i).keys()) == set([i])
+    assert t_i.shape == torch.Size([3, 4])
+
+    t_ = to_tensor(t_i, [i])
+    assert set(sizesof(t_).keys()) == set([])
+    assert t_.shape == torch.Size([2, 3, 4])
+    assert torch.allclose(t_, t)
+
+    t__ = to_tensor(t_, [])
+    assert set(sizesof(t__).keys()) == set([])
+    assert t__.shape == torch.Size([2, 3, 4])
+    assert torch.allclose(t_, t__)
