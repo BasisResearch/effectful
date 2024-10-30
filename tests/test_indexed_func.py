@@ -166,3 +166,21 @@ def test_vmap_nested():
     for ii in range(10):
         for jj in range(7):
             assert (actual_t[ii, jj] == x[ii] + y[jj]).all()
+
+
+def test_vmap_and_grad():
+    sin = torch.sin
+    grad_sin = grad(sin)
+
+    i = name_to_sym("i")
+    x = torch_getitem(torch.randn([10, 7]), [i()])
+
+    # implicit vmap over i and explicit vmap over first positional dim
+    actual = vmap(grad_sin)(x)
+    assert actual.shape == torch.Size([7])
+
+    actual_t = to_tensor(actual, [i])
+    x_t = to_tensor(x, [i])
+    for ii in range(10):
+        for jj in range(7):
+            assert torch.allclose(actual_t[ii, jj], x_t[ii, jj].cos())
