@@ -17,3 +17,19 @@ def test_evaluate():
 
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == Nested([{1: 2}, 1, (1, 2)], 1, arg1={2: 1})
+
+
+def test_operation_metadata():
+    """Test that Operation instances preserve decorated function metadata."""
+
+    def f(x):
+        """Docstring for f"""
+        return x + 1
+
+    f_op = Operation(f)
+    ff_op = Operation(f)
+
+    assert f.__doc__ == f_op.__doc__
+    assert f.__name__ == f_op.__name__
+    assert hash(f) == hash(f_op)
+    assert f_op == ff_op

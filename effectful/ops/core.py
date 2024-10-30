@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import typing
 from typing import (
     Any,
@@ -30,9 +31,18 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@dataclasses.dataclass(frozen=True, eq=True, repr=True, unsafe_hash=True)
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
+
+    def __init__(self, signature):
+        self.signature = signature
+        functools.update_wrapper(self, signature)
+
+    def __eq__(self, other):
+        return isinstance(other, Operation) and self.signature == other.signature
+
+    def __hash__(self):
+        return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.internals.sugar import infer_default_rule
