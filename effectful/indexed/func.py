@@ -17,27 +17,37 @@ def indexed_func_wrapper(func):
 
     # hide index lists from tree.map_structure
     class Indexes:
-        def __init__(self, indexes):
-            self.indexes = indexes
+        def __init__(self, sizes):
+            self.sizes = sizes
+            self.indexes = list(sizes.keys())
 
     # strip named indexes from the result of the function and store them
     def deindexed(*args, **kwargs):
         nonlocal indexes
+
+        def deindex_tensor(t, i):
+            t_ = to_tensor(t, i.sizes.keys())
+            assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
+            return t_
+
         ret = func(*args, **kwargs)
-        indexes = tree.map_structure(lambda t: Indexes(list(sizesof(t).keys())), ret)
-        return tree.map_structure(lambda t, i: to_tensor(t, i.indexes), ret, indexes)
+        indexes = tree.map_structure(lambda t: Indexes(sizesof(t)), ret)
+        tensors = tree.map_structure(lambda t, i: deindex_tensor(t, i), ret, indexes)
+        return tensors
 
     # reapply the stored indexes to a result
-    def reindex(ret):
+    def reindex(ret, starting_dim=0):
+        def index_expr(i):
+            return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
+
         if tree.is_nested(ret):
-            return tree.map_structure(
-                lambda t, i: torch_getitem(t, tuple(x() for x in i.indexes)),
-                ret,
-                indexes,
+            indexed_ret = tree.map_structure(
+                lambda t, i: torch_getitem(t, index_expr(i)), ret, indexes
             )
-        if indexes is not None:
-            return torch_getitem(ret, tuple(i() for i in indexes.indexes))
-        return ret
+        else:
+            indexed_ret = torch_getitem(ret, index_expr(indexes))
+
+        return indexed_ret
 
     return deindexed, reindex
 
@@ -119,3 +129,12 @@ def vjp(func, *indexed_primals, **kwargs):
         return repack_primals(grads)
 
     return indexed_result, vjpfunc_wrapper
+
+
+def vmap(func, *args, **kwargs):
+    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    vmap_func = _register_torch_op(torch.func.vmap(deindexed_func, *args, **kwargs))
+    # vmap_func returns tensors of shape [vmap_dim, indexed_dim_1, ...,
+    # indexed_dim_n, pos_dim_1, ..., pos_dim_m], so we reapply indexes starting
+    # at dim 1
+    return lambda *a, **k: reindex(vmap_func(*a, *k), starting_dim=1)

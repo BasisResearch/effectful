@@ -3,7 +3,7 @@ import torch
 from effectful.ops.core import Term
 from effectful.internals.sugar import torch_getitem
 from effectful.indexed.ops import name_to_sym, indices_of, IndexSet, to_tensor
-from effectful.indexed.func import grad, jacfwd, jacrev, hessian, jvp, vjp
+from effectful.indexed.func import grad, jacfwd, jacrev, hessian, jvp, vjp, vmap
 
 
 def test_grad_1():
@@ -136,3 +136,33 @@ def test_vjp_nested():
     (result, vjpfunc) = vjp(f, x)
     vjps = vjpfunc(y)
     assert torch.allclose(to_tensor(vjps[0], [i]), torch.tensor(7.0))
+
+
+def test_vmap_1():
+    i = name_to_sym("i")
+    x = torch.randn([10, 5])
+    x_i = torch_getitem(x, [i()])
+
+    f = lambda x: x + 1
+    actual = vmap(f)(x_i)
+    expected = x + 1
+    assert torch.allclose(to_tensor(actual, [i]), expected)
+
+
+def test_vmap_nested():
+    i = name_to_sym("i")
+    j = name_to_sym("j")
+    x = torch.randn([10, 5, 4])
+    x_i = torch_getitem(x, [i()])
+    y = torch.randn([7])
+    y_j = torch_getitem(y, [j()])
+
+    def f(x):
+        return y_j + x
+
+    actual = vmap(f)(x_i)
+    actual_t = to_tensor(actual, [i, j])
+
+    for ii in range(10):
+        for jj in range(7):
+            assert (actual_t[ii, jj] == x[ii] + y[jj]).all()
