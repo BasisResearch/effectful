@@ -42,6 +42,7 @@ def indexed_func_wrapper(func):
     return deindexed, reindex
 
 
+@functools.wraps(torch.func.grad)
 def grad(func, *args, **kwargs):
     """Compute the gradient of a function with respect to its arguments. This is
     a wrapper around `torch.func.grad` that allows the function to be called
@@ -53,24 +54,28 @@ def grad(func, *args, **kwargs):
     return lambda *a, **k: reindex(f(*a, *k))
 
 
+@functools.wraps(torch.func.jacfwd)
 def jacfwd(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
     jacobian = _register_torch_op(torch.func.jacfwd(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
+@functools.wraps(torch.func.jacrev)
 def jacrev(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
     jacobian = _register_torch_op(torch.func.jacrev(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
+@functools.wraps(torch.func.hessian)
 def hessian(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
     h = _register_torch_op(torch.func.hessian(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(h(*a, *k))
 
 
+@functools.wraps(torch.func.jvp)
 def jvp(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
 
@@ -80,6 +85,7 @@ def jvp(func, *args, **kwargs):
     return tree.map_structure(reindex, ret)
 
 
+@functools.wraps(torch.func.vjp)
 def vjp(func, *indexed_primals, **kwargs):
     unpacked_primals = []
     for t in indexed_primals:
