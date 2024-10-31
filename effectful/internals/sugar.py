@@ -988,3 +988,11 @@ class EagerTensorTerm(torch.Tensor):
 
     def new(self, *args, **kwargs):
         return self.to_tensor().new(*args, **kwargs)
+
+    @property
+    def requires_grad(self):
+        return self.to_tensor().requires_grad
+
+    @property
+    def grad_fn(self):
+        return self.to_tensor().grad_fn
