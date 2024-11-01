@@ -980,19 +980,19 @@ class EagerTensorTerm(torch.Tensor):
 
     @property
     def dtype(self):
-        return self.to_tensor().dtype
+        return self.args[0].dtype
 
     @property
     def device(self):
-        return self.to_tensor().device
+        return self.args[0].device
 
     def new(self, *args, **kwargs):
-        return self.to_tensor().new(*args, **kwargs)
+        return self.args[0].new(*args, **kwargs)
 
     @property
     def requires_grad(self):
-        return self.to_tensor().requires_grad
+        return self.args[0].requires_grad
 
     @property
     def grad_fn(self):
-        return self.to_tensor().grad_fn
+        return self.args[0].grad_fn

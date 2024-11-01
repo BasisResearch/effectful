@@ -40,6 +40,12 @@ def to_indexed(tensor, batch_dims):
     )
 
 
+def from_indexed(tensor, batch_dims):
+    if indices_of(tensor) == IndexSet():
+        return tensor
+    return to_tensor(tensor, [name_to_sym(str(i)) for i in range(batch_dims)])
+
+
 class DistTestCase:
     def __init__(self, raw_dist, raw_params, batch_shape, xfail=None):
         assert isinstance(raw_dist, str)
@@ -131,7 +137,7 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
         assert param_indices in [IndexSet(), sample_indices]
 
     # Indexed samples should have the same shape as regular samples, but with the batch dimensions indexed
-    indexed_sample_t = to_tensor(indexed_sample)
+    indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))
     assert sample.shape == indexed_sample_t.shape
     assert sample.dtype == indexed_sample_t.dtype
 
@@ -139,7 +145,7 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
     indexed_lprob = indexed_dist.log_prob(indexed_sample)
 
     # Indexed logprobs should have the same shape as regular logprobs, but with the batch dimensions indexed
-    indexed_lprob_t = to_tensor(indexed_lprob)
+    indexed_lprob_t = from_indexed(indexed_lprob, len(case_.batch_shape))
     assert lprob.shape == indexed_lprob_t.shape
     assert lprob.dtype == indexed_lprob_t.dtype
 
@@ -169,7 +175,7 @@ def test_dist_randomness(case_, sample_shape, use_rsample):
         indexed_sample = indexed_dist.sample(sample_shape)
         pos_sample = pos_dist.sample(sample_shape)
 
-    indexed_sample_t = to_tensor(indexed_sample)
+    indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))
 
     new_shape = (-1, *pos_sample.shape[len(case_.batch_shape) :])
     flat_sample = pos_sample.reshape(new_shape)
@@ -204,16 +210,16 @@ def test_dist_stats(case_, statistic):
         if statistic == "entropy":
             expected_stat = expected_stat()
             actual_stat = actual_stat()
-        actual_stat = to_tensor(actual_stat)
     except NotImplementedError:
         pytest.xfail(f"{statistic} not implemented")
 
-    actual_stat, expected_stat = torch.broadcast_tensors(actual_stat, expected_stat)
+    actual_stat_t = from_indexed(actual_stat, len(case_.batch_shape))
+    actual_stat_t, expected_stat = torch.broadcast_tensors(actual_stat_t, expected_stat)
 
     if expected_stat.isnan().all():
-        assert actual_stat.isnan().all()
+        assert to_tensor(actual_stat).isnan().all()
     else:
-        assert_close(actual_stat, expected_stat)
+        assert_close(actual_stat_t, expected_stat)
 
 
 for batch_shape in [(5,), (2, 3), ()]:
