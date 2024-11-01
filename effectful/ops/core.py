@@ -1,4 +1,3 @@
-import dataclasses
 import functools
 import typing
 from typing import (
@@ -34,12 +33,14 @@ V = TypeVar("V")
 class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
 
-    def __init__(self, signature):
+    def __init__(self, signature: Callable[Q, V]):
         self.signature = signature
         functools.update_wrapper(self, signature)
 
     def __eq__(self, other):
-        return isinstance(other, Operation) and self.signature == other.signature
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return self.signature == other.signature
 
     def __hash__(self):
         return hash(self.signature)
