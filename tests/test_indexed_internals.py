@@ -103,13 +103,13 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
         **{
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
+            if full_batch_shape[dim] > 1
         }
     )
 
     assert actual_world == expected_world
 
 
-@pytest.mark.skip
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )

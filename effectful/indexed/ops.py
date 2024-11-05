@@ -145,9 +145,6 @@ def lift_tensor(tensor, **kwargs):
     )
     event_dim = kwargs.get("event_dim", 0)
 
-    # drop the event dimensions from the end of the shape
-    batch_shape = tensor.shape[: len(tensor.shape) - event_dim]
-
     index_expr = [slice(None)] * len(tensor.shape)
     for name, dim in name_to_dim.items():
         # ensure that lifted tensors use the same free variables for the same name
@@ -160,6 +157,7 @@ def lift_tensor(tensor, **kwargs):
     return result, vars_
 
 
+@functools.singledispatch
 def indices_of(value, **kwargs) -> IndexSet:
     """
     Get a :class:`IndexSet` of indices on which an indexed value is supported.
@@ -217,10 +215,7 @@ def indices_of(value, **kwargs) -> IndexSet:
     :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A :class:`IndexSet` containing the indices on which the value is supported.
     """
-    if isinstance(value, torch.Tensor) and not isinstance(value, Term):
-        value, _ = lift_tensor(value, **kwargs)
-
-    return IndexSet(**{k._name: set(range(v)) for (k, v) in sizesof(value).items()})
+    raise NotImplementedError
 
 
 def gather(value, indexset, **kwargs):
@@ -300,8 +295,9 @@ def gather(value, indexset, **kwargs):
 
 
 def stack(values, name, **kwargs):
-    """Stack a sequence of indexed values, creating a new dimension. The new dimension is indexed by `name`. The
-    indexed values in the stack must have identical shapes.
+    """Stack a sequence of indexed values, creating a new dimension. The new
+    dimension is indexed by `name`. The indexed values in the stack must have
+    identical shapes.
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
