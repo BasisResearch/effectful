@@ -178,19 +178,23 @@ def gensym(t, *, name=None):
     is_type = (
         isinstance(t, typing.Type) or typing.get_origin(t) is collections.abc.Callable
     )
+
     if is_type:
 
         @Operation
         def op() -> t:  # type: ignore
             raise NoDefaultRule
 
-    else:
+    elif isinstance(t, collections.abc.Callable):
 
-        def op(*args, **kwargs):
+        def dummy(*args, **kwargs):
             raise NoDefaultRule
 
-        op.__signature__ = inspect.signature(t)
-        op = Operation(op)
+        functools.update_wrapper(dummy, t)
+        op = Operation(dummy)
+
+    else:
+        raise ValueError(f"expected type or callable, got {t}")
 
     op.__name__ = name or t.__name__
 
