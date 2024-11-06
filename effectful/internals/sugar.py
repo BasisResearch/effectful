@@ -174,7 +174,10 @@ def gensym(t, *, name=None):
     :returns: A fresh Operation.
 
     """
-    is_type = isinstance(t, type)
+    # curiously, typing.Callable[..., T] is not a subtype of typing.Type[T]
+    is_type = (
+        isinstance(t, typing.Type) or typing.get_origin(t) is collections.abc.Callable
+    )
     if is_type:
 
         @Operation
