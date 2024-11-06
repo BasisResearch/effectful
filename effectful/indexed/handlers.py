@@ -6,6 +6,9 @@ import pyro
 import torch
 from typing_extensions import ParamSpec
 
+from ..ops.core import Interpretation
+from ..ops.handler import fwd
+from ..handlers.pyro import pyro_sample
 from .internals import _LazyPlateMessenger, add_indices, get_sample_msg_device
 from .ops import union
 
@@ -107,6 +110,21 @@ class IndexPlatesMessenger(pyro.poutine.messenger.Messenger):
     def _pyro_scatter_n(self, msg: Dict[str, Any]) -> None:
         add_indices(union(*msg["args"][0].keys()))
         msg["stop"] = True
+
+
+def dependent_mask(get_mask) -> Interpretation[torch.Tensor, torch.Tensor]:
+    """
+    Helper function for effect handlers that select a subset of worlds.
+    """
+
+    def pyro_sample_handler(name, dist, *args, **kwargs):
+        obs = kwargs.get("obs")
+        device = get_sample_msg_device(dist, obs)
+        mask = get_mask(dist, obs, device=device, name=name)
+        dist = dist.expand(torch.broadcast_shapes(dist.batch_shape, mask.shape))
+        return fwd(None, name, dist, *args, **kwargs)
+
+    return {pyro_sample: pyro_sample_handler}
 
 
 class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
