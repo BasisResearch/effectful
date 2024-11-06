@@ -155,12 +155,44 @@ def implements(op: Operation[P, V]):
     return _ImplementedOperation(op)
 
 
-def gensym(t: Type[T]) -> Operation[[], T]:
-    @Operation
-    def op() -> t:  # type: ignore
-        raise NoDefaultRule
+@typing.overload
+def gensym(t: Type[T], *, name: Optional[str]) -> Operation[[], T]: ...
 
-    return typing.cast(Operation[[], T], op)
+
+@typing.overload
+def gensym(t: Callable[P, T], *, name: Optional[str]) -> Operation[P, T]: ...
+
+
+def gensym(t, *, name=None):
+    """gensym creates fresh Operations.
+
+    This is useful for creating fresh variables.
+
+    :param t: May be a type or a callable. If a type, the Operation will have no arguments. If a callable, the Operation will have the same signature as the callable, but with no default rule.
+    :param name: Optional name for the Operation.
+    :returns: A fresh Operation.
+    """
+    is_type = isinstance(t, type)
+    if is_type:
+
+        @Operation
+        def op() -> t:  # type: ignore
+            raise NoDefaultRule
+
+    else:
+
+        def op(*args, **kwargs):
+            raise NoDefaultRule
+
+        op.__signature__ = inspect.signature(t)
+        op = Operation(op)
+
+    op.__name__ = name or t.__name__
+
+    if is_type:
+        return typing.cast(Operation[[], T], op)
+    else:
+        return typing.cast(Operation[P, T], op)
 
 
 class Annotation:
