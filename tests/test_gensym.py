@@ -1,6 +1,6 @@
 from typing import Annotated, Callable, TypeVar
 
-from effectful.internals.sugar import gensym, Bound, NoDefaultRule
+from effectful.internals.sugar import Bound, NoDefaultRule, gensym
 from effectful.ops.core import Operation, Term, ctxof
 
 
