@@ -1,5 +1,5 @@
-from effectful.ops.core import Operation, Term
 from effectful.internals.sugar import gensym
+from effectful.ops.core import Operation, Term
 
 
 def test_always_fresh():
