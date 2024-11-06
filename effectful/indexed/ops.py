@@ -295,9 +295,8 @@ def gather(value, indexset, **kwargs):
 
 
 def stack(values, name, **kwargs):
-    """Stack a sequence of indexed values, creating a new dimension. The new
-    dimension is indexed by `name`. The indexed values in the stack must have
-    identical shapes.
+    """Stack a sequence of indexed values, creating a new dimension. The new dimension is indexed by `name`. The
+    indexed values in the stack must have identical shapes.
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
