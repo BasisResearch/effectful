@@ -5,7 +5,8 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.prompts import bind_prompt
 from effectful.internals.runtime import get_interpretation, interpreter
-from effectful.ops.core import Interpretation, Operation
+from effectful.internals.sugar import gensym
+from effectful.ops.core import Interpretation, Operation, apply
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -39,21 +40,25 @@ def product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
-    # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {op: closed_handler(intp)(op) for op in intp}
+    if not any(op in intp for op in intp2):
+        refls2 = {op: op.__default_rule__ for op in intp2}
+        intp_ = {op: closed_handler(refls2)(intp[op]) for op in intp}
+        return {op: runner(intp_)(intp2[op]) for op in intp2}
+    else:
+        renaming = {op: gensym(op) for op in intp2 if op in intp}
+        intp_ = {renaming.get(op, op): closed_handler(renaming)(intp[op]) for op in intp}
+        return product(intp_, coproduct(renaming, intp2))
 
-    return {
-        op: closed_handler(refls)(
-            intp2[op]
-            if op not in intp
-            else bind_prompt(
-                fwd,  # type: ignore
-                closed_handler(intp)(cast(Callable[..., T], op)),
-                intp2[op],
-            )
-        )
-        for op in intp2
-    }
+
+@contextlib.contextmanager
+def runner(intp: Interpretation[S, T]):
+
+    @interpreter(get_interpretation())
+    def _apply(_, op, *args, **kwargs):
+        return op(*args, **kwargs)
+
+    with interpreter({apply: _apply, **intp}):
+        yield
 
 
 @contextlib.contextmanager
