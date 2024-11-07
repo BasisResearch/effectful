@@ -34,8 +34,8 @@ class Operation(Generic[Q, V]):
     signature: Callable[Q, V]
 
     def __init__(self, signature: Callable[Q, V]):
-        self.signature = signature
         functools.update_wrapper(self, signature)
+        self.signature = signature
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
