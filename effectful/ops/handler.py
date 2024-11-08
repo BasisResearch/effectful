@@ -75,11 +75,11 @@ def product2(
 def runner(intp: Interpretation[S, T]):
 
     @interpreter(get_interpretation())
-    def _apply(_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply(_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
-    with interpreter({apply: _apply, **intp}):
-        yield
+    with interpreter({apply: _reapply, **intp}):
+        yield intp
 
 
 @contextlib.contextmanager
