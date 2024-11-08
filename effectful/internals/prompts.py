@@ -101,8 +101,6 @@ def bind_prompt(
     Manager: No need to be hasty, have your refund!
     Clerk: Great, here's your refund.
     """
-    from effectful.ops.handler import runner
-
     @contextmanager
     def _unset_cont(
         prompt: Operation[Concatenate[S, P], T], orig: Callable[Concatenate[S, P], T]
@@ -118,7 +116,7 @@ def bind_prompt(
         unset = _unset_cont(
             prompt, get_interpretation().get(prompt, prompt.__default_rule__)
         )
-        with runner({prompt: unset(_set_state(prompt_impl))}):  # type: ignore
+        with interpreter({**get_interpretation(), prompt: unset(_set_state(prompt_impl))}):  # type: ignore
             return wrapped(*a, **k)
 
     return wrapper

@@ -57,7 +57,7 @@ def product(
     }
 
 
-def product2(
+def _product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
@@ -68,7 +68,7 @@ def product2(
     else:
         renaming = {op: gensym(op) for op in intp2 if op in intp}
         intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-        return product2(intp_, coproduct(renaming, intp2))
+        return _product(intp_, coproduct(renaming, intp2))
 
 
 @contextlib.contextmanager
