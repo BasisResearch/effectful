@@ -25,13 +25,12 @@ def _get_args() -> Tuple[Tuple, Mapping]:
 
 
 def _set_state(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
-    from effectful.ops.handler import runner
 
     @wraps(fn)
     def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
         res = res if res is not None else _get_result()
-        with runner({_get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
+        with interpreter({**get_interpretation(), _get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
             return fn(*a, **k)
 
     return _cont_wrapper
