@@ -36,7 +36,7 @@ def coproduct(
     return res
 
 
-def _product(
+def product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
