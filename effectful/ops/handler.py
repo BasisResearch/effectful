@@ -36,7 +36,7 @@ def coproduct(
     return res
 
 
-def product(
+def _product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
@@ -61,14 +61,16 @@ def _product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
-    if not any(op in intp for op in intp2):
-        refls2 = {op: op.__default_rule__ for op in intp2}
-        intp_ = {op: handler(refls2)(intp[op]) for op in intp}
-        return {op: runner(intp_)(intp2[op]) for op in intp2}
-    else:
-        renaming = {op: gensym(op) for op in intp2 if op in intp}
-        intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-        return _product(intp_, coproduct(renaming, intp2))
+    ...
+    #return {op: runner(intp)(intp2[op]) for op in intp2}
+    #if not any(op in intp for op in intp2):
+    #    refls2 = {op: op.__default_rule__ for op in intp2}
+    #    intp_ = {op: runner(refls2)(intp[op]) for op in intp}
+    #    return {op: runner(intp_)(intp2[op]) for op in intp2}
+    #else:
+    #    renaming = {op: gensym(op) for op in intp2 if op in intp}
+    #    intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
+    #    return _product(intp_, coproduct(renaming, intp2))
 
 
 @contextlib.contextmanager
