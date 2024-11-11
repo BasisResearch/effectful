@@ -30,7 +30,7 @@ def coproduct(
         if i1:
             res[op] = bind_prompt(fwd, i1, i2)  # type: ignore
         else:
-            res[op] = bind_prompt(fwd, op.__default_rule__, i2)
+            res[op] = bind_prompt(fwd, op.__default_rule__, i2)  # type: ignore
 
     return res
 

@@ -42,7 +42,7 @@ from typing_extensions import Concatenate, ParamSpec
 from effectful.internals.prompts import bind_result, bind_result_to_method
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Operation
-from effectful.ops.handler import coproduct, fwd, handler, product
+from effectful.ops.handler import coproduct, fwd, handler
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -395,7 +395,7 @@ def block(
         else:
             return fwd(res)
 
-    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})
+    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that
