@@ -323,7 +323,7 @@ class NativeParam(ObjectInterpretation):
             return constrained_value
 
         # Forward our value to any potential upstream transformations
-        return fwd(fn(initial_value, constraint))
+        return fn(initial_value, constraint)
 
     @implements(get_param_store)
     def get_param_store(self):
@@ -390,19 +390,12 @@ def block(
     @bind_result
     def blocking(res, op: Operation, *args, **kwargs):
         if hide_fn(op, res, *args, **kwargs):
-            return res if res is not None else op(*args, **kwargs)
+            with handler(default_runner):
+                return res if res is not None else op(*args, **kwargs)
         else:
             return fwd(res)
 
-    return handler(
-        product(
-            default_runner,
-            {
-                sample: partial(blocking, sample),
-                param: partial(blocking, param),
-            },
-        )
-    )
+    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that

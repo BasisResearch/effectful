@@ -2,6 +2,7 @@ import contextlib
 import itertools
 import logging
 from typing import TypeVar
+from functools import partial
 
 import pytest
 from typing_extensions import ParamSpec
@@ -9,7 +10,7 @@ from typing_extensions import ParamSpec
 from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import closed_handler, coproduct, fwd, handler
+from effectful.ops.handler import closed_handler, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
 
@@ -49,17 +50,13 @@ OPERATION_CASES = (
 N_CASES = [1, 2, 3]
 
 
-@pytest.mark.parametrize("op,args", OPERATION_CASES)
-def test_affine_continuation_compose(op, args):
-    def f():
-        return op(*args)
+def test_fwd_simple():
+    def plus_1_fwd(x):
+        # do nothing and just fwd
+        return fwd(None)
 
-    h_twice = {op: bind_result(lambda r, *a, **k: fwd(fwd(r)))}
-
-    assert (
-        closed_handler(defaults(op))(f)()
-        == closed_handler(coproduct(defaults(op), h_twice))(f)()
-    )
+    with closed_handler({plus_1: plus_1_fwd}):
+        assert plus_1(1) == 2
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -170,3 +167,48 @@ def test_sugar_subclassing():
     with handler(ScaleAndShiftBy(4, 1)):
         assert plus_1(4) == 9
         assert plus_2(4) == 12
+
+
+def test_fwd_default():
+    """
+    Test that forwarding with no outer handler defers to the default rule.
+    """
+
+    @Operation
+    def do_stuff():
+        return "default stuff"
+
+    def do_more_stuff():
+        return fwd(None) + " and more"
+
+    def fancy_stuff():
+        return "fancy stuff"
+
+    # forwarding with no outer handler defers to the default rule
+    with handler({do_stuff: do_more_stuff}):
+        assert do_stuff() == "default stuff and more"
+
+    # forwarding with an outer handler uses the outer handler
+    with handler(coproduct({do_stuff: fancy_stuff}, {do_stuff: do_more_stuff})):
+        assert do_stuff() == "fancy stuff and more"
+
+    # ditto for product
+    with handler(product({do_stuff: fancy_stuff}, {do_stuff: do_more_stuff})):
+        assert do_stuff() == "fancy stuff and more"
+
+    # empty coproducts allow forwarding to the default implementation
+    with handler(coproduct({}, {do_stuff: do_more_stuff})):
+        assert do_stuff() == "default stuff and more"
+
+    # ditto products
+    with handler(product({}, {do_stuff: do_more_stuff})):
+        assert do_stuff() == "default stuff and more"
+
+    # taking a product correctly closes over the default implementation
+    with handler(
+        coproduct(
+            {do_stuff: fancy_stuff},
+            product({do_stuff: do_more_stuff}, {do_stuff: do_more_stuff}),
+        )
+    ):
+        assert do_stuff() == "default stuff and more and more"
