@@ -1,8 +1,8 @@
 import contextlib
 import itertools
 import logging
-from typing import TypeVar
 from functools import partial
+from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
