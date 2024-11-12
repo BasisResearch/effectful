@@ -1,5 +1,5 @@
 import contextlib
-from typing import Callable, Optional, TypeVar, cast
+from typing import Optional, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -31,7 +31,7 @@ def coproduct(
         if i1:
             res[op] = bind_prompt(fwd, i1, i2)  # type: ignore
         else:
-            res[op] = i2
+            res[op] = bind_prompt(fwd, op.__default_rule__, i2)  # type: ignore
 
     return res
 
@@ -40,7 +40,7 @@ def product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
-    if any(op in intp for op in intp2):
+    if any(op in intp for op in intp2):  # alpha-rename
         renaming = {op: gensym(op) for op in intp2 if op in intp}
         intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
         return product(intp_, intp2)
@@ -69,5 +69,5 @@ def handler(intp: Interpretation[S, T]):
 
 @contextlib.contextmanager
 def closed_handler(intp: Interpretation[S, T]):
-    with interpreter({**get_interpretation(), **intp}):
+    with interpreter(coproduct({}, {**get_interpretation(), **intp})):
         yield intp

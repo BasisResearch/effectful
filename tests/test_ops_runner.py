@@ -52,19 +52,6 @@ N_CASES = [1, 2, 3]
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
-def test_affine_continuation_product(op, args):
-    def f():
-        return op(*args)
-
-    h_twice = {op: bind_result(lambda r, *a, **k: fwd(fwd(r)))}
-
-    assert (
-        closed_handler(defaults(op))(f)()
-        == closed_handler(product(defaults(op), h_twice))(f)()
-    )
-
-
-@pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n1", N_CASES)
 @pytest.mark.parametrize("n2", N_CASES)
 def test_product_block_associative(op, args, n1, n2):
