@@ -40,37 +40,14 @@ def product(
     intp: Interpretation[S, T],
     intp2: Interpretation[S, T],
 ) -> Interpretation[S, T]:
-    # on prompt, jump to the outer interpretation and interpret it using itself
-    refls = {op: closed_handler(intp)(op) for op in intp}
-
-    return {
-        op: closed_handler(refls)(
-            intp2[op]
-            if op not in intp
-            else bind_prompt(
-                fwd,  # type: ignore
-                closed_handler(intp)(cast(Callable[..., T], op)),
-                intp2[op],
-            )
-        )
-        for op in intp2
-    }
-
-
-def _product(
-    intp: Interpretation[S, T],
-    intp2: Interpretation[S, T],
-) -> Interpretation[S, T]:
-    ...
-    #return {op: runner(intp)(intp2[op]) for op in intp2}
-    #if not any(op in intp for op in intp2):
-    #    refls2 = {op: op.__default_rule__ for op in intp2}
-    #    intp_ = {op: runner(refls2)(intp[op]) for op in intp}
-    #    return {op: runner(intp_)(intp2[op]) for op in intp2}
-    #else:
-    #    renaming = {op: gensym(op) for op in intp2 if op in intp}
-    #    intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-    #    return _product(intp_, coproduct(renaming, intp2))
+    if any(op in intp for op in intp2):
+        renaming = {op: gensym(op) for op in intp2 if op in intp}
+        intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
+        return product(intp_, intp2)
+    else:
+        refls2 = {op: op.__default_rule__ for op in intp2}
+        intp_ = {op: runner(refls2)(intp[op]) for op in intp}
+        return {op: runner(intp_)(intp2[op]) for op in intp2}
 
 
 @contextlib.contextmanager
