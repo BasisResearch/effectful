@@ -24,18 +24,6 @@ def _get_args() -> Tuple[Tuple, Mapping]:
     return ((), {})
 
 
-def _set_state(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
-
-    @wraps(fn)
-    def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()  # type: ignore
-        res = res if res is not None else _get_result()
-        with interpreter({**get_interpretation(), _get_result: lambda: res, _get_args: lambda: (a, k)}):  # type: ignore
-            return fn(*a, **k)
-
-    return _cont_wrapper
-
-
 def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return lambda *a, **k: fn(_get_result(), *a, **k)
 
@@ -101,6 +89,7 @@ def bind_prompt(
     Manager: No need to be hasty, have your refund!
     Clerk: Great, here's your refund.
     """
+
     @contextmanager
     def _unset_cont(
         prompt: Operation[Concatenate[S, P], T], orig: Callable[Concatenate[S, P], T]
@@ -109,14 +98,21 @@ def bind_prompt(
         r.interpretation = {**r.interpretation, prompt: orig}
         yield
 
+    @wraps(prompt)
+    def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
+        a, k = (a, k) if a or k else _get_args()  # type: ignore
+        res = res if res is not None else _get_result()
+        state_intp = {_get_result: lambda: res, _get_args: lambda: (a, k)}
+        with interpreter({**get_interpretation(), **state_intp}):  # type: ignore
+            return prompt_impl(*a, **k)
+
     @wraps(wrapped)
-    @bind_result
-    @_set_state
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
         unset = _unset_cont(
             prompt, get_interpretation().get(prompt, prompt.__default_rule__)
         )
-        with interpreter({**get_interpretation(), prompt: unset(_set_state(prompt_impl))}):  # type: ignore
+        state_intp = {prompt: unset(_cont_wrapper), _get_args: lambda: (a, k)}
+        with interpreter({**get_interpretation(), **state_intp}):  # type: ignore
             return wrapped(*a, **k)
 
     return wrapper
