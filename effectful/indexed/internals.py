@@ -1,14 +1,14 @@
 import numbers
-from typing import Optional, TypeVar, Union, Dict
+from typing import Dict, Optional, TypeVar, Union
 
 import pyro
 import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from ..ops.core import Term
 from ..internals.sugar import sizesof
-from .ops import IndexSet, indices_of, union, get_index_plates
+from ..ops.core import Term
+from .ops import IndexSet, get_index_plates, indices_of, union
 
 K = TypeVar("K")
 T = TypeVar("T")

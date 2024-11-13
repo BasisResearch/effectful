@@ -1,9 +1,9 @@
 import torch
 
-from effectful.ops.core import Term
+from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp, vmap
+from effectful.indexed.ops import IndexSet, indices_of, name_to_sym, to_tensor
 from effectful.internals.sugar import torch_getitem
-from effectful.indexed.ops import name_to_sym, indices_of, IndexSet, to_tensor
-from effectful.indexed.func import grad, jacfwd, jacrev, hessian, jvp, vjp, vmap
+from effectful.ops.core import Term
 
 
 def test_grad_1():

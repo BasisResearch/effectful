@@ -878,10 +878,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
 
 @_register_torch_op
-def torch_getitem(
-    x: torch.Tensor,
-    key: Tuple[IndexElement, ...],
-) -> torch.Tensor:
+def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor:
     if not isinstance(x, torch.Tensor):
         raise TypeError(f"expected a tensor but got {type(x)}")
 

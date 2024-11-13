@@ -16,8 +16,8 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import gensym, sizesof, torch_getitem, partial_eval, Indexable
-from ..ops.core import Operation, Term, Expr
+from ..internals.sugar import Indexable, gensym, partial_eval, sizesof, torch_getitem
+from ..ops.core import Expr, Operation, Term
 from ..ops.function import defun
 
 T = TypeVar("T")

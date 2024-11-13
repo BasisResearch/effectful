@@ -16,14 +16,14 @@ from effectful.indexed.ops import (
     cond_n,
     gather,
     get_index_plates,
+    indexed,
     indexset_as_mask,
     indices_of,
     lift_tensor,
     name_to_sym,
+    reduce,
     stack,
     to_tensor,
-    indexed,
-    reduce,
 )
 from effectful.internals.sugar import _register_torch_op, gensym, sizesof, torch_getitem
 from effectful.ops.core import Term, ctxof, typeof
