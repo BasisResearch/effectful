@@ -174,3 +174,10 @@ def as_term(value: Expr[T]) -> Expr[T]:
         impl: Callable[[T], Expr[T]]
         impl = _as_term_registry.dispatch(type(value))  # type: ignore
         return impl(value)
+
+
+def subst(term, substs):
+    with interpreter(
+        {k: functools.partial(lambda vv: vv, v) for (k, v) in substs.items()},
+    ):
+        return evaluate(term)
