@@ -185,22 +185,21 @@ def gensym(t, *, name=None):
 
     if is_type:
 
-        @Operation
-        def op() -> t:  # type: ignore
+        def func() -> t:  # type: ignore
             raise NoDefaultRule
 
     elif isinstance(t, collections.abc.Callable):
 
-        def dummy(*args, **kwargs):
+        def func(*args, **kwargs):  # type: ignore
             raise NoDefaultRule
 
-        functools.update_wrapper(dummy, t)
-        op = Operation(dummy)
+        functools.update_wrapper(func, t)
 
     else:
         raise ValueError(f"expected type or callable, got {t}")
 
-    op.__name__ = name or t.__name__
+    func.__name__ = name or t.__name__
+    op = Operation(func)
 
     if is_type:
         return typing.cast(Operation[[], T], op)
