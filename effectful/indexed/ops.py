@@ -16,12 +16,7 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import (
-    gensym,
-    sizesof,
-    torch_getitem,
-    partial_eval,
-)
+from ..internals.sugar import gensym, sizesof, torch_getitem, partial_eval, Indexable
 from ..ops.core import Operation, Term, Expr
 from ..ops.function import defun
 
@@ -397,3 +392,17 @@ def indexset_as_mask(
 
 def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
     return partial_eval(t, order=indexes)
+
+
+def indexed(t: torch.Tensor) -> Indexable:
+    """Helper function for constructing indexed tensors.
+
+    Returns: An Indexable object that can be indexed with free variables.
+
+    Example:
+    >>> width, height = gensym(int, name='width'), gensym(int, name='height')
+    >>> t = indexed(torch.ones(2, 3))[width(), height()]
+    indexed(tensor([[1., 1., 1.],
+                [1., 1., 1.]]))[width(), height()]
+    """
+    return Indexable(t)

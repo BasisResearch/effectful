@@ -921,6 +921,18 @@ def torch_getitem(
     return torch.ops.aten.index(x, tuple(key))
 
 
+class Indexable:
+    def __init__(self, t: torch.Tensor):
+        if not isinstance(t, torch.Tensor):
+            raise ValueError(f"Expected a torch.Tensor, got {type(t)}")
+        self.t = t
+
+    def __getitem__(self, key):
+        if not isinstance(key, tuple):
+            key = (key,)
+        return torch_getitem(self.t, key)
+
+
 @embed_register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
     match op, args, kwargs:
