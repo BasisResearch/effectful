@@ -989,7 +989,16 @@ class EagerTensorTerm(torch.Tensor):
         return ret
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({term_to_str(self)})"
+        indexed_constr = "indexed"
+
+        # correct indentation
+        parts = str(self.args[0]).split("\n")
+        tensor_str = "\n".join(
+            [parts[0]] + [(len(indexed_constr) + 1) * " " + p for p in parts[1:]]
+        )
+
+        key_str = ", ".join(str(k) for k in self.args[1])
+        return f"{indexed_constr}({tensor_str})[{key_str}]"
 
     @classmethod
     def __torch_function__(
