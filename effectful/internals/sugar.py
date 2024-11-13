@@ -3,10 +3,10 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
-import math
 import numbers
 import operator
 import typing
+from types import EllipsisType
 from typing import (
     Any,
     Callable,
@@ -22,7 +22,7 @@ from typing import (
 
 import torch
 import tree
-from typing_extensions import ParamSpec, TypeGuard
+from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import interpreter, weak_memoize
 from effectful.ops.core import (
@@ -483,7 +483,7 @@ def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
-def term_to_str(term: Term[object]) -> str:
+def term_to_str(term: Term[T]) -> str:
     params_str = ""
     if len(term.args) > 0:
         params_str += ", ".join(str(x) for x in term.args)
@@ -705,9 +705,7 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     return defun(body, *bound_sig.args, **bound_sig.kwargs)
 
 
-import torch
-
-IndexElement = Union[None, int, slice, Sequence[int], Type["Ellipsis"], torch.Tensor]
+IndexElement = Union[None, int, slice, Sequence[int], EllipsisType, torch.Tensor]
 
 
 def _desugar_tensor_index(shape, key):
@@ -745,22 +743,20 @@ def _desugar_tensor_index(shape, key):
 
 
 def _getitem_ellipsis_and_none(
-    x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
-) -> Tuple[
-    Expr[torch.Tensor], Tuple[Expr[Union[int, slice, Sequence[int], torch.Tensor]], ...]
-]:
+    x: torch.Tensor, key: Tuple[IndexElement, ...]
+) -> Tuple[torch.Tensor, Tuple[IndexElement, ...]]:
     """Eliminate ellipses and None in an index expression x[key].
 
     Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
 
     """
 
-    new_shape, new_key = _desugar_tensor_index(x.shape, key)
-    return torch.reshape(x, new_shape), new_key
+    new_shape, new_key = _desugar_tensor_index(x.shape, key)  # type:ignore
+    return torch.reshape(x, new_shape), new_key  # type:ignore
 
 
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
-    sizes = {}
+    sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
         x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
@@ -769,15 +765,17 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
             shape, key_ = _desugar_tensor_index(x.shape, key)
 
             for i, k in enumerate(key_):
-                match k:
-                    case Term(op, (), ()) as tm if issubclass(typeof(tm), int):
-                        if op in sizes and sizes[op] != shape[i]:
-                            raise ValueError(
-                                f"Named index {op} used in incompatible dimensions of size {sizes[op]} and {shape[i]}"
-                            )
-                        sizes[op] = shape[i]
-                    case _:
-                        continue
+                if (
+                    isinstance(k, Term)
+                    and len(k.args) == 0
+                    and len(k.kwargs) == 0
+                    and issubclass(typeof(k), int)
+                ):
+                    if k.op in sizes and sizes[k.op] != shape[i]:
+                        raise ValueError(
+                            f"Named index {k.op} used in incompatible dimensions of size {sizes[k.op]} and {shape[i]}"
+                        )
+                    sizes[k.op] = shape[i]
 
         return torch_getitem.__free_rule__(x, key)
 
@@ -792,7 +790,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def partial_eval(t: Term[torch.Tensor], order=None) -> torch.Tensor:
+def partial_eval(t: T, order=None) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -846,7 +844,7 @@ def partial_eval(t: Term[torch.Tensor], order=None) -> torch.Tensor:
 def _register_torch_op(torch_fn: Callable[P, T]):
 
     @Operation
-    def _torch_op(*args, **kwargs) -> torch.Tensor:
+    def _torch_op(*args, **kwargs) -> T:
 
         tm = _torch_op.__free_rule__(*args, **kwargs)
         sized_fvs = sizesof(tm)
@@ -863,7 +861,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             torch_getitem,
             _torch_op,
         }:
-            return partial_eval(tm)
+            return typing.cast(T, partial_eval(tm))
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -896,11 +894,11 @@ def torch_getitem(
     x, key = _getitem_ellipsis_and_none(x, key)
 
     # Convert non-tensor args to tensors
-    key = list(key)
+    key_l = list(key)
     for i, arg in list(enumerate(key)):
         if isinstance(arg, slice):
             if arg == slice(None):
-                key[i] = None
+                key_l[i] = None
             else:
                 # Convert slices to torch.arange()s.
                 start = arg.start if arg.start is not None else 0
@@ -909,14 +907,14 @@ def torch_getitem(
                 flat_arg = torch.arange(
                     start, stop, step, dtype=torch.long, device=x.device
                 )
-                key[i] = flat_arg.reshape((-1,) + (1,) * i)
+                key_l[i] = flat_arg.reshape((-1,) + (1,) * i)
         elif isinstance(arg, int):
-            key[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
+            key_l[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
         elif isinstance(arg, (list, tuple)):
             flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
-            key[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
+            key_l[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
-    return torch.ops.aten.index(x, tuple(key))
+    return torch.ops.aten.index(x, tuple(key_l))
 
 
 @embed_register(torch.Tensor)
@@ -959,17 +957,22 @@ class EagerTensorTerm(torch.Tensor):
 
     def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
         assert not isinstance(x, Term)
-        assert all(
-            typeof(k) is int and not k.args and not k.kwargs
-            for k in key
-            if isinstance(k, Term)
-        )
+        for k in key:
+            if isinstance(k, Term):
+                assert typeof(k) is int and not k.args and not k.kwargs
+
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
         ret.args = (x, key)
+
+        ret.shape = torch.Size(
+            [s for s, k in zip(x.shape, key) if not isinstance(k, Term)]
+        )
+        ret.ndim = len(ret.shape)
+
         return ret
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.__class__.__name__}({term_to_str(self)})"
 
     @classmethod
@@ -978,9 +981,7 @@ class EagerTensorTerm(torch.Tensor):
     ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
-    def __getitem__(
-        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
-    ) -> Expr[torch.Tensor]:
+    def __getitem__(self, key) -> torch.Tensor:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
     def __format__(self, format_spec: str) -> str:
@@ -991,12 +992,7 @@ class EagerTensorTerm(torch.Tensor):
             + "]"
         )
 
-    @property
-    def shape(self) -> torch.Size:
-        x, key = self.args
-        return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
-
-    def size(self, dim: Optional[int] = None) -> int:
+    def size(self, dim=None):
         if dim is None:
             return self.shape
         return self.shape[dim]
@@ -1005,14 +1001,10 @@ class EagerTensorTerm(torch.Tensor):
         return self.shape.numel()
 
     def dim(self) -> int:
-        return len(self.shape)
+        return self.ndim
 
-    @property
-    def ndim(self) -> int:
-        return self.dim()
-
-    def ndimension(self):
-        return self.dim()
+    def ndimension(self) -> int:
+        return self.ndim
 
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")

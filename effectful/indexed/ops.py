@@ -16,13 +16,8 @@ from typing import (
 import pyro
 import torch
 
-from ..internals.sugar import (
-    gensym,
-    sizesof,
-    torch_getitem,
-    partial_eval,
-)
-from ..ops.core import Operation, Term, Expr
+from ..internals.sugar import gensym, partial_eval, sizesof, torch_getitem
+from ..ops.core import Expr, Operation, Term
 from ..ops.function import defun
 
 T = TypeVar("T")
@@ -64,14 +59,13 @@ class IndexSet(Dict[str, Set[int]]):
         True
     """
 
-    def __init__(self, **mapping: Dict[str, Union[int, Iterable[int]]]):
-        super().__init__(
-            **{
-                k: {vs} if isinstance(vs, int) else set(vs)
-                for k, vs in mapping.items()
-                if vs
-            }
-        )
+    def __init__(self, **mapping: Union[int, Iterable[int]]):
+        index_set = {}
+        for k, vs in mapping.items():
+            indexes = {vs} if isinstance(vs, int) else set(vs)
+            if len(indexes) > 0:
+                index_set[k] = indexes
+        super().__init__(**index_set)
 
     def __repr__(self):
         return f"{type(self).__name__}({super().__repr__()})"
@@ -121,9 +115,7 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
 @functools.lru_cache(maxsize=None)
 def name_to_sym(name: str) -> Operation[[], int]:
-    sym = gensym(int)
-    sym._name = name
-    return sym
+    return gensym(int, name=name)
 
 
 def lift_tensor(tensor, **kwargs):

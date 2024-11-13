@@ -1,14 +1,14 @@
 import numbers
-from typing import Optional, TypeVar, Union, Dict
+from typing import Dict, Optional, TypeVar, Union
 
 import pyro
 import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from ..ops.core import Term
 from ..internals.sugar import sizesof
-from .ops import IndexSet, indices_of, union, get_index_plates
+from ..ops.core import Term
+from .ops import IndexSet, get_index_plates, indices_of, union
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -38,7 +38,7 @@ def _indices_of_tuple(value: tuple, **kwargs) -> IndexSet:
 
 @indices_of.register
 def _indices_of_shape(value: torch.Size, **kwargs) -> IndexSet:
-    name_to_dim = (
+    name_to_dim: dict[str, int] = (
         kwargs["name_to_dim"]
         if "name_to_dim" in kwargs
         else {name: f.dim for name, f in get_index_plates().items()}
@@ -55,7 +55,7 @@ def _indices_of_shape(value: torch.Size, **kwargs) -> IndexSet:
 
 @indices_of.register
 def _indices_of_term(value: Term, **kwargs) -> IndexSet:
-    return IndexSet(**{k._name: set(range(v)) for (k, v) in sizesof(value).items()})
+    return IndexSet(**{str(k): set(range(v)) for (k, v) in sizesof(value).items()})
 
 
 @indices_of.register
