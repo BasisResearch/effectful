@@ -885,6 +885,12 @@ def torch_getitem(
     if not isinstance(x, torch.Tensor):
         raise TypeError(f"expected a tensor but got {type(x)}")
 
+    for k in key:
+        if isinstance(k, Operation):
+            raise TypeError(
+                f"Got operation symbol {str(k)}. You probably meant {str(k)}()."
+            )
+
     # fast path for simple cases
     if len(key) == 0:
         return x
