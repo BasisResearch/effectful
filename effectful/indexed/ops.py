@@ -406,3 +406,36 @@ def indexed(t: torch.Tensor) -> Indexable:
                 [1., 1., 1.]]))[width(), height()]
     """
     return Indexable(t)
+
+
+def reduce(indexes, indexed_tensor, reducer) -> Expr[torch.Tensor]:
+    """Reduce an indexed tensor along one or more named dimensions.
+
+    Args:
+    - indexes: Names of dimensions to reduce.
+    - indexed_tensor: The tensor to reduce.
+    - reducer: One of ("sum", "prod", "mean", "amax", "amin"). Must be a valid argument to `torch.Tensor.scatter_reduce`.
+
+    Returns: A new indexed tensor with the specified dimensions reduced.
+
+    Example:
+    >>> width, height = gensym(int, name='width'), gensym(int, name='height')
+    >>> t = indexed(torch.ones(2, 3))[width(), height()]
+    >>> reduce([width], t, "sum")
+    indexed(tensor([2., 2., 2.]))[height()]
+    """
+    num_positional = len(indexed_tensor.shape)
+    # convert indexed dimensions to positional and flatten all new positional dims
+    t = to_tensor(indexed_tensor, indexes)
+    new_positional = len(t.shape) - num_positional
+    t_flat = torch.flatten(t, 0, new_positional - 1)
+
+    # reduce dim 0 into the first index of dim 0, then return reduction
+    return torch.scatter_reduce(
+        t_flat,
+        0,
+        torch.broadcast_to(torch.tensor(0), t_flat.shape),
+        t_flat,
+        reducer,
+        include_self=False,
+    )[0]
