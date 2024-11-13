@@ -276,9 +276,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
         # recursively rename bound variables from innermost to outermost scope
         for scope in sorted(bound_vars.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {
-                var: gensym(var.__type_rule__()) for var in bound_vars[scope]
-            }  # TODO support finitary operations
+            renaming_map = {var: gensym(var) for var in bound_vars[scope]}
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
                 bound_sig.arguments[name] = tree.map_structure(

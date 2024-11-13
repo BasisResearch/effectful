@@ -124,12 +124,6 @@ def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
             return fwd(None)
 
 
-alpha_rules: Interpretation = {
-    add: add.__default_rule__,
-    App: App.__default_rule__,
-    Lam: Lam.__default_rule__,
-    Let: Let.__default_rule__,
-}
 eta_rules: Interpretation = {
     Lam: eta_lam,
     Let: eta_let,
@@ -155,7 +149,6 @@ sort_rules: Interpretation = {
 eager_mixed = functools.reduce(
     coproduct,
     (
-        alpha_rules,
         eta_rules,
         beta_rules,
         commute_rules,
