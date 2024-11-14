@@ -1,13 +1,15 @@
-import functools
 import re
-from collections import OrderedDict, namedtuple
-from importlib import import_module
+from collections import namedtuple
 
-import numpy as np
 import pyro.distributions as dist
 import pytest
 import torch
-from torch import exp, rand, randint
+
+#################################################
+# these imports are used by generated code
+from torch import exp, rand, randint  # noqa: F401
+
+#################################################
 from torch.testing import assert_close
 
 from effectful.indexed.ops import IndexSet, indices_of, name_to_sym, to_tensor
@@ -80,7 +82,8 @@ class DistTestCase:
         case = Case(**self.params)
         dist_ = eval(self.raw_dist)
 
-        case = Case(**self.indexed_params)
+        # case is used by generated code in self.raw_dist
+        case = Case(**self.indexed_params)  # noqa: F841
         indexed_dist = eval(self.raw_dist)
 
         return dist_, indexed_dist
