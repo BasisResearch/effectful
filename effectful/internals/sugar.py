@@ -923,8 +923,9 @@ def torch_getitem(
 @embed_register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
     match op, args, kwargs:
-        case torch_getitem_, (torch.Tensor() as x, (k1, *ks) as key), () if (
+        case torch_getitem_, (torch.Tensor() as x, key), () if (
             torch_getitem_ is torch_getitem
+            and len(key) >= 1
             and not isinstance(x, Term)
             and all(
                 typeof(k) is int and not k.args and not k.kwargs
