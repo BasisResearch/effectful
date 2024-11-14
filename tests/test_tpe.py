@@ -1,26 +1,13 @@
-import collections
-import functools
 import logging
-import operator
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, gensym, torch_getitem
-from effectful.ops.core import (
-    Expr,
-    Interpretation,
-    Operation,
-    Term,
-    as_term,
-    ctxof,
-    evaluate,
-    typeof,
-)
-from effectful.ops.function import defun, funcall
-from effectful.ops.handler import coproduct, fwd, handler
+from effectful.internals.sugar import gensym, torch_getitem
+from effectful.ops.core import as_term
+from effectful.ops.function import defun
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +42,7 @@ def test_tpe_2():
     xval, ival = torch.rand(2, 3), torch.arange(2)
     expected = torch.sum(xval[ival, :], dim=0)
 
-    i, j = gensym(int), gensym(int)
+    j = gensym(int)
     x_j = torch_getitem(
         xval,
         (
@@ -82,7 +69,7 @@ def test_tpe_3():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    i, j, k = gensym(int), gensym(int), gensym(int)
+    j, k = gensym(int), gensym(int)
     x_j = torch_getitem(
         xval,
         (

@@ -1,9 +1,9 @@
 import torch
 
-from effectful.ops.core import Term
+from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp, vmap
+from effectful.indexed.ops import IndexSet, indices_of, name_to_sym, to_tensor
 from effectful.internals.sugar import torch_getitem
-from effectful.indexed.ops import name_to_sym, indices_of, IndexSet, to_tensor
-from effectful.indexed.func import grad, jacfwd, jacrev, hessian, jvp, vjp, vmap
+from effectful.ops.core import Term
 
 
 def test_grad_1():
@@ -92,7 +92,10 @@ def test_hessian_1():
 def test_jvp_1():
     i = name_to_sym("i")
     x = torch_getitem(torch.randn([10]), [i()])
-    f = lambda x: x * torch.tensor([1.0, 2.0, 3])
+
+    def f(x):
+        return x * torch.tensor([1.0, 2.0, 3])
+
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
     assert torch.allclose(to_tensor(value, [i]), to_tensor(f(x), [i]))
@@ -104,7 +107,10 @@ def test_jvp_nested():
     j = name_to_sym("j")
     x = torch_getitem(torch.randn([10]), [i()])
     a = torch_getitem(torch.ones([7]), [j()])
-    f = lambda x: a + x * torch.tensor([1.0, 2.0, 3])
+
+    def f(x):
+        return a + x * torch.tensor([1.0, 2.0, 3])
+
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
     assert torch.allclose(to_tensor(value, [i, j]), to_tensor(f(x), [i, j]))
@@ -117,7 +123,9 @@ def test_vjp_1():
     y = torch_getitem(torch.ones([10, 5]), [i()])
     z = torch_getitem(torch.ones([10, 5]), [i()])
 
-    f = lambda x: (x.sin(), x.cos())
+    def f(x):
+        return (x.sin(), x.cos())
+
     (_, vjpfunc) = vjp(f, x)
     vjps = vjpfunc((y, z))
     assert torch.allclose(to_tensor(vjps[0], [i]), to_tensor(x.cos() + -x.sin(), [i]))
@@ -143,7 +151,9 @@ def test_vmap_1():
     x = torch.randn([10, 5])
     x_i = torch_getitem(x, [i()])
 
-    f = lambda x: x + 1
+    def f(x):
+        return x + 1
+
     actual = vmap(f)(x_i)
     expected = x + 1
     assert torch.allclose(to_tensor(actual, [i]), expected)
