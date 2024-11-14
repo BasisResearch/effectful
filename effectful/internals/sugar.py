@@ -751,8 +751,8 @@ def _getitem_ellipsis_and_none(
 
     """
 
-    new_shape, new_key = _desugar_tensor_index(x.shape, key)  # type:ignore
-    return torch.reshape(x, new_shape), new_key  # type:ignore
+    new_shape, new_key = _desugar_tensor_index(x.shape, key)
+    return torch.reshape(x, new_shape), new_key
 
 
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
