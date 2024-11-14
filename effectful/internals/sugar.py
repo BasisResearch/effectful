@@ -397,17 +397,15 @@ as_term_register = _as_term_registry.register
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
 
 
-def register_syntax_op(
-    syntax_fn: Callable[P, T], syntax_op_fn: Optional[Callable[P, T]] = None
-):
-    if syntax_op_fn is None:
-        return functools.partial(register_syntax_op, syntax_fn)
+def register_syntax_op(syntax_fn: Callable[P, T]):
+    def register_syntax_op_fn(syntax_op_fn: Callable[P, T]):
+        OPERATORS[syntax_fn] = Operation(syntax_op_fn)
+        return OPERATORS[syntax_fn]
 
-    OPERATORS[syntax_fn] = Operation(syntax_op_fn)
-    return OPERATORS[syntax_fn]
+    return register_syntax_op_fn
 
 
-for _arithmetic_binop in (
+for arithmetic_binop in (
     operator.add,
     operator.sub,
     operator.mul,
@@ -423,24 +421,28 @@ for _arithmetic_binop in (
     operator.xor,
 ):
 
-    @register_syntax_op(_arithmetic_binop)
-    def _(__x: T, __y: T) -> T:
+    @register_syntax_op(arithmetic_binop)
+    def _(x: T, y: T) -> T:
+        if not isinstance(x, Term) and not isinstance(y, Term):
+            return arithmetic_binop(x, y)
         raise NoDefaultRule
 
 
-for _arithmethic_unop in (
+for arithmetic_unop in (
     operator.neg,
     operator.pos,
     operator.abs,
     operator.invert,
 ):
 
-    @register_syntax_op(_arithmethic_unop)
-    def _(__x: T) -> T:
+    @register_syntax_op(arithmetic_unop)
+    def _(x: T) -> T:
+        if not isinstance(x, Term):
+            return arithmetic_unop(x)  # typing: ignore
         raise NoDefaultRule
 
 
-for _other_operator_op in (
+for other_operator_op in (
     operator.not_,
     operator.lt,
     operator.le,
@@ -463,9 +465,14 @@ for _other_operator_op in (
     # reversed,
 ):
 
-    @register_syntax_op(_other_operator_op)
-    @functools.wraps(_other_operator_op)
+    @register_syntax_op(other_operator_op)
+    @functools.wraps(other_operator_op)
     def _(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in args) and not any(
+            isinstance(a, Term) for a in kwargs.values()
+        ):
+            return other_operator_op(*args, **kwargs)
+
         raise NoDefaultRule
 
 

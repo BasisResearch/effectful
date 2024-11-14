@@ -1,5 +1,5 @@
 from effectful.internals.sugar import NoDefaultRule, Operation, gensym
-from effectful.ops.core import ctxof, evaluate
+from effectful.ops.core import ctxof, evaluate, Term
 from effectful.ops.handler import handler
 
 
@@ -14,6 +14,15 @@ def test_evaluate():
 
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == Nested([{1: 2}, 1, (1, 2)], 1, arg1={2: 1})
+
+
+def test_evaluate_2():
+    x = gensym(int, name="x")
+    y = gensym(int, name="y")
+    t = x() + y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 1, y: lambda: 2}):
+        assert evaluate(t) == 3
 
 
 def test_operation_metadata():

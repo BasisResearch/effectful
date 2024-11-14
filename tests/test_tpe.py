@@ -137,6 +137,21 @@ def test_tpe_known_index():
         assert not any(isinstance(a, int) for a in case_.args[1])
 
 
+def test_tpe_constant_eval():
+    """Constant indexes are partially evaluated away."""
+    height, width = gensym(int, name="height"), gensym(int, name="width")
+    t = torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
+    A = torch_getitem(t, (height(), width()))
+
+    layer = gensym(int, name="layer")
+    with handler({height: lambda: layer() // 3, width: lambda: layer() % 3}):
+        A_layer = evaluate(A)
+    with handler({layer: lambda: 2}):
+        A_final = evaluate(A_layer)
+
+    assert not isinstance(A_final, Term)
+
+
 def test_tpe_stack():
     xval, yval = torch.rand(10, 5), torch.rand(10, 5)
 
