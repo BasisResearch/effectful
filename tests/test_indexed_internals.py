@@ -16,12 +16,10 @@ from effectful.indexed.ops import (
     cond_n,
     gather,
     get_index_plates,
-    indexed,
     indexset_as_mask,
     indices_of,
     lift_tensor,
     name_to_sym,
-    reduce,
     stack,
     to_tensor,
 )
@@ -354,18 +352,3 @@ def test_to_tensor():
     assert set(sizesof(t__).keys()) == set([])
     assert t__.shape == torch.Size([2, 3, 4])
     assert torch.allclose(t_, t__)
-
-
-def test_reduce():
-    height, width = gensym(int, name="height"), gensym(int, name="width")
-    t = indexed(torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]]))[height(), width()]
-
-    assert torch.allclose(
-        to_tensor(reduce([height], t, "sum"), [width]), torch.tensor([6, 12, 18])
-    )
-
-    assert torch.allclose(
-        to_tensor(reduce([width], t, "sum"), [height]), torch.tensor([8, 15, 13])
-    )
-
-    assert torch.allclose(reduce([height, width], t, "sum"), torch.tensor(36))
