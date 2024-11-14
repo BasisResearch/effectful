@@ -17,6 +17,7 @@ import pyro
 import torch
 
 import effectful.internals.sugar
+
 from ..internals.sugar import gensym, partial_eval, sizesof, torch_getitem
 from ..ops.core import Expr, Operation, Term
 from ..ops.function import defun
