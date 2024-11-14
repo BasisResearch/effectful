@@ -241,7 +241,7 @@ def _indices_of_tuple(value: tuple, **kwargs) -> IndexSet:
 
 @indices_of.register
 def _indices_of_shape(value: torch.Size, **kwargs) -> IndexSet:
-    name_to_dim: dict[str, int] = (
+    name_to_dim = (
         kwargs["name_to_dim"]
         if "name_to_dim" in kwargs
         else {name: f.dim for name, f in get_index_plates().items()}
@@ -453,9 +453,11 @@ def indexset_as_mask(
     Get a dense mask tensor for indexing into a tensor from an indexset.
     """
     if name_to_dim_size is None:
-        name_to_dim_size = {
-            name: (f.dim, f.size) for name, f in get_index_plates().items()
-        }
+        name_to_dim_size = {}
+        for name, f in get_index_plates().items():
+            assert f.dim is not None
+            name_to_dim_size[name] = (f.dim, f.size)
+
     batch_shape = [1] * -min([dim for dim, _ in name_to_dim_size.values()], default=0)
     inds: List[Union[slice, torch.Tensor]] = [slice(None)] * len(batch_shape)
     for name, values in indexset.items():

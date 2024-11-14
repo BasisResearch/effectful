@@ -32,7 +32,7 @@ class _LazyPlateMessenger(IndepMessenger):
 
 
 def get_sample_msg_device(
-    dist: pyro.distributions.Distribution,
+    dist: pyro.distributions.torch_distribution.TorchDistribution,
     value: Optional[Union[torch.Tensor, float, int, bool]],
 ) -> torch.device:
     # some gross code to infer the device of the obs_mask tensor
