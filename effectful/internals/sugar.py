@@ -844,7 +844,7 @@ def partial_eval(t: T, order=None) -> T:
 def _register_torch_op(torch_fn: Callable[P, T]):
 
     @Operation
-    def _torch_op(*args, **kwargs) -> T:
+    def _torch_op(*args, **kwargs) -> torch.Tensor:
 
         tm = _torch_op.__free_rule__(*args, **kwargs)
         sized_fvs = sizesof(tm)
@@ -861,13 +861,16 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             torch_getitem,
             _torch_op,
         }:
-            return typing.cast(T, partial_eval(tm))
+            # note: this cast is a lie. partial_eval can return non-tensors, as
+            # can torch_fn. for example, some torch functions return tuples,
+            # which partial_eval handles.
+            return typing.cast(torch.Tensor, partial_eval(tm))
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
             )
         ):
-            return torch_fn(*args, **kwargs)
+            return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
             raise NoDefaultRule
 
@@ -957,6 +960,7 @@ class EagerTensorTerm(torch.Tensor):
 
     def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
         assert not isinstance(x, Term)
+
         for k in key:
             if isinstance(k, Term):
                 assert typeof(k) is int and not k.args and not k.kwargs
@@ -964,12 +968,6 @@ class EagerTensorTerm(torch.Tensor):
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
         ret.args = (x, key)
-
-        ret.shape = torch.Size(
-            [s for s, k in zip(x.shape, key) if not isinstance(k, Term)]
-        )
-        ret.ndim = len(ret.shape)
-
         return ret
 
     def __repr__(self):
@@ -992,7 +990,12 @@ class EagerTensorTerm(torch.Tensor):
             + "]"
         )
 
-    def size(self, dim=None):
+    @property
+    def shape(self) -> torch.Size:  # type: ignore
+        x, key = self.args
+        return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
+
+    def size(self, dim: Optional[int] = None):
         if dim is None:
             return self.shape
         return self.shape[dim]
@@ -1001,10 +1004,14 @@ class EagerTensorTerm(torch.Tensor):
         return self.shape.numel()
 
     def dim(self) -> int:
-        return self.ndim
+        return len(self.shape)
 
-    def ndimension(self) -> int:
-        return self.ndim
+    @property
+    def ndim(self) -> int:  # type: ignore
+        return self.dim()
+
+    def ndimension(self):
+        return self.dim()
 
     def item(self):
         raise ValueError(f"cannot convert {self} to a Python scalar")
