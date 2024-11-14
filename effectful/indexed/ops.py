@@ -253,7 +253,12 @@ def _indices_of_shape(value: torch.Size, **kwargs) -> IndexSet:
 
 @indices_of.register
 def _indices_of_term(value: Term, **kwargs) -> IndexSet:
-    return IndexSet(**{k.__name__: set(range(v)) for (k, v) in sizesof(value).items()})
+    return IndexSet(
+        **{
+            k.__name__: set(range(v))  # type:ignore
+            for (k, v) in sizesof(value).items()
+        }
+    )
 
 
 @indices_of.register
