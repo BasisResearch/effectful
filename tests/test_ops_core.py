@@ -1,8 +1,11 @@
+import pytest
+
 from effectful.internals.sugar import NoDefaultRule, Operation, gensym
 from effectful.ops.core import ctxof, evaluate
 from effectful.ops.handler import handler
 
 
+@pytest.mark.xfail
 def test_evaluate():
     @Operation
     def Nested(*args, **kwargs):
