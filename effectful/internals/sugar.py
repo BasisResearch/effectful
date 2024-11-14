@@ -856,7 +856,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and not isinstance(args[0], Term)
             and sized_fvs
             and args[1]
-            and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
+            and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {

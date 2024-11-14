@@ -120,6 +120,23 @@ def test_tpe_4():
             )
 
 
+def test_tpe_known_index():
+    """Constant indexes are partially evaluated away."""
+    i, j = gensym(int, name="i"), gensym(int, name="j")
+
+    cases = [
+        torch_getitem(torch.ones(2, 3), (i(), 1)),
+        torch_getitem(torch.ones(2, 3), (0, i())),
+        torch_getitem(torch.ones(2, 3, 4), (0, i(), 1)),
+        torch_getitem(torch.ones(2, 3, 4), (0, i(), j())),
+        torch_getitem(torch.ones(2, 3, 4), (i(), j(), 3)),
+    ]
+
+    for case_ in cases:
+        assert all(isinstance(a, Term) for a in case_.args[1])
+        assert not any(isinstance(a, int) for a in case_.args[1])
+
+
 def test_tpe_stack():
     xval, yval = torch.rand(10, 5), torch.rand(10, 5)
 
