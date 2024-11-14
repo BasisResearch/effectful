@@ -924,12 +924,21 @@ def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tenso
 
 
 class Indexable:
+    """Helper class for constructing indexed tensors.
+
+    Example:
+    >>> width, height = gensym(int, name='width'), gensym(int, name='height')
+    >>> t = Indexable(torch.ones(2, 3))[width(), height()]
+    Indexable(tensor([[1., 1., 1.],
+                      [1., 1., 1.]]))[width(), height()]
+    """
+
     def __init__(self, t: torch.Tensor):
         if not isinstance(t, torch.Tensor):
             raise ValueError(f"Expected a torch.Tensor, got {type(t)}")
         self.t = t
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> torch.Tensor:
         if not isinstance(key, tuple):
             key = (key,)
         return torch_getitem(self.t, key)
@@ -986,7 +995,7 @@ class EagerTensorTerm(torch.Tensor):
         return ret
 
     def __repr__(self) -> str:
-        indexed_constr = "indexed"
+        indexed_constr = "Indexable"
 
         # correct indentation
         parts = str(self.args[0]).split("\n")
