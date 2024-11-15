@@ -405,7 +405,42 @@ def register_syntax_op(syntax_fn: Callable[P, T]):
     return register_syntax_op_fn
 
 
-for arithmetic_binop in (
+def create_arithmetic_binop_rule(op):
+    def rule(x: T, y: T) -> T:
+        if not isinstance(x, Term) and not isinstance(y, Term):
+            return op(x, y)
+        raise NoDefaultRule
+
+    # Note: functools.wraps would be better, but it does not preserve type
+    # annotations
+    rule.__name__ = op.__name__
+    return rule
+
+
+def create_arithmetic_unop_rule(op):
+    def rule(x: T) -> T:
+        if not isinstance(x, Term):
+            return op(x)
+        raise NoDefaultRule
+
+    rule.__name__ = op.__name__
+    return rule
+
+
+def create_generic_rule(op):
+    @functools.wraps(op)
+    def rule(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in args) and not any(
+            isinstance(a, Term) for a in kwargs.values()
+        ):
+            return op(*args, **kwargs)
+
+        raise NoDefaultRule
+
+    return rule
+
+
+ARITHMETIC_BINOPS = (
     operator.add,
     operator.sub,
     operator.mul,
@@ -419,36 +454,16 @@ for arithmetic_binop in (
     operator.and_,
     operator.or_,
     operator.xor,
-):
+)
 
-    def binop_rule(binop, x: T, y: T) -> T:
-        if not isinstance(x, Term) and not isinstance(y, Term):
-            return binop(x, y)
-        raise NoDefaultRule
-
-    bound_binop = functools.partial(binop_rule, arithmetic_binop)
-    wrapped_binop = functools.wraps(arithmetic_binop)(bound_binop)
-    register_syntax_op(arithmetic_binop)(wrapped_binop)
-
-
-for arithmetic_unop in (
+ARITHMETIC_UNOPS = (
     operator.neg,
     operator.pos,
     operator.abs,
     operator.invert,
-):
+)
 
-    def unop_rule(unop, x: T) -> T:
-        if not isinstance(x, Term):
-            return unop(x)  # type: ignore
-        raise NoDefaultRule
-
-    bound_unop = functools.partial(unop_rule, arithmetic_unop)
-    wrapped_unop = functools.wraps(arithmetic_unop)(bound_unop)
-    register_syntax_op(arithmetic_unop)(wrapped_unop)
-
-
-for other_operator_op in (
+OTHER_OPS = (
     operator.not_,
     operator.lt,
     operator.le,
@@ -469,19 +484,16 @@ for other_operator_op in (
     # iter,
     # next,
     # reversed,
-):
+)
 
-    def other_rule(other, *args, **kwargs):
-        if not any(isinstance(a, Term) for a in args) and not any(
-            isinstance(a, Term) for a in kwargs.values()
-        ):
-            return other(*args, **kwargs)
+for op in ARITHMETIC_BINOPS:
+    register_syntax_op(op)(create_arithmetic_binop_rule(op))
 
-        raise NoDefaultRule
+for op in ARITHMETIC_UNOPS:  # type: ignore
+    register_syntax_op(op)(create_arithmetic_unop_rule(op))
 
-    bound_other = functools.partial(other_rule, other_operator_op)
-    wrapped_other = functools.wraps(other_operator_op)(bound_other)
-    register_syntax_op(other_operator_op)(wrapped_other)
+for op in OTHER_OPS:  # type: ignore
+    register_syntax_op(op)(create_generic_rule(op))
 
 
 @register_syntax_op(operator.eq)
