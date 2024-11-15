@@ -438,7 +438,7 @@ for arithmetic_unop in (
     @register_syntax_op(arithmetic_unop)
     def _(x: T) -> T:
         if not isinstance(x, Term):
-            return arithmetic_unop(x)  # typing: ignore
+            return arithmetic_unop(x)  # type: ignore
         raise NoDefaultRule
 
 

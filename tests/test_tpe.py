@@ -6,8 +6,9 @@ import torch
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import gensym, torch_getitem
-from effectful.ops.core import as_term
+from effectful.ops.core import Term, as_term, evaluate
 from effectful.ops.function import defun
+from effectful.ops.handler import handler
 
 logger = logging.getLogger(__name__)
 
