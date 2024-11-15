@@ -397,17 +397,50 @@ as_term_register = _as_term_registry.register
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
 
 
-def register_syntax_op(
-    syntax_fn: Callable[P, T], syntax_op_fn: Optional[Callable[P, T]] = None
-):
-    if syntax_op_fn is None:
-        return functools.partial(register_syntax_op, syntax_fn)
+def register_syntax_op(syntax_fn: Callable[P, T]):
+    def register_syntax_op_fn(syntax_op_fn: Callable[P, T]):
+        OPERATORS[syntax_fn] = Operation(syntax_op_fn)
+        return OPERATORS[syntax_fn]
 
-    OPERATORS[syntax_fn] = Operation(syntax_op_fn)
-    return OPERATORS[syntax_fn]
+    return register_syntax_op_fn
 
 
-for _arithmetic_binop in (
+def create_arithmetic_binop_rule(op):
+    def rule(x: T, y: T) -> T:
+        if not isinstance(x, Term) and not isinstance(y, Term):
+            return op(x, y)
+        raise NoDefaultRule
+
+    # Note: functools.wraps would be better, but it does not preserve type
+    # annotations
+    rule.__name__ = op.__name__
+    return rule
+
+
+def create_arithmetic_unop_rule(op):
+    def rule(x: T) -> T:
+        if not isinstance(x, Term):
+            return op(x)
+        raise NoDefaultRule
+
+    rule.__name__ = op.__name__
+    return rule
+
+
+def create_generic_rule(op):
+    @functools.wraps(op)
+    def rule(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in args) and not any(
+            isinstance(a, Term) for a in kwargs.values()
+        ):
+            return op(*args, **kwargs)
+
+        raise NoDefaultRule
+
+    return rule
+
+
+ARITHMETIC_BINOPS = (
     operator.add,
     operator.sub,
     operator.mul,
@@ -421,26 +454,16 @@ for _arithmetic_binop in (
     operator.and_,
     operator.or_,
     operator.xor,
-):
+)
 
-    @register_syntax_op(_arithmetic_binop)
-    def _(__x: T, __y: T) -> T:
-        raise NoDefaultRule
-
-
-for _arithmethic_unop in (
+ARITHMETIC_UNOPS = (
     operator.neg,
     operator.pos,
     operator.abs,
     operator.invert,
-):
+)
 
-    @register_syntax_op(_arithmethic_unop)
-    def _(__x: T) -> T:
-        raise NoDefaultRule
-
-
-for _other_operator_op in (
+OTHER_OPS = (
     operator.not_,
     operator.lt,
     operator.le,
@@ -461,12 +484,16 @@ for _other_operator_op in (
     # iter,
     # next,
     # reversed,
-):
+)
 
-    @register_syntax_op(_other_operator_op)
-    @functools.wraps(_other_operator_op)
-    def _(*args, **kwargs):
-        raise NoDefaultRule
+for op in ARITHMETIC_BINOPS:
+    register_syntax_op(op)(create_arithmetic_binop_rule(op))
+
+for op in ARITHMETIC_UNOPS:  # type: ignore
+    register_syntax_op(op)(create_arithmetic_unop_rule(op))
+
+for op in OTHER_OPS:  # type: ignore
+    register_syntax_op(op)(create_generic_rule(op))
 
 
 @register_syntax_op(operator.eq)
@@ -854,7 +881,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and not isinstance(args[0], Term)
             and sized_fvs
             and args[1]
-            and all(k.op in sized_fvs for k in args[1] if isinstance(k, Term))
+            and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
             raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {

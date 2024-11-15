@@ -6,8 +6,9 @@ import torch
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import gensym, torch_getitem
-from effectful.ops.core import as_term
+from effectful.ops.core import Term, as_term, evaluate
 from effectful.ops.function import defun
+from effectful.ops.handler import handler
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,38 @@ def test_tpe_4():
             assert (
                 f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
             )
+
+
+def test_tpe_known_index():
+    """Constant indexes are partially evaluated away."""
+    i, j = gensym(int, name="i"), gensym(int, name="j")
+
+    cases = [
+        torch_getitem(torch.ones(2, 3), (i(), 1)),
+        torch_getitem(torch.ones(2, 3), (0, i())),
+        torch_getitem(torch.ones(2, 3, 4), (0, i(), 1)),
+        torch_getitem(torch.ones(2, 3, 4), (0, i(), j())),
+        torch_getitem(torch.ones(2, 3, 4), (i(), j(), 3)),
+    ]
+
+    for case_ in cases:
+        assert all(isinstance(a, Term) for a in case_.args[1])
+        assert not any(isinstance(a, int) for a in case_.args[1])
+
+
+def test_tpe_constant_eval():
+    """Constant indexes are partially evaluated away."""
+    height, width = gensym(int, name="height"), gensym(int, name="width")
+    t = torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
+    A = torch_getitem(t, (height(), width()))
+
+    layer = gensym(int, name="layer")
+    with handler({height: lambda: layer() // 3, width: lambda: layer() % 3}):
+        A_layer = evaluate(A)
+    with handler({layer: lambda: 2}):
+        A_final = evaluate(A_layer)
+
+    assert not isinstance(A_final, Term)
 
 
 def test_tpe_stack():
