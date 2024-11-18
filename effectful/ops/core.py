@@ -1,12 +1,11 @@
 import functools
-import typing
+from abc import ABC, abstractmethod
 from typing import (
     Any,
     Callable,
     Dict,
     Generic,
     Mapping,
-    Protocol,
     Sequence,
     Tuple,
     Type,
@@ -74,13 +73,26 @@ class Operation(Generic[Q, V]):
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
-@typing.runtime_checkable
-class Term(Protocol[T]):
-    op: Operation[..., T]
-    args: Sequence["Expr[Any]"]
-    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
+class Term(ABC, Generic[T]):
+    __match_args__ = ("op", "args", "kwargs")
 
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
+    @property
+    @abstractmethod
+    def op(self) -> Operation[..., T]:
+        """Abstract property for the operation."""
+        pass
+
+    @property
+    @abstractmethod
+    def args(self) -> Sequence["Expr[Any]"]:
+        """Abstract property for the arguments."""
+        pass
+
+    @property
+    @abstractmethod
+    def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
+        """Abstract property for the keyword arguments."""
+        pass
 
 
 Expr = Union[T, Term[T]]
@@ -90,17 +102,17 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
     match x, other:
         case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            kwargs, kwargs2 = dict(kwargs), dict(kwargs2)
+            kwargs_d, kwargs2_d = dict(kwargs), dict(kwargs2)
             try:
                 tree.assert_same_structure(
-                    (op, args, kwargs), (op2, args2, kwargs2), check_types=True
+                    (op, args, kwargs_d), (op2, args2, kwargs2_d), check_types=True
                 )
             except (TypeError, ValueError):
                 return False
             return all(
                 tree.flatten(
                     tree.map_structure(
-                        syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
+                        syntactic_eq, (op, args, kwargs_d), (op2, args2, kwargs2_d)
                     )
                 )
             )
