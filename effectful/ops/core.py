@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import functools
 import typing
 from typing import (
@@ -74,13 +75,26 @@ class Operation(Generic[Q, V]):
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
-@typing.runtime_checkable
-class Term(Protocol[T]):
-    op: Operation[..., T]
-    args: Sequence["Expr[Any]"]
-    kwargs: Sequence[Tuple[str, "Expr[Any]"]]
+class Term(ABC, Generic[T]):
+    __match_args__ = ("op", "args", "kwargs")
 
-    __match_args__: tuple[str, str, str] = ("op", "args", "kwargs")
+    @property
+    @abstractmethod
+    def op(self) -> Operation[..., T]:
+        """Abstract property for the operation."""
+        pass
+
+    @property
+    @abstractmethod
+    def args(self) -> Sequence["Expr[Any]"]:
+        """Abstract property for the arguments."""
+        pass
+
+    @property
+    @abstractmethod
+    def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
+        """Abstract property for the keyword arguments."""
+        pass
 
 
 Expr = Union[T, Term[T]]

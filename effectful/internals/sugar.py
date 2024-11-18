@@ -481,9 +481,9 @@ def _ne_op(a: T, b: T) -> bool:
 
 @embed_register(object)
 class BaseTerm(Generic[T], Term[T]):
-    op: Operation[..., T]
-    args: Sequence[Expr]
-    kwargs: Sequence[Tuple[str, Expr]]
+    _op: Operation[..., T]
+    _args: Sequence[Expr]
+    _kwargs: Sequence[Tuple[str, Expr]]
 
     def __init__(
         self,
@@ -491,9 +491,9 @@ class BaseTerm(Generic[T], Term[T]):
         args: Sequence[Expr],
         kwargs: Sequence[Tuple[str, Expr]],
     ):
-        self.op = op
-        self.args = args
-        self.kwargs = kwargs
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
 
     def __str__(self: "Term[T]") -> str:
         params_str = ""
@@ -505,6 +505,18 @@ class BaseTerm(Generic[T], Term[T]):
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
+
+    @property
+    def op(self):
+        return self._op
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
 
 
 @as_term_register(object)
@@ -530,6 +542,7 @@ class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
+
     #######################################################################
     def __add__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.add](self, other)  # type: ignore
