@@ -141,9 +141,13 @@ class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def _pyro_sample(self, msg: Dict[str, Any]) -> None:
+    def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if pyro.poutine.util.site_is_subsample(msg):
             return
+
+        assert isinstance(
+            msg["fn"], pyro.distributions.torch_distribution.TorchDistribution
+        )
 
         device = get_sample_msg_device(msg["fn"], msg["value"])
         name = msg["name"] if "name" in msg else None

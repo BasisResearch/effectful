@@ -30,7 +30,7 @@ def coproduct(
         if i1:
             res[op] = bind_prompt(fwd, i1, i2)  # type: ignore
         else:
-            res[op] = i2
+            res[op] = bind_prompt(fwd, op.__default_rule__, i2)  # type: ignore
 
     return res
 
@@ -44,7 +44,7 @@ def product(
 
     return {
         op: closed_handler(refls)(
-            intp2[op]
+            bind_prompt(fwd, op.__default_rule__, intp2[op])
             if op not in intp
             else bind_prompt(
                 fwd,  # type: ignore
@@ -64,5 +64,5 @@ def handler(intp: Interpretation[S, T]):
 
 @contextlib.contextmanager
 def closed_handler(intp: Interpretation[S, T]):
-    with interpreter({**get_interpretation(), **intp}):
+    with interpreter(coproduct({}, {**get_interpretation(), **intp})):
         yield intp

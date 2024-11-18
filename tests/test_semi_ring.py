@@ -199,15 +199,6 @@ def vertical_fusion(e1, x, e2):
 
 
 add = OPERATORS[operator.add]
-free = {
-    add: add.__default_rule__,
-    Sum: Sum.__default_rule__,
-    Let: Let.__default_rule__,
-    Record: Record.__default_rule__,
-    Dict: Dict.__default_rule__,
-    Field: Field.__default_rule__,
-    App: App.__default_rule__,
-}
 
 eager = {
     add: eager_add,
@@ -235,20 +226,20 @@ def test_simple_sum():
     k = gensym(object)
     v = gensym(object)
 
-    with handler(free), handler(eager):
+    with handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
         assert e["v"] == 3
 
-    with handler(free), handler(eager):
+    with handler(eager):
         e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
         assert e == 2
 
-    with handler(free), handler(eager):
+    with handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
         assert e["a"] == 3
         assert e["b"] == 4
 
-    with handler(free), handler(eager), handler(opt):
+    with handler(eager), handler(opt):
         e = Let(
             Dict("a", 1, "b", 2),
             x,
@@ -292,7 +283,7 @@ def make_dict(n):
 
 def test_fusion_term():
     d = gensym(object)
-    with handler(free), handler(opt):
+    with handler(opt):
         result, (x, _, k, v) = fusion_test(d)
     assert result == Let(
         d,
@@ -304,12 +295,12 @@ def test_fusion_term():
 def test_fusion_unopt(benchmark):
     @benchmark
     def run():
-        with handler(free), handler(eager):
+        with handler(eager):
             return fusion_test(make_dict(100))
 
 
 def test_fusion_opt(benchmark):
     @benchmark
     def run():
-        with handler(free), handler(eager), handler(opt):
+        with handler(eager), handler(opt):
             return fusion_test(make_dict(100))
