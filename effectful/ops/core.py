@@ -1,13 +1,11 @@
-from abc import ABC, abstractmethod
 import functools
-import typing
+from abc import ABC, abstractmethod
 from typing import (
     Any,
     Callable,
     Dict,
     Generic,
     Mapping,
-    Protocol,
     Sequence,
     Tuple,
     Type,
@@ -104,17 +102,17 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
     match x, other:
         case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            kwargs, kwargs2 = dict(kwargs), dict(kwargs2)
+            kwargs_d, kwargs2_d = dict(kwargs), dict(kwargs2)
             try:
                 tree.assert_same_structure(
-                    (op, args, kwargs), (op2, args2, kwargs2), check_types=True
+                    (op, args, kwargs_d), (op2, args2, kwargs2_d), check_types=True
                 )
             except (TypeError, ValueError):
                 return False
             return all(
                 tree.flatten(
                     tree.map_structure(
-                        syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
+                        syntactic_eq, (op, args, kwargs_d), (op2, args2, kwargs2_d)
                     )
                 )
             )
