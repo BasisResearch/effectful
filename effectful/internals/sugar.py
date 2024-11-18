@@ -534,7 +534,7 @@ class BaseTerm(Generic[T], Term[T]):
         self.args = args
         self.kwargs = kwargs
 
-    def __str__(self: "Term[T]") -> str:
+    def __repr__(self):
         return term_to_str(self)
 
     def __eq__(self, other) -> bool:
