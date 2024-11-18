@@ -542,7 +542,6 @@ class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
-
     #######################################################################
     def __add__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
         return OPERATORS[operator.add](self, other)  # type: ignore
