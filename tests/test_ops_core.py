@@ -5,18 +5,17 @@ from effectful.ops.core import Term, ctxof, evaluate
 from effectful.ops.handler import handler
 
 
-@pytest.mark.xfail
 def test_evaluate():
     @Operation
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
-    x = gensym(object)
-    y = gensym(object)
+    x = gensym(int, name='x')
+    y = gensym(int, name='y')
     t = Nested([{"a": y()}, x(), (x(), y())], x(), arg1={"b": x()})
 
     with handler({x: lambda: 1, y: lambda: 2}):
-        assert evaluate(t) == Nested([{1: 2}, 1, (1, 2)], 1, arg1={2: 1})
+        assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
 
 
 def test_evaluate_2():
