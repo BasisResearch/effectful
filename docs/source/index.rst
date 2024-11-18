@@ -8,6 +8,7 @@ Table of Contents
    getting_started
    introduction
    minipyro
+   named_tensor_notation_i
 
 
 Indices and tables

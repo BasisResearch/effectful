@@ -185,22 +185,21 @@ def gensym(t, *, name=None):
 
     if is_type:
 
-        @Operation
-        def op() -> t:  # type: ignore
+        def func() -> t:  # type: ignore
             raise NoDefaultRule
 
     elif isinstance(t, collections.abc.Callable):
 
-        def dummy(*args, **kwargs):
+        def func(*args, **kwargs):  # type: ignore
             raise NoDefaultRule
 
-        functools.update_wrapper(dummy, t)
-        op = Operation(dummy)
+        functools.update_wrapper(func, t)
 
     else:
         raise ValueError(f"expected type or callable, got {t}")
 
-    op.__name__ = name or t.__name__
+    func.__name__ = name or t.__name__
+    op = Operation(func)
 
     if is_type:
         return typing.cast(Operation[[], T], op)
@@ -535,7 +534,7 @@ class BaseTerm(Generic[T], Term[T]):
         self._args = args
         self._kwargs = kwargs
 
-    def __str__(self: "Term[T]") -> str:
+    def __repr__(self):
         return term_to_str(self)
 
     def __eq__(self, other) -> bool:
@@ -917,12 +916,15 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
 
 @_register_torch_op
-def torch_getitem(
-    x: torch.Tensor,
-    key: Tuple[IndexElement, ...],
-) -> torch.Tensor:
+def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor:
     if not isinstance(x, torch.Tensor):
         raise TypeError(f"expected a tensor but got {type(x)}")
+
+    for k in key:
+        if isinstance(k, Operation):
+            raise TypeError(
+                f"Got operation symbol {str(k)}. You probably meant {str(k)}()."
+            )
 
     # fast path for simple cases
     if len(key) == 0:
@@ -957,6 +959,27 @@ def torch_getitem(
             key_l[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
     return torch.ops.aten.index(x, tuple(key_l))
+
+
+class Indexable:
+    """Helper class for constructing indexed tensors.
+
+    Example:
+    >>> width, height = gensym(int, name='width'), gensym(int, name='height')
+    >>> t = Indexable(torch.ones(2, 3))[width(), height()]
+    Indexable(tensor([[1., 1., 1.],
+                      [1., 1., 1.]]))[width(), height()]
+    """
+
+    def __init__(self, t: torch.Tensor):
+        if not isinstance(t, torch.Tensor):
+            raise ValueError(f"Expected a torch.Tensor, got {type(t)}")
+        self.t = t
+
+    def __getitem__(self, key) -> torch.Tensor:
+        if not isinstance(key, tuple):
+            key = (key,)
+        return torch_getitem(self.t, key)
 
 
 @embed_register(torch.Tensor)
@@ -1011,7 +1034,16 @@ class EagerTensorTerm(torch.Tensor):
         return ret
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({term_to_str(self)})"
+        indexed_constr = "Indexable"
+
+        # correct indentation
+        parts = str(self.args[0]).split("\n")
+        tensor_str = "\n".join(
+            [parts[0]] + [(len(indexed_constr) + 1) * " " + p for p in parts[1:]]
+        )
+
+        key_str = ", ".join(str(k) for k in self.args[1])
+        return f"{indexed_constr}({tensor_str})[{key_str}]"
 
     @classmethod
     def __torch_function__(

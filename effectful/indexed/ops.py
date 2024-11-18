@@ -19,6 +19,8 @@ from typing import (
 import pyro
 import torch
 
+import effectful.internals.sugar
+
 from ..internals.sugar import gensym, partial_eval, sizesof, torch_getitem
 from ..ops.core import Expr, Operation, Term
 from ..ops.function import defun
@@ -471,3 +473,6 @@ def indexset_as_mask(
 
 def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
     return partial_eval(t, order=indexes)
+
+
+Indexable = effectful.internals.sugar.Indexable
