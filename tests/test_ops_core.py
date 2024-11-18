@@ -10,8 +10,8 @@ def test_evaluate():
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
-    x = gensym(int, name='x')
-    y = gensym(int, name='y')
+    x = gensym(int, name="x")
+    y = gensym(int, name="y")
     t = Nested([{"a": y()}, x(), (x(), y())], x(), arg1={"b": x()})
 
     with handler({x: lambda: 1, y: lambda: 2}):
