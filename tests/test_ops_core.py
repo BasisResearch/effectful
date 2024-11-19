@@ -1,5 +1,3 @@
-import pytest
-
 from effectful.internals.sugar import NoDefaultRule, Operation, gensym
 from effectful.ops.core import Term, ctxof, evaluate
 from effectful.ops.handler import handler
