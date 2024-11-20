@@ -970,6 +970,7 @@ class Indexable:
     Example:
     >>> width, height = gensym(int, name='width'), gensym(int, name='height')
     >>> t = Indexable(torch.ones(2, 3))[width(), height()]
+    >>> t
     Indexable(tensor([[1., 1., 1.],
                       [1., 1., 1.]]))[width(), height()]
     """

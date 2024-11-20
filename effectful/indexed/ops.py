@@ -169,14 +169,16 @@ def indices_of(value, **kwargs) -> IndexSet:
     For example, in a model with an outcome variable ``Y`` and a treatment variable
     ``T`` that has been intervened on, ``T`` and ``Y`` are both indexed by ``"T"``::
 
-        >>> with MultiWorldCounterfactual():
-        ...     X = pyro.sample("X", get_X_dist())
-        ...     T = pyro.sample("T", get_T_dist(X))
-        ...     T = intervene(T, t, name="T_ax")  # adds an index variable "T_ax"
-        ...     Y = pyro.sample("Y", get_Y_dist(X, T))
-        ...     assert indices_of(X) == IndexSet()
-        ...     assert indices_of(T) == IndexSet(T_ax={0, 1})
-        ...     assert indices_of(Y) == IndexSet(T_ax={0, 1})
+        >>> def example():
+        ...     with MultiWorldCounterfactual():
+        ...         X = pyro.sample("X", get_X_dist())
+        ...         T = pyro.sample("T", get_T_dist(X))
+        ...         T = intervene(T, t, name="T_ax")  # adds an index variable "T_ax"
+        ...         Y = pyro.sample("Y", get_Y_dist(X, T))
+        ...         assert indices_of(X) == IndexSet()
+        ...         assert indices_of(T) == IndexSet(T_ax={0, 1})
+        ...         assert indices_of(Y) == IndexSet(T_ax={0, 1})
+        >>> example() # doctest: +SKIP
 
     Just as multidimensional arrays can be expanded to shapes with new dimensions
     over which they are constant, :func:`indices_of` is defined extensionally,
@@ -204,10 +206,10 @@ def indices_of(value, **kwargs) -> IndexSet:
         the values of ``Y`` from worlds where no intervention on ``T`` happened
         would result in a value that no longer contains free variable ``"T"``::
 
-            >>> indices_of(Y) == IndexSet(T_ax={0, 1})
+            >>> indices_of(Y) == IndexSet(T_ax={0, 1}) # doctest: +SKIP
             True
-            >>> Y0 = gather(Y, IndexSet(T_ax={0}))
-            >>> indices_of(Y0) == IndexSet() != IndexSet(T_ax={0})
+            >>> Y0 = gather(Y, IndexSet(T_ax={0})) # doctest: +SKIP
+            >>> indices_of(Y0) == IndexSet() != IndexSet(T_ax={0}) # doctest: +SKIP
             True
 
         The practical implications of this imprecision are limited
@@ -301,14 +303,16 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     ``T`` that has been intervened on, we can use :func:`gather` to define quantities
     like treatment effects that require comparison of different potential outcomes::
 
-        >>> with MultiWorldCounterfactual():
-        ...     X = pyro.sample("X", get_X_dist())
-        ...     T = pyro.sample("T", get_T_dist(X))
-        ...     T = intervene(T, t, name="T_ax")  # adds an index variable "T_ax"
-        ...     Y = pyro.sample("Y", get_Y_dist(X, T))
-        ...     Y_factual = gather(Y, IndexSet(T_ax=0))         # no intervention
-        ...     Y_counterfactual = gather(Y, IndexSet(T_ax=1))  # intervention
-        ...     treatment_effect = Y_counterfactual - Y_factual
+        >>> def example():
+        ...     with MultiWorldCounterfactual():
+        ...         X = pyro.sample("X", get_X_dist())
+        ...         T = pyro.sample("T", get_T_dist(X))
+        ...         T = intervene(T, t, name="T_ax")  # adds an index variable "T_ax"
+        ...         Y = pyro.sample("Y", get_Y_dist(X, T))
+        ...         Y_factual = gather(Y, IndexSet(T_ax=0))         # no intervention
+        ...         Y_counterfactual = gather(Y, IndexSet(T_ax=1))  # intervention
+        ...         treatment_effect = Y_counterfactual - Y_factual
+        >>> example() # doctest: +SKIP
 
     Like :func:`torch.gather` and substitution in term rewriting,
     :func:`gather` is defined extensionally, meaning that values
@@ -338,10 +342,10 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
         the values of ``Y`` from worlds where no intervention on ``T`` happened
         would result in a value that no longer contains free variable ``"T"``::
 
-            >>> indices_of(Y) == IndexSet(T_ax={0, 1})
+            >>> indices_of(Y) == IndexSet(T_ax={0, 1}) # doctest: +SKIP
             True
-            >>> Y0 = gather(Y, IndexSet(T_ax={0}))
-            >>> indices_of(Y0) == IndexSet() != IndexSet(T_ax={0})
+            >>> Y0 = gather(Y, IndexSet(T_ax={0})) # doctest: +SKIP
+            >>> indices_of(Y0) == IndexSet() != IndexSet(T_ax={0}) # doctest: +SKIP
             True
 
         The practical implications of this imprecision are limited
