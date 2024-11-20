@@ -842,8 +842,9 @@ def partial_eval(t: T, order=None) -> T:
 
     sized_fvs = sizesof(t)
 
-    if any(x for x in order if x not in sized_fvs):
-        raise ValueError("sized must be a subset of the term's sized free variables")
+    for x in order:
+        if x not in sized_fvs:
+            raise ValueError(f"Tried to partially evaluate nonexistent free variable {x} (free={sized_fvs})")
 
     # if there are no sized free variables, then nothing to do
     if len(sized_fvs) == 0:
