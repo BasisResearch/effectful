@@ -9,6 +9,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Sequence,
     Set,
     Tuple,
     TypeVar,
@@ -290,7 +291,7 @@ def _indices_of_state(value: Dict[K, T], *, event_dim: int = 0, **kwargs) -> Ind
     )
 
 
-def gather(value, indexset, **kwargs):
+def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -366,9 +367,10 @@ def gather(value, indexset, **kwargs):
     return defun(value, *binding.keys())(*[v() for v in binding.values()])
 
 
-def stack(values, name, **kwargs):
-    """Stack a sequence of indexed values, creating a new dimension. The new dimension is indexed by `name`. The
-    indexed values in the stack must have identical shapes.
+def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
+    """Stack a sequence of indexed values, creating a new dimension. The new
+    dimension is indexed by `name`. The indexed values in the stack must have
+    identical shapes.
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
