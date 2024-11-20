@@ -1,6 +1,6 @@
 import collections
 import functools
-from typing import Any, Callable, Dict, Hashable, List, Optional
+from typing import Any, Callable, Dict, Hashable, List, Optional, Protocol
 
 import pyro
 import torch
@@ -112,12 +112,27 @@ class IndexPlatesMessenger(pyro.poutine.messenger.Messenger):
         msg["stop"] = True
 
 
-def dependent_mask(get_mask) -> Interpretation[torch.Tensor, torch.Tensor]:
+class GetMask(Protocol):
+    def __call__(
+        self,
+        dist: pyro.distributions.Distribution,
+        value: Optional[torch.Tensor],
+        device: torch.device = torch.device("cpu"),
+        name: Optional[str] = None,
+    ): ...
+
+
+def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tensor]:
     """
     Helper function for effect handlers that select a subset of worlds.
     """
 
-    def pyro_sample_handler(name, dist, *args, **kwargs):
+    def pyro_sample_handler(
+        name: str,
+        dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
         obs = kwargs.get("obs")
         device = get_sample_msg_device(dist, obs)
         mask = get_mask(dist, obs, device=device, name=name)
