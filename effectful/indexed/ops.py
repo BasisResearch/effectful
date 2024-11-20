@@ -372,7 +372,7 @@ def stack(values, name, **kwargs):
 
     """
     values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
-    return torch.stack(values)[name_to_sym(name)()]
+    return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
 @functools.singledispatch
