@@ -161,7 +161,7 @@ class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
             return
 
         assert isinstance(
-            msg["fn"], pyro.distributions.torch_distribution.TorchDistribution
+            msg["fn"], pyro.distributions.torch_distribution.TorchDistributionMixin
         )
 
         device = get_sample_msg_device(msg["fn"], msg["value"])
