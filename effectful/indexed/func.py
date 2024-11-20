@@ -1,4 +1,5 @@
 import functools
+from typing import Callable, ParamSpec, Tuple, TypeVar
 
 import torch
 import tree
@@ -7,7 +8,14 @@ from ..internals.sugar import _register_torch_op, sizesof, torch_getitem
 from .ops import to_tensor
 
 
-def indexed_func_wrapper(func):
+P = ParamSpec("P")
+T = TypeVar("T")
+S = TypeVar("S")
+
+
+def indexed_func_wrapper(
+    func: Callable[P, T]
+) -> Tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
     indexes = None
 
@@ -127,6 +135,7 @@ def vjp(func, *indexed_primals, **kwargs):
     return indexed_result, vjpfunc_wrapper
 
 
+@functools.wraps(torch.func.vmap)
 def vmap(func, *args, **kwargs):
     (deindexed_func, reindex) = indexed_func_wrapper(func)
     vmap_func = _register_torch_op(torch.func.vmap(deindexed_func, *args, **kwargs))
