@@ -159,7 +159,7 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
             _ctx.pop(bound_var, None)
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term if isinstance(term, Term) else as_term(term))  # type: ignore
+        evaluate(as_term(term))  # type: ignore
 
     return _ctx
 
@@ -169,7 +169,7 @@ def to_string(term: Expr[S]) -> str:
         return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
 
     with interpreter({apply: _to_str}):  # type: ignore
-        return evaluate(term if isinstance(term, Term) else as_term(term))  # type: ignore
+        return evaluate(as_term(term))  # type: ignore
 
 
 def typeof(term: Expr[T]) -> Type[T]:
