@@ -99,8 +99,9 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
     Example::
 
-        >>> union(IndexSet(a={0, 1}, b={1}), IndexSet(a={1, 2}))
-        IndexSet({'a': {0, 1, 2}, 'b': {1}})
+        >>> s = union(IndexSet(a={0, 1}, b={1}), IndexSet(a={1, 2}))
+        >>> {k:s[k] for k in sorted(s.keys())}
+        {'a': {0, 1, 2}, 'b': {1}}
 
     .. note::
 
