@@ -66,7 +66,7 @@ class Operation(Generic[Q, V]):
 
         return infer_scope_rule(self)(*args, **kwargs)  # type: ignore
 
-    def __str__(self):
+    def __repr__(self):
         return self.signature.__name__
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
