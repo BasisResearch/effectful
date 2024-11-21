@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from effectful.indexed.handlers import IndexPlatesMessenger
-from effectful.indexed.internals import add_indices
+from effectful.indexed.internals.handlers import add_indices
 from effectful.indexed.ops import (
     IndexSet,
     cond,

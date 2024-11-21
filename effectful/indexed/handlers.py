@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 from ..handlers.pyro import pyro_sample
 from ..ops.core import Interpretation
 from ..ops.handler import fwd
-from .internals import _LazyPlateMessenger, add_indices, get_sample_msg_device
+from .internals.handlers import _LazyPlateMessenger, add_indices, get_sample_msg_device
 from .ops import union
 
 P = ParamSpec("P")

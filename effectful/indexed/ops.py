@@ -20,11 +20,13 @@ from typing import (
 import pyro
 import torch
 
+import effectful.indexed.internals.utils
 import effectful.internals.sugar
 
-from ..internals.sugar import gensym, partial_eval, sizesof, torch_getitem
-from ..ops.core import Expr, Operation, Term
+from ..internals.sugar import partial_eval, sizesof, torch_getitem
+from ..ops.core import Expr, Term
 from ..ops.function import defun
+from .internals.utils import _get_index_plates_to_name_to_dim, lift_tensor, name_to_sym
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -119,52 +121,6 @@ def union(*indexsets: IndexSet) -> IndexSet:
             for k in set.union(*(set(vs) for vs in indexsets))
         }
     )
-
-
-@functools.lru_cache(maxsize=None)
-def name_to_sym(name: str) -> Operation[[], int]:
-    return gensym(int, name=name)
-
-
-def lift_tensor(
-    tensor: torch.Tensor,
-    *,
-    name_to_dim: Optional[Mapping[str, int]] = None,
-    event_dim: int = 0,
-) -> Tuple[torch.Tensor, List[Operation]]:
-    """Lift a tensor to an indexed tensor using the mapping in name_to_dim.
-
-    Parameters:
-    - tensor (torch.Tensor): A tensor.
-    - name_to_dim: A dictionary mapping names to dimensions. If not provided, the plates returned by get_index_plates()
-    are used.
-
-    """
-    if name_to_dim is None:
-        name_to_dim = _get_index_plates_to_name_to_dim()
-
-    index_expr: List[Any] = [slice(None)] * len(tensor.shape)
-    for name, dim_offset in name_to_dim.items():
-        dim = dim_offset - event_dim
-        # ensure that lifted tensors use the same free variables for the same name
-        index_expr[dim] = name_to_sym(name)()
-
-    vars_: List[Operation] = []
-    for v in index_expr:
-        if isinstance(v, Term):
-            vars_.append(v.op)
-
-    result = torch_getitem(tensor, tuple(index_expr))
-
-    return result, vars_
-
-
-def _get_index_plates_to_name_to_dim() -> Mapping[str, int]:
-    name_to_dim = {}
-    for name, f in get_index_plates().items():
-        assert f.dim is not None
-        name_to_dim[name] = f.dim
-    return name_to_dim
 
 
 def indices_of(
@@ -434,11 +390,6 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor, **kwargs):
     return result
 
 
-@pyro.poutine.runtime.effectful(type="get_index_plates")
-def get_index_plates() -> Dict[str, pyro.poutine.indep_messenger.CondIndepStackFrame]:
-    return {}
-
-
 def indexset_as_mask(
     indexset: IndexSet,
     *,
@@ -471,3 +422,4 @@ def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
 
 
 Indexable = effectful.internals.sugar.Indexable
+get_index_plates = effectful.indexed.internals.utils.get_index_plates

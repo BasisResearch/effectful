@@ -5,7 +5,9 @@ import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from .ops import IndexSet, indices_of, union
+from ..ops import IndexSet, indices_of, union
+
+# Internal machinery for IndexedPlateMessenger
 
 
 class _LazyPlateMessenger(IndepMessenger):
