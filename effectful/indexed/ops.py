@@ -308,7 +308,6 @@ def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
     return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
-@functools.singledispatch
 def cond(fst, snd, case, *, event_dim: int = 0, **kwargs):
     """
     Selection operation that is the sum-type analogue of :func:`scatter`
@@ -336,32 +335,7 @@ def cond(fst, snd, case, *, event_dim: int = 0, **kwargs):
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
     :param kwargs: Additional keyword arguments used by specific implementations.
     """
-    raise NotImplementedError(f"cond not implemented for {type(fst)}")
-
-
-@cond.register(int)
-@cond.register(float)
-@cond.register(bool)
-def _cond_number(
-    fst: Union[bool, numbers.Number],
-    snd: Union[bool, numbers.Number, torch.Tensor],
-    case: Union[bool, torch.Tensor],
-    **kwargs,
-) -> torch.Tensor:
-    return cond(
-        torch.as_tensor(fst), torch.as_tensor(snd), torch.as_tensor(case), **kwargs
-    )
-
-
-@cond.register
-def _cond_tensor(
-    fst: torch.Tensor,
-    snd: torch.Tensor,
-    case: torch.Tensor,
-    *,
-    event_dim: int = 0,
-    **kwargs,
-) -> torch.Tensor:
+    fst, snd, case = torch.as_tensor(fst), torch.as_tensor(snd), torch.as_tensor(case)
     case_ = typing.cast(
         torch.Tensor,
         case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs),
