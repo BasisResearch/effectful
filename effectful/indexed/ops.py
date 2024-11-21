@@ -284,7 +284,7 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     :return: A new value containing entries of ``value`` from ``indexset``.
     """
     if isinstance(value, torch.Tensor) and not isinstance(value, Term):
-        value, _ = lift_tensor(value, **kwargs)
+        value = lift_tensor(value, **kwargs)
 
     indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
@@ -304,7 +304,7 @@ def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
     identical shapes.
 
     """
-    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs)[0] for v in values]
+    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs) for v in values]
     return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
@@ -364,11 +364,11 @@ def _cond_tensor(
 ) -> torch.Tensor:
     case_ = typing.cast(
         torch.Tensor,
-        case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs)[0],
+        case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs),
     )
 
     [fst_, snd_] = [
-        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)[0]
+        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)
         for v in [fst, snd]
     ]
 

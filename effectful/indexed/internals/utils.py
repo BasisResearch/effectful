@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional
 
 import pyro
 import torch
@@ -18,7 +18,7 @@ def lift_tensor(
     *,
     name_to_dim: Optional[Mapping[str, int]] = None,
     event_dim: int = 0,
-) -> Tuple[torch.Tensor, List[Operation]]:
+) -> torch.Tensor:
     """Lift a tensor to an indexed tensor using the mapping in name_to_dim.
 
     Parameters:
@@ -43,7 +43,7 @@ def lift_tensor(
 
     result = torch_getitem(tensor, tuple(index_expr))
 
-    return result, vars_
+    return result
 
 
 @pyro.poutine.runtime.effectful(type="get_index_plates")

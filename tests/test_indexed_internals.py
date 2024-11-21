@@ -73,15 +73,6 @@ SHAPE_CASES = list(
 )
 
 
-def test_lift_tensor():
-    raw_value = torch.randn(2, 3, 4)
-    name_to_dim = {"dim1": -2}
-    lifted_value, vars_ = lift_tensor(raw_value, event_dim=1, name_to_dim=name_to_dim)
-
-    f_lifted = defun(lifted_value, *vars_)
-    assert (f_lifted(0) == raw_value[0]).all()
-
-
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -165,7 +156,7 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         else:
             _name_to_dim = name_to_dim
 
-        lifted_value, vars_ = lift_tensor(
+        lifted_value = lift_tensor(
             value, event_dim=len(event_shape), name_to_dim=_name_to_dim
         )
 
@@ -202,8 +193,8 @@ def test_stack():
     t1 = torch.randn(5, 3)
     t2 = torch.randn(5, 3)
 
-    l1, _ = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
-    l2, _ = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
+    l1 = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
+    l2 = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
     l3 = stack([l1, l2], "x")
 
     f = indexed_to_defun(l3, ["x", "a", "b"])
