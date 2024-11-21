@@ -14,7 +14,6 @@ from effectful.indexed.ops import (
     cond_n,
     gather,
     get_index_plates,
-    indexset_as_mask,
     indices_of,
     lift_tensor,
     name_to_sym,
@@ -22,8 +21,9 @@ from effectful.indexed.ops import (
     to_tensor,
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
-from effectful.ops.core import Term, typeof
+from effectful.ops.core import evaluate
 from effectful.ops.function import defun
+from effectful.ops.handler import handler
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,6 @@ def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_sha
     assert actual_world == expected_world
 
 
-# Test the law `gather(value, world) == value[indexset_as_mask(world)]`
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -150,9 +149,8 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
 
     world = IndexSet(
         **{
-            name: {full_batch_shape[dim] - 2}
+            name: {max(full_batch_shape[dim] - 2, 0)}
             for name, dim in name_to_dim.items()
-            if full_batch_shape[dim] > 1
         }
     )
 
@@ -170,37 +168,28 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         lifted_value, vars_ = lift_tensor(
             value, event_dim=len(event_shape), name_to_dim=_name_to_dim
         )
-        actual = gather(lifted_value, world)
 
-    mask = indexset_as_mask(
-        world,
-        event_dim=len(event_shape),
-        name_to_dim_size={
-            name: (dim, full_batch_shape[dim]) for name, dim in name_to_dim.items()
-        },
-    )
-    _, mask = torch.broadcast_tensors(value, mask)
+    actual = gather(lifted_value, world)
 
-    assert mask.shape == value.shape
+    # for each gathered index, check that the gathered value is equal to the
+    # value at that index
+    world_vars = []
+    for name, inds in world.items():
+        sym = name_to_sym(name)
+        world_vars.append([(sym, i) for i in range(len(inds))])
 
-    f_actual = defun(actual, *vars_)
+    for binding in itertools.product(*world_vars):
+        with handler({sym: lambda: post_gather for (sym, post_gather) in binding}):
+            actual_v = evaluate(actual)
 
-    assert isinstance(actual, Term)
-    assert actual.op == torch_getitem
-    assert isinstance(actual.args[0], torch.Tensor)
-    assert all(
-        not isinstance(arg, Term) or issubclass(typeof(arg), int)
-        for arg in actual.args[1]
-    )
+        assert actual_v.shape == enum_shape + plate_shape + event_shape
 
-    world_vars = {name_to_sym(name): inds for name, inds in world.items()}
-    world_dims = [enumerate(world_vars.get(v, {0})) for v in vars_]
-    for idx in itertools.product(*world_dims):
-        actual_idx = tuple(i[0] for i in idx)
-        value_idx = (slice(None),) * len(enum_shape) + tuple(i[1] for i in idx)
-        actual_v = f_actual(*actual_idx)
-        value_v = value[value_idx]
-        assert (actual_v == value_v).all()
+        expected_idx = [slice(None)] * len(full_batch_shape)
+        for name, dim in name_to_dim.items():
+            expected_idx[dim] = list(world[name])[0]
+        expected_v = value[tuple(expected_idx)]
+
+        assert (actual_v == expected_v).all()
 
 
 def indexed_to_defun(value, names):
