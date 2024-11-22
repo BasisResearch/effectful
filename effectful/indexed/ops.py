@@ -1,5 +1,4 @@
 import functools
-import numbers
 import operator
 import typing
 from typing import (
@@ -346,7 +345,7 @@ def cond(fst, snd, case, *, event_dim: int = 0, **kwargs):
         for v in [fst, snd]
     ]
 
-    return torch.where(case_[(...,) + (None,) * event_dim], snd_, fst_)
+    return torch.where(case_[(...,) + (None,) * event_dim], snd_, fst_)  # type: ignore
 
 
 def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor, **kwargs):
