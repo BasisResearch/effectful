@@ -7,109 +7,115 @@ import torch
 from typing_extensions import ParamSpec
 
 from ..handlers.pyro import pyro_sample
-from ..ops.core import Interpretation
+from ..ops.core import Interpretation, ctxof
 from ..ops.handler import fwd
-from .internals.handlers import _LazyPlateMessenger, add_indices, get_sample_msg_device
-from .ops import union
+from .internals.handlers import (
+    _LazyPlateMessenger,
+    get_sample_msg_device,
+)
+from .ops import Indexable, to_tensor
 
 P = ParamSpec("P")
 
 
-class IndexPlatesMessenger(pyro.poutine.messenger.Messenger):
-    plates: Dict[Hashable, pyro.poutine.indep_messenger.IndepMessenger]
-    first_available_dim: int
+class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribution):
+    """A distribution wrapper that lazily converts indexed dimensions to
+    positional.
 
-    def __init__(self, first_available_dim: Optional[int] = None):
-        if first_available_dim is None:
-            first_available_dim = -5  # conservative default for 99% of models
-        assert first_available_dim < 0
-        self._orig_dim = first_available_dim
-        self.first_available_dim = first_available_dim
-        self.plates = collections.OrderedDict()
-        super().__init__()
+    """
 
-    def __enter__(self):
-        ret = super().__enter__()
-        for name in self.plates.keys():
-            self.plates[name].__enter__()
-        return ret
+    def __init__(self, base_dist):
+        self.base_dist = base_dist
+        self._names = None
+        self.enumerate_support = base_dist.enumerate_support
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        for name in reversed(list(self.plates.keys())):
-            self.plates[name].__exit__(exc_type, exc_value, traceback)
-        return super().__exit__(exc_type, exc_value, traceback)
+    def _get_vars_sizes(self, value=None):
+        if self._vars is None:
+            if value is None:
+                value = self.sample()
 
-    def __call__(self, fn: Callable) -> Callable:
-        handled_fn = super().__call__(fn)
+            free = ctxof(value)
+            self._vars = list(free.keys())
+            self._sizes = [free[v] for v in self._vars]
 
-        # IndexPlatesMessenger is a stateful handler, and by default
-        # does not clear its state after exiting a context to support REPL usage.
-        # This wrapper ensures that state is cleared after exiting a context
-        # when IndexPlatesMessenger is used as a decorator.
-        @functools.wraps(handled_fn)
-        def wrapped_handled_fn(*args, **kwargs):
-            try:
-                return handled_fn(*args, **kwargs)
-            finally:
-                if self not in pyro.poutine.runtime._PYRO_STACK:
-                    for p in list(self.plates):
-                        assert p not in pyro.poutine.runtime._PYRO_STACK
-                        del self.plates[p]
-                    self.first_available_dim = self._orig_dim
+        return (self._vars, self._sizes)
 
-        return wrapped_handled_fn
+    def _to_positional(self, value):
+        (vars_, _) = self._get_vars_sizes(value)
+        return to_tensor(value, vars_)
 
-    def _pyro_get_index_plates(self, msg):
-        msg["value"] = {name: plate.frame for name, plate in self.plates.items()}
-        msg["done"], msg["stop"] = True, True
+    def _from_positional(self, value):
+        (vars_, _) = self._get_vars_sizes()
+        return Indexable(value)[tuple(v() for v in vars_)]
 
-    def _enter_index_plate(self, plate: _LazyPlateMessenger) -> _LazyPlateMessenger:
-        try:
+    @property
+    def batch_shape(self):
+        return self._get_vars_sizes()[1] + self.base_dist.batch_shape
+
+    @property
+    def event_shape(self):
+        return self.base_dist.event_shape
+
+    @property
+    def has_enumerate_support(self):
+        return self.base_dist.has_enumerate_support
+
+    def sample(self, sample_shape=torch.Size()):
+        return self._to_positional(self.base_dist.sample(sample_shape))
+
+    def rsample(self, sample_shape=torch.Size()):
+        return self._to_positional(self.base_dist.rsample(sample_shape))
+
+    def log_prob(self, value):
+        return self.base_dist.log_prob(self._from_positional(value))
+
+    def enumerate_support(self, expand=True):
+        return self._to_positional(self.base_dist.enumerate_support(expand))
+
+
+def indexed():
+    """Allow distributions with indexed batch dimensions to be used with
+    `pyro.sample` by lazily converting the indexed dimensions to positional
+    dimensions.
+
+    """
+
+    def pyro_sample_handler(
+        name: str,
+        dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
+        infer: Optional[pyro.poutine.runtime.InferDict] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        infer = infer or {}
+
+        if "_index_expanded" in infer:
+            return fwd(None)
+
+        pdist = PositionalDistribution(dist)
+        (vars_, sizes) = pdist._get_vars_sizes()
+
+        shape_len = len(pdist.shape())
+        plates = []
+        for dim_offset, (var, size) in enumerate(zip(vars_, sizes)):
+            plate = _LazyPlateMessenger(
+                str(var),
+                dim=-shape_len + dim_offset,
+                size=size,
+            )
             plate.__enter__()
-        except ValueError as e:
-            if "collide at dim" in str(e):
-                raise ValueError(
-                    f"{self} was unable to allocate an index plate dimension "
-                    f"at dimension {self.first_available_dim}.\n"
-                    f"Try setting a value less than {self._orig_dim} for `first_available_dim` "
-                    "that is less than the leftmost (most negative) plate dimension in your model."
-                )
-            else:
-                raise e
-        stack: List[pyro.poutine.messenger.Messenger] = pyro.poutine.runtime._PYRO_STACK
-        stack.pop(stack.index(plate))
-        stack.insert(stack.index(self) + len(self.plates) + 1, plate)
-        return plate
+            plates.append(plate)
 
-    def _pyro_add_indices(self, msg):
-        (indexset,) = msg["args"]
-        for name, indices in indexset.items():
-            if name not in self.plates:
-                new_size = max(max(indices) + 1, len(indices))
-                # Push the new plate onto Pyro's handler stack at a location
-                # adjacent to this IndexPlatesMessenger instance so that
-                # any handlers pushed after this IndexPlatesMessenger instance
-                # are still guaranteed to exit safely in the correct order.
-                self.plates[name] = self._enter_index_plate(
-                    _LazyPlateMessenger(
-                        name=name,
-                        dim=self.first_available_dim,
-                        size=new_size,
-                    )
-                )
-                self.first_available_dim -= 1
-            else:
-                assert (
-                    0
-                    <= min(indices)
-                    <= len(indices) - 1
-                    <= max(indices)
-                    < self.plates[name].size
-                ), f"cannot add {name}={indices} to {self.plates[name].size}"
+        infer["_index_expanded"] = True
 
-    def _pyro_scatter_n(self, msg: Dict[str, Any]) -> None:
-        add_indices(union(*msg["args"][0].keys()))
-        msg["stop"] = True
+        try:
+            return pdist._from_positional(
+                pyro.sample(name, pdist, infer=infer, **kwargs)
+            )
+        finally:
+            for plate in reversed(plates):
+                plate.__exit__(None, None, None)
+
+    return {pyro_sample: pyro_sample_handler}
 
 
 class GetMask(Protocol):

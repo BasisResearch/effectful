@@ -5,10 +5,6 @@ import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
-from ..ops import IndexSet, indices_of, union
-
-# Internal machinery for IndexedPlateMessenger
-
 
 class _LazyPlateMessenger(IndepMessenger):
     prefix: str = "__index_plate__"
@@ -26,11 +22,8 @@ class _LazyPlateMessenger(IndepMessenger):
     def _process_message(self, msg):
         if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
             return
-        if self._orig_name in union(
-            indices_of(msg["value"], event_dim=msg["fn"].event_dim),
-            indices_of(msg["fn"]),
-        ):
-            super()._process_message(msg)
+
+        super()._process_message(msg)
 
 
 def get_sample_msg_device(
@@ -50,8 +43,3 @@ def get_sample_msg_device(
             if isinstance(p, torch.Tensor):
                 return p.device
     raise ValueError(f"could not infer device for {dist} and {value}")
-
-
-@pyro.poutine.runtime.effectful(type="add_indices")
-def add_indices(indexset: IndexSet) -> IndexSet:
-    return indexset
