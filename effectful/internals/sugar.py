@@ -272,9 +272,7 @@ def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
         # recursively rename bound variables from innermost to outermost scope
         for scope in sorted(bound_vars.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {
-                var: gensym(var.__type_rule__()) for var in bound_vars[scope]
-            }  # TODO support finitary operations
+            renaming_map = {var: gensym(var) for var in bound_vars[scope]}
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
                 bound_sig.arguments[name] = tree.map_structure(
@@ -483,9 +481,9 @@ def _ne_op(a: T, b: T) -> bool:
 
 @embed_register(object)
 class BaseTerm(Generic[T], Term[T]):
-    op: Operation[..., T]
-    args: Sequence[Expr]
-    kwargs: Sequence[Tuple[str, Expr]]
+    _op: Operation[..., T]
+    _args: Sequence[Expr]
+    _kwargs: Sequence[Tuple[str, Expr]]
 
     def __init__(
         self,
@@ -493,9 +491,9 @@ class BaseTerm(Generic[T], Term[T]):
         args: Sequence[Expr],
         kwargs: Sequence[Tuple[str, Expr]],
     ):
-        self.op = op
-        self.args = args
-        self.kwargs = kwargs
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
 
     def __str__(self: "Term[T]") -> str:
         params_str = ""
@@ -507,6 +505,18 @@ class BaseTerm(Generic[T], Term[T]):
 
     def __eq__(self, other) -> bool:
         return OPERATORS[operator.eq](self, other)  # type: ignore
+
+    @property
+    def op(self):
+        return self._op
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
 
 
 @as_term_register(object)

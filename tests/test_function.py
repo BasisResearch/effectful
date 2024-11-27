@@ -40,7 +40,7 @@ def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match x, y:
         case _, Term(op, (a, b), ()) if op == add:
-            return (x + a) + b
+            return (x + a) + b  # type: ignore
         case _:
             return fwd(None)
 
@@ -58,11 +58,11 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match x, y:
         case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
-            return y + x
+            return y + x  # type: ignore
         case Term(add_, (a, Term(vx, (), ())), ()), Term(
             vy, (), ()
         ) if add_ == add and id(vx) > id(vy):
-            return (a + vy()) + vx()
+            return (a + vy()) + vx()  # type: ignore
         case _:
             return fwd(None)
 
