@@ -7,11 +7,8 @@ from typing_extensions import ParamSpec
 from ..handlers.pyro import pyro_sample
 from ..ops.core import Interpretation
 from ..ops.handler import fwd
-from .internals.handlers import (
-    _LazyPlateMessenger,
-    get_sample_msg_device,
-)
-from .ops import Indexable, to_tensor, indices_of
+from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
+from .ops import Indexable, indices_of, to_tensor
 
 P = ParamSpec("P")
 
@@ -107,7 +104,7 @@ def _indexed_pyro_sample_handler(
         plate.__enter__()
         plates.append(plate)
 
-    infer["_index_expanded"] = True
+    infer["_index_expanded"] = True  # type: ignore
 
     try:
         return pdist._from_positional(pyro.sample(name, pdist, infer=infer, **kwargs))

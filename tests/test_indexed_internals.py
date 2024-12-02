@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from effectful.indexed.ops import (
+    Indexable,
     IndexSet,
     cond,
     cond_n,
@@ -13,7 +14,6 @@ from effectful.indexed.ops import (
     indices_of,
     stack,
     to_tensor,
-    Indexable,
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import evaluate

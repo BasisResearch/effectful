@@ -1,11 +1,11 @@
 import functools
-from typing import Any, Dict, Iterable, Sequence, Set, TypeVar, Union
+from typing import Any, Dict, Iterable, Set, TypeVar, Union
 
 import torch
 
-from ..internals.utils import name_to_sym
-
 import effectful.indexed.ops.impl as impl
+
+from ..internals.utils import name_to_sym
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -47,15 +47,17 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
 
 def indices_of(value: Any) -> IndexSet:
-    return {k.__name__: v for (k, v) in impl.indices_of(value).items()}
+    return IndexSet(**{k.__name__: v for (k, v) in impl.indices_of(value).items()})  # type: ignore
 
 
 def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
-    return impl.gather(value, indexset_vars)
+    return impl.gather(value, impl.IndexSet(indexset_vars))
 
 
-def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
+def stack(
+    values: Union[tuple[torch.Tensor, ...], list[torch.Tensor]], name: str, **kwargs
+) -> torch.Tensor:
     return impl.stack(values, name_to_sym(name))
 
 

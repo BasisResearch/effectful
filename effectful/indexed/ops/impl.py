@@ -1,6 +1,6 @@
 import functools
 import operator
-from typing import Any, Dict, Optional, Sequence, Set, TypeVar
+from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
 
 import torch
 
@@ -8,7 +8,7 @@ import effectful.indexed.internals.utils
 import effectful.internals.sugar
 
 from ...internals.sugar import partial_eval, sizesof
-from ...ops.core import Expr, Term, Operation
+from ...ops.core import Expr, Operation, Term
 from ...ops.function import defun
 
 K = TypeVar("K")
@@ -51,7 +51,9 @@ class IndexSet(Dict[Operation[[], int], Set[int]]):
         True
     """
 
-    def __init__(self, mapping: Dict[Operation[[], int], Set[int]]):
+    def __init__(
+        self, mapping: Mapping[Operation[[], int], Union[int, Sequence[int], set[int]]]
+    ):
         index_set = {}
         for k, vs in mapping.items():
             indexes = {vs} if isinstance(vs, int) else set(vs)
@@ -254,7 +256,9 @@ def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     return defun(value, *binding.keys())(*[v() for v in binding.values()])
 
 
-def stack(values: Sequence[torch.Tensor], dim: Operation[[], int]) -> torch.Tensor:
+def stack(
+    values: Union[tuple[torch.Tensor, ...], list[torch.Tensor]], dim: Operation[[], int]
+) -> torch.Tensor:
     """Stack a sequence of indexed values, creating a new dimension. The new
     dimension is indexed by `dim`. The indexed values in the stack must have
     identical shapes.
@@ -308,6 +312,7 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
             dtype=torch.bool,
         )
         result = cond(result if result is not None else value, value, tst)
+    assert result is not None
     return result
 
 

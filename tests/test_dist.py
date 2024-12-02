@@ -12,7 +12,8 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
-from effectful.indexed.ops import IndexSet, indices_of, name_to_sym, to_tensor
+from effectful.indexed.internals.utils import name_to_sym
+from effectful.indexed.ops import IndexSet, indices_of, to_tensor
 from effectful.internals.sugar import gensym, torch_getitem
 
 ##################################################
