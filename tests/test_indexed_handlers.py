@@ -2,6 +2,8 @@ import pyro
 import pyro.distributions as dist
 import torch
 
+from pyro.poutine.indep_messenger import CondIndepStackFrame
+
 from effectful.ops.core import ctxof
 from effectful.ops.handler import handler
 from effectful.handlers.pyro import PyroShim
@@ -26,7 +28,11 @@ def test_indexed_sample():
     class CheckSampleMessenger(pyro.poutine.messenger.Messenger):
         def _pyro_sample(self, msg):
             # named dimensions should not be visible to Pyro
-            assert indices_of(msg["fn"]) == IndexSet()
+            assert indices_of(msg["fn"]) == IndexSet({})
+            assert (
+                CondIndepStackFrame(name="__index_plate___b", dim=-2, size=3, counter=0)
+                in msg["cond_indep_stack"]
+            )
 
     with CheckSampleMessenger(), PyroShim():
         with handler(indexed):

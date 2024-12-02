@@ -5,13 +5,13 @@ import torch
 from typing_extensions import ParamSpec
 
 from ..handlers.pyro import pyro_sample
-from ..ops.core import Interpretation, ctxof
+from ..ops.core import Interpretation
 from ..ops.handler import fwd
 from .internals.handlers import (
     _LazyPlateMessenger,
     get_sample_msg_device,
 )
-from .ops import Indexable, to_tensor
+from .ops import Indexable, to_tensor, indices_of
 
 P = ParamSpec("P")
 
@@ -31,9 +31,9 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def _get_vars_sizes(self, value=None):
         if self._vars is None:
             if value is None:
-                value = self.sample()
+                value = self.base_dist.sample()
 
-            free = ctxof(value)
+            free = indices_of(value)
             self._vars = list(free.keys())
             self._sizes = [free[v] for v in self._vars]
 
@@ -49,7 +49,10 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     @property
     def batch_shape(self):
-        return self._get_vars_sizes()[1] + self.base_dist.batch_shape
+        return (
+            torch.Size([len(s) for s in self._get_vars_sizes()[1]])
+            + self.base_dist.batch_shape
+        )
 
     @property
     def event_shape(self):
@@ -58,6 +61,13 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     @property
     def has_enumerate_support(self):
         return self.base_dist.has_enumerate_support
+
+    @property
+    def arg_constraints(self):
+        return self.base_dist.arg_constraints
+
+    def __repr__(self):
+        return f"PositionalDistribution({self.base_dist})"
 
     def sample(self, sample_shape=torch.Size()):
         return self._to_positional(self.base_dist.sample(sample_shape))
@@ -92,7 +102,7 @@ def _indexed_pyro_sample_handler(
         plate = _LazyPlateMessenger(
             str(var),
             dim=-shape_len + dim_offset,
-            size=size,
+            size=len(size),
         )
         plate.__enter__()
         plates.append(plate)

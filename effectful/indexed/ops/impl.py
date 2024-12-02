@@ -124,9 +124,9 @@ def indices_of(value: Any) -> IndexSet:
         ...         T = pyro.sample("T", get_T_dist(X))
         ...         T = intervene(T, t, name="T_ax")  # adds an index variable "T_ax"
         ...         Y = pyro.sample("Y", get_Y_dist(X, T))
-        ...         assert indices_of(X) == IndexSet()
-        ...         assert indices_of(T) == IndexSet(T_ax={0, 1})
-        ...         assert indices_of(Y) == IndexSet(T_ax={0, 1})
+        ...         assert indices_of(X) == IndexSet({})
+        ...         assert indices_of(T) == IndexSet({T_ax: {0, 1}})
+        ...         assert indices_of(Y) == IndexSet({T_ax: {0, 1}})
         >>> example() # doctest: +SKIP
 
     Just as multidimensional arrays can be expanded to shapes with new dimensions
@@ -178,7 +178,7 @@ def indices_of(value: Any) -> IndexSet:
     elif isinstance(value, torch.distributions.Distribution):
         return indices_of(value.sample())
 
-    return IndexSet()
+    return IndexSet({})
 
 
 def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
