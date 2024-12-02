@@ -1,22 +1,21 @@
 import functools
 import operator
-from typing import Any, Dict, Iterable, Optional, Sequence, Set, TypeVar, Union
+from typing import Any, Dict, Optional, Sequence, Set, TypeVar
 
 import torch
 
 import effectful.indexed.internals.utils
 import effectful.internals.sugar
 
-from ..internals.sugar import partial_eval, sizesof, torch_getitem
-from ..ops.core import Expr, Term
-from ..ops.function import defun
-from .internals.utils import name_to_sym
+from ...internals.sugar import partial_eval, sizesof
+from ...ops.core import Expr, Term, Operation
+from ...ops.function import defun
 
 K = TypeVar("K")
 T = TypeVar("T")
 
 
-class IndexSet(Dict[str, Set[int]]):
+class IndexSet(Dict[Operation[[], int], Set[int]]):
     """
     :class:`IndexSet` s represent the support of an indexed value, primarily
     those created using :func:`intervene` and :class:`MultiWorldCounterfactual`
@@ -52,13 +51,13 @@ class IndexSet(Dict[str, Set[int]]):
         True
     """
 
-    def __init__(self, **mapping: Union[int, Iterable[int]]):
+    def __init__(self, mapping: Dict[Operation[[], int], Set[int]]):
         index_set = {}
         for k, vs in mapping.items():
             indexes = {vs} if isinstance(vs, int) else set(vs)
             if len(indexes) > 0:
                 index_set[k] = indexes
-        super().__init__(**index_set)
+        super().__init__(index_set)
 
     def __repr__(self):
         return f"{type(self).__name__}({super().__repr__()})"
@@ -103,7 +102,7 @@ def union(*indexsets: IndexSet) -> IndexSet:
             union(a, union(a, b)) == union(a, b)
     """
     return IndexSet(
-        **{
+        {
             k: set.union(*[vs[k] for vs in indexsets if k in vs])
             for k in set.union(*(set(vs) for vs in indexsets))
         }
@@ -171,8 +170,8 @@ def indices_of(value: Any) -> IndexSet:
     """
     if isinstance(value, Term):
         return IndexSet(
-            **{
-                k.__name__: set(range(v))  # type:ignore
+            {
+                k: set(range(v))  # type:ignore
                 for (k, v) in sizesof(value).items()
             }
         )
@@ -182,7 +181,7 @@ def indices_of(value: Any) -> IndexSet:
     return IndexSet()
 
 
-def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
+def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -242,28 +241,26 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
 
     :param value: The value to gather.
     :param IndexSet indexset: The :class:`IndexSet` of entries to select from ``value``.
-    :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A new value containing entries of ``value`` from ``indexset``.
     """
-    indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
         k: functools.partial(
-            lambda v: v, torch_getitem(torch.tensor(list(indexset_vars[k])), [k()])
+            lambda v: v, Indexable(torch.tensor(list(indexset[k])))[k()]
         )
         for k in sizesof(value).keys()
-        if k in indexset_vars
+        if k in indexset
     }
 
     return defun(value, *binding.keys())(*[v() for v in binding.values()])
 
 
-def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
+def stack(values: Sequence[torch.Tensor], dim: Operation[[], int]) -> torch.Tensor:
     """Stack a sequence of indexed values, creating a new dimension. The new
-    dimension is indexed by `name`. The indexed values in the stack must have
+    dimension is indexed by `dim`. The indexed values in the stack must have
     identical shapes.
 
     """
-    return Indexable(torch.stack(values))[name_to_sym(name)()]
+    return Indexable(torch.stack(values))[dim()]
 
 
 def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Tensor:
@@ -291,7 +288,6 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
     :param fst: The value to return if ``case`` is ``False`` .
     :param snd: The value to return if ``case`` is ``True`` .
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
-    :param kwargs: Additional keyword arguments used by specific implementations.
     """
     return torch.where(
         case_.reshape(case_.shape + (1,) * min(len(snd.shape), len(fst.shape))),

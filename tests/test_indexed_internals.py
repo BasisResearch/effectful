@@ -11,7 +11,6 @@ from effectful.indexed.ops import (
     cond_n,
     gather,
     indices_of,
-    name_to_sym,
     stack,
     to_tensor,
     Indexable,
@@ -74,7 +73,7 @@ SHAPE_CASES = list(
 def indexed_batch(t, batch_len, name_to_dim):
     i = [slice(None)] * batch_len
     for n, d in name_to_dim.items():
-        i[d] = name_to_sym(n)()
+        i[d] = n()
     return Indexable(t)[tuple(i)]
 
 
@@ -83,7 +82,7 @@ def indexed_batch(t, batch_len, name_to_dim):
 )
 def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     batch_dim_names = {
-        f"b{i}": -1 - i
+        gensym(int, name=f"b{i}"): -1 - i
         for i in range(len(plate_shape), len(plate_shape) + len(batch_shape))
     }
     full_batch_shape = enum_shape + batch_shape + plate_shape
@@ -95,7 +94,7 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
 
     actual = indices_of(value)
     expected = IndexSet(
-        **{
+        {
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
         }
@@ -109,7 +108,7 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
 )
 def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_shape):
     batch_dim_names = {
-        f"b{i}": -1 - i
+        gensym(int, name=f"b{i}"): -1 - i
         for i in range(len(plate_shape), len(plate_shape) + len(batch_shape))
     }
 
@@ -127,7 +126,7 @@ def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_sha
     actual = indices_of(value)
 
     expected = IndexSet(
-        **{
+        {
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
         }
@@ -141,16 +140,15 @@ def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_sha
 )
 def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
-    name_to_dim = {f"dim_{i}": cf_dim - i for i in range(len(batch_shape))}
+    name_to_dim = {
+        gensym(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
+    }
 
     full_batch_shape = enum_shape + batch_shape + plate_shape
     value = torch.randn(full_batch_shape + event_shape)
 
     world = IndexSet(
-        **{
-            name: {max(full_batch_shape[dim] - 2, 0)}
-            for name, dim in name_to_dim.items()
-        }
+        {name: {max(full_batch_shape[dim] - 2, 0)} for name, dim in name_to_dim.items()}
     )
 
     ivalue = indexed_batch(value, len(full_batch_shape), name_to_dim)
@@ -160,8 +158,7 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     # for each gathered index, check that the gathered value is equal to the
     # value at that index
     world_vars = []
-    for name, inds in world.items():
-        sym = name_to_sym(name)
+    for sym, inds in world.items():
         world_vars.append([(sym, i) for i in range(len(inds))])
 
     for binding in itertools.product(*world_vars):
@@ -180,7 +177,7 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
 
 def indexed_to_defun(value, names):
     vars_ = sizesof(value)
-    ordered_vars = [[v for v in vars_ if v is name_to_sym(n)][0] for n in names]
+    ordered_vars = [[v for v in vars_ if v is n][0] for n in names]
     return defun(value, *ordered_vars)
 
 
@@ -188,12 +185,12 @@ def test_stack():
     t1 = torch.randn(5, 3)
     t2 = torch.randn(5, 3)
 
-    a, b = name_to_sym("a"), name_to_sym("b")
+    a, b, x = gensym(int, name="a"), gensym(int, name="b"), gensym(int, name="x")
     l1 = Indexable(t1)[a(), b()]
     l2 = Indexable(t2)[a(), b()]
-    l3 = stack([l1, l2], "x")
+    l3 = stack([l1, l2], x)
 
-    f = indexed_to_defun(l3, ["x", "a", "b"])
+    f = indexed_to_defun(l3, [x, a, b])
 
     for i in range(5):
         for j in range(3):
@@ -224,32 +221,29 @@ def test_simple_distribution():
 )
 def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
+    new_dim = gensym(int, name="new_dim")
     ind1, ind2, ind3 = (
-        IndexSet(new_dim={0}),
-        IndexSet(new_dim={1}),
-        IndexSet(new_dim={2}),
+        IndexSet({new_dim: {0}}),
+        IndexSet({new_dim: {1}}),
+        IndexSet({new_dim: {2}}),
     )
-    name_to_dim = {f"dim_{i}": cf_dim - i for i in range(len(batch_shape))}
+    name_to_dim = {
+        gensym(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
+    }
 
     full_batch_shape = enum_shape + batch_shape + plate_shape
     batch_len = len(full_batch_shape)
 
-    def indexed(t, batch_len, name_to_dim):
-        i = [slice(None)] * batch_len
-        for n, d in name_to_dim.items():
-            i[d] = name_to_sym(n)()
-        return Indexable(t)[tuple(i)]
-
-    case = indexed(torch.randint(0, 3, full_batch_shape), batch_len, name_to_dim)
-    value1 = indexed(
+    case = indexed_batch(torch.randint(0, 3, full_batch_shape), batch_len, name_to_dim)
+    value1 = indexed_batch(
         torch.randn(full_batch_shape + event_shape), batch_len, name_to_dim
     )
-    value2 = indexed(
+    value2 = indexed_batch(
         torch.randn(enum_shape + batch_shape + (1,) * len(plate_shape) + event_shape),
         batch_len,
         name_to_dim,
     )
-    value3 = indexed(
+    value3 = indexed_batch(
         torch.randn(full_batch_shape + event_shape), batch_len, name_to_dim
     )
 
@@ -263,27 +257,25 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
         indices_of(actual_full) == indices_of(actual_left) == indices_of(actual_right)
     )
 
-    vars = list(name_to_sym(n) for n in name_to_dim.keys())
+    vars = list(name_to_dim.keys())
     assert (to_tensor(actual_full, vars) == to_tensor(actual_left, vars)).all()
     assert (to_tensor(actual_left, vars) == to_tensor(actual_right, vars)).all()
 
 
 def test_to_tensor():
-    i = name_to_sym("i")
-    j = name_to_sym("j")
-    k = name_to_sym("k")
+    i, j, k = gensym(int, name="i"), gensym(int, name="j"), gensym(int, name="k")
 
     # test that named dimensions can be removed and reordered
     t = torch.randn([2, 3, 4])
-    t1 = to_tensor(torch_getitem(t, [i(), j(), k()]), [i, j, k])
-    t2 = to_tensor(torch_getitem(t.permute((2, 0, 1)), [k(), i(), j()]), [i, j, k])
-    t3 = to_tensor(torch_getitem(t.permute((1, 0, 2)), [j(), i(), k()]), [i, j, k])
+    t1 = to_tensor(Indexable(t)[i(), j(), k()], [i, j, k])
+    t2 = to_tensor(Indexable(t.permute((2, 0, 1)))[k(), i(), j()], [i, j, k])
+    t3 = to_tensor(Indexable(t.permute((1, 0, 2)))[j(), i(), k()], [i, j, k])
 
     assert torch.allclose(t1, t2)
     assert torch.allclose(t1, t3)
 
     # test that to_tensor can remove some but not all named dimensions
-    t_ijk = torch_getitem(t, [i(), j(), k()])
+    t_ijk = Indexable(t)[i(), j(), k()]
     t_ij = to_tensor(t_ijk, [k])
     assert set(sizesof(t_ij).keys()) == set([i, j])
     assert t_ij.shape == torch.Size([4])
