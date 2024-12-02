@@ -44,7 +44,7 @@ def to_indexed(tensor, batch_dims):
 
 
 def from_indexed(tensor, batch_dims):
-    if indices_of(tensor) == IndexSet():
+    if indices_of(tensor) == IndexSet({}):
         return tensor
     return to_tensor(tensor, [name_to_sym(str(i)) for i in range(batch_dims)])
 
@@ -138,7 +138,7 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
     sample_indices = indices_of(indexed_sample)
     for param in case_.indexed_params.values():
         param_indices = indices_of(param)
-        assert param_indices in [IndexSet(), sample_indices]
+        assert param_indices in [IndexSet({}), sample_indices]
 
     # Indexed samples should have the same shape as regular samples, but with the batch dimensions indexed
     indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))

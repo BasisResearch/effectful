@@ -35,18 +35,21 @@ class IndexSet(Dict[Operation[[], int], Set[int]]):
     the sets of indices of the free variables ``x`` and ``y``
     for which a value is defined::
 
-        >>> IndexSet(x={0, 1}, y={2, 3})
-        IndexSet({'x': {0, 1}, 'y': {2, 3}})
+        >>> from effectful.internals.sugar import gensym
+        >>> x, y = gensym(int, name="x"), gensym(int, name="y")
+        >>> IndexSet({x: {0, 1}, y: {2, 3}})
+        IndexSet({x: {0, 1}, y: {2, 3}})
 
     :class:`IndexSet` 's constructor will automatically drop empty entries
     and attempt to convert input values to :class:`set` s::
 
-        >>> IndexSet(x=[0, 0, 1], y=set(), z=2)
-        IndexSet({'x': {0, 1}, 'z': {2}})
+        >>> z = gensym(int, name="z")
+        >>> IndexSet({x: [0, 0, 1], y: set(), z: 2})
+        IndexSet({x: {0, 1}, z: {2}})
 
     :class:`IndexSet` s are also hashable and can be used as keys in :class:`dict` s::
 
-        >>> indexset = IndexSet(x={0, 1}, y={2, 3})
+        >>> indexset = IndexSet({x: {0, 1}, y: {2, 3}})
         >>> indexset in {indexset: 1}
         True
     """
@@ -89,9 +92,13 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
     Example::
 
-        >>> s = union(IndexSet(a={0, 1}, b={1}), IndexSet(a={1, 2}))
-        >>> {k:s[k] for k in sorted(s.keys())}
-        {'a': {0, 1, 2}, 'b': {1}}
+        >>> from effectful.internals.sugar import gensym
+        >>> a, b = gensym(int, name="a"), gensym(int, name="b")
+        >>> s = union(IndexSet({a: {0, 1}, b: {1}}), IndexSet({a: {1, 2}}))
+        >>> s[a]
+        {0, 1, 2}
+        >>> s[b]
+        {1}
 
     .. note::
 
@@ -279,10 +286,12 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
     Unlike a Python conditional expression, however, the case may be a tensor,
     and both branches are evaluated, as with :func:`torch.where` ::
 
-        >>> fst, snd = torch.randn(2, 3), torch.randn(2, 3)
+        >>> from effectful.internals.sugar import gensym
+        >>> b = gensym(int, name="b")
+        >>> fst, snd = Indexable(torch.randn(2, 3))[b()], Indexable(torch.randn(2, 3))[b()]
         >>> case = (fst < snd).all(-1)
-        >>> x = cond(fst, snd, case, event_dim=1)
-        >>> assert (x == torch.where(case[..., None], snd, fst)).all()
+        >>> x = cond(fst, snd, case)
+        >>> assert (to_tensor(x, [b]) == to_tensor(torch.where(case[..., None], snd, fst), [b])).all()
 
     .. note::
 

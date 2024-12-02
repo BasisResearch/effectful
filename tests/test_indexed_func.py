@@ -16,7 +16,7 @@ def test_grad_1():
     cos_x_actual = grad_sin(x)
 
     assert isinstance(cos_x_actual, Term)
-    assert indices_of(cos_x_actual) == IndexSet(i=(set(range(10))))
+    assert indices_of(cos_x_actual) == IndexSet({i: (set(range(10)))})
 
     cos_x_expected = x.cos()
 
