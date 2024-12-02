@@ -1,22 +1,7 @@
 import functools
 import operator
-import typing
-from typing import (
-    Any,
-    Dict,
-    Hashable,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    TypeVar,
-    Union,
-)
+from typing import Any, Dict, Iterable, Optional, Sequence, Set, TypeVar, Union
 
-import pyro
 import torch
 
 import effectful.indexed.internals.utils
@@ -25,7 +10,7 @@ import effectful.internals.sugar
 from ..internals.sugar import partial_eval, sizesof, torch_getitem
 from ..ops.core import Expr, Term
 from ..ops.function import defun
-from .internals.utils import _get_index_plates_to_name_to_dim, lift_tensor, name_to_sym
+from .internals.utils import name_to_sym
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -82,7 +67,10 @@ class IndexSet(Dict[str, Set[int]]):
         return hash(frozenset((k, frozenset(vs)) for k, vs in self.items()))
 
     def _to_handler(self):
-        """Return an effectful handler that binds each index variable to a tensor of its possible index values."""
+        """Return an effectful handler that binds each index variable to a
+        tensor of its possible index values.
+
+        """
         return {
             k: functools.partial(lambda v: v, torch.tensor(list(v)))
             for k, v in self.items()
@@ -122,12 +110,7 @@ def union(*indexsets: IndexSet) -> IndexSet:
     )
 
 
-def indices_of(
-    value: Any,
-    *,
-    name_to_dim: Optional[Mapping[str, int]] = None,
-    event_dim: int = 0,
-) -> IndexSet:
+def indices_of(value: Any) -> IndexSet:
     """
     Get a :class:`IndexSet` of indices on which an indexed value is supported.
     :func:`indices_of` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -186,10 +169,6 @@ def indices_of(
     :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A :class:`IndexSet` containing the indices on which the value is supported.
     """
-
-    if name_to_dim is None:
-        name_to_dim = _get_index_plates_to_name_to_dim()
-
     if isinstance(value, Term):
         return IndexSet(
             **{
@@ -197,24 +176,8 @@ def indices_of(
                 for (k, v) in sizesof(value).items()
             }
         )
-
-    shape = None
-    if isinstance(value, torch.Tensor):
-        shape = value.shape
-    elif isinstance(
-        value, pyro.distributions.torch_distribution.TorchDistributionMixin
-    ):
-        shape = value.batch_shape
-
-    if shape is not None:
-        shape = shape[: len(shape) - event_dim]
-        return IndexSet(
-            **{
-                name: set(range(shape[dim]))
-                for name, dim in name_to_dim.items()
-                if -dim <= len(shape) and shape[dim] > 1
-            }
-        )
+    elif isinstance(value, torch.distributions.Distribution):
+        return indices_of(value.sample())
 
     return IndexSet()
 
@@ -282,9 +245,6 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A new value containing entries of ``value`` from ``indexset``.
     """
-    if isinstance(value, torch.Tensor) and not isinstance(value, Term):
-        value = lift_tensor(value, **kwargs)
-
     indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
         k: functools.partial(
@@ -303,11 +263,10 @@ def stack(values: Sequence[torch.Tensor], name: str, **kwargs) -> torch.Tensor:
     identical shapes.
 
     """
-    values = [v if isinstance(v, Term) else lift_tensor(v, **kwargs) for v in values]
     return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
-def cond(fst, snd, case, *, event_dim: int = 0, **kwargs):
+def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Tensor:
     """
     Selection operation that is the sum-type analogue of :func:`scatter`
     in the sense that where :func:`scatter` propagates both of its arguments,
@@ -334,21 +293,14 @@ def cond(fst, snd, case, *, event_dim: int = 0, **kwargs):
     :param case: A boolean value or tensor. If a tensor, should have event shape ``()`` .
     :param kwargs: Additional keyword arguments used by specific implementations.
     """
-    fst, snd, case = torch.as_tensor(fst), torch.as_tensor(snd), torch.as_tensor(case)
-    case_ = typing.cast(
-        torch.Tensor,
-        case if isinstance(case, Term) else lift_tensor(case, event_dim=0, **kwargs),
+    return torch.where(
+        case_.reshape(case_.shape + (1,) * min(len(snd.shape), len(fst.shape))),
+        snd,
+        fst,
     )
 
-    [fst_, snd_] = [
-        v if isinstance(v, Term) else lift_tensor(v, event_dim=event_dim, **kwargs)
-        for v in [fst, snd]
-    ]
 
-    return torch.where(case_[(...,) + (None,) * event_dim], snd_, fst_)  # type: ignore
-
-
-def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor, **kwargs):
+def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Tensor:
     assert len(values) > 0
     assert all(isinstance(k, IndexSet) for k in values.keys())
     result: Optional[torch.Tensor] = None
@@ -359,35 +311,8 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor, **kwargs):
             ),
             dtype=torch.bool,
         )
-        result = cond(result if result is not None else value, value, tst, **kwargs)
+        result = cond(result if result is not None else value, value, tst)
     return result
-
-
-def indexset_as_mask(
-    indexset: IndexSet,
-    *,
-    event_dim: int = 0,
-    name_to_dim_size: Optional[Dict[Hashable, Tuple[int, int]]] = None,
-    device: torch.device = torch.device("cpu"),
-) -> torch.Tensor:
-    """
-    Get a dense mask tensor for indexing into a tensor from an indexset.
-    """
-    if name_to_dim_size is None:
-        name_to_dim_size = {}
-        for name, f in get_index_plates().items():
-            assert f.dim is not None
-            name_to_dim_size[name] = (f.dim, f.size)
-
-    batch_shape = [1] * -min([dim for dim, _ in name_to_dim_size.values()], default=0)
-    inds: List[Union[slice, torch.Tensor]] = [slice(None)] * len(batch_shape)
-    for name, values in indexset.items():
-        dim, size = name_to_dim_size[name]
-        inds[dim] = torch.tensor(list(sorted(values)), dtype=torch.long)
-        batch_shape[dim] = size
-    mask = torch.zeros(tuple(batch_shape), dtype=torch.bool, device=device)
-    mask[tuple(inds)] = True
-    return mask[(...,) + (None,) * event_dim]
 
 
 def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
@@ -395,4 +320,3 @@ def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
 
 
 Indexable = effectful.internals.sugar.Indexable
-get_index_plates = effectful.indexed.internals.utils.get_index_plates

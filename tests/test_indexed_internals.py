@@ -1,4 +1,3 @@
-import contextlib
 import itertools
 import logging
 
@@ -6,24 +5,23 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.indexed.handlers import IndexPlatesMessenger
-from effectful.indexed.internals.handlers import add_indices
 from effectful.indexed.ops import (
     IndexSet,
     cond,
     cond_n,
     gather,
-    get_index_plates,
     indices_of,
-    lift_tensor,
     name_to_sym,
     stack,
     to_tensor,
+    Indexable,
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import evaluate
 from effectful.ops.function import defun
 from effectful.ops.handler import handler
+
+torch.distributions.Distribution.set_default_validate_args(False)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +71,13 @@ SHAPE_CASES = list(
 )
 
 
+def indexed_batch(t, batch_len, name_to_dim):
+    i = [slice(None)] * batch_len
+    for n, d in name_to_dim.items():
+        i[d] = name_to_sym(n)()
+    return Indexable(t)[tuple(i)]
+
+
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
@@ -81,22 +86,22 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
         f"b{i}": -1 - i
         for i in range(len(plate_shape), len(plate_shape) + len(batch_shape))
     }
-
     full_batch_shape = enum_shape + batch_shape + plate_shape
-    value = torch.randn(full_batch_shape + event_shape)
-    actual_world = indices_of(
-        value, event_dim=len(event_shape), name_to_dim=batch_dim_names
+    value = indexed_batch(
+        torch.randn(full_batch_shape + event_shape),
+        len(full_batch_shape),
+        batch_dim_names,
     )
 
-    expected_world = IndexSet(
+    actual = indices_of(value)
+    expected = IndexSet(
         **{
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
-            if full_batch_shape[dim] > 1
         }
     )
 
-    assert actual_world == expected_world
+    assert actual == expected
 
 
 @pytest.mark.parametrize(
@@ -109,29 +114,32 @@ def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_sha
     }
 
     full_batch_shape = enum_shape + batch_shape + plate_shape
-    value = (
-        dist.Normal(0, 1)
-        .expand(full_batch_shape + event_shape)
-        .to_event(len(event_shape))
-    )
-    actual_world = indices_of(value, name_to_dim=batch_dim_names)
+    full_shape = full_batch_shape + event_shape
 
-    expected_world = IndexSet(
+    loc = indexed_batch(
+        torch.tensor(0.0).expand(full_shape), len(full_batch_shape), batch_dim_names
+    )
+    scale = indexed_batch(
+        torch.tensor(1.0).expand(full_shape), len(full_batch_shape), batch_dim_names
+    )
+    value = dist.Normal(loc, scale).to_event(len(event_shape))
+
+    actual = indices_of(value)
+
+    expected = IndexSet(
         **{
             name: set(range(full_batch_shape[dim]))
             for name, dim in batch_dim_names.items()
-            if full_batch_shape[dim] > 1
         }
     )
 
-    assert actual_world == expected_world
+    assert actual == expected
 
 
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
-@pytest.mark.parametrize("use_effect", [True, False])
-def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_effect):
+def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
     name_to_dim = {f"dim_{i}": cf_dim - i for i in range(len(batch_shape))}
 
@@ -145,22 +153,9 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape, use_ef
         }
     )
 
-    with contextlib.ExitStack() as stack:
-        if use_effect:
-            stack.enter_context(IndexPlatesMessenger(cf_dim))
-            for name, dim in name_to_dim.items():
-                add_indices(
-                    IndexSet(**{name: set(range(max(2, full_batch_shape[dim])))})
-                )
-            _name_to_dim = None
-        else:
-            _name_to_dim = name_to_dim
+    ivalue = indexed_batch(value, len(full_batch_shape), name_to_dim)
 
-        lifted_value = lift_tensor(
-            value, event_dim=len(event_shape), name_to_dim=_name_to_dim
-        )
-
-    actual = gather(lifted_value, world)
+    actual = gather(ivalue, world)
 
     # for each gathered index, check that the gathered value is equal to the
     # value at that index
@@ -193,8 +188,9 @@ def test_stack():
     t1 = torch.randn(5, 3)
     t2 = torch.randn(5, 3)
 
-    l1 = lift_tensor(t1, name_to_dim={"a": 0, "b": 1})
-    l2 = lift_tensor(t2, name_to_dim={"a": 0, "b": 1})
+    a, b = name_to_sym("a"), name_to_sym("b")
+    l1 = Indexable(t1)[a(), b()]
+    l2 = Indexable(t2)[a(), b()]
     l3 = stack([l1, l2], "x")
 
     f = indexed_to_defun(l3, ["x", "a", "b"])
@@ -223,24 +219,11 @@ def test_simple_distribution():
     dist.Bernoulli(t, validate_args=False)
 
 
-def test_index_plate_names():
-    with IndexPlatesMessenger(-1):
-        add_indices(IndexSet(a={0, 1}))
-        index_plates = get_index_plates()
-        x_ind = indices_of(torch.randn(2))
-
-    assert "a" in x_ind
-    assert len(index_plates) == 1
-    for name, frame in index_plates.items():
-        assert name != frame.name
-
-
 @pytest.mark.parametrize(
     "enum_shape,plate_shape,batch_shape,event_shape", SHAPE_CASES, ids=str
 )
 def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
-    event_dim = len(event_shape)
     ind1, ind2, ind3 = (
         IndexSet(new_dim={0}),
         IndexSet(new_dim={1}),
@@ -248,53 +231,41 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     )
     name_to_dim = {f"dim_{i}": cf_dim - i for i in range(len(batch_shape))}
 
-    case = torch.randint(0, 3, enum_shape + batch_shape + plate_shape)
-    value1 = torch.randn(batch_shape + plate_shape + event_shape)
-    value2 = torch.randn(
-        enum_shape + batch_shape + (1,) * len(plate_shape) + event_shape
+    full_batch_shape = enum_shape + batch_shape + plate_shape
+    batch_len = len(full_batch_shape)
+
+    def indexed(t, batch_len, name_to_dim):
+        i = [slice(None)] * batch_len
+        for n, d in name_to_dim.items():
+            i[d] = name_to_sym(n)()
+        return Indexable(t)[tuple(i)]
+
+    case = indexed(torch.randint(0, 3, full_batch_shape), batch_len, name_to_dim)
+    value1 = indexed(
+        torch.randn(full_batch_shape + event_shape), batch_len, name_to_dim
     )
-    value3 = torch.randn(enum_shape + batch_shape + plate_shape + event_shape)
+    value2 = indexed(
+        torch.randn(enum_shape + batch_shape + (1,) * len(plate_shape) + event_shape),
+        batch_len,
+        name_to_dim,
+    )
+    value3 = indexed(
+        torch.randn(full_batch_shape + event_shape), batch_len, name_to_dim
+    )
 
-    with IndexPlatesMessenger(cf_dim):
-        for name, dim in name_to_dim.items():
-            add_indices(
-                IndexSet(**{name: set(range(max(3, (batch_shape + plate_shape)[dim])))})
-            )
+    actual_full = cond_n({ind1: value1, ind2: value2, ind3: value3}, case)
 
-        actual_full = cond_n(
-            {ind1: value1, ind2: value2, ind3: value3}, case, event_dim=event_dim
-        )
+    actual_left = cond(cond(value1, value2, case == 1), value3, case >= 2)
 
-        actual_left = cond(
-            cond(value1, value2, case == 1, event_dim=event_dim),
-            value3,
-            case >= 2,
-            event_dim=event_dim,
-        )
+    actual_right = cond(value1, cond(value2, value3, case == 2), case >= 1)
 
-        actual_right = cond(
-            value1,
-            cond(value2, value3, case == 2, event_dim=event_dim),
-            case >= 1,
-            event_dim=event_dim,
-        )
+    assert (
+        indices_of(actual_full) == indices_of(actual_left) == indices_of(actual_right)
+    )
 
-        assert (
-            indices_of(actual_full, event_dim=event_dim)
-            == indices_of(actual_left, event_dim=event_dim)
-            == indices_of(actual_right, event_dim=event_dim)
-        )
-
-    name_to_dim = list(name_to_dim.items())
-    names = [i[0] for i in name_to_dim]
-
-    f_actual_full = indexed_to_defun(actual_full, names)
-    f_actual_left = indexed_to_defun(actual_left, names)
-    f_actual_right = indexed_to_defun(actual_right, names)
-
-    for idx in itertools.product(*[range(d[1]) for d in name_to_dim]):
-        assert (f_actual_full(*idx) == f_actual_left(*idx)).all()
-        assert (f_actual_left(*idx) == f_actual_right(*idx)).all()
+    vars = list(name_to_sym(n) for n in name_to_dim.keys())
+    assert (to_tensor(actual_full, vars) == to_tensor(actual_left, vars)).all()
+    assert (to_tensor(actual_left, vars) == to_tensor(actual_right, vars)).all()
 
 
 def test_to_tensor():
