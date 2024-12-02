@@ -1,6 +1,4 @@
-import collections
-import functools
-from typing import Any, Callable, Dict, Hashable, List, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 import pyro
 import torch
@@ -27,6 +25,7 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def __init__(self, base_dist):
         self.base_dist = base_dist
         self._names = None
+        self._vars = None
         self.enumerate_support = base_dist.enumerate_support
 
     def _get_vars_sizes(self, value=None):
@@ -73,49 +72,44 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         return self._to_positional(self.base_dist.enumerate_support(expand))
 
 
-def indexed():
-    """Allow distributions with indexed batch dimensions to be used with
-    `pyro.sample` by lazily converting the indexed dimensions to positional
-    dimensions.
+def _indexed_pyro_sample_handler(
+    name: str,
+    dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
+    infer: Optional[pyro.poutine.runtime.InferDict] = None,
+    **kwargs,
+) -> torch.Tensor:
+    infer = infer or {}
 
-    """
+    if "_index_expanded" in infer:
+        return fwd(None)
 
-    def pyro_sample_handler(
-        name: str,
-        dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
-        infer: Optional[pyro.poutine.runtime.InferDict] = None,
-        **kwargs,
-    ) -> torch.Tensor:
-        infer = infer or {}
+    pdist = PositionalDistribution(dist)
+    (vars_, sizes) = pdist._get_vars_sizes()
 
-        if "_index_expanded" in infer:
-            return fwd(None)
+    shape_len = len(pdist.shape())
+    plates = []
+    for dim_offset, (var, size) in enumerate(zip(vars_, sizes)):
+        plate = _LazyPlateMessenger(
+            str(var),
+            dim=-shape_len + dim_offset,
+            size=size,
+        )
+        plate.__enter__()
+        plates.append(plate)
 
-        pdist = PositionalDistribution(dist)
-        (vars_, sizes) = pdist._get_vars_sizes()
+    infer["_index_expanded"] = True
 
-        shape_len = len(pdist.shape())
-        plates = []
-        for dim_offset, (var, size) in enumerate(zip(vars_, sizes)):
-            plate = _LazyPlateMessenger(
-                str(var),
-                dim=-shape_len + dim_offset,
-                size=size,
-            )
-            plate.__enter__()
-            plates.append(plate)
+    try:
+        return pdist._from_positional(pyro.sample(name, pdist, infer=infer, **kwargs))
+    finally:
+        for plate in reversed(plates):
+            plate.__exit__(None, None, None)
 
-        infer["_index_expanded"] = True
 
-        try:
-            return pdist._from_positional(
-                pyro.sample(name, pdist, infer=infer, **kwargs)
-            )
-        finally:
-            for plate in reversed(plates):
-                plate.__exit__(None, None, None)
-
-    return {pyro_sample: pyro_sample_handler}
+#: Allow distributions with indexed batch dimensions to be used with
+#: `pyro.sample` by lazily converting the indexed dimensions to positional
+#: dimensions.
+indexed = {pyro_sample: _indexed_pyro_sample_handler}
 
 
 class GetMask(Protocol):
