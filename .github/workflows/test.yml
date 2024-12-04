@@ -4,7 +4,7 @@ on:
   push:
     branches: [ master ]
   pull_request:
-    branches: [ master, jf-add-indexed, staging-* ]
+    branches: [ master, staging-* ]
 
 jobs:
   build:
