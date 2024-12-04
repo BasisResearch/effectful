@@ -66,7 +66,7 @@ class Operation(Generic[Q, V]):
 
         return infer_scope_rule(self)(*args, **kwargs)  # type: ignore
 
-    def __str__(self):
+    def __repr__(self):
         return self.signature.__name__
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
@@ -154,14 +154,22 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
-        _ctx.setdefault(op, op.__type_rule__)
+        _ctx.setdefault(op, op.__type_rule__(*args, **kwargs))
         for bound_var in op.__scope_rule__(*args, **kwargs):
             _ctx.pop(bound_var, None)
 
     with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(term)  # type: ignore
+        evaluate(as_term(term))  # type: ignore
 
     return _ctx
+
+
+def to_string(term: Expr[S]) -> str:
+    def _to_str(_, op, *args, **kwargs):
+        return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
+
+    with interpreter({apply: _to_str}):  # type: ignore
+        return evaluate(as_term(term))  # type: ignore
 
 
 def typeof(term: Expr[T]) -> Type[T]:
