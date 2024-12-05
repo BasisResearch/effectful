@@ -36,6 +36,22 @@ def _set_state(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
     return _cont_wrapper
 
 
+def _reset_state(fn: Callable[P, T]) -> Callable[P, T]:
+
+    @wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with interpreter(
+            {
+                **get_interpretation(),
+                _get_result: _get_result.__default_rule__,
+                _get_args: _get_args.__default_rule__,
+            }
+        ):
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
 def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
     return lambda *a, **k: fn(_get_result(), *a, **k)
 
@@ -101,18 +117,17 @@ def bind_prompt(
     Manager: No need to be hasty, have your refund!
     Clerk: Great, here's your refund.
     """
+
     @contextmanager
     def _handler(intp):
         with interpreter({**get_interpretation(), **intp}):
             yield intp
 
     @wraps(wrapped)
-    @_handler({_get_args: _get_args.__default_rule__})
-    @bind_result
-    @_set_state
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
         prev = get_interpretation().get(prompt, prompt.__default_rule__)
-        with _handler({prompt: _handler({prompt: prev})(_set_state(prompt_impl))}):  # type: ignore
+        with _handler({prompt: _handler({prompt: prev})(cont)}):  # type: ignore
             return wrapped(*a, **k)
 
-    return wrapper
+    cont = _set_state(prompt_impl)
+    return bind_result(_reset_state(_set_state(wrapper)))
