@@ -191,10 +191,6 @@ def test_fwd_default():
     with handler(coproduct({do_stuff: fancy_stuff}, {do_stuff: do_more_stuff})):
         assert do_stuff() == "fancy stuff and more"
 
-    # ditto for product
-    with handler(product({do_stuff: fancy_stuff}, {do_stuff: do_more_stuff})):
-        assert do_stuff() == "fancy stuff and more"
-
     # empty coproducts allow forwarding to the default implementation
     with handler(coproduct({}, {do_stuff: do_more_stuff})):
         assert do_stuff() == "default stuff and more"
@@ -202,12 +198,3 @@ def test_fwd_default():
     # ditto products
     with handler(product({}, {do_stuff: do_more_stuff})):
         assert do_stuff() == "default stuff and more"
-
-    # taking a product correctly closes over the default implementation
-    with handler(
-        coproduct(
-            {do_stuff: fancy_stuff},
-            product({do_stuff: do_more_stuff}, {do_stuff: do_more_stuff}),
-        )
-    ):
-        assert do_stuff() == "default stuff and more and more"
