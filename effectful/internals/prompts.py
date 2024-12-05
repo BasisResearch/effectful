@@ -4,7 +4,7 @@ from typing import Callable, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.runtime import get_interpretation, get_runtime, interpreter
+from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.core import Operation
 
 P = ParamSpec("P")
@@ -102,21 +102,17 @@ def bind_prompt(
     Clerk: Great, here's your refund.
     """
     @contextmanager
-    def _unset_cont(
-        prompt: Operation[Concatenate[S, P], T], orig: Callable[Concatenate[S, P], T]
-    ):
-        r = get_runtime()
-        r.interpretation = {**r.interpretation, prompt: orig}
-        yield
+    def _handler(intp):
+        with interpreter({**get_interpretation(), **intp}):
+            yield intp
 
     @wraps(wrapped)
+    @_handler({_get_args: _get_args.__default_rule__})
     @bind_result
     @_set_state
     def wrapper(*a: P.args, **k: P.kwargs) -> T:
-        unset = _unset_cont(
-            prompt, get_interpretation().get(prompt, prompt.__default_rule__)
-        )
-        with interpreter({**get_interpretation(), prompt: unset(_set_state(prompt_impl))}):  # type: ignore
+        prev = get_interpretation().get(prompt, prompt.__default_rule__)
+        with _handler({prompt: _handler({prompt: prev})(_set_state(prompt_impl))}):  # type: ignore
             return wrapped(*a, **k)
 
     return wrapper
