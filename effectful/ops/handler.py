@@ -42,11 +42,11 @@ def product(
 ) -> Interpretation[S, T]:
     if any(op in intp for op in intp2):  # alpha-rename
         renaming = {op: gensym(op) for op in intp2 if op in intp}
-        intp_ = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-        return product(intp_, intp2)
+        intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
+        return product(intp_fresh, intp2)
     else:
         refls2 = {op: op.__default_rule__ for op in intp2}
-        intp_ = {op: runner(refls2)(intp[op]) for op in intp}
+        intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
         return {op: runner(intp_)(intp2[op]) for op in intp2}
 
 
