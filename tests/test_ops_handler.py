@@ -6,10 +6,9 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import NoDefaultRule, ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import closed_handler, coproduct, fwd, handler, product
+from effectful.ops.handler import bind_result, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +53,7 @@ def test_fwd_simple():
         # do nothing and just fwd
         return fwd(None)
 
-    with closed_handler({plus_1: plus_1_fwd}):
+    with handler({plus_1: plus_1_fwd}):
         assert plus_1(1) == 2
 
 
@@ -72,7 +71,7 @@ def test_compose_associative(op, args, n1, n2):
     intp1 = coproduct(h0, coproduct(h1, h2))
     intp2 = coproduct(coproduct(h0, h1), h2)
 
-    assert closed_handler(intp1)(f)() == closed_handler(intp2)(f)()
+    assert handler(intp1)(f)() == handler(intp2)(f)()
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -91,7 +90,7 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     intp1 = coproduct(h0, coproduct(h1, h2))
     intp2 = coproduct(h0, coproduct(h2, h1))
 
-    assert closed_handler(intp1)(f)() == closed_handler(intp2)(f)()
+    assert handler(intp1)(f)() == handler(intp2)(f)()
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -105,7 +104,7 @@ def test_handler_associative(op, args, n1, n2):
     h1 = times_n_handler(n1, op)
     h2 = times_n_handler(n2, op)
 
-    expected = closed_handler(coproduct(h0, coproduct(h1, h2)))(f)()
+    expected = handler(coproduct(h0, coproduct(h1, h2)))(f)()
 
     with handler(h0), handler(h1), handler(h2):
         assert f() == expected

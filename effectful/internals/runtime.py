@@ -1,20 +1,18 @@
 import contextlib
 import dataclasses
 import functools
-import typing
 import weakref
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
+
+from effectful.ops.core import Interpretation, Operation
 
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
 T_co = TypeVar("T_co", covariant=True)
-
-if typing.TYPE_CHECKING:
-    from ..ops.core import Interpretation
 
 
 @dataclasses.dataclass
@@ -29,16 +27,6 @@ def get_runtime() -> Runtime:
 
 def get_interpretation():
     return get_runtime().interpretation
-
-
-def bind_interpretation(
-    fn: Callable[Concatenate["Interpretation[S, T]", P], V]
-) -> Callable[P, V]:
-    @functools.wraps(fn)
-    def _wrapper(*args, **kwargs):
-        return fn(get_interpretation(), *args, **kwargs)
-
-    return _wrapper
 
 
 def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
@@ -71,3 +59,53 @@ def interpreter(intp: "Interpretation"):
         yield intp
     finally:
         r.interpretation = old_intp
+
+
+@Operation
+def _get_result() -> Optional[T]:
+    return None
+
+
+@Operation
+def _get_args() -> Tuple[Tuple, Mapping]:
+    return ((), {})
+
+
+def _set_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
+    from effectful.ops.handler import handler
+
+    @functools.wraps(fn)
+    def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
+        a, k = (a, k) if a or k else _get_args()  # type: ignore
+        res = res if res is not None else _get_result()
+        with handler({_get_result: lambda: res}):  # type: ignore
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
+def _set_args(fn: Callable[P, T]) -> Callable[P, T]:
+    from effectful.ops.handler import handler
+
+    @functools.wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with handler({_get_args: lambda: (a, k)}):  # type: ignore
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
+def _set_prompt(
+    prompt: Operation[Concatenate[Optional[S], P], S],
+    cont: Callable[Concatenate[Optional[S], P], T],
+    body: Callable[P, T],
+) -> Callable[P, T]:
+    from effectful.ops.handler import handler
+
+    @functools.wraps(body)
+    def bound_body(*a: P.args, **k: P.kwargs) -> T:
+        next_cont = get_interpretation().get(prompt, prompt.__default_rule__)
+        with handler({prompt: handler({prompt: next_cont})(cont)}):  # type: ignore
+            return body(*a, **k)
+
+    return bound_body

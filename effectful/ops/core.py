@@ -6,6 +6,7 @@ from typing import (
     Dict,
     Generic,
     Mapping,
+    Optional,
     Sequence,
     Tuple,
     Type,
@@ -15,12 +16,6 @@ from typing import (
 
 import tree
 from typing_extensions import ParamSpec
-
-from effectful.internals.runtime import (
-    bind_interpretation,
-    get_interpretation,
-    interpreter,
-)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -70,6 +65,8 @@ class Operation(Generic[Q, V]):
         return self.signature.__name__
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
+
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
@@ -140,17 +137,25 @@ def apply(
         return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
-@bind_interpretation
-def evaluate(intp: Interpretation[S, T], expr: Expr[T]) -> Expr[T]:
+def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> Expr[T]:
+    if intp is None:
+        from effectful.internals.runtime import get_interpretation
+
+        intp = get_interpretation()
+
     match as_term(expr):
         case Term(op, args, kwargs):
-            (args, kwargs) = tree.map_structure(evaluate, (args, dict(kwargs)))
+            (args, kwargs) = tree.map_structure(
+                functools.partial(evaluate, intp=intp), (args, dict(kwargs))
+            )
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
         case literal:
             return literal
 
 
 def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
+    from effectful.internals.runtime import interpreter
+
     _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
 
     def _update_ctx(_, op, *args, **kwargs):
@@ -165,6 +170,8 @@ def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
 
 
 def to_string(term: Expr[S]) -> str:
+    from effectful.internals.runtime import interpreter
+
     def _to_str(_, op, *args, **kwargs):
         return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
 
@@ -173,6 +180,8 @@ def to_string(term: Expr[S]) -> str:
 
 
 def typeof(term: Expr[T]) -> Type[T]:
+    from effectful.internals.runtime import interpreter
+
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term)  # type: ignore
 
