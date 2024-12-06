@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import bind_result, closed_handler
+from effectful.ops.handler import bind_result, coproduct
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
+
+
+@contextlib.contextmanager
+def closed_handler(intp: Interpretation[S, T]):
+    from effectful.internals.runtime import get_interpretation, interpreter
+
+    with interpreter(coproduct({}, {**get_interpretation(), **intp})):
+        yield intp
 
 
 @Operation

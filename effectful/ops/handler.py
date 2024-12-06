@@ -85,11 +85,3 @@ def handler(intp: Interpretation[S, T]):
 
     with interpreter(coproduct(get_interpretation(), intp)):
         yield intp
-
-
-@contextlib.contextmanager
-def closed_handler(intp: Interpretation[S, T]):
-    from effectful.internals.runtime import get_interpretation, interpreter
-
-    with interpreter(coproduct({}, {**get_interpretation(), **intp})):
-        yield intp
