@@ -7,10 +7,9 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import closed_handler
+from effectful.ops.handler import bind_result, closed_handler
 
 logger = logging.getLogger(__name__)
 

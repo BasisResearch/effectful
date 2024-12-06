@@ -6,10 +6,16 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.prompts import bind_result
 from effectful.internals.sugar import NoDefaultRule, ObjectInterpretation, implements
 from effectful.ops.core import Interpretation, Operation
-from effectful.ops.handler import closed_handler, coproduct, fwd, handler, product
+from effectful.ops.handler import (
+    bind_result,
+    closed_handler,
+    coproduct,
+    fwd,
+    handler,
+    product,
+)
 
 logger = logging.getLogger(__name__)
 
