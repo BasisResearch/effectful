@@ -171,7 +171,7 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
         )
 
     def log_prob(self, value):
-        return self.base_dist.log_prob(self._from_named(value))
+        return self._to_named(self.base_dist.log_prob(self._from_named(value)))
 
     def enumerate_support(self, expand=True):
         return self._to_named(self.base_dist.enumerate_support(expand))
