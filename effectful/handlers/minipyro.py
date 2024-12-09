@@ -40,7 +40,7 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Operation
+from effectful.ops.core import Operation, defop
 from effectful.ops.handler import (
     bind_result,
     bind_result_to_method,
@@ -97,12 +97,12 @@ class Seed(NamedTuple):
 # just throw `RuntimeError`s.
 
 
-@Operation
+@defop
 def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
     raise RuntimeError("No default implementation of sample")
 
 
-@Operation
+@defop
 def param(
     var_name: str,
     initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
@@ -118,22 +118,22 @@ def param(
 # To keep with the minipyro API, we write them explicitly.
 
 
-@Operation
+@defop
 def clear_param_store() -> None:
     raise RuntimeError("No default implementation of clear_param_store")
 
 
-@Operation
+@defop
 def get_param_store() -> dict[str, Tensor]:
     raise RuntimeError("No default implementation of get_param_store")
 
 
-@Operation
+@defop
 def get_rng_seed() -> Seed:
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
-@Operation
+@defop
 def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 

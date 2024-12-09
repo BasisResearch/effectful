@@ -5,7 +5,7 @@ from typing import Annotated, Callable, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import Bound, NoDefaultRule
-from effectful.ops.core import Expr, Operation, Term, as_term, evaluate
+from effectful.ops.core import Expr, Operation, Term, as_term, defop, evaluate
 from effectful.ops.handler import handler
 
 P = ParamSpec("P")
@@ -14,7 +14,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@Operation
+@defop
 def defun(
     body: T,
     *args: Annotated[Operation, Bound()],
@@ -23,7 +23,7 @@ def defun(
     raise NoDefaultRule
 
 
-@Operation  # type: ignore
+@defop  # type: ignore
 def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     match as_term(fn):
         case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == defun:

@@ -4,10 +4,10 @@ from typing import Optional
 import pyro
 import torch
 
-from effectful.ops.core import Operation
+from effectful.ops.core import defop
 
 
-@Operation
+@defop
 def pyro_sample(
     name: str,
     fn: pyro.distributions.torch_distribution.TorchDistributionMixin,

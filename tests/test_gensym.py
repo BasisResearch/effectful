@@ -1,7 +1,7 @@
 from typing import Annotated, Callable, TypeVar
 
 from effectful.internals.sugar import Bound, NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, ctxof
+from effectful.ops.core import Operation, Term, ctxof, defop
 
 
 def test_always_fresh():
@@ -30,7 +30,7 @@ def test_gensym_operation():
     def g(x: int) -> int:
         return x
 
-    assert gensym(f) != f != Operation(f)
+    assert gensym(f) != f != defop(f)
 
     assert gensym(f) != gensym(g) != gensym(f)
 
@@ -39,7 +39,7 @@ def test_gensym_operation():
 
 
 def test_gensym_operation_2():
-    @Operation
+    @defop
     def op(x: int) -> int:
         return x
 
@@ -60,7 +60,7 @@ def test_gensym_annotations():
     """Test that gensym respects annotations."""
     S, T = TypeVar("S"), TypeVar("T")
 
-    @Operation
+    @defop
     def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
         raise NoDefaultRule
 

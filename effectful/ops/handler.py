@@ -4,7 +4,7 @@ from typing import Callable, Optional, TypeVar
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.internals.sugar import gensym
-from effectful.ops.core import Interpretation, Operation, apply
+from effectful.ops.core import Interpretation, Operation, apply, defop
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -13,7 +13,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@Operation
+@defop
 def fwd(__result: Optional[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
