@@ -1,7 +1,6 @@
 import re
 from collections import namedtuple
 
-from effectful.ops.core import gensym
 import pyro.distributions as dist
 import pytest
 import torch
@@ -16,6 +15,7 @@ from torch.testing import assert_close
 from effectful.indexed.internals.utils import name_to_sym
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
 from effectful.internals.sugar import torch_getitem
+from effectful.ops.core import gensym
 
 ##################################################
 # Test cases

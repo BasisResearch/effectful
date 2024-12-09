@@ -3,8 +3,7 @@ from typing import Callable, Optional, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.core import gensym
-from effectful.ops.core import Interpretation, Operation, apply, defop
+from effectful.ops.core import Interpretation, Operation, apply, defop, gensym
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")

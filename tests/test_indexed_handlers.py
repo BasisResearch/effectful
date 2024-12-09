@@ -6,8 +6,7 @@ from pyro.poutine.indep_messenger import CondIndepStackFrame
 from effectful.handlers.pyro import PyroShim
 from effectful.indexed.handlers import indexed
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
-from effectful.ops.core import gensym
-from effectful.ops.core import ctxof
+from effectful.ops.core import ctxof, gensym
 from effectful.ops.handler import handler
 
 torch.distributions.Distribution.set_default_validate_args(False)

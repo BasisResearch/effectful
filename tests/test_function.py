@@ -8,7 +8,15 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import OPERATORS
-from effectful.ops.core import Expr, Interpretation, Term, as_term, ctxof, gensym, typeof
+from effectful.ops.core import (
+    Expr,
+    Interpretation,
+    Term,
+    as_term,
+    ctxof,
+    gensym,
+    typeof,
+)
 from effectful.ops.handler import coproduct, fwd, handler
 
 logger = logging.getLogger(__name__)

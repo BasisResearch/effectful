@@ -5,7 +5,7 @@ import types
 from typing import TypeVar
 
 from effectful.internals.sugar import OPERATORS
-from effectful.ops.core import NoDefaultRule, Operation, Term, as_term, defop, evaluate, gensym
+from effectful.ops.core import Operation, Term, as_term, defop, evaluate, gensym
 from effectful.ops.handler import fwd, handler
 
 K = TypeVar("K")
@@ -52,32 +52,32 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
 
 @defop
 def Sum(e1, k, v, e2):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def Let(e1, x, e2):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def Record(**kwargs):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def Dict(*contents):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def Field(record, key):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def App(f, x):
-    raise NoDefaultRule
+    return NotImplemented
 
 
 ops = types.SimpleNamespace()

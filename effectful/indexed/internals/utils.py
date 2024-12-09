@@ -1,7 +1,6 @@
 import functools
 
-from effectful.ops.core import gensym
-from effectful.ops.core import Operation
+from effectful.ops.core import Operation, gensym
 
 
 @functools.lru_cache(maxsize=None)

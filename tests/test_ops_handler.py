@@ -7,7 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, NoDefaultRule, Operation, defop
+from effectful.ops.core import Interpretation, Operation, defop
 from effectful.ops.handler import bind_result, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
@@ -202,7 +202,7 @@ def test_fwd_default():
 def test_product_resets_fwd():
     @defop
     def do_stuff():
-        raise NoDefaultRule
+        return NotImplemented
 
     @defop
     def do_other_stuff():
@@ -221,17 +221,17 @@ def test_product_resets_fwd():
 
 @defop
 def op0():
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def op1():
-    raise NoDefaultRule
+    return NotImplemented
 
 
 @defop
 def op2():
-    raise NoDefaultRule
+    return NotImplemented
 
 
 def f_op2():

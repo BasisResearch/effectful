@@ -14,7 +14,6 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Type,
     TypeVar,
     Union,
 )
@@ -33,11 +32,10 @@ from effectful.ops.core import (
     ctxof,
     defop,
     evaluate,
+    gensym,
     syntactic_eq,
     typeof,
 )
-from effectful.ops.core import NoDefaultRule
-from effectful.ops.core import gensym
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -206,7 +204,7 @@ def create_arithmetic_binop_rule(op):
     def rule(x: T, y: T) -> T:
         if not isinstance(x, Term) and not isinstance(y, Term):
             return op(x, y)
-        raise NoDefaultRule
+        return NotImplemented
 
     # Note: functools.wraps would be better, but it does not preserve type
     # annotations
@@ -218,7 +216,7 @@ def create_arithmetic_unop_rule(op):
     def rule(x: T) -> T:
         if not isinstance(x, Term):
             return op(x)
-        raise NoDefaultRule
+        return NotImplemented
 
     rule.__name__ = op.__name__
     return rule
@@ -232,7 +230,7 @@ def create_generic_rule(op):
         ):
             return op(*args, **kwargs)
 
-        raise NoDefaultRule
+        return NotImplemented
 
     return rule
 
@@ -695,7 +693,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
-            raise NoDefaultRule
+            return NotImplemented
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
             _torch_op,
@@ -711,7 +709,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
-            raise NoDefaultRule
+            return NotImplemented
 
     return _torch_op
 
