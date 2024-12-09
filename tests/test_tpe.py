@@ -5,8 +5,8 @@ import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import gensym, torch_getitem
-from effectful.ops.core import Term, as_term, evaluate
+from effectful.internals.sugar import torch_getitem
+from effectful.ops.core import Term, as_term, evaluate, gensym
 from effectful.ops.function import defun
 from effectful.ops.handler import handler
 

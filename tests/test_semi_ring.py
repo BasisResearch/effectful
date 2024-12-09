@@ -4,8 +4,8 @@ import random
 import types
 from typing import TypeVar
 
-from effectful.internals.sugar import OPERATORS, NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, as_term, defop, evaluate
+from effectful.internals.sugar import OPERATORS
+from effectful.ops.core import NoDefaultRule, Operation, Term, as_term, defop, evaluate, gensym
 from effectful.ops.handler import fwd, handler
 
 K = TypeVar("K")

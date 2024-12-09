@@ -6,8 +6,8 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import NoDefaultRule, ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation, defop
+from effectful.internals.sugar import ObjectInterpretation, implements
+from effectful.ops.core import Interpretation, NoDefaultRule, Operation, defop
 from effectful.ops.handler import bind_result, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)

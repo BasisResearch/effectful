@@ -2,7 +2,7 @@ import torch
 
 from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp, vmap
 from effectful.indexed.ops import Indexable, IndexSet, indices_of, to_tensor
-from effectful.internals.sugar import gensym
+from effectful.ops.core import gensym
 from effectful.ops.core import Term
 
 

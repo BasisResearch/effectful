@@ -1,7 +1,7 @@
 from typing import Annotated, Callable, TypeVar
 
-from effectful.internals.sugar import Bound, NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, ctxof, defop
+from effectful.ops.core import gensym
+from effectful.ops.core import Bound, NoDefaultRule, Operation, Term, ctxof, defop
 
 
 def test_always_fresh():

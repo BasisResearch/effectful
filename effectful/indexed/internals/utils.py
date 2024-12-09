@@ -1,6 +1,6 @@
 import functools
 
-from effectful.internals.sugar import gensym
+from effectful.ops.core import gensym
 from effectful.ops.core import Operation
 
 

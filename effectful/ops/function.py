@@ -4,8 +4,8 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import Bound, NoDefaultRule
-from effectful.ops.core import Expr, Operation, Term, as_term, defop, evaluate
+from effectful.ops.core import Bound
+from effectful.ops.core import Expr, NoDefaultRule, Operation, Term, as_term, defop, evaluate
 from effectful.ops.handler import handler
 
 P = ParamSpec("P")

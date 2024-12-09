@@ -15,8 +15,8 @@ from effectful.indexed.ops import (
     stack,
     to_tensor,
 )
-from effectful.internals.sugar import gensym, sizesof, torch_getitem
-from effectful.ops.core import evaluate
+from effectful.internals.sugar import sizesof, torch_getitem
+from effectful.ops.core import evaluate, gensym
 from effectful.ops.function import defun
 from effectful.ops.handler import handler
 

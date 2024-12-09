@@ -1,5 +1,6 @@
 import abc
 import collections
+import dataclasses
 import functools
 import inspect
 import typing
@@ -62,6 +63,72 @@ class Operation(abc.ABC, Generic[Q, V]):
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
+class NoDefaultRule(Exception):
+    pass
+
+
+class Annotation:
+    pass
+
+
+@dataclasses.dataclass
+class Bound(Annotation):
+    scope: int = 0
+
+
+@dataclasses.dataclass
+class Scoped(Annotation):
+    scope: int = 0
+
+
+@typing.overload
+def gensym(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]: ...
+
+
+@typing.overload
+def gensym(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
+
+
+def gensym(t, *, name=None):
+    """gensym creates fresh Operations.
+
+    This is useful for creating fresh variables.
+
+    :param t: May be a type or a callable. If a type, the Operation will have no arguments. If a callable, the Operation
+    will have the same signature as the callable, but with no default rule.
+    :param name: Optional name for the Operation.
+    :returns: A fresh Operation.
+
+    """
+    # curiously, typing.Callable[..., T] is not a subtype of typing.Type[T]
+    is_type = (
+        isinstance(t, typing.Type) or typing.get_origin(t) is collections.abc.Callable
+    )
+
+    if is_type:
+
+        def func() -> t:  # type: ignore
+            raise NoDefaultRule
+
+    elif isinstance(t, collections.abc.Callable):
+
+        def func(*args, **kwargs):  # type: ignore
+            raise NoDefaultRule
+
+        functools.update_wrapper(func, t)
+
+    else:
+        raise ValueError(f"expected type or callable, got {t}")
+
+    func.__name__ = name or t.__name__
+    op = defop(func)
+
+    if is_type:
+        return typing.cast(Operation[[], T], op)
+    else:
+        return typing.cast(Operation[P, T], op)
+
+
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     signature: Callable[Q, V]
 
@@ -78,7 +145,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.internals.sugar import NoDefaultRule
 
         try:
             return self.signature(*args, **kwargs)
@@ -87,11 +153,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.internals.sugar import (
-            Bound,
-            Scoped,
             _embed_registry,
             embed,
-            gensym,
             rename,
         )
 
@@ -180,7 +243,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __scope_rule__(
         self, *args: Q.args, **kwargs: Q.kwargs
     ) -> "Interpretation[T, Type[T]]":
-        from effectful.internals.sugar import Bound
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)

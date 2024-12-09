@@ -1,6 +1,5 @@
 import collections
 import collections.abc
-import dataclasses
 import functools
 import inspect
 import numbers
@@ -37,6 +36,8 @@ from effectful.ops.core import (
     syntactic_eq,
     typeof,
 )
+from effectful.ops.core import NoDefaultRule
+from effectful.ops.core import gensym
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -160,68 +161,6 @@ def implements(op: Operation[P, V]):
     return _ImplementedOperation(op)
 
 
-@typing.overload
-def gensym(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]: ...
-
-
-@typing.overload
-def gensym(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-def gensym(t, *, name=None):
-    """gensym creates fresh Operations.
-
-    This is useful for creating fresh variables.
-
-    :param t: May be a type or a callable. If a type, the Operation will have no arguments. If a callable, the Operation
-    will have the same signature as the callable, but with no default rule.
-    :param name: Optional name for the Operation.
-    :returns: A fresh Operation.
-
-    """
-    # curiously, typing.Callable[..., T] is not a subtype of typing.Type[T]
-    is_type = (
-        isinstance(t, typing.Type) or typing.get_origin(t) is collections.abc.Callable
-    )
-
-    if is_type:
-
-        def func() -> t:  # type: ignore
-            raise NoDefaultRule
-
-    elif isinstance(t, collections.abc.Callable):
-
-        def func(*args, **kwargs):  # type: ignore
-            raise NoDefaultRule
-
-        functools.update_wrapper(func, t)
-
-    else:
-        raise ValueError(f"expected type or callable, got {t}")
-
-    func.__name__ = name or t.__name__
-    op = defop(func)
-
-    if is_type:
-        return typing.cast(Operation[[], T], op)
-    else:
-        return typing.cast(Operation[P, T], op)
-
-
-class Annotation:
-    pass
-
-
-@dataclasses.dataclass
-class Bound(Annotation):
-    scope: int = 0
-
-
-@dataclasses.dataclass
-class Scoped(Annotation):
-    scope: int = 0
-
-
 def rename(
     subs: Mapping[Operation[..., S], Operation[..., S]],
     leaf_value: V,  # Union[Term[V], Operation[..., V], V],
@@ -233,10 +172,6 @@ def rename(
             return evaluate(leaf_value)  # type: ignore
     else:
         return leaf_value
-
-
-class NoDefaultRule(Exception):
-    pass
 
 
 def embed(expr: Expr[T]) -> Expr[T]:
