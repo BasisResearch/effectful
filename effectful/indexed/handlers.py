@@ -1,11 +1,11 @@
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, List, Optional, Protocol, Sequence
 
 import pyro
 import torch
 from typing_extensions import ParamSpec
 
 from ..handlers.pyro import pyro_sample
-from ..ops.core import Interpretation
+from ..ops.core import Interpretation, Operation
 from ..ops.handler import fwd
 from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
 from .ops import Indexable, indices_of, to_tensor
@@ -19,13 +19,14 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     """
 
-    def __init__(self, base_dist):
+    def __init__(
+        self, base_dist: pyro.distributions.torch_distribution.TorchDistribution
+    ):
         self.base_dist = base_dist
         self.indices = indices_of(base_dist)
-        self.enumerate_support = base_dist.enumerate_support
         super().__init__()
 
-    def _to_positional(self, value):
+    def _to_positional(self, value: torch.Tensor) -> torch.Tensor:
         # self.base_dist has shape: | batch_shape | event_shape | & named
         # assume value comes from base_dist with shape:
         # | sample_shape | batch_shape | event_shape | & named
@@ -53,7 +54,7 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
         return pos_tensor_r
 
-    def _from_positional(self, value):
+    def _from_positional(self, value: torch.Tensor) -> torch.Tensor:
         # maximal value shape: | sample_shape | named | batch_shape | event_shape |
         shape = self.shape()
         if len(value.shape) < len(shape):
@@ -62,7 +63,7 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         # check that the rightmost dimensions match
         assert value.shape[len(value.shape) - len(shape) :] == shape
 
-        indexes = [slice(None)] * (len(value.shape))
+        indexes: List[Any] = [slice(None)] * (len(value.shape))
         for i, n in enumerate(self.indices.keys()):
             indexes[
                 len(value.shape)
@@ -112,7 +113,11 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):
     """A distribution wrapper that lazily names leftmost dimensions."""
 
-    def __init__(self, base_dist, names):
+    def __init__(
+        self,
+        base_dist: pyro.distributions.torch_distribution.TorchDistribution,
+        names: Sequence[Operation[[], int]],
+    ):
         """
         :param base_dist: A distribution with batch dimensions.
 
@@ -123,15 +128,14 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
 
         self.base_dist = base_dist
         self.names = names
-        self.enumerate_support = base_dist.enumerate_support
         super().__init__()
 
-    def _to_named(self, value, offset=0):
+    def _to_named(self, value: torch.Tensor, offset=0) -> torch.Tensor:
         return Indexable(value)[
             tuple([slice(None)] * offset + [n() for n in self.names])
         ]
 
-    def _from_named(self, value):
+    def _from_named(self, value: torch.Tensor) -> torch.Tensor:
         return to_tensor(value, self.names)
 
     @property

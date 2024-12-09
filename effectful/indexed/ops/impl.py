@@ -8,7 +8,7 @@ import effectful.indexed.internals.utils
 import effectful.internals.sugar
 
 from ...internals.sugar import partial_eval, sizesof
-from ...ops.core import Expr, Operation, Term
+from ...ops.core import Operation, Term
 from ...ops.function import defun
 
 K = TypeVar("K")
@@ -325,7 +325,7 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
     return result
 
 
-def to_tensor(t: Expr[torch.Tensor], indexes=None) -> Expr[torch.Tensor]:
+def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
     return partial_eval(t, order=indexes)
 
 

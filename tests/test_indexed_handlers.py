@@ -5,9 +5,9 @@ from pyro.poutine.indep_messenger import CondIndepStackFrame
 
 from effectful.handlers.pyro import PyroShim
 from effectful.indexed.handlers import (
-    indexed,
     NamedDistribution,
     PositionalDistribution,
+    indexed,
 )
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
 from effectful.internals.sugar import gensym
