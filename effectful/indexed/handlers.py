@@ -108,13 +108,6 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def enumerate_support(self, expand=True):
         return self._to_positional(self.base_dist.enumerate_support(expand))
 
-    # def expand(self, batch_shape):
-    #     # original: | named | batch_shape | event_shape |
-    #     # base_dist: | batch_shape | event_shape | & named
-    #     # expanded base_dist: | batch_shape2 | batch_shape | event_shape | & named
-    #     # new: | batch_shape2 | named | batch_shape | event_shape |
-    #     raise NotImplementedError()
-
 
 class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):
     """A distribution wrapper that lazily names leftmost dimensions."""
