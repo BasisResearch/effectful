@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import PyroShim, pyro_sample
-from effectful.ops.core import Operation
+from effectful.ops.core import defop
 from effectful.ops.handler import fwd, handler
 
 pyro.settings.set(module_local_params=True)
@@ -16,7 +16,7 @@ pyro.settings.set(module_local_params=True)
 logger = logging.getLogger(__name__)
 
 
-@Operation
+@defop
 def chirho_observe_dist(
     name: str,
     rv: pyro.distributions.torch_distribution.TorchDistributionMixin,

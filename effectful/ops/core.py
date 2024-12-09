@@ -1,5 +1,8 @@
+import abc
+import collections
 import functools
-from abc import ABC, abstractmethod
+import inspect
+import typing
 from typing import (
     Any,
     Callable,
@@ -24,7 +27,42 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-class Operation(Generic[Q, V]):
+class Operation(abc.ABC, Generic[Q, V]):
+
+    @abc.abstractmethod
+    def __eq__(self, other):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __hash__(self):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __scope_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> "Interpretation[T, Type[T]]":
+        raise NotImplementedError
+
+    @typing.final
+    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
+
+        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
+
+
+class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     signature: Callable[Q, V]
 
     def __init__(self, signature: Callable[Q, V]):
@@ -40,53 +78,156 @@ class Operation(Generic[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.internals.sugar import infer_default_rule
+        from effectful.internals.sugar import NoDefaultRule
 
-        return infer_default_rule(self)(*args, **kwargs)
+        try:
+            return self.signature(*args, **kwargs)
+        except NoDefaultRule:
+            return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.internals.sugar import infer_free_rule
+        from effectful.internals.sugar import (
+            Bound,
+            Scoped,
+            _embed_registry,
+            embed,
+            gensym,
+            rename,
+        )
 
-        return infer_free_rule(self)(*args, **kwargs)
+        sig = inspect.signature(self.signature)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
+
+        bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
+        scoped_args: dict[int, set[str]] = collections.defaultdict(set)
+        unscoped_args: set[str] = set()
+        for param_name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, Bound):
+                        scoped_args[anno.scope].add(param_name)
+                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                            assert isinstance(bound_sig.arguments[param_name], tuple)
+                            for bound_var in bound_sig.arguments[param_name]:
+                                bound_vars[anno.scope].add(bound_var)
+                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                            assert isinstance(bound_sig.arguments[param_name], dict)
+                            for bound_var in bound_sig.arguments[param_name].values():
+                                bound_vars[anno.scope].add(bound_var)
+                        else:
+                            bound_vars[anno.scope].add(bound_sig.arguments[param_name])
+                    elif isinstance(anno, Scoped):
+                        scoped_args[anno.scope].add(param_name)
+            else:
+                unscoped_args.add(param_name)
+
+        # TODO replace this temporary check with more general scope level propagation
+        if bound_vars:
+            min_scope = min(bound_vars.keys(), default=0)
+            scoped_args[min_scope] |= unscoped_args
+            max_scope = max(bound_vars.keys(), default=0)
+            assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
+
+        # recursively rename bound variables from innermost to outermost scope
+        for scope in sorted(bound_vars.keys()):
+            # create fresh variables for each bound variable in the scope
+            renaming_map = {var: gensym(var) for var in bound_vars[scope]}
+            # get just the arguments that are in the scope
+            for name in scoped_args[scope]:
+                bound_sig.arguments[name] = tree.map_structure(
+                    lambda a: rename(renaming_map, a),
+                    bound_sig.arguments[name],
+                )
+
+        tm = _embed_registry.dispatch(object)(
+            self, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
+        )
+        return embed(tm)  # type: ignore
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
-        from effectful.internals.sugar import infer_type_rule
+        sig = inspect.signature(self.signature)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
 
-        return infer_type_rule(self)(*args, **kwargs)
+        anno = sig.return_annotation
+        if anno is inspect.Signature.empty:
+            return typing.cast(Type[V], object)
+        elif isinstance(anno, typing.TypeVar):
+            # rudimentary but sound special-case type inference sufficient for syntax ops:
+            # if the return type annotation is a TypeVar,
+            # look for a parameter with the same annotation and return its type,
+            # otherwise give up and return Any/object
+            for name, param in bound_sig.signature.parameters.items():
+                if param.annotation is anno and param.kind not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
+                    arg = bound_sig.arguments[name]
+                    tp: Type[V] = type(arg) if not isinstance(arg, type) else arg
+                    return tp
+            return typing.cast(Type[V], object)
+        elif typing.get_origin(anno) is typing.Annotated:
+            tp = typing.get_args(anno)[0]
+            if not typing.TYPE_CHECKING:
+                tp = tp if typing.get_origin(tp) is None else typing.get_origin(tp)
+            return tp
+        elif typing.get_origin(anno) is not None:
+            return typing.get_origin(anno)
+        else:
+            return anno
 
     def __scope_rule__(
         self, *args: Q.args, **kwargs: Q.kwargs
     ) -> "Interpretation[T, Type[T]]":
-        from effectful.internals.sugar import infer_scope_rule
+        from effectful.internals.sugar import Bound
 
-        return infer_scope_rule(self)(*args, **kwargs)  # type: ignore
+        sig = inspect.signature(self.signature)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
+
+        bound_vars: dict[Operation[..., T], Callable[..., Type[T]]] = {}
+        for param_name, param in bound_sig.signature.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in param.annotation.__metadata__:
+                    if isinstance(anno, Bound):
+                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                            for bound_var in bound_sig.arguments[param_name]:
+                                bound_vars[bound_var] = bound_var.__type_rule__
+                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                            for bound_var in bound_sig.arguments[param_name].values():
+                                bound_vars[bound_var] = bound_var.__type_rule__
+                        else:
+                            bound_var = bound_sig.arguments[param_name]
+                            bound_vars[bound_var] = bound_var.__type_rule__
+
+        return bound_vars
 
     def __repr__(self):
         return self.signature.__name__
 
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
 
-        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
+def defop(signature: Callable[Q, V]) -> Operation[Q, V]:
+    return _BaseOperation(signature)
 
 
-class Term(ABC, Generic[T]):
+class Term(abc.ABC, Generic[T]):
     __match_args__ = ("op", "args", "kwargs")
 
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def op(self) -> Operation[..., T]:
         """Abstract property for the operation."""
         pass
 
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def args(self) -> Sequence["Expr[Any]"]:
         """Abstract property for the arguments."""
         pass
 
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
         """Abstract property for the keyword arguments."""
         pass
@@ -125,7 +266,7 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-@Operation  # type: ignore
+@defop  # type: ignore
 def apply(
     intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:

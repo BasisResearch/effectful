@@ -13,6 +13,7 @@ from effectful.ops.core import (
     Operation,
     Term,
     ctxof,
+    defop,
     evaluate,
     typeof,
 )
@@ -28,17 +29,17 @@ T = TypeVar("T")
 add = OPERATORS[operator.add]
 
 
-@Operation
+@defop
 def App(f: Callable[[S], T], arg: S) -> T:
     raise NoDefaultRule
 
 
-@Operation
+@defop
 def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
     raise NoDefaultRule
 
 
-@Operation
+@defop
 def Let(
     var: Annotated[Operation[[], S], Bound(0)],
     val: Annotated[S, Scoped(1)],

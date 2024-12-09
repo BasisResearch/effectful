@@ -1,12 +1,11 @@
 import contextlib
 import dataclasses
 import functools
-import weakref
 from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.core import Interpretation, Operation
+from effectful.ops.core import Interpretation, Operation, defop
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -29,26 +28,6 @@ def get_interpretation():
     return get_runtime().interpretation
 
 
-def weak_memoize(f: Callable[[S], T]) -> Callable[[S], T]:
-    """
-    Memoize a one-argument function using a dictionary
-    whose keys are weak references to the arguments.
-    """
-
-    cache: weakref.WeakKeyDictionary[S, T] = weakref.WeakKeyDictionary()
-
-    @functools.wraps(f)
-    def wrapper(x: S) -> T:
-        try:
-            return cache[x]
-        except KeyError:
-            result = f(x)
-            cache[x] = result
-            return result
-
-    return wrapper
-
-
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
 
@@ -61,12 +40,12 @@ def interpreter(intp: "Interpretation"):
         r.interpretation = old_intp
 
 
-@Operation
+@defop
 def _get_result() -> Optional[T]:
     return None
 
 
-@Operation
+@defop
 def _get_args() -> Tuple[Tuple, Mapping]:
     return ((), {})
 

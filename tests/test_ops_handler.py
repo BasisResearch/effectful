@@ -7,7 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.internals.sugar import NoDefaultRule, ObjectInterpretation, implements
-from effectful.ops.core import Interpretation, Operation
+from effectful.ops.core import Interpretation, Operation, defop
 from effectful.ops.handler import bind_result, coproduct, fwd, handler, product
 
 logger = logging.getLogger(__name__)
@@ -17,17 +17,17 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-@Operation
+@defop
 def plus_1(x: int) -> int:
     return x + 1
 
 
-@Operation
+@defop
 def plus_2(x: int) -> int:
     return x + 2
 
 
-@Operation
+@defop
 def times_plus_1(x: int, y: int) -> int:
     return x * y + 1
 
@@ -81,7 +81,7 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     def f():
         return op(*args) + new_op(*args)
 
-    new_op = Operation(lambda *args: op(*args) + 3)
+    new_op = defop(lambda *args: op(*args) + 3)
 
     h0 = defaults(op, new_op)
     h1 = times_n_handler(n1, op)
@@ -172,7 +172,7 @@ def test_fwd_default():
     Test that forwarding with no outer handler defers to the default rule.
     """
 
-    @Operation
+    @defop
     def do_stuff():
         return "default stuff"
 
@@ -200,11 +200,11 @@ def test_fwd_default():
 
 
 def test_product_resets_fwd():
-    @Operation
+    @defop
     def do_stuff():
         raise NoDefaultRule
 
-    @Operation
+    @defop
     def do_other_stuff():
         return "other stuff"
 
@@ -219,17 +219,17 @@ def test_product_resets_fwd():
         assert do_stuff() == "fancy other stuff and more default stuff"
 
 
-@Operation
+@defop
 def op0():
     raise NoDefaultRule
 
 
-@Operation
+@defop
 def op1():
     raise NoDefaultRule
 
 
-@Operation
+@defop
 def op2():
     raise NoDefaultRule
 

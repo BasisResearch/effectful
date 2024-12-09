@@ -24,7 +24,7 @@ import torch
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.internals.runtime import interpreter, weak_memoize
+from effectful.internals.runtime import interpreter
 from effectful.ops.core import (
     Expr,
     Interpretation,
@@ -32,6 +32,7 @@ from effectful.ops.core import (
     Term,
     apply,
     ctxof,
+    defop,
     evaluate,
     syntactic_eq,
     typeof,
@@ -53,11 +54,11 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
     (mapping from :type:`Operation` to :type:`Callable`)
 
     >>> from effectful.ops.handler import handler
-    >>> @Operation
+    >>> @defop
     ... def read_box():
     ...     pass
     ...
-    >>> @Operation
+    >>> @defop
     ... def write_box(new_value):
     ...     pass
     ...
@@ -199,7 +200,7 @@ def gensym(t, *, name=None):
         raise ValueError(f"expected type or callable, got {t}")
 
     func.__name__ = name or t.__name__
-    op = Operation(func)
+    op = defop(func)
 
     if is_type:
         return typing.cast(Operation[[], T], op)
@@ -221,159 +222,21 @@ class Scoped(Annotation):
     scope: int = 0
 
 
-@weak_memoize
-def infer_free_rule(op: Operation[P, T]) -> Callable[P, Term[T]]:
-    sig = inspect.signature(op.signature)
-
-    def rename(
-        subs: Mapping[Operation[..., S], Operation[..., S]],
-        leaf_value: V,  # Union[Term[V], Operation[..., V], V],
-    ) -> V:  # Union[Term[V], Operation[..., V], V]:
-        if isinstance(leaf_value, Operation):
-            return subs.get(leaf_value, leaf_value)  # type: ignore
-        elif isinstance(leaf_value, Term):
-            with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
-                return evaluate(leaf_value)  # type: ignore
-        else:
-            return leaf_value
-
-    @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> Term[T]:
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        bound_vars: dict[int, set[Operation]] = collections.defaultdict(set)
-        scoped_args: dict[int, set[str]] = collections.defaultdict(set)
-        unscoped_args: set[str] = set()
-        for param_name, param in bound_sig.signature.parameters.items():
-            if typing.get_origin(param.annotation) is typing.Annotated:
-                for anno in param.annotation.__metadata__:
-                    if isinstance(anno, Bound):
-                        scoped_args[anno.scope].add(param_name)
-                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                            assert isinstance(bound_sig.arguments[param_name], tuple)
-                            for bound_var in bound_sig.arguments[param_name]:
-                                bound_vars[anno.scope].add(bound_var)
-                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            assert isinstance(bound_sig.arguments[param_name], dict)
-                            for bound_var in bound_sig.arguments[param_name].values():
-                                bound_vars[anno.scope].add(bound_var)
-                        else:
-                            bound_vars[anno.scope].add(bound_sig.arguments[param_name])
-                    elif isinstance(anno, Scoped):
-                        scoped_args[anno.scope].add(param_name)
-            else:
-                unscoped_args.add(param_name)
-
-        # TODO replace this temporary check with more general scope level propagation
-        if bound_vars:
-            min_scope = min(bound_vars.keys(), default=0)
-            scoped_args[min_scope] |= unscoped_args
-            max_scope = max(bound_vars.keys(), default=0)
-            assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
-
-        # recursively rename bound variables from innermost to outermost scope
-        for scope in sorted(bound_vars.keys()):
-            # create fresh variables for each bound variable in the scope
-            renaming_map = {var: gensym(var) for var in bound_vars[scope]}
-            # get just the arguments that are in the scope
-            for name in scoped_args[scope]:
-                bound_sig.arguments[name] = tree.map_structure(
-                    lambda a: rename(renaming_map, a),
-                    bound_sig.arguments[name],
-                )
-
-        tm = _embed_registry.dispatch(object)(
-            op, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
-        )
-        return embed(tm)  # type: ignore
-
-    return _rule
-
-
-@weak_memoize
-def infer_scope_rule(op: Operation[P, T]) -> Callable[P, Interpretation[V, Type[V]]]:
-    sig = inspect.signature(op.signature)
-
-    @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> Interpretation[V, Type[V]]:
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        bound_vars: dict[Operation[..., V], Callable[..., Type[V]]] = {}
-        for param_name, param in bound_sig.signature.parameters.items():
-            if typing.get_origin(param.annotation) is typing.Annotated:
-                for anno in param.annotation.__metadata__:
-                    if isinstance(anno, Bound):
-                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                            for bound_var in bound_sig.arguments[param_name]:
-                                bound_vars[bound_var] = bound_var.__type_rule__
-                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            for bound_var in bound_sig.arguments[param_name].values():
-                                bound_vars[bound_var] = bound_var.__type_rule__
-                        else:
-                            bound_var = bound_sig.arguments[param_name]
-                            bound_vars[bound_var] = bound_var.__type_rule__
-
-        return bound_vars
-
-    return _rule
-
-
-@weak_memoize
-def infer_type_rule(op: Operation[P, T]) -> Callable[P, Type[T]]:
-    sig = inspect.signature(op.signature)
-
-    @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> Type[T]:
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-        if anno is inspect.Signature.empty:
-            return typing.cast(Type[T], object)
-        elif isinstance(anno, typing.TypeVar):
-            # rudimentary but sound special-case type inference sufficient for syntax ops:
-            # if the return type annotation is a TypeVar,
-            # look for a parameter with the same annotation and return its type,
-            # otherwise give up and return Any/object
-            for name, param in bound_sig.signature.parameters.items():
-                if param.annotation is anno and param.kind not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    arg = bound_sig.arguments[name]
-                    tp: Type[T] = type(arg) if not isinstance(arg, type) else arg
-                    return tp
-            return typing.cast(Type[T], object)
-        elif typing.get_origin(anno) is typing.Annotated:
-            tp = typing.get_args(anno)[0]
-            if not typing.TYPE_CHECKING:
-                tp = tp if typing.get_origin(tp) is None else typing.get_origin(tp)
-            return tp
-        elif typing.get_origin(anno) is not None:
-            return typing.get_origin(anno)
-        else:
-            return anno
-
-    return _rule
+def rename(
+    subs: Mapping[Operation[..., S], Operation[..., S]],
+    leaf_value: V,  # Union[Term[V], Operation[..., V], V],
+) -> V:  # Union[Term[V], Operation[..., V], V]:
+    if isinstance(leaf_value, Operation):
+        return subs.get(leaf_value, leaf_value)  # type: ignore
+    elif isinstance(leaf_value, Term):
+        with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
+            return evaluate(leaf_value)  # type: ignore
+    else:
+        return leaf_value
 
 
 class NoDefaultRule(Exception):
     pass
-
-
-@weak_memoize
-def infer_default_rule(op: Operation[P, T]) -> Callable[P, Expr[T]]:
-
-    @functools.wraps(op.signature)
-    def _rule(*args: P.args, **kwargs: P.kwargs) -> Expr[T]:
-        try:
-            return op.signature(*args, **kwargs)
-        except NoDefaultRule:
-            return op.__free_rule__(*args, **kwargs)
-
-    return _rule
 
 
 def embed(expr: Expr[T]) -> Expr[T]:
@@ -398,7 +261,7 @@ OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
 
 def register_syntax_op(syntax_fn: Callable[P, T]):
     def register_syntax_op_fn(syntax_op_fn: Callable[P, T]):
-        OPERATORS[syntax_fn] = Operation(syntax_op_fn)
+        OPERATORS[syntax_fn] = defop(syntax_op_fn)
         return OPERATORS[syntax_fn]
 
     return register_syntax_op_fn
@@ -884,7 +747,7 @@ def partial_eval(t: T, order=None) -> T:
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
 
-    @Operation
+    @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
         tm = _torch_op.__free_rule__(*args, **kwargs)

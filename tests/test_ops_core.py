@@ -1,10 +1,10 @@
-from effectful.internals.sugar import NoDefaultRule, Operation, gensym
-from effectful.ops.core import Term, ctxof, evaluate
+from effectful.internals.sugar import NoDefaultRule, gensym
+from effectful.ops.core import Term, ctxof, defop, evaluate
 from effectful.ops.handler import handler
 
 
 def test_evaluate():
-    @Operation
+    @defop
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
@@ -48,8 +48,8 @@ def test_operation_metadata():
         """Docstring for f"""
         return x + 1
 
-    f_op = Operation(f)
-    ff_op = Operation(f)
+    f_op = defop(f)
+    ff_op = defop(f)
 
     assert f.__doc__ == f_op.__doc__
     assert f.__name__ == f_op.__name__
@@ -61,7 +61,7 @@ def test_ctxof():
     x = gensym(object)
     y = gensym(object)
 
-    @Operation
+    @defop
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
