@@ -156,6 +156,7 @@ def _indexed_pyro_sample_handler(
     name: str,
     dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
     infer: Optional[pyro.poutine.runtime.InferDict] = None,
+    obs: Optional[torch.Tensor] = None,
     **kwargs,
 ) -> torch.Tensor:
     infer = infer or {}
@@ -164,6 +165,8 @@ def _indexed_pyro_sample_handler(
         return fwd(None)
 
     pdist = PositionalDistribution(dist)
+    obs = None if obs is None else pdist._to_positional(obs)
+
     shape_len = len(pdist.shape())
     plates = []
     for dim_offset, (var, size) in enumerate(pdist.indices.items()):
@@ -178,7 +181,7 @@ def _indexed_pyro_sample_handler(
     infer["_index_expanded"] = True  # type: ignore
 
     try:
-        t = pyro.sample(name, pdist, infer=infer, **kwargs)
+        t = pyro.sample(name, pdist, infer=infer, obs=obs, **kwargs)
         return pdist._from_positional(t)
     finally:
         for plate in reversed(plates):
