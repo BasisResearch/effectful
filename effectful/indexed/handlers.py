@@ -26,22 +26,35 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         super().__init__()
 
     def _to_positional(self, value):
+        # self.base_dist has shape: | batch_shape | event_shape | & named
+        # assume value comes from base_dist with shape:
+        # | sample_shape | batch_shape | event_shape | & named
+        # return a tensor of shape | sample_shape | named | batch_shape | event_shape |
+
         n_named = len(self.indices)
         dims = list(range(n_named + len(value.shape)))
 
-        event_dims = dims[len(dims) - len(self.event_shape) :]
-        named_dims = dims[:n_named]
-        batch_dims = dims[n_named : len(dims) - len(self.event_shape)]
+        n_event = len(self.event_shape)
+        n_batch = len(self.base_dist.batch_shape)
+        n_sample = len(value.shape) - n_batch - n_event
 
-        # named dimensions are on the left of the batch shape
+        event_dims = dims[len(dims) - n_event :]
+        batch_dims = dims[len(dims) - n_event - n_batch : len(dims) - n_event]
+        named_dims = dims[:n_named]
+        sample_dims = dims[n_named : n_named + n_sample]
+
+        # shape: | named | sample_shape | batch_shape | event_shape |
         pos_tensor = to_tensor(value, self.indices.keys())
 
-        # move named dimensions to right of the batch shape
-        pos_tensor_r = torch.permute(pos_tensor, batch_dims + named_dims + event_dims)
+        # shape: | sample_shape | named | batch_shape | event_shape |
+        pos_tensor_r = torch.permute(
+            pos_tensor, sample_dims + named_dims + batch_dims + event_dims
+        )
 
         return pos_tensor_r
 
     def _from_positional(self, value):
+        # maximal value shape: | sample_shape | named | batch_shape | event_shape |
         shape = self.shape()
         if len(value.shape) < len(shape):
             value = value.expand(shape)
@@ -52,15 +65,20 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         indexes = [slice(None)] * (len(value.shape))
         for i, n in enumerate(self.indices.keys()):
             indexes[
-                len(value.shape) - len(self.indices) - len(self.event_shape) + i
+                len(value.shape)
+                - len(self.indices)
+                - len(self.event_shape)
+                - len(self.base_dist.batch_shape)
+                + i
             ] = n()
 
         return Indexable(value)[tuple(indexes)]
 
     @property
     def batch_shape(self):
-        return self.base_dist.batch_shape + torch.Size(
-            [len(s) for s in self.indices.values()]
+        return (
+            torch.Size([len(s) for s in self.indices.values()])
+            + self.base_dist.batch_shape
         )
 
     @property
@@ -89,6 +107,13 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     def enumerate_support(self, expand=True):
         return self._to_positional(self.base_dist.enumerate_support(expand))
+
+    # def expand(self, batch_shape):
+    #     # original: | named | batch_shape | event_shape |
+    #     # base_dist: | batch_shape | event_shape | & named
+    #     # expanded base_dist: | batch_shape2 | batch_shape | event_shape | & named
+    #     # new: | batch_shape2 | named | batch_shape | event_shape |
+    #     raise NotImplementedError()
 
 
 class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):

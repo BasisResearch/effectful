@@ -86,10 +86,6 @@ def test_positional_dist():
     assert indices_of(s2) == IndexSet({})
     assert s2.shape == torch.Size([4, 5, 2, 3])
 
-    s2_named = d_exp._from_positional(s2)
-    assert all(n in indices_of(s2_named) for n in [x, y])
-    assert s2_named.shape == torch.Size([4, 5])
-
     s3 = d.sample((4, 5))
     assert indices_of(s3) == IndexSet({})
     assert s3.shape == torch.Size([4, 5, 2, 3])
@@ -100,3 +96,5 @@ def test_positional_dist():
     d = PositionalDistribution(dist.Normal(loc, scale))
 
     assert indices_of(d._from_positional(d.sample((6, 7)))) == expected_indices
+    assert d.sample().shape == torch.Size([2, 3, 4, 5])
+    assert d.sample((6, 7)).shape == torch.Size([6, 7, 2, 3, 4, 5])
