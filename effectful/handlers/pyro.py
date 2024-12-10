@@ -31,6 +31,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     """
 
     _current_site: Optional[str]
+    _current_site_is_observed: Optional[bool]
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if typing.TYPE_CHECKING:
@@ -42,7 +43,11 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             )
 
         if (
-            getattr(self, "_current_site", None) == msg["name"]
+            (
+                getattr(self, "_current_site", None) == msg["name"]
+                and getattr(self, "_current_site_is_observed", None)
+                == msg["is_observed"]
+            )
             or pyro.poutine.util.site_is_subsample(msg)
             or pyro.poutine.util.site_is_factor(msg)
         ):
@@ -52,6 +57,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         try:
             self._current_site = msg["name"]
+            self._current_site_is_observed = msg["is_observed"]
             msg["value"] = pyro_sample(
                 msg["name"],
                 msg["fn"],
@@ -60,6 +66,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             )
         finally:
             self._current_site = None
+            self._current_site_is_observed = None
 
         # flags to guarantee commutativity of condition, intervene, trace
         msg["stop"] = True
