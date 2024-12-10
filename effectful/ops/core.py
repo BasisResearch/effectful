@@ -63,6 +63,10 @@ class Operation(abc.ABC, Generic[Q, V]):
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
 
+class NoDefaultRule(Exception):
+    pass
+
+
 class Annotation:
     pass
 
@@ -104,12 +108,12 @@ def gensym(t, *, name=None):
     if is_type:
 
         def func() -> t:  # type: ignore
-            return NotImplemented
+            raise NoDefaultRule
 
     elif isinstance(t, collections.abc.Callable):
 
         def func(*args, **kwargs):  # type: ignore
-            return NotImplemented
+            raise NoDefaultRule
 
         functools.update_wrapper(func, t)
 
@@ -141,11 +145,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        maybe_result = self.signature(*args, **kwargs)
-        if maybe_result is NotImplemented:
+
+        try:
+            return self.signature(*args, **kwargs)
+        except NoDefaultRule:
             return self.__free_rule__(*args, **kwargs)
-        else:
-            return maybe_result
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.internals.sugar import _embed_registry, embed, rename

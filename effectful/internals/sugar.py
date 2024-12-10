@@ -26,6 +26,7 @@ from effectful.internals.runtime import interpreter
 from effectful.ops.core import (
     Expr,
     Interpretation,
+    NoDefaultRule,
     Operation,
     Term,
     apply,
@@ -204,7 +205,7 @@ def create_arithmetic_binop_rule(op):
     def rule(x: T, y: T) -> T:
         if not isinstance(x, Term) and not isinstance(y, Term):
             return op(x, y)
-        return NotImplemented
+        raise NoDefaultRule
 
     # Note: functools.wraps would be better, but it does not preserve type
     # annotations
@@ -216,7 +217,7 @@ def create_arithmetic_unop_rule(op):
     def rule(x: T) -> T:
         if not isinstance(x, Term):
             return op(x)
-        return NotImplemented
+        raise NoDefaultRule
 
     rule.__name__ = op.__name__
     return rule
@@ -230,7 +231,7 @@ def create_generic_rule(op):
         ):
             return op(*args, **kwargs)
 
-        return NotImplemented
+        raise NoDefaultRule
 
     return rule
 
@@ -693,7 +694,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
-            return NotImplemented
+            raise NoDefaultRule
         elif sized_fvs and set(sized_fvs.keys()) == set(ctxof(tm).keys()) - {
             torch_getitem,
             _torch_op,
@@ -709,7 +710,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
-            return NotImplemented
+            raise NoDefaultRule
 
     return _torch_op
 

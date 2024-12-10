@@ -11,6 +11,7 @@ from effectful.ops.core import (
     Bound,
     Expr,
     Interpretation,
+    NoDefaultRule,
     Operation,
     Scoped,
     Term,
@@ -34,12 +35,12 @@ add = OPERATORS[operator.add]
 
 @defop
 def App(f: Callable[[S], T], arg: S) -> T:
-    return NotImplemented
+    raise NoDefaultRule
 
 
 @defop
 def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
-    return NotImplemented
+    raise NoDefaultRule
 
 
 @defop
@@ -48,7 +49,7 @@ def Let(
     val: Annotated[S, Scoped(1)],
     body: Annotated[T, Scoped(0)],
 ) -> T:
-    return NotImplemented
+    raise NoDefaultRule
 
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:

@@ -1,6 +1,14 @@
 from typing import Annotated, Callable, TypeVar
 
-from effectful.ops.core import Bound, Operation, Term, ctxof, defop, gensym
+from effectful.ops.core import (
+    Bound,
+    NoDefaultRule,
+    Operation,
+    Term,
+    ctxof,
+    defop,
+    gensym,
+)
 
 
 def test_always_fresh():
@@ -61,7 +69,7 @@ def test_gensym_annotations():
 
     @defop
     def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
-        return NotImplemented
+        raise NoDefaultRule
 
     x = gensym(int)
     y = gensym(int)

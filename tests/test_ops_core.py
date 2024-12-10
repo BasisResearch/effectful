@@ -1,11 +1,11 @@
-from effectful.ops.core import Term, ctxof, defop, evaluate, gensym
+from effectful.ops.core import NoDefaultRule, Term, ctxof, defop, evaluate, gensym
 from effectful.ops.handler import handler
 
 
 def test_evaluate():
     @defop
     def Nested(*args, **kwargs):
-        return NotImplemented
+        raise NoDefaultRule
 
     x = gensym(int, name="x")
     y = gensym(int, name="y")
@@ -62,7 +62,7 @@ def test_ctxof():
 
     @defop
     def Nested(*args, **kwargs):
-        return NotImplemented
+        raise NoDefaultRule
 
     assert ctxof(Nested(x(), y())).keys() >= {x, y}
     assert ctxof(Nested([x()], y())).keys() >= {x, y}
