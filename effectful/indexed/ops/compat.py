@@ -61,7 +61,10 @@ def stack(
     return impl.stack(values, name_to_sym(name))
 
 
+def to_tensor(value: torch.Tensor, indices: list[str]) -> torch.Tensor:
+    return impl.to_tensor(value, [name_to_sym(name) for name in indices])
+
+
 cond = impl.cond
 cond_n = impl.cond_n
-to_tensor = impl.to_tensor
 Indexable = impl.Indexable

@@ -5,6 +5,8 @@ import pyro.infer.reparam
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
 
+from ..ops.compat import indices_of, union
+
 
 class _LazyPlateMessenger(IndepMessenger):
     prefix: str = "__index_plate__"
@@ -23,7 +25,8 @@ class _LazyPlateMessenger(IndepMessenger):
         if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
             return
 
-        super()._process_message(msg)
+        if self._orig_name in union(indices_of(msg["value"]), indices_of(msg["fn"])):
+            super()._process_message(msg)
 
 
 def get_sample_msg_device(
