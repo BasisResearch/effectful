@@ -1,11 +1,11 @@
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, List, Optional, Protocol, Sequence
 
 import pyro
 import torch
 from typing_extensions import ParamSpec
 
 from ..handlers.pyro import pyro_sample
-from ..ops.core import Interpretation
+from ..ops.core import Interpretation, Operation
 from ..ops.handler import fwd
 from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
 from .ops import Indexable, indices_of, to_tensor
@@ -19,35 +19,66 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     """
 
-    def __init__(self, base_dist):
+    def __init__(
+        self, base_dist: pyro.distributions.torch_distribution.TorchDistribution
+    ):
         self.base_dist = base_dist
-        self._names = None
-        self._vars = None
-        self.enumerate_support = base_dist.enumerate_support
+        self.indices = indices_of(base_dist)
+        super().__init__()
 
-    def _get_vars_sizes(self, value=None):
-        if self._vars is None:
-            if value is None:
-                value = self.base_dist.sample()
+    def _to_positional(self, value: torch.Tensor) -> torch.Tensor:
+        # self.base_dist has shape: | batch_shape | event_shape | & named
+        # assume value comes from base_dist with shape:
+        # | sample_shape | batch_shape | event_shape | & named
+        # return a tensor of shape | sample_shape | named | batch_shape | event_shape |
 
-            free = indices_of(value)
-            self._vars = list(free.keys())
-            self._sizes = [free[v] for v in self._vars]
+        n_named = len(self.indices)
+        dims = list(range(n_named + len(value.shape)))
 
-        return (self._vars, self._sizes)
+        n_event = len(self.event_shape)
+        n_batch = len(self.base_dist.batch_shape)
+        n_sample = len(value.shape) - n_batch - n_event
 
-    def _to_positional(self, value):
-        (vars_, _) = self._get_vars_sizes(value)
-        return to_tensor(value, vars_)
+        event_dims = dims[len(dims) - n_event :]
+        batch_dims = dims[len(dims) - n_event - n_batch : len(dims) - n_event]
+        named_dims = dims[:n_named]
+        sample_dims = dims[n_named : n_named + n_sample]
 
-    def _from_positional(self, value):
-        (vars_, _) = self._get_vars_sizes()
-        return Indexable(value)[tuple(v() for v in vars_)]
+        # shape: | named | sample_shape | batch_shape | event_shape |
+        pos_tensor = to_tensor(value, self.indices.keys())
+
+        # shape: | sample_shape | named | batch_shape | event_shape |
+        pos_tensor_r = torch.permute(
+            pos_tensor, sample_dims + named_dims + batch_dims + event_dims
+        )
+
+        return pos_tensor_r
+
+    def _from_positional(self, value: torch.Tensor) -> torch.Tensor:
+        # maximal value shape: | sample_shape | named | batch_shape | event_shape |
+        shape = self.shape()
+        if len(value.shape) < len(shape):
+            value = value.expand(shape)
+
+        # check that the rightmost dimensions match
+        assert value.shape[len(value.shape) - len(shape) :] == shape
+
+        indexes: List[Any] = [slice(None)] * (len(value.shape))
+        for i, n in enumerate(self.indices.keys()):
+            indexes[
+                len(value.shape)
+                - len(self.indices)
+                - len(self.event_shape)
+                - len(self.base_dist.batch_shape)
+                + i
+            ] = n()
+
+        return Indexable(value)[tuple(indexes)]
 
     @property
     def batch_shape(self):
         return (
-            torch.Size([len(s) for s in self._get_vars_sizes()[1]])
+            torch.Size([len(s) for s in self.indices.values()])
             + self.base_dist.batch_shape
         )
 
@@ -79,10 +110,75 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         return self._to_positional(self.base_dist.enumerate_support(expand))
 
 
+class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):
+    """A distribution wrapper that lazily names leftmost dimensions."""
+
+    def __init__(
+        self,
+        base_dist: pyro.distributions.torch_distribution.TorchDistribution,
+        names: Sequence[Operation[[], int]],
+    ):
+        """
+        :param base_dist: A distribution with batch dimensions.
+
+        :param names: A list of names.
+
+        """
+        assert len(names) <= len(base_dist.batch_shape)
+
+        self.base_dist = base_dist
+        self.names = names
+        super().__init__()
+
+    def _to_named(self, value: torch.Tensor, offset=0) -> torch.Tensor:
+        return Indexable(value)[
+            tuple([slice(None)] * offset + [n() for n in self.names])
+        ]
+
+    def _from_named(self, value: torch.Tensor) -> torch.Tensor:
+        return to_tensor(value, self.names)
+
+    @property
+    def batch_shape(self):
+        return self.base_dist.batch_shape[len(self.names) :]
+
+    @property
+    def event_shape(self):
+        return self.base_dist.event_shape
+
+    @property
+    def has_enumerate_support(self):
+        return self.base_dist.has_enumerate_support
+
+    @property
+    def arg_constraints(self):
+        return self.base_dist.arg_constraints
+
+    def __repr__(self):
+        return f"NamedDistribution({self.base_dist}, {self.names})"
+
+    def sample(self, sample_shape=torch.Size()):
+        return self._to_named(
+            self.base_dist.sample(sample_shape), offset=len(sample_shape)
+        )
+
+    def rsample(self, sample_shape=torch.Size()):
+        return self._to_named(
+            self.base_dist.rsample(sample_shape), offset=len(sample_shape)
+        )
+
+    def log_prob(self, value):
+        return self._to_named(self.base_dist.log_prob(self._from_named(value)))
+
+    def enumerate_support(self, expand=True):
+        return self._to_named(self.base_dist.enumerate_support(expand))
+
+
 def _indexed_pyro_sample_handler(
     name: str,
     dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
     infer: Optional[pyro.poutine.runtime.InferDict] = None,
+    obs: Optional[torch.Tensor] = None,
     **kwargs,
 ) -> torch.Tensor:
     infer = infer or {}
@@ -91,11 +187,11 @@ def _indexed_pyro_sample_handler(
         return fwd(None)
 
     pdist = PositionalDistribution(dist)
-    (vars_, sizes) = pdist._get_vars_sizes()
+    obs = None if obs is None else pdist._to_positional(obs)
 
     shape_len = len(pdist.shape())
     plates = []
-    for dim_offset, (var, size) in enumerate(zip(vars_, sizes)):
+    for dim_offset, (var, size) in enumerate(pdist.indices.items()):
         plate = _LazyPlateMessenger(
             str(var),
             dim=-shape_len + dim_offset,
@@ -107,7 +203,8 @@ def _indexed_pyro_sample_handler(
     infer["_index_expanded"] = True  # type: ignore
 
     try:
-        return pdist._from_positional(pyro.sample(name, pdist, infer=infer, **kwargs))
+        t = pyro.sample(name, pdist, infer=infer, obs=obs, **kwargs)
+        return pdist._from_positional(t)
     finally:
         for plate in reversed(plates):
             plate.__exit__(None, None, None)
