@@ -1,4 +1,5 @@
 import typing
+import warnings
 from typing import Optional
 
 import pyro
@@ -31,6 +32,11 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     """
 
     _current_site: Optional[str]
+
+    def __enter__(self):
+        if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
+            warnings.warn("PyroShim should be installed at most once.")
+        return super().__enter__()
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if typing.TYPE_CHECKING:
@@ -68,3 +74,20 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["is_observed"] = True
         msg["infer"]["is_auxiliary"] = True
         msg["infer"]["_do_not_trace"] = True
+
+
+def pyro_module_shim(
+    module: type[pyro.nn.module.PyroModule],
+) -> type[pyro.nn.module.PyroModule]:
+    """Wrap a PyroModule in a PyroShim.
+
+    Returns a new subclass of PyroModule that wraps calls to `forward` in a PyroShim.
+
+    """
+
+    class PyroModuleShim(module):  # type: ignore
+        def forward(self, *args, **kwargs):
+            with PyroShim():
+                return super().forward(*args, **kwargs)
+
+    return PyroModuleShim
