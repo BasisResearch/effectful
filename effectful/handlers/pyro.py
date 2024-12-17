@@ -33,7 +33,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     _current_site: Optional[str]
 
-    def __enter__(self) -> None:
+    def __enter__(self):
         if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
             warnings.warn("PyroShim should be installed at most once.")
         return super().__enter__()
@@ -85,7 +85,7 @@ def pyro_module_shim(
 
     """
 
-    class PyroModuleShim(module):
+    class PyroModuleShim(module):  # type: ignore
         def forward(self, *args, **kwargs):
             with PyroShim():
                 return super().forward(*args, **kwargs)
