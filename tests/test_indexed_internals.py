@@ -17,7 +17,7 @@ from effectful.indexed.ops import (
 )
 from effectful.internals.sugar import gensym, sizesof, torch_getitem
 from effectful.ops.core import evaluate
-from effectful.ops.function import defun
+from effectful.ops.core import defun
 from effectful.ops.handler import handler
 
 torch.distributions.Distribution.set_default_validate_args(False)

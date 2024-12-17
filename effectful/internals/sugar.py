@@ -33,6 +33,7 @@ from effectful.ops.core import (
     apply,
     ctxof,
     defop,
+    defun,
     evaluate,
     syntactic_eq,
     typeof,
@@ -562,14 +563,14 @@ class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
 @embed_register(collections.abc.Callable)  # type: ignore
 class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
     def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.function import funcall
+        from effectful.ops.handler import funcall
 
         return funcall(self, *args, **kwargs)  # type: ignore
 
 
 @as_term_register(collections.abc.Callable)  # type: ignore
 def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
-    from effectful.ops.function import defun, funcall
+    from effectful.ops.handler import funcall
 
     assert not isinstance(value, Term)
 
@@ -698,7 +699,7 @@ def partial_eval(t: T, order=None) -> T:
     tensor, in the order they appear. All other variables remain free.
 
     """
-    from effectful.ops.function import defun
+    from effectful.ops.core import defun
 
     if order is None:
         order = []

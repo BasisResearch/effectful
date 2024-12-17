@@ -3,8 +3,8 @@ from typing import Callable, Optional, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.sugar import gensym
-from effectful.ops.core import Interpretation, Operation, apply, defop
+from effectful.internals.sugar import NoDefaultRule, gensym
+from effectful.ops.core import Interpretation, Operation, Term, apply, as_term, defop, defun, evaluate
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -85,3 +85,26 @@ def handler(intp: Interpretation[S, T]):
 
     with interpreter(coproduct(get_interpretation(), intp)):
         yield intp
+
+
+@defop  # type: ignore
+def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    match as_term(fn):
+        case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == defun:
+            body: Expr[Callable[P, T]] = body_
+            argvars: tuple[Operation, ...] = typing.cast(
+                tuple[Operation, ...], argvars_
+            )
+            kwvars: dict[str, Operation] = typing.cast(
+                dict[str, Operation], dict(kwvars_)
+            )
+            subs = {
+                **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
+                **{
+                    kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs
+                },
+            }
+            with handler(subs):
+                return evaluate(body)  # type: ignore
+        case _:
+            raise NoDefaultRule

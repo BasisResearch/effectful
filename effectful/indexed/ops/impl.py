@@ -9,7 +9,7 @@ import effectful.internals.sugar
 
 from ...internals.sugar import partial_eval, sizesof
 from ...ops.core import Operation, Term
-from ...ops.function import defun
+from ...ops.core import defun
 
 K = TypeVar("K")
 T = TypeVar("T")

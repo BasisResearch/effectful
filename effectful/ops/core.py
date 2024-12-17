@@ -4,6 +4,7 @@ import functools
 import inspect
 import typing
 from typing import (
+    Annotated,
     Any,
     Callable,
     Dict,
@@ -19,6 +20,8 @@ from typing import (
 
 import tree
 from typing_extensions import ParamSpec
+
+from effectful.internals.sugar import Bound, NoDefaultRule
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -336,3 +339,12 @@ def as_term(value: Expr[T]) -> Expr[T]:
         impl: Callable[[T], Expr[T]]
         impl = _as_term_registry.dispatch(type(value))  # type: ignore
         return impl(value)
+
+
+@defop
+def defun(
+    body: T,
+    *args: Annotated[Operation, Bound()],
+    **kwargs: Annotated[Operation, Bound()],
+) -> Callable[..., T]:
+    raise NoDefaultRule
