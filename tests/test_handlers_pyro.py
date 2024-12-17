@@ -35,8 +35,7 @@ def chirho_condition(data: Mapping[str, torch.Tensor]):
         obs: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
-        if name in data:
-            assert obs is None
+        if obs is None and name in data:
             return chirho_observe_dist(
                 name,
                 fn,
