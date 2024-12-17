@@ -1,6 +1,6 @@
 import typing
-from typing import Optional
 import warnings
+from typing import Optional
 
 import pyro
 import torch
