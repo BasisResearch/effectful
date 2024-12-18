@@ -1,10 +1,7 @@
 import pyro.distributions as dist
 import torch
 
-from effectful.indexed.distributions import (
-    NamedDistribution,
-    PositionalDistribution
-)
+from effectful.indexed.distributions import NamedDistribution, PositionalDistribution
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
 from effectful.internals.sugar import gensym
 

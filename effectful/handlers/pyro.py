@@ -3,13 +3,12 @@ import warnings
 from typing import Optional
 
 import pyro
-from pyro.poutine.indep_messenger import CondIndepStackFrame
 import torch
+from pyro.poutine.indep_messenger import CondIndepStackFrame
 
-from effectful.ops.core import defop
-
+from effectful.indexed.distributions import Naming, PositionalDistribution
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
-from effectful.indexed.distributions import PositionalDistribution, Naming
+from effectful.ops.core import defop
 
 
 @defop
@@ -72,7 +71,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # convert remaining named dimensions to positional
             obs_indices = indices_of(obs)
             pos_obs = obs
-            if obs is not None:
+            if pos_obs is not None:
                 # ensure obs has the same | batch_shape | event_shape | as dist
                 # it should now differ only in named dimensions
                 batch_dims = dist.shape()
@@ -96,7 +95,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             assert indices_of(pos_obs) == IndexSet({})
 
             for var, dim in naming.name_to_dim.items():
-                frame = CondIndepStackFrame(name=var, dim=dim, size=None, counter=0)
+                frame = CondIndepStackFrame(name=str(var), dim=dim, size=-1, counter=0)
                 msg["cond_indep_stack"] = (frame,) + msg["cond_indep_stack"]
 
             msg["fn"] = pdist

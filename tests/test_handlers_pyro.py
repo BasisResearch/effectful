@@ -4,14 +4,15 @@ from typing import Mapping, Optional
 
 import pyro
 import pyro.distributions as dist
-from pyro.poutine.indep_messenger import CondIndepStackFrame
 import pytest
 import torch
+from pyro.poutine.indep_messenger import CondIndepStackFrame
 
 from effectful.handlers.pyro import PyroShim, pyro_sample
-from effectful.ops.core import defop, gensym, ctxof
-from effectful.ops.handler import fwd, handler
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
+from effectful.internals.sugar import gensym
+from effectful.ops.core import ctxof, defop
+from effectful.ops.handler import fwd, handler
 
 pyro.settings.set(module_local_params=True)
 

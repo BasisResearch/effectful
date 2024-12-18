@@ -1,4 +1,4 @@
-from typing import Any, List, Mapping, Sequence
+from typing import Any, Collection, List, Mapping
 
 import pyro
 import torch
@@ -17,7 +17,7 @@ class Naming:
         self.name_to_dim = name_to_dim
 
     @staticmethod
-    def from_shape(names: Sequence[Operation[[], int]], event_dims: int) -> "Naming":
+    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
@@ -134,7 +134,7 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
     def __init__(
         self,
         base_dist: pyro.distributions.torch_distribution.TorchDistribution,
-        names: Sequence[Operation[[], int]],
+        names: Collection[Operation[[], int]],
     ):
         """
         :param base_dist: A distribution with batch dimensions.

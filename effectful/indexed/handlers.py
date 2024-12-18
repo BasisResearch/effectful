@@ -1,13 +1,13 @@
-from typing import Any, Callable, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Optional, Protocol
 
 import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from ..ops.core import Interpretation, Operation
+from ..handlers.pyro import pyro_sample
+from ..ops.core import Interpretation
 from ..ops.handler import fwd
-from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
-from .ops import Indexable, IndexSet, indices_of, to_tensor, union
+from .internals.handlers import get_sample_msg_device
 
 P = ParamSpec("P")
 
