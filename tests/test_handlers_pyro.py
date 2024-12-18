@@ -4,12 +4,14 @@ from typing import Mapping, Optional
 
 import pyro
 import pyro.distributions as dist
+from pyro.poutine.indep_messenger import CondIndepStackFrame
 import pytest
 import torch
 
 from effectful.handlers.pyro import PyroShim, pyro_sample
-from effectful.ops.core import defop
+from effectful.ops.core import defop, gensym, ctxof
 from effectful.ops.handler import fwd, handler
+from effectful.indexed.ops import Indexable, IndexSet, indices_of
 
 pyro.settings.set(module_local_params=True)
 
@@ -127,3 +129,30 @@ def test_smoke_condition_enumerate_hmm_elbo(
 
     # smoke test
     elbo.differentiable_loss(model, guide, data)
+
+
+def test_indexed_sample():
+    b = gensym(int, name="b")
+
+    def model():
+        loc, scale = (
+            Indexable(torch.tensor(0.0).expand((3, 2)))[b()],
+            Indexable(torch.tensor(1.0).expand((3, 2)))[b()],
+        )
+        return pyro.sample("x", dist.Normal(loc, scale))
+
+    class CheckSampleMessenger(pyro.poutine.messenger.Messenger):
+        def _pyro_sample(self, msg):
+            # named dimensions should not be visible to Pyro
+            assert indices_of(msg["fn"]) == IndexSet({})
+            assert (
+                CondIndepStackFrame(name="__index_plate___b", dim=-2, size=3, counter=0)
+                in msg["cond_indep_stack"]
+            )
+
+    with CheckSampleMessenger(), PyroShim():
+        t = model()
+
+        # samples from indexed distributions should also be indexed
+        assert t.shape == torch.Size([2])
+        assert b in ctxof(t)

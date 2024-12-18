@@ -1,6 +1,6 @@
 import typing
 import warnings
-from typing import List, Optional
+from typing import Optional
 
 import pyro
 from pyro.poutine.indep_messenger import CondIndepStackFrame
@@ -9,7 +9,7 @@ import torch
 from effectful.ops.core import defop
 
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
-from effectful.indexed.handlers import PositionalDistribution, Naming
+from effectful.indexed.distributions import PositionalDistribution, Naming
 
 
 @defop
