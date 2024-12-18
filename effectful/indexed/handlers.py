@@ -112,6 +112,10 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def arg_constraints(self):
         return self.base_dist.arg_constraints
 
+    @property
+    def support(self):
+        return self.base_dist.support
+
     def __repr__(self):
         return f"PositionalDistribution({self.base_dist})"
 
@@ -194,6 +198,10 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
     @property
     def arg_constraints(self):
         return self.base_dist.arg_constraints
+
+    @property
+    def support(self):
+        return self.base_dist.support
 
     def __repr__(self):
         return f"NamedDistribution({self.base_dist}, {self.names})"
