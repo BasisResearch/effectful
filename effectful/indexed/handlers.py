@@ -4,7 +4,6 @@ import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from ..handlers.pyro import pyro_sample
 from ..ops.core import Interpretation, Operation
 from ..ops.handler import fwd
 from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
@@ -226,76 +225,6 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
 
     def enumerate_support(self, expand=True):
         return self._to_named(self.base_dist.enumerate_support(expand))
-
-
-def _indexed_pyro_sample_handler(
-    name: str,
-    dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
-    infer: Optional[pyro.poutine.runtime.InferDict] = None,
-    obs: Optional[torch.Tensor] = None,
-    **kwargs,
-) -> torch.Tensor:
-    infer = infer or {}
-
-    print("indexed_sample", name, dist, infer, obs)
-
-    if "_index_dist" in infer:
-        return fwd(None)
-
-    # pdist shape: | named1 | batch_shape | event_shape |
-    # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
-    pdist = PositionalDistribution(dist)
-    assert indices_of(pdist) == IndexSet({})
-    naming = pdist.naming
-
-    # convert remaining named dimensions to positional
-    obs_indices = indices_of(obs)
-    pos_obs = obs
-    if obs is not None:
-        # ensure obs has the same | batch_shape | event_shape | as dist
-        # it should now differ only in named dimensions
-        batch_dims = dist.shape()
-        if len(pos_obs.shape) < len(batch_dims):
-            pos_obs = pos_obs.expand(batch_dims)
-
-        name_to_dim = {}
-        for i, (k, v) in enumerate(reversed(pdist.indices.items())):
-            if k in obs_indices:
-                pos_obs = to_tensor(pos_obs, [k])
-            else:
-                pos_obs = pos_obs.expand((len(v),) + pos_obs.shape)
-            name_to_dim[k] = -len(batch_dims) - i - 1
-
-        n_batch_and_dist_named = len(pos_obs.shape)
-        for i, k in enumerate(reversed(indices_of(pos_obs).keys())):
-            pos_obs = to_tensor(pos_obs, [k])
-            name_to_dim[k] = -n_batch_and_dist_named - i - 1
-
-        naming = Naming(name_to_dim)
-
-    # obs shape: | named2 | named1 | batch_shape | event_shape |
-    indices = union(IndexSet(obs_indices), pdist.indices)
-    plates = []
-    for var, dim in naming.name_to_dim.items():
-        plate = _LazyPlateMessenger(str(var), dim=dim, size=len(indices[var]))
-        plate.__enter__()
-        plates.append(plate)
-
-    infer["_index_naming"] = naming  # type: ignore
-
-    try:
-        assert indices_of(pos_obs) == IndexSet({})
-        t = pyro.sample(name, pdist, infer=infer, obs=pos_obs, **kwargs)
-        return naming.apply(t)
-    finally:
-        for plate in reversed(plates):
-            plate.__exit__(None, None, None)
-
-
-#: Allow distributions with indexed batch dimensions to be used with
-#: `pyro.sample` by lazily converting the indexed dimensions to positional
-#: dimensions.
-indexed = {pyro_sample: _indexed_pyro_sample_handler}
 
 
 class GetMask(Protocol):

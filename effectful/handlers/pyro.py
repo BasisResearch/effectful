@@ -1,11 +1,15 @@
 import typing
 import warnings
-from typing import Optional
+from typing import List, Optional
 
 import pyro
+from pyro.poutine.indep_messenger import CondIndepStackFrame
 import torch
 
 from effectful.ops.core import defop
+
+from effectful.indexed.ops import IndexSet, indices_of, to_tensor
+from effectful.indexed.handlers import PositionalDistribution, Naming
 
 
 @defop
@@ -47,13 +51,58 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 msg["fn"], pyro.distributions.torch_distribution.TorchDistributionMixin
             )
 
-        if (
-            getattr(self, "_current_site", None) == msg["name"]
-            or pyro.poutine.util.site_is_subsample(msg)
-            or pyro.poutine.util.site_is_factor(msg)
+        if pyro.poutine.util.site_is_subsample(msg) or pyro.poutine.util.site_is_factor(
+            msg
         ):
+            return
+
+        if getattr(self, "_current_site", None) == msg["name"]:
             if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
+
+            dist = msg["fn"]
+            obs = msg["value"] if msg["is_observed"] else None
+
+            # pdist shape: | named1 | batch_shape | event_shape |
+            # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
+            pdist = PositionalDistribution(dist)
+            assert indices_of(pdist) == IndexSet({})
+            naming = pdist.naming
+
+            # convert remaining named dimensions to positional
+            obs_indices = indices_of(obs)
+            pos_obs = obs
+            if obs is not None:
+                # ensure obs has the same | batch_shape | event_shape | as dist
+                # it should now differ only in named dimensions
+                batch_dims = dist.shape()
+                if len(pos_obs.shape) < len(batch_dims):
+                    pos_obs = pos_obs.expand(batch_dims)
+
+                name_to_dim = {}
+                for i, (k, v) in enumerate(reversed(pdist.indices.items())):
+                    if k in obs_indices:
+                        pos_obs = to_tensor(pos_obs, [k])
+                    else:
+                        pos_obs = pos_obs.expand((len(v),) + pos_obs.shape)
+                    name_to_dim[k] = -len(batch_dims) - i - 1
+
+                n_batch_and_dist_named = len(pos_obs.shape)
+                for i, k in enumerate(reversed(indices_of(pos_obs).keys())):
+                    pos_obs = to_tensor(pos_obs, [k])
+                    name_to_dim[k] = -n_batch_and_dist_named - i - 1
+
+                naming = Naming(name_to_dim)
+            assert indices_of(pos_obs) == IndexSet({})
+
+            for var, dim in naming.name_to_dim.items():
+                frame = CondIndepStackFrame(name=var, dim=dim, size=None, counter=0)
+                msg["cond_indep_stack"] = (frame,) + msg["cond_indep_stack"]
+
+            msg["fn"] = pdist
+            msg["value"] = pos_obs
+            msg["infer"]["_index_naming"] = naming  # type: ignore
+
             return
 
         try:
@@ -74,6 +123,16 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["is_observed"] = True
         msg["infer"]["is_auxiliary"] = True
         msg["infer"]["_do_not_trace"] = True
+
+    def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
+        if "_index_naming" not in msg["infer"]:
+            return
+
+        msg["value"] = (
+            msg["infer"]["_index_naming"].apply(msg["value"])
+            if msg["value"] is not None
+            else None
+        )
 
 
 def pyro_module_shim(
