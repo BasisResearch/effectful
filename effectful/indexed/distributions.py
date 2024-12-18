@@ -204,7 +204,8 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
         t = self._to_named(
             self.base_dist.sample(sample_shape), offset=len(sample_shape)
         )
-        assert set(indices_of(t).keys()) == set(self.names) and t.shape == self.shape()
+        assert set(indices_of(t).keys()) == set(self.names)
+        assert t.shape == self.shape() + sample_shape
         return t
 
     def rsample(self, sample_shape=torch.Size()):
