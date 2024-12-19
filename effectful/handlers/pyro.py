@@ -5,6 +5,7 @@ from typing import Optional
 import pyro
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame
+from pyro.poutine.mask_messenger import MaskMessenger
 
 from effectful.indexed.distributions import Naming, PositionalDistribution
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
@@ -18,15 +19,17 @@ def pyro_sample(
     *args,
     obs: Optional[torch.Tensor] = None,
     obs_mask: Optional[torch.BoolTensor] = None,
+    mask: Optional[torch.BoolTensor] = None,
     infer: Optional[pyro.poutine.runtime.InferDict] = None,
     **kwargs,
 ) -> torch.Tensor:
     """
     Operation to sample from a Pyro distribution.
     """
-    return pyro.sample(
-        name, fn, *args, obs=obs, obs_mask=obs_mask, infer=infer, **kwargs
-    )
+    with MaskMessenger(mask if mask is not None else True):
+        return pyro.sample(
+            name, fn, *args, obs=obs, obs_mask=obs_mask, infer=infer, **kwargs
+        )
 
 
 class PyroShim(pyro.poutine.messenger.Messenger):
