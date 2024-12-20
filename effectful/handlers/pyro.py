@@ -112,12 +112,11 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 mask, dist.batch_shape, pdist.indices
             )
 
+            pos_obs: Optional[torch.Tensor] = None
             if obs is not None:
                 pos_obs, naming = PyroShim._broadcast_to_named(
                     obs, dist.shape(), pdist.indices
                 )
-            else:
-                pos_obs = obs
 
             for var, dim in naming.name_to_dim.items():
                 frame = CondIndepStackFrame(name=str(var), dim=dim, size=-1, counter=0)

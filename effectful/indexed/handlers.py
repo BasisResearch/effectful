@@ -7,15 +7,16 @@ from typing_extensions import ParamSpec
 from ..handlers.pyro import pyro_sample
 from ..ops.core import Interpretation
 from ..ops.handler import fwd
-from .ops import indices_of
-from .internals.handlers import get_sample_msg_device
 from .distributions import NamedDistribution
+from .internals.handlers import get_sample_msg_device
+from .ops import indices_of
 
 P = ParamSpec("P")
 
 
 class GetMask(Protocol):
     def __call__(
+        self,
         dist: pyro.distributions.Distribution,
         value: Optional[torch.Tensor],
         device: torch.device = torch.device("cpu"),
@@ -35,8 +36,7 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
         **kwargs,
     ) -> torch.Tensor:
         obs = kwargs.get("obs")
-        device = get_sample_msg_device(dist, obs)
-        mask = get_mask(dist, obs, device=device, name=name)
+        mask = get_mask(dist, obs, device=get_sample_msg_device(dist, obs), name=name)
         assert mask.shape == torch.Size([])
 
         # expand distribution with any named dimensions not already present
