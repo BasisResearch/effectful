@@ -57,39 +57,6 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
     return {pyro_sample: _pyro_sample}
 
 
-class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
-    """
-    Abstract base class for effect handlers that select a subset of worlds.
-    """
-
-    def get_mask(
-        self,
-        dist: pyro.distributions.Distribution,
-        value: Optional[torch.Tensor],
-        device: torch.device = torch.device("cpu"),
-        name: Optional[str] = None,
-    ) -> torch.Tensor:
-        raise NotImplementedError
-
-    def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
-        if pyro.poutine.util.site_is_subsample(msg):
-            return
-
-        assert isinstance(
-            msg["fn"], pyro.distributions.torch_distribution.TorchDistributionMixin
-        )
-
-        device = get_sample_msg_device(msg["fn"], msg["value"])
-        name = msg["name"] if "name" in msg else None
-        mask = self.get_mask(msg["fn"], msg["value"], device=device, name=name)
-        msg["mask"] = mask if msg["mask"] is None else msg["mask"] & mask
-
-        # expand distribution to make sure two copies of a variable are sampled
-        msg["fn"] = msg["fn"].expand(
-            torch.broadcast_shapes(msg["fn"].batch_shape, mask.shape)
-        )
-
-
 @pyro.poutine.block()
 @pyro.validation_enabled(False)
 @torch.no_grad()
