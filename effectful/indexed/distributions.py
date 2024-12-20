@@ -145,7 +145,7 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
         self.base_dist = base_dist
         self.names = names
 
-        assert len(names) <= len(base_dist.batch_shape)
+        assert 1 <= len(names) <= len(base_dist.batch_shape)
         base_indices = indices_of(base_dist)
         assert not any(n in base_indices for n in names)
 
