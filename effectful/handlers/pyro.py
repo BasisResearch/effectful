@@ -166,7 +166,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # note: is it safe to assume that msg['fn'] is a distribution?
             dist_shape = msg["fn"].shape()  # type: ignore
             if len(value.shape) < len(dist_shape):
-                value = value.broadcast_to(dist_shape)
+                value = value.broadcast_to(
+                    torch.broadcast_shapes(value.shape, dist_shape)
+                )
             value = naming.apply(value)
             msg["value"] = value
 
