@@ -7,14 +7,15 @@ from typing_extensions import ParamSpec
 from ..handlers.pyro import pyro_sample
 from ..ops.core import Interpretation
 from ..ops.handler import fwd
+from .ops import indices_of
 from .internals.handlers import get_sample_msg_device
+from .distributions import NamedDistribution
 
 P = ParamSpec("P")
 
 
 class GetMask(Protocol):
     def __call__(
-        self,
         dist: pyro.distributions.Distribution,
         value: Optional[torch.Tensor],
         device: torch.device = torch.device("cpu"),
@@ -27,7 +28,7 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
     Helper function for effect handlers that select a subset of worlds.
     """
 
-    def pyro_sample_handler(
+    def _pyro_sample(
         name: str,
         dist: pyro.distributions.torch_distribution.TorchDistributionMixin,
         *args,
@@ -36,10 +37,24 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
         obs = kwargs.get("obs")
         device = get_sample_msg_device(dist, obs)
         mask = get_mask(dist, obs, device=device, name=name)
-        dist = dist.expand(torch.broadcast_shapes(dist.batch_shape, mask.shape))
-        return fwd(None, name, dist, *args, **kwargs)
+        assert mask.shape == torch.Size([])
 
-    return {pyro_sample: pyro_sample_handler}
+        # expand distribution with any named dimensions not already present
+        dist_indices = indices_of(dist)
+        mask_extra_indices = {
+            k: v for (k, v) in indices_of(mask).items() if k not in dist_indices
+        }
+
+        if len(mask_extra_indices) > 0:
+            mask_expanded_shape = torch.Size(
+                [len(v) for v in mask_extra_indices.values()]
+            )
+            expanded_dist = dist.expand(mask_expanded_shape + dist.batch_shape)
+            dist = NamedDistribution(expanded_dist, mask_extra_indices.keys())
+
+        return fwd(None, name, dist, *args, mask=mask, **kwargs)
+
+    return {pyro_sample: _pyro_sample}
 
 
 class DependentMaskMessenger(pyro.poutine.messenger.Messenger):
