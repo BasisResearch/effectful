@@ -19,6 +19,12 @@ pyro.settings.set(module_local_params=True)
 logger = logging.getLogger(__name__)
 
 
+def setup_module():
+    pyro.settings.set(module_local_params=True)
+    pyro.enable_validation(False)
+    torch.distributions.Distribution.set_default_validate_args(False)
+
+
 @defop
 def chirho_observe_dist(
     name: str,
