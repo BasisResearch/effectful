@@ -1,6 +1,6 @@
 import typing
 import warnings
-from typing import Optional
+from typing import Optional, Tuple
 
 import pyro
 import torch
@@ -44,6 +44,37 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             warnings.warn("PyroShim should be installed at most once.")
         return super().__enter__()
 
+    @staticmethod
+    def _broadcast_to_named(
+        t: torch.Tensor, shape: torch.Size, indices: IndexSet
+    ) -> Tuple[torch.Tensor, Naming]:
+        """Convert a tensor `t` to a fully positional tensor that is
+        broadcastable with the positional representation of tensors of shape
+        |shape|, |indices|.
+
+        """
+        t_indices = indices_of(t)
+
+        if len(t.shape) < len(shape):
+            t = t.expand(shape)
+
+        # create a positional dimension for every named index in the target shape
+        name_to_dim = {}
+        for i, (k, v) in enumerate(reversed(indices.items())):
+            if k in t_indices:
+                t = to_tensor(t, [k])
+            else:
+                t = t.expand((len(v),) + t.shape)
+            name_to_dim[k] = -len(shape) - i - 1
+
+        # create a positional dimension for every remaining named index in `t`
+        n_batch_and_dist_named = len(t.shape)
+        for i, k in enumerate(reversed(indices_of(t).keys())):
+            t = to_tensor(t, [k])
+            name_to_dim[k] = -n_batch_and_dist_named - i - 1
+
+        return t, Naming(name_to_dim)
+
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if typing.TYPE_CHECKING:
             assert msg["type"] == "sample"
@@ -68,34 +99,25 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # pdist shape: | named1 | batch_shape | event_shape |
             # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
             pdist = PositionalDistribution(dist)
-            assert indices_of(pdist) == IndexSet({})
             naming = pdist.naming
 
-            # convert remaining named dimensions to positional
-            obs_indices = indices_of(obs)
-            pos_obs = obs
-            if pos_obs is not None:
-                # ensure obs has the same | batch_shape | event_shape | as dist
-                # it should now differ only in named dimensions
-                batch_dims = dist.shape()
-                if len(pos_obs.shape) < len(batch_dims):
-                    pos_obs = pos_obs.expand(batch_dims)
+            if msg["mask"] is None:
+                mask = torch.tensor(True)
+            elif isinstance(msg["mask"], bool):
+                mask = torch.tensor(msg["mask"])
+            else:
+                mask = msg["mask"]
 
-                name_to_dim = {}
-                for i, (k, v) in enumerate(reversed(pdist.indices.items())):
-                    if k in obs_indices:
-                        pos_obs = to_tensor(pos_obs, [k])
-                    else:
-                        pos_obs = pos_obs.expand((len(v),) + pos_obs.shape)
-                    name_to_dim[k] = -len(batch_dims) - i - 1
+            pos_mask, _ = PyroShim._broadcast_to_named(
+                mask, dist.batch_shape, pdist.indices
+            )
 
-                n_batch_and_dist_named = len(pos_obs.shape)
-                for i, k in enumerate(reversed(indices_of(pos_obs).keys())):
-                    pos_obs = to_tensor(pos_obs, [k])
-                    name_to_dim[k] = -n_batch_and_dist_named - i - 1
-
-                naming = Naming(name_to_dim)
-            assert indices_of(pos_obs) == IndexSet({})
+            if obs is not None:
+                pos_obs, naming = PyroShim._broadcast_to_named(
+                    obs, dist.shape(), pdist.indices
+                )
+            else:
+                pos_obs = obs
 
             for var, dim in naming.name_to_dim.items():
                 frame = CondIndepStackFrame(name=str(var), dim=dim, size=-1, counter=0)
@@ -103,7 +125,13 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
             msg["fn"] = pdist
             msg["value"] = pos_obs
+            msg["mask"] = pos_mask
             msg["infer"]["_index_naming"] = naming  # type: ignore
+
+            assert all(
+                indices_of(msg[field]) == IndexSet({})
+                for field in ["fn", "value", "mask"]
+            )
 
             return
 
@@ -130,11 +158,14 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         if "_index_naming" not in msg["infer"]:
             return
 
-        msg["value"] = (
-            msg["infer"]["_index_naming"].apply(msg["value"])
-            if msg["value"] is not None
-            else None
-        )
+        value = msg["value"]
+
+        if value is not None:
+            dist_shape = msg["fn"].shape()
+            if len(value.shape) < len(dist_shape):
+                value = value.broadcast_to(dist_shape)
+            value = msg["infer"]["_index_naming"].apply(value)
+            msg["value"] = value
 
 
 def pyro_module_shim(
