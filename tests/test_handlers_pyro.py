@@ -6,7 +6,6 @@ import pyro
 import pyro.distributions as dist
 import pytest
 import torch
-from pyro.poutine.indep_messenger import CondIndepStackFrame
 
 from effectful.handlers.pyro import PyroShim, pyro_sample
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
@@ -152,10 +151,7 @@ def test_indexed_sample():
         def _pyro_sample(self, msg):
             # named dimensions should not be visible to Pyro
             assert indices_of(msg["fn"]) == IndexSet({})
-            assert (
-                CondIndepStackFrame(name="__index_plate___b", dim=-2, size=3, counter=0)
-                in msg["cond_indep_stack"]
-            )
+            assert any(f.name == "b" and f.dim == -2 for f in msg["cond_indep_stack"])
 
     with CheckSampleMessenger(), PyroShim():
         t = model()
