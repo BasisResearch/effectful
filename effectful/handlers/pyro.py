@@ -127,10 +127,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["mask"] = pos_mask
             msg["infer"]["_index_naming"] = naming  # type: ignore
 
-            assert all(
-                indices_of(msg[field]) == IndexSet({})
-                for field in ["fn", "value", "mask"]
-            )
+            assert indices_of(msg["fn"]) == IndexSet({})
+            assert indices_of(msg["value"]) == IndexSet({})
+            assert indices_of(msg["mask"]) == IndexSet({})
 
             return
 
@@ -154,16 +153,21 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["infer"]["_do_not_trace"] = True
 
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
-        if "_index_naming" not in msg["infer"]:
+        infer = msg.get("infer")
+        if infer is None or "_index_naming" not in infer:
             return
+
+        # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
+        naming = infer["_index_naming"]  # type: ignore
 
         value = msg["value"]
 
         if value is not None:
-            dist_shape = msg["fn"].shape()
+            # note: is it safe to assume that msg['fn'] is a distribution?
+            dist_shape = msg["fn"].shape()  # type: ignore
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(dist_shape)
-            value = msg["infer"]["_index_naming"].apply(value)
+            value = naming.apply(value)
             msg["value"] = value
 
 
