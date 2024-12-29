@@ -5,6 +5,7 @@ import pyro.distributions as dist
 import pytest
 import torch
 
+from effectful.handlers.torch_tensor import sizesof, torch_getitem
 from effectful.indexed.ops import (
     Indexable,
     IndexSet,
@@ -15,7 +16,6 @@ from effectful.indexed.ops import (
     stack,
     to_tensor,
 )
-from effectful.internals.torch_tensor import sizesof, torch_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop, defun
 

@@ -12,9 +12,9 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
+from effectful.handlers.torch_tensor import torch_getitem
 from effectful.indexed.internals.utils import name_to_sym
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
-from effectful.internals.torch_tensor import torch_getitem
 from effectful.ops.syntax import defop
 
 ##################################################

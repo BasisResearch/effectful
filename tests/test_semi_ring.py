@@ -4,7 +4,7 @@ import random
 import types
 from typing import TypeVar
 
-from effectful.internals.operator import OPERATORS
+from effectful.handlers.operator import OPERATORS
 from effectful.ops.semantics import evaluate, fwd, handler
 from effectful.ops.syntax import NoDefaultRule, as_term, defop
 from effectful.ops.types import Operation, Term

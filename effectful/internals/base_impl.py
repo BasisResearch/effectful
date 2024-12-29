@@ -200,7 +200,7 @@ class BaseTerm(Generic[T], Term[T]):
         return strof(self)
 
     def __eq__(self, other) -> bool:
-        from effectful.internals.operator import OPERATORS
+        from effectful.handlers.operator import OPERATORS
 
         return OPERATORS[operator.eq](self, other)  # type: ignore
 

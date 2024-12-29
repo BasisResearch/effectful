@@ -2,8 +2,8 @@ import numbers
 import operator
 from typing import Generic, TypeVar
 
+from effectful.handlers.operator import OPERATORS
 from effectful.internals.base_impl import BaseTerm, as_data_register
-from effectful.internals.operator import OPERATORS
 from effectful.ops.types import Expr
 
 _T_Number = TypeVar("_T_Number", bound=numbers.Number)
