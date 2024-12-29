@@ -3,7 +3,7 @@ from typing import Any, Dict, Iterable, Set, TypeVar, Union
 
 import torch
 
-import effectful.indexed.ops.impl as impl
+import effectful.handlers.indexed.ops.impl as impl
 
 from ..internals.utils import name_to_sym
 

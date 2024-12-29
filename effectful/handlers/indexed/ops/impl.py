@@ -4,12 +4,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
 
 import torch
 
+import effectful.handlers.indexed.internals.utils
 import effectful.handlers.torch_tensor
-import effectful.indexed.internals.utils
-
-from ...handlers.torch_tensor import partial_eval, sizesof
-from ...ops.syntax import defun
-from ...ops.types import Operation, Term
+from effectful.handlers.torch_tensor import partial_eval, sizesof
+from effectful.ops.syntax import defun
+from effectful.ops.types import Operation, Term
 
 K = TypeVar("K")
 T = TypeVar("T")

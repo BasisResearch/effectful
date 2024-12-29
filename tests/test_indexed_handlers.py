@@ -3,13 +3,13 @@ import pyro.distributions as dist
 import torch
 from pyro.poutine.indep_messenger import CondIndepStackFrame
 
-from effectful.handlers.pyro import PyroShim
-from effectful.indexed.handlers import (
+from effectful.handlers.indexed.handlers import (
     NamedDistribution,
     PositionalDistribution,
     indexed,
 )
-from effectful.indexed.ops import Indexable, IndexSet, indices_of
+from effectful.handlers.indexed.ops import Indexable, IndexSet, indices_of
+from effectful.handlers.pyro import PyroShim
 from effectful.ops.semantics import fvsof, handler
 from effectful.ops.syntax import defop
 
