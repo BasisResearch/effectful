@@ -1,6 +1,6 @@
-from effectful.internals.sugar import NoDefaultRule, gensym
-from effectful.ops.core import Term, ctxof, defop, evaluate
-from effectful.ops.handler import handler
+from effectful.ops.semantics import evaluate, fvsof, handler
+from effectful.ops.syntax import NoDefaultRule, defop
+from effectful.ops.types import Term
 
 
 def test_evaluate():
@@ -8,8 +8,8 @@ def test_evaluate():
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
-    x = gensym(int, name="x")
-    y = gensym(int, name="y")
+    x = defop(int, name="x")
+    y = defop(int, name="y")
     t = Nested([{"a": y()}, x(), (x(), y())], x(), arg1={"b": x()})
 
     with handler({x: lambda: 1, y: lambda: 2}):
@@ -17,8 +17,8 @@ def test_evaluate():
 
 
 def test_evaluate_2():
-    x = gensym(int, name="x")
-    y = gensym(int, name="y")
+    x = defop(int, name="x")
+    y = defop(int, name="y")
     t = x() + y()
     assert isinstance(t, Term)
     assert t.op.__name__ == "add"
@@ -58,14 +58,14 @@ def test_operation_metadata():
 
 
 def test_ctxof():
-    x = gensym(object)
-    y = gensym(object)
+    x = defop(object)
+    y = defop(object)
 
     @defop
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
-    assert ctxof(Nested(x(), y())).keys() >= {x, y}
-    assert ctxof(Nested([x()], y())).keys() >= {x, y}
-    assert ctxof(Nested([x()], [y()])).keys() >= {x, y}
-    assert ctxof(Nested((x(), y()))).keys() >= {x, y}
+    assert fvsof(Nested(x(), y())).keys() >= {x, y}
+    assert fvsof(Nested([x()], y())).keys() >= {x, y}
+    assert fvsof(Nested([x()], [y()])).keys() >= {x, y}
+    assert fvsof(Nested((x(), y()))).keys() >= {x, y}

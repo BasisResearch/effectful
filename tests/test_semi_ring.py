@@ -4,9 +4,10 @@ import random
 import types
 from typing import TypeVar
 
-from effectful.internals.sugar import OPERATORS, NoDefaultRule, gensym
-from effectful.ops.core import Operation, Term, as_term, defop, evaluate
-from effectful.ops.handler import fwd, handler
+from effectful.internals.operator import OPERATORS
+from effectful.ops.semantics import evaluate, fwd, handler
+from effectful.ops.syntax import NoDefaultRule, as_term, defop
+from effectful.ops.types import Operation, Term
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -221,10 +222,10 @@ def add1(v: int) -> int:
 
 
 def test_simple_sum():
-    x = gensym(object)
-    y = gensym(object)
-    k = gensym(object)
-    v = gensym(object)
+    x = defop(object)
+    y = defop(object)
+    k = defop(object)
+    v = defop(object)
 
     with handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
@@ -254,10 +255,10 @@ def test_simple_sum():
 
 
 def fusion_test(d):
-    x = gensym(object)
-    y = gensym(object)
-    k = gensym(object)
-    v = gensym(object)
+    x = defop(object)
+    y = defop(object)
+    k = defop(object)
+    v = defop(object)
 
     return (
         Let(
@@ -282,7 +283,7 @@ def make_dict(n):
 
 
 def test_fusion_term():
-    d = gensym(object)
+    d = defop(object)
     with handler(opt):
         result, (x, _, k, v) = fusion_test(d)
     assert result == Let(

@@ -6,18 +6,10 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, Bound, NoDefaultRule, Scoped, gensym
-from effectful.ops.core import (
-    Expr,
-    Interpretation,
-    Operation,
-    Term,
-    ctxof,
-    defop,
-    evaluate,
-    typeof,
-)
-from effectful.ops.handler import coproduct, fwd, handler
+from effectful.internals.operator import OPERATORS
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +65,7 @@ def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
 
 def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
-    if var not in ctxof(body):  # type: ignore
+    if var not in fvsof(body):  # type: ignore
         return body
     else:
         return fwd(None)
@@ -81,7 +73,7 @@ def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Ex
 
 def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """eta reduction"""
-    if var not in ctxof(body):  # type: ignore
+    if var not in fvsof(body):  # type: ignore
         return body
     else:
         return fwd(None)
@@ -162,7 +154,7 @@ eager_mixed = functools.reduce(
 
 def test_lambda_calculus_1():
 
-    x, y = gensym(int), gensym(int)
+    x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
         e1 = x() + 1
@@ -178,7 +170,7 @@ def test_lambda_calculus_1():
 
 def test_lambda_calculus_2():
 
-    x, y = gensym(int), gensym(int)
+    x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
@@ -188,7 +180,7 @@ def test_lambda_calculus_2():
 
 def test_lambda_calculus_3():
 
-    x, y, f = gensym(int), gensym(int), gensym(Callable)
+    x, y, f = defop(int), defop(int), defop(Callable)
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
@@ -198,7 +190,7 @@ def test_lambda_calculus_3():
 
 def test_lambda_calculus_4():
 
-    x, f, g = gensym(int), gensym(Callable), gensym(Callable)
+    x, f, g = defop(int), defop(Callable), defop(Callable)
 
     with handler(eager_mixed):
         add1 = Lam(x, (x() + 1))
@@ -209,16 +201,16 @@ def test_lambda_calculus_4():
 
 def test_lambda_calculus_5():
 
-    x = gensym(int)
+    x = defop(int)
 
     with handler(eager_mixed):
         e_add1 = Let(x, x(), (x() + 1))
         f_add1 = Lam(x, e_add1)
 
-        assert x in ctxof(e_add1)
+        assert x in fvsof(e_add1)
         assert e_add1.args[0] != x
 
-        assert x not in ctxof(f_add1)
+        assert x not in fvsof(f_add1)
         assert f_add1.args[0] != f_add1.args[1].args[0]
 
         assert App(f_add1, 1) == 2
@@ -227,7 +219,7 @@ def test_lambda_calculus_5():
 
 def test_arithmetic_1():
 
-    x_, y_ = gensym(int), gensym(int)
+    x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
     with handler(eager_mixed):
@@ -238,7 +230,7 @@ def test_arithmetic_1():
 
 def test_arithmetic_2():
 
-    x_, y_ = gensym(int), gensym(int)
+    x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
     with handler(eager_mixed):
@@ -250,7 +242,7 @@ def test_arithmetic_2():
 
 def test_arithmetic_3():
 
-    x_, y_ = gensym(int), gensym(int)
+    x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
     with handler(eager_mixed):
@@ -261,7 +253,7 @@ def test_arithmetic_3():
 
 def test_arithmetic_4():
 
-    x_, y_ = gensym(int), gensym(int)
+    x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
     with handler(eager_mixed):
@@ -276,7 +268,7 @@ def test_arithmetic_4():
 
 def test_arithmetic_5():
 
-    x, y = gensym(int), gensym(int)
+    x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
         assert Let(x, x() + 3, x() + 1) == x() + 4

@@ -10,15 +10,14 @@ from effectful.indexed.handlers import (
     indexed,
 )
 from effectful.indexed.ops import Indexable, IndexSet, indices_of
-from effectful.internals.sugar import gensym
-from effectful.ops.core import ctxof
-from effectful.ops.handler import handler
+from effectful.ops.semantics import fvsof, handler
+from effectful.ops.syntax import defop
 
 torch.distributions.Distribution.set_default_validate_args(False)
 
 
 def test_indexed_sample():
-    b = gensym(int, name="b")
+    b = defop(int, name="b")
 
     def model():
         loc, scale = (
@@ -42,11 +41,11 @@ def test_indexed_sample():
 
             # samples from indexed distributions should also be indexed
             assert t.shape == torch.Size([2])
-            assert b in ctxof(t)
+            assert b in fvsof(t)
 
 
 def test_named_dist():
-    x, y = gensym(int, name="x"), gensym(int, name="y")
+    x, y = defop(int, name="x"), defop(int, name="y")
     d = NamedDistribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
 
     expected_indices = IndexSet({x: {0, 1}, y: {0, 1, 2}})
@@ -66,7 +65,7 @@ def test_named_dist():
 
 
 def test_positional_dist():
-    x, y = gensym(int, name="x"), gensym(int, name="y")
+    x, y = defop(int, name="x"), defop(int, name="y")
     loc = Indexable(torch.tensor(0.0).expand((2, 3)))[x(), y()]
     scale = Indexable(torch.tensor(1.0).expand((2, 3)))[x(), y()]
 

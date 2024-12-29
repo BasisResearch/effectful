@@ -39,15 +39,15 @@ from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Operation, defop
-from effectful.ops.handler import (
+from effectful.ops.semantics import coproduct, fwd, handler
+from effectful.ops.syntax import (
+    ObjectInterpretation,
     bind_result,
     bind_result_to_method,
-    coproduct,
-    fwd,
-    handler,
+    defop,
+    implements,
 )
+from effectful.ops.types import Operation
 
 P = ParamSpec("P")
 T = TypeVar("T")

@@ -5,11 +5,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
 import torch
 
 import effectful.indexed.internals.utils
-import effectful.internals.sugar
+import effectful.internals.torch
 
-from ...internals.sugar import partial_eval, sizesof
-from ...ops.core import Operation, Term
-from ...ops.core import defun
+from ...internals.torch import partial_eval, sizesof
+from ...ops.syntax import defun
+from ...ops.types import Operation, Term
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -329,4 +329,4 @@ def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
     return partial_eval(t, order=indexes)
 
 
-Indexable = effectful.internals.sugar.Indexable
+Indexable = effectful.internals.torch.Indexable

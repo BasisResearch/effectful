@@ -14,7 +14,8 @@ from torch.testing import assert_close
 
 from effectful.indexed.internals.utils import name_to_sym
 from effectful.indexed.ops import IndexSet, indices_of, to_tensor
-from effectful.internals.sugar import gensym, torch_getitem
+from effectful.internals.torch import torch_getitem
+from effectful.ops.syntax import defop
 
 ##################################################
 # Test cases
@@ -109,7 +110,7 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
     expanded = indexed_dist.expand(extra_batch_shape + indexed_dist.batch_shape)
     sample = expanded.sample(indexed_sample_shape + sample_shape)
     indexed_sample = torch_getitem(
-        sample, tuple(gensym(int)() for _ in range(len(indexed_sample_shape)))
+        sample, tuple(defop(int)() for _ in range(len(indexed_sample_shape)))
     )
 
     assert (

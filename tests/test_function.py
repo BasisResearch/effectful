@@ -7,9 +7,10 @@ from typing import Callable, TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import OPERATORS, gensym
-from effectful.ops.core import Expr, Interpretation, Term, as_term, ctxof, typeof
-from effectful.ops.handler import coproduct, fwd, handler
+from effectful.internals.operator import OPERATORS
+from effectful.ops.semantics import coproduct, fvsof, fwd, handler, typeof
+from effectful.ops.syntax import as_term, defop
+from effectful.ops.types import Expr, Interpretation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ eager_mixed = functools.reduce(
 
 def test_defun_1():
 
-    x, y = gensym(int), gensym(int)
+    x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
 
@@ -110,8 +111,8 @@ def test_defun_1():
             return x + y() + 1
 
         assert typeof(f1) is collections.abc.Callable
-        assert y in ctxof(f1)
-        assert x not in ctxof(f1)
+        assert y in fvsof(f1)
+        assert x not in fvsof(f1)
 
         assert f1(1) == y() + 2
         assert f1(x()) == x() + y() + 1
@@ -154,7 +155,7 @@ def test_defun_3():
 
 def test_defun_4():
 
-    x = gensym(int)
+    x = defop(int)
 
     with handler(eager_mixed):
 

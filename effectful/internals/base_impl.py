@@ -1,27 +1,14 @@
-import abc
 import collections
 import functools
 import inspect
+import operator
 import typing
-from typing import (
-    Annotated,
-    Any,
-    Callable,
-    Dict,
-    Generic,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import Bound, NoDefaultRule
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -30,39 +17,20 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-class Operation(abc.ABC, Generic[Q, V]):
+def rename(
+    subs: Mapping[Operation[..., S], Operation[..., S]],
+    leaf_value: V,  # Union[Term[V], Operation[..., V], V],
+) -> V:  # Union[Term[V], Operation[..., V], V]:
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, evaluate
 
-    @abc.abstractmethod
-    def __eq__(self, other):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __hash__(self):
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __scope_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> "Interpretation[T, Type[T]]":
-        raise NotImplementedError
-
-    @typing.final
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
-
-        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
+    if isinstance(leaf_value, Operation):
+        return subs.get(leaf_value, leaf_value)  # type: ignore
+    elif isinstance(leaf_value, Term):
+        with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
+            return evaluate(leaf_value)  # type: ignore
+    else:
+        return leaf_value
 
 
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
@@ -81,7 +49,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.internals.sugar import NoDefaultRule
+        from effectful.ops.syntax import NoDefaultRule
 
         try:
             return self.signature(*args, **kwargs)
@@ -89,14 +57,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.internals.sugar import (
-            Bound,
-            Scoped,
-            _embed_registry,
-            embed,
-            gensym,
-            rename,
-        )
+        from effectful.ops.syntax import Bound, Scoped, as_data, defop
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -135,7 +96,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         # recursively rename bound variables from innermost to outermost scope
         for scope in sorted(bound_vars.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {var: gensym(var) for var in bound_vars[scope]}
+            renaming_map = {var: defop(var) for var in bound_vars[scope]}
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
                 bound_sig.arguments[name] = tree.map_structure(
@@ -143,10 +104,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     bound_sig.arguments[name],
                 )
 
-        tm = _embed_registry.dispatch(object)(
+        tm = _as_data_registry.dispatch(object)(
             self, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
         )
-        return embed(tm)  # type: ignore
+        return as_data(tm)  # type: ignore
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)
@@ -180,10 +141,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         else:
             return anno
 
-    def __scope_rule__(
+    def __fvs_rule__(
         self, *args: Q.args, **kwargs: Q.kwargs
     ) -> "Interpretation[T, Type[T]]":
-        from effectful.internals.sugar import Bound
+        from effectful.ops.syntax import Bound
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -210,141 +171,111 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return self.signature.__name__
 
 
-def defop(signature: Callable[Q, V]) -> Operation[Q, V]:
-    return _BaseOperation(signature)
+_as_data_registry = functools.singledispatch(lambda v: v)
+as_data_register = _as_data_registry.register
+
+_as_term_registry = functools.singledispatch(lambda v: v)
+as_term_register = _as_term_registry.register
 
 
-class Term(abc.ABC, Generic[T]):
-    __match_args__ = ("op", "args", "kwargs")
+@as_data_register(object)
+class BaseTerm(Generic[T], Term[T]):
+    _op: Operation[..., T]
+    _args: Sequence[Expr]
+    _kwargs: Sequence[Tuple[str, Expr]]
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        args: Sequence[Expr],
+        kwargs: Sequence[Tuple[str, Expr]],
+    ):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    def __repr__(self):
+        from effectful.ops.semantics import strof
+
+        return strof(self)
+
+    def __eq__(self, other) -> bool:
+        from effectful.internals.operator import OPERATORS
+
+        return OPERATORS[operator.eq](self, other)  # type: ignore
 
     @property
-    @abc.abstractmethod
-    def op(self) -> Operation[..., T]:
-        """Abstract property for the operation."""
-        pass
+    def op(self):
+        return self._op
 
     @property
-    @abc.abstractmethod
-    def args(self) -> Sequence["Expr[Any]"]:
-        """Abstract property for the arguments."""
-        pass
+    def args(self):
+        return self._args
 
     @property
-    @abc.abstractmethod
-    def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
-        """Abstract property for the keyword arguments."""
-        pass
+    def kwargs(self):
+        return self._kwargs
 
 
-Expr = Union[T, Term[T]]
+@as_term_register(object)
+def _unembed_literal(value: T) -> T:
+    return value
 
 
-def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
-    """Syntactic equality, ignoring the interpretation of the terms."""
-    match x, other:
-        case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            kwargs_d, kwargs2_d = dict(kwargs), dict(kwargs2)
-            try:
-                tree.assert_same_structure(
-                    (op, args, kwargs_d), (op2, args2, kwargs2_d), check_types=True
-                )
-            except (TypeError, ValueError):
-                return False
-            return all(
-                tree.flatten(
-                    tree.map_structure(
-                        syntactic_eq, (op, args, kwargs_d), (op2, args2, kwargs2_d)
-                    )
-                )
+@as_data_register(Operation)
+def _embed_literal_op(expr: Operation[P, T]) -> Operation[P, T]:
+    return expr
+
+
+@as_term_register(Operation)
+def _unembed_literal_op(value: Operation[P, T]) -> Operation[P, T]:
+    return value
+
+
+@as_data_register(collections.abc.Callable)  # type: ignore
+class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+        from effectful.ops.semantics import funcall
+
+        return funcall(self, *args, **kwargs)  # type: ignore
+
+
+@as_term_register(collections.abc.Callable)  # type: ignore
+def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, funcall
+    from effectful.ops.syntax import defop, defun
+
+    assert not isinstance(value, Term)
+
+    try:
+        sig = inspect.signature(value)
+    except ValueError:
+        return value
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
             )
-        case Term(_, _, _), _:
-            return False
-        case _, Term(_, _, _):
-            return False
-        case _, _:
-            return x == other
-    return False
 
+    bound_sig = sig.bind(
+        **{name: defop(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
 
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            funcall: funcall.__default_rule__,
+        }
+    ):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
 
-
-@defop  # type: ignore
-def apply(
-    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
-) -> T:
-    if op in intp:
-        return intp[op](*args, **kwargs)
-    elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
-    else:
-        return op.__default_rule__(*args, **kwargs)  # type: ignore
-
-
-def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> Expr[T]:
-    if intp is None:
-        from effectful.internals.runtime import get_interpretation
-
-        intp = get_interpretation()
-
-    match as_term(expr):
-        case Term(op, args, kwargs):
-            (args, kwargs) = tree.map_structure(
-                functools.partial(evaluate, intp=intp), (args, dict(kwargs))
-            )
-            return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
-        case literal:
-            return literal
-
-
-def ctxof(term: Expr[S]) -> Interpretation[T, Type[T]]:
-    from effectful.internals.runtime import interpreter
-
-    _ctx: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
-
-    def _update_ctx(_, op, *args, **kwargs):
-        _ctx.setdefault(op, op.__type_rule__(*args, **kwargs))
-        for bound_var in op.__scope_rule__(*args, **kwargs):
-            _ctx.pop(bound_var, None)
-
-    with interpreter({apply: _update_ctx}):  # type: ignore
-        evaluate(as_term(term))  # type: ignore
-
-    return _ctx
-
-
-def to_string(term: Expr[S]) -> str:
-    from effectful.internals.runtime import interpreter
-
-    def _to_str(_, op, *args, **kwargs):
-        return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
-
-    with interpreter({apply: _to_str}):  # type: ignore
-        return evaluate(as_term(term))  # type: ignore
-
-
-def typeof(term: Expr[T]) -> Type[T]:
-    from effectful.internals.runtime import interpreter
-
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
-        return evaluate(term)  # type: ignore
-
-
-def as_term(value: Expr[T]) -> Expr[T]:
-    from effectful.internals.sugar import _as_term_registry
-
-    if isinstance(value, Term):
-        return value  # type: ignore
-    else:
-        impl: Callable[[T], Expr[T]]
-        impl = _as_term_registry.dispatch(type(value))  # type: ignore
-        return impl(value)
-
-
-@defop
-def defun(
-    body: T,
-    *args: Annotated[Operation, Bound()],
-    **kwargs: Annotated[Operation, Bound()],
-) -> Callable[..., T]:
-    raise NoDefaultRule
+    return defun(body, *bound_sig.args, **bound_sig.kwargs)

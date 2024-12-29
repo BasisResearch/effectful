@@ -4,7 +4,7 @@ from typing import Optional
 import pyro
 import torch
 
-from effectful.ops.core import defop
+from effectful.ops.syntax import defop
 
 
 @defop

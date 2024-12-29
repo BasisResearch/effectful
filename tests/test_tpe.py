@@ -5,10 +5,10 @@ import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.internals.sugar import gensym, torch_getitem
-from effectful.ops.core import Term, as_term, evaluate
-from effectful.ops.core import defun
-from effectful.ops.handler import handler
+from effectful.internals.torch import torch_getitem
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import as_term, defop, defun
+from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ T = TypeVar("T")
 
 
 def test_tpe_1():
-    i, j = gensym(int), gensym(int)
+    i, j = defop(int), defop(int)
     xval, y1_val, y2_val = torch.rand(2, 3), torch.rand(2), torch.rand(3)
     expected = torch.add(torch.add(xval, y1_val[..., None]), y2_val[None])
 
@@ -43,7 +43,7 @@ def test_tpe_2():
     xval, ival = torch.rand(2, 3), torch.arange(2)
     expected = torch.sum(xval[ival, :], dim=0)
 
-    j = gensym(int)
+    j = defop(int)
     x_j = torch_getitem(
         xval,
         (
@@ -70,7 +70,7 @@ def test_tpe_3():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    j, k = gensym(int), gensym(int)
+    j, k = defop(int), defop(int)
     x_j = torch_getitem(
         xval,
         (
@@ -110,7 +110,7 @@ def test_tpe_4():
 
 def test_tpe_known_index():
     """Constant indexes are partially evaluated away."""
-    i, j = gensym(int, name="i"), gensym(int, name="j")
+    i, j = defop(int, name="i"), defop(int, name="j")
 
     cases = [
         torch_getitem(torch.ones(2, 3), (i(), 1)),
@@ -127,11 +127,11 @@ def test_tpe_known_index():
 
 def test_tpe_constant_eval():
     """Constant indexes are partially evaluated away."""
-    height, width = gensym(int, name="height"), gensym(int, name="width")
+    height, width = defop(int, name="height"), defop(int, name="width")
     t = torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
     A = torch_getitem(t, (height(), width()))
 
-    layer = gensym(int, name="layer")
+    layer = defop(int, name="layer")
     with handler({height: lambda: layer() // 3, width: lambda: layer() % 3}):
         A_layer = evaluate(A)
     with handler({layer: lambda: 2}):
@@ -143,8 +143,8 @@ def test_tpe_constant_eval():
 def test_tpe_stack():
     xval, yval = torch.rand(10, 5), torch.rand(10, 5)
 
-    i = gensym(int)
-    j = gensym(int)
+    i = defop(int)
+    j = defop(int)
     x_ij = torch_getitem(
         xval,
         (i(), j()),
@@ -233,7 +233,7 @@ INDEXING_CASES = [
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_getitem_ellipsis_and_none(tensor, idx):
-    from effectful.internals.sugar import _getitem_ellipsis_and_none
+    from effectful.internals.torch import _getitem_ellipsis_and_none
 
     expected = tensor[idx]
     t, i = _getitem_ellipsis_and_none(tensor, idx)

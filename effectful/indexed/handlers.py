@@ -5,8 +5,8 @@ import torch
 from typing_extensions import ParamSpec
 
 from ..handlers.pyro import pyro_sample
-from ..ops.core import Interpretation, Operation
-from ..ops.handler import fwd
+from ..ops.semantics import fwd
+from ..ops.types import Interpretation, Operation
 from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
 from .ops import Indexable, indices_of, to_tensor
 

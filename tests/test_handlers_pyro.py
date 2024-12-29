@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import PyroShim, pyro_sample
-from effectful.ops.core import defop
-from effectful.ops.handler import fwd, handler
+from effectful.ops.semantics import fwd, handler
+from effectful.ops.syntax import defop
 
 pyro.settings.set(module_local_params=True)
 

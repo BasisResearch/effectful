@@ -4,7 +4,7 @@ from typing import Callable, ParamSpec, Tuple, TypeVar
 import torch
 import tree
 
-from ..internals.sugar import _register_torch_op, sizesof, torch_getitem
+from ..internals.torch import _register_torch_op, sizesof, torch_getitem
 from .ops import to_tensor
 
 P = ParamSpec("P")

@@ -2,8 +2,8 @@ import torch
 
 from effectful.indexed.func import grad, hessian, jacfwd, jacrev, jvp, vjp, vmap
 from effectful.indexed.ops import Indexable, IndexSet, indices_of, to_tensor
-from effectful.internals.sugar import gensym
-from effectful.ops.core import Term
+from effectful.ops.syntax import defop
+from effectful.ops.types import Term
 
 
 def test_grad_1():
@@ -11,7 +11,7 @@ def test_grad_1():
         return torch.sin(x)
 
     grad_sin = grad(sin)
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn([10]))[i()]
     cos_x_actual = grad_sin(x)
 
@@ -32,7 +32,7 @@ def test_grad_1():
 
 
 def test_jacfwd_1():
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn(11, 5))[i()]
     jacobian = jacfwd(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
@@ -41,8 +41,8 @@ def test_jacfwd_1():
 
 
 def test_jacfwd_nested_1():
-    i = gensym(int, name="i")
-    a = gensym(int, name="a")
+    i = defop(int, name="i")
+    a = defop(int, name="a")
     y = Indexable(torch.randn(7, 5))[a()]
     x = Indexable(torch.randn(11, 5))[i()]
 
@@ -56,8 +56,8 @@ def test_jacfwd_nested_1():
 
 
 def test_jacfwd_nested_2():
-    i = gensym(int, name="i")
-    a = gensym(int, name="a")
+    i = defop(int, name="i")
+    a = defop(int, name="a")
     y = Indexable(torch.randn(7, 5))[a()]
     x = Indexable(torch.randn(11, 5))[i()]
 
@@ -71,7 +71,7 @@ def test_jacfwd_nested_2():
 
 
 def test_jacrev_1():
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn(11, 5))[i()]
     jacobian = jacrev(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
@@ -83,14 +83,14 @@ def test_hessian_1():
     def f(x):
         return x.sin().sum()
 
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn(11, 5))[i()]
     hess = hessian(f)(x)  # equivalent to jacfwd(jacrev(f))(x)
     assert torch.allclose(to_tensor(hess, [i]), to_tensor(torch.diag(-x.sin()), [i]))
 
 
 def test_jvp_1():
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn([10]))[i()]
 
     def f(x):
@@ -103,8 +103,8 @@ def test_jvp_1():
 
 
 def test_jvp_nested():
-    i = gensym(int, name="i")
-    j = gensym(int, name="j")
+    i = defop(int, name="i")
+    j = defop(int, name="j")
     x = Indexable(torch.randn([10]))[i()]
     a = Indexable(torch.ones([7]))[j()]
 
@@ -118,7 +118,7 @@ def test_jvp_nested():
 
 
 def test_vjp_1():
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn([10, 5]))[i()]
     y = Indexable(torch.ones([10, 5]))[i()]
     z = Indexable(torch.ones([10, 5]))[i()]
@@ -132,8 +132,8 @@ def test_vjp_1():
 
 
 def test_vjp_nested():
-    i = gensym(int, name="i")
-    a = gensym(int, name="a")
+    i = defop(int, name="i")
+    a = defop(int, name="a")
     x = Indexable(torch.randn([10, 5]))[i()]
     z = Indexable(torch.ones([7, 5]))[a()]
     y = Indexable(torch.ones([10, 7, 5]))[i(), a()]
@@ -147,7 +147,7 @@ def test_vjp_nested():
 
 
 def test_vmap_1():
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = torch.randn([10, 5])
     x_i = Indexable(x)[i()]
 
@@ -160,8 +160,8 @@ def test_vmap_1():
 
 
 def test_vmap_nested():
-    i = gensym(int, name="i")
-    j = gensym(int, name="j")
+    i = defop(int, name="i")
+    j = defop(int, name="j")
     x = torch.randn([10, 5, 4])
     x_i = Indexable(x)[i()]
     y = torch.randn([7])
@@ -182,7 +182,7 @@ def test_vmap_and_grad():
     sin = torch.sin
     grad_sin = grad(sin)
 
-    i = gensym(int, name="i")
+    i = defop(int, name="i")
     x = Indexable(torch.randn([10, 7]))[i()]
 
     # implicit vmap over i and explicit vmap over first positional dim

@@ -5,7 +5,8 @@ from typing import Callable, Generic, Mapping, Optional, Tuple, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.core import Interpretation, Operation, defop
+from effectful.ops.syntax import defop
+from effectful.ops.types import Interpretation, Operation
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -51,7 +52,7 @@ def _get_args() -> Tuple[Tuple, Mapping]:
 
 
 def _set_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
-    from effectful.ops.handler import handler
+    from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
     def _cont_wrapper(res: Optional[S], *a: P.args, **k: P.kwargs) -> T:
@@ -64,7 +65,7 @@ def _set_result(fn: Callable[P, T]) -> Callable[Concatenate[Optional[S], P], T]:
 
 
 def _set_args(fn: Callable[P, T]) -> Callable[P, T]:
-    from effectful.ops.handler import handler
+    from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
@@ -79,7 +80,7 @@ def _set_prompt(
     cont: Callable[Concatenate[Optional[S], P], T],
     body: Callable[P, T],
 ) -> Callable[P, T]:
-    from effectful.ops.handler import handler
+    from effectful.ops.semantics import handler
 
     @functools.wraps(body)
     def bound_body(*a: P.args, **k: P.kwargs) -> T:

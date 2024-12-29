@@ -2,7 +2,7 @@ import pytest
 from pyroapi import pyro_backend
 
 from effectful.handlers.minipyro import default_runner
-from effectful.ops.handler import handler
+from effectful.ops.semantics import handler
 
 
 @pytest.fixture

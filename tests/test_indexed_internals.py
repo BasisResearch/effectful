@@ -15,10 +15,9 @@ from effectful.indexed.ops import (
     stack,
     to_tensor,
 )
-from effectful.internals.sugar import gensym, sizesof, torch_getitem
-from effectful.ops.core import evaluate
-from effectful.ops.core import defun
-from effectful.ops.handler import handler
+from effectful.internals.torch import sizesof, torch_getitem
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import defop, defun
 
 torch.distributions.Distribution.set_default_validate_args(False)
 
@@ -82,7 +81,7 @@ def indexed_batch(t, batch_len, name_to_dim):
 )
 def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     batch_dim_names = {
-        gensym(int, name=f"b{i}"): -1 - i
+        defop(int, name=f"b{i}"): -1 - i
         for i in range(len(plate_shape), len(plate_shape) + len(batch_shape))
     }
     full_batch_shape = enum_shape + batch_shape + plate_shape
@@ -108,7 +107,7 @@ def test_indices_of_tensor(enum_shape, plate_shape, batch_shape, event_shape):
 )
 def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_shape):
     batch_dim_names = {
-        gensym(int, name=f"b{i}"): -1 - i
+        defop(int, name=f"b{i}"): -1 - i
         for i in range(len(plate_shape), len(plate_shape) + len(batch_shape))
     }
 
@@ -141,7 +140,7 @@ def test_indices_of_distribution(enum_shape, plate_shape, batch_shape, event_sha
 def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
     name_to_dim = {
-        gensym(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
+        defop(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
     }
 
     full_batch_shape = enum_shape + batch_shape + plate_shape
@@ -185,7 +184,7 @@ def test_stack():
     t1 = torch.randn(5, 3)
     t2 = torch.randn(5, 3)
 
-    a, b, x = gensym(int, name="a"), gensym(int, name="b"), gensym(int, name="x")
+    a, b, x = defop(int, name="a"), defop(int, name="b"), defop(int, name="x")
     l1 = Indexable(t1)[a(), b()]
     l2 = Indexable(t2)[a(), b()]
     l3 = stack([l1, l2], x)
@@ -200,7 +199,7 @@ def test_stack():
 
 def test_index_incompatible():
     """Check that using the same index in two incompatible dimensions raises an error."""
-    i = gensym(int)
+    i = defop(int)
     with pytest.raises(ValueError):
         torch_getitem(torch.randn(2, 3), (i(), i()))
 
@@ -208,7 +207,7 @@ def test_index_incompatible():
 
 
 def test_simple_distribution():
-    i = gensym(int)
+    i = defop(int)
     t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
 
     dist.Beta(t, t, validate_args=False)
@@ -221,14 +220,14 @@ def test_simple_distribution():
 )
 def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape):
     cf_dim = -1 - len(plate_shape)
-    new_dim = gensym(int, name="new_dim")
+    new_dim = defop(int, name="new_dim")
     ind1, ind2, ind3 = (
         IndexSet({new_dim: {0}}),
         IndexSet({new_dim: {1}}),
         IndexSet({new_dim: {2}}),
     )
     name_to_dim = {
-        gensym(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
+        defop(int, name=f"dim_{i}"): cf_dim - i for i in range(len(batch_shape))
     }
 
     full_batch_shape = enum_shape + batch_shape + plate_shape
@@ -263,7 +262,7 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
 
 
 def test_to_tensor():
-    i, j, k = gensym(int, name="i"), gensym(int, name="j"), gensym(int, name="k")
+    i, j, k = defop(int, name="i"), defop(int, name="j"), defop(int, name="k")
 
     # test that named dimensions can be removed and reordered
     t = torch.randn([2, 3, 4])
