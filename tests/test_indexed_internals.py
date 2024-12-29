@@ -15,7 +15,7 @@ from effectful.indexed.ops import (
     stack,
     to_tensor,
 )
-from effectful.internals.torch import sizesof, torch_getitem
+from effectful.internals.torch_tensor import sizesof, torch_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop, defun
 

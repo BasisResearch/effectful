@@ -5,7 +5,7 @@ import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.internals.torch import torch_getitem
+from effectful.internals.torch_tensor import torch_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import as_term, defop, defun
 from effectful.ops.types import Term
@@ -233,7 +233,7 @@ INDEXING_CASES = [
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_getitem_ellipsis_and_none(tensor, idx):
-    from effectful.internals.torch import _getitem_ellipsis_and_none
+    from effectful.internals.torch_tensor import _getitem_ellipsis_and_none
 
     expected = tensor[idx]
     t, i = _getitem_ellipsis_and_none(tensor, idx)
