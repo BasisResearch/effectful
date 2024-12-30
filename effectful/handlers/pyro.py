@@ -76,25 +76,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["infer"]["_do_not_trace"] = True
 
 
-def get_sample_msg_device(
-    dist: pyro.distributions.torch_distribution.TorchDistribution,
-    value: Optional[Union[torch.Tensor, float, int, bool]],
-) -> torch.device:
-    # some gross code to infer the device of the obs_mask tensor
-    #   because distributions are hard to introspect
-    if isinstance(value, torch.Tensor):
-        return value.device
-    else:
-        dist_ = dist
-        while hasattr(dist_, "base_dist"):
-            dist_ = dist_.base_dist
-        for param_name in dist_.arg_constraints.keys():
-            p = getattr(dist_, param_name)
-            if isinstance(p, torch.Tensor):
-                return p.device
-    raise ValueError(f"could not infer device for {dist} and {value}")
-
-
 class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribution):
     """A distribution wrapper that lazily converts indexed dimensions to
     positional.
@@ -336,3 +317,22 @@ def guess_max_plate_nesting(
     elbo = pyro.infer.Trace_ELBO()
     elbo._guess_max_plate_nesting(model, guide, args, kwargs)
     return elbo.max_plate_nesting
+
+
+def get_sample_msg_device(
+    dist: pyro.distributions.torch_distribution.TorchDistribution,
+    value: Optional[Union[torch.Tensor, float, int, bool]],
+) -> torch.device:
+    # some gross code to infer the device of the obs_mask tensor
+    #   because distributions are hard to introspect
+    if isinstance(value, torch.Tensor):
+        return value.device
+    else:
+        dist_ = dist
+        while hasattr(dist_, "base_dist"):
+            dist_ = dist_.base_dist
+        for param_name in dist_.arg_constraints.keys():
+            p = getattr(dist_, param_name)
+            if isinstance(p, torch.Tensor):
+                return p.device
+    raise ValueError(f"could not infer device for {dist} and {value}")
