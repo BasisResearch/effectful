@@ -4,8 +4,8 @@ from typing import Any, Dict, Iterable, Set, TypeVar, Union
 import torch
 
 import effectful.handlers.indexed.ops.impl as impl
-
-from ..internals.utils import name_to_sym
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -48,6 +48,11 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
 def indices_of(value: Any) -> IndexSet:
     return IndexSet(**{k.__name__: v for (k, v) in impl.indices_of(value).items()})  # type: ignore
+
+
+@functools.lru_cache(maxsize=None)
+def name_to_sym(name: str) -> Operation[[], int]:
+    return defop(int, name=name)
 
 
 def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:

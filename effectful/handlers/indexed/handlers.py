@@ -4,11 +4,10 @@ import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.handlers.pyro import pyro_sample
+from effectful.handlers.pyro import get_sample_msg_device, pyro_sample
 from effectful.ops.semantics import fwd
 from effectful.ops.types import Interpretation, Operation
 
-from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
 from .ops import Indexable, indices_of, to_tensor
 
 P = ParamSpec("P")
@@ -173,6 +172,26 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
 
     def enumerate_support(self, expand=True):
         return self._to_named(self.base_dist.enumerate_support(expand))
+
+
+class _LazyPlateMessenger(pyro.poutine.indep_messenger.IndepMessenger):
+    prefix: str = "__index_plate__"
+
+    def __init__(self, name: str, *args, **kwargs):
+        self._orig_name: str = name
+        super().__init__(f"{self.prefix}_{name}", *args, **kwargs)
+
+    @property
+    def frame(self) -> pyro.poutine.indep_messenger.CondIndepStackFrame:
+        return pyro.poutine.indep_messenger.CondIndepStackFrame(
+            name=self.name, dim=self.dim, size=self.size, counter=0
+        )
+
+    def _process_message(self, msg):
+        if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
+            return
+
+        super()._process_message(msg)
 
 
 def _indexed_pyro_sample_handler(
