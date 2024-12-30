@@ -63,15 +63,14 @@ def defop(t, *, name=None):
         def func(*args, **kwargs):  # type: ignore
             raise NoDefaultRule
 
-        func.__name__ = name or t.__name__
         functools.update_wrapper(func, t)
-        return defop(func)
+        return defop(func, name=name)
     elif isinstance(t, type):
 
         def func() -> t:  # type: ignore
             raise NoDefaultRule
 
-        return typing.cast(Operation[[], T], defop(func))
+        return typing.cast(Operation[[], T], defop(func, name=name))
     elif isinstance(t, collections.abc.Callable):
         from effectful.internals.base_impl import _BaseOperation
 

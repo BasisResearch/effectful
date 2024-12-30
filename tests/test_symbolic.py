@@ -180,7 +180,7 @@ def test_lambda_calculus_2():
 
 def test_lambda_calculus_3():
 
-    x, y, f = defop(int), defop(int), defop(Callable)
+    x, y, f = defop(int), defop(int), defop(collections.abc.Callable)
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
@@ -190,7 +190,11 @@ def test_lambda_calculus_3():
 
 def test_lambda_calculus_4():
 
-    x, f, g = defop(int), defop(Callable), defop(Callable)
+    x, f, g = (
+        defop(int),
+        defop(collections.abc.Callable),
+        defop(collections.abc.Callable),
+    )
 
     with handler(eager_mixed):
         add1 = Lam(x, (x() + 1))

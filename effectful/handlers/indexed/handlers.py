@@ -7,6 +7,7 @@ from typing_extensions import ParamSpec
 from effectful.handlers.pyro import pyro_sample
 from effectful.ops.semantics import fwd
 from effectful.ops.types import Interpretation, Operation
+
 from .internals.handlers import _LazyPlateMessenger, get_sample_msg_device
 from .ops import Indexable, indices_of, to_tensor
 

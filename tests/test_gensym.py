@@ -50,10 +50,9 @@ def test_gensym_operation_2():
     assert g_op.__name__ == op.__name__
 
     # the new operation should have no default rule
-    f_sym = defop(f)
-    t = f_sym(0)
+    t = g_op(0)
     assert isinstance(t, Term)
-    assert t.op == f_sym
+    assert t.op == g_op
     assert t.args == (0,)
 
 

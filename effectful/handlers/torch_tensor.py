@@ -7,6 +7,7 @@ import torch
 import tree
 from typing_extensions import ParamSpec
 
+import effectful.handlers.operator  # noqa: F401
 from effectful.internals.base_impl import BaseTerm, as_data_register
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof

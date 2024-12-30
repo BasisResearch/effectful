@@ -2,7 +2,7 @@ import collections
 import functools
 import logging
 import operator
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
@@ -147,7 +147,7 @@ def test_defun_3():
             return x + y
 
         @as_term
-        def app2(f: Callable, x: int, y: int) -> int:
+        def app2(f: collections.abc.Callable, x: int, y: int) -> int:
             return f(x, y)
 
         assert app2(f2, 1, 2) == 3
@@ -161,8 +161,9 @@ def test_defun_4():
 
         @as_term
         def compose(
-            f: Callable[[int], int], g: Callable[[int], int]
-        ) -> Callable[[int], int]:
+            f: collections.abc.Callable[[int], int],
+            g: collections.abc.Callable[[int], int],
+        ) -> collections.abc.Callable[[int], int]:
 
             @as_term
             def fg(x: int) -> int:
