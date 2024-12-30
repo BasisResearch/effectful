@@ -1,13 +1,16 @@
 import typing
-from typing import Any, List, Optional, Sequence, Union
+from typing import Any, Callable, List, Optional, Sequence, Union
 
 import pyro
 import torch
+from typing_extensions import ParamSpec
 
 from effectful.handlers.indexed.ops import Indexable, indices_of, to_tensor
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation
+
+P = ParamSpec("P")
 
 
 @defop
@@ -313,3 +316,24 @@ def _indexed_pyro_sample_handler(
 #: `pyro.sample` by lazily converting the indexed dimensions to positional
 #: dimensions.
 indexed = {pyro_sample: _indexed_pyro_sample_handler}
+
+
+@pyro.poutine.block()
+@pyro.validation_enabled(False)
+@torch.no_grad()
+def guess_max_plate_nesting(
+    model: Callable[P, Any], guide: Callable[P, Any], *args: P.args, **kwargs: P.kwargs
+) -> int:
+    """
+    Guesses the maximum plate nesting level by running `pyro.infer.Trace_ELBO`
+
+    :param model: Python callable containing Pyro primitives.
+    :type model: Callable[P, Any]
+    :param guide: Python callable containing Pyro primitives.
+    :type guide: Callable[P, Any]
+    :return: maximum plate nesting level
+    :rtype: int
+    """
+    elbo = pyro.infer.Trace_ELBO()
+    elbo._guess_max_plate_nesting(model, guide, args, kwargs)
+    return elbo.max_plate_nesting
