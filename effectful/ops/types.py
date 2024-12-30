@@ -5,6 +5,7 @@ from typing import (
     Callable,
     Generic,
     Mapping,
+    Optional,
     Sequence,
     Tuple,
     Type,
@@ -82,3 +83,9 @@ class Term(abc.ABC, Generic[T]):
 Expr = Union[T, Term[T]]
 
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+
+MaybeResult = Optional[T]
+
+
+class Annotation:
+    pass

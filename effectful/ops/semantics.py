@@ -7,7 +7,7 @@ import tree
 from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import NoDefaultRule, as_term, defop, defun
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Interpretation, MaybeResult, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -52,7 +52,7 @@ def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 
 @defop
-def fwd(__result: Optional[S], *args, **kwargs) -> S:
+def fwd(__result: MaybeResult[S], *args, **kwargs) -> S:
     return __result  # type: ignore
 
 

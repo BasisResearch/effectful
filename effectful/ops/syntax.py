@@ -7,17 +7,20 @@ from typing import Annotated, Callable, Generic, Optional, Sequence, Type, TypeV
 import tree
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import (
+    Annotation,
+    Expr,
+    Interpretation,
+    MaybeResult,
+    Operation,
+    Term,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-
-
-class Annotation:
-    pass
 
 
 @dataclasses.dataclass
@@ -91,14 +94,14 @@ def defun(
     raise NoDefaultRule
 
 
-def bind_result(fn: Callable[Concatenate[Optional[T], P], T]) -> Callable[P, T]:
+def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, T]:
     from effectful.internals.runtime import _get_result
 
     return lambda *a, **k: fn(_get_result(), *a, **k)
 
 
 def bind_result_to_method(
-    fn: Callable[Concatenate[V, Optional[T], P], T]
+    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
 ) -> Callable[Concatenate[V, P], T]:
     return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
 
