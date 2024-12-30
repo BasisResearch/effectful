@@ -4,9 +4,8 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
 
 import torch
 
-import effectful.handlers.indexed.internals.utils
-import effectful.handlers.torch_tensor
-from effectful.handlers.torch_tensor import partial_eval, sizesof
+import effectful.handlers.torch
+from effectful.handlers.torch import partial_eval, sizesof
 from effectful.ops.syntax import defun
 from effectful.ops.types import Operation, Term
 
@@ -328,4 +327,4 @@ def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
     return partial_eval(t, order=indexes)
 
 
-Indexable = effectful.handlers.torch_tensor.Indexable
+Indexable = effectful.handlers.torch.Indexable

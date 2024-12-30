@@ -14,7 +14,7 @@ from torch.testing import assert_close
 
 from effectful.handlers.indexed.ops import IndexSet, indices_of, to_tensor
 from effectful.handlers.indexed.ops.compat import name_to_sym
-from effectful.handlers.torch_tensor import torch_getitem
+from effectful.handlers.torch import torch_getitem
 from effectful.ops.syntax import defop
 
 ##################################################
