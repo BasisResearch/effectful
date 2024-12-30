@@ -106,7 +106,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def partial_eval(t: T, order=None) -> T:
+def _partial_eval(t: T, order=None) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -159,6 +159,10 @@ def partial_eval(t: T, order=None) -> T:
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
+def to_tensor(t: torch.Tensor, order=None) -> torch.Tensor:
+    return _partial_eval(t, order=order)
+
+
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
 
@@ -183,7 +187,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             # note: this cast is a lie. partial_eval can return non-tensors, as
             # can torch_fn. for example, some torch functions return tuples,
             # which partial_eval handles.
-            return typing.cast(torch.Tensor, partial_eval(tm))
+            return typing.cast(torch.Tensor, _partial_eval(tm))
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
@@ -389,10 +393,6 @@ class EagerTensorTerm(torch.Tensor):
     @property
     def grad_fn(self):
         return self.args[0].grad_fn
-
-
-def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
-    return partial_eval(t, order=indexes)
 
 
 def indexed_func_wrapper(
