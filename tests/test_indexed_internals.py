@@ -6,16 +6,14 @@ import pytest
 import torch
 
 from effectful.handlers.indexed.ops import (
-    Indexable,
     IndexSet,
     cond,
     cond_n,
     gather,
     indices_of,
     stack,
-    to_tensor,
 )
-from effectful.handlers.torch import sizesof, torch_getitem
+from effectful.handlers.torch import Indexable, sizesof, to_tensor, torch_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop, defun
 

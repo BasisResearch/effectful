@@ -68,5 +68,3 @@ def stack(
 
 cond = impl.cond
 cond_n = impl.cond_n
-to_tensor = impl.to_tensor
-Indexable = impl.Indexable

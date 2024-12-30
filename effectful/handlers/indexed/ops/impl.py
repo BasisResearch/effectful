@@ -4,8 +4,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
 
 import torch
 
-import effectful.handlers.torch
-from effectful.handlers.torch import partial_eval, sizesof
+from effectful.handlers.torch import Indexable, sizesof
 from effectful.ops.syntax import defun
 from effectful.ops.types import Operation, Term
 
@@ -321,10 +320,3 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
         result = cond(result if result is not None else value, value, tst)
     assert result is not None
     return result
-
-
-def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
-    return partial_eval(t, order=indexes)
-
-
-Indexable = effectful.handlers.torch.Indexable

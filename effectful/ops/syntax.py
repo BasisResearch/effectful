@@ -70,6 +70,7 @@ def defop(t, *, name=None):
         def func() -> t:  # type: ignore
             raise NoDefaultRule
 
+        func.__name__ = name or t.__name__
         return typing.cast(Operation[[], T], defop(func, name=name))
     elif isinstance(t, collections.abc.Callable):
         from effectful.internals.base_impl import _BaseOperation

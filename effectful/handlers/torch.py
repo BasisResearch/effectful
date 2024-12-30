@@ -8,7 +8,6 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.operator  # noqa: F401
-from effectful.handlers.indexed.ops import to_tensor
 from effectful.internals.base_impl import BaseTerm, as_data_register
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
@@ -390,6 +389,10 @@ class EagerTensorTerm(torch.Tensor):
     @property
     def grad_fn(self):
         return self.args[0].grad_fn
+
+
+def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
+    return partial_eval(t, order=indexes)
 
 
 def indexed_func_wrapper(

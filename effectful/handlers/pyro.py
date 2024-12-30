@@ -1,11 +1,11 @@
 import typing
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Union
 
 import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.handlers.indexed.ops import Indexable, indices_of, to_tensor
+from effectful.handlers.torch import Indexable, sizesof, to_tensor
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation
@@ -101,11 +101,13 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     """
 
+    indices: Mapping[Operation[[], int], int]
+
     def __init__(
         self, base_dist: pyro.distributions.torch_distribution.TorchDistribution
     ):
         self.base_dist = base_dist
-        self.indices = indices_of(base_dist)
+        self.indices = sizesof(base_dist.sample())
         super().__init__()
 
     def _to_positional(self, value: torch.Tensor) -> torch.Tensor:
@@ -159,10 +161,7 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
 
     @property
     def batch_shape(self):
-        return (
-            torch.Size([len(s) for s in self.indices.values()])
-            + self.base_dist.batch_shape
-        )
+        return tuple(self.indices.values()) + self.base_dist.batch_shape
 
     @property
     def event_shape(self):
@@ -297,7 +296,7 @@ def _indexed_pyro_sample_handler(
         plate = _LazyPlateMessenger(
             str(var),
             dim=-shape_len + dim_offset,
-            size=len(size),
+            size=size,
         )
         plate.__enter__()
         plates.append(plate)
