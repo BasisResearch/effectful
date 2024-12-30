@@ -4,11 +4,12 @@ import logging
 import operator
 from typing import Annotated, Callable, TypeVar
 
+import pytest
 from typing_extensions import ParamSpec
 
 from effectful.handlers.operator import OPERATORS
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, as_term, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -279,3 +280,101 @@ def test_arithmetic_5():
         assert Let(x, x() + 3, x() + y() + 1) == y() + x() + 4
 
         assert Let(x, x() + 3, Let(x, x() + 4, x() + y())) == x() + y() + 7
+
+
+def test_defun_1():
+
+    x, y = defop(int), defop(int)
+
+    with handler(eager_mixed):
+
+        @as_term
+        def f1(x: int) -> int:
+            return x + y() + 1
+
+        assert typeof(f1) is collections.abc.Callable
+        assert y in fvsof(f1)
+        assert x not in fvsof(f1)
+
+        assert f1(1) == y() + 2
+        assert f1(x()) == x() + y() + 1
+
+
+def test_defun_2():
+
+    with handler(eager_mixed):
+
+        @as_term
+        def f1(x: int, y: int) -> int:
+            return x + y
+
+        @as_term
+        def f2(x: int, y: int) -> int:
+
+            @as_term
+            def f2_inner(y: int) -> int:
+                return x + y
+
+            return f2_inner(y)  # type: ignore
+
+        assert f1(1, 2) == f2(1, 2) == 3
+
+
+def test_defun_3():
+
+    with handler(eager_mixed):
+
+        @as_term
+        def f2(x: int, y: int) -> int:
+            return x + y
+
+        @as_term
+        def app2(f: collections.abc.Callable, x: int, y: int) -> int:
+            return f(x, y)
+
+        assert app2(f2, 1, 2) == 3
+
+
+def test_defun_4():
+
+    x = defop(int)
+
+    with handler(eager_mixed):
+
+        @as_term
+        def compose(
+            f: collections.abc.Callable[[int], int],
+            g: collections.abc.Callable[[int], int],
+        ) -> collections.abc.Callable[[int], int]:
+
+            @as_term
+            def fg(x: int) -> int:
+                return f(g(x))
+
+            return fg  # type: ignore
+
+        @as_term
+        def add1(x: int) -> int:
+            return x + 1
+
+        @as_term
+        def add1_twice(x: int) -> int:
+            return compose(add1, add1)(x)
+
+        assert add1_twice(1) == compose(add1, add1)(1) == 3
+        assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2
+
+
+def test_defun_5():
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        as_term(lambda *xs: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        as_term(lambda **ys: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        as_term(lambda y=1, **ys: None)
+
+    with pytest.raises(NotImplementedError, match="variadic"):
+        as_term(lambda x, *xs, y=1, **ys: None)

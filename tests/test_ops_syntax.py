@@ -74,3 +74,19 @@ def test_gensym_annotations():
     # binding annotations must be preserved for ctxof to work properly
     assert x not in fvsof(lam(x, x()))
     assert y in fvsof(lam(x, y()))
+
+
+def test_operation_metadata():
+    """Test that Operation instances preserve decorated function metadata."""
+
+    def f(x):
+        """Docstring for f"""
+        return x + 1
+
+    f_op = defop(f)
+    ff_op = defop(f)
+
+    assert f.__doc__ == f_op.__doc__
+    assert f.__name__ == f_op.__name__
+    assert hash(f) == hash(f_op)
+    assert f_op == ff_op
