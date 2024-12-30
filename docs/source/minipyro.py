@@ -14,7 +14,6 @@ allows effectful-minipyro to be run against `pyroapi`'s test suite.
 """
 
 import random
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -25,7 +24,6 @@ import numpy as np
 import pyroapi
 import torch.distributions as distributions
 import torch.optim
-from pyro.distributions import validation_enabled
 from torch import (
     Size,
     Tensor,
@@ -503,60 +501,39 @@ def Trace_ELBO(**kwargs):
     return elbo
 
 
-# This is a Jit wrapper around elbo() that (1) delays tracing until the first
-# invocation, and (2) registers pyro.param() statements with torch.jit.trace.
-# This version does not support variable number of args or non-tensor kwargs.
-class JitTrace_ELBO:
-    def __init__(self, **kwargs):
-        self.ignore_jit_warnings = kwargs.pop("ignore_jit_warnings", False)
-        self._compiled = None
-        self._param_trace = None
-
-    def __call__(self, model, guide, *args):
-        # On first call, initialize params and save their names.
-        if self._param_trace is None:
-            with block(), trace() as tr, block(
-                hide_fn=lambda op, *_, **__: op != param
-            ):
-                elbo(model, guide, *args)
-            self._param_trace = tr
-
-        # Augment args with reads from the global param store.
-        unconstrained_params = tuple(
-            param(name).unconstrained() for name in self._param_trace
-        )
-        params_and_args = unconstrained_params + args
-
-        # On first call, create a compiled elbo.
-        if self._compiled is None:
-
-            def compiled(*params_and_args):
-                unconstrained_params = params_and_args[: len(self._param_trace)]
-                args = params_and_args[len(self._param_trace) :]
-                for name, unconstrained_param in zip(
-                    self._param_trace, unconstrained_params
-                ):
-                    constrained_param = param(name)  # assume param has been initialized
-                    assert constrained_param.unconstrained() is unconstrained_param
-                    self._param_trace[name].value = constrained_param
-                with replay(self._param_trace):
-                    return elbo(model, guide, *args)
-
-            with validation_enabled(False), warnings.catch_warnings():
-                if self.ignore_jit_warnings:
-                    warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
-                self._compiled = torch.jit.trace(
-                    compiled, params_and_args, check_trace=False
-                )
-
-        return self._compiled(*params_and_args)
-
-
 pyroapi.register_backend(
     "effectful-minipyro",
     {
-        "infer": "effectful.handlers.minipyro",
-        "optim": "effectful.handlers.minipyro",
-        "pyro": "effectful.handlers.minipyro",
+        "infer": "docs.source.minipyro",
+        "optim": "docs.source.minipyro",
+        "pyro": "docs.source.minipyro",
     },
 )
+
+
+def example():
+    """
+    The following is a short script showing how to use effectful-minipyro.
+    It is taken from a larger battery of tests available as part of the `pyro-api package <https://github.com/pyro-ppl/pyro-api/tree/master>`_.
+    """
+
+    def model(data):
+        p = param("p", torch.tensor(0.5))
+        sample("x", distributions.Bernoulli(p), obs=data)
+
+    def guide(data):
+        pass
+
+    with handler(default_runner):
+        data = torch.tensor(0.0)
+        get_param_store().clear()
+        elbo = Trace_ELBO(ignore_jit_warnings=True)
+
+        optimizer = Adam({"lr": 1e-6})
+        inference = SVI(model, guide, optimizer, elbo)
+        for i in range(2):
+            inference.step(data)
+
+
+if __name__ == "__main__":
+    example()

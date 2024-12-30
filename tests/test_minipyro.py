@@ -1,7 +1,8 @@
+import importlib
+
 import pytest
 from pyroapi import pyro_backend
 
-from effectful.handlers.minipyro import default_runner
 from effectful.ops.semantics import handler
 
 
@@ -12,8 +13,11 @@ def jit():
 
 @pytest.fixture
 def backend():
+
+    minipyro = importlib.import_module("docs.source.minipyro", package="effectful")
+
     with pyro_backend("effectful-minipyro"):
-        with handler(default_runner):
+        with handler(minipyro.default_runner):
             yield
 
 
