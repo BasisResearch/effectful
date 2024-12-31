@@ -6,14 +6,12 @@ import pyro
 import pyro.distributions as dist
 import pytest
 import torch
-from pyro.poutine.indep_messenger import CondIndepStackFrame
 
 from effectful.handlers.indexed.ops import IndexSet, indices_of
 from effectful.handlers.pyro import (
     NamedDistribution,
     PositionalDistribution,
     PyroShim,
-    indexed,
     pyro_sample,
 )
 from effectful.handlers.torch import Indexable
@@ -24,6 +22,12 @@ torch.distributions.Distribution.set_default_validate_args(False)
 pyro.settings.set(module_local_params=True)
 
 logger = logging.getLogger(__name__)
+
+
+def setup_module():
+    pyro.settings.set(module_local_params=True)
+    pyro.enable_validation(False)
+    torch.distributions.Distribution.set_default_validate_args(False)
 
 
 @defop
@@ -88,7 +92,18 @@ class HMM(pyro.nn.PyroModule):
 
 @pytest.mark.parametrize("num_particles", [1, 10])
 @pytest.mark.parametrize("max_plate_nesting", [3, float("inf")])
-@pytest.mark.parametrize("use_guide", [False, True])
+@pytest.mark.parametrize(
+    "use_guide",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                reason="distribution type restrictions in AutoDiscreteParallel"
+            ),
+        ),
+    ],
+)
 @pytest.mark.parametrize("num_steps", [2, 3, 4, 5, 6])
 @pytest.mark.parametrize("Elbo", [pyro.infer.TraceEnum_ELBO, pyro.infer.TraceTMC_ELBO])
 def test_smoke_condition_enumerate_hmm_elbo(
@@ -153,18 +168,14 @@ def test_indexed_sample():
         def _pyro_sample(self, msg):
             # named dimensions should not be visible to Pyro
             assert indices_of(msg["fn"]) == IndexSet({})
-            assert (
-                CondIndepStackFrame(name="__index_plate___b", dim=-2, size=3, counter=0)
-                in msg["cond_indep_stack"]
-            )
+            assert any(f.name == "b" and f.dim == -2 for f in msg["cond_indep_stack"])
 
     with CheckSampleMessenger(), PyroShim():
-        with handler(indexed):
-            t = model()
+        t = model()
 
-            # samples from indexed distributions should also be indexed
-            assert t.shape == torch.Size([2])
-            assert b in fvsof(t)
+        # samples from indexed distributions should also be indexed
+        assert t.shape == torch.Size([2])
+        assert b in fvsof(t)
 
 
 def test_named_dist():
