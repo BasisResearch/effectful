@@ -3,27 +3,6 @@ from typing import Optional, Union
 import pyro
 import pyro.infer.reparam
 import torch
-from pyro.poutine.indep_messenger import CondIndepStackFrame, IndepMessenger
-
-
-class _LazyPlateMessenger(IndepMessenger):
-    prefix: str = "__index_plate__"
-
-    def __init__(self, name: str, *args, **kwargs):
-        self._orig_name: str = name
-        super().__init__(f"{self.prefix}_{name}", *args, **kwargs)
-
-    @property
-    def frame(self) -> CondIndepStackFrame:
-        return CondIndepStackFrame(
-            name=self.name, dim=self.dim, size=self.size, counter=0
-        )
-
-    def _process_message(self, msg):
-        if msg["type"] not in ("sample",) or pyro.poutine.util.site_is_subsample(msg):
-            return
-
-        super()._process_message(msg)
 
 
 def get_sample_msg_device(
