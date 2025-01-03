@@ -5,7 +5,6 @@ import pytest
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.handlers.indexed.ops import IndexSet, indices_of
 from effectful.handlers.torch import (
     Indexable,
     grad,
@@ -13,6 +12,7 @@ from effectful.handlers.torch import (
     jacfwd,
     jacrev,
     jvp,
+    sizesof,
     to_tensor,
     torch_getitem,
     vjp,
@@ -295,7 +295,7 @@ def test_grad_1():
     cos_x_actual = grad_sin(x)
 
     assert isinstance(cos_x_actual, Term)
-    assert indices_of(cos_x_actual) == IndexSet({i: (set(range(10)))})
+    assert sizesof(cos_x_actual) == {i: 10}
 
     cos_x_expected = x.cos()
 
