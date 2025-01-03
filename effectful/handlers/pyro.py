@@ -61,7 +61,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         # create a positional dimension for every named index in the target shape
         name_to_dim = {}
-        for i, (k, v) in enumerate(reversed(indices.items())):
+        for i, (k, v) in enumerate(reversed(list(indices.items()))):
             if k in t_indices:
                 t = to_tensor(t, [k])
             else:
@@ -70,7 +70,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         # create a positional dimension for every remaining named index in `t`
         n_batch_and_dist_named = len(t.shape)
-        for i, k in enumerate(reversed(sizesof(t).keys())):
+        for i, k in enumerate(reversed(list(sizesof(t).keys()))):
             t = to_tensor(t, [k])
             name_to_dim[k] = -n_batch_and_dist_named - i - 1
 
