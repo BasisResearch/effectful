@@ -1,14 +1,10 @@
-from typing import Optional, Protocol
+from typing import Any, Callable, Optional, Protocol, Union
 
 import pyro
 import torch
 from typing_extensions import ParamSpec
 
-from effectful.handlers.pyro import (
-    NamedDistribution,
-    get_sample_msg_device,
-    pyro_sample,
-)
+from effectful.handlers.pyro import NamedDistribution, pyro_sample
 from effectful.handlers.torch import sizesof
 from effectful.ops.semantics import fwd
 from effectful.ops.types import Interpretation
@@ -24,6 +20,25 @@ class GetMask(Protocol):
         device: torch.device = torch.device("cpu"),
         name: Optional[str] = None,
     ): ...
+
+
+def get_sample_msg_device(
+    dist: pyro.distributions.torch_distribution.TorchDistribution,
+    value: Optional[Union[torch.Tensor, float, int, bool]],
+) -> torch.device:
+    # some gross code to infer the device of the obs_mask tensor
+    #   because distributions are hard to introspect
+    if isinstance(value, torch.Tensor):
+        return value.device
+    else:
+        dist_ = dist
+        while hasattr(dist_, "base_dist"):
+            dist_ = dist_.base_dist
+        for param_name in dist_.arg_constraints.keys():
+            p = getattr(dist_, param_name)
+            if isinstance(p, torch.Tensor):
+                return p.device
+    raise ValueError(f"could not infer device for {dist} and {value}")
 
 
 def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tensor]:
@@ -55,3 +70,24 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
         return fwd(None, name, dist, *args, mask=mask, **kwargs)
 
     return {pyro_sample: _pyro_sample}
+
+
+@pyro.poutine.block()
+@pyro.validation_enabled(False)
+@torch.no_grad()
+def guess_max_plate_nesting(
+    model: Callable[P, Any], guide: Callable[P, Any], *args: P.args, **kwargs: P.kwargs
+) -> int:
+    """
+    Guesses the maximum plate nesting level by running `pyro.infer.Trace_ELBO`
+
+    :param model: Python callable containing Pyro primitives.
+    :type model: Callable[P, Any]
+    :param guide: Python callable containing Pyro primitives.
+    :type guide: Callable[P, Any]
+    :return: maximum plate nesting level
+    :rtype: int
+    """
+    elbo = pyro.infer.Trace_ELBO()
+    elbo._guess_max_plate_nesting(model, guide, args, kwargs)
+    return elbo.max_plate_nesting
