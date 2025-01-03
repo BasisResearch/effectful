@@ -13,7 +13,7 @@ from effectful.handlers.pyro import (
     PyroShim,
     pyro_sample,
 )
-from effectful.handlers.torch import Indexable, sizesof
+from effectful.handlers.torch import Indexable, sizesof, torch_getitem
 from effectful.ops.semantics import fvsof, fwd, handler
 from effectful.ops.syntax import defop
 
@@ -229,3 +229,12 @@ def test_positional_dist():
     assert sizesof(d._from_positional(d.sample((6, 7)))) == expected_indices
     assert d.sample().shape == torch.Size([2, 3, 4, 5])
     assert d.sample((6, 7)).shape == torch.Size([6, 7, 2, 3, 4, 5])
+
+
+def test_simple_distribution():
+    i = defop(int)
+    t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
+
+    dist.Beta(t, t, validate_args=False)
+
+    dist.Bernoulli(t, validate_args=False)

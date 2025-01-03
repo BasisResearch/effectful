@@ -473,3 +473,45 @@ def test_vmap_and_grad():
     for ii in range(10):
         for jj in range(7):
             assert torch.allclose(actual_t[ii, jj], x_t[ii, jj].cos())
+
+
+def test_index_incompatible():
+    """Check that using the same index in two incompatible dimensions raises an error."""
+    i = defop(int)
+    with pytest.raises(ValueError):
+        torch_getitem(torch.randn(2, 3), (i(), i()))
+
+    torch_getitem(torch.randn(2, 2), (i(), i()))
+
+
+def test_to_tensor():
+    i, j, k = defop(int, name="i"), defop(int, name="j"), defop(int, name="k")
+
+    # test that named dimensions can be removed and reordered
+    t = torch.randn([2, 3, 4])
+    t1 = to_tensor(Indexable(t)[i(), j(), k()], [i, j, k])
+    t2 = to_tensor(Indexable(t.permute((2, 0, 1)))[k(), i(), j()], [i, j, k])
+    t3 = to_tensor(Indexable(t.permute((1, 0, 2)))[j(), i(), k()], [i, j, k])
+
+    assert torch.allclose(t1, t2)
+    assert torch.allclose(t1, t3)
+
+    # test that to_tensor can remove some but not all named dimensions
+    t_ijk = Indexable(t)[i(), j(), k()]
+    t_ij = to_tensor(t_ijk, [k])
+    assert set(sizesof(t_ij).keys()) == set([i, j])
+    assert t_ij.shape == torch.Size([4])
+
+    t_i = to_tensor(t_ij, [j])
+    assert set(sizesof(t_i).keys()) == set([i])
+    assert t_i.shape == torch.Size([3, 4])
+
+    t_ = to_tensor(t_i, [i])
+    assert set(sizesof(t_).keys()) == set([])
+    assert t_.shape == torch.Size([2, 3, 4])
+    assert torch.allclose(t_, t)
+
+    t__ = to_tensor(t_, [])
+    assert set(sizesof(t__).keys()) == set([])
+    assert t__.shape == torch.Size([2, 3, 4])
+    assert torch.allclose(t_, t__)
