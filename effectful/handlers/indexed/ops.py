@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, Optional, Set, TypeVar, Union
 import torch
 
 from effectful.handlers.torch import Indexable, sizesof
-from effectful.ops.syntax import defop, defun
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation, Term
 
 K = TypeVar("K")
@@ -255,7 +255,7 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
         if k in indexset_vars
     }
 
-    return defun(value, *binding.keys())(*[v() for v in binding.values()])
+    return deffn(value, *binding.keys())(*[v() for v in binding.values()])
 
 
 def stack(

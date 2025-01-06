@@ -9,7 +9,7 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.operator import OPERATORS
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, as_term, defop
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop, defterm
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ def test_defun_1():
 
     with handler(eager_mixed):
 
-        @as_term
+        @defterm
         def f1(x: int) -> int:
             return x + y() + 1
 
@@ -304,14 +304,14 @@ def test_defun_2():
 
     with handler(eager_mixed):
 
-        @as_term
+        @defterm
         def f1(x: int, y: int) -> int:
             return x + y
 
-        @as_term
+        @defterm
         def f2(x: int, y: int) -> int:
 
-            @as_term
+            @defterm
             def f2_inner(y: int) -> int:
                 return x + y
 
@@ -324,11 +324,11 @@ def test_defun_3():
 
     with handler(eager_mixed):
 
-        @as_term
+        @defterm
         def f2(x: int, y: int) -> int:
             return x + y
 
-        @as_term
+        @defterm
         def app2(f: collections.abc.Callable, x: int, y: int) -> int:
             return f(x, y)
 
@@ -341,23 +341,23 @@ def test_defun_4():
 
     with handler(eager_mixed):
 
-        @as_term
+        @defterm
         def compose(
             f: collections.abc.Callable[[int], int],
             g: collections.abc.Callable[[int], int],
         ) -> collections.abc.Callable[[int], int]:
 
-            @as_term
+            @defterm
             def fg(x: int) -> int:
                 return f(g(x))
 
             return fg  # type: ignore
 
-        @as_term
+        @defterm
         def add1(x: int) -> int:
             return x + 1
 
-        @as_term
+        @defterm
         def add1_twice(x: int) -> int:
             return compose(add1, add1)(x)
 
@@ -368,13 +368,13 @@ def test_defun_4():
 def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        as_term(lambda *xs: None)
+        defterm(lambda *xs: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        as_term(lambda **ys: None)
+        defterm(lambda **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        as_term(lambda y=1, **ys: None)
+        defterm(lambda y=1, **ys: None)
 
     with pytest.raises(NotImplementedError, match="variadic"):
-        as_term(lambda x, *xs, y=1, **ys: None)
+        defterm(lambda x, *xs, y=1, **ys: None)

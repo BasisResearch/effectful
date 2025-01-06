@@ -38,17 +38,12 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.semantics import coproduct, fwd, handler
-from effectful.ops.syntax import (
-    ObjectInterpretation,
-    bind_result,
-    bind_result_to_method,
-    defop,
-    implements,
-)
-from effectful.ops.types import Operation
+from effectful.ops.syntax import ObjectInterpretation, bind_result, defop, implements
+from effectful.ops.types import MaybeResult, Operation
 
 P = ParamSpec("P")
 T = TypeVar("T")
+V = TypeVar("V")
 
 # Poutine has a notion of 'messages', which are dictionaries
 # that are passed between handlers (or 'Messengers') in order
@@ -141,6 +136,12 @@ def set_rng_seed(seed: Union[int, Seed]):
 # It is written in the form of an `ObjectInterpretation`, which
 # maps each `Operation` to a method on an `object`, allowing the
 # `Operation`s to share state.
+
+
+def bind_result_to_method(
+    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
+) -> Callable[Concatenate[V, P], T]:
+    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
 
 
 class Tracer(ObjectInterpretation):

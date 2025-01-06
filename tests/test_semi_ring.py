@@ -6,7 +6,7 @@ from typing import TypeVar
 
 from effectful.handlers.operator import OPERATORS
 from effectful.ops.semantics import evaluate, fwd, handler
-from effectful.ops.syntax import NoDefaultRule, as_term, defop
+from effectful.ops.syntax import NoDefaultRule, defop, defterm
 from effectful.ops.types import Operation, Term
 
 K = TypeVar("K")
@@ -216,7 +216,7 @@ opt = {
 }
 
 
-@as_term
+@defterm
 def add1(v: int) -> int:
     return v + 1
 

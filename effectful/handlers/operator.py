@@ -5,8 +5,8 @@ from typing import Any, Callable, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.base_impl import BaseTerm, as_data_register
-from effectful.ops.syntax import NoDefaultRule, defop, syntactic_eq
+from effectful.internals.base_impl import _BaseTerm
+from effectful.ops.syntax import NoDefaultRule, defdata, defop, syntactic_eq
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -131,8 +131,8 @@ def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
-@as_data_register(numbers.Number)
-class NumberTerm(Generic[_T_Number], BaseTerm[_T_Number]):
+@defdata.register(numbers.Number)
+class NumberTerm(Generic[_T_Number], _BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators

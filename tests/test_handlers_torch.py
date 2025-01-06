@@ -19,7 +19,7 @@ from effectful.handlers.torch import (
     vmap,
 )
 from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import as_term, defop, defun
+from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def test_tpe_1():
     assert actual.numel() == 1
     assert actual.dim() == actual.ndim == 0
 
-    f_actual = defun(actual, i, j)
+    f_actual = deffn(actual, i, j)
     for ii in range(2):
         for jj in range(3):
             assert f_actual(torch.tensor(ii), torch.tensor(jj)) == expected[ii, jj]
@@ -73,7 +73,7 @@ def test_tpe_2():
     assert actual.shape == ()
     assert actual.numel() == 1
 
-    f_actual = defun(actual, j)
+    f_actual = deffn(actual, j)
     for jj in range(3):
         assert f_actual(torch.tensor(jj)) == expected[jj]
 
@@ -99,7 +99,7 @@ def test_tpe_3():
     assert actual.shape == ()
     assert actual.numel() == 1
 
-    f_actual = defun(actual, j, k)
+    f_actual = deffn(actual, j, k)
     for jj in range(3):
         for kk in range(4):
             assert f_actual(torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
@@ -109,7 +109,7 @@ def test_tpe_4():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    @as_term
+    @defterm
     def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:  # type: ignore
         return torch.sum(x[k, ival, j], dim=0)
 
@@ -168,13 +168,13 @@ def test_tpe_stack():
     actual = torch.stack((x_ij, y_ij))
     assert isinstance(actual, torch.Tensor)
     assert actual.shape == (2,)
-    f_actual = defun(actual, i, j)
+    f_actual = deffn(actual, i, j)
 
     for ii in range(10):
         for jj in range(5):
             actual = f_actual(ii, jj)
             expected = torch.stack(
-                (defun(x_ij, i, j)(ii, jj), defun(y_ij, i, j)(ii, jj))
+                (deffn(x_ij, i, j)(ii, jj), deffn(y_ij, i, j)(ii, jj))
             )
             assert torch.equal(actual, expected)
 

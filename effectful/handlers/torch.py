@@ -8,10 +8,10 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.operator  # noqa: F401
-from effectful.internals.base_impl import BaseTerm, as_data_register
+from effectful.internals.base_impl import _BaseTerm
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import NoDefaultRule, defop
+from effectful.ops.syntax import NoDefaultRule, defdata, defop
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -113,7 +113,7 @@ def _partial_eval(t: T, order=None) -> T:
     tensor, in the order they appear. All other variables remain free.
 
     """
-    from effectful.ops.syntax import defun
+    from effectful.ops.syntax import deffn
 
     if order is None:
         order = []
@@ -137,7 +137,7 @@ def _partial_eval(t: T, order=None) -> T:
     ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
 
     tpe_torch_fn = torch.func.vmap(
-        defun(t, *[var for (var, _) in ordered_sized_fvs]), randomness="different"
+        deffn(t, *[var for (var, _) in ordered_sized_fvs]), randomness="different"
     )
 
     inds = torch.broadcast_tensors(
@@ -268,7 +268,7 @@ class Indexable:
         return torch_getitem(self.t, key)
 
 
-@as_data_register(torch.Tensor)
+@defdata.register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
     match op, args, kwargs:
         case torch_getitem_, (torch.Tensor() as x, key), () if (
@@ -286,7 +286,7 @@ def _embed_tensor(op, args, kwargs):
             return TensorTerm(op, args, kwargs)
 
 
-class TensorTerm(BaseTerm[torch.Tensor]):
+class TensorTerm(_BaseTerm[torch.Tensor]):
     def __getitem__(
         self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
     ) -> Expr[torch.Tensor]:
