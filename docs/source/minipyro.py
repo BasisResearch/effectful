@@ -45,7 +45,7 @@ from effectful.ops.syntax import (
     defop,
     implements,
 )
-from effectful.ops.types import MaybeResult, Operation
+from effectful.ops.types import Operation
 
 P = ParamSpec("P")
 T = TypeVar("T")
