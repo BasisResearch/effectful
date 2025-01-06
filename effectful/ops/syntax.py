@@ -138,7 +138,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
-def _unembed_literal(value: T) -> T:
+def _(value: T) -> T:
     return value
 
 
