@@ -100,6 +100,7 @@ class _CustomSingleDispatchCallable(Generic[P, T]):
     ):
         self._func = func
         self._registry = functools.singledispatch(func)
+        functools.update_wrapper(self, func)
 
     @property
     def dispatch(self):
