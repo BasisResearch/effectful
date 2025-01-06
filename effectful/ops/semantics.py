@@ -154,7 +154,8 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
     def _update_fvs(_, op, *args, **kwargs):
         _fvs.add(op)
         for bound_var in op.__fvs_rule__(*args, **kwargs):
-            _fvs.pop(bound_var, None)
+            if bound_var in _fvs:
+                _fvs.remove(bound_var)
 
     with interpreter({apply: _update_fvs}):  # type: ignore
         evaluate(defterm(term))  # type: ignore
