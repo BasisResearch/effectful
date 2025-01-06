@@ -87,5 +87,5 @@ Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 MaybeResult = Optional[T]
 
 
-class Annotation:
+class ArgAnnotation:
     pass

@@ -6,7 +6,7 @@ from typing import Callable, Dict, Optional, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, as_term, defop, defun
+from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
 from effectful.ops.types import Expr, Interpretation, MaybeResult, Operation, Term
 
 P = ParamSpec("P")
@@ -29,9 +29,9 @@ def apply(
 
 
 @defop  # type: ignore
-def funcall(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    match as_term(fn):
-        case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == defun:
+def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    match defterm(fn):
+        case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == deffn:
             body: Expr[Callable[P, T]] = body_
             argvars: tuple[Operation, ...] = typing.cast(
                 tuple[Operation, ...], argvars_
@@ -119,7 +119,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
 
         intp = get_interpretation()
 
-    match as_term(expr):
+    match defterm(expr):
         case Term(op, args, kwargs):
             (args, kwargs) = tree.map_structure(
                 functools.partial(evaluate, intp=intp), (args, dict(kwargs))
@@ -143,7 +143,7 @@ def strof(term: Expr[S]) -> str:
         return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
 
     with interpreter({apply: _to_str}):  # type: ignore
-        return evaluate(as_term(term))  # type: ignore
+        return evaluate(defterm(term))  # type: ignore
 
 
 def fvsof(term: Expr[S]) -> Interpretation[T, Type[T]]:
@@ -157,6 +157,6 @@ def fvsof(term: Expr[S]) -> Interpretation[T, Type[T]]:
             _fvs.pop(bound_var, None)
 
     with interpreter({apply: _update_fvs}):  # type: ignore
-        evaluate(as_term(term))  # type: ignore
+        evaluate(defterm(term))  # type: ignore
 
     return _fvs

@@ -57,7 +57,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.ops.syntax import Bound, Scoped, as_data, defop
+        from effectful.ops.syntax import Bound, Scoped, defdata, defop
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -104,10 +104,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     bound_sig.arguments[name],
                 )
 
-        tm = _as_data_registry.dispatch(object)(
-            self, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())
-        )
-        return as_data(tm)  # type: ignore
+        return defdata(_BaseTerm(self, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())))  # type: ignore
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)
@@ -171,15 +168,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return self.signature.__name__
 
 
-_as_data_registry = functools.singledispatch(lambda v: v)
-as_data_register = _as_data_registry.register
-
-_as_term_registry = functools.singledispatch(lambda v: v)
-as_term_register = _as_term_registry.register
-
-
-@as_data_register(object)
-class BaseTerm(Generic[T], Term[T]):
+class _BaseTerm(Generic[T], Term[T]):
     _op: Operation[..., T]
     _args: Sequence[Expr]
     _kwargs: Sequence[Tuple[str, Expr]]
@@ -217,34 +206,17 @@ class BaseTerm(Generic[T], Term[T]):
         return self._kwargs
 
 
-@as_term_register(object)
-def _unembed_literal(value: T) -> T:
-    return value
-
-
-@as_data_register(Operation)
-def _embed_literal_op(expr: Operation[P, T]) -> Operation[P, T]:
-    return expr
-
-
-@as_term_register(Operation)
-def _unembed_literal_op(value: Operation[P, T]) -> Operation[P, T]:
-    return value
-
-
-@as_data_register(collections.abc.Callable)  # type: ignore
-class CallableTerm(Generic[P, T], BaseTerm[collections.abc.Callable[P, T]]):
+class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
     def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.semantics import funcall
+        from effectful.ops.semantics import call
 
-        return funcall(self, *args, **kwargs)  # type: ignore
+        return call(self, *args, **kwargs)  # type: ignore
 
 
-@as_term_register(collections.abc.Callable)  # type: ignore
 def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, funcall
-    from effectful.ops.syntax import defop, defun
+    from effectful.ops.semantics import apply, call
+    from effectful.ops.syntax import deffn, defop
 
     assert not isinstance(value, Term)
 
@@ -270,7 +242,7 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     with interpreter(
         {
             apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
-            funcall: funcall.__default_rule__,
+            call: call.__default_rule__,
         }
     ):
         body = value(
@@ -278,4 +250,4 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
             **{k: v() for k, v in bound_sig.kwargs.items()},
         )
 
-    return defun(body, *bound_sig.args, **bound_sig.kwargs)
+    return deffn(body, *bound_sig.args, **bound_sig.kwargs)

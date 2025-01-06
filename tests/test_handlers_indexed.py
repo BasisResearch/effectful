@@ -16,7 +16,7 @@ from effectful.handlers.indexed.ops import (
 )
 from effectful.handlers.torch import Indexable, sizesof, to_tensor
 from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import defun
+from effectful.ops.syntax import deffn
 
 torch.distributions.Distribution.set_default_validate_args(False)
 
@@ -177,7 +177,7 @@ def test_gather_tensor(enum_shape, plate_shape, batch_shape, event_shape):
 def indexed_to_defun(value, names):
     vars_ = sizesof(value)
     ordered_vars = [[v for v in vars_ if v is n][0] for n in names]
-    return defun(value, *ordered_vars)
+    return deffn(value, *ordered_vars)
 
 
 def test_stack():

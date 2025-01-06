@@ -8,7 +8,7 @@ import tree
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.types import (
-    Annotation,
+    ArgAnnotation,
     Expr,
     Interpretation,
     MaybeResult,
@@ -24,12 +24,12 @@ V = TypeVar("V")
 
 
 @dataclasses.dataclass
-class Bound(Annotation):
+class Bound(ArgAnnotation):
     scope: int = 0
 
 
 @dataclasses.dataclass
-class Scoped(Annotation):
+class Scoped(ArgAnnotation):
     scope: int = 0
 
 
@@ -86,7 +86,7 @@ def defop(t, *, name=None):
 
 
 @defop
-def defun(
+def deffn(
     body: T,
     *args: Annotated[Operation, Bound()],
     **kwargs: Annotated[Operation, Bound()],
@@ -94,16 +94,74 @@ def defun(
     raise NoDefaultRule
 
 
-def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, T]:
-    from effectful.internals.runtime import _get_result
+class _CustomSingleDispatchCallable(Generic[P, T]):
+    def __init__(
+        self, func: Callable[Concatenate[Callable[[type], Callable[P, T]], P], T]
+    ):
+        self._func = func
+        self._registry = functools.singledispatch(func)
+        functools.update_wrapper(self, func)
 
-    return lambda *a, **k: fn(_get_result(), *a, **k)
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        return self._func(self.dispatch, *args, **kwargs)
 
 
-def bind_result_to_method(
-    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
-) -> Callable[Concatenate[V, P], T]:
-    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
+@_CustomSingleDispatchCallable
+def defterm(dispatch, value: T) -> Expr[T]:
+    if isinstance(value, Term):
+        return value
+    else:
+        return dispatch(type(value))(value)
+
+
+@_CustomSingleDispatchCallable
+def defdata(dispatch, expr: Term[T]) -> Expr[T]:
+    from effectful.ops.semantics import typeof
+
+    if isinstance(expr, Term):
+        impl: Callable[
+            [Operation[..., T], Sequence, Sequence[tuple[str, object]]], Expr[T]
+        ]
+        impl = dispatch(typeof(expr))  # type: ignore
+        return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
+    else:
+        return expr
+
+
+@defterm.register(object)
+@defterm.register(Operation)
+@defterm.register(Term)
+def _(value: T) -> T:
+    return value
+
+
+@defdata.register(object)
+def _(op, args, kwargs):
+    from effectful.internals.base_impl import _BaseTerm
+
+    return _BaseTerm(op, args, kwargs)
+
+
+@defdata.register(collections.abc.Callable)
+def _(op, args, kwargs):
+    from effectful.internals.base_impl import _CallableTerm
+
+    return _CallableTerm(op, args, kwargs)
+
+
+@defterm.register(collections.abc.Callable)
+def _(fn: Callable[P, T]):
+    from effectful.internals.base_impl import _unembed_callable
+
+    return _unembed_callable(fn)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
@@ -133,27 +191,16 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     return False
 
 
-def as_term(value: Expr[T]) -> Expr[T]:
-    from effectful.internals.base_impl import _as_term_registry
+def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, T]:
+    from effectful.internals.runtime import _get_result
 
-    if isinstance(value, Term):
-        return value  # type: ignore
-    else:
-        impl: Callable[[T], Expr[T]]
-        impl = _as_term_registry.dispatch(type(value))  # type: ignore
-        return impl(value)
+    return lambda *a, **k: fn(_get_result(), *a, **k)
 
 
-def as_data(expr: Expr[T]) -> Expr[T]:
-    from effectful.internals.base_impl import _as_data_registry
-    from effectful.ops.semantics import typeof
-
-    if isinstance(expr, Term):
-        impl: Callable[[Operation[..., T], Sequence, Sequence[tuple]], Term[T]]
-        impl = _as_data_registry.dispatch(typeof(expr))
-        return impl(expr.op, expr.args, expr.kwargs)
-    else:
-        return expr
+def bind_result_to_method(
+    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
+) -> Callable[Concatenate[V, P], T]:
+    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
 
 
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
