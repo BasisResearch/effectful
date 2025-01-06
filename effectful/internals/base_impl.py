@@ -3,12 +3,12 @@ import functools
 import inspect
 import operator
 import typing
-from typing import Callable, Generic, Mapping, Sequence, Tuple, Type, TypeVar
+from typing import Callable, Generic, Mapping, Sequence, Set, Tuple, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -138,29 +138,27 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         else:
             return anno
 
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> "Interpretation[T, Type[T]]":
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set[Operation]:
         from effectful.ops.syntax import Bound
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
-        bound_vars: dict[Operation[..., T], Callable[..., Type[T]]] = {}
+        bound_vars: Set[Operation] = set()
         for param_name, param in bound_sig.signature.parameters.items():
             if typing.get_origin(param.annotation) is typing.Annotated:
                 for anno in param.annotation.__metadata__:
                     if isinstance(anno, Bound):
                         if param.kind is inspect.Parameter.VAR_POSITIONAL:
                             for bound_var in bound_sig.arguments[param_name]:
-                                bound_vars[bound_var] = bound_var.__type_rule__
+                                bound_vars.add(bound_var)
                         elif param.kind is inspect.Parameter.VAR_KEYWORD:
                             for bound_var in bound_sig.arguments[param_name].values():
-                                bound_vars[bound_var] = bound_var.__type_rule__
+                                bound_vars.add(bound_var)
                         else:
                             bound_var = bound_sig.arguments[param_name]
-                            bound_vars[bound_var] = bound_var.__type_rule__
+                            bound_vars.add(bound_var)
 
         return bound_vars
 

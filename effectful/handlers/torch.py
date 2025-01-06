@@ -180,7 +180,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
             raise NoDefaultRule
-        elif sized_fvs and set(sized_fvs.keys()) == set(fvsof(tm).keys()) - {
+        elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {
             torch_getitem,
             _torch_op,
         }:
