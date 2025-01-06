@@ -281,12 +281,12 @@ def _embed_tensor(op, args, kwargs):
                 if isinstance(k, Term)
             )
         ):
-            return EagerTensorTerm(x, key)
+            return _EagerTensorTerm(x, key)
         case _:
-            return TensorTerm(op, args, kwargs)
+            return _TensorTerm(op, args, kwargs)
 
 
-class TensorTerm(_BaseTerm[torch.Tensor]):
+class _TensorTerm(_BaseTerm[torch.Tensor]):
     def __getitem__(
         self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
     ) -> Expr[torch.Tensor]:
@@ -300,7 +300,7 @@ class TensorTerm(_BaseTerm[torch.Tensor]):
 
 
 @Term.register
-class EagerTensorTerm(torch.Tensor):
+class _EagerTensorTerm(torch.Tensor):
 
     op: Operation[..., torch.Tensor] = torch_getitem
     args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]

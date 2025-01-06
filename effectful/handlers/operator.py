@@ -20,7 +20,7 @@ _T_Number = TypeVar("_T_Number", bound=numbers.Number)
 OPERATORS: dict[Callable[..., Any], Operation[..., Any]] = {}
 
 
-def register_syntax_op(syntax_fn: Callable[P, T]):
+def _register_syntax_op(syntax_fn: Callable[P, T]):
     def register_syntax_op_fn(syntax_op_fn: Callable[P, T]):
         OPERATORS[syntax_fn] = defop(syntax_op_fn)
         return OPERATORS[syntax_fn]
@@ -28,7 +28,7 @@ def register_syntax_op(syntax_fn: Callable[P, T]):
     return register_syntax_op_fn
 
 
-def create_arithmetic_binop_rule(op):
+def _create_arithmetic_binop_rule(op):
     def rule(x: T, y: T) -> T:
         if not isinstance(x, Term) and not isinstance(y, Term):
             return op(x, y)
@@ -40,7 +40,7 @@ def create_arithmetic_binop_rule(op):
     return rule
 
 
-def create_arithmetic_unop_rule(op):
+def _create_arithmetic_unop_rule(op):
     def rule(x: T) -> T:
         if not isinstance(x, Term):
             return op(x)
@@ -50,7 +50,7 @@ def create_arithmetic_unop_rule(op):
     return rule
 
 
-def create_generic_rule(op):
+def _create_generic_rule(op):
     @functools.wraps(op)
     def rule(*args, **kwargs):
         if not any(isinstance(a, Term) for a in args) and not any(
@@ -63,7 +63,7 @@ def create_generic_rule(op):
     return rule
 
 
-ARITHMETIC_BINOPS = (
+_ARITHMETIC_BINOPS = (
     operator.add,
     operator.sub,
     operator.mul,
@@ -78,13 +78,13 @@ ARITHMETIC_BINOPS = (
     operator.or_,
     operator.xor,
 )
-ARITHMETIC_UNOPS = (
+_ARITHMETIC_UNOPS = (
     operator.neg,
     operator.pos,
     operator.abs,
     operator.invert,
 )
-OTHER_OPS = (
+_OTHER_OPS = (
     operator.not_,
     operator.lt,
     operator.le,
@@ -107,17 +107,17 @@ OTHER_OPS = (
     # reversed,
 )
 
-for op in ARITHMETIC_BINOPS:
-    register_syntax_op(op)(create_arithmetic_binop_rule(op))
+for op in _ARITHMETIC_BINOPS:
+    _register_syntax_op(op)(_create_arithmetic_binop_rule(op))
 
-for op in ARITHMETIC_UNOPS:  # type: ignore
-    register_syntax_op(op)(create_arithmetic_unop_rule(op))
+for op in _ARITHMETIC_UNOPS:  # type: ignore
+    _register_syntax_op(op)(_create_arithmetic_unop_rule(op))
 
-for op in OTHER_OPS:  # type: ignore
-    register_syntax_op(op)(create_generic_rule(op))
+for op in _OTHER_OPS:  # type: ignore
+    _register_syntax_op(op)(_create_generic_rule(op))
 
 
-@register_syntax_op(operator.eq)
+@_register_syntax_op(operator.eq)
 def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
     """Default implementation of equality for terms. As a special case, equality defaults to syntactic equality rather
     than producing a free term.
@@ -126,13 +126,13 @@ def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
     return syntactic_eq(a, b)
 
 
-@register_syntax_op(operator.ne)
+@_register_syntax_op(operator.ne)
 def _ne_op(a: T, b: T) -> bool:
     return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
 
 
 @defdata.register(numbers.Number)
-class NumberTerm(Generic[_T_Number], _BaseTerm[_T_Number]):
+class _NumberTerm(Generic[_T_Number], _BaseTerm[_T_Number]):
 
     #######################################################################
     # arithmetic binary operators
