@@ -196,6 +196,12 @@ def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, 
     return lambda *a, **k: fn(_get_result(), *a, **k)
 
 
+def bind_result_to_method(
+    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
+) -> Callable[Concatenate[V, P], T]:
+    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
+
+
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
     """
     A helper superclass for defining an :type:`Interpretation`s of many :type:`Operation` instances with shared
