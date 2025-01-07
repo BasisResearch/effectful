@@ -270,20 +270,19 @@ class Indexable:
 
 @defdata.register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
-    match op, args, kwargs:
-        case torch_getitem_, (torch.Tensor() as x, key), {} if (
-            torch_getitem_ is torch_getitem
-            and len(key) >= 1
-            and not isinstance(x, Term)
-            and all(
-                typeof(k) is int and not k.args and not k.kwargs
-                for k in key
-                if isinstance(k, Term)
-            )
-        ):
-            return _EagerTensorTerm(x, key)
-        case _:
-            return _TensorTerm(op, args, kwargs)
+    if (
+        op is torch_getitem
+        and not isinstance(args[0], Term)
+        and len(args[1]) > 0
+        and all(
+            typeof(k) is int and not k.args and not k.kwargs
+            for k in args[1]
+            if isinstance(k, Term)
+        )
+    ):
+        return _EagerTensorTerm(args[0], args[1])
+    else:
+        return _TensorTerm(op, args, kwargs)
 
 
 class _TensorTerm(_BaseTerm[torch.Tensor]):
