@@ -1,7 +1,7 @@
 import contextlib
 import functools
 import typing
-from typing import Callable, Dict, Optional, Type, TypeVar
+from typing import Callable, Optional, Set, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -146,15 +146,16 @@ def strof(term: Expr[S]) -> str:
         return evaluate(defterm(term))  # type: ignore
 
 
-def fvsof(term: Expr[S]) -> Interpretation[T, Type[T]]:
+def fvsof(term: Expr[S]) -> Set[Operation]:
     from effectful.internals.runtime import interpreter
 
-    _fvs: Dict[Operation[..., T], Callable[..., Type[T]]] = {}
+    _fvs: Set[Operation] = set()
 
     def _update_fvs(_, op, *args, **kwargs):
-        _fvs.setdefault(op, op.__type_rule__(*args, **kwargs))
+        _fvs.add(op)
         for bound_var in op.__fvs_rule__(*args, **kwargs):
-            _fvs.pop(bound_var, None)
+            if bound_var in _fvs:
+                _fvs.remove(bound_var)
 
     with interpreter({apply: _update_fvs}):  # type: ignore
         evaluate(defterm(term))  # type: ignore

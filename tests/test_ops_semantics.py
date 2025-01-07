@@ -584,7 +584,7 @@ def test_ctxof():
     def Nested(*args, **kwargs):
         raise NoDefaultRule
 
-    assert fvsof(Nested(x(), y())).keys() >= {x, y}
-    assert fvsof(Nested([x()], y())).keys() >= {x, y}
-    assert fvsof(Nested([x()], [y()])).keys() >= {x, y}
-    assert fvsof(Nested((x(), y()))).keys() >= {x, y}
+    assert fvsof(Nested(x(), y())) >= {x, y}
+    assert fvsof(Nested([x()], y())) >= {x, y}
+    assert fvsof(Nested([x()], [y()])) >= {x, y}
+    assert fvsof(Nested((x(), y()))) >= {x, y}
