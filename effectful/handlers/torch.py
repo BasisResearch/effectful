@@ -271,7 +271,7 @@ class Indexable:
 @defdata.register(torch.Tensor)
 def _embed_tensor(op, args, kwargs):
     match op, args, kwargs:
-        case torch_getitem_, (torch.Tensor() as x, key), () if (
+        case torch_getitem_, (torch.Tensor() as x, key), {} if (
             torch_getitem_ is torch_getitem
             and len(key) >= 1
             and not isinstance(x, Term)
@@ -304,7 +304,7 @@ class _EagerTensorTerm(torch.Tensor):
 
     op: Operation[..., torch.Tensor] = torch_getitem
     args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
-    kwargs: Tuple = ()
+    kwargs: Mapping[str, object] = {}
 
     __match_args__ = ("op", "args", "kwargs")
 
