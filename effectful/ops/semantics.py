@@ -36,9 +36,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             argvars: tuple[Operation, ...] = typing.cast(
                 tuple[Operation, ...], argvars_
             )
-            kwvars: dict[str, Operation] = typing.cast(
-                dict[str, Operation], dict(kwvars_)
-            )
+            kwvars: dict[str, Operation] = typing.cast(dict[str, Operation], kwvars_)
             subs = {
                 **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
                 **{
@@ -122,7 +120,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
     match defterm(expr):
         case Term(op, args, kwargs):
             (args, kwargs) = tree.map_structure(
-                functools.partial(evaluate, intp=intp), (args, dict(kwargs))
+                functools.partial(evaluate, intp=intp), (args, kwargs)
             )
             return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
         case literal:

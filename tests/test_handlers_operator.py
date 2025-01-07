@@ -53,7 +53,7 @@ def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
     match f, arg:
-        case Term(op, (var, body), ()), _ if op == Lam:
+        case Term(op, (var, body)), _ if op == Lam:
             return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         case _:
             return fwd(None)
@@ -90,7 +90,7 @@ def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match x, y:
-        case _, Term(op, (a, b), ()) if op == add:
+        case _, Term(op, (a, b)) if op == add:
             return (x + a) + b  # type: ignore
         case _:
             return fwd(None)
@@ -108,11 +108,11 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     match x, y:
-        case Term(vx, (), ()), Term(vy, (), ()) if id(vx) > id(vy):
+        case Term(vx, ()), Term(vy, ()) if id(vx) > id(vy):
             return y + x  # type: ignore
-        case Term(add_, (a, Term(vx, (), ())), ()), Term(
-            vy, (), ()
-        ) if add_ == add and id(vx) > id(vy):
+        case Term(add_, (a, Term(vx, ()))), Term(vy, ()) if add_ == add and id(vx) > id(
+            vy
+        ):
             return (a + vy()) + vx()  # type: ignore
         case _:
             return fwd(None)

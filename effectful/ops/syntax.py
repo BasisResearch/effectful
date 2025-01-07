@@ -2,7 +2,16 @@ import collections
 import dataclasses
 import functools
 import typing
-from typing import Annotated, Callable, Generic, Optional, Sequence, Type, TypeVar
+from typing import (
+    Annotated,
+    Callable,
+    Generic,
+    Mapping,
+    Optional,
+    Sequence,
+    Type,
+    TypeVar,
+)
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
@@ -127,9 +136,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     from effectful.ops.semantics import typeof
 
     if isinstance(expr, Term):
-        impl: Callable[
-            [Operation[..., T], Sequence, Sequence[tuple[str, object]]], Expr[T]
-        ]
+        impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
         impl = dispatch(typeof(expr))  # type: ignore
         return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
     else:
@@ -168,17 +175,16 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
     match x, other:
         case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            kwargs_d, kwargs2_d = dict(kwargs), dict(kwargs2)
             try:
                 tree.assert_same_structure(
-                    (op, args, kwargs_d), (op2, args2, kwargs2_d), check_types=True
+                    (op, args, kwargs), (op2, args2, kwargs2), check_types=True
                 )
             except (TypeError, ValueError):
                 return False
             return all(
                 tree.flatten(
                     tree.map_structure(
-                        syntactic_eq, (op, args, kwargs_d), (op2, args2, kwargs2_d)
+                        syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
                     )
                 )
             )

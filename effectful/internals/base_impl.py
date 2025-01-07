@@ -2,7 +2,7 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Mapping, Sequence, Set, Tuple, Type, TypeVar
+from typing import Callable, Generic, Mapping, Sequence, Set, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -103,7 +103,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     bound_sig.arguments[name],
                 )
 
-        return defdata(_BaseTerm(self, tuple(bound_sig.args), tuple(bound_sig.kwargs.items())))  # type: ignore
+        return defdata(_BaseTerm(self, bound_sig.args, bound_sig.kwargs))  # type: ignore
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)
@@ -177,13 +177,13 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 class _BaseTerm(Generic[T], Term[T]):
     _op: Operation[..., T]
     _args: Sequence[Expr]
-    _kwargs: Sequence[Tuple[str, Expr]]
+    _kwargs: Mapping[str, Expr]
 
     def __init__(
         self,
         op: Operation[..., T],
         args: Sequence[Expr],
-        kwargs: Sequence[Tuple[str, Expr]],
+        kwargs: Mapping[str, Expr],
     ):
         self._op = op
         self._args = args

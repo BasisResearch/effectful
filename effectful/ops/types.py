@@ -8,7 +8,6 @@ from typing import (
     Optional,
     Sequence,
     Set,
-    Tuple,
     Type,
     TypeVar,
     Union,
@@ -78,7 +77,7 @@ class Term(abc.ABC, Generic[T]):
 
     @property
     @abc.abstractmethod
-    def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
+    def kwargs(self) -> Mapping[str, "Expr[Any]"]:
         """Abstract property for the keyword arguments."""
         pass
 
