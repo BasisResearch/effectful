@@ -136,16 +136,6 @@ def typeof(term: Expr[T]) -> Type[T]:
         return evaluate(term)  # type: ignore
 
 
-def strof(term: Expr[S]) -> str:
-    from effectful.internals.runtime import interpreter
-
-    def _to_str(_, op, *args, **kwargs):
-        return f"{op}({', '.join(str(a) for a in args)}, {', '.join(f'{k}={v}' for k, v in kwargs.items())})"
-
-    with interpreter({apply: _to_str}):  # type: ignore
-        return evaluate(defterm(term))  # type: ignore
-
-
 def fvsof(term: Expr[S]) -> Set[Operation]:
     from effectful.internals.runtime import interpreter
 

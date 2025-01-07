@@ -378,3 +378,28 @@ def test_defun_5():
 
     with pytest.raises(NotImplementedError, match="variadic"):
         defterm(lambda x, *xs, y=1, **ys: None)
+
+
+def test_evaluate_2():
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    t = x() + y()
+    assert isinstance(t, Term)
+    assert t.op.__name__ == "add"
+    with handler({x: lambda: 1, y: lambda: 3}):
+        assert evaluate(t) == 4
+
+    t = x() * y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 2, y: lambda: 3}):
+        assert evaluate(t) == 6
+
+    t = x() - y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 2, y: lambda: 3}):
+        assert evaluate(t) == -1
+
+    t = x() ^ y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 1, y: lambda: 2}):
+        assert evaluate(t) == 3
