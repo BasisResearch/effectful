@@ -49,6 +49,10 @@ class Operation(abc.ABC, Generic[Q, V]):
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set["Operation"]:
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
+        raise NotImplementedError
+
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
@@ -77,6 +81,13 @@ class Term(abc.ABC, Generic[T]):
     def kwargs(self) -> Sequence[Tuple[str, "Expr[Any]"]]:
         """Abstract property for the keyword arguments."""
         pass
+
+    def __repr__(self) -> str:
+        from effectful.internals.runtime import interpreter
+        from effectful.ops.semantics import apply, evaluate
+
+        with interpreter({apply: lambda _, op, *a, **k: op.__repr_rule__(*a, **k)}):
+            return evaluate(self)  # type: ignore
 
 
 Expr = Union[T, Term[T]]

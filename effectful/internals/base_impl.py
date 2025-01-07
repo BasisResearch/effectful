@@ -1,7 +1,6 @@
 import collections
 import functools
 import inspect
-import operator
 import typing
 from typing import Callable, Generic, Mapping, Sequence, Set, Tuple, Type, TypeVar
 
@@ -162,6 +161,15 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         return bound_vars
 
+    def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
+        args_str = ", ".join(map(repr, args)) if args else ""
+        kwargs_str = (
+            ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items()) if kwargs else ""
+        )
+        return (
+            f"{self.signature.__name__}({args_str}{', ' if args else ''}{kwargs_str})"
+        )
+
     def __repr__(self):
         return self.signature.__name__
 
@@ -181,15 +189,10 @@ class _BaseTerm(Generic[T], Term[T]):
         self._args = args
         self._kwargs = kwargs
 
-    def __repr__(self):
-        from effectful.ops.semantics import strof
-
-        return strof(self)
-
     def __eq__(self, other) -> bool:
-        from effectful.handlers.operator import OPERATORS
+        from effectful.ops.syntax import syntactic_eq
 
-        return OPERATORS[operator.eq](self, other)  # type: ignore
+        return syntactic_eq(self, other)
 
     @property
     def op(self):

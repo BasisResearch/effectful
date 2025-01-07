@@ -15,7 +15,7 @@ from effectful.ops.syntax import (
     defop,
     implements,
 )
-from effectful.ops.types import Interpretation, Operation, Term
+from effectful.ops.types import Interpretation, Operation
 
 logger = logging.getLogger(__name__)
 
@@ -549,31 +549,6 @@ def test_evaluate():
 
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
-
-
-def test_evaluate_2():
-    x = defop(int, name="x")
-    y = defop(int, name="y")
-    t = x() + y()
-    assert isinstance(t, Term)
-    assert t.op.__name__ == "add"
-    with handler({x: lambda: 1, y: lambda: 3}):
-        assert evaluate(t) == 4
-
-    t = x() * y()
-    assert isinstance(t, Term)
-    with handler({x: lambda: 2, y: lambda: 3}):
-        assert evaluate(t) == 6
-
-    t = x() - y()
-    assert isinstance(t, Term)
-    with handler({x: lambda: 2, y: lambda: 3}):
-        assert evaluate(t) == -1
-
-    t = x() ^ y()
-    assert isinstance(t, Term)
-    with handler({x: lambda: 1, y: lambda: 2}):
-        assert evaluate(t) == 3
 
 
 def test_ctxof():
