@@ -173,28 +173,26 @@ def _(fn: Callable[P, T]):
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms."""
-    match x, other:
-        case Term(op, args, kwargs), Term(op2, args2, kwargs2):
-            try:
-                tree.assert_same_structure(
-                    (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-                )
-            except (TypeError, ValueError):
-                return False
-            return all(
-                tree.flatten(
-                    tree.map_structure(
-                        syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                    )
+    if isinstance(x, Term) and isinstance(other, Term):
+        op, args, kwargs = x.op, x.args, x.kwargs
+        op2, args2, kwargs2 = other.op, other.args, other.kwargs
+        try:
+            tree.assert_same_structure(
+                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
+            )
+        except (TypeError, ValueError):
+            return False
+        return all(
+            tree.flatten(
+                tree.map_structure(
+                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
                 )
             )
-        case Term(_, _, _), _:
-            return False
-        case _, Term(_, _, _):
-            return False
-        case _, _:
-            return x == other
-    return False
+        )
+    elif isinstance(x, Term) or isinstance(other, Term):
+        return False
+    else:
+        return x == other
 
 
 def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, T]:

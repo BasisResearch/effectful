@@ -1,6 +1,5 @@
 import contextlib
 import functools
-import typing
 from typing import Callable, Optional, Set, Type, TypeVar
 
 import tree
@@ -30,23 +29,21 @@ def apply(
 
 @defop  # type: ignore
 def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    match defterm(fn):
-        case Term(defun_, (body_, *argvars_), kwvars_) if defun_ == deffn:
-            body: Expr[Callable[P, T]] = body_
-            argvars: tuple[Operation, ...] = typing.cast(
-                tuple[Operation, ...], argvars_
-            )
-            kwvars: dict[str, Operation] = typing.cast(dict[str, Operation], kwvars_)
-            subs = {
-                **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
-                **{
-                    kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs
-                },
-            }
-            with handler(subs):
-                return evaluate(body)  # type: ignore
-        case _:
-            raise NoDefaultRule
+    if not isinstance(fn, Term):
+        fn = defterm(fn)
+
+    if isinstance(fn, Term) and fn.op is deffn:
+        body: Expr[Callable[P, T]] = fn.args[0]
+        argvars: tuple[Operation, ...] = fn.args[1:]
+        kwvars: dict[str, Operation] = fn.kwargs
+        subs = {
+            **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
+            **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
+        }
+        with handler(subs):
+            return evaluate(body)  # type: ignore
+    else:
+        raise NoDefaultRule
 
 
 @defop
@@ -117,14 +114,17 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
 
         intp = get_interpretation()
 
-    match defterm(expr):
-        case Term(op, args, kwargs):
-            (args, kwargs) = tree.map_structure(
-                functools.partial(evaluate, intp=intp), (args, kwargs)
-            )
-            return apply.__default_rule__(intp, op, *args, **kwargs)  # type: ignore
-        case literal:
-            return literal
+    expr = defterm(expr) if not isinstance(expr, Term) else expr
+
+    if isinstance(expr, Term):
+        (args, kwargs) = tree.map_structure(
+            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
+        )
+        return apply.__default_rule__(intp, expr.op, *args, **kwargs)  # type: ignore
+    elif tree.is_nested(expr):
+        return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
+    else:
+        return expr
 
 
 def typeof(term: Expr[T]) -> Type[T]:
@@ -146,6 +146,6 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
                 _fvs.remove(bound_var)
 
     with interpreter({apply: _update_fvs}):  # type: ignore
-        evaluate(defterm(term))  # type: ignore
+        evaluate(term)  # type: ignore
 
     return _fvs
