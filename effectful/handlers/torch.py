@@ -3,7 +3,11 @@ import typing
 from types import EllipsisType
 from typing import Callable, Mapping, Optional, Sequence, Tuple, TypeVar, Union
 
-import torch
+try:
+    import torch
+except ImportError:
+    raise ImportError("PyTorch is required to use effectful.handlers.torch")
+
 import tree
 from typing_extensions import ParamSpec
 
