@@ -37,7 +37,7 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Term[V]":
         raise NotImplementedError
 
     @abc.abstractmethod

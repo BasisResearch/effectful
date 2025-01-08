@@ -134,7 +134,7 @@ def typeof(term: Expr[T]) -> Type[T]:
         return evaluate(term)  # type: ignore
 
 
-def fvsof(term: Expr[S]) -> Set[Operation]:
+def fvsof(term: Expr) -> Set[Operation]:
     from effectful.internals.runtime import interpreter
 
     _fvs: Set[Operation] = set()
