@@ -34,8 +34,38 @@ def pyro_sample(
 
 
 class PyroShim(pyro.poutine.messenger.Messenger):
-    """
-    Handler for Pyro that wraps all sample sites in a custom effectful type.
+    """Pyro handler that wraps all sample sites in a custom effectful type.
+
+    .. note::
+
+      This handler should be installed around any Pyro model that you want to
+      use effectful handlers with.
+
+
+    It can be used as a decorator:
+
+    >>> import pyro.distributions as dist
+    >>> @PyroShim()
+    ... def model():
+    ...     return pyro.sample("x", dist.Normal(0, 1))
+
+    It can also be used as a context manager:
+
+    >>> with PyroShim():
+    ...     pyro.sample("x", dist.Normal(0, 1))
+
+    When :class:`PyroShim` is installed, all sample sites perform the
+    :func:`pyro_sample` effect, which can be handled by an effectful
+    interpretation.
+
+    >>> def log_sample(name, *args, **kwargs):
+    ...     print(f"Sampled {name}")
+    ...     return fwd(None)
+    >>> with PyroShim(), handler({pyro_sample: log_sample}):
+    ...     pyro.sample("x", dist.Normal(0, 1))
+    ...     pyro.sample("y", dist.Normal(0, 1))
+    Sampled x
+    Sampled y
     """
 
     _current_site: Optional[str]
@@ -189,8 +219,8 @@ class Naming:
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
-        | batch_shape | named | event_shape |
-        to tensors of shape | batch_shape | event_shape |, | named |.
+        ``| batch_shape | named | event_shape |``
+        to tensors of shape ``| batch_shape | event_shape |, | named |``.
 
         """
         assert event_dims >= 0

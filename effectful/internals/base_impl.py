@@ -47,7 +47,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __hash__(self):
         return hash(self.signature)
 
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.ops.syntax import NoDefaultRule
 
         try:
@@ -55,7 +55,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         except NoDefaultRule:
             return self.__free_rule__(*args, **kwargs)
 
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Term[V]:
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         from effectful.ops.syntax import Bound, Scoped, defdata, defop
 
         sig = inspect.signature(self.signature)

@@ -72,6 +72,19 @@ def _getitem_ellipsis_and_none(
 
 
 def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
+    """Return the sizes of named dimensions in a tensor expression.
+
+    Sizes are inferred from the tensor shape.
+
+    :param value: A tensor expression.
+    :return: A mapping from named dimensions to their sizes.
+
+    **Example usage**:
+
+    >>> a, b = defop(int, name='a'), defop(int, name='b')
+    >>> sizesof(Indexable(torch.ones(2, 3))[a(), b()])
+    {a: 2, b: 3}
+    """
     sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
@@ -160,6 +173,19 @@ def _partial_eval(t: T, order=None) -> T:
 
 
 def to_tensor(t: torch.Tensor, order=None) -> torch.Tensor:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :param order: A list of named dimensions to convert to positional dimensions. These positional dimensions will appear at the beginning of the shape.
+    :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(int, name='a'), defop(int, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> to_tensor(Indexable(t)[a(), b()], [b, a]).shape
+    torch.Size([3, 2])
+    """
     return _partial_eval(t, order=order)
 
 
@@ -249,8 +275,9 @@ def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tenso
 class Indexable:
     """Helper class for constructing indexed tensors.
 
-    Example:
-    >>> width, height = gensym(int, name='width'), gensym(int, name='height')
+    **Example usage**:
+
+    >>> width, height = defop(int, name='width'), defop(int, name='height')
     >>> t = Indexable(torch.ones(2, 3))[width(), height()]
     >>> t
     Indexable(tensor([[1., 1., 1.],

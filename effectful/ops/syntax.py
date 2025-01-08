@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import collections
 import dataclasses
 import functools
@@ -43,6 +45,8 @@ class Scoped(ArgAnnotation):
 
 
 class NoDefaultRule(Exception):
+    """Raised in an operation's signature to indicate that the operation has no default rule."""
+
     pass
 
 
@@ -59,14 +63,89 @@ def defop(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 
 def defop(t, *, name=None):
-    """defop creates fresh Operations.
+    """Creates a fresh :class:`Operation`.
 
-    This is useful for creating fresh variables.
+    :param t: May be a type, callable, or :class:`Operation`. If a type, the operation will have no arguments and return the type. If a callable, the operation will have the same signature as the callable, but with no default rule. If an operation, the operation will be a distinct copy of the operation.
+    :param name: Optional name for the operation.
+    :returns: A fresh operation.
 
-    :param t: May be a type or a callable. If a type, the Operation will have no arguments. If a callable, the Operation
-    will have the same signature as the callable, but with no default rule.
-    :param name: Optional name for the Operation.
-    :returns: A fresh Operation.
+    **Example usage**:
+
+    * Defining an operation:
+
+      This example defines an operation that selects one of two integers:
+
+      >>> @defop
+      ... def select(x: int, y: int) -> int:
+      ...     return x
+
+      The operation can be called like a regular function. By default, ``select``
+      returns the first argument:
+
+      >>> select(1, 2)
+      1
+
+      We can change its behavior by installing a ``select`` handler:
+
+      >>> from effectful.ops.semantics import handler
+      >>> with handler({select: lambda x, y: y}):
+      ...     print(select(1, 2))
+      2
+
+    * Defining an operation with no default rule:
+
+      We can use :func:`defop` and the
+      :exc:`effectful.internals.sugar.NoDefaultRule` exception to define an
+      operation with no default rule:
+
+      >>> @defop
+      ... def add(x: int, y: int) -> int:
+      ...     raise NoDefaultRule
+      >>> add(1, 2)
+      add(1, 2)
+
+      When an operation has no default rule, the free rule is used instead, which
+      constructs a term of the operation applied to its arguments. This feature
+      can be used to conveniently define the syntax of a domain-specific language.
+
+    * Defining free variables:
+
+      Passing :func:`defop` a type is a handy way to create a free variable.
+
+      >>> import effectful.handlers.operator
+      >>> from effectful.ops.semantics import evaluate
+      >>> x = defop(int, name='x')
+      >>> y = x() + 1
+
+      ``y`` is free in ``x``, so it is not fully evaluated:
+
+      >>> y
+      add(x(), 1)
+
+      We bind ``x`` by installing a handler for it:
+
+      >>> with handler({x: lambda: 2}):
+      ...     print(evaluate(y))
+      3
+
+    * Defining a fresh :class:`Operation`:
+
+      Passing :func:`defop` an :class:`Operation` creates a fresh operation with
+      the same name and signature, but no default rule.
+
+      >>> fresh_select = defop(select)
+      >>> fresh_select(1, 2)
+      select(1, 2)
+
+      The new operation is distinct from the original:
+
+      >>> with handler({select: lambda x, y: y}):
+      ...     print(select(1, 2), fresh_select(1, 2))
+      2 select(1, 2)
+
+      >>> with handler({fresh_select: lambda x, y: y}):
+      ...     print(select(1, 2), fresh_select(1, 2))
+      1 2
 
     """
 
@@ -100,6 +179,40 @@ def deffn(
     *args: Annotated[Operation, Bound()],
     **kwargs: Annotated[Operation, Bound()],
 ) -> Callable[..., T]:
+    """An operation that represents a lambda function.
+
+    :param body: The body of the function.
+    :type body: T
+    :param args: Operations representing the positional arguments of the function.
+    :type args: Annotated[Operation, Bound()]
+    :param kwargs: Operations representing the keyword arguments of the function.
+    :type kwargs: Annotated[Operation, Bound()]
+    :returns: A callable term.
+    :rtype: Callable[..., T]
+
+    :func:`deffn` terms are eliminated by the :func:`call` operation, which
+    performs beta-reduction.
+
+    **Example usage**:
+
+    Here :func:`deffn` is used to define a term that represents the function
+    ``lambda x, y=1: 2 * x + y``:
+
+    >>> import effectful.handlers.operator
+    >>> x, y = defop(int, name='x'), defop(int, name='y')
+    >>> term = deffn(2 * x() + y(), x, y=y)
+    >>> term
+    deffn(add(mul(2, x()), y()), x, y=y)
+    >>> term(3, y=4)
+    10
+
+    .. note::
+
+      Do not use :func:`deffn` directly. Instead, use :func:`defterm` to convert
+      a function to a term because it will automatically create the right free
+      variables.
+
+    """
     raise NoDefaultRule
 
 
@@ -125,6 +238,27 @@ class _CustomSingleDispatchCallable(Generic[P, T]):
 
 @_CustomSingleDispatchCallable
 def defterm(dispatch, value: T) -> Expr[T]:
+    """Convert a value to a term, using the type of the value to dispatch.
+
+    :param value: The value to convert.
+    :type value: T
+    :returns: A term.
+    :rtype: Expr[T]
+
+    **Example usage**:
+
+    :func:`defterm` can be passed a function, and it will convert that function
+    to a term by calling it with appropriately typed free variables:
+
+    >>> def incr(x: int) -> int:
+    ...     return x + 1
+    >>> term = defterm(incr)
+    >>> term
+    deffn(add(int(), 1), int)
+    >>> term(2)
+    3
+
+    """
     if isinstance(value, Term):
         return value
     else:
@@ -133,6 +267,44 @@ def defterm(dispatch, value: T) -> Expr[T]:
 
 @_CustomSingleDispatchCallable
 def defdata(dispatch, expr: Term[T]) -> Expr[T]:
+    """Converts a term so that it is an instance of its inferred type.
+
+    :param expr: The term to convert.
+    :type expr: Term[T]
+    :returns: An instance of ``T``.
+    :rtype: Expr[T]
+
+    This function is called by :func:`__free_rule__`, so conversions
+    resgistered with :func:`defdata` are automatically applied when terms are
+    constructed.
+
+    .. note::
+
+      This function is not likely to be called by users of the effectful
+      library, but they may wish to register implementations for additional
+      types.
+
+    **Example usage**:
+
+    This is how callable terms are implemented:
+
+    .. code-block:: python
+
+      class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+          def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+              from effectful.ops.semantics import call
+
+              return call(self, *args, **kwargs)
+
+      @defdata.register(collections.abc.Callable)
+      def _(op, args, kwargs):
+          return _CallableTerm(op, args, kwargs)
+
+    When a :class:`Callable` term is passed to :func:`defdata`, it is
+    reconstructed as a :class:`_CallableTerm`, which implements the
+    :func:`__call__` method.
+
+    """
     from effectful.ops.semantics import typeof
 
     if isinstance(expr, Term):
@@ -172,7 +344,14 @@ def _(fn: Callable[P, T]):
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
-    """Syntactic equality, ignoring the interpretation of the terms."""
+    """Syntactic equality, ignoring the interpretation of the terms.
+
+    :param x: A term.
+    :type x: Expr[T]
+    :param other: Another term.
+    :type other: Expr[T]
+    :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
+    """
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
@@ -208,15 +387,15 @@ def bind_result_to_method(
 
 
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
-    """
-    A helper superclass for defining an :type:`Interpretation`s of many :type:`Operation` instances with shared
-    state or behavior.
+    """A helper superclass for defining an ``Interpretation`` of many
+    :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
 
-    You can mark specific methods in the definition of an :class:`ObjectInterpretation` with operations
-    using the :func:`implements` decorator. The :class:`ObjectInterpretation` object itself is an :type:`Interpretation`
-    (mapping from :type:`Operation` to :type:`Callable`)
+    You can mark specific methods in the definition of an
+    :class:`ObjectInterpretation` with operations using the :func:`implements`
+    decorator. The :class:`ObjectInterpretation` object itself is an
+    ``Interpretation`` (mapping from :class:`~effectful.ops.types.Operation` to :class:`~typing.Callable`)
 
-    >>> from effectful.ops.handler import handler
+    >>> from effectful.ops.semantics import handler
     >>> @defop
     ... def read_box():
     ...     pass
@@ -251,6 +430,7 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
     >>> with handler(first_box):
     ...     print(read_box())
     New Value
+
     """
 
     # This is a weird hack to get around the fact that
@@ -309,11 +489,11 @@ class _ImplementedOperation(Generic[P, Q, T, V]):
 
 
 def implements(op: Operation[P, V]):
-    """
-    Marks a method in an `ObjectInterpretation` as the implementation of a
-    particular abstract `Operation`.
+    """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
+    particular abstract :class:`Operation`.
 
-    When passed an `Operation`, returns a method decorator which installs the given
-    method as the implementation of the given `Operation`.
+    When passed an :class:`Operation`, returns a method decorator which installs
+    the given method as the implementation of the given :class:`Operation`.
+
     """
     return _ImplementedOperation(op)
