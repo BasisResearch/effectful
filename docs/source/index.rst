@@ -9,15 +9,13 @@ Table of Contents
    introduction
    named_tensor_notation
 
-Examples
-========
-
 .. toctree::
    :maxdepth: 1
    :caption: Examples
 
    minipyro_example
    lambda_example
+   semi_ring_example
 
 Indices and Tables
 ==================
