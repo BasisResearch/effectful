@@ -1,24 +1,20 @@
 import functools
 import operator
-from typing import Any, Dict, Mapping, Optional, Sequence, Set, TypeVar, Union
+from typing import Any, Dict, Iterable, Optional, Set, TypeVar, Union
 
 import torch
 
-import effectful.indexed.internals.utils
-import effectful.internals.sugar
-
-from ...internals.sugar import partial_eval, sizesof
-from ...ops.core import Operation, Term
-from ...ops.function import defun
+from effectful.handlers.torch import Indexable, sizesof
+from effectful.ops.syntax import deffn, defop
+from effectful.ops.types import Operation, Term
 
 K = TypeVar("K")
 T = TypeVar("T")
 
 
-class IndexSet(Dict[Operation[[], int], Set[int]]):
+class IndexSet(Dict[str, Set[int]]):
     """
-    :class:`IndexSet` s represent the support of an indexed value, primarily
-    those created using :func:`intervene` and :class:`MultiWorldCounterfactual`
+    :class:`IndexSet` s represent the support of an indexed value,
     for which free variables correspond to single interventions and indices
     to worlds where that intervention either did or did not happen.
 
@@ -27,7 +23,7 @@ class IndexSet(Dict[Operation[[], int], Set[int]]):
     and from bounded integer interval supports to finite sets of positive integers.
 
     :class:`IndexSet`s are implemented as :class:`dict`s with
-    :class:`Operation`s as keys corresponding to names of free index variables
+    :class:`str`s as keys corresponding to names of free index variables
     and :class:`set` s of positive :class:`int` s as values corresponding
     to the values of the index variables where the indexed value is defined.
 
@@ -35,34 +31,29 @@ class IndexSet(Dict[Operation[[], int], Set[int]]):
     the sets of indices of the free variables ``x`` and ``y``
     for which a value is defined::
 
-        >>> from effectful.internals.sugar import gensym
-        >>> x, y = gensym(int, name="x"), gensym(int, name="y")
-        >>> IndexSet({x: {0, 1}, y: {2, 3}})
+        >>> IndexSet(x={0, 1}, y={2, 3})
         IndexSet({x: {0, 1}, y: {2, 3}})
 
     :class:`IndexSet` 's constructor will automatically drop empty entries
     and attempt to convert input values to :class:`set` s::
 
-        >>> z = gensym(int, name="z")
-        >>> IndexSet({x: [0, 0, 1], y: set(), z: 2})
+        >>> IndexSet(x=[0, 0, 1], y=set(), z=2)
         IndexSet({x: {0, 1}, z: {2}})
 
     :class:`IndexSet` s are also hashable and can be used as keys in :class:`dict` s::
 
-        >>> indexset = IndexSet({x: {0, 1}, y: {2, 3}})
+        >>> indexset = IndexSet(x={0, 1}, y={2, 3})
         >>> indexset in {indexset: 1}
         True
     """
 
-    def __init__(
-        self, mapping: Mapping[Operation[[], int], Union[int, Sequence[int], set[int]]]
-    ):
+    def __init__(self, **mapping: Union[int, Iterable[int]]):
         index_set = {}
         for k, vs in mapping.items():
             indexes = {vs} if isinstance(vs, int) else set(vs)
             if len(indexes) > 0:
                 index_set[k] = indexes
-        super().__init__(index_set)
+        super().__init__(**index_set)
 
     def __repr__(self):
         return f"{type(self).__name__}({super().__repr__()})"
@@ -76,7 +67,7 @@ class IndexSet(Dict[Operation[[], int], Set[int]]):
 
         """
         return {
-            k: functools.partial(lambda v: v, torch.tensor(list(v)))
+            name_to_sym(k): functools.partial(lambda v: v, torch.tensor(list(v)))
             for k, v in self.items()
         }
 
@@ -92,12 +83,10 @@ def union(*indexsets: IndexSet) -> IndexSet:
 
     Example::
 
-        >>> from effectful.internals.sugar import gensym
-        >>> a, b = gensym(int, name="a"), gensym(int, name="b")
-        >>> s = union(IndexSet({a: {0, 1}, b: {1}}), IndexSet({a: {1, 2}}))
-        >>> s[a]
+        >>> s = union(IndexSet(a={0, 1}, b={1}), IndexSet(a={1, 2}))
+        >>> s["a"]
         {0, 1, 2}
-        >>> s[b]
+        >>> s["b"]
         {1}
 
     .. note::
@@ -111,7 +100,7 @@ def union(*indexsets: IndexSet) -> IndexSet:
             union(a, union(a, b)) == union(a, b)
     """
     return IndexSet(
-        {
+        **{
             k: set.union(*[vs[k] for vs in indexsets if k in vs])
             for k in set.union(*(set(vs) for vs in indexsets))
         }
@@ -179,18 +168,23 @@ def indices_of(value: Any) -> IndexSet:
     """
     if isinstance(value, Term):
         return IndexSet(
-            {
-                k: set(range(v))  # type:ignore
+            **{
+                k.__name__: set(range(v))  # type:ignore
                 for (k, v) in sizesof(value).items()
             }
         )
     elif isinstance(value, torch.distributions.Distribution):
         return indices_of(value.sample())
 
-    return IndexSet({})
+    return IndexSet()
 
 
-def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
+@functools.lru_cache(maxsize=None)
+def name_to_sym(name: str) -> Operation[[], int]:
+    return defop(int, name=name)
+
+
+def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -252,26 +246,27 @@ def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     :param IndexSet indexset: The :class:`IndexSet` of entries to select from ``value``.
     :return: A new value containing entries of ``value`` from ``indexset``.
     """
+    indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
         k: functools.partial(
-            lambda v: v, Indexable(torch.tensor(list(indexset[k])))[k()]
+            lambda v: v, Indexable(torch.tensor(list(indexset_vars[k])))[k()]
         )
         for k in sizesof(value).keys()
-        if k in indexset
+        if k in indexset_vars
     }
 
-    return defun(value, *binding.keys())(*[v() for v in binding.values()])
+    return deffn(value, *binding.keys())(*[v() for v in binding.values()])
 
 
 def stack(
-    values: Union[tuple[torch.Tensor, ...], list[torch.Tensor]], dim: Operation[[], int]
+    values: Union[tuple[torch.Tensor, ...], list[torch.Tensor]], name: str, **kwargs
 ) -> torch.Tensor:
     """Stack a sequence of indexed values, creating a new dimension. The new
     dimension is indexed by `dim`. The indexed values in the stack must have
     identical shapes.
 
     """
-    return Indexable(torch.stack(values))[dim()]
+    return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
 def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Tensor:
@@ -323,10 +318,3 @@ def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
         result = cond(result if result is not None else value, value, tst)
     assert result is not None
     return result
-
-
-def to_tensor(t: torch.Tensor, indexes=None) -> torch.Tensor:
-    return partial_eval(t, order=indexes)
-
-
-Indexable = effectful.internals.sugar.Indexable

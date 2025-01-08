@@ -7,12 +7,17 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.handlers.pyro import PyroShim, pyro_sample
-from effectful.indexed.ops import Indexable, IndexSet, indices_of
-from effectful.internals.sugar import gensym
-from effectful.ops.core import ctxof, defop
-from effectful.ops.handler import fwd, handler
+from effectful.handlers.pyro import (
+    NamedDistribution,
+    PositionalDistribution,
+    PyroShim,
+    pyro_sample,
+)
+from effectful.handlers.torch import Indexable, sizesof, torch_getitem
+from effectful.ops.semantics import fvsof, fwd, handler
+from effectful.ops.syntax import defop
 
+torch.distributions.Distribution.set_default_validate_args(False)
 pyro.settings.set(module_local_params=True)
 
 logger = logging.getLogger(__name__)
@@ -149,7 +154,7 @@ def test_smoke_condition_enumerate_hmm_elbo(
 
 
 def test_indexed_sample():
-    b = gensym(int, name="b")
+    b = defop(int, name="b")
 
     def model():
         loc, scale = (
@@ -161,7 +166,7 @@ def test_indexed_sample():
     class CheckSampleMessenger(pyro.poutine.messenger.Messenger):
         def _pyro_sample(self, msg):
             # named dimensions should not be visible to Pyro
-            assert indices_of(msg["fn"]) == IndexSet({})
+            assert sizesof(msg["fn"].sample()) == {}
             assert any(f.name == "b" and f.dim == -2 for f in msg["cond_indep_stack"])
 
     with CheckSampleMessenger(), PyroShim():
@@ -169,4 +174,67 @@ def test_indexed_sample():
 
         # samples from indexed distributions should also be indexed
         assert t.shape == torch.Size([2])
-        assert b in ctxof(t)
+        assert b in fvsof(t)
+
+
+def test_named_dist():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    d = NamedDistribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
+
+    expected_indices = {x: 2, y: 3}
+
+    s1 = d.sample()
+    assert sizesof(d.sample()) == expected_indices
+    assert s1.shape == torch.Size([])
+
+    s2 = d.sample((4, 5))
+    assert sizesof(s2) == expected_indices
+    assert s2.shape == torch.Size([4, 5])
+
+    s3 = d.rsample((4, 5))
+    assert sizesof(s3) == expected_indices
+    assert s3.shape == torch.Size([4, 5])
+
+
+def test_positional_dist():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    loc = Indexable(torch.tensor(0.0).expand((2, 3)))[x(), y()]
+    scale = Indexable(torch.tensor(1.0).expand((2, 3)))[x(), y()]
+
+    expected_indices = {x: 2, y: 3}
+
+    d = PositionalDistribution(dist.Normal(loc, scale))
+
+    assert d.shape() == torch.Size([2, 3])
+
+    s1 = d.sample()
+    assert sizesof(s1) == {}
+    assert s1.shape == torch.Size([2, 3])
+    assert all(n in sizesof(d._from_positional(s1)) for n in [x, y])
+
+    d_exp = d.expand((4, 5) + d.batch_shape)
+    s2 = d_exp.sample()
+    assert sizesof(s2) == {}
+    assert s2.shape == torch.Size([4, 5, 2, 3])
+
+    s3 = d.sample((4, 5))
+    assert sizesof(s3) == {}
+    assert s3.shape == torch.Size([4, 5, 2, 3])
+    assert all(n in sizesof(d._from_positional(s3)) for n in [x, y])
+
+    loc = Indexable(torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
+    scale = Indexable(torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
+    d = PositionalDistribution(dist.Normal(loc, scale))
+
+    assert sizesof(d._from_positional(d.sample((6, 7)))) == expected_indices
+    assert d.sample().shape == torch.Size([2, 3, 4, 5])
+    assert d.sample((6, 7)).shape == torch.Size([6, 7, 2, 3, 4, 5])
+
+
+def test_simple_distribution():
+    i = defop(int)
+    t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
+
+    dist.Beta(t, t, validate_args=False)
+
+    dist.Bernoulli(t, validate_args=False)

@@ -1,3 +1,4 @@
+import functools
 import re
 from collections import namedtuple
 
@@ -12,9 +13,9 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
-from effectful.indexed.internals.utils import name_to_sym
-from effectful.indexed.ops import IndexSet, indices_of, to_tensor
-from effectful.internals.sugar import gensym, torch_getitem
+from effectful.handlers.torch import sizesof, to_tensor, torch_getitem
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
 
 ##################################################
 # Test cases
@@ -37,16 +38,21 @@ def random_scale_tril(*args):
     return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
 
 
+@functools.cache
+def _name_to_sym(name: str) -> Operation[[], int]:
+    return defop(int, name=name)
+
+
 def to_indexed(tensor, batch_dims):
     return torch_getitem(
-        tensor, tuple(name_to_sym(str(i))() for i in range(batch_dims))
+        tensor, tuple(_name_to_sym(str(i))() for i in range(batch_dims))
     )
 
 
 def from_indexed(tensor, batch_dims):
-    if indices_of(tensor) == IndexSet({}):
+    if sizesof(tensor) == {}:
         return tensor
-    return to_tensor(tensor, [name_to_sym(str(i)) for i in range(batch_dims)])
+    return to_tensor(tensor, [_name_to_sym(str(i)) for i in range(batch_dims)])
 
 
 class DistTestCase:
@@ -109,7 +115,7 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
     expanded = indexed_dist.expand(extra_batch_shape + indexed_dist.batch_shape)
     sample = expanded.sample(indexed_sample_shape + sample_shape)
     indexed_sample = torch_getitem(
-        sample, tuple(gensym(int)() for _ in range(len(indexed_sample_shape)))
+        sample, tuple(defop(int)() for _ in range(len(indexed_sample_shape)))
     )
 
     assert (
@@ -135,10 +141,10 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
 
     # Indexed samples should have the same indices as the parameters to their distribution (if those parameters are
     # indexed)
-    sample_indices = indices_of(indexed_sample)
+    sample_indices = sizesof(indexed_sample)
     for param in case_.indexed_params.values():
-        param_indices = indices_of(param)
-        assert param_indices in [IndexSet({}), sample_indices]
+        param_indices = sizesof(param)
+        assert param_indices in [{}, sample_indices]
 
     # Indexed samples should have the same shape as regular samples, but with the batch dimensions indexed
     indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))

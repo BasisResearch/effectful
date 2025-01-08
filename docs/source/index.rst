@@ -7,7 +7,7 @@ Table of Contents
 
    getting_started
    introduction
-   minipyro
+   minipyro_example
    named_tensor_notation
 
 
