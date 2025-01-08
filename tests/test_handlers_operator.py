@@ -3,11 +3,10 @@ import logging
 
 import pytest
 
+from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import defop, defterm
 from effectful.ops.types import Term
-
-from docs.source.lambda_ import App, Lam, Let, eager_mixed
 
 logger = logging.getLogger(__name__)
 
