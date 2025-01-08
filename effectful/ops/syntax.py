@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import collections
 import dataclasses
 import functools
@@ -69,6 +67,10 @@ def defop(t, *, name=None):
     :param name: Optional name for the operation.
     :returns: A fresh operation.
 
+    .. note::
+
+      The result of :func:`defop` is always fresh (i.e. ``defop(f) != defop(f)``).
+
     **Example usage**:
 
     * Defining an operation:
@@ -127,6 +129,43 @@ def defop(t, *, name=None):
       >>> with handler({x: lambda: 2}):
       ...     print(evaluate(y))
       3
+
+      .. note::
+
+        Because the result of :func:`defop` is always fresh, it's important to
+        be careful with variable identity.
+
+        Two variables with the same name are not equal:
+
+        >>> x1 = defop(int, name='x')
+        >>> x2 = defop(int, name='x')
+        >>> x1 == x2
+        False
+
+        This means that to correctly bind a variable, you must use the same
+        operation object. In this example, ``scale`` returns a term with a free
+        variable ``x``:
+
+        >>> import effectful.handlers.operator
+        >>> def scale(a: float) -> float:
+        ...     x = defop(float, name='x')
+        ...     return x() * a
+
+        Binding the variable ``x`` by creating a fresh operation object does not
+
+        >>> term = scale(3.0)
+        >>> x = defop(float, name='x')
+        >>> with handler({x: lambda: 2.0}):
+        ...     print(evaluate(term))
+        mul(x(), 3.0)
+
+        This does:
+
+        >>> from effectful.ops.semantics import fvsof
+        >>> correct_x = [v for v in fvsof(term) if str(x) == 'x'][0]
+        >>> with handler({correct_x: lambda: 2.0}):
+        ...     print(evaluate(term))
+        6.0
 
     * Defining a fresh :class:`Operation`:
 
@@ -208,9 +247,9 @@ def deffn(
 
     .. note::
 
-      Do not use :func:`deffn` directly. Instead, use :func:`defterm` to convert
-      a function to a term because it will automatically create the right free
-      variables.
+      In general, avoid using :func:`deffn` directly. Instead, use
+      :func:`defterm` to convert a function to a term because it will
+      automatically create the right free variables.
 
     """
     raise NoDefaultRule

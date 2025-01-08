@@ -162,13 +162,16 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return bound_vars
 
     def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
-        args_str = ", ".join(map(repr, args)) if args else ""
+        args_str = ", ".join(map(str, args)) if args else ""
         kwargs_str = (
-            ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items()) if kwargs else ""
+            ", ".join(f"{k}={str(v)}" for k, v in kwargs.items()) if kwargs else ""
         )
-        return (
-            f"{self.signature.__name__}({args_str}{', ' if args else ''}{kwargs_str})"
-        )
+
+        ret = f"{self.signature.__name__}({args_str}"
+        if kwargs:
+            ret += f"{', ' if args else ''}"
+        ret += f"{kwargs_str})"
+        return ret
 
     def __repr__(self):
         return self.signature.__name__

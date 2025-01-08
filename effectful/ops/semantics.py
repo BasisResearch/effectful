@@ -19,8 +19,7 @@ V = TypeVar("V")
 def apply(
     intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:
-    """
-    Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
+    """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
 
@@ -44,6 +43,7 @@ def apply(
     ...     term = mul(add(1, 2), 3)
     >>> term
     mul(add(1, 2), 3)
+
     """
     if op in intp:
         return intp[op](*args, **kwargs)
@@ -55,9 +55,10 @@ def apply(
 
 @defop  # type: ignore
 def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """An operation that eliminates a :func:`deffn` term by beta-reduction.
+    """An operation that eliminates a callable term.
 
     This operation is invoked by the ``__call__`` method of a callable term.
+
     """
     if not isinstance(fn, Term):
         fn = defterm(fn)
@@ -195,7 +196,6 @@ def product(
     Publishing.
 
     """
-
     if any(op in intp for op in intp2):  # alpha-rename
         renaming = {op: defop(op) for op in intp2 if op in intp}
         intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
@@ -208,7 +208,10 @@ def product(
 
 @contextlib.contextmanager
 def runner(intp: Interpretation[S, T]):
-    """Install an interpretation by replacing the current interpretation."""
+    """Install an interpretation by taking a product with the current
+    interpretation.
+
+    """
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
@@ -221,7 +224,10 @@ def runner(intp: Interpretation[S, T]):
 
 @contextlib.contextmanager
 def handler(intp: Interpretation[S, T]):
-    """Install an intepretation by taking a coproduct with the current interpretation."""
+    """Install an interpretation by taking a coproduct with the current
+    interpretation.
+
+    """
     from effectful.internals.runtime import get_interpretation, interpreter
 
     with interpreter(coproduct(get_interpretation(), intp)):
@@ -287,6 +293,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     ...     raise NoDefaultRule
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
+
     """
     from effectful.internals.runtime import interpreter
 
@@ -304,6 +311,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
     ...     raise NoDefaultRule
     >>> fvsof(f(1, 2))
     {f}
+
     """
     from effectful.internals.runtime import interpreter
 

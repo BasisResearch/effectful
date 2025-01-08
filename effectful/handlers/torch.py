@@ -21,6 +21,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
+# + An element of a tensor index expression.
 IndexElement = Union[None, int, slice, Sequence[int], EllipsisType, torch.Tensor]
 
 
@@ -223,11 +224,21 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         else:
             raise NoDefaultRule
 
+    functools.update_wrapper(_torch_op, torch_fn)
     return _torch_op
 
 
 @_register_torch_op
 def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor:
+    """Operation for indexing a tensor.
+
+    .. note::
+
+      This operation is not intended to be called directly. Instead, use
+      :class:`Indexable` to create indexed tensors. :func:`torch_getitem` is
+      exposed so that it can be handled.
+
+    """
     if not isinstance(x, torch.Tensor):
         raise TypeError(f"expected a tensor but got {type(x)}")
 
@@ -421,7 +432,7 @@ class _EagerTensorTerm(torch.Tensor):
         return self.args[0].grad_fn
 
 
-def indexed_func_wrapper(
+def _indexed_func_wrapper(
     func: Callable[P, T]
 ) -> Tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
@@ -471,35 +482,35 @@ def grad(func, *args, **kwargs):
     with indexed arguments.
 
     """
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
     f = _register_torch_op(torch.func.grad(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(f(*a, *k))
 
 
 @functools.wraps(torch.func.jacfwd)
 def jacfwd(func, *args, **kwargs):
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
     jacobian = _register_torch_op(torch.func.jacfwd(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
 @functools.wraps(torch.func.jacrev)
 def jacrev(func, *args, **kwargs):
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
     jacobian = _register_torch_op(torch.func.jacrev(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(jacobian(*a, *k))
 
 
 @functools.wraps(torch.func.hessian)
 def hessian(func, *args, **kwargs):
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
     h = _register_torch_op(torch.func.hessian(deindexed_func, *args, **kwargs))
     return lambda *a, **k: reindex(h(*a, *k))
 
 
 @functools.wraps(torch.func.jvp)
 def jvp(func, *args, **kwargs):
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
 
     # hide deindexed_func from _register_torch_op
     jvp_func = functools.partial(torch.func.jvp, deindexed_func)
@@ -545,7 +556,7 @@ def vjp(func, *indexed_primals, **kwargs):
 
 @functools.wraps(torch.func.vmap)
 def vmap(func, *args, **kwargs):
-    (deindexed_func, reindex) = indexed_func_wrapper(func)
+    (deindexed_func, reindex) = _indexed_func_wrapper(func)
     vmap_func = _register_torch_op(torch.func.vmap(deindexed_func, *args, **kwargs))
     # vmap_func returns tensors of shape [vmap_dim, indexed_dim_1, ...,
     # indexed_dim_n, pos_dim_1, ..., pos_dim_m], so we reapply indexes starting
