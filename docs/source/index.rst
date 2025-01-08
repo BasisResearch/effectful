@@ -7,11 +7,19 @@ Table of Contents
 
    getting_started
    introduction
-   minipyro_example
    named_tensor_notation
 
+Examples
+========
 
-Indices and tables
+.. toctree::
+   :maxdepth: 1
+   :caption: Examples
+
+   minipyro_example
+   lambda_example
+
+Indices and Tables
 ==================
 
 * :ref:`genindex`
