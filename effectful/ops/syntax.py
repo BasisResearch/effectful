@@ -63,7 +63,11 @@ def defop(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 def defop(t, *, name=None):
     """Creates a fresh :class:`Operation`.
 
-    :param t: May be a type, callable, or :class:`Operation`. If a type, the operation will have no arguments and return the type. If a callable, the operation will have the same signature as the callable, but with no default rule. If an operation, the operation will be a distinct copy of the operation.
+    :param t: May be a type, callable, or :class:`Operation`. If a type, the
+              operation will have no arguments and return the type. If a callable,
+              the operation will have the same signature as the callable, but with
+              no default rule. If an operation, the operation will be a distinct
+              copy of the operation.
     :param name: Optional name for the operation.
     :returns: A fresh operation.
 

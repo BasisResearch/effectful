@@ -83,7 +83,8 @@ def fwd(__result: MaybeResult[S], *args, **kwargs) -> S:
 
     :func:`fwd` should only be called in the context of a handler.
 
-    :param __result: An accumulator commonly used for the result of the operation. See :func:`effectful.ops.syntax.bind_result`.
+    :param __result: An accumulator commonly used for the result of the operation.
+                     See :func:`effectful.ops.syntax.bind_result`.
     :param args: Positional arguments.
     :param kwargs: Keyword arguments.
 

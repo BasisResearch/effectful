@@ -120,7 +120,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def _partial_eval(t: T, order=None) -> T:
+def _partial_eval(t: T, order: Optional[Sequence[Operation[[], int]]] = None) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -173,11 +173,15 @@ def _partial_eval(t: T, order=None) -> T:
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
-def to_tensor(t: torch.Tensor, order=None) -> torch.Tensor:
+def to_tensor(*args, **kwargs) -> torch.Tensor:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
-    :param order: A list of named dimensions to convert to positional dimensions. These positional dimensions will appear at the beginning of the shape.
+    :type t: T
+    :param order: A list of named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type order: Optional[Sequence[Operation[[], int]]]
     :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
 
     **Example usage**:
@@ -187,7 +191,7 @@ def to_tensor(t: torch.Tensor, order=None) -> torch.Tensor:
     >>> to_tensor(Indexable(t)[a(), b()], [b, a]).shape
     torch.Size([3, 2])
     """
-    return _partial_eval(t, order=order)
+    return _partial_eval(*args, **kwargs)
 
 
 @functools.cache
