@@ -55,7 +55,7 @@ setup(
         "dm-tree",
     ],
     extras_require={"torch": TORCH_REQUIRE, "pyro": PYRO_REQUIRE, "dev": DEV_REQUIRE},
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     keywords="machine learning statistics probabilistic programming bayesian modeling pytorch",
     license="Apache 2.0",
     classifiers=[
@@ -65,8 +65,6 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: POSIX :: Linux",
         "Operating System :: MacOS :: MacOS X",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
     ],
