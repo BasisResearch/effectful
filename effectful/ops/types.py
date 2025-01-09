@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import abc
 import typing
 from typing import (
@@ -23,6 +25,13 @@ V = TypeVar("V")
 
 
 class Operation(abc.ABC, Generic[Q, V]):
+    """An abstract class representing an effect that can be implemented by an effect handler.
+
+    .. note::
+
+       Do not use :class:`Operation` directly. Instead, use :func:`defop` to define operations.
+
+    """
 
     @abc.abstractmethod
     def __eq__(self, other):
@@ -34,10 +43,15 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        """The default rule is used when the operation is not handled.
+
+        If no default rule is supplied, the free rule is used instead.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Term[V]":
+    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        """Returns a term for the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -50,10 +64,12 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
+        """Returns the type of the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set["Operation"]:
+        """Returns the free variables of the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -69,6 +85,11 @@ class Operation(abc.ABC, Generic[Q, V]):
 
 
 class Term(abc.ABC, Generic[T]):
+    """A term in an effectful computation is a is a tree of :class:`Operation`
+    applied to values.
+
+    """
+
     __match_args__ = ("op", "args", "kwargs")
 
     @property
@@ -97,8 +118,10 @@ class Term(abc.ABC, Generic[T]):
             return evaluate(self)  # type: ignore
 
 
+#: An expression is either a value or a term.
 Expr = Union[T, Term[T]]
 
+#: An interpretation is a mapping from operations to their implementations.
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 MaybeResult = Optional[T]
