@@ -33,7 +33,7 @@ def pyro_sample(
     **kwargs,
 ) -> torch.Tensor:
     """
-    Operation to sample from a Pyro distribution.
+    Operation to sample from a Pyro distribution. See :func:`pyro.sample`.
     """
     with pyro.poutine.mask(mask=mask if mask is not None else True):
         return pyro.sample(
@@ -42,8 +42,43 @@ def pyro_sample(
 
 
 class PyroShim(pyro.poutine.messenger.Messenger):
-    """
-    Handler for Pyro that wraps all sample sites in a custom effectful type.
+    """Pyro handler that wraps all sample sites in a custom effectful type.
+
+    .. note::
+
+      This handler should be installed around any Pyro model that you want to
+      use effectful handlers with.
+
+    **Example usage**:
+
+    >>> import pyro.distributions as dist
+    >>> from effectful.ops.semantics import fwd, handler
+    >>> torch.distributions.Distribution.set_default_validate_args(False)
+
+    It can be used as a decorator:
+
+    >>> @PyroShim()
+    ... def model():
+    ...     return pyro.sample("x", dist.Normal(0, 1))
+
+    It can also be used as a context manager:
+
+    >>> with PyroShim():
+    ...     x = pyro.sample("x", dist.Normal(0, 1))
+
+    When :class:`PyroShim` is installed, all sample sites perform the
+    :func:`pyro_sample` effect, which can be handled by an effectful
+    interpretation.
+
+    >>> def log_sample(name, *args, **kwargs):
+    ...     print(f"Sampled {name}")
+    ...     return fwd(None)
+
+    >>> with PyroShim(), handler({pyro_sample: log_sample}):
+    ...     x = pyro.sample("x", dist.Normal(0, 1))
+    ...     y = pyro.sample("y", dist.Normal(0, 1))
+    Sampled x
+    Sampled y
     """
 
     _current_site: Optional[str]
@@ -197,8 +232,8 @@ class Naming:
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
-        | batch_shape | named | event_shape |
-        to tensors of shape | batch_shape | event_shape |, | named |.
+        ``| batch_shape | named | event_shape |``
+        to tensors of shape ``| batch_shape | event_shape |, | named |``.
 
         """
         assert event_dims >= 0
@@ -403,9 +438,20 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
 def pyro_module_shim(
     module: type[pyro.nn.module.PyroModule],
 ) -> type[pyro.nn.module.PyroModule]:
-    """Wrap a PyroModule in a PyroShim.
+    """Wrap a :class:`PyroModule` in a :class:`PyroShim`.
 
-    Returns a new subclass of PyroModule that wraps calls to `forward` in a PyroShim.
+    Returns a new subclass of :class:`PyroModule` that wraps calls to
+    :func:`forward` in a :class:`PyroShim`.
+
+    **Example usage**:
+
+    .. code-block:: python
+
+        class SimpleModel(PyroModule):
+            def forward(self):
+                return pyro.sample("y", dist.Normal(0, 1))
+
+        SimpleModelShim = pyro_module_shim(SimpleModel)
 
     """
 

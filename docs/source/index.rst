@@ -10,6 +10,12 @@ Table of Contents
    minipyro_example
    named_tensor_notation
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Documentation
+
+   effectful
+   
 
 Indices and tables
 ==================
