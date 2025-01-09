@@ -56,9 +56,11 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __evalctx_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
+        self, intp: "Interpretation[S, T]", *args: Q.args, **kwargs: Q.kwargs
     ) -> tuple[
-        "Interpretation", tuple["Interpretation", ...], dict[str, "Interpretation"]
+        "Interpretation[S, S | T]",
+        tuple[tuple["Expr", "Interpretation[S, S | T]"], ...],
+        dict[str, tuple["Expr", "Interpretation[S, S | T]"]],
     ]:
         raise NotImplementedError
 

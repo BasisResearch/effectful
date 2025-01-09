@@ -17,7 +17,7 @@ V = TypeVar("V")
 
 
 def _rename_leaf_op(
-    v: T, renaming: Mapping[Operation[P, S], Operation[P, S]]
+    v: T, renaming: Mapping[Operation[..., S], Operation[..., S]]
 ) -> tuple[T, Interpretation[S, S]]:
     return tree.map_structure(
         lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
@@ -59,7 +59,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 apply: lambda _, op, *a, **k: defdata(_BaseTerm(op, a, k)),
                 **{op: op for op in bound_vars},
             }
-            return evaluate(_BaseTerm(self, args, kwargs), intp=intp)
+            return evaluate(_BaseTerm(self, args, kwargs), intp=intp)  # type: ignore
 
     def __evalctx_rule__(
         self, intp: Interpretation[S, T], *args: Q.args, **kwargs: Q.kwargs
@@ -112,12 +112,12 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
-        subs: dict[Operation, Operation] = {}
+        subs: dict[Operation[..., S], Operation[..., S]] = {}
         for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
             subs = coproduct(
                 {var: defop(var) for var in bound_vars[scope] if var in intp}, subs
-            )
+            )  # type: ignore
 
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
