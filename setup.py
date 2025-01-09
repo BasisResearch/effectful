@@ -11,17 +11,29 @@ except Exception as e:
     sys.stderr.flush()
     long_description = ""
 
-# examples/tutorials
-EXTRAS_REQUIRE = [
-    "jupyter",
-    "graphviz",
-    "matplotlib",
-    "pandas",
-    "seaborn",
-    "pytorch-lightning",
-    "scikit-image",
-    "tensorboard",
-]
+TORCH_REQUIRE = ["torch"]
+PYRO_REQUIRE = TORCH_REQUIRE + ["pyro-ppl"]
+DEV_REQUIRE = (
+    PYRO_REQUIRE
+    + TORCH_REQUIRE
+    + [
+        "pytest",
+        "pytest-cov",
+        "pytest-xdist",
+        "pytest-benchmark",
+        "mypy",
+        "black",
+        "flake8",
+        "isort",
+        "sphinx",
+        "sphinxcontrib-bibtex",
+        "sphinx_rtd_theme",
+        "myst-parser",
+        "nbsphinx",
+        "nbval",
+        "nbqa",
+    ]
+)
 
 setup(
     name="effectful",
@@ -40,31 +52,10 @@ setup(
         # if you add any additional libraries, please also
         # add them to `docs/source/requirements.txt`
         "typing_extensions",
-        "pyro-ppl",
         "dm-tree",
     ],
-    extras_require={
-        "extras": EXTRAS_REQUIRE,
-        "test": EXTRAS_REQUIRE
-        + [
-            "pytest",
-            "pytest-cov",
-            "pytest-xdist",
-            "pytest-benchmark",
-            "mypy",
-            "black",
-            "flake8",
-            "isort",
-            "sphinx==7.1.2",
-            "sphinxcontrib-bibtex",
-            "sphinx_rtd_theme==1.3.0",
-            "myst_parser",
-            "nbsphinx",
-            "nbval",
-            "nbqa",
-        ],
-    },
-    python_requires=">=3.8",
+    extras_require={"torch": TORCH_REQUIRE, "pyro": PYRO_REQUIRE, "dev": DEV_REQUIRE},
+    python_requires=">=3.10",
     keywords="machine learning statistics probabilistic programming bayesian modeling pytorch",
     license="Apache 2.0",
     classifiers=[
@@ -74,8 +65,6 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: POSIX :: Linux",
         "Operating System :: MacOS :: MacOS X",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
     ],
