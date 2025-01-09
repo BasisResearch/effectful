@@ -17,6 +17,11 @@ Table of Contents
    lambda_example
    semi_ring_example
 
+   :maxdepth: 2
+   :caption: Documentation
+
+   effectful
+
 Indices and Tables
 ==================
 
