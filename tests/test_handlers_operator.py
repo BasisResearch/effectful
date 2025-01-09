@@ -165,6 +165,9 @@ def test_lambda_calculus_1():
         assert Lam(y, f1) == f1
         assert Lam(x, f1.args[1]) == f1.args[1]
 
+        assert fvsof(e1) == fvsof(x() + 1)
+        assert fvsof(Lam(x, e1).args[1]) != fvsof(Lam(x, e1).args[1])
+
         assert typeof(e1) is int
         assert typeof(f1) is collections.abc.Callable
 

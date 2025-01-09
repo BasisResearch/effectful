@@ -41,6 +41,14 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
+    def __evalctx_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
+        "Interpretation", tuple["Interpretation", ...], dict[str, "Interpretation"]
+    ]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         raise NotImplementedError
 

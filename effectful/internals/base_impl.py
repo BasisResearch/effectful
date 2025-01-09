@@ -7,7 +7,7 @@ from typing import Callable, Generic, Mapping, Sequence, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -16,20 +16,12 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-def rename(
-    subs: Mapping[Operation[..., S], Operation[..., S]],
-    leaf_value: V,  # Union[Term[V], Operation[..., V], V],
-) -> V:  # Union[Term[V], Operation[..., V], V]:
-    from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, evaluate
-
-    if isinstance(leaf_value, Operation):
-        return subs.get(leaf_value, leaf_value)  # type: ignore
-    elif isinstance(leaf_value, Term):
-        with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
-            return evaluate(leaf_value)  # type: ignore
-    else:
-        return leaf_value
+def _rename_leaf_op(
+    v: T, renaming: Mapping[Operation[P, S], Operation[P, S]]
+) -> tuple[T, Interpretation[S, S]]:
+    return tree.map_structure(
+        lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
+    ), dict(renaming)
 
 
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
@@ -56,7 +48,28 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Term[V]:
-        from effectful.ops.syntax import Bound, Scoped, defdata, defop
+        from effectful.ops.semantics import apply, evaluate
+        from effectful.ops.syntax import defdata
+
+        bound_vars = self.__fvs_rule__(*args, **kwargs)
+        if not bound_vars:
+            return defdata(_BaseTerm(self, args, kwargs))
+        else:
+            intp = {
+                apply: lambda _, op, *a, **k: defdata(_BaseTerm(op, a, k)),
+                **{op: op for op in bound_vars},
+            }
+            return evaluate(_BaseTerm(self, args, kwargs), intp=intp)
+
+    def __evalctx_rule__(
+        self, intp: Interpretation[S, T], *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
+        Interpretation[S, S | T],
+        tuple[tuple[Expr, Interpretation[S, S | T]], ...],
+        dict[str, tuple[Expr, Interpretation[S, S | T]]],
+    ]:
+        from effectful.ops.semantics import coproduct
+        from effectful.ops.syntax import Bound, Scoped, defop
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -85,25 +98,44 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             else:
                 unscoped_args.add(param_name)
 
+        if not bound_vars:  # fast path for no bound variables
+            return (
+                {},
+                tuple((a, {}) for a in bound_sig.args),
+                {k: (v, {}) for k, v in bound_sig.kwargs.items()},
+            )
+
         # TODO replace this temporary check with more general scope level propagation
-        if bound_vars:
-            min_scope = min(bound_vars.keys(), default=0)
-            scoped_args[min_scope] |= unscoped_args
-            max_scope = max(bound_vars.keys(), default=0)
-            assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
+        min_scope = min(bound_vars.keys(), default=0)
+        scoped_args[min_scope] |= unscoped_args
+        max_scope = max(bound_vars.keys(), default=0)
+        assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
-        for scope in sorted(bound_vars.keys()):
+        subs: dict[Operation, Operation] = {}
+        for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {var: defop(var) for var in bound_vars[scope]}
+            subs = coproduct(
+                {var: defop(var) for var in bound_vars[scope] if var in intp}, subs
+            )
+
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
-                bound_sig.arguments[name] = tree.map_structure(
-                    lambda a: rename(renaming_map, a),
-                    bound_sig.arguments[name],
-                )
+                if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
+                    bound_sig.arguments[name] = tuple(
+                        _rename_leaf_op(a, subs) for a in bound_sig.arguments[name]
+                    )
+                elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
+                    bound_sig.arguments[name] = {
+                        k: _rename_leaf_op(v, subs)
+                        for k, v in bound_sig.arguments[name].items()
+                    }
+                else:
+                    bound_sig.arguments[name] = _rename_leaf_op(
+                        bound_sig.arguments[name], subs
+                    )
 
-        return defdata(_BaseTerm(self, bound_sig.args, bound_sig.kwargs))  # type: ignore
+        return {}, tuple(bound_sig.args), dict(bound_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)

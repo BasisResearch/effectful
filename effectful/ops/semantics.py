@@ -117,10 +117,14 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
     expr = defterm(expr) if not isinstance(expr, Term) else expr
 
     if isinstance(expr, Term):
-        (args, kwargs) = tree.map_structure(
-            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
+        out_ctx, arg_ctxs, kw_ctxs = expr.op.__evalctx_rule__(
+            intp, *expr.args, **expr.kwargs
         )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)  # type: ignore
+        args = [evaluate(arg, intp=coproduct(intp, ctx)) for arg, ctx in arg_ctxs]
+        kwargs = {
+            k: evaluate(v, intp=coproduct(intp, ctx)) for k, (v, ctx) in kw_ctxs.items()
+        }
+        return apply.__default_rule__(coproduct(intp, out_ctx), expr.op, *args, **kwargs)  # type: ignore
     elif tree.is_nested(expr):
         return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
     else:
