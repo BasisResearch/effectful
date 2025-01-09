@@ -17,6 +17,7 @@ Table of Contents
    lambda_example
    semi_ring_example
 
+.. toctree::
    :maxdepth: 2
    :caption: Documentation
 
