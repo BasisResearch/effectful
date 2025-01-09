@@ -56,6 +56,7 @@ extensions = [
     # "sphinx_gallery.gen_gallery",
     # "sphinx_search.extension",
     "sphinxcontrib.bibtex",
+    "sphinxcontrib.jquery",
 ]
 
 # Point sphinxcontrib.bibtex to the bibtex file.
