@@ -1,6 +1,8 @@
-import collections
+import collections.abc
 import dataclasses
 import functools
+import operator
+import types
 import typing
 from typing import (
     Annotated,
@@ -48,19 +50,8 @@ class NoDefaultRule(Exception):
     pass
 
 
-@typing.overload
-def defop(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]: ...
-
-
-@typing.overload
-def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-@typing.overload
-def defop(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-def defop(t, *, name=None):
+@functools.singledispatch
+def defop(t, *, name: Optional[str] = None) -> Operation:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -191,29 +182,43 @@ def defop(t, *, name=None):
       1 2
 
     """
+    raise NotImplementedError(f"expected type or callable, got {t}")
 
-    if isinstance(t, Operation):
 
-        def func(*args, **kwargs):  # type: ignore
-            raise NoDefaultRule
+@defop.register(collections.abc.Callable)
+def _(
+    t: collections.abc.Callable[P, T], *, name: Optional[str] = None
+) -> Operation[P, T]:
+    from effectful.internals.base_impl import _BaseOperation
 
-        functools.update_wrapper(func, t)
-        return defop(func, name=name)
-    elif isinstance(t, type):
+    op = _BaseOperation(t)
+    op.__name__ = name or t.__name__  # type: ignore
+    return op
 
-        def func() -> t:  # type: ignore
-            raise NoDefaultRule
 
-        func.__name__ = name or t.__name__
-        return typing.cast(Operation[[], T], defop(func, name=name))
-    elif isinstance(t, collections.abc.Callable):
-        from effectful.internals.base_impl import _BaseOperation
+@defop.register(Operation)
+def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+    def func(*args, **kwargs):  # type: ignore
+        raise NoDefaultRule
 
-        op = _BaseOperation(t)
-        op.__name__ = name or t.__name__
-        return op
-    else:
-        raise ValueError(f"expected type or callable, got {t}")
+    functools.update_wrapper(func, t)
+    return defop(func, name=name)
+
+
+@defop.register(type)
+def _(t: type[T], *, name: Optional[str] = None) -> Operation[[], T]:
+    def func() -> t:  # type: ignore
+        raise NoDefaultRule
+
+    func.__name__ = name or t.__name__
+    return typing.cast(Operation[[], T], defop(func, name=name))
+
+
+@defop.register(types.BuiltinFunctionType)
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+    from effectful.ops.semantics import call
+
+    return defop(functools.wraps(t)(functools.partial(call, t)), name=name)
 
 
 @defop
@@ -361,6 +366,8 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
+@defterm.register(type)
+@defterm.register(types.BuiltinFunctionType)
 def _(value: T) -> T:
     return value
 
@@ -540,3 +547,35 @@ def implements(op: Operation[P, V]):
 
     """
     return _ImplementedOperation(op)
+
+
+OPERATORS = types.SimpleNamespace()
+
+OPERATORS.add = property(staticmethod(functools.cache(functools.partial(defop, operator.add))))
+OPERATORS.sub = property(staticmethod(functools.cache(functools.partial(defop, operator.sub))))
+OPERATORS.mul = property(staticmethod(functools.cache(functools.partial(defop, operator.mul))))
+OPERATORS.truediv = property(staticmethod(functools.cache(functools.partial(defop, operator.truediv))))
+OPERATORS.floordiv = property(staticmethod(functools.cache(functools.partial(defop, operator.floordiv))))
+OPERATORS.mod = property(staticmethod(functools.cache(functools.partial(defop, operator.mod))))
+OPERATORS.pow = property(staticmethod(functools.cache(functools.partial(defop, operator.pow))))
+OPERATORS.matmul = property(staticmethod(functools.cache(functools.partial(defop, operator.matmul))))
+OPERATORS.lshift = property(staticmethod(functools.cache(functools.partial(defop, operator.lshift))))
+OPERATORS.rshift = property(staticmethod(functools.cache(functools.partial(defop, operator.rshift))))
+OPERATORS.and_ = property(staticmethod(functools.cache(functools.partial(defop, operator.and_))))
+OPERATORS.or_ = property(staticmethod(functools.cache(functools.partial(defop, operator.or_))))
+OPERATORS.xor = property(staticmethod(functools.cache(functools.partial(defop, operator.xor))))
+OPERATORS.neg = property(staticmethod(functools.cache(functools.partial(defop, operator.neg))))
+OPERATORS.pos = property(staticmethod(functools.cache(functools.partial(defop, operator.pos))))
+OPERATORS.abs = property(staticmethod(functools.cache(functools.partial(defop, operator.abs))))
+OPERATORS.invert = property(staticmethod(functools.cache(functools.partial(defop, operator.invert))))
+OPERATORS.not_ = property(staticmethod(functools.cache(functools.partial(defop, operator.not_))))
+OPERATORS.lt = property(staticmethod(functools.cache(functools.partial(defop, operator.lt))))
+OPERATORS.le = property(staticmethod(functools.cache(functools.partial(defop, operator.le))))
+OPERATORS.gt = property(staticmethod(functools.cache(functools.partial(defop, operator.gt))))
+OPERATORS.ge = property(staticmethod(functools.cache(functools.partial(defop, operator.ge))))
+OPERATORS.is_ = property(staticmethod(functools.cache(functools.partial(defop, operator.is_))))
+OPERATORS.is_not = property(staticmethod(functools.cache(functools.partial(defop, operator.is_not))))
+OPERATORS.contains = property(staticmethod(functools.cache(functools.partial(defop, operator.contains))))
+OPERATORS.index = property(staticmethod(functools.cache(functools.partial(defop, operator.index))))
+OPERATORS.getitem = property(staticmethod(functools.cache(functools.partial(defop, operator.getitem))))
+OPERATORS.setitem = property(staticmethod(functools.cache(functools.partial(defop, operator.setitem))))
