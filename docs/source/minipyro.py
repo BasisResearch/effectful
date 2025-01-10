@@ -38,13 +38,7 @@ from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.semantics import coproduct, fwd, handler
-from effectful.ops.syntax import (
-    ObjectInterpretation,
-    bind_result,
-    bind_result_to_method,
-    defop,
-    implements,
-)
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
 P = ParamSpec("P")
@@ -157,11 +151,10 @@ class Tracer(ObjectInterpretation):
         self.TRACE = OrderedDict()
 
     @implements(sample)
-    @bind_result_to_method
-    def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+    def sample(self, var_name: str, dist: Distribution, **kwargs):
         # When we recieve a sample message, we don't know how to
         # handle it ourselves, so we forward it to the next handler:
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd(None)
 
         # Once we've seen the result, we record it, along with the argument
         # that caused it
@@ -172,10 +165,8 @@ class Tracer(ObjectInterpretation):
         return res
 
     @implements(param)
-    @bind_result_to_method
     def param(
         self,
-        ires,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
@@ -183,7 +174,7 @@ class Tracer(ObjectInterpretation):
     ) -> Tensor:
         # Similar to `Tracer.sample`
 
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd(None)
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
@@ -201,12 +192,10 @@ class Replay(ObjectInterpretation):
         self.trace = trace
 
     @implements(sample)
-    @bind_result_to_method
-    def sample(self, res, var_name: str, *args, **kwargs):
+    def sample(self, var_name: str, *args, **kwargs):
         if var_name in self.trace:
             return self.trace[var_name].val
-        else:
-            return fwd(res)
+        return fwd(None)
 
 
 # In minipyro, `Messenger`s can only be used has handlers,
@@ -259,10 +248,7 @@ class NativeSeed(ObjectInterpretation):
         assert isinstance(name, str)
         if obs is not None:
             return obs
-        elif dist.has_rsample:
-            return dist.rsample()
-        else:
-            return dist.sample()
+        return dist.rsample() if dist.has_rsample else dist.sample()
 
 
 @contextmanager
@@ -353,16 +339,15 @@ class Plate(ObjectInterpretation):
         self.dim = dim
 
     @implements(sample)
-    @bind_result_to_method
-    def do_sample(self, res, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    def do_sample(self, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
             batch_shape = [1] * (-self.dim - len(batch_shape)) + list(batch_shape)
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
-        else:
-            return fwd(res)
+
+        return fwd(None)
 
 
 # Helper for using `Plate` as a `handler`
@@ -378,7 +363,7 @@ default_runner = coproduct(NativeSeed(), NativeParam())
 
 
 def block(
-    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
 ):
     """
     Block is a helper for masking out a subset of calls to either
@@ -390,13 +375,11 @@ def block(
     normally.
     """
 
-    @bind_result
-    def blocking(res, op: Operation, *args, **kwargs):
-        if hide_fn(op, res, *args, **kwargs):
+    def blocking(op: Operation, *args, **kwargs):
+        if hide_fn(op, *args, **kwargs):
             with handler(default_runner):
-                return res if res is not None else op(*args, **kwargs)
-        else:
-            return fwd(res)
+                return op(*args, **kwargs)
+        return fwd(None)
 
     return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
 
@@ -413,17 +396,9 @@ class Adam:
 
     def __call__(self, params):
         for param in params:
-            # If we've seen this parameter before, use the previously
-            # constructed optimizer.
-            if param in self.optim_objs:
-                optimizer = self.optim_objs[param]
-            # If we've never seen this parameter before, construct
-            # an Adam optimizer and keep track of it.
-            else:
-                optimizer = torch.optim.Adam([param], **self.optim_args)
-                self.optim_objs[param] = optimizer
-            # Take a gradient step for the parameter param.
-            optimizer.step()
+            if param not in self.optim_objs:
+                self.optim_objs[param] = torch.optim.Adam([param], **self.optim_args)
+            self.optim_objs[param].step()
 
 
 # This is a unified interface for stochastic variational inference in Pyro.
@@ -478,6 +453,7 @@ def elbo(model, guide, *args, **kwargs):
     with trace() as model_trace:
         with replay(guide_trace):
             model(*args, **kwargs)
+
     # We will accumulate the various terms of the ELBO in `elbo`.
     elbo = 0.0
     # Loop over all the sample sites in the model and add the corresponding
@@ -486,11 +462,11 @@ def elbo(model, guide, *args, **kwargs):
     for site in model_trace.values():
         if isinstance(site, SampleMsg):
             elbo = elbo + site.dist.log_prob(site.val).sum()
-    # Loop over all the sample sites in the guide and add the corresponding
-    # -log q(z) term to the ELBO.
+
     for site in guide_trace.values():
         if isinstance(site, SampleMsg):
             elbo = elbo - site.dist.log_prob(site.val).sum()
+
     # Return (-elbo) since by convention we do gradient descent on a loss and
     # the ELBO is a lower bound that needs to be maximized.
     return -elbo
@@ -531,7 +507,7 @@ def example():
 
         optimizer = Adam({"lr": 1e-6})
         inference = SVI(model, guide, optimizer, elbo)
-        for i in range(2):
+        for _ in range(2):
             inference.step(data)
 
 

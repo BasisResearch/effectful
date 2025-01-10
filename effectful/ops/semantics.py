@@ -92,7 +92,7 @@ def fwd(__result: MaybeResult[S], *args, **kwargs) -> S:
     the current arguments to the next handler.
 
     """
-    return __result  # type: ignore
+    raise RuntimeError("fwd should only be called in the context of a handler")
 
 
 def coproduct(

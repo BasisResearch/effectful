@@ -1,5 +1,4 @@
 import contextlib
-import functools
 import itertools
 import logging
 from typing import TypeVar
@@ -8,13 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, product
-from effectful.ops.syntax import (
-    NoDefaultRule,
-    ObjectInterpretation,
-    bind_result,
-    defop,
-    implements,
-)
+from effectful.ops.syntax import NoDefaultRule, ObjectInterpretation, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
 logger = logging.getLogger(__name__)
@@ -49,11 +42,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    @bind_result
-    def _op_times_n(res, n: int, op: Operation[..., int], *args: int) -> int:
-        return (res or op.__default_rule__(*args)) * n  # type: ignore
-
-    return {op: functools.partial(_op_times_n, n, op) for op in ops}
+    return {op: (lambda *args: (fwd(None) * n)) for op in ops}
 
 
 OPERATION_CASES = (
@@ -78,7 +67,8 @@ def test_op_times_n_interpretation(op, args, n):
     assert op in times_n(n, op)
     assert new_op not in times_n(n, op)
 
-    assert op(*args) * n == times_n(n, op)[op](*args)
+    with handler(times_n(n, op)):
+        assert op(*args) == op.__default_rule__(*args) * n
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -177,8 +167,11 @@ def test_op_repeat_nest_interpreter(op, args, n, depth):
         for _ in range(depth):
             stack.enter_context(closed_handler(intp))
 
+        # intp does not bind op, so it should execute unchanged
         assert op(*args) == op.__default_rule__(*args)
-        assert new_op(*args) == intp[new_op](*args)
+
+        # however, intp does bind new_op, so it should execute with the new rule
+        assert new_op(*args) == (op(*args) + 3) * n
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
@@ -277,10 +270,6 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
     return {op: op.__default_rule__ for op in ops}  # type: ignore
 
 
-def times_n_handler(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: bind_result(lambda r, *args, **kwargs: fwd(r) * n) for op in ops}
-
-
 def test_fwd_simple():
     def plus_1_fwd(x):
         # do nothing and just fwd
@@ -298,8 +287,8 @@ def test_compose_associative(op, args, n1, n2):
         return op(*args)
 
     h0 = defaults(op)
-    h1 = times_n_handler(n1, op)
-    h2 = times_n_handler(n2, op)
+    h1 = times_n(n1, op)
+    h2 = times_n(n2, op)
 
     intp1 = coproduct(h0, coproduct(h1, h2))
     intp2 = coproduct(coproduct(h0, h1), h2)
@@ -317,8 +306,8 @@ def test_compose_commute_orthogonal(op, args, n1, n2):
     new_op = defop(lambda *args: op(*args) + 3)
 
     h0 = defaults(op, new_op)
-    h1 = times_n_handler(n1, op)
-    h2 = times_n_handler(n2, new_op)
+    h1 = times_n(n1, op)
+    h2 = times_n(n2, new_op)
 
     intp1 = coproduct(h0, coproduct(h1, h2))
     intp2 = coproduct(h0, coproduct(h2, h1))
@@ -334,8 +323,8 @@ def test_handler_associative(op, args, n1, n2):
         return op(*args)
 
     h0 = defaults(op)
-    h1 = times_n_handler(n1, op)
-    h2 = times_n_handler(n2, op)
+    h1 = times_n(n1, op)
+    h2 = times_n(n2, op)
 
     expected = handler(coproduct(h0, coproduct(h1, h2)))(f)()
 
@@ -360,7 +349,7 @@ def test_stop_without_fwd(op, args, n, depth):
 
     with contextlib.ExitStack() as stack:
         for _ in range(depth):
-            stack.enter_context(handler(times_n_handler(n, op)))
+            stack.enter_context(handler(times_n(n, op)))
 
         stack.enter_context(handler(defaults(op)))
 
