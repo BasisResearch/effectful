@@ -2,8 +2,16 @@ import typing
 import warnings
 from typing import Any, Collection, List, Mapping, Optional, Tuple
 
-import pyro
-import torch
+try:
+    import pyro
+except ImportError:
+    raise ImportError("Pyro is required to use effectful.handlers.pyro.")
+
+try:
+    import torch
+except ImportError:
+    raise ImportError("PyTorch is required to use effectful.handlers.pyro.")
+
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import Indexable, sizesof, to_tensor
