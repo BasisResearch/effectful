@@ -1,6 +1,6 @@
 import random
 
-from docs.source.semi_ring import Dict, Field, Let, Sum, eager, opt, ops
+from docs.source.semi_ring import Dict, Field, Let, Sum, eager, ops, opt
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop, defterm
 from effectful.ops.types import Term

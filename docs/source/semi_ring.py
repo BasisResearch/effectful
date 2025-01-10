@@ -1,12 +1,13 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, overload
+from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
+import effectful.handlers.operator
 from effectful.handlers.operator import OPERATORS
-from effectful.ops.semantics import evaluate, fwd, handler, coproduct, call
-from effectful.ops.syntax import NoDefaultRule, defop, Scoped, Bound, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.semantics import call, coproduct, evaluate, fwd, handler
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop, defterm
+from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
 S = TypeVar("S")
@@ -78,7 +79,7 @@ def Field(record: dict[str, T], key: str) -> T:
 
 
 @defop
-def Dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
+def Dict(*contents: Union[K, V]) -> SemiRingDict[K, V]:
     raise NoDefaultRule
 
 
@@ -104,14 +105,14 @@ def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
             kv.append((contents[i], contents[i + 1]))
         return SemiRingDict(kv)
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_record(**kwargs: T) -> dict[str, T]:
     if all(is_value(v) for v in kwargs.values()):
         return dict(**kwargs)
     else:
-        return fwd(None)
+        return fwd()
 
 
 @overload
@@ -134,14 +135,14 @@ def eager_add(x, y):
     elif isinstance(x, int) and isinstance(y, int):
         return x + y
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_app(f: Callable[[S], T], x: S) -> T:
     if is_value(x):
         return f(x)
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_field(r: dict[str, T], k: str) -> T:
@@ -151,7 +152,7 @@ def eager_field(r: dict[str, T], k: str) -> T:
         case SemiRingDict(), _ if is_value(k):
             return r[k]
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def eager_sum(
@@ -164,7 +165,7 @@ def eager_sum(
         case SemiRingDict(), Term():
             new_d: SemiRingDict[S, T] = SemiRingDict()
             for key, value in e1.items():
-                new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
+                new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)  # type: ignore
             return new_d
         case SemiRingDict(), SemiRingDict():
             new_d = SemiRingDict()
@@ -172,11 +173,11 @@ def eager_sum(
                 new_d += e2
             return new_d
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def eager_let(e1: T, x: Operation[[], T], e2: S) -> S:
-    return handler({x: lambda: e1})(evaluate)(e2)
+    return cast(S, handler({x: lambda: e1})(evaluate)(e2))
 
 
 def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
@@ -185,22 +186,23 @@ def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
             Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
             Term(ops.Sum, (Term(xa), k2, v2, Term(ops.Dict, (Term(k2a), e_rhs)))),
         ) if x == xa and k1 == k1a and k2 == k2a:
-            ret = evaluate(
+            return evaluate(
                 Sum(
-                    e_sum,
-                    k1,
-                    v1,
-                    Let(e_lhs, v2, Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs)))),
+                    e_sum,  # type: ignore
+                    k1,  # type: ignore
+                    v1,  # type: ignore
+                    Let(
+                        e_lhs, v2, Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs)))  # type: ignore
+                    ),
                 )
             )
-            return ret
         case _:
-            return fwd(None)
+            return fwd()
 
 
 add = OPERATORS[operator.add]
 
-eager = {
+eager: Interpretation = {
     add: eager_add,
     Dict: eager_dict,
     Record: eager_record,
@@ -209,25 +211,21 @@ eager = {
     Let: eager_let,
 }
 
-opt = {
+opt: Interpretation = {
     Let: vertical_fusion,
 }
 
 
 if __name__ == "__main__":
     x, y, k, v = (
-        defop(object, name="x"),
-        defop(object, name="y"),
-        defop(object, name="k"),
-        defop(object, name="v"),
+        defop(SemiRingDict[int, int], name="x"),
+        defop(SemiRingDict[int, int], name="y"),
+        defop(int, name="k"),
+        defop(int, name="v"),
     )
 
-    @defterm
-    def add1(a: int) -> int:
-        return a + 1
-
-    term = Let(
-        Sum(x(), k, v, Dict(k(), add1(v()))), y, Sum(y(), k, v, Dict(k(), add1(v())))
+    term: SemiRingDict[int, int] = Let(
+        Sum(x(), k, v, Dict(k(), v() + 1)), y, Sum(y(), k, v, Dict(k(), v() + 1))
     )
 
     print("Without optimization:", term)
