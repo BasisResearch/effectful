@@ -194,7 +194,7 @@ class Replay(ObjectInterpretation):
     @implements(sample)
     def sample(self, var_name: str, *args, **kwargs):
         if var_name in self.trace:
-            return self.trace[var_name].val
+            return fwd(var_name, *args, **{**kwargs, "obs": self.trace[var_name].val})
         return fwd()
 
 
