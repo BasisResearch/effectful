@@ -64,7 +64,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     >>> def log_sample(name, *args, **kwargs):
     ...     print(f"Sampled {name}")
-    ...     return fwd(None)
+    ...     return fwd()
 
     >>> with PyroShim(), handler({pyro_sample: log_sample}):
     ...     x = pyro.sample("x", dist.Normal(0, 1))

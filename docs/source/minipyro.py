@@ -154,7 +154,7 @@ class Tracer(ObjectInterpretation):
     def sample(self, var_name: str, dist: Distribution, **kwargs):
         # When we recieve a sample message, we don't know how to
         # handle it ourselves, so we forward it to the next handler:
-        res: Tensor = fwd(None)
+        res: Tensor = fwd()
 
         # Once we've seen the result, we record it, along with the argument
         # that caused it
@@ -174,7 +174,7 @@ class Tracer(ObjectInterpretation):
     ) -> Tensor:
         # Similar to `Tracer.sample`
 
-        res: Tensor = fwd(None)
+        res: Tensor = fwd()
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
@@ -195,7 +195,7 @@ class Replay(ObjectInterpretation):
     def sample(self, var_name: str, *args, **kwargs):
         if var_name in self.trace:
             return self.trace[var_name].val
-        return fwd(None)
+        return fwd()
 
 
 # In minipyro, `Messenger`s can only be used has handlers,
@@ -223,12 +223,10 @@ class NativeSeed(ObjectInterpretation):
 
     @implements(get_rng_seed)
     def get_rng_seed(self):
-        return fwd(
-            Seed(
-                torch=get_rng_state(),
-                python=random.getstate(),
-                numpy=np.random.get_state(),
-            )
+        return Seed(
+            torch=get_rng_state(),
+            python=random.getstate(),
+            numpy=np.random.get_state(),
         )
 
     @implements(set_rng_seed)
@@ -241,7 +239,7 @@ class NativeSeed(ObjectInterpretation):
             set_rng_state(seed.torch)
             random.setstate(seed.python)
             np.random.set_state(seed.numpy)
-        return fwd(None)
+        return fwd()
 
     @implements(sample)
     def sample(self, name: str, dist: Distribution, obs=None, **kwargs):
@@ -347,7 +345,7 @@ class Plate(ObjectInterpretation):
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
 
-        return fwd(None)
+        return fwd()
 
 
 # Helper for using `Plate` as a `handler`
@@ -379,7 +377,7 @@ def block(
         if hide_fn(op, *args, **kwargs):
             with handler(default_runner):
                 return op(*args, **kwargs)
-        return fwd(None)
+        return fwd()
 
     return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
 

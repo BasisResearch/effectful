@@ -3,16 +3,14 @@ import dataclasses
 import functools
 from typing import Callable, Generic, Mapping, Tuple, TypeVar
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, MaybeResult, Operation
+from effectful.ops.types import Interpretation, Operation
 
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
-V = TypeVar("V")
-T_co = TypeVar("T_co", covariant=True)
 
 
 @dataclasses.dataclass
@@ -42,29 +40,20 @@ def interpreter(intp: "Interpretation"):
 
 
 @defop
-def _get_result() -> MaybeResult[T]:
-    return None
-
-
-@defop
 def _get_args() -> Tuple[Tuple, Mapping]:
     return ((), {})
 
 
-def _set_result(fn: Callable[P, T]) -> Callable[Concatenate[MaybeResult[S], P], T]:
-    from effectful.ops.semantics import handler
-
+def _restore_args(fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
-    def _cont_wrapper(res: MaybeResult[S], *a: P.args, **k: P.kwargs) -> T:
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
-        res = res if res is not None else _get_result()
-        with handler({_get_result: lambda: res}):  # type: ignore
-            return fn(*a, **k)
+        return fn(*a, **k)
 
     return _cont_wrapper
 
 
-def _set_args(fn: Callable[P, T]) -> Callable[P, T]:
+def _save_args(fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
@@ -76,9 +65,7 @@ def _set_args(fn: Callable[P, T]) -> Callable[P, T]:
 
 
 def _set_prompt(
-    prompt: Operation[Concatenate[MaybeResult[S], P], S],
-    cont: Callable[Concatenate[MaybeResult[S], P], T],
-    body: Callable[P, T],
+    prompt: Operation[P, T], cont: Callable[P, T], body: Callable[P, T]
 ) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 

@@ -104,14 +104,14 @@ def eager_dict(*contents):
             kv.append((contents[i], contents[i + 1]))
         return SemiRingDict(kv)
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_record(**kwargs):
     if all(is_value(v) for v in kwargs.values()):
         return dict(**kwargs)
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_add(x, y):
@@ -126,14 +126,14 @@ def eager_add(x, y):
     elif isinstance(x, int) and isinstance(y, int):
         return x + y
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_app(f, x):
     if is_value(x):
         return f(x)
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eager_field(r, k):
@@ -143,7 +143,7 @@ def eager_field(r, k):
         case SemiRingDict(), _ if is_value(k):
             return r[k]
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def eager_sum(e1, k, v, e2):
@@ -159,7 +159,7 @@ def eager_sum(e1, k, v, e2):
                 new_d += e2
             return new_d
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def eager_let(e1, x, e2):
@@ -169,7 +169,7 @@ def eager_let(e1, x, e2):
         case _, SemiRingDict():
             return e2
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def vertical_fusion(e1, x, e2):
@@ -196,7 +196,7 @@ def vertical_fusion(e1, x, e2):
         ) if k1 == k1a and v1 == v1a and x == xa and k2 == k2a and v2 == v2a:
             return Sum(e_sum, k2, v2, Dict(k2(), App(f2, App(f1, v2()))))
         case _:
-            return fwd(None)
+            return fwd()
 
 
 add = OPERATORS[operator.add]

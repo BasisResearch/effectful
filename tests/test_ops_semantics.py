@@ -42,7 +42,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: (lambda *args: (fwd(None) * n)) for op in ops}
+    return {op: (lambda *args: (fwd() * n)) for op in ops}
 
 
 OPERATION_CASES = (
@@ -273,7 +273,7 @@ def defaults(*ops: Operation[..., int]) -> Interpretation[int, int]:
 def test_fwd_simple():
     def plus_1_fwd(x):
         # do nothing and just fwd
-        return fwd(None)
+        return fwd()
 
     with handler({plus_1: plus_1_fwd}):
         assert plus_1(1) == 2
@@ -399,7 +399,7 @@ def test_fwd_default():
         return "default stuff"
 
     def do_more_stuff():
-        return fwd(None) + " and more"
+        return fwd() + " and more"
 
     def fancy_stuff():
         return "fancy stuff"
@@ -432,7 +432,7 @@ def test_product_resets_fwd():
 
     h_outer = {
         do_stuff: lambda: "default stuff",
-        do_other_stuff: lambda: fwd(None) + " and more " + do_stuff(),
+        do_other_stuff: lambda: fwd() + " and more " + do_stuff(),
     }
     h_inner = {do_stuff: lambda: "fancy " + do_other_stuff()}
     h_topmost = {do_stuff: lambda: "should not be called"}
@@ -509,7 +509,7 @@ def test_product_distributive():
 
     h0 = {op0: lambda: 0, op1: lambda: (op0(), 1)}
     h1 = {op2: lambda: (op0(), op1(), 1)}
-    h2 = {op2: lambda: (fwd(None), op0(), op1(), 2)}
+    h2 = {op2: lambda: (fwd(), op0(), op1(), 2)}
 
     h_lhs = product(h0, coproduct(h1, h2))
     h_rhs = coproduct(product(h0, h1), product(h0, h2))
