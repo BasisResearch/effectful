@@ -67,7 +67,7 @@ def dependent_mask(get_mask: GetMask) -> Interpretation[torch.Tensor, torch.Tens
             expanded_dist = dist.expand(mask_expanded_shape + dist.batch_shape)
             dist = NamedDistribution(expanded_dist, mask_extra_indices.keys())
 
-        return fwd(None, name, dist, *args, mask=mask, **kwargs)
+        return fwd(name, dist, *args, mask=mask, **kwargs)
 
     return {pyro_sample: _pyro_sample}
 
