@@ -64,21 +64,21 @@ Here's an example demonstrating how ``effectful`` can be used to implement a sim
            case int(), int():
                return x + y
            case _:
-               return fwd(None)
+               return fwd()
 
    def commute_add(x: int, y: int) -> int:
        match x, y:
            case Term(), int():
                return y + x  
            case _:
-               return fwd(None)
+               return fwd()
 
    def assoc_add(x: int, y: int) -> int:
        match x, y:
            case _, Term(op, (a, b)) if op == add:
                return (x + a) + b 
            case _:
-               return fwd(None)
+               return fwd()
 
    beta_rules = {add: beta_add}
    commute_rules = {add: commute_add}
