@@ -1,7 +1,7 @@
 Lambda Calculus
 ===============
 
-This file implements a simple call-by-value lambda calculus using ``effectful``.
+This file implements a simple call-by-value `lambda calculus <https://en.wikipedia.org/wiki/Lambda_calculus>`_ using ``effectful``.
 
 It demonstrates the use of higher-order effects (i.e. effects that install handlers for other effects as part of their own operation).
 Both :func:`Lam` and :func:`Let` are higher-order, as they handle their bound variables.
