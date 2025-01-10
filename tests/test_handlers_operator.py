@@ -61,12 +61,12 @@ def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
 
 def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """let binding"""
-    return handler({var: lambda: val})(evaluate)(body)  # type: ignore
+    return handler({var: lambda: val})(evaluate)(body)
 
 
 def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
-    if var not in fvsof(body):  # type: ignore
+    if var not in fvsof(body):
         return body
     else:
         return fwd()
@@ -74,7 +74,7 @@ def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Ex
 
 def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """eta reduction"""
-    if var not in fvsof(body):  # type: ignore
+    if var not in fvsof(body):
         return body
     else:
         return fwd()
@@ -315,7 +315,7 @@ def test_defun_2():
             def f2_inner(y: int) -> int:
                 return x + y
 
-            return f2_inner(y)  # type: ignore
+            return f2_inner(y)
 
         assert f1(1, 2) == f2(1, 2) == 3
 
@@ -351,7 +351,7 @@ def test_defun_4():
             def fg(x: int) -> int:
                 return f(g(x))
 
-            return fg  # type: ignore
+            return fg
 
         @defterm
         def add1(x: int) -> int:

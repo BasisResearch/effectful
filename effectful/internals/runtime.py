@@ -58,7 +58,7 @@ def _save_args(fn: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler({_get_args: lambda: (a, k)}):  # type: ignore
+        with handler({_get_args: lambda: (a, k)}):
             return fn(*a, **k)
 
     return _cont_wrapper
@@ -72,7 +72,7 @@ def _set_prompt(
     @functools.wraps(body)
     def bound_body(*a: P.args, **k: P.kwargs) -> T:
         next_cont = get_interpretation().get(prompt, prompt.__default_rule__)
-        with handler({prompt: handler({prompt: next_cont})(cont)}):  # type: ignore
+        with handler({prompt: handler({prompt: next_cont})(cont)}):
             return body(*a, **k)
 
     return bound_body

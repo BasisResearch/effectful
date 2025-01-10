@@ -128,7 +128,7 @@ def _eq_op(a: Expr[T], b: Expr[T]) -> Expr[bool]:
 
 @_register_syntax_op(operator.ne)
 def _ne_op(a: T, b: T) -> bool:
-    return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))  # type: ignore
+    return OPERATORS[operator.not_](OPERATORS[operator.eq](a, b))
 
 
 @defdata.register(numbers.Number)
@@ -138,119 +138,119 @@ class _NumberTerm(Generic[_T_Number], _BaseTerm[_T_Number]):
     # arithmetic binary operators
     #######################################################################
     def __add__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.add](self, other)  # type: ignore
+        return OPERATORS[operator.add](self, other)
 
     def __sub__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.sub](self, other)  # type: ignore
+        return OPERATORS[operator.sub](self, other)
 
     def __mul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mul](self, other)  # type: ignore
+        return OPERATORS[operator.mul](self, other)
 
     def __truediv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.truediv](self, other)  # type: ignore
+        return OPERATORS[operator.truediv](self, other)
 
     def __floordiv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.floordiv](self, other)  # type: ignore
+        return OPERATORS[operator.floordiv](self, other)
 
     def __mod__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mod](self, other)  # type: ignore
+        return OPERATORS[operator.mod](self, other)
 
     def __pow__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.pow](self, other)  # type: ignore
+        return OPERATORS[operator.pow](self, other)
 
     def __matmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.matmul](self, other)  # type: ignore
+        return OPERATORS[operator.matmul](self, other)
 
     #######################################################################
     # unary operators
     #######################################################################
     def __neg__(self) -> Expr[_T_Number]:
-        return OPERATORS[operator.neg](self)  # type: ignore
+        return OPERATORS[operator.neg](self)
 
     def __pos__(self) -> Expr[_T_Number]:
-        return OPERATORS[operator.pos](self)  # type: ignore
+        return OPERATORS[operator.pos](self)
 
     def __abs__(self) -> Expr[_T_Number]:
-        return OPERATORS[operator.abs](self)  # type: ignore
+        return OPERATORS[operator.abs](self)
 
     def __invert__(self) -> Expr[_T_Number]:
-        return OPERATORS[operator.invert](self)  # type: ignore
+        return OPERATORS[operator.invert](self)
 
     #######################################################################
     # comparisons
     #######################################################################
     def __ne__(self, other) -> bool:
-        return OPERATORS[operator.ne](self, other)  # type: ignore
+        return OPERATORS[operator.ne](self, other)
 
     def __lt__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.lt](self, other)  # type: ignore
+        return OPERATORS[operator.lt](self, other)
 
     def __le__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.le](self, other)  # type: ignore
+        return OPERATORS[operator.le](self, other)
 
     def __gt__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.gt](self, other)  # type: ignore
+        return OPERATORS[operator.gt](self, other)
 
     def __ge__(self, other: Expr[_T_Number]) -> Expr[bool]:
-        return OPERATORS[operator.ge](self, other)  # type: ignore
+        return OPERATORS[operator.ge](self, other)
 
     #######################################################################
     # bitwise operators
     #######################################################################
     def __and__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.and_](self, other)  # type: ignore
+        return OPERATORS[operator.and_](self, other)
 
     def __or__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.or_](self, other)  # type: ignore
+        return OPERATORS[operator.or_](self, other)
 
     def __xor__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.xor](self, other)  # type: ignore
+        return OPERATORS[operator.xor](self, other)
 
     def __rshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.rshift](self, other)  # type: ignore
+        return OPERATORS[operator.rshift](self, other)
 
     def __lshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.lshift](self, other)  # type: ignore
+        return OPERATORS[operator.lshift](self, other)
 
     #######################################################################
     # reflected operators
     #######################################################################
     def __radd__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.add](other, self)  # type: ignore
+        return OPERATORS[operator.add](other, self)
 
     def __rsub__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.sub](other, self)  # type: ignore
+        return OPERATORS[operator.sub](other, self)
 
     def __rmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mul](other, self)  # type: ignore
+        return OPERATORS[operator.mul](other, self)
 
     def __rtruediv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.truediv](other, self)  # type: ignore
+        return OPERATORS[operator.truediv](other, self)
 
     def __rfloordiv__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.floordiv](other, self)  # type: ignore
+        return OPERATORS[operator.floordiv](other, self)
 
     def __rmod__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.mod](other, self)  # type: ignore
+        return OPERATORS[operator.mod](other, self)
 
     def __rpow__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.pow](other, self)  # type: ignore
+        return OPERATORS[operator.pow](other, self)
 
     def __rmatmul__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.matmul](other, self)  # type: ignore
+        return OPERATORS[operator.matmul](other, self)
 
     # bitwise
     def __rand__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.and_](other, self)  # type: ignore
+        return OPERATORS[operator.and_](other, self)
 
     def __ror__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.or_](other, self)  # type: ignore
+        return OPERATORS[operator.or_](other, self)
 
     def __rxor__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.xor](other, self)  # type: ignore
+        return OPERATORS[operator.xor](other, self)
 
     def __rrshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.rshift](other, self)  # type: ignore
+        return OPERATORS[operator.rshift](other, self)
 
     def __rlshift__(self, other: Expr[_T_Number]) -> Expr[_T_Number]:
-        return OPERATORS[operator.lshift](other, self)  # type: ignore
+        return OPERATORS[operator.lshift](other, self)
