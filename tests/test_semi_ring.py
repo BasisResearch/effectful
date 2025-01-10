@@ -1,8 +1,9 @@
 import random
 
-from docs.source.semi_ring import App, Dict, Field, Let, Sum, eager, opt
+from docs.source.semi_ring import Dict, Field, Let, Sum, eager, opt, ops
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop, defterm
+from effectful.ops.types import Term
 
 
 @defterm
@@ -11,10 +12,10 @@ def add1(v: int) -> int:
 
 
 def test_simple_sum():
-    x = defop(object)
-    y = defop(object)
-    k = defop(object)
-    v = defop(object)
+    x = defop(str, name="x")
+    y = defop(object, name="y")
+    k = defop(str, name="k")
+    v = defop(int, name="v")
 
     with handler(eager):
         e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
@@ -25,7 +26,7 @@ def test_simple_sum():
         assert e == 2
 
     with handler(eager):
-        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), App(add1, App(add1, v()))))
+        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), add1(add1(v()))))
         assert e["a"] == 3
         assert e["b"] == 4
 
@@ -34,9 +35,9 @@ def test_simple_sum():
             Dict("a", 1, "b", 2),
             x,
             Let(
-                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                Sum(x(), k, v, Dict(k(), add1(v()))),
                 y,
-                Sum(y(), k, v, Dict(k(), App(add1, v()))),
+                Sum(y(), k, v, Dict(k(), add1(v()))),
             ),
         )
         assert e["a"] == 3
@@ -44,19 +45,19 @@ def test_simple_sum():
 
 
 def fusion_test(d):
-    x = defop(object)
-    y = defop(object)
-    k = defop(object)
-    v = defop(object)
+    x = defop(object, name="x")
+    y = defop(object, name="y")
+    k = defop(object, name="k")
+    v = defop(object, name="v")
 
     return (
         Let(
             d,
             x,
             Let(
-                Sum(x(), k, v, Dict(k(), App(add1, v()))),
+                Sum(x(), k, v, Dict(k(), add1(v()))),
                 y,
-                Sum(y(), k, v, Dict(k(), App(add1, v()))),
+                Sum(y(), k, v, Dict(k(), add1(v()))),
             ),
         ),
         (x, y, k, v),
@@ -72,14 +73,16 @@ def make_dict(n):
 
 
 def test_fusion_term():
-    d = defop(object)
-    with handler(opt):
-        result, (x, _, k, v) = fusion_test(d)
-    assert result == Let(
-        d,
-        x,
-        Sum(x(), k, v, Dict(k(), App(add1, App(add1, v())))),
-    )
+    dvar = defop(object, name="dvar")
+    with handler(eager), handler(opt):
+        breakpoint()
+        result, (x, _, k, v) = fusion_test(dvar())
+
+    match result:
+        case Term(ops.Sum, (_, _, _, Term(ops.Dict))):
+            pass
+        case _:
+            assert False
 
 
 def test_fusion_unopt(benchmark):

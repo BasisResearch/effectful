@@ -1,13 +1,16 @@
 import collections.abc
 import operator
 import types
-from typing import TypeVar
+from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, overload
 
 from effectful.handlers.operator import OPERATORS
-from effectful.ops.semantics import evaluate, fwd, handler
-from effectful.ops.syntax import NoDefaultRule, defop, defterm
+from effectful.ops.semantics import evaluate, fwd, handler, coproduct, call
+from effectful.ops.syntax import NoDefaultRule, defop, Scoped, Bound, defterm
 from effectful.ops.types import Operation, Term
 
+P = ParamSpec("P")
+S = TypeVar("S")
+T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
 
@@ -35,7 +38,7 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
             self._hash = hash_
         return self._hash
 
-    def __add__(self, other: "SemiRingDict") -> "SemiRingDict":
+    def __add__(self, other: "SemiRingDict[K, V]") -> "SemiRingDict[K, V]":
         new_dict = self._d.copy()
         for key, value in other.items():
             if key in new_dict:
@@ -46,32 +49,36 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
 
 
 @defop
-def Sum(e1, k, v, e2):
+def Sum(
+    e1: Annotated[SemiRingDict[K, V], Scoped(1)],
+    k: Annotated[Operation[[], K], Bound(0)],
+    v: Annotated[Operation[[], V], Bound(0)],
+    e2: Annotated[SemiRingDict[S, T], Scoped(0)],
+) -> SemiRingDict[S, T]:
     raise NoDefaultRule
 
 
 @defop
-def Let(e1, x, e2):
+def Let(
+    e1: Annotated[T, Scoped(1)],
+    x: Annotated[Operation[[], T], Bound(0)],
+    e2: Annotated[S, Scoped(0)],
+) -> S:
     raise NoDefaultRule
 
 
 @defop
-def Record(**kwargs):
+def Record(**kwargs: T) -> dict[str, T]:
     raise NoDefaultRule
 
 
 @defop
-def Dict(*contents):
+def Field(record: dict[str, T], key: str) -> T:
     raise NoDefaultRule
 
 
 @defop
-def Field(record, key):
-    raise NoDefaultRule
-
-
-@defop
-def App(f, x):
+def Dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
     raise NoDefaultRule
 
 
@@ -81,14 +88,13 @@ ops.Let = Let
 ops.Record = Record
 ops.Dict = Dict
 ops.Field = Field
-ops.App = App
 
 
 def is_value(v):
     return not isinstance(v, (Operation, Term))
 
 
-def eager_dict(*contents):
+def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
     if all(is_value(v) for v in contents):
         if len(contents) % 2 != 0:
             raise ValueError("Dict requires an even number of arguments")
@@ -101,11 +107,19 @@ def eager_dict(*contents):
         return fwd(None)
 
 
-def eager_record(**kwargs):
+def eager_record(**kwargs: T) -> dict[str, T]:
     if all(is_value(v) for v in kwargs.values()):
         return dict(**kwargs)
     else:
         return fwd(None)
+
+
+@overload
+def eager_add(x: int, y: int) -> int: ...
+
+
+@overload
+def eager_add(x: SemiRingDict[K, V], y: SemiRingDict[K, V]) -> SemiRingDict[K, V]: ...
 
 
 def eager_add(x, y):
@@ -123,14 +137,14 @@ def eager_add(x, y):
         return fwd(None)
 
 
-def eager_app(f, x):
+def eager_app(f: Callable[[S], T], x: S) -> T:
     if is_value(x):
         return f(x)
     else:
         return fwd(None)
 
 
-def eager_field(r, k):
+def eager_field(r: dict[str, T], k: str) -> T:
     match r, k:
         case dict(), str():
             return r[k]
@@ -140,10 +154,15 @@ def eager_field(r, k):
             return fwd(None)
 
 
-def eager_sum(e1, k, v, e2):
+def eager_sum(
+    e1: SemiRingDict[K, V],
+    k: Operation[[], K],
+    v: Operation[[], V],
+    e2: SemiRingDict[S, T],
+) -> SemiRingDict[S, T]:
     match e1, e2:
         case SemiRingDict(), Term():
-            new_d = SemiRingDict()
+            new_d: SemiRingDict[S, T] = SemiRingDict()
             for key, value in e1.items():
                 new_d += handler({k: lambda: key, v: lambda: value})(evaluate)(e2)
             return new_d
@@ -156,39 +175,25 @@ def eager_sum(e1, k, v, e2):
             return fwd(None)
 
 
-def eager_let(e1, x, e2):
-    match e1, e2:
-        case SemiRingDict(), Term():
-            return handler({x: lambda: e1})(evaluate)(e2)
-        case _, SemiRingDict():
-            return e2
-        case _:
-            return fwd(None)
+def eager_let(e1: T, x: Operation[[], T], e2: S) -> S:
+    return handler({x: lambda: e1})(evaluate)(e2)
 
 
-def vertical_fusion(e1, x, e2):
+def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
     match e1, e2:
         case (
-            Term(
-                ops.Sum,
-                (
+            Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
+            Term(ops.Sum, (Term(xa), k2, v2, Term(ops.Dict, (Term(k2a), e_rhs)))),
+        ) if x == xa and k1 == k1a and k2 == k2a:
+            ret = evaluate(
+                Sum(
                     e_sum,
                     k1,
                     v1,
-                    Term(ops.Dict, (Term(k1a), Term(ops.App, (f1, Term(v1a))))),
-                ),
-            ),
-            Term(
-                ops.Sum,
-                (
-                    Term(xa),
-                    k2,
-                    v2,
-                    Term(ops.Dict, (Term(k2a), Term(ops.App, (f2, Term(v2a))))),
-                ),
-            ),
-        ) if k1 == k1a and v1 == v1a and x == xa and k2 == k2a and v2 == v2a:
-            return Sum(e_sum, k2, v2, Dict(k2(), App(f2, App(f1, v2()))))
+                    Let(e_lhs, v2, Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs)))),
+                )
+            )
+            return ret
         case _:
             return fwd(None)
 
@@ -202,7 +207,6 @@ eager = {
     Sum: eager_sum,
     Field: eager_field,
     Let: eager_let,
-    App: eager_app,
 }
 
 opt = {
@@ -210,6 +214,22 @@ opt = {
 }
 
 
-@defterm
-def add1(v: int) -> int:
-    return v + 1
+if __name__ == "__main__":
+    x, y, k, v = (
+        defop(object, name="x"),
+        defop(object, name="y"),
+        defop(object, name="k"),
+        defop(object, name="v"),
+    )
+
+    @defterm
+    def add1(a: int) -> int:
+        return a + 1
+
+    term = Let(
+        Sum(x(), k, v, Dict(k(), add1(v()))), y, Sum(y(), k, v, Dict(k(), add1(v())))
+    )
+
+    print("Without optimization:", term)
+    with handler(coproduct(eager, opt)):
+        print("With optimization:", evaluate(term))
