@@ -146,3 +146,12 @@ eager_mixed = functools.reduce(
         sort_rules,
     ),
 )
+
+if __name__ == "__main__":
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    with handler(eager_mixed):
+        f2 = Lam(x, Lam(y, (x() + y())))
+
+        assert App(App(f2, 1), 2) == 3
+        assert Lam(y, f2) == f2
