@@ -394,8 +394,11 @@ class Adam:
 
     def __call__(self, params):
         for param in params:
+            # Create an optimizer if one does not exist for this parameter
             if param not in self.optim_objs:
                 self.optim_objs[param] = torch.optim.Adam([param], **self.optim_args)
+
+            # Take one optimizer step
             self.optim_objs[param].step()
 
 
@@ -461,6 +464,8 @@ def elbo(model, guide, *args, **kwargs):
         if isinstance(site, SampleMsg):
             elbo = elbo + site.dist.log_prob(site.val).sum()
 
+    # Loop over all the sample sites in the guide and add the corresponding
+    # -log q(z) term to the ELBO.
     for site in guide_trace.values():
         if isinstance(site, SampleMsg):
             elbo = elbo - site.dist.log_prob(site.val).sum()
