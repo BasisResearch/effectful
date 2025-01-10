@@ -1,12 +1,12 @@
 import contextlib
 import functools
-from typing import Callable, Optional, Set, Type, TypeVar
+from typing import Any, Callable, Optional, Set, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
-from effectful.ops.types import Expr, Interpretation, MaybeResult, Operation, Term
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -78,13 +78,11 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 
 @defop
-def fwd(__result: MaybeResult[S], *args, **kwargs) -> S:
+def fwd(*args, **kwargs) -> Any:
     """Forward execution to the next most enclosing handler.
 
     :func:`fwd` should only be called in the context of a handler.
 
-    :param __result: An accumulator commonly used for the result of the operation.
-                     See :func:`effectful.ops.syntax.bind_result`.
     :param args: Positional arguments.
     :param kwargs: Keyword arguments.
 
@@ -92,7 +90,7 @@ def fwd(__result: MaybeResult[S], *args, **kwargs) -> S:
     the current arguments to the next handler.
 
     """
-    return __result  # type: ignore
+    raise RuntimeError("fwd should only be called in the context of a handler")
 
 
 def coproduct(
@@ -126,7 +124,7 @@ def coproduct(
     We can delegate to an enclosing handler by calling :func:`fwd`. Here we
     override the ``name`` handler to format the name differently.
 
-    >>> i4 = coproduct(i3, {name: lambda: f'*{fwd(None)}*'})
+    >>> i4 = coproduct(i3, {name: lambda: f'*{fwd()}*'})
     >>> with handler(i4):
     ...     print(f'{message()}')
     Hi *Jack*!
@@ -143,19 +141,20 @@ def coproduct(
     """
     from effectful.internals.runtime import (
         _get_args,
-        _get_result,
-        _set_args,
+        _restore_args,
+        _save_args,
         _set_prompt,
-        _set_result,
     )
 
     res = dict(intp)
     for op, i2 in intp2.items():
-        if op is fwd or op is _get_result or op is _get_args:
+        if op is fwd or op is _get_args:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
             i1 = intp.get(op, op.__default_rule__)  # type: ignore
-            res[op] = _set_prompt(fwd, _set_result(_set_args(i1)), _set_args(i2))  # type: ignore
+
+            # calling fwd in the right handler should dispatch to the left handler
+            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))  # type: ignore
 
     return res
 

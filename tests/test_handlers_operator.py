@@ -47,7 +47,7 @@ def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         case int(), int():
             return x + y
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
@@ -56,7 +56,7 @@ def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
         case Term(op, (var, body)), _ if op == Lam:
             return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
@@ -69,7 +69,7 @@ def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Ex
     if var not in fvsof(body):  # type: ignore
         return body
     else:
-        return fwd(None)
+        return fwd()
 
 
 def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
@@ -77,7 +77,7 @@ def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     if var not in fvsof(body):  # type: ignore
         return body
     else:
-        return fwd(None)
+        return fwd()
 
 
 def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
@@ -85,7 +85,7 @@ def commute_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         case Term(), int():
             return y + x  # type: ignore
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
@@ -93,7 +93,7 @@ def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         case _, Term(op, (a, b)) if op == add:
             return (x + a) + b  # type: ignore
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
@@ -103,7 +103,7 @@ def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         case 0, _:
             return y
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
@@ -115,7 +115,7 @@ def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         ):
             return (a + vy()) + vx()  # type: ignore
         case _:
-            return fwd(None)
+            return fwd()
 
 
 eta_rules: Interpretation = {
