@@ -140,7 +140,7 @@ class _ComplexTerm(_NumberTerm, Term[numbers.Complex]):
         return abs(self)
 
     def __eq__(self, other: Any) -> bool:
-        return syntactic_eq(self, other)
+        return eq(self, other)
 
 
 # Real specific methods
