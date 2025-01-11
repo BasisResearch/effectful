@@ -98,7 +98,7 @@ abs = defop(_wrap_unop(operator.abs))
 @numbers.Complex.register
 class _ComplexTerm(_NumberTerm, Term[numbers.Complex]):
     def __bool__(self) -> bool:
-        return bool(self)
+        raise ValueError("Cannot convert term to bool")
 
     def __add__(self, other: Any) -> numbers.Real:
         return add(self, other)
@@ -156,8 +156,8 @@ ge = defop(_wrap_cmp(operator.ge))
 @numbers.Real.register
 class _RealTerm(_ComplexTerm, Term[numbers.Real]):
     # Real specific methods
-    def __float__(self) -> numbers.Real:
-        raise NotImplementedError
+    def __float__(self) -> float:
+        raise ValueError("Cannot convert term to float")
 
     def __trunc__(self) -> numbers.Integral:
         raise NotImplementedError
@@ -214,8 +214,8 @@ invert = defop(_wrap_unop(operator.invert))
 @numbers.Integral.register
 class _IntegralTerm(_RationalTerm, Term[numbers.Integral]):
     # Integral specific methods
-    def __int__(self) -> numbers.Integral:
-        raise NotImplementedError
+    def __int__(self) -> int:
+        raise ValueError("Cannot convert term to int")
 
     def __index__(self) -> numbers.Integral:
         return index(self)
