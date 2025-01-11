@@ -184,13 +184,13 @@ def _(
     from effectful.internals.base_impl import _BaseOperation
 
     op = _BaseOperation(t)
-    op.__name__ = name or t.__name__  # type: ignore
+    op.__name__ = name or t.__name__
     return op
 
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-    def func(*args, **kwargs):  # type: ignore
+    def func(*args, **kwargs):
         raise NoDefaultRule
 
     functools.update_wrapper(func, t)
@@ -356,7 +356,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     if isinstance(expr, Term):
         impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
         impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
+        return impl(expr.op, expr.args, expr.kwargs)
     else:
         return expr
 
