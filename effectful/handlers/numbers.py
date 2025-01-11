@@ -193,9 +193,11 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
 @defdata.register(numbers.Rational)
 @numbers.Rational.register
 class _RationalTerm(_RealTerm, Term[numbers.Rational]):
+    @property
     def numerator(self):
         raise NotImplementedError
 
+    @property
     def denominator(self):
         raise NotImplementedError
 
