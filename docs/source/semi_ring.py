@@ -3,8 +3,9 @@ import operator
 import types
 from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
-from effectful.ops.semantics import call, coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop, defterm
+import effectful.handlers.numbers  # noqa: F401
+from effectful.ops.semantics import coproduct, evaluate, fwd, handler
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
