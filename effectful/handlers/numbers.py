@@ -39,7 +39,7 @@ class _NumberTerm(Term[numbers.Number]):
         return self._kwargs
 
     def __hash__(self):
-        return hash((self.op, self.args, self.kwargs))
+        return hash((self.op, tuple(self.args), tuple(self.kwargs.items())))
 
 
 # Complex specific methods
