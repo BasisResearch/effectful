@@ -4,7 +4,6 @@ import random
 import types
 from typing import TypeVar
 
-from effectful.handlers.operator import OPERATORS
 from effectful.ops.semantics import evaluate, fwd, handler
 from effectful.ops.syntax import NoDefaultRule, defop, defterm
 from effectful.ops.types import Operation, Term
@@ -199,7 +198,10 @@ def vertical_fusion(e1, x, e2):
             return fwd(None)
 
 
-add = OPERATORS[operator.add]
+@defop
+def add(x: V, y: V) -> V:
+    return operator.add(x, y)
+
 
 eager = {
     add: eager_add,

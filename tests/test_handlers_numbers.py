@@ -1,13 +1,12 @@
 import collections
 import functools
 import logging
-import operator
 from typing import Annotated, Callable, TypeVar
 
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.handlers.operator import OPERATORS
+from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop, defterm
 from effectful.ops.types import Expr, Interpretation, Operation, Term
@@ -17,9 +16,6 @@ logger = logging.getLogger(__name__)
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
-
-
-add = OPERATORS[operator.add]
 
 
 @defop
@@ -43,11 +39,9 @@ def Let(
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
-    match x, y:
-        case int(), int():
-            return x + y
-        case _:
-            return fwd(None)
+    if not isinstance(x, Term) and not isinstance(y, Term):
+        return x + y
+    return fwd(None)
 
 
 def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:

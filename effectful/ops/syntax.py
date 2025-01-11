@@ -1,7 +1,6 @@
 import collections.abc
 import dataclasses
 import functools
-import operator
 import types
 import typing
 from typing import (
@@ -216,9 +215,15 @@ def _(t: type[T], *, name: Optional[str] = None) -> Operation[[], T]:
 
 @defop.register(types.BuiltinFunctionType)
 def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-    from effectful.ops.semantics import call
 
-    return defop(functools.wraps(t)(functools.partial(call, t)), name=name)
+    @functools.wraps(t)
+    def func(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+            return t(*args, **kwargs)
+        else:
+            raise NoDefaultRule
+
+    return defop(func, name=name)
 
 
 @defop
@@ -547,35 +552,3 @@ def implements(op: Operation[P, V]):
 
     """
     return _ImplementedOperation(op)
-
-
-OPERATORS = types.SimpleNamespace()
-
-OPERATORS.add = property(staticmethod(functools.cache(functools.partial(defop, operator.add))))
-OPERATORS.sub = property(staticmethod(functools.cache(functools.partial(defop, operator.sub))))
-OPERATORS.mul = property(staticmethod(functools.cache(functools.partial(defop, operator.mul))))
-OPERATORS.truediv = property(staticmethod(functools.cache(functools.partial(defop, operator.truediv))))
-OPERATORS.floordiv = property(staticmethod(functools.cache(functools.partial(defop, operator.floordiv))))
-OPERATORS.mod = property(staticmethod(functools.cache(functools.partial(defop, operator.mod))))
-OPERATORS.pow = property(staticmethod(functools.cache(functools.partial(defop, operator.pow))))
-OPERATORS.matmul = property(staticmethod(functools.cache(functools.partial(defop, operator.matmul))))
-OPERATORS.lshift = property(staticmethod(functools.cache(functools.partial(defop, operator.lshift))))
-OPERATORS.rshift = property(staticmethod(functools.cache(functools.partial(defop, operator.rshift))))
-OPERATORS.and_ = property(staticmethod(functools.cache(functools.partial(defop, operator.and_))))
-OPERATORS.or_ = property(staticmethod(functools.cache(functools.partial(defop, operator.or_))))
-OPERATORS.xor = property(staticmethod(functools.cache(functools.partial(defop, operator.xor))))
-OPERATORS.neg = property(staticmethod(functools.cache(functools.partial(defop, operator.neg))))
-OPERATORS.pos = property(staticmethod(functools.cache(functools.partial(defop, operator.pos))))
-OPERATORS.abs = property(staticmethod(functools.cache(functools.partial(defop, operator.abs))))
-OPERATORS.invert = property(staticmethod(functools.cache(functools.partial(defop, operator.invert))))
-OPERATORS.not_ = property(staticmethod(functools.cache(functools.partial(defop, operator.not_))))
-OPERATORS.lt = property(staticmethod(functools.cache(functools.partial(defop, operator.lt))))
-OPERATORS.le = property(staticmethod(functools.cache(functools.partial(defop, operator.le))))
-OPERATORS.gt = property(staticmethod(functools.cache(functools.partial(defop, operator.gt))))
-OPERATORS.ge = property(staticmethod(functools.cache(functools.partial(defop, operator.ge))))
-OPERATORS.is_ = property(staticmethod(functools.cache(functools.partial(defop, operator.is_))))
-OPERATORS.is_not = property(staticmethod(functools.cache(functools.partial(defop, operator.is_not))))
-OPERATORS.contains = property(staticmethod(functools.cache(functools.partial(defop, operator.contains))))
-OPERATORS.index = property(staticmethod(functools.cache(functools.partial(defop, operator.index))))
-OPERATORS.getitem = property(staticmethod(functools.cache(functools.partial(defop, operator.getitem))))
-OPERATORS.setitem = property(staticmethod(functools.cache(functools.partial(defop, operator.setitem))))
