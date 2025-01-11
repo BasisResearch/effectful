@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, deffn, defop
+from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -60,6 +60,9 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     This operation is invoked by the ``__call__`` method of a callable term.
 
     """
+    if not isinstance(fn, Term):
+        fn = defterm(fn)
+
     if isinstance(fn, Term) and fn.op is deffn:
         body: Expr[Callable[P, T]] = fn.args[0]
         argvars: tuple[Operation, ...] = fn.args[1:]
@@ -70,8 +73,6 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         }
         with handler(subs):
             return evaluate(body)  # type: ignore
-    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
-        return fn(*args, **kwargs)
     else:
         raise NoDefaultRule
 
@@ -256,6 +257,8 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
         from effectful.internals.runtime import get_interpretation
 
         intp = get_interpretation()
+
+    expr = defterm(expr) if not isinstance(expr, Term) else expr
 
     if isinstance(expr, Term):
         (args, kwargs) = tree.map_structure(
