@@ -35,10 +35,11 @@ def Let(
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
     """integer addition"""
-    if not any(isinstance(a, Term) for a in (x, y)):
-        return x + y
-    else:
-        return fwd()
+    match x, y:
+        case int(), int():
+            return x + y
+        case _:
+            return fwd()
 
 
 def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
