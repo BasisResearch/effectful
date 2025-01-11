@@ -1,5 +1,4 @@
 import functools
-import operator
 
 from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
