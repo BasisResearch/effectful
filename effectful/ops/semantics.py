@@ -5,7 +5,7 @@ from typing import Callable, Optional, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
+from effectful.ops.syntax import NoDefaultRule, deffn, defop
 from effectful.ops.types import Expr, Interpretation, MaybeResult, Operation, Term
 
 P = ParamSpec("P")

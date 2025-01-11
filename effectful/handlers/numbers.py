@@ -18,17 +18,16 @@ T_Number = TypeVar("T_Number", bound=numbers.Number)
 
 @defdata.register(numbers.Number)
 @numbers.Number.register
-@Term.register
-class _NumberTerm:
+class _NumberTerm(Term[numbers.Number]):
     def __init__(
-        self, op: Operation[..., numbers.Real], args: tuple, kwargs: dict
+        self, op: Operation[..., numbers.Number], args: tuple, kwargs: dict
     ) -> None:
         self._op = op
         self._args = args
         self._kwargs = kwargs
 
     @property
-    def op(self) -> Operation[..., numbers.Real]:
+    def op(self) -> Operation[..., numbers.Number]:
         return self._op
 
     @property
@@ -97,8 +96,7 @@ abs = defop(_wrap_unop(operator.abs))
 
 @defdata.register(numbers.Complex)
 @numbers.Complex.register
-@Term.register
-class _ComplexTerm(_NumberTerm):
+class _ComplexTerm(_NumberTerm, Term[numbers.Complex]):
     def __bool__(self) -> bool:
         return bool(self)
 
@@ -156,23 +154,22 @@ ge = defop(_wrap_cmp(operator.ge))
 
 @defdata.register(numbers.Real)
 @numbers.Real.register
-@Term.register
-class _RealTerm(_ComplexTerm):
+class _RealTerm(_ComplexTerm, Term[numbers.Real]):
     # Real specific methods
-    def __float__(self):
-        return float(self)
+    def __float__(self) -> numbers.Real:
+        raise NotImplementedError
 
     def __trunc__(self) -> numbers.Integral:
-        return int(self)
+        raise NotImplementedError
 
     def __floor__(self) -> numbers.Integral:
-        return int(self)
+        raise NotImplementedError
 
     def __ceil__(self) -> numbers.Integral:
-        return int(self)
+        raise NotImplementedError
 
-    def __round__(self, ndigits: int = None) -> numbers.Integral:
-        return int(self)
+    def __round__(self, ndigits=None) -> numbers.Integral:
+        raise NotImplementedError
 
     def __floordiv__(self, other):
         return floordiv(self, other)
@@ -195,8 +192,7 @@ class _RealTerm(_ComplexTerm):
 
 @defdata.register(numbers.Rational)
 @numbers.Rational.register
-@Term.register
-class _RationalTerm(_RealTerm):
+class _RationalTerm(_RealTerm, Term[numbers.Rational]):
     def numerator(self):
         raise NotImplementedError
 
@@ -216,11 +212,10 @@ invert = defop(_wrap_unop(operator.invert))
 
 @defdata.register(numbers.Integral)
 @numbers.Integral.register
-@Term.register
-class _IntegralTerm(_RationalTerm):
+class _IntegralTerm(_RationalTerm, Term[numbers.Integral]):
     # Integral specific methods
     def __int__(self) -> numbers.Integral:
-        return int(self)
+        raise NotImplementedError
 
     def __index__(self) -> numbers.Integral:
         return index(self)

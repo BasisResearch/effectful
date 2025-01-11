@@ -184,7 +184,7 @@ def defop(t, *, name: Optional[str] = None) -> Operation:
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
-@defop.register(collections.abc.Callable)
+@defop.register(collections.abc.Callable)  # type: ignore
 def _(
     t: collections.abc.Callable[P, T], *, name: Optional[str] = None
 ) -> Operation[P, T]:
@@ -205,7 +205,7 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 
 @defop.register(type)
-def _(t: type[T], *, name: Optional[str] = None) -> Operation[[], T]:
+def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NoDefaultRule
 
