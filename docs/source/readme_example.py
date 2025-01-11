@@ -15,7 +15,7 @@ def beta_add(x: int, y: int) -> int:
         case int(), int():
             return x + y
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def commute_add(x, y):
@@ -23,7 +23,7 @@ def commute_add(x, y):
         case Term(), int():
             return y + x
         case _:
-            return fwd(None)
+            return fwd()
 
 
 def assoc_add(x, y):
@@ -31,7 +31,7 @@ def assoc_add(x, y):
         case _, Term(op, (a, b)) if op == add:
             return (x + a) + b
         case _:
-            return fwd(None)
+            return fwd()
 
 
 beta_rules = {add: beta_add}
