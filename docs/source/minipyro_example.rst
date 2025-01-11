@@ -1,5 +1,5 @@
-effectful-minipyro
-==================
+MiniPyro
+========
 
 This file is a minimal implementation of the Pyro Programming Language,
 similar in spirit to the minipyro implementation shipped with Pyro.

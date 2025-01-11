@@ -57,7 +57,7 @@ def chirho_condition(data: Mapping[str, torch.Tensor]):
                 **kwargs,
             )
         else:
-            return fwd(None)
+            return fwd()
 
     with handler({pyro_sample: pyro_sample.__default_rule__}):
         with handler({pyro_sample: _handle_pyro_sample}):
