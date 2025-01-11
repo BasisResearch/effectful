@@ -171,7 +171,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["fn"] = pdist
             msg["value"] = pos_obs
             msg["mask"] = pos_mask
-            msg["infer"]["_index_naming"] = naming  # type: ignore
+            msg["infer"]["_index_naming"] = naming
 
             assert sizesof(msg["value"]) == {}
             assert sizesof(msg["mask"]) == {}
@@ -203,13 +203,13 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             return
 
         # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-        naming = infer["_index_naming"]  # type: ignore
+        naming = infer["_index_naming"]
 
         value = msg["value"]
 
         if value is not None:
             # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape = msg["fn"].shape()  # type: ignore
+            dist_shape = msg["fn"].shape()
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(
                     torch.broadcast_shapes(value.shape, dist_shape)
@@ -455,7 +455,7 @@ def pyro_module_shim(
 
     """
 
-    class PyroModuleShim(module):  # type: ignore
+    class PyroModuleShim(module):
         def forward(self, *args, **kwargs):
             with PyroShim():
                 return super().forward(*args, **kwargs)

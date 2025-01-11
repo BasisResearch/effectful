@@ -65,7 +65,7 @@ def chirho_condition(data: Mapping[str, torch.Tensor]):
 
 
 class HMM(pyro.nn.PyroModule):
-    @pyro.nn.PyroParam(constraint=dist.constraints.simplex)  # type: ignore
+    @pyro.nn.PyroParam(constraint=dist.constraints.simplex)
     def trans_probs(self):
         return torch.tensor([[0.75, 0.25], [0.25, 0.75]])
 
