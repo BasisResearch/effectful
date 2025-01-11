@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
+from effectful.ops.syntax import NoDefaultRule, deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -60,9 +60,6 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     This operation is invoked by the ``__call__`` method of a callable term.
 
     """
-    if not isinstance(fn, Term):
-        fn = defterm(fn)
-
     if isinstance(fn, Term) and fn.op is deffn:
         body: Expr[Callable[P, T]] = fn.args[0]
         argvars: tuple[Operation, ...] = fn.args[1:]
@@ -72,7 +69,9 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
         }
         with handler(subs):
-            return evaluate(body)
+            return evaluate(body)  # type: ignore
+    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
+        return fn(*args, **kwargs)
     else:
         raise NoDefaultRule
 
@@ -154,7 +153,7 @@ def coproduct(
             i1 = intp.get(op, op.__default_rule__)  # type: ignore
 
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))  # type: ignore
 
     return res
 
@@ -258,8 +257,6 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
 
         intp = get_interpretation()
 
-    expr = defterm(expr) if not isinstance(expr, Term) else expr
-
     if isinstance(expr, Term):
         (args, kwargs) = tree.map_structure(
             functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
@@ -297,7 +294,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
+    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
         return evaluate(term)  # type: ignore
 
 
@@ -323,7 +320,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 
-    with interpreter({apply: _update_fvs}):
-        evaluate(term)
+    with interpreter({apply: _update_fvs}):  # type: ignore
+        evaluate(term)  # type: ignore
 
     return _fvs

@@ -1,6 +1,7 @@
-import collections
+import collections.abc
 import dataclasses
 import functools
+import types
 import typing
 from typing import (
     Annotated,
@@ -41,19 +42,8 @@ class NoDefaultRule(Exception):
     pass
 
 
-@typing.overload
-def defop(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]: ...
-
-
-@typing.overload
-def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-@typing.overload
-def defop(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-def defop(t, *, name=None):
+@functools.singledispatch
+def defop(t, *, name: Optional[str] = None) -> Operation:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -184,29 +174,49 @@ def defop(t, *, name=None):
       1 2
 
     """
+    raise NotImplementedError(f"expected type or callable, got {t}")
 
-    if isinstance(t, Operation):
 
-        def func(*args, **kwargs):
+@defop.register(collections.abc.Callable)  # type: ignore
+def _(
+    t: collections.abc.Callable[P, T], *, name: Optional[str] = None
+) -> Operation[P, T]:
+    from effectful.internals.base_impl import _BaseOperation
+
+    op = _BaseOperation(t)
+    op.__name__ = name or t.__name__  # type: ignore
+    return op
+
+
+@defop.register(Operation)
+def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+    def func(*args, **kwargs):  # type: ignore
+        raise NoDefaultRule
+
+    functools.update_wrapper(func, t)
+    return defop(func, name=name)
+
+
+@defop.register(type)
+def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
+    def func() -> t:  # type: ignore
+        raise NoDefaultRule
+
+    func.__name__ = name or t.__name__
+    return typing.cast(Operation[[], T], defop(func, name=name))
+
+
+@defop.register(types.BuiltinFunctionType)
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+
+    @functools.wraps(t)
+    def func(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+            return t(*args, **kwargs)
+        else:
             raise NoDefaultRule
 
-        functools.update_wrapper(func, t)
-        return defop(func, name=name)
-    elif isinstance(t, type):
-
-        def func() -> t:  # type: ignore
-            raise NoDefaultRule
-
-        func.__name__ = name or t.__name__
-        return typing.cast(Operation[[], T], defop(func, name=name))
-    elif isinstance(t, collections.abc.Callable):
-        from effectful.internals.base_impl import _BaseOperation
-
-        op = _BaseOperation(t)
-        op.__name__ = name or t.__name__
-        return op
-    else:
-        raise ValueError(f"expected type or callable, got {t}")
+    return defop(func, name=name)
 
 
 @defop
@@ -346,7 +356,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     if isinstance(expr, Term):
         impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
         impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)
+        return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
     else:
         return expr
 
@@ -354,6 +364,8 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
+@defterm.register(type)
+@defterm.register(types.BuiltinFunctionType)
 def _(value: T) -> T:
     return value
 
