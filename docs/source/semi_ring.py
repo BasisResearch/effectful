@@ -98,12 +98,8 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def is_value(v):
-    return not isinstance(v, (Operation, Term))
-
-
 def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
-    if all(is_value(v) for v in contents):
+    if not any(isinstance(v, Term) for v in contents):
         if len(contents) % 2 != 0:
             raise ValueError("Dict requires an even number of arguments")
 
@@ -116,7 +112,7 @@ def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
 
 
 def eager_record(**kwargs: T) -> dict[str, T]:
-    if all(is_value(v) for v in kwargs.values()):
+    if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
         return fwd()
@@ -146,7 +142,7 @@ def eager_add(x, y):
 
 
 def eager_app(f: Callable[[S], T], x: S) -> T:
-    if is_value(x):
+    if not isinstance(x, Term):
         return f(x)
     else:
         return fwd()
@@ -156,7 +152,7 @@ def eager_field(r: dict[str, T], k: str) -> T:
     match r, k:
         case dict(), str():
             return r[k]
-        case SemiRingDict(), _ if is_value(k):
+        case SemiRingDict(), _ if not isinstance(k, Term):
             return r[k]
         case _:
             return fwd()
