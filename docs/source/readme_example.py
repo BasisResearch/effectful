@@ -1,34 +1,38 @@
-import operator
 import functools
+import operator
 
-from effectful.handlers.operator import OPERATORS
-from effectful.ops.types import Term
-from effectful.ops.syntax import defop
-from effectful.ops.semantics import handler, evaluate, coproduct, fwd
 import effectful.handlers.operator
+from effectful.handlers.operator import OPERATORS
+from effectful.ops.semantics import coproduct, evaluate, fwd, handler
+from effectful.ops.syntax import defop
+from effectful.ops.types import Term
 
 add = OPERATORS[operator.add]
 
-def beta_add(x: int, y: int) -> int:        
+
+def beta_add(x: int, y: int) -> int:
     match x, y:
         case int(), int():
             return x + y
         case _:
             return fwd(None)
 
+
 def commute_add(x, y):
     match x, y:
         case Term(), int():
-            return y + x  
+            return y + x
         case _:
             return fwd(None)
+
 
 def assoc_add(x, y):
     match x, y:
         case _, Term(op, (a, b)) if op == add:
-            return (x + a) + b 
+            return (x + a) + b
         case _:
             return fwd(None)
+
 
 beta_rules = {add: beta_add}
 commute_rules = {add: commute_add}

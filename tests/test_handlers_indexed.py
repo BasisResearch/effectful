@@ -5,7 +5,7 @@ import pyro.distributions as dist
 import pytest
 import torch
 
-from effectful.handlers.indexed.ops import (
+from effectful.handlers.indexed import (
     IndexSet,
     cond,
     cond_n,
