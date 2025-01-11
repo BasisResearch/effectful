@@ -1,7 +1,7 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, Union, cast, overload
+from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
@@ -137,13 +137,6 @@ def eager_add(x, y):
         return SemiRingDict(new_dict)
     elif isinstance(x, int) and isinstance(y, int):
         return x + y
-    else:
-        return fwd()
-
-
-def eager_app(f: Callable[[S], T], x: S) -> T:
-    if not isinstance(x, Term):
-        return f(x)
     else:
         return fwd()
 
