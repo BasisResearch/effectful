@@ -187,7 +187,7 @@ def defop(t, *, name=None):
 
     if isinstance(t, Operation):
 
-        def func(*args, **kwargs):  # type: ignore
+        def func(*args, **kwargs):
             raise NoDefaultRule
 
         functools.update_wrapper(func, t)
@@ -346,7 +346,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     if isinstance(expr, Term):
         impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
         impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
+        return impl(expr.op, expr.args, expr.kwargs)
     else:
         return expr
 

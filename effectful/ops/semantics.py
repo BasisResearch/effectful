@@ -72,7 +72,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
             **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
         }
         with handler(subs):
-            return evaluate(body)  # type: ignore
+            return evaluate(body)
     else:
         raise NoDefaultRule
 
@@ -154,7 +154,7 @@ def coproduct(
             i1 = intp.get(op, op.__default_rule__)  # type: ignore
 
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))  # type: ignore
+            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
 
     return res
 
@@ -297,7 +297,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):  # type: ignore
+    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
         return evaluate(term)  # type: ignore
 
 
@@ -323,7 +323,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 
-    with interpreter({apply: _update_fvs}):  # type: ignore
-        evaluate(term)  # type: ignore
+    with interpreter({apply: _update_fvs}):
+        evaluate(term)
 
     return _fvs
