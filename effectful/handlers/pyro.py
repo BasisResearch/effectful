@@ -212,7 +212,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             assert isinstance(
                 msg["fn"], pyro.distributions.torch_distribution.TorchDistribution
             )
-            dist_shape: torch.Size = msg["fn"].batch_shape + msg["fn"].event_shape
+            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(
                     torch.broadcast_shapes(value.shape, dist_shape)
