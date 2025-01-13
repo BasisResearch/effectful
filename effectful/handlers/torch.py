@@ -14,7 +14,7 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import NoDefaultRule, _BaseTerm, defdata, defop
+from effectful.ops.syntax import NoDefaultRule, defdata, defop
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -330,7 +330,26 @@ def _embed_tensor(op, *args, **kwargs):
         return _TensorTerm(op, *args, **kwargs)
 
 
-class _TensorTerm(_BaseTerm[torch.Tensor]):
+class _TensorTerm(Term[torch.Tensor]):
+    def __init__(
+        self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
+    ) -> None:
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    @property
+    def op(self) -> Operation[..., torch.Tensor]:
+        return self._op
+
+    @property
+    def args(self) -> tuple:
+        return self._args
+
+    @property
+    def kwargs(self) -> dict:
+        return self._kwargs
+
     def __getitem__(
         self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
     ) -> Expr[torch.Tensor]:
