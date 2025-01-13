@@ -564,7 +564,14 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
         return self.implementations[item].__get__(self, type(self))
 
 
-class _ImplementedOperation(Generic[P, Q, T, V]):
+class implements(Generic[P, Q, T, V]):
+    """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
+    particular abstract :class:`Operation`.
+
+    When passed an :class:`Operation`, returns a method decorator which installs
+    the given method as the implementation of the given :class:`Operation`.
+
+    """
     impl: Optional[Callable[Q, V]]
     op: Operation[P, T]
 
@@ -587,14 +594,3 @@ class _ImplementedOperation(Generic[P, Q, T, V]):
         assert self.impl is not None
         assert self.op is not None
         owner._temporary_implementations[self.op] = self.impl
-
-
-def implements(op: Operation[P, V]):
-    """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
-    particular abstract :class:`Operation`.
-
-    When passed an :class:`Operation`, returns a method decorator which installs
-    the given method as the implementation of the given :class:`Operation`.
-
-    """
-    return _ImplementedOperation(op)
