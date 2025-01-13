@@ -171,7 +171,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["fn"] = pdist
             msg["value"] = pos_obs
             msg["mask"] = pos_mask
-            msg["infer"]["_index_naming"] = naming
+            msg["infer"]["_index_naming"] = naming  # type: ignore
 
             assert sizesof(msg["value"]) == {}
             assert sizesof(msg["mask"]) == {}
@@ -203,7 +203,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             return
 
         # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-        naming = infer["_index_naming"]
+        naming = infer["_index_naming"]  # type: ignore
 
         value = msg["value"]
 
@@ -458,7 +458,7 @@ def pyro_module_shim(
 
     """
 
-    class PyroModuleShim(module):
+    class PyroModuleShim(module):  # type: ignore
         def forward(self, *args, **kwargs):
             with PyroShim():
                 return super().forward(*args, **kwargs)
