@@ -16,14 +16,7 @@ from typing import (
 import tree
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.types import (
-    ArgAnnotation,
-    Expr,
-    Interpretation,
-    MaybeResult,
-    Operation,
-    Term,
-)
+from effectful.ops.types import ArgAnnotation, Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -194,7 +187,7 @@ def defop(t, *, name=None):
 
     if isinstance(t, Operation):
 
-        def func(*args, **kwargs):  # type: ignore
+        def func(*args, **kwargs):
             raise NoDefaultRule
 
         functools.update_wrapper(func, t)
@@ -353,7 +346,7 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     if isinstance(expr, Term):
         impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
         impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)  # type: ignore
+        return impl(expr.op, expr.args, expr.kwargs)
     else:
         return expr
 
@@ -415,18 +408,6 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
         return False
     else:
         return x == other
-
-
-def bind_result(fn: Callable[Concatenate[MaybeResult[T], P], T]) -> Callable[P, T]:
-    from effectful.internals.runtime import _get_result
-
-    return lambda *a, **k: fn(_get_result(), *a, **k)
-
-
-def bind_result_to_method(
-    fn: Callable[Concatenate[V, MaybeResult[T], P], T]
-) -> Callable[Concatenate[V, P], T]:
-    return bind_result(lambda r, s, *a, **k: fn(s, r, *a, **k))
 
 
 class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):

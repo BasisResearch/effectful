@@ -2,18 +2,7 @@ from __future__ import annotations
 
 import abc
 import typing
-from typing import (
-    Any,
-    Callable,
-    Generic,
-    Mapping,
-    Optional,
-    Sequence,
-    Set,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import Any, Callable, Generic, Mapping, Sequence, Set, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -125,8 +114,6 @@ Expr = Union[T, Term[T]]
 
 #: An interpretation is a mapping from operations to their implementations.
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
-
-MaybeResult = Optional[T]
 
 
 class ArgAnnotation:

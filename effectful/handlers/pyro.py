@@ -72,7 +72,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     >>> def log_sample(name, *args, **kwargs):
     ...     print(f"Sampled {name}")
-    ...     return fwd(None)
+    ...     return fwd()
 
     >>> with PyroShim(), handler({pyro_sample: log_sample}):
     ...     x = pyro.sample("x", dist.Normal(0, 1))
@@ -209,7 +209,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         if value is not None:
             # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape = msg["fn"].shape()  # type: ignore
+            assert isinstance(
+                msg["fn"], pyro.distributions.torch_distribution.TorchDistribution
+            )
+            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(
                     torch.broadcast_shapes(value.shape, dist_shape)

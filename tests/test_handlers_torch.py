@@ -110,7 +110,7 @@ def test_tpe_4():
     expected = torch.sum(xval, dim=1)
 
     @defterm
-    def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:  # type: ignore
+    def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:
         return torch.sum(x[k, ival, j], dim=0)
 
     for jj in range(3):
