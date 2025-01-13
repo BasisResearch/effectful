@@ -572,6 +572,7 @@ class implements(Generic[P, Q, T, V]):
     the given method as the implementation of the given :class:`Operation`.
 
     """
+
     impl: Optional[Callable[Q, V]]
     op: Operation[P, T]
 

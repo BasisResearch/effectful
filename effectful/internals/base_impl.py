@@ -42,7 +42,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         tuple[Interpretation[S, S | T], ...],
         dict[str, Interpretation[S, S | T]],
     ]:
-        from effectful.ops.semantics import coproduct
         from effectful.ops.syntax import Bound, Scoped, defop
 
         sig = inspect.signature(self.signature)
@@ -88,7 +87,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         subs: dict[Operation[..., S], Operation[..., S]] = {}
         for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            subs = coproduct({var: defop(var) for var in bound_vars[scope]}, subs)  # type: ignore
+            subs = {**{var: defop(var) for var in bound_vars[scope]}, **subs}  # type: ignore
 
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
