@@ -306,16 +306,12 @@ def defterm(dispatch, value: T) -> Expr[T]:
 def defdata(
     dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> Expr[T]:
-    """Converts a term so that it is an instance of its inferred type.
+    """Constructs a Term that is an instance of its semantic type.
 
-    :param expr: The term to convert.
-    :type expr: Term[T]
     :returns: An instance of ``T``.
     :rtype: Expr[T]
 
-    This function is called by :func:`__free_rule__`, so conversions
-    resgistered with :func:`defdata` are automatically applied when terms are
-    constructed.
+    This function is the only way to construct a :class:`Term` from an :class:`Operation`.
 
     .. note::
 
@@ -329,20 +325,40 @@ def defdata(
 
     .. code-block:: python
 
-      class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+      class _CallableTerm(Generic[P, T], Term[collections.abc.Callable[P, T]]):
+          def __init__(
+              self,
+              op: Operation[..., T],
+              *args: Expr,
+              **kwargs: Expr,
+          ):
+              self._op = op
+              self._args = args
+              self._kwargs = kwargs
+
+          @property
+          def op(self):
+              return self._op
+
+          @property
+          def args(self):
+              return self._args
+
+          @property
+          def kwargs(self):
+              return self._kwargs
+
           def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
               from effectful.ops.semantics import call
 
               return call(self, *args, **kwargs)
 
       @defdata.register(collections.abc.Callable)
-      def _(op, args, kwargs):
-          return _CallableTerm(op, args, kwargs)
+      def _(op, *args, **kwargs):
+          return _CallableTerm(op, *args, **kwargs)
 
-    When a :class:`Callable` term is passed to :func:`defdata`, it is
-    reconstructed as a :class:`_CallableTerm`, which implements the
-    :func:`__call__` method.
-
+    When an Operation whose return type is `Callable` is passed to :func:`defdata`,
+    it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.ops.semantics import apply, evaluate, typeof
 
