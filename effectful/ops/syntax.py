@@ -303,7 +303,9 @@ def defterm(dispatch, value: T) -> Expr[T]:
 
 
 @_CustomSingleDispatchCallable
-def defdata(dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> Expr[T]:
+def defdata(
+    dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs
+) -> Expr[T]:
     """Converts a term so that it is an instance of its inferred type.
 
     :param expr: The term to convert.
@@ -345,17 +347,26 @@ def defdata(dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) ->
     from effectful.ops.semantics import apply, evaluate, typeof
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-    args_kwargs = {**dict(enumerate(zip(args, arg_ctxs))), **{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}}
+    args_kwargs = {
+        **dict(enumerate(zip(args, arg_ctxs))),
+        **{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()},
+    }
     for k, (v, c) in list(args_kwargs.items()):
         if c:
-            v = tree.map_structure(lambda a: c.get(a, a) if isinstance(a, Operation) else a, v)
-            args_kwargs[k] = evaluate(v, intp={apply: lambda _, op, *a, **k: defdata(op, *a, **k), **c})
+            v = tree.map_structure(
+                lambda a: c.get(a, a) if isinstance(a, Operation) else a, v
+            )
+            args_kwargs[k] = evaluate(
+                v, intp={apply: lambda _, op, *a, **k: defdata(op, *a, **k), **c}
+            )
         else:
             args_kwargs[k] = v
 
     args_ = tuple(args_kwargs[i] for i in range(len(args)))
     kwargs_ = {k: args_kwargs[k] for k in kwargs}
-    return dispatch(typeof(dispatch(object)(op, *args_, **kwargs_)))(op, *args_, **kwargs_)
+    return dispatch(typeof(dispatch(object)(op, *args_, **kwargs_)))(
+        op, *args_, **kwargs_
+    )
 
 
 @defterm.register(object)
@@ -395,7 +406,6 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
-
 
 
 @defdata.register(collections.abc.Callable)

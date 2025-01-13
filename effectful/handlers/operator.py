@@ -5,8 +5,7 @@ from typing import Any, Callable, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.internals.base_impl import _BaseTerm
-from effectful.ops.syntax import NoDefaultRule, defdata, defop, syntactic_eq
+from effectful.ops.syntax import NoDefaultRule, _BaseTerm, defdata, defop, syntactic_eq
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")

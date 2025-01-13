@@ -12,10 +12,9 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.operator  # noqa: F401
-from effectful.internals.base_impl import _BaseTerm
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import NoDefaultRule, defdata, defop
+from effectful.ops.syntax import NoDefaultRule, _BaseTerm, defdata, defop
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")

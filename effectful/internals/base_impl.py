@@ -2,7 +2,7 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Mapping, Sequence, Set, Type, TypeVar
+from typing import Callable, Generic, Type, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -151,36 +151,3 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
     def __repr__(self):
         return self.signature.__name__
-
-
-class _BaseTerm(Generic[T], Term[T]):
-    _op: Operation[..., T]
-    _args: Sequence[Expr]
-    _kwargs: Mapping[str, Expr]
-
-    def __init__(
-        self,
-        op: Operation[..., T],
-        *args: Expr,
-        **kwargs: Expr,
-    ):
-        self._op = op
-        self._args = args
-        self._kwargs = kwargs
-
-    def __eq__(self, other) -> bool:
-        from effectful.ops.syntax import syntactic_eq
-
-        return syntactic_eq(self, other)
-
-    @property
-    def op(self):
-        return self._op
-
-    @property
-    def args(self):
-        return self._args
-
-    @property
-    def kwargs(self):
-        return self._kwargs
