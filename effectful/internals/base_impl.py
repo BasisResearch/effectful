@@ -26,7 +26,9 @@ def rename(
     if isinstance(leaf_value, Operation):
         return subs.get(leaf_value, leaf_value)  # type: ignore
     elif isinstance(leaf_value, Term):
-        with interpreter({apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}):  # type: ignore
+        with interpreter(
+            {apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}
+        ):
             return evaluate(leaf_value)  # type: ignore
     else:
         return leaf_value
@@ -103,7 +105,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     bound_sig.arguments[name],
                 )
 
-        return defdata(_BaseTerm(self, bound_sig.args, bound_sig.kwargs))  # type: ignore
+        return defdata(_BaseTerm(self, bound_sig.args, bound_sig.kwargs))
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)

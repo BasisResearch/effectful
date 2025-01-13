@@ -75,7 +75,6 @@ def make_dict(n):
 def test_fusion_term():
     dvar = defop(object, name="dvar")
     with handler(eager), handler(opt):
-        breakpoint()
         result, (x, _, k, v) = fusion_test(dvar())
 
     match result:

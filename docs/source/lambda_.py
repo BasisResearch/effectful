@@ -53,12 +53,12 @@ def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
 
 def beta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """let binding"""
-    return handler({var: lambda: val})(evaluate)(body)  # type: ignore
+    return handler({var: lambda: val})(evaluate)(body)
 
 
 def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
-    if var not in fvsof(body):  # type: ignore
+    if var not in fvsof(body):
         return body
     else:
         return fwd()
@@ -66,7 +66,7 @@ def eta_lam(var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Ex
 
 def eta_let(var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T]:
     """eta reduction"""
-    if var not in fvsof(body):  # type: ignore
+    if var not in fvsof(body):
         return body
     else:
         return fwd()
