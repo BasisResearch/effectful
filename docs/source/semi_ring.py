@@ -1,12 +1,11 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, Callable, ParamSpec, Tuple, TypeVar, Union, cast, overload
+from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
-import effectful.handlers.operator
-from effectful.handlers.operator import OPERATORS
-from effectful.ops.semantics import call, coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop, defterm
+import effectful.handlers.numbers  # noqa: F401
+from effectful.ops.semantics import coproduct, evaluate, fwd, handler
+from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -83,6 +82,14 @@ def Dict(*contents: Union[K, V]) -> SemiRingDict[K, V]:
     raise NoDefaultRule
 
 
+@defop
+def add(x: T, y: T) -> T:
+    if not any(isinstance(a, Term) for a in (x, y)):
+        return operator.add(x, y)
+    else:
+        raise NoDefaultRule
+
+
 ops = types.SimpleNamespace()
 ops.Sum = Sum
 ops.Let = Let
@@ -91,12 +98,8 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def is_value(v):
-    return not isinstance(v, (Operation, Term))
-
-
 def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
-    if all(is_value(v) for v in contents):
+    if not any(isinstance(v, Term) for v in contents):
         if len(contents) % 2 != 0:
             raise ValueError("Dict requires an even number of arguments")
 
@@ -109,7 +112,7 @@ def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
 
 
 def eager_record(**kwargs: T) -> dict[str, T]:
-    if all(is_value(v) for v in kwargs.values()):
+    if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
         return fwd()
@@ -138,18 +141,11 @@ def eager_add(x, y):
         return fwd()
 
 
-def eager_app(f: Callable[[S], T], x: S) -> T:
-    if is_value(x):
-        return f(x)
-    else:
-        return fwd()
-
-
 def eager_field(r: dict[str, T], k: str) -> T:
     match r, k:
         case dict(), str():
             return r[k]
-        case SemiRingDict(), _ if is_value(k):
+        case SemiRingDict(), _ if not isinstance(k, Term):
             return r[k]
         case _:
             return fwd()
@@ -199,8 +195,6 @@ def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
         case _:
             return fwd()
 
-
-add = OPERATORS[operator.add]
 
 eager: Interpretation = {
     add: eager_add,

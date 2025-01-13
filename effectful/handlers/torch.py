@@ -11,7 +11,7 @@ except ImportError:
 import tree
 from typing_extensions import ParamSpec
 
-import effectful.handlers.operator  # noqa: F401
+import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import NoDefaultRule, _BaseTerm, defdata, defop
