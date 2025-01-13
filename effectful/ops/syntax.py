@@ -178,9 +178,7 @@ def defop(t, *, name: Optional[str] = None):
 
 
 @defop.register(collections.abc.Callable)
-def _(
-    t: Callable[P, T], *, name: Optional[str] = None
-) -> Operation[P, T]:
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     from effectful.internals.base_impl import _BaseOperation
 
     op = _BaseOperation(t)

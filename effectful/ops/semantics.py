@@ -295,7 +295,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     from effectful.internals.runtime import interpreter
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term)  # type: ignore
+        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
 
 
 def fvsof(term: Expr[S]) -> Set[Operation]:
