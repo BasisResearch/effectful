@@ -111,12 +111,12 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
                         )
                     sizes[k.op] = shape[i]
 
-        return torch_getitem.__free_rule__(x, key)
+        return defdata(torch_getitem, x, key)
 
     with interpreter(
         {
             torch_getitem: _torch_getitem_sizeof,
-            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
         }
     ):
         evaluate(value)
@@ -204,7 +204,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
-        tm = _torch_op.__free_rule__(*args, **kwargs)
+        tm = defdata(_torch_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
         if (
@@ -315,7 +315,7 @@ class Indexable:
 
 
 @defdata.register(torch.Tensor)
-def _embed_tensor(op, args, kwargs):
+def _embed_tensor(op, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)
@@ -328,7 +328,7 @@ def _embed_tensor(op, args, kwargs):
     ):
         return _EagerTensorTerm(args[0], args[1])
     else:
-        return _TensorTerm(op, args, kwargs)
+        return _TensorTerm(op, *args, **kwargs)
 
 
 class _TensorTerm(_BaseTerm[torch.Tensor]):

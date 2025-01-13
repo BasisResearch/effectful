@@ -39,26 +39,15 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        """Returns a term for the operation applied to arguments."""
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def __evalctx_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        "Interpretation[S, S | T]",
-        tuple[tuple["Expr", "Interpretation[S, S | T]"], ...],
-        dict[str, tuple["Expr", "Interpretation[S, S | T]"]],
-    ]:
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         """Returns the type of the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set["Operation"]:
-        """Returns the free variables of the operation applied to arguments."""
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+        tuple[tuple["Expr", "Interpretation[S, S | T]"], ...],
+        dict[str, tuple["Expr", "Interpretation[S, S | T]"]],
+    ]:
         raise NotImplementedError
 
     @abc.abstractmethod

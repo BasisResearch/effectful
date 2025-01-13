@@ -1,6 +1,7 @@
 import collections
 import dataclasses
 import functools
+import inspect
 import typing
 from typing import (
     Annotated,
@@ -302,7 +303,7 @@ def defterm(dispatch, value: T) -> Expr[T]:
 
 
 @_CustomSingleDispatchCallable
-def defdata(dispatch, expr: Term[T]) -> Expr[T]:
+def defdata(dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> Expr[T]:
     """Converts a term so that it is an instance of its inferred type.
 
     :param expr: The term to convert.
@@ -341,14 +342,20 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
     :func:`__call__` method.
 
     """
-    from effectful.ops.semantics import typeof
+    from effectful.ops.semantics import apply, evaluate, typeof
 
-    if isinstance(expr, Term):
-        impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
-        impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)
-    else:
-        return expr
+    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    args_kwargs = {**dict(enumerate(zip(args, arg_ctxs))), **{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}}
+    for k, (v, c) in list(args_kwargs.items()):
+        if c:
+            v = tree.map_structure(lambda a: c.get(a, a) if isinstance(a, Operation) else a, v)
+            args_kwargs[k] = evaluate(v, intp={apply: lambda _, op, *a, **k: defdata(op, *a, **k), **c})
+        else:
+            args_kwargs[k] = v
+
+    args_ = tuple(args_kwargs[i] for i in range(len(args)))
+    kwargs_ = {k: args_kwargs[k] for k in kwargs}
+    return dispatch(typeof(dispatch(object)(op, *args_, **kwargs_)))(op, *args_, **kwargs_)
 
 
 @defterm.register(object)
@@ -359,24 +366,84 @@ def _(value: T) -> T:
 
 
 @defdata.register(object)
-def _(op, args, kwargs):
-    from effectful.internals.base_impl import _BaseTerm
+class _BaseTerm(Generic[T], Term[T]):
+    _op: Operation[..., T]
+    _args: Sequence[Expr]
+    _kwargs: Mapping[str, Expr]
 
-    return _BaseTerm(op, args, kwargs)
+    def __init__(
+        self,
+        op: Operation[..., T],
+        *args: Expr,
+        **kwargs: Expr,
+    ):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    def __eq__(self, other) -> bool:
+        return syntactic_eq(self, other)
+
+    @property
+    def op(self):
+        return self._op
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
+
 
 
 @defdata.register(collections.abc.Callable)
-def _(op, args, kwargs):
-    from effectful.internals.base_impl import _CallableTerm
+class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+        from effectful.ops.semantics import call
 
-    return _CallableTerm(op, args, kwargs)
+        return call(self, *args, **kwargs)  # type: ignore
 
 
 @defterm.register(collections.abc.Callable)
-def _(fn: Callable[P, T]):
-    from effectful.internals.base_impl import _unembed_callable
+def _(value: Callable[P, T]):
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, call
 
-    return _unembed_callable(fn)
+    assert not isinstance(value, Term)
+
+    try:
+        sig = inspect.signature(value)
+    except ValueError:
+        return value
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
+            )
+
+    bound_sig = sig.bind(
+        **{name: defop(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
+
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
+            call: call.__default_rule__,
+        }
+    ):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
+
+    return deffn(body, *bound_sig.args, **bound_sig.kwargs)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:

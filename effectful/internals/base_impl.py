@@ -4,7 +4,6 @@ import inspect
 import typing
 from typing import Callable, Generic, Mapping, Sequence, Set, Type, TypeVar
 
-import tree
 from typing_extensions import ParamSpec
 
 from effectful.ops.types import Expr, Interpretation, Operation, Term
@@ -14,12 +13,6 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-
-
-def _rename_leaf_op(v: T, renaming: Mapping[Operation[..., S], Operation[..., S]]) -> T:
-    return tree.map_structure(
-        lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-    )
 
 
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
@@ -38,35 +31,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.ops.syntax import NoDefaultRule
+        from effectful.ops.syntax import NoDefaultRule, defdata
 
         try:
             return self.signature(*args, **kwargs)
         except NoDefaultRule:
-            return self.__free_rule__(*args, **kwargs)
+            return defdata(self, *args, **kwargs)
 
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Term[V]:
-        from effectful.ops.semantics import apply, coproduct, evaluate, handler
-        from effectful.ops.syntax import defdata
-
-        bound_vars = self.__fvs_rule__(*args, **kwargs)
-        if not bound_vars:
-            return defdata(_BaseTerm(self, args, kwargs))
-        else:
-            intp = {apply: lambda _, op, *a, **k: defdata(_BaseTerm(op, a, k))}
-            _, arg_ctxs, kwarg_ctxs = self.__evalctx_rule__(*args, **kwargs)
-            args = tuple(
-                handler(coproduct(intp, c))(evaluate)(_rename_leaf_op(a, c))
-                for a, c in zip(args, arg_ctxs)
-            )
-            kwargs = {
-                k: handler(coproduct(intp, c))(evaluate)(_rename_leaf_op(kwargs[k], c))
-                for k, c in kwarg_ctxs.items()
-            }
-            return defdata(_BaseTerm(self, args, kwargs))  # type: ignore
-
-    def __evalctx_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        Interpretation[S, S | T],
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
         tuple[Interpretation[S, S | T], ...],
         dict[str, Interpretation[S, S | T]],
     ]:
@@ -102,7 +74,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         if not bound_vars:  # fast path for no bound variables
             return (
-                {},
                 tuple({} for _ in bound_sig.args),
                 {k: {} for k in bound_sig.kwargs},
             )
@@ -132,7 +103,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 else:
                     bound_sig.arguments[name] = subs
 
-        return {}, tuple(bound_sig.args), dict(bound_sig.kwargs)
+        return tuple(bound_sig.args), dict(bound_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)
@@ -166,13 +137,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         else:
             return anno
 
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set[Operation]:
-        out_ctx, arg_ctxs, kwarg_ctxs = self.__evalctx_rule__(*args, **kwargs)
-        return set().union(
-            *(a.keys() for a in arg_ctxs),
-            *(k.keys() for k in kwarg_ctxs.values()),
-        ) - set(out_ctx.keys())
-
     def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
         args_str = ", ".join(map(str, args)) if args else ""
         kwargs_str = (
@@ -197,8 +161,8 @@ class _BaseTerm(Generic[T], Term[T]):
     def __init__(
         self,
         op: Operation[..., T],
-        args: Sequence[Expr],
-        kwargs: Mapping[str, Expr],
+        *args: Expr,
+        **kwargs: Expr,
     ):
         self._op = op
         self._args = args
@@ -220,50 +184,3 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
-
-
-class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
-    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.semantics import call
-
-        return call(self, *args, **kwargs)  # type: ignore
-
-
-def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
-    from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, call
-    from effectful.ops.syntax import deffn, defop
-
-    assert not isinstance(value, Term)
-
-    try:
-        sig = inspect.signature(value)
-    except ValueError:
-        return value
-
-    for name, param in sig.parameters.items():
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise NotImplementedError(
-                f"cannot unembed {value}: parameter {name} is variadic"
-            )
-
-    bound_sig = sig.bind(
-        **{name: defop(param.annotation) for name, param in sig.parameters.items()}
-    )
-    bound_sig.apply_defaults()
-
-    with interpreter(
-        {
-            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
-            call: call.__default_rule__,
-        }
-    ):
-        body = value(
-            *[a() for a in bound_sig.args],
-            **{k: v() for k, v in bound_sig.kwargs.items()},
-        )
-
-    return deffn(body, *bound_sig.args, **bound_sig.kwargs)
