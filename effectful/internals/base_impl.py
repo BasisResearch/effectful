@@ -16,12 +16,10 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-def _rename_leaf_op(
-    v: T, renaming: Mapping[Operation[..., S], Operation[..., S]]
-) -> tuple[T, Interpretation[S, S]]:
+def _rename_leaf_op(v: T, renaming: Mapping[Operation[..., S], Operation[..., S]]) -> T:
     return tree.map_structure(
         lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-    ), dict(renaming)
+    )
 
 
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
@@ -48,25 +46,29 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Term[V]:
-        from effectful.ops.semantics import apply, evaluate
+        from effectful.ops.semantics import apply, coproduct, evaluate, handler
         from effectful.ops.syntax import defdata
 
         bound_vars = self.__fvs_rule__(*args, **kwargs)
         if not bound_vars:
             return defdata(_BaseTerm(self, args, kwargs))
         else:
-            intp = {
-                apply: lambda _, op, *a, **k: defdata(_BaseTerm(op, a, k)),
-                **{op: op for op in bound_vars},
+            intp = {apply: lambda _, op, *a, **k: defdata(_BaseTerm(op, a, k))}
+            _, arg_ctxs, kwarg_ctxs = self.__evalctx_rule__(*args, **kwargs)
+            args = tuple(
+                handler(coproduct(intp, c))(evaluate)(_rename_leaf_op(a, c))
+                for a, c in zip(args, arg_ctxs)
+            )
+            kwargs = {
+                k: handler(coproduct(intp, c))(evaluate)(_rename_leaf_op(kwargs[k], c))
+                for k, c in kwarg_ctxs.items()
             }
-            return evaluate(_BaseTerm(self, args, kwargs), intp=intp)  # type: ignore
+            return defdata(_BaseTerm(self, args, kwargs))  # type: ignore
 
-    def __evalctx_rule__(
-        self, intp: Interpretation[S, T], *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
+    def __evalctx_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
         Interpretation[S, S | T],
-        tuple[tuple[Expr, Interpretation[S, S | T]], ...],
-        dict[str, tuple[Expr, Interpretation[S, S | T]]],
+        tuple[Interpretation[S, S | T], ...],
+        dict[str, Interpretation[S, S | T]],
     ]:
         from effectful.ops.semantics import coproduct
         from effectful.ops.syntax import Bound, Scoped, defop
@@ -101,8 +103,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         if not bound_vars:  # fast path for no bound variables
             return (
                 {},
-                tuple((a, {}) for a in bound_sig.args),
-                {k: (v, {}) for k, v in bound_sig.kwargs.items()},
+                tuple({} for _ in bound_sig.args),
+                {k: {} for k in bound_sig.kwargs},
             )
 
         # TODO replace this temporary check with more general scope level propagation
@@ -115,25 +117,20 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         subs: dict[Operation[..., S], Operation[..., S]] = {}
         for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            subs = coproduct(
-                {var: defop(var) for var in bound_vars[scope] if var in intp}, subs
-            )  # type: ignore
+            subs = coproduct({var: defop(var) for var in bound_vars[scope]}, subs)  # type: ignore
 
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
                 if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
                     bound_sig.arguments[name] = tuple(
-                        _rename_leaf_op(a, subs) for a in bound_sig.arguments[name]
+                        subs for _ in bound_sig.arguments[name]
                     )
                 elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
                     bound_sig.arguments[name] = {
-                        k: _rename_leaf_op(v, subs)
-                        for k, v in bound_sig.arguments[name].items()
+                        k: subs for k in bound_sig.arguments[name]
                     }
                 else:
-                    bound_sig.arguments[name] = _rename_leaf_op(
-                        bound_sig.arguments[name], subs
-                    )
+                    bound_sig.arguments[name] = subs
 
         return {}, tuple(bound_sig.args), dict(bound_sig.kwargs)
 
@@ -170,28 +167,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return anno
 
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set[Operation]:
-        from effectful.ops.syntax import Bound
-
-        sig = inspect.signature(self.signature)
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        bound_vars: Set[Operation] = set()
-        for param_name, param in bound_sig.signature.parameters.items():
-            if typing.get_origin(param.annotation) is typing.Annotated:
-                for anno in param.annotation.__metadata__:
-                    if isinstance(anno, Bound):
-                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                            for bound_var in bound_sig.arguments[param_name]:
-                                bound_vars.add(bound_var)
-                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            for bound_var in bound_sig.arguments[param_name].values():
-                                bound_vars.add(bound_var)
-                        else:
-                            bound_var = bound_sig.arguments[param_name]
-                            bound_vars.add(bound_var)
-
-        return bound_vars
+        out_ctx, arg_ctxs, kwarg_ctxs = self.__evalctx_rule__(*args, **kwargs)
+        return set().union(
+            *(a.keys() for a in arg_ctxs),
+            *(k.keys() for k in kwarg_ctxs.values()),
+        ) - set(out_ctx.keys())
 
     def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
         args_str = ", ".join(map(str, args)) if args else ""
