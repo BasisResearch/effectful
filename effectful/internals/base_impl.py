@@ -6,7 +6,7 @@ from typing import Callable, Generic, Type, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Interpretation, Operation
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
