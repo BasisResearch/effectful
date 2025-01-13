@@ -4,7 +4,7 @@ from typing import Annotated, Callable, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.handlers.operator import OPERATORS
+from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
@@ -12,9 +12,6 @@ from effectful.ops.types import Expr, Interpretation, Operation, Term
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
-
-
-add = OPERATORS[operator.add]
 
 
 @defop
