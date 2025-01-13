@@ -15,7 +15,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@defop  # type: ignore
+@defop
 def apply(
     intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
 ) -> T:
