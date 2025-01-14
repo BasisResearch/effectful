@@ -225,16 +225,16 @@ def test_defun_4():
 
 def test_defun_5():
 
-    with pytest.raises(NotImplementedError, match="variadic"):
+    with pytest.raises(ValueError, match="variadic"):
         defterm(lambda *xs: None)
 
-    with pytest.raises(NotImplementedError, match="variadic"):
+    with pytest.raises(ValueError, match="variadic"):
         defterm(lambda **ys: None)
 
-    with pytest.raises(NotImplementedError, match="variadic"):
+    with pytest.raises(ValueError, match="variadic"):
         defterm(lambda y=1, **ys: None)
 
-    with pytest.raises(NotImplementedError, match="variadic"):
+    with pytest.raises(ValueError, match="variadic"):
         defterm(lambda x, *xs, y=1, **ys: None)
 
 

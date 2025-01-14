@@ -51,11 +51,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.ops.syntax import NoDefaultRule
-
         try:
             return self.signature(*args, **kwargs)
-        except NoDefaultRule:
+        except NotImplementedError:
             return self.__free_rule__(*args, **kwargs)
 
     def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
@@ -237,9 +235,7 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
-            raise NotImplementedError(
-                f"cannot unembed {value}: parameter {name} is variadic"
-            )
+            raise ValueError(f"cannot unembed {value}: parameter {name} is variadic")
 
     bound_sig = sig.bind(
         **{name: defop(param.annotation) for name, param in sig.parameters.items()}

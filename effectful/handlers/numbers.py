@@ -4,7 +4,7 @@ from typing import Any, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, defdata, defop, syntactic_eq
+from effectful.ops.syntax import defdata, defop, syntactic_eq
 from effectful.ops.types import Operation, Term
 
 P = ParamSpec("P")
@@ -56,7 +56,7 @@ def _wrap_cmp(op):
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
-            raise NoDefaultRule
+            raise NotImplementedError
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
@@ -67,7 +67,7 @@ def _wrap_binop(op):
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
-            raise NoDefaultRule
+            raise NotImplementedError
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
@@ -78,7 +78,7 @@ def _wrap_unop(op):
         if not isinstance(x, Term):
             return op(x)
         else:
-            raise NoDefaultRule
+            raise NotImplementedError
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
