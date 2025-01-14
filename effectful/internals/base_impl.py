@@ -2,11 +2,11 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Type, TypeVar
+from typing import Callable, Generic, Mapping, Sequence, Type, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Expr, Interpretation, Operation
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -150,3 +150,83 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
     def __repr__(self):
         return self.signature.__name__
+
+
+class _BaseTerm(Generic[T], Term[T]):
+    _op: Operation[..., T]
+    _args: Sequence[Expr]
+    _kwargs: Mapping[str, Expr]
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        *args: Expr,
+        **kwargs: Expr,
+    ):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    def __eq__(self, other) -> bool:
+        from effectful.ops.syntax import syntactic_eq
+
+        return syntactic_eq(self, other)
+
+    @property
+    def op(self):
+        return self._op
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
+
+
+class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+        from effectful.ops.semantics import call
+
+        return call(self, *args, **kwargs)  # type: ignore
+
+
+def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, call
+    from effectful.ops.syntax import defdata, deffn, defop
+
+    assert not isinstance(value, Term)
+
+    try:
+        sig = inspect.signature(value)
+    except ValueError:
+        return value
+
+    for name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"cannot unembed {value}: parameter {name} is variadic"
+            )
+
+    bound_sig = sig.bind(
+        **{name: defop(param.annotation) for name, param in sig.parameters.items()}
+    )
+    bound_sig.apply_defaults()
+
+    with interpreter(
+        {
+            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
+            call: call.__default_rule__,
+        }
+    ):
+        body = value(
+            *[a() for a in bound_sig.args],
+            **{k: v() for k, v in bound_sig.kwargs.items()},
+        )
+
+    return deffn(body, *bound_sig.args, **bound_sig.kwargs)
