@@ -1,5 +1,5 @@
-sphinx==7.1.2
+sphinx
 sphinxcontrib-bibtex
-sphinx_rtd_theme==1.3.0
+sphinx_rtd_theme
 myst_parser
 nbsphinx
