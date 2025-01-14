@@ -5,4 +5,5 @@ myst_parser
 nbsphinx
 pyro-ppl
 torch
-tree
+dm-tree
+typing_extensions
