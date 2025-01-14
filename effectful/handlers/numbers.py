@@ -1,3 +1,8 @@
+"""
+This module provides a term representation for numbers and operations on them.
+"""
+
+
 import numbers
 import operator
 from typing import Any, TypeVar
