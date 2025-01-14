@@ -2,7 +2,7 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Mapping, Sequence, Set, Type, TypeVar
+from typing import Callable, Generic, Mapping, Optional, Sequence, Set, Type, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -37,9 +37,10 @@ def rename(
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     signature: Callable[Q, V]
 
-    def __init__(self, signature: Callable[Q, V]):
+    def __init__(self, signature: Callable[Q, V], *, name: Optional[str] = None):
         functools.update_wrapper(self, signature)
         self.signature = signature
+        self.__name__ = name or signature.__name__
 
     def __eq__(self, other):
         if not isinstance(other, Operation):

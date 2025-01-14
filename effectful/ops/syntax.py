@@ -43,7 +43,7 @@ class NoDefaultRule(Exception):
 
 
 @functools.singledispatch
-def defop(t, *, name: Optional[str] = None):
+def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -177,13 +177,11 @@ def defop(t, *, name: Optional[str] = None):
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
-@defop.register(collections.abc.Callable)
+@defop.register(typing.cast(Type[collections.abc.Callable], collections.abc.Callable))
 def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     from effectful.internals.base_impl import _BaseOperation
 
-    op = _BaseOperation(t)
-    op.__name__ = name or t.__name__
-    return op
+    return _BaseOperation(t, name=name)
 
 
 @defop.register(Operation)
