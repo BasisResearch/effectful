@@ -1,4 +1,3 @@
-|Build Status|
 
 .. index-inclusion-marker
 

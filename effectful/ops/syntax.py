@@ -1,6 +1,7 @@
-import collections
+import collections.abc
 import dataclasses
 import functools
+import types
 import typing
 from typing import Annotated, Callable, Generic, Optional, Type, TypeVar, Union
 
@@ -26,25 +27,8 @@ class Scoped(ArgAnnotation):
     scope: int = 0
 
 
-class NoDefaultRule(Exception):
-    """Raised in an operation's signature to indicate that the operation has no default rule."""
-
-    pass
-
-
-@typing.overload
-def defop(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]: ...
-
-
-@typing.overload
-def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-@typing.overload
-def defop(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]: ...
-
-
-def defop(t, *, name=None):
+@functools.singledispatch
+def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -85,12 +69,12 @@ def defop(t, *, name=None):
     * Defining an operation with no default rule:
 
       We can use :func:`defop` and the
-      :exc:`effectful.internals.sugar.NoDefaultRule` exception to define an
+      :exc:`NotImplementedError` exception to define an
       operation with no default rule:
 
       >>> @defop
       ... def add(x: int, y: int) -> int:
-      ...     raise NoDefaultRule
+      ...     raise NotImplementedError
       >>> add(1, 2)
       add(1, 2)
 
@@ -175,29 +159,45 @@ def defop(t, *, name=None):
       1 2
 
     """
+    raise NotImplementedError(f"expected type or callable, got {t}")
 
-    if isinstance(t, Operation):
 
-        def func(*args, **kwargs):
-            raise NoDefaultRule
+@defop.register(typing.cast(Type[collections.abc.Callable], collections.abc.Callable))
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+    from effectful.internals.base_impl import _BaseOperation
 
-        functools.update_wrapper(func, t)
-        return defop(func, name=name)
-    elif isinstance(t, type):
+    return _BaseOperation(t, name=name)
 
-        def func() -> t:  # type: ignore
-            raise NoDefaultRule
 
-        func.__name__ = name or t.__name__
-        return typing.cast(Operation[[], T], defop(func, name=name))
-    elif isinstance(t, collections.abc.Callable):
-        from effectful.internals.base_impl import _BaseOperation
+@defop.register(Operation)
+def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+    def func(*args, **kwargs):
+        raise NotImplementedError
 
-        op = _BaseOperation(t)
-        op.__name__ = name or t.__name__
-        return op
-    else:
-        raise ValueError(f"expected type or callable, got {t}")
+    functools.update_wrapper(func, t)
+    return defop(func, name=name)
+
+
+@defop.register(type)
+def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
+    def func() -> t:  # type: ignore
+        raise NotImplementedError
+
+    func.__name__ = name or t.__name__
+    return typing.cast(Operation[[], T], defop(func, name=name))
+
+
+@defop.register(types.BuiltinFunctionType)
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+
+    @functools.wraps(t)
+    def func(*args, **kwargs):
+        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+            return t(*args, **kwargs)
+        else:
+            raise NotImplementedError
+
+    return defop(func, name=name)
 
 
 @defop
@@ -240,7 +240,7 @@ def deffn(
       automatically create the right free variables.
 
     """
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 class _CustomSingleDispatchCallable(Generic[P, T]):
@@ -402,6 +402,8 @@ def defdata(
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
+@defterm.register(type)
+@defterm.register(types.BuiltinFunctionType)
 def _(value: T) -> T:
     return value
 

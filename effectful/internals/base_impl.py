@@ -2,7 +2,7 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Mapping, Sequence, Type, TypeVar
+from typing import Callable, Generic, Mapping, Optional, Sequence, Type, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
@@ -18,9 +18,10 @@ V = TypeVar("V")
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     signature: Callable[Q, V]
 
-    def __init__(self, signature: Callable[Q, V]):
+    def __init__(self, signature: Callable[Q, V], *, name: Optional[str] = None):
         functools.update_wrapper(self, signature)
         self.signature = signature
+        self.__name__ = name or signature.__name__
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -31,11 +32,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.ops.syntax import NoDefaultRule, defdata
+        from effectful.ops.syntax import defdata
 
         try:
             return self.signature(*args, **kwargs)
-        except NoDefaultRule:
+        except NotImplementedError:
             return typing.cast(
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
@@ -211,9 +212,7 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
-            raise NotImplementedError(
-                f"cannot unembed {value}: parameter {name} is variadic"
-            )
+            raise ValueError(f"cannot unembed {value}: parameter {name} is variadic")
 
     bound_sig = sig.bind(
         **{name: defop(param.annotation) for name, param in sig.parameters.items()}
