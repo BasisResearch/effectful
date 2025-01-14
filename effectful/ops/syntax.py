@@ -397,10 +397,10 @@ def _(op, *args, **kwargs):
 
 
 @defterm.register(collections.abc.Callable)
-def _(value: Callable[P, T]) -> Expr[collections.abc.Callable[P, T]]:
+def _(fn: Callable[P, T]) -> Expr[collections.abc.Callable[P, T]]:
     from effectful.internals.base_impl import _unembed_callable
 
-    return _unembed_callable(value)
+    return _unembed_callable(fn)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
