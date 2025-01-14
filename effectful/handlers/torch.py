@@ -15,7 +15,7 @@ import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.base_impl import _BaseTerm
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import NoDefaultRule, defdata, defop
+from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -214,7 +214,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             and args[1]
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
-            raise NoDefaultRule
+            raise NotImplementedError
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {
             torch_getitem,
             _torch_op,
@@ -230,7 +230,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
         ):
             return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
-            raise NoDefaultRule
+            raise NotImplementedError
 
     functools.update_wrapper(_torch_op, torch_fn)
     return _torch_op

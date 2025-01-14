@@ -5,7 +5,7 @@ from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
+from effectful.ops.syntax import Bound, Scoped, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -55,7 +55,7 @@ def Sum(
     v: Annotated[Operation[[], V], Bound(0)],
     e2: Annotated[SemiRingDict[S, T], Scoped(0)],
 ) -> SemiRingDict[S, T]:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
@@ -64,22 +64,22 @@ def Let(
     x: Annotated[Operation[[], T], Bound(0)],
     e2: Annotated[S, Scoped(0)],
 ) -> S:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def Record(**kwargs: T) -> dict[str, T]:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def Field(record: dict[str, T], key: str) -> T:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def Dict(*contents: Union[K, V]) -> SemiRingDict[K, V]:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
@@ -87,7 +87,7 @@ def add(x: T, y: T) -> T:
     if not any(isinstance(a, Term) for a in (x, y)):
         return operator.add(x, y)
     else:
-        raise NoDefaultRule
+        raise NotImplementedError
 
 
 ops = types.SimpleNamespace()
