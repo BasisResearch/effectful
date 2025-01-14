@@ -45,8 +45,8 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        tuple["Interpretation[S, S | T]", ...],
-        dict[str, "Interpretation[S, S | T]"],
+        tuple["Interpretation", ...],
+        dict[str, "Interpretation"],
     ]:
         raise NotImplementedError
 

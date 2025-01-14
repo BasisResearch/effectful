@@ -4,7 +4,7 @@ import inspect
 import typing
 from typing import Callable, Generic, Mapping, Sequence, Type, TypeVar
 
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
@@ -36,11 +36,13 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         try:
             return self.signature(*args, **kwargs)
         except NoDefaultRule:
-            return defdata(self, *args, **kwargs)
+            return typing.cast(
+                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+            )(self, *args, **kwargs)
 
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        tuple[Interpretation[S, S | T], ...],
-        dict[str, Interpretation[S, S | T]],
+        tuple[Interpretation, ...],
+        dict[str, Interpretation],
     ]:
         from effectful.ops.syntax import Bound, Scoped, defop
 
@@ -84,10 +86,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
-        subs: dict[Operation[..., S], Operation[..., S]] = {}
+        subs: dict[Operation, Operation] = {}
         for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            subs = {**{var: defop(var) for var in bound_vars[scope]}, **subs}  # type: ignore
+            subs = {**{var: defop(var) for var in bound_vars[scope]}, **subs}
 
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:

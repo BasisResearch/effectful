@@ -61,7 +61,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
     """
     if not isinstance(fn, Term):
-        fn = defterm(fn)
+        fn = defterm(fn)  # type: ignore
 
     if isinstance(fn, Term) and fn.op is deffn:
         body: Expr[Callable[P, T]] = fn.args[0]

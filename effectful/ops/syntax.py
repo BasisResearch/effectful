@@ -2,7 +2,7 @@ import collections
 import dataclasses
 import functools
 import typing
-from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
+from typing import Annotated, Callable, Generic, Optional, Type, TypeVar, Union
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
@@ -245,7 +245,7 @@ def deffn(
 
 class _CustomSingleDispatchCallable(Generic[P, T]):
     def __init__(
-        self, func: Callable[Concatenate[Callable[[type], Callable[P, T]], P], T]
+        self, func: Callable[Concatenate[Callable[[Type[T]], Callable[P, T]], P], T]
     ):
         self._func = func
         self._registry = functools.singledispatch(func)
@@ -264,7 +264,9 @@ class _CustomSingleDispatchCallable(Generic[P, T]):
 
 
 @_CustomSingleDispatchCallable
-def defterm(dispatch, value: T) -> Expr[T]:
+def defterm(
+    __dispatch: Callable[[Type[T]], Callable[[T], Expr[T]]], value: T
+) -> Expr[T]:
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
@@ -289,12 +291,15 @@ def defterm(dispatch, value: T) -> Expr[T]:
     if isinstance(value, Term):
         return value
     else:
-        return dispatch(type(value))(value)
+        return __dispatch(type(value))(value)
 
 
 @_CustomSingleDispatchCallable
 def defdata(
-    dispatch, op: Operation[P, T], *args: P.args, **kwargs: P.kwargs
+    __dispatch: Callable[[Type[T]], Callable[Concatenate[Operation[P, T], P], Expr[T]]],
+    op: Operation[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
 ) -> Expr[T]:
     """Constructs a Term that is an instance of its semantic type.
 
@@ -353,25 +358,35 @@ def defdata(
     from effectful.ops.semantics import apply, evaluate, typeof
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-    args_kwargs = {
+    args_kwargs: dict[Union[int, str], tuple[Expr, Interpretation]] = {
         **dict(enumerate(zip(args, arg_ctxs))),
         **{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()},
     }
+    args_, kwargs_ = list(args), dict(kwargs)
     for k, (v, c) in list(args_kwargs.items()):
         if c:
             v = tree.map_structure(
                 lambda a: c.get(a, a) if isinstance(a, Operation) else a, v
             )
-            args_kwargs[k] = evaluate(
+            res = evaluate(
                 v, intp={apply: lambda _, op, *a, **k: defdata(op, *a, **k), **c}
             )
-        else:
-            args_kwargs[k] = v
+            if isinstance(k, int):
+                args_.append(res)
+            else:
+                kwargs_[k] = res
 
-    args_ = tuple(args_kwargs[i] for i in range(len(args)))
-    kwargs_ = {k: args_kwargs[k] for k in kwargs}
-    return dispatch(typeof(dispatch(object)(op, *args_, **kwargs_)))(
-        op, *args_, **kwargs_
+    tp: Type[T] = typeof(
+        __dispatch(typing.cast(Type[T], object))(
+            op,
+            *args_,  # type: ignore
+            **kwargs_,  # type: ignore
+        )
+    )
+    return __dispatch(tp)(
+        op,
+        *args_,  # type: ignore
+        **kwargs_,  # type: ignore
     )
 
 
@@ -383,21 +398,21 @@ def _(value: T) -> T:
 
 
 @defdata.register(object)
-def _(op, *args, **kwargs):
+def _(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs):
     from effectful.internals.base_impl import _BaseTerm
 
     return _BaseTerm(op, *args, **kwargs)
 
 
 @defdata.register(collections.abc.Callable)
-def _(op, *args, **kwargs):
+def _(op: Operation[P, Callable[Q, T]], *args: P.args, **kwargs: P.kwargs):
     from effectful.internals.base_impl import _CallableTerm
 
-    return _CallableTerm(op, *args, **kwargs)
+    return typing.cast(_CallableTerm[Q, T], _CallableTerm(op, *args, **kwargs))
 
 
 @defterm.register(collections.abc.Callable)
-def _(fn: Callable[P, T]) -> Expr[collections.abc.Callable[P, T]]:
+def _(fn: Callable[P, T]) -> Expr[Callable[P, T]]:
     from effectful.internals.base_impl import _unembed_callable
 
     return _unembed_callable(fn)
@@ -511,15 +526,7 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
         return self.implementations[item].__get__(self, type(self))
 
 
-class implements(Generic[P, Q, T, V]):
-    """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
-    particular abstract :class:`Operation`.
-
-    When passed an :class:`Operation`, returns a method decorator which installs
-    the given method as the implementation of the given :class:`Operation`.
-
-    """
-
+class _ImplementedOperation(Generic[P, Q, T, V]):
     impl: Optional[Callable[Q, V]]
     op: Operation[P, T]
 
@@ -542,3 +549,14 @@ class implements(Generic[P, Q, T, V]):
         assert self.impl is not None
         assert self.op is not None
         owner._temporary_implementations[self.op] = self.impl
+
+
+def implements(op: Operation[P, V]):
+    """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
+    particular abstract :class:`Operation`.
+
+    When passed an :class:`Operation`, returns a method decorator which installs
+    the given method as the implementation of the given :class:`Operation`.
+
+    """
+    return _ImplementedOperation(op)
