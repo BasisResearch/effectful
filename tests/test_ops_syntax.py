@@ -1,7 +1,7 @@
 from typing import Annotated, Callable, TypeVar
 
-from effectful.ops.semantics import fvsof
-from effectful.ops.syntax import Bound, NoDefaultRule, defop
+from effectful.ops.semantics import call, evaluate, fvsof
+from effectful.ops.syntax import Bound, NoDefaultRule, defop, defterm
 from effectful.ops.types import Operation, Term
 
 
@@ -90,3 +90,29 @@ def test_operation_metadata():
     assert f.__name__ == f_op.__name__
     assert hash(f) == hash(f_op)
     assert f_op == ff_op
+
+
+def test_no_default_tracing():
+
+    x, y = defop(int), defop(int)
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NoDefaultRule
+
+    def f1(x: int) -> int:
+        return add(x, add(y(), 1))
+
+    f1_term = defterm(f1)
+
+    f1_app = call(f1, x())
+    f1_term_app = f1_term(x())
+
+    assert y in fvsof(f1_term_app)
+    assert y not in fvsof(f1_app)
+
+    assert y not in fvsof(evaluate(f1_app))
+
+    assert isinstance(f1_app, Term)
+    assert f1_app.op is call
+    assert f1_app.args[0] is f1
