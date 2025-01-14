@@ -1,4 +1,4 @@
-exiContributing
+Contributing
 ============
 
 Development
