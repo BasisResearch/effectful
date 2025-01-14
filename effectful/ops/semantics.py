@@ -321,8 +321,8 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
         _fvs.add(op)
         arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
         bound_vars = set().union(
-            *(a.keys() for a in arg_ctxs),
-            *(k.keys() for k in kwarg_ctxs.values()),
+            *(a for a in arg_ctxs),
+            *(k for k in kwarg_ctxs.values()),
         )
         for bound_var in bound_vars:
             if bound_var in _fvs:

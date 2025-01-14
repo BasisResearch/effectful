@@ -6,7 +6,7 @@ from typing import Callable, Generic, Mapping, Sequence, Type, TypeVar
 
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -41,10 +41,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             )(self, *args, **kwargs)
 
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        tuple[Interpretation, ...],
-        dict[str, Interpretation],
+        tuple[collections.abc.Set[Operation], ...],
+        dict[str, collections.abc.Set[Operation]],
     ]:
-        from effectful.ops.syntax import Bound, Scoped, defop
+        from effectful.ops.syntax import Bound, Scoped
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -75,8 +75,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         if not bound_vars:  # fast path for no bound variables
             return (
-                tuple({} for _ in bound_sig.args),
-                {k: {} for k in bound_sig.kwargs},
+                tuple(frozenset() for _ in bound_sig.args),
+                {k: frozenset() for k in bound_sig.kwargs},
             )
 
         # TODO replace this temporary check with more general scope level propagation
@@ -86,10 +86,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
-        subs: dict[Operation, Operation] = {}
+        subs: frozenset[Operation] = frozenset()
         for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            subs = {**{var: defop(var) for var in bound_vars[scope]}, **subs}
+            subs = subs | bound_vars[scope]
 
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:

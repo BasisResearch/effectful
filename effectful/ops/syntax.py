@@ -358,23 +358,32 @@ def defdata(
     from effectful.ops.semantics import apply, evaluate, typeof
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-    args_kwargs: dict[Union[int, str], tuple[Expr, Interpretation]] = {
-        **dict(enumerate(zip(args, arg_ctxs))),
-        **{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()},
+    renaming = {
+        var: defop(var)
+        for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
+        for var in bound_vars
     }
+
     args_, kwargs_ = list(args), dict(kwargs)
-    for k, (v, c) in list(args_kwargs.items()):
+    for i, (v, c) in (
+        *enumerate(zip(args, arg_ctxs)),
+        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
+    ):
         if c:
             v = tree.map_structure(
-                lambda a: c.get(a, a) if isinstance(a, Operation) else a, v
+                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
             )
             res = evaluate(
-                v, intp={apply: lambda _, op, *a, **k: defdata(op, *a, **k), **c}
+                v,
+                intp={
+                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
+                    **{op: renaming[op] for op in c},
+                },
             )
-            if isinstance(k, int):
-                args_.append(res)
-            else:
-                kwargs_[k] = res
+            if isinstance(i, int):
+                args_[i] = res
+            elif isinstance(i, str):
+                kwargs_[i] = res
 
     tp: Type[T] = typeof(
         __dispatch(typing.cast(Type[T], object))(

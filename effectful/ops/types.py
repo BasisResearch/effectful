@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import collections.abc
 import typing
 from typing import Any, Callable, Generic, Mapping, Sequence, Set, Type, TypeVar, Union
 
@@ -45,8 +46,8 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        tuple["Interpretation", ...],
-        dict[str, "Interpretation"],
+        tuple[collections.abc.Set["Operation"], ...],
+        dict[str, collections.abc.Set["Operation"]],
     ]:
         raise NotImplementedError
 
