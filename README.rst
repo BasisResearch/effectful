@@ -19,7 +19,7 @@ Install From Source
    git clone git@github.com:BasisResearch/effectful.git
    cd effectful
    git checkout master
-   pip install -e .[test]
+   pip install -e .[pyro]
 
 Install With Optional PyTorch/Pyro Support
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
