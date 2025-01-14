@@ -8,6 +8,9 @@ Operations
    :members:
    :undoc-members:
 
+Syntax
+^^^^^^
+
 .. automodule:: effectful.ops.syntax
    :members:
    :undoc-members:
@@ -17,17 +20,23 @@ Operations
    .. autofunction:: effectful.ops.syntax.defdata(value: Term[T]) -> Expr[T]
    .. autofunction:: effectful.ops.semantics.fwd
 
+Semantics
+^^^^^^^^^
+
 .. automodule:: effectful.ops.semantics
    :members:
    :undoc-members:
 
    .. autofunction:: effectful.ops.semantics.apply
-      
+
+Types
+^^^^^
+
 .. automodule:: effectful.ops.types
    :members:
    :undoc-members:
 
-   
+
 Handlers
 --------
 
@@ -35,15 +44,24 @@ Handlers
    :members:
    :undoc-members:
 
+Numbers
+^^^^^^^
+
+.. automodule:: effectful.handlers.numbers
+   :members:
+   :undoc-members:
+
+Pyro
+^^^^
+
 .. automodule:: effectful.handlers.pyro
    :members:
    :undoc-members:
 
    .. autofunction:: effectful.handlers.pyro.pyro_sample(name: str, fn: pyro.distributions.torch_distribution.TorchDistributionMixin, *args, obs: Optional[torch.Tensor] = None, obs_mask: Optional[torch.BoolTensor] = None, mask: Optional[torch.BoolTensor] = None, infer: Optional[pyro.poutine.runtime.InferDict] = None, **kwargs) -> torch.Tensor
 
-.. automodule:: effectful.handlers.operator
-   :members:
-   :undoc-members:
+Torch
+^^^^^
 
 .. automodule:: effectful.handlers.torch
    :members:
@@ -56,12 +74,15 @@ Handlers
    .. autofunction:: effectful.handlers.torch.jvp
    .. autofunction:: effectful.handlers.torch.vjp
    .. autofunction:: effectful.handlers.torch.vmap
-   .. autofunction:: torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor                  
+   .. autofunction:: torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor
+
+Indexed
+^^^^^^^
 
 .. automodule:: effectful.handlers.indexed
    :members:
    :undoc-members:
-      
+
 
 Internals
 ---------
@@ -77,4 +98,3 @@ Internals
 .. automodule:: effectful.internals.runtime
    :members:
    :undoc-members:
-   
