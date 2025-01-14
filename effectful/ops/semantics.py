@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, deffn, defop, defterm
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -60,9 +60,6 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     This operation is invoked by the ``__call__`` method of a callable term.
 
     """
-    if not isinstance(fn, Term):
-        fn = defterm(fn)
-
     if isinstance(fn, Term) and fn.op is deffn:
         body: Expr[Callable[P, T]] = fn.args[0]
         argvars: tuple[Operation, ...] = fn.args[1:]
@@ -73,8 +70,10 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         }
         with handler(subs):
             return evaluate(body)
+    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
+        return fn(*args, **kwargs)
     else:
-        raise NoDefaultRule
+        raise NotImplementedError
 
 
 @defop
@@ -245,7 +244,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
 
     >>> @defop
     ... def add(x: int, y: int) -> int:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> expr = add(1, add(2, 3))
     >>> expr
     add(1, add(2, 3))
@@ -257,8 +256,6 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
         from effectful.internals.runtime import get_interpretation
 
         intp = get_interpretation()
-
-    expr = defterm(expr) if not isinstance(expr, Term) else expr
 
     if isinstance(expr, Term):
         (args, kwargs) = tree.map_structure(
@@ -280,7 +277,7 @@ def typeof(term: Expr[T]) -> Type[T]:
 
     >>> @defop
     ... def cmp(x: int, y: int) -> bool:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> typeof(cmp(1, 2))
     <class 'bool'>
 
@@ -290,7 +287,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     >>> T = TypeVar('T')
     >>> @defop
     ... def if_then_else(x: bool, a: T, b: T) -> T:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
@@ -298,7 +295,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     from effectful.internals.runtime import interpreter
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term)  # type: ignore
+        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
 
 
 def fvsof(term: Expr[S]) -> Set[Operation]:
@@ -308,7 +305,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
 
     >>> @defop
     ... def f(x: int, y: int) -> int:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> fvsof(f(1, 2))
     {f}
 

@@ -6,7 +6,7 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
-from effectful.ops.syntax import Bound, NoDefaultRule, Scoped, defop
+from effectful.ops.syntax import Bound, Scoped, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -16,12 +16,12 @@ T = TypeVar("T")
 
 @defop
 def App(f: Callable[[S], T], arg: S) -> T:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
@@ -30,7 +30,7 @@ def Let(
     val: Annotated[S, Scoped(1)],
     body: Annotated[T, Scoped(0)],
 ) -> T:
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:

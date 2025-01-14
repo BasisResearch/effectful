@@ -7,7 +7,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, product
-from effectful.ops.syntax import NoDefaultRule, ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
 logger = logging.getLogger(__name__)
@@ -424,7 +424,7 @@ def test_fwd_default():
 def test_product_resets_fwd():
     @defop
     def do_stuff():
-        raise NoDefaultRule
+        raise NotImplementedError
 
     @defop
     def do_other_stuff():
@@ -443,17 +443,17 @@ def test_product_resets_fwd():
 
 @defop
 def op0():
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def op1():
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 @defop
 def op2():
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 def f_op2():
@@ -530,7 +530,7 @@ def test_product_distributive():
 def test_evaluate():
     @defop
     def Nested(*args, **kwargs):
-        raise NoDefaultRule
+        raise NotImplementedError
 
     x = defop(int, name="x")
     y = defop(int, name="y")
@@ -546,7 +546,7 @@ def test_ctxof():
 
     @defop
     def Nested(*args, **kwargs):
-        raise NoDefaultRule
+        raise NotImplementedError
 
     assert fvsof(Nested(x(), y())) >= {x, y}
     assert fvsof(Nested([x()], y())) >= {x, y}
