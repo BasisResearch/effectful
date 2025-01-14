@@ -14,7 +14,6 @@ allows effectful-minipyro to be run against `pyroapi`'s test suite.
 """
 
 import random
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -25,7 +24,6 @@ import numpy as np
 import pyroapi
 import torch.distributions as distributions
 import torch.optim
-from pyro.distributions import validation_enabled
 from torch import (
     Size,
     Tensor,
@@ -39,10 +37,9 @@ from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.internals.prompts import bind_result, bind_result_to_method
-from effectful.internals.sugar import ObjectInterpretation, implements
-from effectful.ops.core import Operation
-from effectful.ops.handler import coproduct, fwd, handler, product
+from effectful.ops.semantics import coproduct, fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.types import Operation
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -92,12 +89,12 @@ class Seed(NamedTuple):
 # just throw `RuntimeError`s.
 
 
-@Operation
+@defop
 def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
     raise RuntimeError("No default implementation of sample")
 
 
-@Operation
+@defop
 def param(
     var_name: str,
     initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
@@ -113,22 +110,22 @@ def param(
 # To keep with the minipyro API, we write them explicitly.
 
 
-@Operation
+@defop
 def clear_param_store() -> None:
     raise RuntimeError("No default implementation of clear_param_store")
 
 
-@Operation
+@defop
 def get_param_store() -> dict[str, Tensor]:
     raise RuntimeError("No default implementation of get_param_store")
 
 
-@Operation
+@defop
 def get_rng_seed() -> Seed:
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
-@Operation
+@defop
 def set_rng_seed(seed: Union[int, Seed]):
     raise RuntimeError("No default implementation of get_rng_seed")
 
@@ -154,11 +151,10 @@ class Tracer(ObjectInterpretation):
         self.TRACE = OrderedDict()
 
     @implements(sample)
-    @bind_result_to_method
-    def sample(self, ires, var_name: str, dist: Distribution, **kwargs):
+    def sample(self, var_name: str, dist: Distribution, **kwargs):
         # When we recieve a sample message, we don't know how to
         # handle it ourselves, so we forward it to the next handler:
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd()
 
         # Once we've seen the result, we record it, along with the argument
         # that caused it
@@ -169,10 +165,8 @@ class Tracer(ObjectInterpretation):
         return res
 
     @implements(param)
-    @bind_result_to_method
     def param(
         self,
-        ires,
         var_name: str,
         initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
         constraint: Optional[Constraint] = None,
@@ -180,7 +174,7 @@ class Tracer(ObjectInterpretation):
     ) -> Tensor:
         # Similar to `Tracer.sample`
 
-        res: Tensor = fwd(ires)
+        res: Tensor = fwd()
         self.TRACE[var_name] = ParamMsg(name=var_name, val=res)
 
         return res
@@ -198,12 +192,10 @@ class Replay(ObjectInterpretation):
         self.trace = trace
 
     @implements(sample)
-    @bind_result_to_method
-    def sample(self, res, var_name: str, *args, **kwargs):
+    def sample(self, var_name: str, *args, **kwargs):
         if var_name in self.trace:
-            return self.trace[var_name].val
-        else:
-            return fwd(res)
+            return fwd(var_name, *args, **{**kwargs, "obs": self.trace[var_name].val})
+        return fwd()
 
 
 # In minipyro, `Messenger`s can only be used has handlers,
@@ -231,12 +223,10 @@ class NativeSeed(ObjectInterpretation):
 
     @implements(get_rng_seed)
     def get_rng_seed(self):
-        return fwd(
-            Seed(
-                torch=get_rng_state(),
-                python=random.getstate(),
-                numpy=np.random.get_state(),
-            )
+        return Seed(
+            torch=get_rng_state(),
+            python=random.getstate(),
+            numpy=np.random.get_state(),
         )
 
     @implements(set_rng_seed)
@@ -249,17 +239,14 @@ class NativeSeed(ObjectInterpretation):
             set_rng_state(seed.torch)
             random.setstate(seed.python)
             np.random.set_state(seed.numpy)
-        return fwd(None)
+        return fwd()
 
     @implements(sample)
     def sample(self, name: str, dist: Distribution, obs=None, **kwargs):
         assert isinstance(name, str)
         if obs is not None:
             return obs
-        elif dist.has_rsample:
-            return dist.rsample()
-        else:
-            return dist.sample()
+        return dist.rsample() if dist.has_rsample else dist.sample()
 
 
 @contextmanager
@@ -323,7 +310,7 @@ class NativeParam(ObjectInterpretation):
             return constrained_value
 
         # Forward our value to any potential upstream transformations
-        return fwd(fn(initial_value, constraint))
+        return fn(initial_value, constraint)
 
     @implements(get_param_store)
     def get_param_store(self):
@@ -350,16 +337,15 @@ class Plate(ObjectInterpretation):
         self.dim = dim
 
     @implements(sample)
-    @bind_result_to_method
-    def do_sample(self, res, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
+    def do_sample(self, sampled_name: str, dist: Distribution, **kwargs) -> Tensor:
         batch_shape = list(dist.batch_shape)
 
         if len(batch_shape) < -self.dim or batch_shape[self.dim] != self.size:
             batch_shape = [1] * (-self.dim - len(batch_shape)) + list(batch_shape)
             batch_shape[self.dim] = self.size
             return sample(sampled_name, dist.expand(Size(batch_shape)))
-        else:
-            return fwd(res)
+
+        return fwd()
 
 
 # Helper for using `Plate` as a `handler`
@@ -375,7 +361,7 @@ default_runner = coproduct(NativeSeed(), NativeParam())
 
 
 def block(
-    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
 ):
     """
     Block is a helper for masking out a subset of calls to either
@@ -387,22 +373,13 @@ def block(
     normally.
     """
 
-    @bind_result
-    def blocking(res, op: Operation, *args, **kwargs):
-        if hide_fn(op, res, *args, **kwargs):
-            return res if res is not None else op(*args, **kwargs)
-        else:
-            return fwd(res)
+    def blocking(op: Operation, *args, **kwargs):
+        if hide_fn(op, *args, **kwargs):
+            with handler(default_runner):
+                return op(*args, **kwargs)
+        return fwd()
 
-    return handler(
-        product(
-            default_runner,
-            {
-                sample: partial(blocking, sample),
-                param: partial(blocking, param),
-            },
-        )
-    )
+    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that
@@ -417,17 +394,12 @@ class Adam:
 
     def __call__(self, params):
         for param in params:
-            # If we've seen this parameter before, use the previously
-            # constructed optimizer.
-            if param in self.optim_objs:
-                optimizer = self.optim_objs[param]
-            # If we've never seen this parameter before, construct
-            # an Adam optimizer and keep track of it.
-            else:
-                optimizer = torch.optim.Adam([param], **self.optim_args)
-                self.optim_objs[param] = optimizer
-            # Take a gradient step for the parameter param.
-            optimizer.step()
+            # Create an optimizer if one does not exist for this parameter
+            if param not in self.optim_objs:
+                self.optim_objs[param] = torch.optim.Adam([param], **self.optim_args)
+
+            # Take one optimizer step
+            self.optim_objs[param].step()
 
 
 # This is a unified interface for stochastic variational inference in Pyro.
@@ -482,6 +454,7 @@ def elbo(model, guide, *args, **kwargs):
     with trace() as model_trace:
         with replay(guide_trace):
             model(*args, **kwargs)
+
     # We will accumulate the various terms of the ELBO in `elbo`.
     elbo = 0.0
     # Loop over all the sample sites in the model and add the corresponding
@@ -490,11 +463,13 @@ def elbo(model, guide, *args, **kwargs):
     for site in model_trace.values():
         if isinstance(site, SampleMsg):
             elbo = elbo + site.dist.log_prob(site.val).sum()
+
     # Loop over all the sample sites in the guide and add the corresponding
     # -log q(z) term to the ELBO.
     for site in guide_trace.values():
         if isinstance(site, SampleMsg):
             elbo = elbo - site.dist.log_prob(site.val).sum()
+
     # Return (-elbo) since by convention we do gradient descent on a loss and
     # the ELBO is a lower bound that needs to be maximized.
     return -elbo
@@ -505,60 +480,39 @@ def Trace_ELBO(**kwargs):
     return elbo
 
 
-# This is a Jit wrapper around elbo() that (1) delays tracing until the first
-# invocation, and (2) registers pyro.param() statements with torch.jit.trace.
-# This version does not support variable number of args or non-tensor kwargs.
-class JitTrace_ELBO:
-    def __init__(self, **kwargs):
-        self.ignore_jit_warnings = kwargs.pop("ignore_jit_warnings", False)
-        self._compiled = None
-        self._param_trace = None
-
-    def __call__(self, model, guide, *args):
-        # On first call, initialize params and save their names.
-        if self._param_trace is None:
-            with block(), trace() as tr, block(
-                hide_fn=lambda op, *_, **__: op != param
-            ):
-                elbo(model, guide, *args)
-            self._param_trace = tr
-
-        # Augment args with reads from the global param store.
-        unconstrained_params = tuple(
-            param(name).unconstrained() for name in self._param_trace
-        )
-        params_and_args = unconstrained_params + args
-
-        # On first call, create a compiled elbo.
-        if self._compiled is None:
-
-            def compiled(*params_and_args):
-                unconstrained_params = params_and_args[: len(self._param_trace)]
-                args = params_and_args[len(self._param_trace) :]
-                for name, unconstrained_param in zip(
-                    self._param_trace, unconstrained_params
-                ):
-                    constrained_param = param(name)  # assume param has been initialized
-                    assert constrained_param.unconstrained() is unconstrained_param
-                    self._param_trace[name].value = constrained_param
-                with replay(self._param_trace):
-                    return elbo(model, guide, *args)
-
-            with validation_enabled(False), warnings.catch_warnings():
-                if self.ignore_jit_warnings:
-                    warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
-                self._compiled = torch.jit.trace(
-                    compiled, params_and_args, check_trace=False
-                )
-
-        return self._compiled(*params_and_args)
-
-
 pyroapi.register_backend(
     "effectful-minipyro",
     {
-        "infer": "effectful.handlers.minipyro",
-        "optim": "effectful.handlers.minipyro",
-        "pyro": "effectful.handlers.minipyro",
+        "infer": "docs.source.minipyro",
+        "optim": "docs.source.minipyro",
+        "pyro": "docs.source.minipyro",
     },
 )
+
+
+def example():
+    """
+    The following is a short script showing how to use effectful-minipyro.
+    It is taken from a larger battery of tests available as part of the `pyro-api package <https://github.com/pyro-ppl/pyro-api/tree/master>`_.
+    """
+
+    def model(data):
+        p = param("p", torch.tensor(0.5))
+        sample("x", distributions.Bernoulli(p), obs=data)
+
+    def guide(data):
+        pass
+
+    with handler(default_runner):
+        data = torch.tensor(0.0)
+        get_param_store().clear()
+        elbo = Trace_ELBO(ignore_jit_warnings=True)
+
+        optimizer = Adam({"lr": 1e-6})
+        inference = SVI(model, guide, optimizer, elbo)
+        for _ in range(2):
+            inference.step(data)
+
+
+if __name__ == "__main__":
+    example()
