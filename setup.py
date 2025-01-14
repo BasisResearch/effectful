@@ -13,9 +13,17 @@ except Exception as e:
 
 TORCH_REQUIRE = ["torch"]
 PYRO_REQUIRE = TORCH_REQUIRE + ["pyro-ppl"]
+DOCS_REQUIRE = [
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx_rtd_theme",
+    "myst-parser",
+    "nbsphinx",
+]
 DEV_REQUIRE = (
     PYRO_REQUIRE
     + TORCH_REQUIRE
+    + DOCS_REQUIRE
     + [
         "pytest",
         "pytest-cov",
@@ -25,11 +33,6 @@ DEV_REQUIRE = (
         "black",
         "flake8",
         "isort",
-        "sphinx",
-        "sphinxcontrib-bibtex",
-        "sphinx_rtd_theme",
-        "myst-parser",
-        "nbsphinx",
         "nbval",
         "nbqa",
     ]
@@ -54,7 +57,12 @@ setup(
         "typing_extensions",
         "dm-tree",
     ],
-    extras_require={"torch": TORCH_REQUIRE, "pyro": PYRO_REQUIRE, "dev": DEV_REQUIRE},
+    extras_require={
+        "torch": TORCH_REQUIRE,
+        "pyro": PYRO_REQUIRE,
+        "dev": DEV_REQUIRE,
+        "docs": DOCS_REQUIRE,
+    },
     python_requires=">=3.10",
     keywords="machine learning statistics probabilistic programming bayesian modeling pytorch",
     license="Apache 2.0",
