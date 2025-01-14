@@ -36,12 +36,6 @@ class Scoped(ArgAnnotation):
     scope: int = 0
 
 
-class NoDefaultRule(Exception):
-    """Raised in an operation's signature to indicate that the operation has no default rule."""
-
-    pass
-
-
 @functools.singledispatch
 def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
@@ -84,12 +78,12 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     * Defining an operation with no default rule:
 
       We can use :func:`defop` and the
-      :exc:`effectful.internals.sugar.NoDefaultRule` exception to define an
+      :exc:`NotImplementedError` exception to define an
       operation with no default rule:
 
       >>> @defop
       ... def add(x: int, y: int) -> int:
-      ...     raise NoDefaultRule
+      ...     raise NotImplementedError
       >>> add(1, 2)
       add(1, 2)
 
@@ -187,7 +181,7 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     def func(*args, **kwargs):
-        raise NoDefaultRule
+        raise NotImplementedError
 
     functools.update_wrapper(func, t)
     return defop(func, name=name)
@@ -196,7 +190,7 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 @defop.register(type)
 def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
-        raise NoDefaultRule
+        raise NotImplementedError
 
     func.__name__ = name or t.__name__
     return typing.cast(Operation[[], T], defop(func, name=name))
@@ -210,7 +204,7 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
         if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
             return t(*args, **kwargs)
         else:
-            raise NoDefaultRule
+            raise NotImplementedError
 
     return defop(func, name=name)
 
@@ -255,7 +249,7 @@ def deffn(
       automatically create the right free variables.
 
     """
-    raise NoDefaultRule
+    raise NotImplementedError
 
 
 class _CustomSingleDispatchCallable(Generic[P, T]):

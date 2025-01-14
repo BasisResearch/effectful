@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, Set, Type, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import NoDefaultRule, deffn, defop
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -73,7 +73,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
         return fn(*args, **kwargs)
     else:
-        raise NoDefaultRule
+        raise NotImplementedError
 
 
 @defop
@@ -244,7 +244,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
 
     >>> @defop
     ... def add(x: int, y: int) -> int:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> expr = add(1, add(2, 3))
     >>> expr
     add(1, add(2, 3))
@@ -277,7 +277,7 @@ def typeof(term: Expr[T]) -> Type[T]:
 
     >>> @defop
     ... def cmp(x: int, y: int) -> bool:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> typeof(cmp(1, 2))
     <class 'bool'>
 
@@ -287,7 +287,7 @@ def typeof(term: Expr[T]) -> Type[T]:
     >>> T = TypeVar('T')
     >>> @defop
     ... def if_then_else(x: bool, a: T, b: T) -> T:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
@@ -305,7 +305,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
 
     >>> @defop
     ... def f(x: int, y: int) -> int:
-    ...     raise NoDefaultRule
+    ...     raise NotImplementedError
     >>> fvsof(f(1, 2))
     {f}
 

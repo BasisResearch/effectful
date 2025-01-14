@@ -1,7 +1,7 @@
 from typing import Annotated, Callable, TypeVar
 
 from effectful.ops.semantics import call, evaluate, fvsof
-from effectful.ops.syntax import Bound, NoDefaultRule, defop, defterm
+from effectful.ops.syntax import Bound, defop, defterm
 from effectful.ops.types import Operation, Term
 
 
@@ -62,7 +62,7 @@ def test_gensym_annotations():
 
     @defop
     def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
-        raise NoDefaultRule
+        raise NotImplementedError
 
     x = defop(int)
     y = defop(int)
@@ -98,7 +98,7 @@ def test_no_default_tracing():
 
     @defop
     def add(x: int, y: int) -> int:
-        raise NoDefaultRule
+        raise NotImplementedError
 
     def f1(x: int) -> int:
         return add(x, add(y(), 1))
