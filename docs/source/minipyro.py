@@ -284,9 +284,7 @@ class NativeParam(ObjectInterpretation):
         event_dim: Optional[int] = None,
     ) -> Tensor:
         if event_dim is not None:
-            raise NotImplementedError(
-                "minipyro.plate does not support the event_dim arg"
-            )
+            raise RuntimeError("minipyro.plate does not support the event_dim arg")
 
         def fn(init_value, constraint):
             if name in self.PARAM_STORE:
@@ -328,9 +326,7 @@ class Plate(ObjectInterpretation):
 
     def __init__(self, name: str, size: int, dim: Optional[int]):
         if dim is None:
-            raise NotImplementedError(
-                "mini-pyro requires the `dim` argument to `plate`"
-            )
+            raise ValueError("mini-pyro requires the `dim` argument to `plate`")
 
         self.name = name
         self.size = size
