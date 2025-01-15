@@ -45,7 +45,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __eq__(self, other):
         if not isinstance(other, Operation):
             return NotImplemented
-        return self.signature == other.signature
+        return self is other
 
     def __hash__(self):
         return hash(self.signature)
@@ -175,7 +175,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return ret
 
     def __repr__(self):
-        return self.signature.__name__
+        return self.__name__
 
 
 class _BaseTerm(Generic[T], Term[T]):

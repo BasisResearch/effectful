@@ -1,6 +1,7 @@
 import collections.abc
 import dataclasses
 import functools
+import random
 import types
 import typing
 from typing import (
@@ -180,10 +181,15 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+
+    @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
 
-    functools.update_wrapper(func, t)
+    if name is None:
+        name = (
+            getattr(t, "__name__", str(t))[:10000] + f"__{random.randint(0, 1 << 32)}"
+        )
     return defop(func, name=name)
 
 
@@ -192,7 +198,8 @@ def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
-    func.__name__ = name or t.__name__
+    if name is None:
+        name = t.__name__ + f"__{random.randint(0, 1 << 32)}"
     return typing.cast(Operation[[], T], defop(func, name=name))
 
 
