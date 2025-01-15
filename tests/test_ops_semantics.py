@@ -6,7 +6,16 @@ from typing import TypeVar
 import pytest
 from typing_extensions import ParamSpec
 
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, product
+from effectful.ops.semantics import (
+    apply,
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    product,
+    runner,
+)
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
@@ -552,3 +561,44 @@ def test_ctxof():
     assert fvsof(Nested([x()], y())) >= {x, y}
     assert fvsof(Nested([x()], [y()])) >= {x, y}
     assert fvsof(Nested((x(), y()))) >= {x, y}
+
+
+def test_handler_typing() -> None:
+    """This test is for the type checker; it doesn't do anything interesting
+    when run.
+
+    """
+
+    @defop
+    def f(x: int) -> int:
+        raise NotImplementedError
+
+    @defop
+    def g(x: str, y: bool) -> str:
+        return "test" if y else x
+
+    # Note: this annotation is required. Without annotation, mypy joins the two
+    # operator types to `object`.
+    i: Interpretation = {f: lambda x: x + 1, g: lambda x, y: x + str(y)}
+
+    handler(i)
+    runner(i)
+    product(i, i)
+    coproduct(i, i)
+    apply(i, f, 1)
+    evaluate(0, intp=i)
+
+    # include tests with inlined interpretation, because mypy might do inference
+    # differently
+    handler({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
+    runner({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
+    product(
+        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
+        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
+    )
+    coproduct(
+        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
+        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
+    )
+    apply({f: lambda x: x + 1, g: lambda x, y: x + str(y)}, f, 1)
+    evaluate(0, intp={f: lambda x: x + 1, g: lambda x, y: x + str(y)})
