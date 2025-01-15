@@ -243,9 +243,9 @@ def deffn(
     raise NotImplementedError
 
 
-class _CustomSingleDispatchCallable(Generic[P, T]):
+class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
     def __init__(
-        self, func: Callable[Concatenate[Callable[[Type[T]], Callable[P, T]], P], T]
+        self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
         self._func = func
         self._registry = functools.singledispatch(func)
@@ -264,9 +264,7 @@ class _CustomSingleDispatchCallable(Generic[P, T]):
 
 
 @_CustomSingleDispatchCallable
-def defterm(
-    __dispatch: Callable[[Type[T]], Callable[[T], Expr[T]]], value: T
-) -> Expr[T]:
+def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
@@ -296,10 +294,10 @@ def defterm(
 
 @_CustomSingleDispatchCallable
 def defdata(
-    __dispatch: Callable[[Type[T]], Callable[Concatenate[Operation[P, T], P], Expr[T]]],
-    op: Operation[P, T],
-    *args: P.args,
-    **kwargs: P.kwargs,
+    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    op: Operation[..., T],
+    *args,
+    **kwargs,
 ) -> Expr[T]:
     """Constructs a Term that is an instance of its semantic type.
 
@@ -386,17 +384,9 @@ def defdata(
                 kwargs_[i] = res
 
     tp: Type[T] = typeof(
-        __dispatch(typing.cast(Type[T], object))(
-            op,
-            *args_,  # type: ignore
-            **kwargs_,  # type: ignore
-        )
+        __dispatch(typing.cast(Type[T], object))(op, *args_, **kwargs_)
     )
-    return __dispatch(tp)(
-        op,
-        *args_,  # type: ignore
-        **kwargs_,  # type: ignore
-    )
+    return __dispatch(tp)(op, *args_, **kwargs_)
 
 
 @defterm.register(object)

@@ -110,7 +110,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
                         )
                     sizes[k.op] = shape[i]
 
-        return defdata(torch_getitem, x, key)  # type: ignore
+        return defdata(torch_getitem, x, key)
 
     with interpreter(
         {
@@ -203,8 +203,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
     @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
 
-        tm: Term[torch.Tensor]
-        tm = defdata(_torch_op, *args, **kwargs)  # type: ignore
+        tm = defdata(_torch_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
         if (
