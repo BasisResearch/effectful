@@ -15,10 +15,8 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
-@defop  # type: ignore
-def apply(
-    intp: Interpretation[S, T], op: Operation[P, S], *args: P.args, **kwargs: P.kwargs
-) -> T:
+@defop
+def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -50,7 +48,7 @@ def apply(
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)  # type: ignore
+        return op.__default_rule__(*args, **kwargs)
 
 
 @defop  # type: ignore
@@ -92,9 +90,7 @@ def fwd(*args, **kwargs) -> Any:
     raise RuntimeError("fwd should only be called in the context of a handler")
 
 
-def coproduct(
-    intp: Interpretation[S, T], intp2: Interpretation[S, T]
-) -> Interpretation[S, T]:
+def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """The coproduct of two interpretations handles any effect that is handled
     by either. If both interpretations handle an effect, ``intp2`` takes
     precedence.
@@ -150,7 +146,7 @@ def coproduct(
         if op is fwd or op is _get_args:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
-            i1 = intp.get(op, op.__default_rule__)  # type: ignore
+            i1 = intp.get(op, op.__default_rule__)
 
             # calling fwd in the right handler should dispatch to the left handler
             res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
@@ -158,9 +154,7 @@ def coproduct(
     return res
 
 
-def product(
-    intp: Interpretation[S, T], intp2: Interpretation[S, T]
-) -> Interpretation[S, T]:
+def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """The product of two interpretations handles any effect that is handled by
     ``intp2``. Handlers in ``intp2`` may override handlers in ``intp``, but
     those changes are not visible to the handlers in ``intp``. In this way,
@@ -206,7 +200,7 @@ def product(
 
 
 @contextlib.contextmanager
-def runner(intp: Interpretation[S, T]):
+def runner(intp: Interpretation):
     """Install an interpretation by taking a product with the current
     interpretation.
 
@@ -222,7 +216,7 @@ def runner(intp: Interpretation[S, T]):
 
 
 @contextlib.contextmanager
-def handler(intp: Interpretation[S, T]):
+def handler(intp: Interpretation):
     """Install an interpretation by taking a coproduct with the current
     interpretation.
 
@@ -233,7 +227,7 @@ def handler(intp: Interpretation[S, T]):
         yield intp
 
 
-def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> Expr[T]:
+def evaluate(expr: Expr[T], *, intp: Optional[Interpretation] = None) -> Expr[T]:
     """Evaluate expression ``expr`` using interpretation ``intp``. If no
     interpretation is provided, uses the current interpretation.
 
@@ -261,7 +255,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation[S, T]] = None) -> E
         (args, kwargs) = tree.map_structure(
             functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
         )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)  # type: ignore
+        return apply.__default_rule__(intp, expr.op, *args, **kwargs)
     elif tree.is_nested(expr):
         return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
     else:
