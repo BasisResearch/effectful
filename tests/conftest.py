@@ -13,7 +13,7 @@ def pytest_runtest_call(item):
     try:
         output = yield
         return output
-    except NotImplementedError as e:
+    except RuntimeError as e:
         if any(s in str(e) for s in UNIMPLEMENTED_SUBSTRINGS):
             pytest.xfail(str(e))
         else:
