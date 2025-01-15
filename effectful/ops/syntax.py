@@ -187,7 +187,9 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
         raise NotImplementedError
 
     if name is None:
-        name = t.__name__ + "__SYM_" + uuid.uuid4().hex.split("-")[0]
+        name = (
+            getattr(t, "__name__", str(t)) + "__SYM_" + uuid.uuid4().hex.split("-")[0]
+        )
     return defop(func, name=name)
 
 
