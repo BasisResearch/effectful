@@ -47,16 +47,12 @@ Here's an example demonstrating how ``effectful`` can be used to implement a sim
 
 .. code:: python
 
-   import operator
    import functools
 
-   from effectful.handlers.operator import OPERATORS
    from effectful.ops.types import Term
    from effectful.ops.syntax import defop
    from effectful.ops.semantics import handler, evaluate, coproduct, fwd
-   import effectful.handlers.operator
-
-   add = OPERATORS[operator.add]
+   from effectful.handlers.numbers import add
 
    def beta_add(x: int, y: int) -> int:        
        match x, y:
