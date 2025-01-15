@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 import collections.abc
 import typing
-from typing import Any, Callable, Generic, Mapping, Sequence, Set, Type, TypeVar, Union
+from typing import Any, Callable, Generic, Mapping, Sequence, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 

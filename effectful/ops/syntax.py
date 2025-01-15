@@ -3,7 +3,7 @@ import dataclasses
 import functools
 import types
 import typing
-from typing import Annotated, Callable, Generic, Optional, Type, TypeVar, Union
+from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
