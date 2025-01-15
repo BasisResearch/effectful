@@ -18,7 +18,7 @@ To install dev dependencies, run the following command.
 
 .. code:: sh
 
-   pip install -e .[test]
+   pip install -e .[dev]
 
 Testing
 -------

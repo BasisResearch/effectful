@@ -14,6 +14,7 @@ except Exception as e:
 TORCH_REQUIRE = ["torch"]
 PYRO_REQUIRE = TORCH_REQUIRE + ["pyro-ppl"]
 DOCS_REQUIRE = [
+    "setuptools",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
