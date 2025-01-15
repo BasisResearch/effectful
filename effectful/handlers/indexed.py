@@ -156,7 +156,7 @@ def indices_of(value: Any) -> IndexSet:
     :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A :class:`IndexSet` containing the indices on which the value is supported.
     """
-    return IndexSet(**{k.__name__: set(range(v)) for (k, v) in sizesof(value).items()})
+    return IndexSet(**{getattr(k, "__name__"): set(range(v)) for (k, v) in sizesof(value).items()})
 
 
 @functools.lru_cache(maxsize=None)
