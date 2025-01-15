@@ -264,7 +264,7 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
         self, base_dist: pyro.distributions.torch_distribution.TorchDistribution
     ):
         self.base_dist = base_dist
-        self.indices = sizesof(base_dist.sample())
+        self.indices = sizesof(base_dist)
 
         n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
         self.naming = Naming.from_shape(self.indices.keys(), n_base)
@@ -361,7 +361,7 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
         self.names = names
 
         assert 1 <= len(names) <= len(base_dist.batch_shape)
-        base_indices = sizesof(base_dist.sample())
+        base_indices = sizesof(base_dist)
         assert not any(n in base_indices for n in names)
 
         n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
