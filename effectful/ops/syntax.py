@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import types
 import typing
+import uuid
 from typing import (
     Annotated,
     Callable,
@@ -180,10 +181,13 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+
+    @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
 
-    functools.update_wrapper(func, t)
+    if name is None:
+        name = t.__name__ + "__SYM_" + uuid.uuid4().hex.split("-")[0]
     return defop(func, name=name)
 
 
@@ -192,7 +196,8 @@ def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
-    func.__name__ = name or t.__name__
+    if name is None:
+        name = t.__name__ + "__SYM_" + uuid.uuid4().hex.split("-")[0]
     return typing.cast(Operation[[], T], defop(func, name=name))
 
 

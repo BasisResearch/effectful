@@ -175,7 +175,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return ret
 
     def __repr__(self):
-        return self.signature.__name__
+        return self.__name__
 
 
 class _BaseTerm(Generic[T], Term[T]):
