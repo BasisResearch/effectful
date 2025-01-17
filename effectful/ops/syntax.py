@@ -394,9 +394,9 @@ def deffn(
     :param body: The body of the function.
     :type body: T
     :param args: Operations representing the positional arguments of the function.
-    :type args: Annotated[Operation, Bound()]
+    :type args: Operation
     :param kwargs: Operations representing the keyword arguments of the function.
-    :type kwargs: Annotated[Operation, Bound()]
+    :type kwargs: Operation
     :returns: A callable term.
     :rtype: Callable[..., T]
 

@@ -168,10 +168,7 @@ def indices_of(value: Any) -> IndexSet:
     """
     if isinstance(value, Term):
         return IndexSet(
-            **{
-                k.__name__: set(range(v))  # type:ignore
-                for (k, v) in sizesof(value).items()
-            }
+            **{k.__name__: set(range(v)) for (k, v) in sizesof(value).items()}
         )
     elif isinstance(value, torch.distributions.Distribution):
         return indices_of(value.sample())
