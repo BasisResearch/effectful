@@ -44,136 +44,118 @@ class Scoped(ArgAnnotation):
         return isinstance(param, type) and issubclass(param, Operation)
 
     @classmethod
-    def _param_is_scoped(cls, param: type | inspect.Parameter) -> bool:
-        anno = param.annotation if isinstance(param, inspect.Parameter) else param
-        return typing.get_origin(anno) is Annotated and any(
-            isinstance(a, cls) for a in typing.get_args(anno)[1:]
-        )
-
-    @classmethod
-    def _get_param_ordinal(cls, param: type | inspect.Parameter):
-        if cls._param_is_scoped(param):
-            anno = param.annotation if isinstance(param, inspect.Parameter) else param
-            for a in typing.get_args(anno)[1:]:
+    def _get_param_ordinal(cls, param: type | inspect.Parameter) -> collections.abc.Set:
+        if isinstance(param, inspect.Parameter):
+            return cls._get_param_ordinal(param.annotation)
+        elif typing.get_origin(param) is Annotated:
+            for a in typing.get_args(param)[1:]:
                 if isinstance(a, cls):
                     return a.ordinal
-        else:
-            raise TypeError(f"expected an Annotated with a {cls}, but got {param}")
-
-    @classmethod
-    def _get_fresh_ordinal(cls, *, name: str = "RootScope"):
-        return cls(ordinal=frozenset({TypeVar(name)}))
-
-    @classmethod
-    def _get_free_type_vars(
-        cls, tp: type | inspect.Parameter
-    ) -> collections.abc.Set[TypeVar]:
-        if isinstance(tp, inspect.Parameter):
-            return cls._get_free_type_vars(tp.annotation)
-        elif typing.get_origin(tp) is Annotated:
-            return cls._get_free_type_vars(typing.get_args(tp)[0])
-        elif isinstance(tp, TypeVar):
-            return {tp}
-        elif typing.get_origin(tp) is None:
             return set()
         else:
-            return set().union(*map(cls._get_free_type_vars, typing.get_args(tp)))
+            return set()
 
     @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        root_scope = cls._get_fresh_ordinal()
-
-        # pre-condition: root_scope should not appear in the signature
-        assert not any(
-            root_scope.ordinal <= cls._get_param_ordinal(p)
-            for p in (sig.return_annotation, *sig.parameters.values())
-            if cls._param_is_scoped(p)
+    def _get_root_ordinal(cls, sig: inspect.Signature) -> collections.abc.Set:
+        return set(cls._get_param_ordinal(sig.return_annotation)).intersection(
+            *(cls._get_param_ordinal(p) for p in sig.parameters.values())
         )
 
-        # invariant: at most one Scope annotation per parameter (for now)
-        assert all(
-            len([a for a in p.annotation.__metadata__ if isinstance(a, cls)]) <= 1
+    @classmethod
+    def _get_fresh_ordinal(cls, *, name: str = "RootScope") -> collections.abc.Set:
+        return {TypeVar(name)}
+
+    @classmethod
+    def _check_has_single_scope(cls, sig: inspect.Signature) -> bool:
+        # invariant: at most one Scope annotation per parameter
+        return not any(
+            len([a for a in p.annotation.__metadata__ if isinstance(a, cls)]) > 1
             for p in sig.parameters.values()
             if typing.get_origin(p.annotation) is Annotated
         )
 
-        # add missing Scoped annotations and join everything with the root scope
-        new_params = collections.OrderedDict()
-        for name, param in sig.parameters.items():
-            if cls._param_is_scoped(param):
-                new_scope = cls(
-                    ordinal=cls._get_param_ordinal(param) | root_scope.ordinal
-                )
-                new_params[name] = param.replace(
-                    annotation=Annotated[
-                        typing.get_args(param.annotation)[0], new_scope
-                    ]
-                )
+    @classmethod
+    def _check_no_typevar_overlap(cls, sig: inspect.Signature) -> bool:
+
+        def _get_free_type_vars(
+            tp: type | typing._SpecialForm | inspect.Parameter | tuple | list,
+        ) -> collections.abc.Set[TypeVar]:
+            if isinstance(tp, TypeVar):
+                return {tp}
+            elif isinstance(tp, (tuple, list)):
+                return set().union(*map(_get_free_type_vars, tp))
+            elif isinstance(tp, inspect.Parameter):
+                return _get_free_type_vars(tp.annotation)
+            elif typing.get_origin(tp) is Annotated:
+                return _get_free_type_vars(typing.get_args(tp)[0])
+            elif typing.get_origin(tp) is not None:
+                return _get_free_type_vars(typing.get_args(tp))
             else:
-                new_params[name] = param.replace(
-                    annotation=Annotated[param.annotation, root_scope]
-                )
-
-        # add missing Scoped annotation to the return annotation and join with the root scope
-        if cls._param_is_scoped(sig.return_annotation):
-            new_scope = cls(
-                ordinal=cls._get_param_ordinal(sig.return_annotation)
-                | root_scope.ordinal
-            )
-            new_return = Annotated[typing.get_args(sig.return_annotation)[0], new_scope]  # type: ignore
-        else:
-            new_return = Annotated[sig.return_annotation, root_scope]
-
-        # construct a new Signature structure with the inferred annotations
-        inferred_sig = sig.replace(
-            parameters=list(new_params.values()), return_annotation=new_return
-        )
+                return set()
 
         # invariant: no overlap between ordinal typevars and generic ones
-        assert set.isdisjoint(
-            set().union(
-                *(
-                    cls._get_free_type_vars(p)
-                    for p in (
-                        inferred_sig.return_annotation,
-                        *inferred_sig.parameters.values(),
-                    )
-                )
-            ),
-            set().union(
-                *(
-                    cls._get_param_ordinal(p)
-                    for p in (
-                        inferred_sig.return_annotation,
-                        *inferred_sig.parameters.values(),
-                    )
-                )
-            ),
+        free_type_vars = _get_free_type_vars(
+            (sig.return_annotation, *sig.parameters.values())
+        )
+        return all(
+            free_type_vars.isdisjoint(cls._get_param_ordinal(p))
+            for p in (
+                sig.return_annotation,
+                *sig.parameters.values(),
+            )
         )
 
-        # post-condition: all parameters and return annotation are scoped
-        #   (keeping separate for clarity and so it can be deprecated later)
-        assert all(
-            cls._param_is_scoped(p)
-            for p in (inferred_sig.return_annotation, *inferred_sig.parameters.values())
+    @classmethod
+    def _check_no_boundvars_in_result(cls, sig: inspect.Signature) -> bool:
+        root_ordinal = cls._get_root_ordinal(sig)
+        return_ordinal = cls._get_param_ordinal(sig.return_annotation)
+        return not any(
+            root_ordinal < cls._get_param_ordinal(p) <= return_ordinal
+            for p in sig.parameters.values()
+            if cls._param_is_var(p)
         )
 
-        # post-condition: all parameters and return annotation are joined with the root scope
-        assert all(
-            root_scope.ordinal <= cls._get_param_ordinal(p)
-            for p in (inferred_sig.return_annotation, *inferred_sig.parameters.values())
-            if cls._param_is_scoped(p)
+    @classmethod
+    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        # pre-conditions
+        assert cls._check_has_single_scope(sig)
+        assert cls._check_no_typevar_overlap(sig)
+        assert cls._check_no_boundvars_in_result(sig)
+
+        root_ordinal = cls._get_root_ordinal(sig)
+        if not root_ordinal:
+            root_ordinal = cls._get_fresh_ordinal()
+
+        # add missing Scoped annotations and join everything with the root scope
+        new_annos: list[type | typing._SpecialForm] = []
+        for anno in (
+            sig.return_annotation,
+            *(p.annotation for p in sig.parameters.values()),
+        ):
+            new_scope = cls(ordinal=cls._get_param_ordinal(anno) | root_ordinal)
+            if typing.get_origin(anno) is Annotated:
+                new_anno = typing.get_args(anno)[0]
+                new_anno = Annotated[new_anno, new_scope]
+                for other in typing.get_args(anno)[1:]:
+                    if not isinstance(other, cls):
+                        new_anno = Annotated[new_anno, other]
+            else:
+                new_anno = Annotated[anno, new_scope]
+
+            new_annos.append(new_anno)
+
+        # construct a new Signature structure with the inferred annotations
+        new_return_anno, new_annos = new_annos[0], new_annos[1:]
+        inferred_sig = sig.replace(
+            parameters=[
+                p.replace(annotation=a)
+                for p, a in zip(sig.parameters.values(), new_annos)
+            ],
+            return_annotation=new_return_anno,
         )
 
-        # post-condition: no bound variables in the return scope (for now)
-        assert not any(
-            root_scope.ordinal < cls._get_param_ordinal(p)
-            and cls._get_param_ordinal(p)
-            <= cls._get_param_ordinal(inferred_sig.return_annotation)
-            for p in inferred_sig.parameters.values()
-            if cls._param_is_scoped(p) and cls._param_is_var(p)
-        )
-
+        # post-conditions
+        assert cls._get_root_ordinal(inferred_sig) == root_ordinal != set()
         return inferred_sig
 
     def analyze(self, bound_sig: inspect.BoundArguments) -> frozenset[Operation]:
@@ -182,8 +164,7 @@ class Scoped(ArgAnnotation):
         for name, param in bound_sig.signature.parameters.items():
             param_ordinal = self._get_param_ordinal(param)
             if (
-                self._param_is_scoped(param)
-                and self._param_is_var(param)
+                self._param_is_var(param)
                 and param_ordinal <= self.ordinal
                 and not param_ordinal <= return_ordinal
             ):
