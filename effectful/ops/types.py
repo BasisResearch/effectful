@@ -108,13 +108,9 @@ Expr = Union[T, Term[T]]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class ArgAnnotation(Generic[T], abc.ABC):
+class ArgAnnotation(abc.ABC):
 
     @classmethod
     @abc.abstractmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def analyze(self, bound_sig: inspect.BoundArguments) -> T:
         raise NotImplementedError

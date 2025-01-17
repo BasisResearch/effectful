@@ -19,7 +19,7 @@ V = TypeVar("V")
 
 
 @dataclasses.dataclass
-class Scoped(ArgAnnotation[frozenset[Operation]]):
+class Scoped(ArgAnnotation):
     ordinal: collections.abc.Set
 
     def __class_getitem__(cls, item: TypeVar | typing._SpecialForm):
