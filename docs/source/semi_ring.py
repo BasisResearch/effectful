@@ -5,7 +5,7 @@ from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import Bound, Scoped_, defop
+from effectful.ops.syntax import Scoped, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -13,6 +13,8 @@ S = TypeVar("S")
 T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 # https://stackoverflow.com/questions/2703599/what-would-a-frozen-dict-be
@@ -50,19 +52,19 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
 
 @defop
 def Sum(
-    e1: Annotated[SemiRingDict[K, V], Scoped_(1)],
-    k: Annotated[Operation[[], K], Bound(0)],
-    v: Annotated[Operation[[], V], Bound(0)],
-    e2: Annotated[SemiRingDict[S, T], Scoped_(0)],
+    e1: SemiRingDict[K, V],
+    k: Annotated[Operation[[], K], Scoped[A]],
+    v: Annotated[Operation[[], V], Scoped[A]],
+    e2: Annotated[SemiRingDict[S, T], Scoped[A]],
 ) -> SemiRingDict[S, T]:
     raise NotImplementedError
 
 
 @defop
 def Let(
-    e1: Annotated[T, Scoped_(1)],
-    x: Annotated[Operation[[], T], Bound(0)],
-    e2: Annotated[S, Scoped_(0)],
+    e1: Annotated[T, Scoped[A]],
+    x: Annotated[Operation[[], T], Scoped[B]],
+    e2: Annotated[S, Scoped[B]],
 ) -> S:
     raise NotImplementedError
 
