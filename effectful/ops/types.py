@@ -53,6 +53,14 @@ class Operation(abc.ABC, Generic[Q, V]):
         tuple[collections.abc.Set["Operation"], ...],
         dict[str, collections.abc.Set["Operation"]],
     ]:
+        """
+        Returns the sets of variables that appear free in each argument and keyword argument
+        but not in the result of the operation, i.e. the variables bound by the operation.
+
+        These are used by :func:`fvsof` to determine the free variables of a term by
+        subtracting the results of this method from the free variables of the subterms,
+        allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
