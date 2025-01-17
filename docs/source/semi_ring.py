@@ -5,7 +5,7 @@ from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import Bound, Scoped, defop
+from effectful.ops.syntax import Bound, Scoped_, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -50,19 +50,19 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
 
 @defop
 def Sum(
-    e1: Annotated[SemiRingDict[K, V], Scoped(1)],
+    e1: Annotated[SemiRingDict[K, V], Scoped_(1)],
     k: Annotated[Operation[[], K], Bound(0)],
     v: Annotated[Operation[[], V], Bound(0)],
-    e2: Annotated[SemiRingDict[S, T], Scoped(0)],
+    e2: Annotated[SemiRingDict[S, T], Scoped_(0)],
 ) -> SemiRingDict[S, T]:
     raise NotImplementedError
 
 
 @defop
 def Let(
-    e1: Annotated[T, Scoped(1)],
+    e1: Annotated[T, Scoped_(1)],
     x: Annotated[Operation[[], T], Bound(0)],
-    e2: Annotated[S, Scoped(0)],
+    e2: Annotated[S, Scoped_(0)],
 ) -> S:
     raise NotImplementedError
 
