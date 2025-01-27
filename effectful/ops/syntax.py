@@ -10,7 +10,7 @@ from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
 import tree
 from typing_extensions import Concatenate, ParamSpec
 
-from effectful.ops.types import ArgAnnotation, Expr, Interpretation, Operation, Term
+from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -20,7 +20,7 @@ V = TypeVar("V")
 
 
 @dataclasses.dataclass
-class Scoped(ArgAnnotation):
+class Scoped(Annotation):
     """
     A special type annotation that indicates the relative scope of a parameter
     in the signature of an :class:`Operation` created with :func:`defop` .

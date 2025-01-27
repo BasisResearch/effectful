@@ -116,7 +116,7 @@ Expr = Union[T, Term[T]]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class ArgAnnotation(abc.ABC):
+class Annotation(abc.ABC):
 
     @classmethod
     @abc.abstractmethod
