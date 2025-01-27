@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import abc
+import collections.abc
 import typing
-from typing import Any, Callable, Generic, Mapping, Sequence, Set, Type, TypeVar, Union
+from typing import Any, Callable, Generic, Mapping, Sequence, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -39,18 +40,15 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        """Returns a term for the operation applied to arguments."""
-        raise NotImplementedError
-
-    @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         """Returns the type of the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set["Operation"]:
-        """Returns the free variables of the operation applied to arguments."""
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+        tuple[collections.abc.Set["Operation"], ...],
+        dict[str, collections.abc.Set["Operation"]],
+    ]:
         raise NotImplementedError
 
     @abc.abstractmethod

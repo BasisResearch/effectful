@@ -310,7 +310,12 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
 
     def _update_fvs(_, op, *args, **kwargs):
         _fvs.add(op)
-        for bound_var in op.__fvs_rule__(*args, **kwargs):
+        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+        bound_vars = set().union(
+            *(a for a in arg_ctxs),
+            *(k for k in kwarg_ctxs.values()),
+        )
+        for bound_var in bound_vars:
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 

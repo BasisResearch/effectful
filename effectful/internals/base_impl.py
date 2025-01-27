@@ -2,10 +2,9 @@ import collections
 import functools
 import inspect
 import typing
-from typing import Callable, Generic, Mapping, Optional, Sequence, Set, Type, TypeVar
+from typing import Callable, Generic, Mapping, Optional, Sequence, Type, TypeVar
 
-import tree
-from typing_extensions import ParamSpec
+from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.types import Expr, Operation, Term
 
@@ -14,24 +13,6 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
-
-
-def rename(
-    subs: Mapping[Operation[..., S], Operation[..., S]],
-    leaf_value: V,  # Union[Term[V], Operation[..., V], V],
-) -> V:  # Union[Term[V], Operation[..., V], V]:
-    from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, evaluate
-
-    if isinstance(leaf_value, Operation):
-        return subs.get(leaf_value, leaf_value)  # type: ignore
-    elif isinstance(leaf_value, Term):
-        with interpreter(
-            {apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k), **subs}
-        ):
-            return evaluate(leaf_value)  # type: ignore
-    else:
-        return leaf_value
 
 
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
@@ -51,13 +32,20 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return hash(self.signature)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        from effectful.ops.syntax import defdata
+
         try:
             return self.signature(*args, **kwargs)
         except NotImplementedError:
-            return self.__free_rule__(*args, **kwargs)
+            return typing.cast(
+                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+            )(self, *args, **kwargs)
 
-    def __free_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        from effectful.ops.syntax import Bound, Scoped, defdata, defop
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+        tuple[collections.abc.Set[Operation], ...],
+        dict[str, collections.abc.Set[Operation]],
+    ]:
+        from effectful.ops.syntax import Bound, Scoped
 
         sig = inspect.signature(self.signature)
         bound_sig = sig.bind(*args, **kwargs)
@@ -86,25 +74,38 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             else:
                 unscoped_args.add(param_name)
 
+        if not bound_vars:  # fast path for no bound variables
+            return (
+                tuple(frozenset() for _ in bound_sig.args),
+                {k: frozenset() for k in bound_sig.kwargs},
+            )
+
         # TODO replace this temporary check with more general scope level propagation
-        if bound_vars:
-            min_scope = min(bound_vars.keys(), default=0)
-            scoped_args[min_scope] |= unscoped_args
-            max_scope = max(bound_vars.keys(), default=0)
-            assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
+        min_scope = min(bound_vars.keys(), default=0)
+        scoped_args[min_scope] |= unscoped_args
+        max_scope = max(bound_vars.keys(), default=0)
+        assert all(s in bound_vars or s > max_scope for s in scoped_args.keys())
 
         # recursively rename bound variables from innermost to outermost scope
-        for scope in sorted(bound_vars.keys()):
+        subs: frozenset[Operation] = frozenset()
+        for scope in sorted(scoped_args.keys()):
             # create fresh variables for each bound variable in the scope
-            renaming_map = {var: defop(var) for var in bound_vars[scope]}
+            subs = subs | bound_vars[scope]
+
             # get just the arguments that are in the scope
             for name in scoped_args[scope]:
-                bound_sig.arguments[name] = tree.map_structure(
-                    lambda a: rename(renaming_map, a),
-                    bound_sig.arguments[name],
-                )
+                if sig.parameters[name].kind is inspect.Parameter.VAR_POSITIONAL:
+                    bound_sig.arguments[name] = tuple(
+                        subs for _ in bound_sig.arguments[name]
+                    )
+                elif sig.parameters[name].kind is inspect.Parameter.VAR_KEYWORD:
+                    bound_sig.arguments[name] = {
+                        k: subs for k in bound_sig.arguments[name]
+                    }
+                else:
+                    bound_sig.arguments[name] = subs
 
-        return defdata(_BaseTerm(self, bound_sig.args, bound_sig.kwargs))
+        return tuple(bound_sig.args), dict(bound_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
         sig = inspect.signature(self.signature)
@@ -138,30 +139,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         else:
             return anno
 
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Set[Operation]:
-        from effectful.ops.syntax import Bound
-
-        sig = inspect.signature(self.signature)
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        bound_vars: Set[Operation] = set()
-        for param_name, param in bound_sig.signature.parameters.items():
-            if typing.get_origin(param.annotation) is typing.Annotated:
-                for anno in param.annotation.__metadata__:
-                    if isinstance(anno, Bound):
-                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                            for bound_var in bound_sig.arguments[param_name]:
-                                bound_vars.add(bound_var)
-                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            for bound_var in bound_sig.arguments[param_name].values():
-                                bound_vars.add(bound_var)
-                        else:
-                            bound_var = bound_sig.arguments[param_name]
-                            bound_vars.add(bound_var)
-
-        return bound_vars
-
     def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
         args_str = ", ".join(map(str, args)) if args else ""
         kwargs_str = (
@@ -186,8 +163,8 @@ class _BaseTerm(Generic[T], Term[T]):
     def __init__(
         self,
         op: Operation[..., T],
-        args: Sequence[Expr],
-        kwargs: Mapping[str, Expr],
+        *args: Expr,
+        **kwargs: Expr,
     ):
         self._op = op
         self._args = args
@@ -221,7 +198,7 @@ class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
 def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
     from effectful.internals.runtime import interpreter
     from effectful.ops.semantics import apply, call
-    from effectful.ops.syntax import deffn, defop
+    from effectful.ops.syntax import defdata, deffn, defop
 
     assert not isinstance(value, Term)
 
@@ -244,7 +221,7 @@ def _unembed_callable(value: Callable[P, T]) -> Expr[Callable[P, T]]:
 
     with interpreter(
         {
-            apply: lambda _, op, *a, **k: op.__free_rule__(*a, **k),
+            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
             call: call.__default_rule__,
         }
     ):

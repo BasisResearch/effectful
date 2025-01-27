@@ -4,16 +4,7 @@ import functools
 import random
 import types
 import typing
-from typing import (
-    Annotated,
-    Callable,
-    Generic,
-    Mapping,
-    Optional,
-    Sequence,
-    Type,
-    TypeVar,
-)
+from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
@@ -259,9 +250,9 @@ def deffn(
     raise NotImplementedError
 
 
-class _CustomSingleDispatchCallable(Generic[P, T]):
+class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
     def __init__(
-        self, func: Callable[Concatenate[Callable[[type], Callable[P, T]], P], T]
+        self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
         self._func = func
         self._registry = functools.singledispatch(func)
@@ -280,7 +271,7 @@ class _CustomSingleDispatchCallable(Generic[P, T]):
 
 
 @_CustomSingleDispatchCallable
-def defterm(dispatch, value: T) -> Expr[T]:
+def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
@@ -305,21 +296,22 @@ def defterm(dispatch, value: T) -> Expr[T]:
     if isinstance(value, Term):
         return value
     else:
-        return dispatch(type(value))(value)
+        return __dispatch(type(value))(value)
 
 
 @_CustomSingleDispatchCallable
-def defdata(dispatch, expr: Term[T]) -> Expr[T]:
-    """Converts a term so that it is an instance of its inferred type.
+def defdata(
+    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    op: Operation[..., T],
+    *args,
+    **kwargs,
+) -> Expr[T]:
+    """Constructs a Term that is an instance of its semantic type.
 
-    :param expr: The term to convert.
-    :type expr: Term[T]
     :returns: An instance of ``T``.
     :rtype: Expr[T]
 
-    This function is called by :func:`__free_rule__`, so conversions
-    resgistered with :func:`defdata` are automatically applied when terms are
-    constructed.
+    This function is the only way to construct a :class:`Term` from an :class:`Operation`.
 
     .. note::
 
@@ -333,29 +325,75 @@ def defdata(dispatch, expr: Term[T]) -> Expr[T]:
 
     .. code-block:: python
 
-      class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+      class _CallableTerm(Generic[P, T], Term[collections.abc.Callable[P, T]]):
+          def __init__(
+              self,
+              op: Operation[..., T],
+              *args: Expr,
+              **kwargs: Expr,
+          ):
+              self._op = op
+              self._args = args
+              self._kwargs = kwargs
+
+          @property
+          def op(self):
+              return self._op
+
+          @property
+          def args(self):
+              return self._args
+
+          @property
+          def kwargs(self):
+              return self._kwargs
+
           def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
               from effectful.ops.semantics import call
 
               return call(self, *args, **kwargs)
 
       @defdata.register(collections.abc.Callable)
-      def _(op, args, kwargs):
-          return _CallableTerm(op, args, kwargs)
+      def _(op, *args, **kwargs):
+          return _CallableTerm(op, *args, **kwargs)
 
-    When a :class:`Callable` term is passed to :func:`defdata`, it is
-    reconstructed as a :class:`_CallableTerm`, which implements the
-    :func:`__call__` method.
-
+    When an Operation whose return type is `Callable` is passed to :func:`defdata`,
+    it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import typeof
+    from effectful.ops.semantics import apply, evaluate, typeof
 
-    if isinstance(expr, Term):
-        impl: Callable[[Operation[..., T], Sequence, Mapping[str, object]], Expr[T]]
-        impl = dispatch(typeof(expr))  # type: ignore
-        return impl(expr.op, expr.args, expr.kwargs)
-    else:
-        return expr
+    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    renaming = {
+        var: defop(var)
+        for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
+        for var in bound_vars
+    }
+
+    args_, kwargs_ = list(args), dict(kwargs)
+    for i, (v, c) in (
+        *enumerate(zip(args, arg_ctxs)),
+        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
+    ):
+        if c:
+            v = tree.map_structure(
+                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
+            )
+            res = evaluate(
+                v,
+                intp={
+                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
+                    **{op: renaming[op] for op in c},
+                },
+            )
+            if isinstance(i, int):
+                args_[i] = res
+            elif isinstance(i, str):
+                kwargs_[i] = res
+
+    tp: Type[T] = typeof(
+        __dispatch(typing.cast(Type[T], object))(op, *args_, **kwargs_)
+    )
+    return __dispatch(tp)(op, *args_, **kwargs_)
 
 
 @defterm.register(object)
@@ -368,21 +406,21 @@ def _(value: T) -> T:
 
 
 @defdata.register(object)
-def _(op, args, kwargs):
+def _(op: Operation[P, T], *args: P.args, **kwargs: P.kwargs):
     from effectful.internals.base_impl import _BaseTerm
 
-    return _BaseTerm(op, args, kwargs)
+    return _BaseTerm(op, *args, **kwargs)
 
 
 @defdata.register(collections.abc.Callable)
-def _(op, args, kwargs):
+def _(op: Operation[P, Callable[Q, T]], *args: P.args, **kwargs: P.kwargs):
     from effectful.internals.base_impl import _CallableTerm
 
-    return _CallableTerm(op, args, kwargs)
+    return typing.cast(_CallableTerm[Q, T], _CallableTerm(op, *args, **kwargs))
 
 
 @defterm.register(collections.abc.Callable)
-def _(fn: Callable[P, T]):
+def _(fn: Callable[P, T]) -> Expr[Callable[P, T]]:
     from effectful.internals.base_impl import _unembed_callable
 
     return _unembed_callable(fn)

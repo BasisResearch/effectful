@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import defdata, defop, syntactic_eq
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -24,7 +24,7 @@ T_Number = TypeVar("T_Number", bound=numbers.Number)
 @numbers.Number.register
 class _NumberTerm(Term[numbers.Number]):
     def __init__(
-        self, op: Operation[..., numbers.Number], args: tuple, kwargs: dict
+        self, op: Operation[..., numbers.Number], *args: Expr, **kwargs: Expr
     ) -> None:
         self._op = op
         self._args = args
