@@ -24,34 +24,34 @@ class Scoped(ArgAnnotation):
     A special type annotation that indicates the relative scope of a parameter
     in the signature of an :class:`Operation` created with :func:`defop` .
 
-    :class:`Scoped` makes it easy to describe higher-order :class:`Operation`s
-    that take other :class:`Term`s and :class:`Operation`s as arguments,
+    :class:`Scoped` makes it easy to describe higher-order :class:`Operation` s
+    that take other :class:`Term` s and :class:`Operation` s as arguments,
     inspired by a number of recent proposals to view syntactic variables
     as algebraic effects and environments as effect handlers.
 
-    As a result, in `effectful` many complex higher-order programming constructs,
+    As a result, in ``effectful`` many complex higher-order programming constructs,
     such as lambda-abstraction, let-binding, loops, try-catch exception handling,
     nondeterminism, capture-avoiding substitution and algebraic effect handling,
-    can be expressed uniformly using :func:`defop` as ordinary :class:`Operation`s
+    can be expressed uniformly using :func:`defop` as ordinary :class:`Operation` s
     and evaluated or transformed using generalized effect handlers that respect
     the scoping semantics of the operations.
 
     .. warning::
 
         :class:`Scoped` instances are typically constructed using indexing
-        syntactic sugar borrowed from generic types like :class:`typing.Generic`.
-        For example, `Scoped[A]` desugars to a :class:`Scoped` instances
-        with `ordinal={A}`, and `Scoped[A | B]` desugars to a :class:`Scoped`
-        instance with `ordinal={A, B}`.
+        syntactic sugar borrowed from generic types like :class:`typing.Generic` .
+        For example, ``Scoped[A]`` desugars to a :class:`Scoped` instances
+        with ``ordinal={A}``, and ``Scoped[A | B]`` desugars to a :class:`Scoped`
+        instance with ``ordinal={A, B}`` .
 
-        However, :class:`Scoped` is not a generic type, and the set of :class:`TypeVar`s
+        However, :class:`Scoped` is not a generic type, and the set of :class:`typing.TypeVar` s
         used for the :class:`Scoped` annotations in a given operation must be disjoint
-        from the set of :class:`TypeVar`s used for generic types of the parameters.
+        from the set of :class:`typing.TypeVar` s used for generic types of the parameters.
 
     **Example usage**:
 
     We illustrate the use of :class:`Scoped` with a few case studies of classical
-    syntactic variable binding constructs expressed as :class:`Operation`s.
+    syntactic variable binding constructs expressed as :class:`Operation` s.
 
     >>> from typing import Annotated, TypeVar
     >>> from effectful.ops.syntax import Scoped, defop
@@ -60,65 +60,65 @@ class Scoped(ArgAnnotation):
     >>> A, B, S, T = TypeVar('A'), TypeVar('B'), TypeVar('S'), TypeVar('T')
     >>> x, y = defop(int, name='x'), defop(int, name='y')
 
-    For example, we can define a higher-order operation :func:`Lambda`
-    that takes an :class:`Operation` representing a bound syntactic variable
-    and a :class:`Term` representing the body of an anonymous function,
-    and returns a :class:`Term` representing a lambda function::
+    * For example, we can define a higher-order operation :func:`Lambda`
+      that takes an :class:`Operation` representing a bound syntactic variable
+      and a :class:`Term` representing the body of an anonymous function,
+      and returns a :class:`Term` representing a lambda function:
 
-    >>> @defop
-    ... def Lambda(
-    ...     var: Annotated[Operation[[], S], Scoped[A]],
-    ...     body: Annotated[T, Scoped[A | B]]
-    ... ) -> Annotated[Callable[[S], T], Scoped[B]]:
-    ...     raise NotImplementedError
+      >>> @defop
+      ... def Lambda(
+      ...     var: Annotated[Operation[[], S], Scoped[A]],
+      ...     body: Annotated[T, Scoped[A | B]]
+      ... ) -> Annotated[Callable[[S], T], Scoped[B]]:
+      ...     raise NotImplementedError
 
-    The :class:`Scoped` annotation is used here to indicate that the argument `var`
-    passed to :func:`Lambda` may appear free in `body`, but not in the resulting function.
-    In other words, it is bound by :func:`Lambda`::
+    * The :class:`Scoped` annotation is used here to indicate that the argument ``var``
+      passed to :func:`Lambda` may appear free in ``body``, but not in the resulting function.
+      In other words, it is bound by :func:`Lambda`:
 
-    >>> assert x not in fvsof(Lambda(x, add(x(), 1)))
+      >>> assert x not in fvsof(Lambda(x, add(x(), 1)))
 
-    However, variables in `body` other than `var` still appear free in the result::
+      However, variables in ``body`` other than ``var`` still appear free in the result:
 
-    >>> assert y in fvsof(Lambda(x, add(x(), y())))
+      >>> assert y in fvsof(Lambda(x, add(x(), y())))
 
-    :class:`Scoped` can also be used with variadic arguments and keyword arguments.
-    For example, we can define a generalized :func:`LambdaN` that takes a variable
-    number of arguments and keyword arguments::
+    * :class:`Scoped` can also be used with variadic arguments and keyword arguments.
+      For example, we can define a generalized :func:`LambdaN` that takes a variable
+      number of arguments and keyword arguments:
 
-    >>> @defop
-    ... def LambdaN(
-    ...     body: Annotated[T, Scoped[A | B]]
-    ...     *args: Annotated[Operation[[], S], Scoped[A]],
-    ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
-    ... ) -> Annotated[Callable[..., T], Scoped[B]]:
-    ...     raise NotImplementedError
+      >>> @defop
+      ... def LambdaN(
+      ...     body: Annotated[T, Scoped[A | B]]
+      ...     *args: Annotated[Operation[[], S], Scoped[A]],
+      ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
+      ... ) -> Annotated[Callable[..., T], Scoped[B]]:
+      ...     raise NotImplementedError
 
-    This is equivalent to the built-in :class:`Operation` :func:`deffn`::
+      This is equivalent to the built-in :class:`Operation` :func:`deffn`:
 
-    >>> assert not {x, y} & fvsof(LambdaN(add(x(), y()), x, y))
+      >>> assert not {x, y} & fvsof(LambdaN(add(x(), y()), x, y))
 
-    :class:`Scoped` and :func:`defop` can also express more complex scoping semantics.
-    For example, we can define a :func:`Let` operation that binds a variable in
-    a body :class:`Term` to a value that may be another possibly open :class:`Term`::
+    * :class:`Scoped` and :func:`defop` can also express more complex scoping semantics.
+      For example, we can define a :func:`Let` operation that binds a variable in
+      a :class:`Term` ``body`` to a ``value`` that may be another possibly open :class:`Term` :
 
-    >>> @defop
-    ... def Let(
-    ...     var: Annotated[Operation[[], S], Scoped[A]],
-    ...     val: Annotated[S, Scoped[B]],
-    ...     body: Annotated[T, Scoped[A | B]]
-    ... ) -> Annotated[T, Scoped[B]]:
-    ...     raise NotImplementedError
+      >>> @defop
+      ... def Let(
+      ...     var: Annotated[Operation[[], S], Scoped[A]],
+      ...     val: Annotated[S, Scoped[B]],
+      ...     body: Annotated[T, Scoped[A | B]]
+      ... ) -> Annotated[T, Scoped[B]]:
+      ...     raise NotImplementedError
 
-    Here the variable `var` is bound by :func:`Let` in `body` but not in `val`::
+      Here the variable ``var`` is bound by :func:`Let` in `body` but not in ``val`` :
 
-    >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())))
-    >>> assert {x, y} in fvsof(Let(x, add(y(), x()), add(x(), y())))
+      >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())))
+      >>> assert {x, y} in fvsof(Let(x, add(y(), x()), add(x(), y())))
 
-    This is reflected in the free variables of subterms of the result::
+      This is reflected in the free variables of subterms of the result:
 
-    >>> assert x in fvsof(Let(x, add(x(), y()), add(x(), y())).args[1])
-    >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())).args[2])
+      >>> assert x in fvsof(Let(x, add(x(), y()), add(x(), y())).args[1])
+      >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())).args[2])
     """
 
     ordinal: collections.abc.Set
@@ -137,10 +137,10 @@ class Scoped(ArgAnnotation):
     @staticmethod
     def _param_is_var(param: type | inspect.Parameter) -> bool:
         """
-        Helper function that checks if a parameter is annotated as an :class:`Operation`.
+        Helper function that checks if a parameter is annotated as an :class:`Operation` .
 
         :param param: The parameter to check.
-        :returns: True if the parameter is an :class:`Operation`, False otherwise.
+        :returns: ``True`` if the parameter is an :class:`Operation` , ``False`` otherwise.
         """
         if isinstance(param, inspect.Parameter):
             param = param.annotation
@@ -263,15 +263,15 @@ class Scoped(ArgAnnotation):
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
         """
         Given a :class:`inspect.Signature` for an :class:`Operation` for which
-        only some :class:`inspect.Parameter`s have manual :class:`Scoped` annotations,
-        computes a new signature with Scoped annotations attached to each parameter,
+        only some :class:`inspect.Parameter` s have manual :class:`Scoped` annotations,
+        computes a new signature with :class:`Scoped` annotations attached to each parameter,
         including the return type annotation.
 
         The new annotations are inferred by joining the manual annotations with a
         fresh root scope. The root scope is the intersection of all :class:`Scoped`
         annotations in the resulting :class:`inspect.Signature` object.
 
-        :class`Operation`s in this root scope are free in the result and in all arguments.
+        :class`Operation` s in this root scope are free in the result and in all arguments.
 
         :param sig: The signature of the operation.
         :returns: A new signature with inferred :class:`Scoped` annotations.
@@ -324,13 +324,13 @@ class Scoped(ArgAnnotation):
         The :func:`analyze` methods of :class:`Scoped` annotations that appear on
         the signature of an :class:`Operation` are used by :func:`defop` to generate
         implementations of :func:`Operation.__fvs_rule__` underlying alpha-renaming
-        in :func:`defterm` and :func:`defdata` and free variable sets in :func:`fvsof`.
+        in :func:`defterm` and :func:`defdata` and free variable sets in :func:`fvsof` .
 
         Specifically, the :func:`analyze` method of the :class:`Scoped` annotation
         of a parameter computes the set of bound variables in that parameter's value.
         The :func:`Operation.__fvs_rule__` method generated by :func:`defop` simply
         extracts the annotation of each parameter, calls :func:`analyze` on the value
-        given for the corresponding parameter in `bound_sig`, and returns the results.
+        given for the corresponding parameter in ``bound_sig`` , and returns the results.
 
         :param bound_sig: The :class:`inspect.Signature` of an :class:`Operation`
             together with values for all of its arguments.
