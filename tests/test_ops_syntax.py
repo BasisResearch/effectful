@@ -44,10 +44,10 @@ def test_gensym_operation_2():
     def op(x: int) -> int:
         return x
 
-    # passing an operation to gensym should return a new operation, but preserve the name
+    # passing an operation to gensym should return a new operation
     g_op = defop(op)
-    assert g_op != op
-    assert g_op.__name__ == op.__name__
+    assert g_op != defop(g_op) != defop(op, name=op.__name__) != op
+    assert str(g_op) != str(op) == str(defop(op, name=op.__name__))
 
     # the new operation should have no default rule
     t = g_op(0)
@@ -93,7 +93,7 @@ def test_operation_metadata():
     assert f.__doc__ == f_op.__doc__
     assert f.__name__ == f_op.__name__
     assert hash(f) == hash(f_op)
-    assert f_op == ff_op
+    assert f_op != ff_op
 
 
 def test_no_default_tracing():
