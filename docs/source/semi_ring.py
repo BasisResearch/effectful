@@ -65,7 +65,7 @@ def Let(
     e1: Annotated[T, Scoped[A]],
     x: Annotated[Operation[[], T], Scoped[B]],
     e2: Annotated[S, Scoped[B]],
-) -> S:
+) -> Annotated[S, Scoped[A]]:
     raise NotImplementedError
 
 
