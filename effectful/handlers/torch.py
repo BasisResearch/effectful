@@ -1,7 +1,16 @@
 import functools
 import typing
 from types import EllipsisType
-from typing import Callable, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Callable,
+    Collection,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 try:
     import torch
@@ -128,7 +137,7 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def _partial_eval(t: T, order: Optional[Sequence[Operation[[], int]]] = None) -> T:
+def _partial_eval(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -181,7 +190,7 @@ def _partial_eval(t: T, order: Optional[Sequence[Operation[[], int]]] = None) ->
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
-def to_tensor(*args, **kwargs) -> torch.Tensor:
+def to_tensor(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -199,7 +208,7 @@ def to_tensor(*args, **kwargs) -> torch.Tensor:
     >>> to_tensor(Indexable(t)[a(), b()], [b, a]).shape
     torch.Size([3, 2])
     """
-    return _partial_eval(*args, **kwargs)
+    return _partial_eval(t, order=order)
 
 
 @functools.cache
