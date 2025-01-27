@@ -601,7 +601,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             ", ".join(f"{k}={str(v)}" for k, v in kwargs.items()) if kwargs else ""
         )
 
-        ret = f"{self._default.__name__}({args_str}"
+        ret = f"{self.__name__}({args_str}"
         if kwargs:
             ret += f"{', ' if args else ''}"
         ret += f"{kwargs_str})"
