@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import collections.abc
+import inspect
 import typing
 from typing import Any, Callable, Generic, Mapping, Sequence, Type, TypeVar, Union
 
@@ -22,6 +23,9 @@ class Operation(abc.ABC, Generic[Q, V]):
        Do not use :class:`Operation` directly. Instead, use :func:`defop` to define operations.
 
     """
+
+    __signature__: inspect.Signature
+    __name__: str
 
     @abc.abstractmethod
     def __eq__(self, other):
@@ -49,6 +53,14 @@ class Operation(abc.ABC, Generic[Q, V]):
         tuple[collections.abc.Set["Operation"], ...],
         dict[str, collections.abc.Set["Operation"]],
     ]:
+        """
+        Returns the sets of variables that appear free in each argument and keyword argument
+        but not in the result of the operation, i.e. the variables bound by the operation.
+
+        These are used by :func:`fvsof` to determine the free variables of a term by
+        subtracting the results of this method from the free variables of the subterms,
+        allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -75,19 +87,19 @@ class Term(abc.ABC, Generic[T]):
     @abc.abstractmethod
     def op(self) -> Operation[..., T]:
         """Abstract property for the operation."""
-        pass
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def args(self) -> Sequence["Expr[Any]"]:
         """Abstract property for the arguments."""
-        pass
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def kwargs(self) -> Mapping[str, "Expr[Any]"]:
         """Abstract property for the keyword arguments."""
-        pass
+        raise NotImplementedError
 
     def __repr__(self) -> str:
         from effectful.internals.runtime import interpreter
@@ -104,5 +116,9 @@ Expr = Union[T, Term[T]]
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
-class ArgAnnotation:
-    pass
+class ArgAnnotation(abc.ABC):
+
+    @classmethod
+    @abc.abstractmethod
+    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        raise NotImplementedError

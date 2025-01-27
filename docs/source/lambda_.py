@@ -6,12 +6,15 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
-from effectful.ops.syntax import Bound, Scoped, defop
+from effectful.ops.syntax import Scoped, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
+A = TypeVar("A")
+B = TypeVar("B")
+C = TypeVar("C")
 
 
 @defop
@@ -20,15 +23,17 @@ def App(f: Callable[[S], T], arg: S) -> T:
 
 
 @defop
-def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
+def Lam(
+    var: Annotated[Operation[[], S], Scoped[A]], body: Annotated[T, Scoped[A]]
+) -> Callable[[S], T]:
     raise NotImplementedError
 
 
 @defop
 def Let(
-    var: Annotated[Operation[[], S], Bound(0)],
-    val: Annotated[S, Scoped(1)],
-    body: Annotated[T, Scoped(0)],
+    var: Annotated[Operation[[], S], Scoped[A]],
+    val: S,
+    body: Annotated[T, Scoped[A]],
 ) -> T:
     raise NotImplementedError
 

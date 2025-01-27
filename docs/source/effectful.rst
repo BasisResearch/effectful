@@ -15,7 +15,7 @@ Syntax
    :members:
    :undoc-members:
 
-   .. autofunction:: effectful.ops.syntax.deffn(body: T, *args: Annotated[Operation, Bound()], **kwargs: Annotated[Operation, Bound()]) -> Callable[..., T])
+   .. autofunction:: effectful.ops.syntax.deffn(body: T, *args: Operation, **kwargs: Operation) -> Callable[..., T])
    .. autofunction:: effectful.ops.syntax.defterm(value: T) -> Expr[T]
    .. autofunction:: effectful.ops.syntax.defdata(value: Term[T]) -> Expr[T]
    .. autofunction:: effectful.ops.semantics.fwd

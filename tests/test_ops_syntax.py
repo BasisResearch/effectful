@@ -1,7 +1,7 @@
 from typing import Annotated, Callable, TypeVar
 
 from effectful.ops.semantics import call, evaluate, fvsof
-from effectful.ops.syntax import Bound, defop, defterm
+from effectful.ops.syntax import Scoped, defop, defterm
 from effectful.ops.types import Operation, Term
 
 
@@ -59,9 +59,13 @@ def test_gensym_operation_2():
 def test_gensym_annotations():
     """Test that gensym respects annotations."""
     S, T = TypeVar("S"), TypeVar("T")
+    A = TypeVar("A")
 
     @defop
-    def Lam(var: Annotated[Operation[[], S], Bound()], body: T) -> Callable[[S], T]:
+    def Lam(
+        var: Annotated[Operation[[], S], Scoped[A]],
+        body: Annotated[T, Scoped[A]],
+    ) -> Callable[[S], T]:
         raise NotImplementedError
 
     x = defop(int)
