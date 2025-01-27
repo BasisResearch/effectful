@@ -3,13 +3,13 @@ import typing
 from types import EllipsisType
 from typing import (
     Callable,
+    Collection,
     Mapping,
     Optional,
     Sequence,
     Tuple,
     TypeVar,
     Union,
-    Collection,
 )
 
 try:
