@@ -6,7 +6,7 @@ import torch
 
 from effectful.handlers.torch import Indexable, sizesof
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Operation
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -60,16 +60,6 @@ class IndexSet(Dict[str, Set[int]]):
 
     def __hash__(self):
         return hash(frozenset((k, frozenset(vs)) for k, vs in self.items()))
-
-    def _to_handler(self):
-        """Return an effectful handler that binds each index variable to a
-        tensor of its possible index values.
-
-        """
-        return {
-            name_to_sym(k): functools.partial(lambda v: v, torch.tensor(list(v)))
-            for k, v in self.items()
-        }
 
 
 def union(*indexsets: IndexSet) -> IndexSet:
@@ -166,17 +156,9 @@ def indices_of(value: Any) -> IndexSet:
     :param kwargs: Additional keyword arguments used by specific implementations.
     :return: A :class:`IndexSet` containing the indices on which the value is supported.
     """
-    if isinstance(value, Term):
-        return IndexSet(
-            **{
-                k.__name__: set(range(v))  # type:ignore
-                for (k, v) in sizesof(value).items()
-            }
-        )
-    elif isinstance(value, torch.distributions.Distribution):
-        return indices_of(value.sample())
-
-    return IndexSet()
+    return IndexSet(
+        **{getattr(k, "__name__"): set(range(v)) for (k, v) in sizesof(value).items()}
+    )
 
 
 @functools.lru_cache(maxsize=None)

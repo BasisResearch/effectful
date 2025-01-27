@@ -89,6 +89,11 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     >>> sizesof(Indexable(torch.ones(2, 3))[a(), b()])
     {a: 2, b: 3}
     """
+    if isinstance(value, torch.distributions.Distribution) and not isinstance(
+        value, Term
+    ):
+        return {v: s for a in value.__dict__.values() for v, s in sizesof(a).items()}
+
     sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
