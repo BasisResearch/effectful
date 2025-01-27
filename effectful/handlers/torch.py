@@ -75,7 +75,8 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
-def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
+@functools.singledispatch
+def sizesof(value) -> Mapping[Operation[[], int], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
     Sizes are inferred from the tensor shape.
@@ -89,11 +90,11 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     >>> sizesof(Indexable(torch.ones(2, 3))[a(), b()])
     {a: 2, b: 3}
     """
-    if isinstance(value, torch.distributions.Distribution) and not isinstance(
-        value, Term
-    ):
-        return {v: s for a in value.__dict__.values() for v, s in sizesof(a).items()}
+    return {}
 
+
+@sizesof.register(Term)
+def _sizesof_term(value: Term) -> Mapping[Operation[[], int], int]:
     sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
@@ -126,6 +127,15 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
         evaluate(value)
 
     return sizes
+
+
+@sizesof.register(torch.distributions.Distribution)
+def _sizesof_distribution(
+    value: torch.distributions.Distribution,
+) -> Mapping[Operation[[], int], int]:
+    if isinstance(value, Term):
+        return _sizesof_term(value)
+    return {v: s for a in value.__dict__.values() for v, s in sizesof(a).items()}
 
 
 def _partial_eval(t: T, order: Optional[Sequence[Operation[[], int]]] = None) -> T:

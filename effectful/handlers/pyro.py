@@ -342,6 +342,9 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def enumerate_support(self, expand=True):
         return self._to_positional(self.base_dist.enumerate_support(expand))
 
+    def _sizesof(self):
+        return {}
+
 
 class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):
     """A distribution wrapper that lazily names leftmost dimensions."""
@@ -436,6 +439,26 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
 
     def enumerate_support(self, expand=True):
         return self._to_named(self.base_dist.enumerate_support(expand))
+
+    def _sizesof(self):
+        base_shape = self.base_dist.shape()
+        return {
+            v: base_shape[d] for (v, d) in self.naming.name_to_dim.items()
+        } | sizesof(self.base_dist)
+
+
+@sizesof.register(PositionalDistribution)
+def _sizesof_positional_distribution(
+    value: PositionalDistribution,
+) -> Mapping[Operation[[], int], int]:
+    return value._sizesof()
+
+
+@sizesof.register(NamedDistribution)
+def _sizesof_named_distribution(
+    value: NamedDistribution,
+) -> Mapping[Operation[[], int], int]:
+    return value._sizesof()
 
 
 def pyro_module_shim(
