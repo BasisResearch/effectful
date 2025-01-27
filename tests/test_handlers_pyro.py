@@ -238,3 +238,37 @@ def test_simple_distribution():
     dist.Beta(t, t, validate_args=False)
 
     dist.Bernoulli(t, validate_args=False)
+
+
+def test_sizesof_named_distribution():
+    # Create base distribution with known batch shape
+    base_dist = dist.Normal(torch.zeros(3, 4, 5), torch.ones(3, 4, 5))
+
+    # Create names for the first two dimensions
+    dim0 = defop(int, name="dim0")
+    dim1 = defop(int, name="dim1")
+    names = [dim0, dim1]
+
+    # Create named distribution
+    named_dist = NamedDistribution(base_dist, names)
+
+    # Get sizes
+    sizes = sizesof(named_dist)
+
+    # Check that the sizes match expected values
+    assert sizes[dim0] == 3
+    assert sizes[dim1] == 4
+    assert len(sizes) == 2  # Only named dimensions should be included
+
+
+def test_sizesof_positional_distribution():
+    dim0 = defop(int, name="dim0")
+    dim1 = defop(int, name="dim1")
+
+    mean = Indexable(torch.zeros(3, 4, 5))[dim0(), dim1()]
+    var = Indexable(torch.ones(3, 4, 5))[dim0(), dim1()]
+    base_dist = dist.Normal(mean, var)
+
+    pos_dist = PositionalDistribution(base_dist)
+
+    assert sizesof(pos_dist) == {}
