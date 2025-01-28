@@ -1,6 +1,18 @@
+from abc import ABC, abstractmethod
+import functools
 import typing
 import warnings
-from typing import Any, Collection, List, Mapping, Optional, Tuple, Annotated, TypeVar
+from typing import (
+    Any,
+    Collection,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Annotated,
+    TypeVar,
+    Callable,
+)
 
 try:
     import pyro
@@ -21,6 +33,7 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import Indexable, sizesof, to_tensor
 from effectful.ops.syntax import defop, Scoped, defterm, defdata
+from effectful.ops.semantics import call
 from effectful.ops.types import Operation, Term
 
 P = ParamSpec("P")
@@ -270,66 +283,89 @@ def positional_distribution(
     raise NotImplementedError
 
 
-@Term.register
-class _DistributionTerm(TorchDistribution):
-    """A distribution wrapper that satisfies the Term interface."""
+class _TorchDistributionWrapperMixin(ABC):
+    @property
+    @abstractmethod
+    def _base_dist(self):
+        pass
 
-    op: Operation[..., TorchDistribution] = defop(TorchDistribution)
-    args: Tuple[torch.Tensor, ...]
-    kwargs: Mapping[str, object] = {}
+    @property
+    def has_rsample(self):
+        return self._base_dist.has_rsample
 
-    __match_args__ = ("op", "args", "kwargs")
+    @property
+    def batch_shape(self):
+        return self._base_dist.batch_shape
 
-    def __init__(self, base_dist: TorchDistribution):
-        self.args = tuple(base_dist.__dict__.values())
-        self.base_dist = base_dist
+    @property
+    def event_shape(self):
+        return self._base_dist.event_shape
+
+    @property
+    def has_enumerate_support(self):
+        return self._base_dist.has_enumerate_support
+
+    @property
+    def arg_constraints(self):
+        return self._base_dist.arg_constraints
+
+    @property
+    def support(self):
+        return self._base_dist.support
+
+    def sample(self, sample_shape=torch.Size()):
+        return self._base_dist.sample(sample_shape)
+
+    def rsample(self, sample_shape=torch.Size()):
+        return self._base_dist.rsample(sample_shape)
+
+    def log_prob(self, value):
+        return self._base_dist.log_prob(value)
+
+    def enumerate_support(self, expand=True):
+        return self._base_dist.enumerate_support(expand)
 
     def __getitem__(self, key: Collection[Operation[[], int]]):
         return named_distribution(self, *key)
 
-    @property
-    def has_rsample(self):
-        return self.base_dist.has_rsample
+
+@functools.cache
+def _register_dist_constr(dist_constr: Callable[P, TorchDistribution]):
+    return defop(dist_constr)
+
+
+@Term.register
+class _DistributionTerm(_TorchDistributionWrapperMixin, TorchDistribution):
+    """A distribution wrapper that satisfies the Term interface.
+
+    Represented as a term of the form call(D, *args, **kwargs) where D is the
+    distribution constructor.
+
+    """
+
+    op: Operation = call
+    args: tuple
+    kwargs: Mapping[str, Any] = {}
+
+    __match_args__ = ("op", "args", "kwargs")
+
+    def __init__(self, base_dist: TorchDistribution):
+        self.args = (_register_dist_constr(type(base_dist)),) + tuple(
+            base_dist.__dict__.values()
+        )
 
     @property
-    def batch_shape(self):
-        return self.base_dist.batch_shape
-
-    @property
-    def event_shape(self):
-        return self.base_dist.event_shape
-
-    @property
-    def has_enumerate_support(self):
-        return self.base_dist.has_enumerate_support
-
-    @property
-    def arg_constraints(self):
-        return self.base_dist.arg_constraints
-
-    @property
-    def support(self):
-        return self.base_dist.support
-
-    def sample(self, sample_shape=torch.Size()):
-        return self.base_dist.sample(sample_shape)
-
-    def rsample(self, sample_shape=torch.Size()):
-        return self.base_dist.rsample(sample_shape)
-
-    def log_prob(self, value):
-        return self.base_dist.log_prob(value)
-
-    def enumerate_support(self, expand=True):
-        return self.base_dist.enumerate_support(expand)
+    def _base_dist(self):
+        return self.args[0](*self.args[1:])
 
 
 @defterm.register(TorchDistribution)
+@defterm.register(TorchDistributionMixin)
 def _embed_dist(dist: TorchDistribution) -> Term[TorchDistribution]:
     return _DistributionTerm(dist)
 
 
-class _PositionalDistributionTerm(_DistributionTerm):
+class _PositionalDistributionTerm(_TorchDistributionWrapperMixin, TorchDistribution):
     """A distribution wrapper that lazily converts indexed dimensions to
     positional.
 
@@ -344,23 +380,25 @@ class _PositionalDistributionTerm(_DistributionTerm):
     indices: Mapping[Operation[[], int], int]
 
     def __init__(self, base_dist: TorchDistribution):
-        super().__init__(base_dist)
-
         self.args = (base_dist,)
         self.indices = sizesof(base_dist)
 
         n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
         self.naming = Naming.from_shape(self.indices.keys(), n_base)
 
+    @property
+    def _base_dist(self):
+        return self.args[0]
+
     def _to_positional(self, value: torch.Tensor) -> torch.Tensor:
-        # self.base_dist has shape: | batch_shape | event_shape | & named
+        # self._base_dist has shape: | batch_shape | event_shape | & named
         # assume value comes from base_dist with shape:
         # | sample_shape | batch_shape | event_shape | & named
         # return a tensor of shape | sample_shape | named | batch_shape | event_shape |
         n_named = len(self.indices)
         dims = list(range(n_named + len(value.shape)))
 
-        n_base = len(self.event_shape) + len(self.base_dist.batch_shape)
+        n_base = len(self.event_shape) + len(self._base_dist.batch_shape)
         n_sample = len(value.shape) - n_base
 
         base_dims = dims[len(dims) - n_base :]
@@ -381,47 +419,23 @@ class _PositionalDistributionTerm(_DistributionTerm):
         return self.naming.apply(value)
 
     @property
-    def has_rsample(self):
-        return self.base_dist.has_rsample
-
-    @property
     def batch_shape(self):
-        return (
-            torch.Size([s for s in self.indices.values()]) + self.base_dist.batch_shape
-        )
-
-    @property
-    def event_shape(self):
-        return self.base_dist.event_shape
-
-    @property
-    def has_enumerate_support(self):
-        return self.base_dist.has_enumerate_support
-
-    @property
-    def arg_constraints(self):
-        return self.base_dist.arg_constraints
-
-    @property
-    def support(self):
-        return self.base_dist.support
+        return torch.Size([s for s in self.indices.values()]) + super().batch_shape
 
     def sample(self, sample_shape=torch.Size()):
-        return self._to_positional(self.base_dist.sample(sample_shape))
+        return self._to_positional(super().sample(sample_shape))
 
     def rsample(self, sample_shape=torch.Size()):
-        return self._to_positional(self.base_dist.rsample(sample_shape))
+        return self._to_positional(super().rsample(sample_shape))
 
     def log_prob(self, value):
-        return self._to_positional(
-            self.base_dist.log_prob(self._from_positional(value))
-        )
+        return self._to_positional(super().log_prob(self._from_positional(value)))
 
     def enumerate_support(self, expand=True):
-        return self._to_positional(self.base_dist.enumerate_support(expand))
+        return self._to_positional(super().enumerate_support(expand))
 
 
-class _NamedDistributionTerm(_DistributionTerm):
+class _NamedDistributionTerm(_TorchDistributionWrapperMixin, TorchDistribution):
     """A distribution wrapper that lazily names leftmost dimensions."""
 
     op: Operation[..., TorchDistribution] = named_distribution
@@ -437,7 +451,7 @@ class _NamedDistributionTerm(_DistributionTerm):
         :param names: A list of names.
 
         """
-        self.base_dist = base_dist
+        self.args = (base_dist,) + tuple(names)
         self.names = names
 
         assert 1 <= len(names) <= len(base_dist.batch_shape)
@@ -446,7 +460,10 @@ class _NamedDistributionTerm(_DistributionTerm):
 
         n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
         self.naming = Naming.from_shape(names, n_base - len(names))
-        super().__init__()
+
+    @property
+    def _base_dist(self):
+        return self.args[0]
 
     def _to_named(self, value: torch.Tensor, offset=0) -> torch.Tensor:
         return self.naming.apply(value)

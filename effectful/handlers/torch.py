@@ -23,7 +23,7 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -122,12 +122,12 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
 
         return defdata(torch_getitem, x, key)
 
-    with interpreter(
-        {
-            torch_getitem: _torch_getitem_sizeof,
-            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-        }
-    ):
+    def _apply(_, op, *args, **kwargs):
+        args, kwargs = tree.map_structure(defterm, (args, kwargs))
+        return defdata(op, *args, **kwargs)
+
+    value = defterm(value)
+    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
         evaluate(value)
 
     return sizes

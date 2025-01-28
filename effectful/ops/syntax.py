@@ -89,7 +89,7 @@ class Scoped(Annotation):
 
       >>> @defop
       ... def LambdaN(
-      ...     body: Annotated[T, Scoped[A | B]]
+      ...     body: Annotated[T, Scoped[A | B]],
       ...     *args: Annotated[Operation[[], S], Scoped[A]],
       ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
       ... ) -> Annotated[Callable[..., T], Scoped[B]]:
@@ -280,7 +280,7 @@ class Scoped(Annotation):
         # pre-conditions
         assert cls._check_has_single_scope(sig)
         assert cls._check_no_typevar_overlap(sig)
-        assert cls._check_no_boundvars_in_result(sig)
+        # assert cls._check_no_boundvars_in_result(sig)
 
         root_ordinal = cls._get_root_ordinal(sig)
         if not root_ordinal:

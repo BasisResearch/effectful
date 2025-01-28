@@ -179,7 +179,7 @@ def test_indexed_sample():
 
 def test_named_dist():
     x, y = defop(int, name="x"), defop(int, name="y")
-    d = named_distribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
+    d = named_distribution(dist.Normal(0.0, 1.0).expand((2, 3)), x, y)
 
     expected_indices = {x: 2, y: 3}
 
@@ -250,7 +250,7 @@ def test_sizesof_named_distribution():
     names = [dim0, dim1]
 
     # Create named distribution
-    named_dist = named_distribution(base_dist, names)
+    named_dist = named_distribution(base_dist, *names)
 
     # Get sizes
     sizes = sizesof(named_dist)

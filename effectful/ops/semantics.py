@@ -37,7 +37,9 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
 
     By installing an :func:`apply` handler, we capture the term instead:
 
-    >>> with handler({apply: lambda _, op, *args, **kwargs: op.__free_rule__(*args, **kwargs) }):
+    >>> def default(*args, **kwargs):
+    ...     raise NotImplementedError
+    >>> with handler({apply: default }):
     ...     term = mul(add(1, 2), 3)
     >>> term
     mul(add(1, 2), 3)
