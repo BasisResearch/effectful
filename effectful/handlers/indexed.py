@@ -32,13 +32,13 @@ class IndexSet(Dict[str, Set[int]]):
     for which a value is defined::
 
         >>> IndexSet(x={0, 1}, y={2, 3})
-        IndexSet({x: {0, 1}, y: {2, 3}})
+        IndexSet({'x': {0, 1}, 'y': {2, 3}})
 
     :class:`IndexSet` 's constructor will automatically drop empty entries
     and attempt to convert input values to :class:`set` s::
 
         >>> IndexSet(x=[0, 0, 1], y=set(), z=2)
-        IndexSet({x: {0, 1}, z: {2}})
+        IndexSet({'x': {0, 1}, 'z': {2}})
 
     :class:`IndexSet` s are also hashable and can be used as keys in :class:`dict` s::
 
@@ -263,8 +263,10 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
     Unlike a Python conditional expression, however, the case may be a tensor,
     and both branches are evaluated, as with :func:`torch.where` ::
 
-        >>> from effectful.internals.sugar import gensym
-        >>> b = gensym(int, name="b")
+        >>> from effectful.ops.syntax import defop
+        >>> from effectful.handlers.torch import to_tensor
+
+        >>> b = defop(int, name="b")
         >>> fst, snd = Indexable(torch.randn(2, 3))[b()], Indexable(torch.randn(2, 3))[b()]
         >>> case = (fst < snd).all(-1)
         >>> x = cond(fst, snd, case)

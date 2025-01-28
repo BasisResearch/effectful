@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import (
-    NamedDistribution,
-    PositionalDistribution,
+    named_distribution,
+    positional_distribution,
     PyroShim,
     pyro_sample,
 )
@@ -179,7 +179,7 @@ def test_indexed_sample():
 
 def test_named_dist():
     x, y = defop(int, name="x"), defop(int, name="y")
-    d = NamedDistribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
+    d = named_distribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
 
     expected_indices = {x: 2, y: 3}
 
@@ -203,7 +203,7 @@ def test_positional_dist():
 
     expected_indices = {x: 2, y: 3}
 
-    d = PositionalDistribution(dist.Normal(loc, scale))
+    d = positional_distribution(dist.Normal(loc, scale))
 
     assert d.shape() == torch.Size([2, 3])
 
@@ -224,7 +224,7 @@ def test_positional_dist():
 
     loc = Indexable(torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
     scale = Indexable(torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
-    d = PositionalDistribution(dist.Normal(loc, scale))
+    d = positional_distribution(dist.Normal(loc, scale))
 
     assert sizesof(d._from_positional(d.sample((6, 7)))) == expected_indices
     assert d.sample().shape == torch.Size([2, 3, 4, 5])
@@ -250,7 +250,7 @@ def test_sizesof_named_distribution():
     names = [dim0, dim1]
 
     # Create named distribution
-    named_dist = NamedDistribution(base_dist, names)
+    named_dist = named_distribution(base_dist, names)
 
     # Get sizes
     sizes = sizesof(named_dist)
@@ -269,6 +269,6 @@ def test_sizesof_positional_distribution():
     var = Indexable(torch.ones(3, 4, 5))[dim0(), dim1()]
     base_dist = dist.Normal(mean, var)
 
-    pos_dist = PositionalDistribution(base_dist)
+    pos_dist = positional_distribution(base_dist)
 
     assert sizesof(pos_dist) == {}

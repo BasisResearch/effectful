@@ -1,11 +1,16 @@
 import typing
 import warnings
-from typing import Any, Collection, List, Mapping, Optional, Tuple
+from typing import Any, Collection, List, Mapping, Optional, Tuple, Annotated, TypeVar
 
 try:
     import pyro
 except ImportError:
     raise ImportError("Pyro is required to use effectful.handlers.pyro.")
+
+from pyro.distributions.torch_distribution import (
+    TorchDistributionMixin,
+    TorchDistribution,
+)
 
 try:
     import torch
@@ -15,16 +20,18 @@ except ImportError:
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import Indexable, sizesof, to_tensor
-from effectful.ops.syntax import defop
-from effectful.ops.types import Operation
+from effectful.ops.syntax import defop, Scoped, defterm, defdata
+from effectful.ops.types import Operation, Term
 
 P = ParamSpec("P")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 @defop
 def pyro_sample(
     name: str,
-    fn: pyro.distributions.torch_distribution.TorchDistributionMixin,
+    fn: TorchDistributionMixin,
     *args,
     obs: Optional[torch.Tensor] = None,
     obs_mask: Optional[torch.BoolTensor] = None,
@@ -124,9 +131,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             assert msg["type"] == "sample"
             assert msg["name"] is not None
             assert msg["infer"] is not None
-            assert isinstance(
-                msg["fn"], pyro.distributions.torch_distribution.TorchDistributionMixin
-            )
+            assert isinstance(msg["fn"], TorchDistributionMixin)
 
         if pyro.poutine.util.site_is_subsample(msg) or pyro.poutine.util.site_is_factor(
             msg
@@ -142,7 +147,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
             # pdist shape: | named1 | batch_shape | event_shape |
             # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
-            pdist = PositionalDistribution(dist)
+            pdist = positional_distribution(dist)
             naming = pdist.naming
 
             if msg["mask"] is None:
@@ -209,9 +214,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         if value is not None:
             # note: is it safe to assume that msg['fn'] is a distribution?
-            assert isinstance(
-                msg["fn"], pyro.distributions.torch_distribution.TorchDistribution
-            )
+            assert isinstance(msg["fn"], TorchDistribution)
             dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(
@@ -252,24 +255,102 @@ class Naming:
         return f"Naming({self.name_to_dim})"
 
 
-class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribution):
+@defop
+def named_distribution(
+    dist: Annotated[TorchDistribution, Scoped[A]],
+    *names: Annotated[Operation[[], int], Scoped[B]],
+) -> Annotated[TorchDistribution, Scoped[A | B]]:
+    raise NotImplementedError
+
+
+@defop
+def positional_distribution(
+    dist: Annotated[TorchDistribution, Scoped[A]]
+) -> TorchDistribution:
+    raise NotImplementedError
+
+
+@Term.register
+class _DistributionTerm(TorchDistribution):
+    """A distribution wrapper that satisfies the Term interface."""
+
+    op: Operation[..., TorchDistribution] = defop(TorchDistribution)
+    args: Tuple[torch.Tensor, ...]
+    kwargs: Mapping[str, object] = {}
+
+    __match_args__ = ("op", "args", "kwargs")
+
+    def __init__(self, base_dist: TorchDistribution):
+        self.args = tuple(base_dist.__dict__.values())
+        self.base_dist = base_dist
+
+    def __getitem__(self, key: Collection[Operation[[], int]]):
+        return named_distribution(self, *key)
+
+    @property
+    def has_rsample(self):
+        return self.base_dist.has_rsample
+
+    @property
+    def batch_shape(self):
+        return self.base_dist.batch_shape
+
+    @property
+    def event_shape(self):
+        return self.base_dist.event_shape
+
+    @property
+    def has_enumerate_support(self):
+        return self.base_dist.has_enumerate_support
+
+    @property
+    def arg_constraints(self):
+        return self.base_dist.arg_constraints
+
+    @property
+    def support(self):
+        return self.base_dist.support
+
+    def sample(self, sample_shape=torch.Size()):
+        return self.base_dist.sample(sample_shape)
+
+    def rsample(self, sample_shape=torch.Size()):
+        return self.base_dist.rsample(sample_shape)
+
+    def log_prob(self, value):
+        return self.base_dist.log_prob(value)
+
+    def enumerate_support(self, expand=True):
+        return self.base_dist.enumerate_support(expand)
+
+
+@defterm.register(TorchDistribution)
+def _embed_dist(dist: TorchDistribution) -> Term[TorchDistribution]:
+    return _DistributionTerm(dist)
+
+
+class _PositionalDistributionTerm(_DistributionTerm):
     """A distribution wrapper that lazily converts indexed dimensions to
     positional.
 
     """
 
+    op: Operation[..., TorchDistribution] = positional_distribution
+    args: Tuple[TorchDistribution]
+    kwargs: Mapping[str, object] = {}
+
+    __match_args__ = ("op", "args", "kwargs")
+
     indices: Mapping[Operation[[], int], int]
 
-    def __init__(
-        self, base_dist: pyro.distributions.torch_distribution.TorchDistribution
-    ):
-        self.base_dist = base_dist
+    def __init__(self, base_dist: TorchDistribution):
+        super().__init__(base_dist)
+
+        self.args = (base_dist,)
         self.indices = sizesof(base_dist)
 
         n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
         self.naming = Naming.from_shape(self.indices.keys(), n_base)
-
-        super().__init__()
 
     def _to_positional(self, value: torch.Tensor) -> torch.Tensor:
         # self.base_dist has shape: | batch_shape | event_shape | & named
@@ -325,9 +406,6 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def support(self):
         return self.base_dist.support
 
-    def __repr__(self):
-        return f"PositionalDistribution({self.base_dist})"
-
     def sample(self, sample_shape=torch.Size()):
         return self._to_positional(self.base_dist.sample(sample_shape))
 
@@ -342,18 +420,17 @@ class PositionalDistribution(pyro.distributions.torch_distribution.TorchDistribu
     def enumerate_support(self, expand=True):
         return self._to_positional(self.base_dist.enumerate_support(expand))
 
-    def _sizesof(self):
-        return {}
 
-
-class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution):
+class _NamedDistributionTerm(_DistributionTerm):
     """A distribution wrapper that lazily names leftmost dimensions."""
 
-    def __init__(
-        self,
-        base_dist: pyro.distributions.torch_distribution.TorchDistribution,
-        names: Collection[Operation[[], int]],
-    ):
+    op: Operation[..., TorchDistribution] = named_distribution
+    args: tuple
+    kwargs: Mapping[str, object] = {}
+
+    __match_args__ = ("op", "args", "kwargs")
+
+    def __init__(self, base_dist: TorchDistribution, *names: Operation[[], int]):
         """
         :param base_dist: A distribution with batch dimensions.
 
@@ -392,73 +469,33 @@ class NamedDistribution(pyro.distributions.torch_distribution.TorchDistribution)
         return pos_tensor_r
 
     @property
-    def has_rsample(self):
-        return self.base_dist.has_rsample
-
-    @property
     def batch_shape(self):
-        return self.base_dist.batch_shape[len(self.names) :]
-
-    @property
-    def event_shape(self):
-        return self.base_dist.event_shape
-
-    @property
-    def has_enumerate_support(self):
-        return self.base_dist.has_enumerate_support
-
-    @property
-    def arg_constraints(self):
-        return self.base_dist.arg_constraints
-
-    @property
-    def support(self):
-        return self.base_dist.support
-
-    def __repr__(self):
-        return f"NamedDistribution({self.base_dist}, {self.names})"
+        return super().batch_shape[len(self.names) :]
 
     def sample(self, sample_shape=torch.Size()):
-        t = self._to_named(
-            self.base_dist.sample(sample_shape), offset=len(sample_shape)
-        )
+        t = self._to_named(super().sample(sample_shape), offset=len(sample_shape))
         assert set(sizesof(t).keys()) == set(self.names)
         assert t.shape == self.shape() + sample_shape
         return t
 
     def rsample(self, sample_shape=torch.Size()):
-        return self._to_named(
-            self.base_dist.rsample(sample_shape), offset=len(sample_shape)
-        )
+        return self._to_named(super().rsample(sample_shape), offset=len(sample_shape))
 
     def log_prob(self, value):
-        v1 = self._from_named(value)
-        v2 = self.base_dist.log_prob(v1)
-        v3 = self._to_named(v2)
-        return v3
+        return self._to_named(super().log_prob(self._from_named(value)))
 
     def enumerate_support(self, expand=True):
-        return self._to_named(self.base_dist.enumerate_support(expand))
-
-    def _sizesof(self):
-        base_shape = self.base_dist.shape()
-        return {
-            v: base_shape[d] for (v, d) in self.naming.name_to_dim.items()
-        } | sizesof(self.base_dist)
+        return self._to_named(super().enumerate_support(expand))
 
 
-@sizesof.register(PositionalDistribution)
-def _sizesof_positional_distribution(
-    value: PositionalDistribution,
-) -> Mapping[Operation[[], int], int]:
-    return value._sizesof()
-
-
-@sizesof.register(NamedDistribution)
-def _sizesof_named_distribution(
-    value: NamedDistribution,
-) -> Mapping[Operation[[], int], int]:
-    return value._sizesof()
+@defdata.register(TorchDistribution)
+def _(op, *args, **kwargs):
+    if op is named_distribution:
+        return _NamedDistributionTerm(*args, **kwargs)
+    elif op is positional_distribution:
+        return _PositionalDistributionTerm(*args, **kwargs)
+    else:
+        Term(op, *args, **kwargs)
 
 
 def pyro_module_shim(
