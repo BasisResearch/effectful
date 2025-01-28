@@ -37,6 +37,8 @@ def test_gensym_operation():
 
     assert defop(f).__name__ == f.__name__
     assert defop(f, name="f2").__name__ == "f2"
+    assert repr(defop(f)) == f.__name__
+    assert repr(defop(f, name="f2")) == "f2"
 
 
 def test_gensym_operation_2():
