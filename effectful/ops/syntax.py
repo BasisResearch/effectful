@@ -17,6 +17,8 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 @dataclasses.dataclass
@@ -564,9 +566,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                                 param_bound_vars for _ in bound_sig.arguments[name]
                             )
                         elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            result_sig.kwargs[name] = {
-                                k: param_bound_vars for k in bound_sig.arguments[name]
-                            }
+                            for k in bound_sig.arguments[name]:
+                                result_sig.arguments[name][k] = param_bound_vars
                         else:
                             result_sig.arguments[name] = param_bound_vars
 
@@ -656,10 +657,10 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 @defop
 def deffn(
-    body: Annotated[T, Scoped[S]],
-    *args: Annotated[Operation, Scoped[S]],
-    **kwargs: Annotated[Operation, Scoped[S]],
-) -> Callable[..., T]:
+    body: Annotated[T, Scoped[A | B]],
+    *args: Annotated[Operation, Scoped[A]],
+    **kwargs: Annotated[Operation, Scoped[A]],
+) -> Annotated[Callable[..., T], Scoped[B]]:
     """An operation that represents a lambda function.
 
     :param body: The body of the function.
