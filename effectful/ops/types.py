@@ -70,6 +70,9 @@ class Operation(abc.ABC, Generic[Q, V]):
 
         return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
+
 
 class Term(abc.ABC, Generic[T]):
     """A term in an effectful computation is a is a tree of :class:`Operation`
@@ -98,7 +101,7 @@ class Term(abc.ABC, Generic[T]):
         raise NotImplementedError
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self.op}, {self.args}, {self.kwargs})"
+        return f"{self.__class__.__name__}({self.op!r}, {self.args!r}, {self.kwargs!r})"
 
     def __str__(self) -> str:
         from effectful.internals.runtime import interpreter
