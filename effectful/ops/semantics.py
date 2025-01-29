@@ -41,7 +41,7 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     ...     raise NotImplementedError
     >>> with handler({apply: default }):
     ...     term = mul(add(1, 2), 3)
-    >>> term
+    >>> print(str(term))
     mul(add(1, 2), 3)
 
     """
@@ -242,7 +242,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation] = None) -> Expr[T]
     ... def add(x: int, y: int) -> int:
     ...     raise NotImplementedError
     >>> expr = add(1, add(2, 3))
-    >>> expr
+    >>> print(str(expr))
     add(1, add(2, 3))
     >>> evaluate(expr, intp={add: lambda x, y: x + y})
     6
@@ -302,9 +302,9 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
     >>> @defop
     ... def f(x: int, y: int) -> int:
     ...     raise NotImplementedError
-    >>> fvsof(f(1, 2))
-    {f}
-
+    >>> fvs = fvsof(f(1, 2))
+    >>> assert f in fvs
+    >>> assert len(fvs) == 1
     """
     from effectful.internals.runtime import interpreter
 
