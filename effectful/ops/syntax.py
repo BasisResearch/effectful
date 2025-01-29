@@ -116,7 +116,9 @@ class Scoped(Annotation):
       Here the variable ``var`` is bound by :func:`Let` in `body` but not in ``val`` :
 
       >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())))
-      >>> assert {x, y} in fvsof(Let(x, add(y(), x()), add(x(), y())))
+
+      >>> fvs = fvsof(Let(x, add(y(), x()), add(x(), y())))
+      >>> assert x in fvs and y in fvs
 
       This is reflected in the free variables of subterms of the result:
 
