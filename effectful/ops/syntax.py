@@ -579,31 +579,41 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         bound_sig.apply_defaults()
 
         anno = sig.return_annotation
+
+        def unwrap_annotation(typ):
+            """Unwrap Annotated types."""
+            return (
+                typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
+            )
+
+        def drop_params(typ):
+            """Strip parameters from polymorphic types."""
+            origin = typing.get_origin(typ)
+            return typ if origin is None else origin
+
+        anno = unwrap_annotation(anno)
+
         if anno is inspect.Signature.empty:
             return typing.cast(Type[V], object)
-        elif isinstance(anno, typing.TypeVar):
+
+        if isinstance(anno, typing.TypeVar):
             # rudimentary but sound special-case type inference sufficient for syntax ops:
             # if the return type annotation is a TypeVar,
             # look for a parameter with the same annotation and return its type,
             # otherwise give up and return Any/object
             for name, param in bound_sig.signature.parameters.items():
-                if param.annotation is anno and param.kind not in (
+                param_typ = unwrap_annotation(param.annotation)
+                if param_typ is anno and param.kind not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
                     tp: Type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return tp
+                    return drop_params(tp)
+
             return typing.cast(Type[V], object)
-        elif typing.get_origin(anno) is typing.Annotated:
-            tp = typing.get_args(anno)[0]
-            if not typing.TYPE_CHECKING:
-                tp = tp if typing.get_origin(tp) is None else typing.get_origin(tp)
-            return tp
-        elif typing.get_origin(anno) is not None:
-            return typing.get_origin(anno)
-        else:
-            return anno
+
+        return drop_params(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
