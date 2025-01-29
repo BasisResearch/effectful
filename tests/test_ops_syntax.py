@@ -1,7 +1,8 @@
 from typing import Annotated, Callable, TypeVar
 
+import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import call, evaluate, fvsof
-from effectful.ops.syntax import Scoped, defop, defterm
+from effectful.ops.syntax import Scoped, deffn, defop, defterm
 from effectful.ops.types import Operation, Term
 
 
@@ -37,8 +38,8 @@ def test_gensym_operation():
 
     assert defop(f).__name__ == f.__name__
     assert defop(f, name="f2").__name__ == "f2"
-    assert repr(defop(f)) == f.__name__
-    assert repr(defop(f, name="f2")) == "f2"
+    assert str(defop(f)) == f.__name__
+    assert str(defop(f, name="f2")) == "f2"
 
 
 def test_gensym_operation_2():
@@ -49,7 +50,6 @@ def test_gensym_operation_2():
     # passing an operation to gensym should return a new operation
     g_op = defop(op)
     assert g_op != defop(g_op) != defop(op, name=op.__name__) != op
-    assert str(g_op) != str(op) == str(defop(op, name=op.__name__))
 
     # the new operation should have no default rule
     t = g_op(0)
@@ -122,3 +122,17 @@ def test_no_default_tracing():
     assert isinstance(f1_app, Term)
     assert f1_app.op is call
     assert f1_app.args[0] is f1
+
+
+def test_term_str():
+    x1 = defop(int, name="x")
+    x2 = defop(int, name="x")
+    x3 = defop(x1)
+
+    assert str(x1) == str(x2) == str(x3) == "x"
+    assert repr(x1) != repr(x2) != repr(x3)
+    assert str(x1() + x2()) == "add(x(), x!1())"
+    assert str(x1() + x1()) == "add(x(), x())"
+    assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
+    assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
+    assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"

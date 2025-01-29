@@ -5,7 +5,7 @@ import inspect
 import random
 import types
 import typing
-from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
+from typing import Annotated, Callable, Generic, List, Optional, Type, TypeVar
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
@@ -89,7 +89,7 @@ class Scoped(Annotation):
 
       >>> @defop
       ... def LambdaN(
-      ...     body: Annotated[T, Scoped[A | B]]
+      ...     body: Annotated[T, Scoped[A | B]],
       ...     *args: Annotated[Operation[[], S], Scoped[A]],
       ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
       ... ) -> Annotated[Callable[..., T], Scoped[B]]:
@@ -370,7 +370,9 @@ class Scoped(Annotation):
 
 
 @functools.singledispatch
-def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+def defop(
+    t: Callable[P, T], *, name: Optional[str] = None, freshening=Optional[List[int]]
+) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -417,7 +419,7 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
       >>> @defop
       ... def add(x: int, y: int) -> int:
       ...     raise NotImplementedError
-      >>> add(1, 2)
+      >>> print(str(add(1, 2)))
       add(1, 2)
 
       When an operation has no default rule, the free rule is used instead, which
@@ -428,14 +430,14 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
       Passing :func:`defop` a type is a handy way to create a free variable.
 
-      >>> import effectful.handlers.operator
+      >>> import effectful.handlers.numbers
       >>> from effectful.ops.semantics import evaluate
       >>> x = defop(int, name='x')
       >>> y = x() + 1
 
       ``y`` is free in ``x``, so it is not fully evaluated:
 
-      >>> y
+      >>> print(str(y))
       add(x(), 1)
 
       We bind ``x`` by installing a handler for it:
@@ -460,7 +462,7 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
         operation object. In this example, ``scale`` returns a term with a free
         variable ``x``:
 
-        >>> import effectful.handlers.operator
+        >>> import effectful.handlers.numbers
         >>> def scale(a: float) -> float:
         ...     x = defop(float, name='x')
         ...     return x() * a
@@ -470,7 +472,7 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
         >>> term = scale(3.0)
         >>> x = defop(float, name='x')
         >>> with handler({x: lambda: 2.0}):
-        ...     print(evaluate(term))
+        ...     print(str(evaluate(term)))
         mul(x(), 3.0)
 
         This does:
@@ -487,7 +489,7 @@ def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
       the same name and signature, but no default rule.
 
       >>> fresh_select = defop(select)
-      >>> fresh_select(1, 2)
+      >>> print(str(fresh_select(1, 2)))
       select(1, 2)
 
       The new operation is distinct from the original:
@@ -511,10 +513,17 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
     _default: Callable[Q, V]
 
-    def __init__(self, default: Callable[Q, V], *, name: Optional[str] = None):
+    def __init__(
+        self,
+        default: Callable[Q, V],
+        *,
+        name: Optional[str] = None,
+        freshening: Optional[list[int]] = None,
+    ):
         functools.update_wrapper(self, default)
         self._default = default
         self.__name__ = name or default.__name__
+        self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
 
     def __eq__(self, other):
@@ -595,19 +604,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         else:
             return anno
 
-    def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
-        args_str = ", ".join(map(str, args)) if args else ""
-        kwargs_str = (
-            ", ".join(f"{k}={str(v)}" for k, v in kwargs.items()) if kwargs else ""
-        )
-
-        ret = f"{self.__name__}({args_str}"
-        if kwargs:
-            ret += f"{', ' if args else ''}"
-        ret += f"{kwargs_str})"
-        return ret
-
     def __repr__(self):
+        return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
+
+    def __str__(self):
         return self.__name__
 
 
@@ -619,10 +619,10 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
         raise NotImplementedError
 
     if name is None:
-        name = (
-            getattr(t, "__name__", str(t))[:10000] + f"__{random.randint(0, 1 << 32)}"
-        )
-    return defop(func, name=name)
+        name = getattr(t, "__name__", str(t))
+    freshening = getattr(t, "_freshening", []) + [random.randint(0, 1 << 32)]
+
+    return defop(func, name=name, freshening=freshening)
 
 
 @defop.register(type)
@@ -630,9 +630,15 @@ def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
+    freshening = []
     if name is None:
-        name = t.__name__ + f"__{random.randint(0, 1 << 32)}"
-    return typing.cast(Operation[[], T], defop(func, name=name))
+        name = t.__name__
+        freshening = [random.randint(0, 1 << 32)]
+
+    return typing.cast(
+        Operation[[], T],
+        defop(func, name=name, freshening=freshening),
+    )
 
 
 @defop.register(types.BuiltinFunctionType)
@@ -673,10 +679,13 @@ def deffn(
     Here :func:`deffn` is used to define a term that represents the function
     ``lambda x, y=1: 2 * x + y``:
 
-    >>> import effectful.handlers.operator
+    >>> import effectful.handlers.numbers
+    >>> import random
+    >>> random.seed(0)
+
     >>> x, y = defop(int, name='x'), defop(int, name='y')
     >>> term = deffn(2 * x() + y(), x, y=y)
-    >>> term
+    >>> print(str(term))
     deffn(add(mul(2, x()), y()), x, y=y)
     >>> term(3, y=4)
     10
@@ -728,8 +737,10 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     >>> def incr(x: int) -> int:
     ...     return x + 1
     >>> term = defterm(incr)
-    >>> term
+
+    >>> print(str(term))
     deffn(add(int(), 1), int)
+
     >>> term(2)
     3
 
