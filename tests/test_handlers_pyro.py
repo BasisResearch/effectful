@@ -8,9 +8,9 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import (
+    PyroShim,
     named_distribution,
     positional_distribution,
-    PyroShim,
     pyro_sample,
 )
 from effectful.handlers.torch import Indexable, sizesof, torch_getitem
@@ -203,14 +203,14 @@ def test_positional_dist():
 
     expected_indices = {x: 2, y: 3}
 
-    d = positional_distribution(dist.Normal(loc, scale))
+    d, naming = positional_distribution(dist.Normal(loc, scale))
 
     assert d.shape() == torch.Size([2, 3])
 
     s1 = d.sample()
     assert sizesof(s1) == {}
     assert s1.shape == torch.Size([2, 3])
-    assert all(n in sizesof(d._from_positional(s1)) for n in [x, y])
+    assert all(n in sizesof(naming.apply(s1)) for n in [x, y])
 
     d_exp = d.expand((4, 5) + d.batch_shape)
     s2 = d_exp.sample()
@@ -220,13 +220,13 @@ def test_positional_dist():
     s3 = d.sample((4, 5))
     assert sizesof(s3) == {}
     assert s3.shape == torch.Size([4, 5, 2, 3])
-    assert all(n in sizesof(d._from_positional(s3)) for n in [x, y])
+    assert all(n in sizesof(naming.apply(s3)) for n in [x, y])
 
     loc = Indexable(torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
     scale = Indexable(torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
-    d = positional_distribution(dist.Normal(loc, scale))
+    d, naming = positional_distribution(dist.Normal(loc, scale))
 
-    assert sizesof(d._from_positional(d.sample((6, 7)))) == expected_indices
+    assert sizesof(naming.apply(d.sample((6, 7)))) == expected_indices
     assert d.sample().shape == torch.Size([2, 3, 4, 5])
     assert d.sample((6, 7)).shape == torch.Size([6, 7, 2, 3, 4, 5])
 

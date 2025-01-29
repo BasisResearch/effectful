@@ -5,6 +5,8 @@ import pyro.distributions as dist
 import pytest
 import torch
 
+# required to register embedding for distributions
+import effectful.handlers.pyro  # noqa: F401
 from effectful.handlers.indexed import (
     IndexSet,
     cond,
