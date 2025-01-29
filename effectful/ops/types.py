@@ -63,10 +63,6 @@ class Operation(abc.ABC, Generic[Q, V]):
         """
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def __repr_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> str:
-        raise NotImplementedError
-
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
@@ -102,11 +98,48 @@ class Term(abc.ABC, Generic[T]):
         raise NotImplementedError
 
     def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.op}, {self.args}, {self.kwargs})"
+
+    def __str__(self) -> str:
         from effectful.internals.runtime import interpreter
         from effectful.ops.semantics import apply, evaluate
 
-        with interpreter({apply: lambda _, op, *a, **k: op.__repr_rule__(*a, **k)}):
-            return evaluate(self)  # type: ignore
+        fresh = collections.defaultdict(dict)
+
+        def op_str(op):
+            """Return a unique (in this term) name for the operation."""
+            name = op.__name__
+            if name not in fresh:
+                fresh[name] = {op: 0}
+            if op not in fresh[name]:
+                fresh[name][op] = len(fresh[name])
+
+            n = fresh[name][op]
+            if n == 0:
+                return name
+            return f"{name}!{n}"
+
+        def term_str(term):
+            if isinstance(term, Operation):
+                return op_str(term)
+            return str(term)
+
+        def _apply(_, op, *args, **kwargs):
+            args_str = ", ".join(map(term_str, args)) if args else ""
+            kwargs_str = (
+                ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())
+                if kwargs
+                else ""
+            )
+
+            ret = f"{op_str(op)}({args_str}"
+            if kwargs:
+                ret += f"{', ' if args else ''}"
+            ret += f"{kwargs_str})"
+            return ret
+
+        with interpreter({apply: _apply}):
+            return evaluate(self)
 
 
 #: An expression is either a value or a term.
