@@ -287,7 +287,7 @@ def named_distribution(
 
 @defop
 def positional_distribution(
-    dist: Annotated[TorchDistribution, Scoped[A]]
+    dist: Annotated[TorchDistribution, Scoped[A]],
 ) -> Tuple[TorchDistribution, Naming]:
     match defterm(dist):
         case Term(op=_call, args=(dist_constr, *args)) if _call is call:

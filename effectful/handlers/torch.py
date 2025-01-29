@@ -469,7 +469,7 @@ class _EagerTensorTerm(torch.Tensor):
 
 
 def _indexed_func_wrapper(
-    func: Callable[P, T]
+    func: Callable[P, T],
 ) -> Tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
     indexes = None
