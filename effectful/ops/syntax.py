@@ -453,7 +453,8 @@ def defop(
         Because the result of :func:`defop` is always fresh, it's important to
         be careful with variable identity.
 
-        Two variables with the same name are not equal:
+        Two operations with the same name that come from different calls to
+        ``defop`` are not equal:
 
         >>> x1 = defop(int, name='x')
         >>> x2 = defop(int, name='x')
@@ -465,23 +466,22 @@ def defop(
         variable ``x``:
 
         >>> import effectful.handlers.numbers
+        >>> x = defop(float, name='x')
         >>> def scale(a: float) -> float:
-        ...     x = defop(float, name='x')
         ...     return x() * a
 
-        Binding the variable ``x`` by creating a fresh operation object does not
+        Binding the variable ``x`` as follows does not work:
 
         >>> term = scale(3.0)
-        >>> x = defop(float, name='x')
-        >>> with handler({x: lambda: 2.0}):
+        >>> fresh_x = defop(float, name='x')
+        >>> with handler({fresh_x: lambda: 2.0}):
         ...     print(str(evaluate(term)))
         mul(x(), 3.0)
 
-        This does:
+        Only the original operation object will work:
 
         >>> from effectful.ops.semantics import fvsof
-        >>> correct_x = [v for v in fvsof(term) if str(x) == 'x'][0]
-        >>> with handler({correct_x: lambda: 2.0}):
+        >>> with handler({x: lambda: 2.0}):
         ...     print(evaluate(term))
         6.0
 
