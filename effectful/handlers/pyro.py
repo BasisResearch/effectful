@@ -225,7 +225,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         if value is not None:
             # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape
+            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
             if len(value.shape) < len(dist_shape):
                 value = value.broadcast_to(
                     torch.broadcast_shapes(value.shape, dist_shape)
