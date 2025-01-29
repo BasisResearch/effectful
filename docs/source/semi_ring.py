@@ -183,7 +183,9 @@ def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
         case (
             Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
             Term(ops.Sum, (Term(xa), k2, v2, Term(ops.Dict, (Term(k2a), e_rhs)))),
-        ) if x == xa and k1 == k1a and k2 == k2a:
+        ) if (
+            x == xa and k1 == k1a and k2 == k2a
+        ):
             return evaluate(
                 Sum(
                     e_sum,  # type: ignore

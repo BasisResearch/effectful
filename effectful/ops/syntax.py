@@ -5,7 +5,7 @@ import inspect
 import random
 import types
 import typing
-from typing import Annotated, Callable, Generic, Optional, Type, TypeVar
+from typing import Annotated, Callable, Generic, List, Optional, Type, TypeVar
 
 import tree
 from typing_extensions import Concatenate, ParamSpec
@@ -370,7 +370,9 @@ class Scoped(Annotation):
 
 
 @functools.singledispatch
-def defop(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
+def defop(
+    t: Callable[P, T], *, name: Optional[str] = None, freshening=Optional[List[int]]
+) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
 
     :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -618,10 +620,9 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
     if name is None:
         name = getattr(t, "__name__", str(t))
+    freshening = getattr(t, "_freshening", []) + [random.randint(0, 1 << 32)]
 
-    return defop(
-        func, name=name, freshening=t._freshening + [random.randint(0, 1 << 32)]
-    )
+    return defop(func, name=name, freshening=freshening)
 
 
 @defop.register(type)

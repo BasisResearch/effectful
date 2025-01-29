@@ -4,7 +4,7 @@ import abc
 import collections.abc
 import inspect
 import typing
-from typing import Any, Callable, Generic, Mapping, Sequence, Type, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Mapping, Sequence, Type, TypeVar, Union
 
 from typing_extensions import ParamSpec
 
@@ -107,7 +107,7 @@ class Term(abc.ABC, Generic[T]):
         from effectful.internals.runtime import interpreter
         from effectful.ops.semantics import apply, evaluate
 
-        fresh = collections.defaultdict(dict)
+        fresh: Dict[str, Dict[Operation, int]] = collections.defaultdict(dict)
 
         def op_str(op):
             """Return a unique (in this term) name for the operation."""
@@ -127,7 +127,7 @@ class Term(abc.ABC, Generic[T]):
                 return op_str(term)
             return str(term)
 
-        def _apply(_, op, *args, **kwargs):
+        def _apply(_, op, *args, **kwargs) -> str:
             args_str = ", ".join(map(term_str, args)) if args else ""
             kwargs_str = (
                 ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())
@@ -142,7 +142,7 @@ class Term(abc.ABC, Generic[T]):
             return ret
 
         with interpreter({apply: _apply}):
-            return evaluate(self)
+            return typing.cast(str, evaluate(self))
 
 
 #: An expression is either a value or a term.

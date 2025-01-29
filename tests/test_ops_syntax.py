@@ -1,9 +1,9 @@
 from typing import Annotated, Callable, TypeVar
 
-from effectful.ops.semantics import call, evaluate, fvsof
-from effectful.ops.syntax import Scoped, defop, defterm, deffn
-from effectful.ops.types import Operation, Term
 import effectful.handlers.numbers  # noqa: F401
+from effectful.ops.semantics import call, evaluate, fvsof
+from effectful.ops.syntax import Scoped, deffn, defop, defterm
+from effectful.ops.types import Operation, Term
 
 
 def test_always_fresh():
