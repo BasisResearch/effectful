@@ -95,8 +95,8 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     **Example usage**:
 
     >>> a, b = defop(int, name='a'), defop(int, name='b')
-    >>> sizesof(Indexable(torch.ones(2, 3))[a(), b()])
-    {a: 2, b: 3}
+    >>> sizes = sizesof(Indexable(torch.ones(2, 3))[a(), b()])
+    >>> assert sizes[a] == 2 and sizes[b] == 3
     """
     if isinstance(value, torch.distributions.Distribution) and not isinstance(
         value, Term

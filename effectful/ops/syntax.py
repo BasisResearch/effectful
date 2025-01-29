@@ -17,6 +17,8 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 @dataclasses.dataclass
@@ -114,7 +116,9 @@ class Scoped(Annotation):
       Here the variable ``var`` is bound by :func:`Let` in `body` but not in ``val`` :
 
       >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())))
-      >>> assert {x, y} in fvsof(Let(x, add(y(), x()), add(x(), y())))
+
+      >>> fvs = fvsof(Let(x, add(y(), x()), add(x(), y())))
+      >>> assert x in fvs and y in fvs
 
       This is reflected in the free variables of subterms of the result:
 
@@ -451,7 +455,8 @@ def defop(
         Because the result of :func:`defop` is always fresh, it's important to
         be careful with variable identity.
 
-        Two variables with the same name are not equal:
+        Two operations with the same name that come from different calls to
+        ``defop`` are not equal:
 
         >>> x1 = defop(int, name='x')
         >>> x2 = defop(int, name='x')
@@ -463,23 +468,22 @@ def defop(
         variable ``x``:
 
         >>> import effectful.handlers.numbers
+        >>> x = defop(float, name='x')
         >>> def scale(a: float) -> float:
-        ...     x = defop(float, name='x')
         ...     return x() * a
 
-        Binding the variable ``x`` by creating a fresh operation object does not
+        Binding the variable ``x`` as follows does not work:
 
         >>> term = scale(3.0)
-        >>> x = defop(float, name='x')
-        >>> with handler({x: lambda: 2.0}):
+        >>> fresh_x = defop(float, name='x')
+        >>> with handler({fresh_x: lambda: 2.0}):
         ...     print(str(evaluate(term)))
         mul(x(), 3.0)
 
-        This does:
+        Only the original operation object will work:
 
         >>> from effectful.ops.semantics import fvsof
-        >>> correct_x = [v for v in fvsof(term) if str(x) == 'x'][0]
-        >>> with handler({correct_x: lambda: 2.0}):
+        >>> with handler({x: lambda: 2.0}):
         ...     print(evaluate(term))
         6.0
 
@@ -564,9 +568,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                                 param_bound_vars for _ in bound_sig.arguments[name]
                             )
                         elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            result_sig.kwargs[name] = {
-                                k: param_bound_vars for k in bound_sig.arguments[name]
-                            }
+                            for k in bound_sig.arguments[name]:
+                                result_sig.arguments[name][k] = param_bound_vars
                         else:
                             result_sig.arguments[name] = param_bound_vars
 
@@ -578,31 +581,41 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         bound_sig.apply_defaults()
 
         anno = sig.return_annotation
+
+        def unwrap_annotation(typ):
+            """Unwrap Annotated types."""
+            return (
+                typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
+            )
+
+        def drop_params(typ):
+            """Strip parameters from polymorphic types."""
+            origin = typing.get_origin(typ)
+            return typ if origin is None else origin
+
+        anno = unwrap_annotation(anno)
+
         if anno is inspect.Signature.empty:
             return typing.cast(Type[V], object)
-        elif isinstance(anno, typing.TypeVar):
+
+        if isinstance(anno, typing.TypeVar):
             # rudimentary but sound special-case type inference sufficient for syntax ops:
             # if the return type annotation is a TypeVar,
             # look for a parameter with the same annotation and return its type,
             # otherwise give up and return Any/object
             for name, param in bound_sig.signature.parameters.items():
-                if param.annotation is anno and param.kind not in (
+                param_typ = unwrap_annotation(param.annotation)
+                if param_typ is anno and param.kind not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
                     tp: Type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return tp
+                    return drop_params(tp)
+
             return typing.cast(Type[V], object)
-        elif typing.get_origin(anno) is typing.Annotated:
-            tp = typing.get_args(anno)[0]
-            if not typing.TYPE_CHECKING:
-                tp = tp if typing.get_origin(tp) is None else typing.get_origin(tp)
-            return tp
-        elif typing.get_origin(anno) is not None:
-            return typing.get_origin(anno)
-        else:
-            return anno
+
+        return drop_params(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -656,10 +669,10 @@ def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 @defop
 def deffn(
-    body: Annotated[T, Scoped[S]],
-    *args: Annotated[Operation, Scoped[S]],
-    **kwargs: Annotated[Operation, Scoped[S]],
-) -> Callable[..., T]:
+    body: Annotated[T, Scoped[A | B]],
+    *args: Annotated[Operation, Scoped[A]],
+    **kwargs: Annotated[Operation, Scoped[A]],
+) -> Annotated[Callable[..., T], Scoped[B]]:
     """An operation that represents a lambda function.
 
     :param body: The body of the function.
