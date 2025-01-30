@@ -280,7 +280,7 @@ class Scoped(Annotation):
         # pre-conditions
         assert cls._check_has_single_scope(sig)
         assert cls._check_no_typevar_overlap(sig)
-        # assert cls._check_no_boundvars_in_result(sig)
+        assert cls._check_no_boundvars_in_result(sig)
 
         root_ordinal = cls._get_root_ordinal(sig)
         if not root_ordinal:

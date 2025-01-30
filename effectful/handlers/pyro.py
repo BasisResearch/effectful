@@ -267,7 +267,7 @@ class Naming:
 
 @defop
 def named_distribution(
-    d: Annotated[TorchDistribution, Scoped[A]],
+    d: Annotated[TorchDistribution, Scoped[A | B]],
     *names: Annotated[Operation[[], int], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     match defterm(d):
