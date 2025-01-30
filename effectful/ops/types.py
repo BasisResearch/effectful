@@ -5,7 +5,7 @@ import collections.abc
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeAlias, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -149,7 +149,7 @@ class Term(abc.ABC, Generic[T]):
 
 
 #: An expression is either a value or a term.
-Expr = T | Term[T]
+Expr: TypeAlias = T | Term[T]
 
 #: An interpretation is a mapping from operations to their implementations.
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
