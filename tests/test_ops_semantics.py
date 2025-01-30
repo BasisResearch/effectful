@@ -470,7 +470,6 @@ def f_op2():
 
 
 def test_product_alpha_equivalent():
-
     h0 = {op0: lambda: (op1(), 0), op1: lambda: 2}
     h1 = {op0: lambda: (op2(), 0), op2: lambda: 2}
     h2 = {op2: lambda: (op0(), 2)}
@@ -485,7 +484,6 @@ def test_product_alpha_equivalent():
 
 
 def test_product_associative():
-
     h0 = {op0: lambda: 0}
     h1 = {op1: lambda: (op0(), 1)}
     h2 = {op2: lambda: (op1(), 2)}
@@ -500,7 +498,6 @@ def test_product_associative():
 
 
 def test_product_commute_orthogonal():
-
     h0 = {op0: lambda: 0}
     h1 = {op1: lambda: 1}
     h2 = {op2: lambda: (op1(), op0(), 2)}
@@ -515,7 +512,6 @@ def test_product_commute_orthogonal():
 
 
 def test_product_distributive():
-
     h0 = {op0: lambda: 0, op1: lambda: (op0(), 1)}
     h1 = {op2: lambda: (op0(), op1(), 1)}
     h2 = {op2: lambda: (fwd(), op0(), op1(), 2)}

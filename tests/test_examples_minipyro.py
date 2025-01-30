@@ -13,7 +13,6 @@ def jit():
 
 @pytest.fixture
 def backend():
-
     minipyro = importlib.import_module("docs.source.minipyro", package="effectful")
 
     with pyro_backend("effectful-minipyro"):

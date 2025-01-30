@@ -1,7 +1,8 @@
 import contextlib
 import dataclasses
 import functools
-from typing import Callable, Generic, Mapping, Tuple, TypeVar
+from collections.abc import Callable, Mapping
+from typing import Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -29,7 +30,6 @@ def get_interpretation():
 
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
-
     r = get_runtime()
     old_intp = r.interpretation
     try:
@@ -40,7 +40,7 @@ def interpreter(intp: "Interpretation"):
 
 
 @defop
-def _get_args() -> Tuple[Tuple, Mapping]:
+def _get_args() -> tuple[tuple, Mapping]:
     return ((), {})
 
 

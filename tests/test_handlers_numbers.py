@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def test_lambda_calculus_1():
-
     x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
@@ -31,7 +30,6 @@ def test_lambda_calculus_1():
 
 
 def test_lambda_calculus_2():
-
     x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
@@ -41,7 +39,6 @@ def test_lambda_calculus_2():
 
 
 def test_lambda_calculus_3():
-
     x, y, f = defop(int), defop(int), defop(collections.abc.Callable)
 
     with handler(eager_mixed):
@@ -51,7 +48,6 @@ def test_lambda_calculus_3():
 
 
 def test_lambda_calculus_4():
-
     x, f, g = (
         defop(int),
         defop(collections.abc.Callable),
@@ -66,7 +62,6 @@ def test_lambda_calculus_4():
 
 
 def test_lambda_calculus_5():
-
     x = defop(int)
 
     with handler(eager_mixed):
@@ -84,7 +79,6 @@ def test_lambda_calculus_5():
 
 
 def test_arithmetic_1():
-
     x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
@@ -95,7 +89,6 @@ def test_arithmetic_1():
 
 
 def test_arithmetic_2():
-
     x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
@@ -107,7 +100,6 @@ def test_arithmetic_2():
 
 
 def test_arithmetic_3():
-
     x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
@@ -118,7 +110,6 @@ def test_arithmetic_3():
 
 
 def test_arithmetic_4():
-
     x_, y_ = defop(int), defop(int)
     x, y = x_(), y_()
 
@@ -133,7 +124,6 @@ def test_arithmetic_4():
 
 
 def test_arithmetic_5():
-
     x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
@@ -144,7 +134,6 @@ def test_arithmetic_5():
 
 
 def test_defun_1():
-
     x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
@@ -162,7 +151,6 @@ def test_defun_1():
 
 
 def test_defun_2():
-
     with handler(eager_mixed):
 
         @defterm
@@ -171,7 +159,6 @@ def test_defun_2():
 
         @defterm
         def f2(x: int, y: int) -> int:
-
             @defterm
             def f2_inner(y: int) -> int:
                 return x + y
@@ -182,7 +169,6 @@ def test_defun_2():
 
 
 def test_defun_3():
-
     with handler(eager_mixed):
 
         @defterm
@@ -197,7 +183,6 @@ def test_defun_3():
 
 
 def test_defun_4():
-
     x = defop(int)
 
     with handler(eager_mixed):
@@ -207,7 +192,6 @@ def test_defun_4():
             f: collections.abc.Callable[[int], int],
             g: collections.abc.Callable[[int], int],
         ) -> collections.abc.Callable[[int], int]:
-
             @defterm
             def fg(x: int) -> int:
                 return f(g(x))
@@ -227,7 +211,6 @@ def test_defun_4():
 
 
 def test_defun_5():
-
     with pytest.raises(ValueError, match="variadic"):
         defterm(lambda *xs: None)
 

@@ -1,6 +1,7 @@
 import contextlib
 import functools
-from typing import Any, Callable, Optional, Set, Type, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -230,7 +231,7 @@ def handler(intp: Interpretation):
         yield intp
 
 
-def evaluate(expr: Expr[T], *, intp: Optional[Interpretation] = None) -> Expr[T]:
+def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     """Evaluate expression ``expr`` using interpretation ``intp``. If no
     interpretation is provided, uses the current interpretation.
 
@@ -265,7 +266,7 @@ def evaluate(expr: Expr[T], *, intp: Optional[Interpretation] = None) -> Expr[T]
         return expr
 
 
-def typeof(term: Expr[T]) -> Type[T]:
+def typeof(term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
     **Example usage**:
@@ -295,7 +296,7 @@ def typeof(term: Expr[T]) -> Type[T]:
         return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
 
 
-def fvsof(term: Expr[S]) -> Set[Operation]:
+def fvsof(term: Expr[S]) -> set[Operation]:
     """Return the free variables of an expression.
 
     **Example usage**:
@@ -309,7 +310,7 @@ def fvsof(term: Expr[S]) -> Set[Operation]:
     """
     from effectful.internals.runtime import interpreter
 
-    _fvs: Set[Operation] = set()
+    _fvs: set[Operation] = set()
 
     def _update_fvs(_, op, *args, **kwargs):
         _fvs.add(op)

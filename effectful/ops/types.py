@@ -4,7 +4,8 @@ import abc
 import collections.abc
 import inspect
 import typing
-from typing import Any, Callable, Dict, Generic, Mapping, Sequence, Type, TypeVar, Union
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -36,7 +37,7 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
         """The default rule is used when the operation is not handled.
 
         If no default rule is supplied, the free rule is used instead.
@@ -44,14 +45,16 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
-        tuple[collections.abc.Set["Operation"], ...],
-        dict[str, collections.abc.Set["Operation"]],
+    def __fvs_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
+        tuple[collections.abc.Set[Operation], ...],
+        dict[str, collections.abc.Set[Operation]],
     ]:
         """
         Returns the sets of variables that appear free in each argument and keyword argument
@@ -90,13 +93,13 @@ class Term(abc.ABC, Generic[T]):
 
     @property
     @abc.abstractmethod
-    def args(self) -> Sequence["Expr[Any]"]:
+    def args(self) -> Sequence[Expr[Any]]:
         """Abstract property for the arguments."""
         raise NotImplementedError
 
     @property
     @abc.abstractmethod
-    def kwargs(self) -> Mapping[str, "Expr[Any]"]:
+    def kwargs(self) -> Mapping[str, Expr[Any]]:
         """Abstract property for the keyword arguments."""
         raise NotImplementedError
 
@@ -107,7 +110,7 @@ class Term(abc.ABC, Generic[T]):
         from effectful.internals.runtime import interpreter
         from effectful.ops.semantics import apply, evaluate
 
-        fresh: Dict[str, Dict[Operation, int]] = collections.defaultdict(dict)
+        fresh: dict[str, dict[Operation, int]] = collections.defaultdict(dict)
 
         def op_str(op):
             """Return a unique (in this term) name for the operation."""
@@ -146,14 +149,13 @@ class Term(abc.ABC, Generic[T]):
 
 
 #: An expression is either a value or a term.
-Expr = Union[T, Term[T]]
+Expr = T | Term[T]
 
 #: An interpretation is a mapping from operations to their implementations.
 Interpretation = Mapping[Operation[..., T], Callable[..., V]]
 
 
 class Annotation(abc.ABC):
-
     @classmethod
     @abc.abstractmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:

@@ -31,9 +31,7 @@ DEV_REQUIRE = (
         "pytest-xdist",
         "pytest-benchmark",
         "mypy",
-        "black",
-        "flake8",
-        "isort",
+        "ruff",
         "nbval",
         "nbqa",
     ]

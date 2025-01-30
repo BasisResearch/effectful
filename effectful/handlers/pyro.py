@@ -1,6 +1,7 @@
 import typing
 import warnings
-from typing import Any, Collection, List, Mapping, Optional, Tuple
+from collections.abc import Collection, Mapping
+from typing import Any
 
 try:
     import pyro
@@ -26,10 +27,10 @@ def pyro_sample(
     name: str,
     fn: pyro.distributions.torch_distribution.TorchDistributionMixin,
     *args,
-    obs: Optional[torch.Tensor] = None,
-    obs_mask: Optional[torch.BoolTensor] = None,
-    mask: Optional[torch.BoolTensor] = None,
-    infer: Optional[pyro.poutine.runtime.InferDict] = None,
+    obs: torch.Tensor | None = None,
+    obs_mask: torch.BoolTensor | None = None,
+    mask: torch.BoolTensor | None = None,
+    infer: pyro.poutine.runtime.InferDict | None = None,
     **kwargs,
 ) -> torch.Tensor:
     """
@@ -81,7 +82,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     Sampled y
     """
 
-    _current_site: Optional[str]
+    _current_site: str | None
 
     def __enter__(self):
         if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
@@ -91,7 +92,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     @staticmethod
     def _broadcast_to_named(
         t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
-    ) -> Tuple[torch.Tensor, "Naming"]:
+    ) -> tuple[torch.Tensor, "Naming"]:
         """Convert a tensor `t` to a fully positional tensor that is
         broadcastable with the positional representation of tensors of shape
         |shape|, |indices|.
@@ -156,7 +157,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 mask, dist.batch_shape, pdist.indices
             )
 
-            pos_obs: Optional[torch.Tensor] = None
+            pos_obs: torch.Tensor | None = None
             if obs is not None:
                 pos_obs, naming = PyroShim._broadcast_to_named(
                     obs, dist.shape(), pdist.indices
@@ -243,7 +244,7 @@ class Naming:
         return Naming({n: -event_dims - len(names) + i for i, n in enumerate(names)})
 
     def apply(self, value: torch.Tensor) -> torch.Tensor:
-        indexes: List[Any] = [slice(None)] * (len(value.shape))
+        indexes: list[Any] = [slice(None)] * (len(value.shape))
         for n, d in self.name_to_dim.items():
             indexes[len(value.shape) + d] = n()
         return Indexable(value)[tuple(indexes)]

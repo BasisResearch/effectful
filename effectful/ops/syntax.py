@@ -5,10 +5,11 @@ import inspect
 import random
 import types
 import typing
-from typing import Annotated, Callable, Generic, List, Optional, Type, TypeVar
+from collections.abc import Callable
+from typing import Annotated, Concatenate, Generic, TypeVar
 
 import tree
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
 
@@ -214,7 +215,7 @@ class Scoped(Annotation):
         ) -> collections.abc.Set[TypeVar]:
             if isinstance(tp, TypeVar):
                 return {tp}
-            elif isinstance(tp, (tuple, list)):
+            elif isinstance(tp, tuple | list):
                 return set().union(*map(_get_free_type_vars, tp))
             elif isinstance(tp, inspect.Parameter):
                 return _get_free_type_vars(tp.annotation)
@@ -371,7 +372,7 @@ class Scoped(Annotation):
 
 @functools.singledispatch
 def defop(
-    t: Callable[P, T], *, name: Optional[str] = None, freshening=Optional[List[int]]
+    t: Callable[P, T], *, name: str | None = None, freshening=list[int] | None
 ) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
 
@@ -506,7 +507,7 @@ def defop(
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
-@defop.register(typing.cast(Type[collections.abc.Callable], collections.abc.Callable))
+@defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
@@ -517,8 +518,8 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self,
         default: Callable[Q, V],
         *,
-        name: Optional[str] = None,
-        freshening: Optional[list[int]] = None,
+        name: str | None = None,
+        freshening: list[int] | None = None,
     ):
         functools.update_wrapper(self, default)
         self._default = default
@@ -542,7 +543,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+    def __fvs_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
@@ -572,14 +575,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Type[V]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         sig = inspect.signature(self._default)
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
         anno = sig.return_annotation
         if anno is inspect.Signature.empty:
-            return typing.cast(Type[V], object)
+            return typing.cast(type[V], object)
         elif isinstance(anno, typing.TypeVar):
             # rudimentary but sound special-case type inference sufficient for syntax ops:
             # if the return type annotation is a TypeVar,
@@ -591,9 +594,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    tp: Type[V] = type(arg) if not isinstance(arg, type) else arg
+                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
                     return tp
-            return typing.cast(Type[V], object)
+            return typing.cast(type[V], object)
         elif typing.get_origin(anno) is typing.Annotated:
             tp = typing.get_args(anno)[0]
             if not typing.TYPE_CHECKING:
@@ -612,8 +615,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
 
 @defop.register(Operation)
-def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-
+def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
@@ -626,7 +628,7 @@ def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
 
 
 @defop.register(type)
-def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
+def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
@@ -642,8 +644,7 @@ def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
 
 
 @defop.register(types.BuiltinFunctionType)
-def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-
+def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
@@ -842,8 +843,8 @@ def defdata(
             elif isinstance(i, str):
                 kwargs_[i] = res
 
-    tp: Type[T] = typeof(
-        __dispatch(typing.cast(Type[T], object))(op, *args_, **kwargs_)
+    tp: type[T] = typeof(
+        __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
     )
     return __dispatch(tp)(op, *args_, **kwargs_)
 
@@ -1046,7 +1047,7 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
 
 
 class _ImplementedOperation(Generic[P, Q, T, V]):
-    impl: Optional[Callable[Q, V]]
+    impl: Callable[Q, V] | None
     op: Operation[P, T]
 
     def __init__(self, op: Operation[P, T]):
