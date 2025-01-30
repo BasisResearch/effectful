@@ -377,147 +377,146 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
 @defterm.register(TorchDistribution)
 @defterm.register(TorchDistributionMixin)
-@functools.singledispatch
 def _embed_distribution(dist: TorchDistribution) -> Term[TorchDistribution]:
     raise ValueError(
         f"No embedding provided for distribution of type {type(dist).__name__}."
     )
 
 
-@_embed_distribution.register(dist.ExpandedDistribution)
+@defterm.register(dist.ExpandedDistribution)
 def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
     if d._batch_shape == d.base_dist.batch_shape:
         return d.base_dist
     raise ValueError("Nontrivial ExpandedDistribution not implemented.")
 
 
-@_embed_distribution.register(dist.Independent)
+@defterm.register(dist.Independent)
 def _embed_independent(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.base_dist, d.reinterpreted_batch_ndims)
 
 
-@_embed_distribution.register(dist.Cauchy)
-@_embed_distribution.register(dist.Gumbel)
-@_embed_distribution.register(dist.Laplace)
-@_embed_distribution.register(dist.LogNormal)
-@_embed_distribution.register(dist.LogisticNormal)
-@_embed_distribution.register(dist.Normal)
-@_embed_distribution.register(dist.StudentT)
+@defterm.register(dist.Cauchy)
+@defterm.register(dist.Gumbel)
+@defterm.register(dist.Laplace)
+@defterm.register(dist.LogNormal)
+@defterm.register(dist.LogisticNormal)
+@defterm.register(dist.Normal)
+@defterm.register(dist.StudentT)
 def _embed_loc_scale(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.loc, d.scale)
 
 
-@_embed_distribution.register(dist.Bernoulli)
-@_embed_distribution.register(dist.Categorical)
-@_embed_distribution.register(dist.ContinuousBernoulli)
-@_embed_distribution.register(dist.Geometric)
-@_embed_distribution.register(dist.OneHotCategorical)
-@_embed_distribution.register(dist.OneHotCategoricalStraightThrough)
+@defterm.register(dist.Bernoulli)
+@defterm.register(dist.Categorical)
+@defterm.register(dist.ContinuousBernoulli)
+@defterm.register(dist.Geometric)
+@defterm.register(dist.OneHotCategorical)
+@defterm.register(dist.OneHotCategoricalStraightThrough)
 def _embed_probs(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.probs)
 
 
-@_embed_distribution.register(dist.Beta)
-@_embed_distribution.register(dist.Kumaraswamy)
+@defterm.register(dist.Beta)
+@defterm.register(dist.Kumaraswamy)
 def _embed_beta(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.concentration1, d.concentration0)
 
 
-@_embed_distribution.register(dist.Binomial)
+@defterm.register(dist.Binomial)
 def _embed_binomial(d: dist.Binomial) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Binomial, d.total_count, d.probs)
 
 
-@_embed_distribution.register(dist.Chi2)
+@defterm.register(dist.Chi2)
 def _embed_chi2(d: dist.Chi2) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Chi2, d.df)
 
 
-@_embed_distribution.register(dist.Dirichlet)
+@defterm.register(dist.Dirichlet)
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Dirichlet, d.concentration)
 
 
-@_embed_distribution.register(dist.Exponential)
+@defterm.register(dist.Exponential)
 def _embed_exponential(d: dist.Exponential) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Exponential, d.rate)
 
 
-@_embed_distribution.register(dist.FisherSnedecor)
+@defterm.register(dist.FisherSnedecor)
 def _embed_fisher_snedecor(d: dist.FisherSnedecor) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.FisherSnedecor, d.df1, d.df2)
 
 
-@_embed_distribution.register(dist.Gamma)
+@defterm.register(dist.Gamma)
 def _embed_gamma(d: dist.Gamma) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Gamma, d.concentration, d.rate)
 
 
-@_embed_distribution.register(dist.HalfCauchy)
-@_embed_distribution.register(dist.HalfNormal)
+@defterm.register(dist.HalfCauchy)
+@defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.scale)
 
 
-@_embed_distribution.register(dist.LKJCholesky)
+@defterm.register(dist.LKJCholesky)
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.LKJCholesky, d.concentration, dim=d.dim)
 
 
-@_embed_distribution.register(dist.Multinomial)
+@defterm.register(dist.Multinomial)
 def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Multinomial, d.total_count, d.probs)
 
 
-@_embed_distribution.register(dist.MultivariateNormal)
+@defterm.register(dist.MultivariateNormal)
 def _embed_multivariate_normal(
     d: dist.MultivariateNormal,
 ) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.MultivariateNormal, d.loc, d.scale_tril)
 
 
-@_embed_distribution.register(dist.NegativeBinomial)
+@defterm.register(dist.NegativeBinomial)
 def _embed_negative_binomial(d: dist.NegativeBinomial) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.NegativeBinomial, d.total_count, d.probs)
 
 
-@_embed_distribution.register(dist.Pareto)
+@defterm.register(dist.Pareto)
 def _embed_pareto(d: dist.Pareto) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Pareto, d.scale, d.alpha)
 
 
-@_embed_distribution.register(dist.Poisson)
+@defterm.register(dist.Poisson)
 def _embed_poisson(d: dist.Poisson) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Poisson, d.rate)
 
 
-@_embed_distribution.register(dist.RelaxedBernoulli)
-@_embed_distribution.register(dist.RelaxedOneHotCategorical)
+@defterm.register(dist.RelaxedBernoulli)
+@defterm.register(dist.RelaxedOneHotCategorical)
 def _embed_relaxed(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.temperature, d.probs)
 
 
-@_embed_distribution.register(dist.Uniform)
+@defterm.register(dist.Uniform)
 def _embed_uniform(d: dist.Uniform) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Uniform, d.low, d.high)
 
 
-@_embed_distribution.register(dist.VonMises)
+@defterm.register(dist.VonMises)
 def _embed_von_mises(d: dist.VonMises) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.VonMises, d.loc, d.concentration)
 
 
-@_embed_distribution.register(dist.Weibull)
+@defterm.register(dist.Weibull)
 def _embed_weibull(d: dist.Weibull) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Weibull, d.scale, d.concentration)
 
 
-@_embed_distribution.register(dist.Wishart)
+@defterm.register(dist.Wishart)
 def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Wishart, d.df, d.scale_tril)
 
 
-@_embed_distribution.register(dist.Delta)
+@defterm.register(dist.Delta)
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
     return _DistributionTerm(dist.Delta, d.v, d.log_density, event_dim=d.event_dim)
 
