@@ -319,7 +319,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     _kwargs: dict
 
     def __init__(self, dist_constr: Type[TorchDistribution], *args, **kwargs):
-        self._args = (dist_constr,) + tuple(args)
+        self._args = (dist_constr,) + tuple(defterm(a) for a in args)
         self._kwargs = kwargs
 
     @property
