@@ -547,7 +547,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+    def __fvs_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
@@ -597,7 +599,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         anno = unwrap_annotation(anno)
 
         if anno is inspect.Signature.empty:
-            return typing.cast(Type[V], object)
+            return typing.cast(type[V], object)
 
         if isinstance(anno, typing.TypeVar):
             # rudimentary but sound special-case type inference sufficient for syntax ops:
@@ -611,10 +613,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    tp: Type[V] = type(arg) if not isinstance(arg, type) else arg
+                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
                     return drop_params(tp)
 
-            return typing.cast(Type[V], object)
+            return typing.cast(type[V], object)
 
         return drop_params(anno)
 
