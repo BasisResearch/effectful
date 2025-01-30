@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euxo pipefail
 
-isort .
-black .
+SRC="effectful tests"
+ruff check --fix $SRC
+ruff format $SRC
