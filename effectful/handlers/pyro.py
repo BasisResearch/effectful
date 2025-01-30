@@ -374,9 +374,6 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     def enumerate_support(self, expand=True):
         return self._base_dist.enumerate_support(expand)
 
-    def __getitem__(self, key: Collection[Operation[[], int]]):
-        return named_distribution(self, *key)
-
 
 @defterm.register(TorchDistribution)
 @defterm.register(TorchDistributionMixin)
