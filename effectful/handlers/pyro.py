@@ -302,57 +302,58 @@ def named_distribution(
     d: Annotated[TorchDistribution, Scoped[A | B]],
     *names: Annotated[Operation[[], int], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
-    match defterm(d):
-        case Term(op=_call, args=(dist_constr, *args)) if _call is call:
-            if dist_constr is dist.Independent:
-                base_dist, reinterpreted_batch_ndims = args
-                return dist.Independent(
-                    named_distribution(
-                        typing.cast(TorchDistribution, base_dist), *names
-                    ),
-                    reinterpreted_batch_ndims,
-                )
-            else:
-                named_args = []
-                for a in args:
-                    assert isinstance(a, torch.Tensor)
-                    named_args.append(
-                        Indexable(typing.cast(torch.Tensor, a))[
-                            tuple(n() for n in names)
-                        ]
-                    )
-                assert callable(dist_constr)
-                return dist_constr(*named_args)
-        case _:
-            raise NotImplementedError
+    d = defterm(d)
+    dist_constr, args = d.args[0], d.args[1:]
+
+    if not (
+        d.op is call
+        and (
+            issubclass(dist_constr, TorchDistribution)
+            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
+        )
+    ):
+        raise NotImplementedError
+
+    def _to_named(a):
+        if isinstance(a, torch.Tensor):
+            return Indexable(typing.cast(torch.Tensor, a))[tuple(n() for n in names)]
+        elif isinstance(a, TorchDistribution):
+            return named_distribution(a, *names)
+        else:
+            return a
+
+    return dist_constr(*[_to_named(a) for a in args], **d.kwargs)
 
 
 @defop
 def positional_distribution(
     d: Annotated[TorchDistribution, Scoped[A]],
 ) -> Tuple[TorchDistribution, Naming]:
-    match defterm(d):
-        case Term(op=_call, args=(dist_constr, *args)) if _call is call:
-            if dist_constr is dist.Independent:
-                base_dist, reinterpreted_batch_ndims = args
-                pos_base_dist, naming = positional_distribution(
-                    typing.cast(TorchDistribution, base_dist)
-                )
-                return (
-                    dist.Independent(pos_base_dist, reinterpreted_batch_ndims),
-                    naming,
-                )
-            else:
-                assert callable(dist_constr)
-                base_dist = dist_constr(*args)
-                indices = sizesof(d).keys()
-                n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
-                naming = Naming.from_shape(indices, n_base)
-                pos_args = [to_tensor(a, indices) for a in args]
-                pos_dist = dist_constr(*pos_args)
-                return pos_dist, naming
-        case _:
-            raise NotImplementedError
+    shape = d.shape()
+    d = defterm(d)
+    dist_constr, args = d.args[0], d.args[1:]
+
+    if not (
+        d.op is call
+        and (
+            issubclass(dist_constr, TorchDistribution)
+            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
+        )
+    ):
+        raise NotImplementedError
+
+    indices = sizesof(d).keys()
+    naming = Naming.from_shape(indices, len(shape))
+
+    def _to_positional(a):
+        if isinstance(a, torch.Tensor):
+            return to_tensor(a, indices)
+        elif isinstance(a, TorchDistribution):
+            return positional_distribution(a)[0]
+        else:
+            return a
+
+    return dist_constr(*[_to_positional(a) for a in args], **d.kwargs), naming
 
 
 class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
