@@ -8,9 +8,9 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import (
-    NamedDistribution,
-    PositionalDistribution,
     PyroShim,
+    named_distribution,
+    positional_distribution,
     pyro_sample,
 )
 from effectful.handlers.torch import Indexable, sizesof, torch_getitem
@@ -179,7 +179,7 @@ def test_indexed_sample():
 
 def test_named_dist():
     x, y = defop(int, name="x"), defop(int, name="y")
-    d = NamedDistribution(dist.Normal(0.0, 1.0).expand((2, 3)), [x, y])
+    d = named_distribution(dist.Normal(0.0, 1.0).expand((2, 3)), x, y)
 
     expected_indices = {x: 2, y: 3}
 
@@ -203,14 +203,14 @@ def test_positional_dist():
 
     expected_indices = {x: 2, y: 3}
 
-    d = PositionalDistribution(dist.Normal(loc, scale))
+    d, naming = positional_distribution(dist.Normal(loc, scale))
 
     assert d.shape() == torch.Size([2, 3])
 
     s1 = d.sample()
     assert sizesof(s1) == {}
     assert s1.shape == torch.Size([2, 3])
-    assert all(n in sizesof(d._from_positional(s1)) for n in [x, y])
+    assert all(n in sizesof(naming.apply(s1)) for n in [x, y])
 
     d_exp = d.expand((4, 5) + d.batch_shape)
     s2 = d_exp.sample()
@@ -220,13 +220,13 @@ def test_positional_dist():
     s3 = d.sample((4, 5))
     assert sizesof(s3) == {}
     assert s3.shape == torch.Size([4, 5, 2, 3])
-    assert all(n in sizesof(d._from_positional(s3)) for n in [x, y])
+    assert all(n in sizesof(naming.apply(s3)) for n in [x, y])
 
     loc = Indexable(torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
     scale = Indexable(torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
-    d = PositionalDistribution(dist.Normal(loc, scale))
+    d, naming = positional_distribution(dist.Normal(loc, scale))
 
-    assert sizesof(d._from_positional(d.sample((6, 7)))) == expected_indices
+    assert sizesof(naming.apply(d.sample((6, 7)))) == expected_indices
     assert d.sample().shape == torch.Size([2, 3, 4, 5])
     assert d.sample((6, 7)).shape == torch.Size([6, 7, 2, 3, 4, 5])
 
@@ -238,3 +238,37 @@ def test_simple_distribution():
     dist.Beta(t, t, validate_args=False)
 
     dist.Bernoulli(t, validate_args=False)
+
+
+def test_sizesof_named_distribution():
+    # Create base distribution with known batch shape
+    base_dist = dist.Normal(torch.zeros(3, 4, 5), torch.ones(3, 4, 5))
+
+    # Create names for the first two dimensions
+    dim0 = defop(int, name="dim0")
+    dim1 = defop(int, name="dim1")
+    names = [dim0, dim1]
+
+    # Create named distribution
+    named_dist = named_distribution(base_dist, *names)
+
+    # Get sizes
+    sizes = sizesof(named_dist)
+
+    # Check that the sizes match expected values
+    assert sizes[dim0] == 3
+    assert sizes[dim1] == 4
+    assert len(sizes) == 2  # Only named dimensions should be included
+
+
+def test_sizesof_positional_distribution():
+    dim0 = defop(int, name="dim0")
+    dim1 = defop(int, name="dim1")
+
+    mean = Indexable(torch.zeros(3, 4, 5))[dim0(), dim1()]
+    var = Indexable(torch.ones(3, 4, 5))[dim0(), dim1()]
+    base_dist = dist.Normal(mean, var)
+
+    pos_dist = positional_distribution(base_dist)
+
+    assert sizesof(pos_dist) == {}

@@ -23,7 +23,7 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -84,7 +84,7 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
-def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
+def sizesof(value) -> Mapping[Operation[[], int], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
     Sizes are inferred from the tensor shape.
@@ -98,11 +98,6 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
     >>> sizes = sizesof(Indexable(torch.ones(2, 3))[a(), b()])
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    if isinstance(value, torch.distributions.Distribution) and not isinstance(
-        value, Term
-    ):
-        return {v: s for a in value.__dict__.values() for v, s in sizesof(a).items()}
-
     sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
@@ -126,12 +121,12 @@ def sizesof(value: Expr) -> Mapping[Operation[[], int], int]:
 
         return defdata(torch_getitem, x, key)
 
-    with interpreter(
-        {
-            torch_getitem: _torch_getitem_sizeof,
-            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-        }
-    ):
+    def _apply(_, op, *args, **kwargs):
+        args, kwargs = tree.map_structure(defterm, (args, kwargs))
+        return defdata(op, *args, **kwargs)
+
+    value = defterm(value)
+    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
         evaluate(value)
 
     return sizes
@@ -213,10 +208,8 @@ def to_tensor(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T
 
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
-
     @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
-
         tm = defdata(_torch_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
@@ -378,7 +371,6 @@ class _TensorTerm(Term[torch.Tensor]):
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
-
     op: Operation[..., torch.Tensor] = torch_getitem
     args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
     kwargs: Mapping[str, object] = {}
