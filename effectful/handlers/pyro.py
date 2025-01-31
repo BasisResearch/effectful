@@ -1,4 +1,3 @@
-import functools
 import typing
 import warnings
 from typing import (
