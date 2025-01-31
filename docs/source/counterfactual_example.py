@@ -1,17 +1,8 @@
 import math
-from typing import (
-    Callable,
-    Concatenate,
-    Mapping,
-    NamedTuple,
-    ParamSpec,
-    Protocol,
-    TypedDict,
-    TypeVar,
-)
+from typing import Callable, Mapping, NamedTuple, ParamSpec, Protocol, TypeVar
 
-from effectful.ops.semantics import evaluate, fvsof, fwd, handler, product, typeof
-from effectful.ops.syntax import Scoped, deffn, defop
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler
+from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -64,10 +55,15 @@ def factor(weight: float) -> float:
 
 @defop
 def intervene(obs: T, act: T, name: Operation[[], bool]) -> T:
+    """Intervene using an intervention point. If the intervention point is true,
+    return the action, otherwise return the observation.
+
+    """
     raise NotImplementedError
 
 
 def substitute(subs: Mapping[Operation[[], T], T]) -> Callable[[Term[S]], Term[S]]:
+    """Substitute into a term. Returns a curried function."""
 
     def thunk(val: T) -> Callable[[], T]:
         return lambda: val
@@ -76,6 +72,12 @@ def substitute(subs: Mapping[Operation[[], T], T]) -> Callable[[Term[S]], Term[S
 
 
 def list_sample(dist: Distribution[T]) -> T:
+    """Sample handler that pushes sample into intervene operations.
+
+    If the distribution has an intervention point, sample from both
+    counterfactual worlds and use intervene to choose which sample to return.
+
+    """
     intervention_points = fvsof(dist) - {sample, factor, intervene, app}
     if len(intervention_points) > 0:
         fv = list(intervention_points)[0]
@@ -131,16 +133,23 @@ MultiWorldCounterfactual: Interpretation = {
 
 
 def model(i_x: Operation[[], bool], i_y: Operation[[], bool]) -> tuple[float, float]:
+    """A simple model with two interventions. Intended to demonstrate the
+    operations defined above.
+
+    """
     x = sample(Bernoulli(0.5))
 
+    # intervene on x to be False with intervention point i_x
     x = intervene(x, False, i_x)
 
     y_loc = app(lambda x: 0.0 if x else 1.0, x)
 
+    # intervene on y to be 1.5 with intervention point i_y
     y_loc = intervene(y_loc, 1.5, i_y)
 
     y = sample(Normal(y_loc, 1.0))
 
+    # compute y in two counterfactual worlds
     y_11 = substitute({i_x: 1, i_y: 1})(y)
     y_00 = substitute({i_x: 0, i_y: 0})(y)
 
@@ -155,7 +164,9 @@ i_y = defop(bool, name="i_y")
 assert {intervene, sample, factor, app} == fvsof(model(i_x, i_y))
 
 with handler(NestedList), handler(MultiWorldCounterfactual):
-    print(model(i_x, i_y))
+    w00, diff = model(i_x, i_y)
+    print(str(w00))
+    print(str(diff))
 
     assert {sample, factor, app} == fvsof(model(i_x, i_y))
 
