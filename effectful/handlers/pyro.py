@@ -1,14 +1,9 @@
 import typing
 import warnings
+from collections.abc import Collection, Mapping
 from typing import (
     Annotated,
     Any,
-    Collection,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
-    Type,
     TypeVar,
 )
 
@@ -45,10 +40,10 @@ def pyro_sample(
     name: str,
     fn: TorchDistributionMixin,
     *args,
-    obs: Optional[torch.Tensor] = None,
-    obs_mask: Optional[torch.BoolTensor] = None,
-    mask: Optional[torch.BoolTensor] = None,
-    infer: Optional[pyro.poutine.runtime.InferDict] = None,
+    obs: torch.Tensor | None = None,
+    obs_mask: torch.BoolTensor | None = None,
+    mask: torch.BoolTensor | None = None,
+    infer: pyro.poutine.runtime.InferDict | None = None,
     **kwargs,
 ) -> torch.Tensor:
     """
@@ -100,7 +95,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     Sampled y
     """
 
-    _current_site: Optional[str]
+    _current_site: str | None
 
     def __enter__(self):
         if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
@@ -110,7 +105,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     @staticmethod
     def _broadcast_to_named(
         t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
-    ) -> Tuple[torch.Tensor, "Naming"]:
+    ) -> tuple[torch.Tensor, "Naming"]:
         """Convert a tensor `t` to a fully positional tensor that is
         broadcastable with the positional representation of tensors of shape
         |shape|, |indices|.
@@ -190,7 +185,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             )
             pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
 
-            pos_obs: Optional[torch.Tensor] = None
+            pos_obs: torch.Tensor | None = None
             if obs is not None:
                 pos_obs, naming = PyroShim._broadcast_to_named(
                     obs, dist.shape(), indices
@@ -288,7 +283,7 @@ class Naming:
         return Naming({n: -event_dims - len(names) + i for i, n in enumerate(names)})
 
     def apply(self, value: torch.Tensor) -> torch.Tensor:
-        indexes: List[Any] = [slice(None)] * (len(value.shape))
+        indexes: list[Any] = [slice(None)] * (len(value.shape))
         for n, d in self.name_to_dim.items():
             indexes[len(value.shape) + d] = n()
         return Indexable(value)[tuple(indexes)]
@@ -328,7 +323,7 @@ def named_distribution(
 @defop
 def positional_distribution(
     d: Annotated[TorchDistribution, Scoped[A]],
-) -> Tuple[TorchDistribution, Naming]:
+) -> tuple[TorchDistribution, Naming]:
     shape = d.shape()
     d = defterm(d)
     dist_constr, args = d.args[0], d.args[1:]
@@ -371,7 +366,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     _args: tuple
     _kwargs: dict
 
-    def __init__(self, dist_constr: Type[TorchDistribution], *args, **kwargs):
+    def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
         self._args = (dist_constr,) + tuple(defterm(a) for a in args)
         self._kwargs = kwargs
 

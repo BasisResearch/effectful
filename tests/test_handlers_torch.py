@@ -255,9 +255,9 @@ def test_getitem_ellipsis_and_none(tensor, idx):
     assert not any(k is Ellipsis or k is None for k in i)
 
     result = t[i]
-    assert (
-        result.shape == expected.shape
-    ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert result.shape == expected.shape, (
+        f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    )
     assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 
@@ -265,9 +265,9 @@ def test_getitem_ellipsis_and_none(tensor, idx):
 def test_custom_getitem(tensor, idx):
     expected = tensor[idx]
     result = torch_getitem(tensor, idx)
-    assert (
-        result.shape == expected.shape
-    ), f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    assert result.shape == expected.shape, (
+        f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
+    )
     assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 

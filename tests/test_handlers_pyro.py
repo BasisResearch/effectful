@@ -1,6 +1,6 @@
 import contextlib
 import logging
-from typing import Mapping, Optional
+from collections.abc import Mapping
 
 import pyro
 import pyro.distributions as dist
@@ -33,7 +33,7 @@ def setup_module():
 def chirho_observe_dist(
     name: str,
     rv: pyro.distributions.torch_distribution.TorchDistributionMixin,
-    obs: Optional[torch.Tensor] = None,
+    obs: torch.Tensor | None = None,
     **kwargs,
 ) -> torch.Tensor:
     return pyro.sample(name, rv, obs=obs, **kwargs)
@@ -41,11 +41,10 @@ def chirho_observe_dist(
 
 @contextlib.contextmanager
 def chirho_condition(data: Mapping[str, torch.Tensor]):
-
     def _handle_pyro_sample(
         name: str,
         fn: pyro.distributions.torch_distribution.TorchDistributionMixin,
-        obs: Optional[torch.Tensor] = None,
+        obs: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         if name in data:

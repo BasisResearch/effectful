@@ -1,4 +1,5 @@
-from typing import Annotated, Callable, TypeVar
+from collections.abc import Callable
+from typing import Annotated, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import call, evaluate, fvsof
@@ -99,7 +100,6 @@ def test_operation_metadata():
 
 
 def test_no_default_tracing():
-
     x, y = defop(int), defop(int)
 
     @defop

@@ -1,15 +1,9 @@
 import functools
 import typing
+from collections.abc import Callable, Collection, Mapping, Sequence
 from types import EllipsisType
 from typing import (
-    Callable,
-    Collection,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
     TypeVar,
-    Union,
 )
 
 try:
@@ -34,7 +28,7 @@ V = TypeVar("V")
 
 
 # + An element of a tensor index expression.
-IndexElement = Union[None, int, slice, Sequence[int], EllipsisType, torch.Tensor]
+IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
 
 
 def _desugar_tensor_index(shape, key):
@@ -53,9 +47,9 @@ def _desugar_tensor_index(shape, key):
             new_shape.append(1)
             new_key.append(slice(None))
         elif k is Ellipsis:
-            assert not any(
-                k is Ellipsis for k in key[i + 1 :]
-            ), "only one Ellipsis allowed"
+            assert not any(k is Ellipsis for k in key[i + 1 :]), (
+                "only one Ellipsis allowed"
+            )
 
             # determine which of the original dimensions this ellipsis refers to
             pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
@@ -72,8 +66,8 @@ def _desugar_tensor_index(shape, key):
 
 
 def _getitem_ellipsis_and_none(
-    x: torch.Tensor, key: Tuple[IndexElement, ...]
-) -> Tuple[torch.Tensor, Tuple[IndexElement, ...]]:
+    x: torch.Tensor, key: tuple[IndexElement, ...]
+) -> tuple[torch.Tensor, tuple[IndexElement, ...]]:
     """Eliminate ellipses and None in an index expression x[key].
 
     Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
@@ -101,7 +95,7 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
     sizes: dict[Operation[[], int], int] = {}
 
     def _torch_getitem_sizeof(
-        x: Expr[torch.Tensor], key: Tuple[Expr[IndexElement], ...]
+        x: Expr[torch.Tensor], key: tuple[Expr[IndexElement], ...]
     ) -> Expr[torch.Tensor]:
         if isinstance(x, torch.Tensor):
             shape, key_ = _desugar_tensor_index(x.shape, key)
@@ -132,7 +126,7 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def _partial_eval(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T:
+def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -185,7 +179,7 @@ def _partial_eval(t: T, order: Optional[Collection[Operation[[], int]]] = None) 
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
-def to_tensor(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T:
+def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -243,7 +237,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
 
 
 @_register_torch_op
-def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tensor:
+def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tensor:
     """Operation for indexing a tensor.
 
     .. note::
@@ -290,7 +284,7 @@ def torch_getitem(x: torch.Tensor, key: Tuple[IndexElement, ...]) -> torch.Tenso
                 key_l[i] = flat_arg.reshape((-1,) + (1,) * i)
         elif isinstance(arg, int):
             key_l[i] = torch.tensor(arg, dtype=torch.long, device=x.device)
-        elif isinstance(arg, (list, tuple)):
+        elif isinstance(arg, list | tuple):
             flat_arg = torch.tensor(arg, dtype=torch.long, device=x.device)
             key_l[i] = flat_arg.reshape(flat_arg.shape + (1,) * i)
 
@@ -358,7 +352,7 @@ class _TensorTerm(Term[torch.Tensor]):
         return self._kwargs
 
     def __getitem__(
-        self, key: Union[Expr[IndexElement], Tuple[Expr[IndexElement], ...]]
+        self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
     ) -> Expr[torch.Tensor]:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
@@ -372,12 +366,12 @@ class _TensorTerm(Term[torch.Tensor]):
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
     op: Operation[..., torch.Tensor] = torch_getitem
-    args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
+    args: tuple[torch.Tensor, tuple[IndexElement, ...]]
     kwargs: Mapping[str, object] = {}
 
     __match_args__ = ("op", "args", "kwargs")
 
-    def __new__(cls, x: torch.Tensor, key: Tuple[IndexElement, ...]):
+    def __new__(cls, x: torch.Tensor, key: tuple[IndexElement, ...]):
         assert not isinstance(x, Term)
 
         for k in key:
@@ -423,7 +417,7 @@ class _EagerTensorTerm(torch.Tensor):
         x, key = self.args
         return torch.Size([s for s, k in zip(x.shape, key) if not isinstance(k, Term)])
 
-    def size(self, dim: Optional[int] = None):
+    def size(self, dim: int | None = None):
         if dim is None:
             return self.shape
         return self.shape[dim]
@@ -466,7 +460,7 @@ class _EagerTensorTerm(torch.Tensor):
 
 def _indexed_func_wrapper(
     func: Callable[P, T],
-) -> Tuple[Callable[P, S], Callable[[S], T]]:
+) -> tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
     indexes = None
 

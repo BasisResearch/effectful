@@ -1,6 +1,7 @@
 import functools
 import operator
-from typing import Any, Dict, Iterable, Optional, Set, TypeVar, Union
+from collections.abc import Iterable
+from typing import Any, TypeVar
 
 import torch
 
@@ -12,7 +13,7 @@ K = TypeVar("K")
 T = TypeVar("T")
 
 
-class IndexSet(Dict[str, Set[int]]):
+class IndexSet(dict[str, set[int]]):
     """
     :class:`IndexSet` s represent the support of an indexed value,
     for which free variables correspond to single interventions and indices
@@ -47,7 +48,7 @@ class IndexSet(Dict[str, Set[int]]):
         True
     """
 
-    def __init__(self, **mapping: Union[int, Iterable[int]]):
+    def __init__(self, **mapping: int | Iterable[int]):
         index_set = {}
         for k, vs in mapping.items():
             indexes = {vs} if isinstance(vs, int) else set(vs)
@@ -161,7 +162,7 @@ def indices_of(value: Any) -> IndexSet:
     )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def name_to_sym(name: str) -> Operation[[], int]:
     return defop(int, name=name)
 
@@ -241,7 +242,7 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
 
 
 def stack(
-    values: Union[tuple[torch.Tensor, ...], list[torch.Tensor]], name: str, **kwargs
+    values: tuple[torch.Tensor, ...] | list[torch.Tensor], name: str, **kwargs
 ) -> torch.Tensor:
     """Stack a sequence of indexed values, creating a new dimension. The new
     dimension is indexed by `dim`. The indexed values in the stack must have
@@ -288,10 +289,10 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
     )
 
 
-def cond_n(values: Dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Tensor:
+def cond_n(values: dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Tensor:
     assert len(values) > 0
     assert all(isinstance(k, IndexSet) for k in values.keys())
-    result: Optional[torch.Tensor] = None
+    result: torch.Tensor | None = None
     for indices, value in values.items():
         tst = torch.as_tensor(
             functools.reduce(
