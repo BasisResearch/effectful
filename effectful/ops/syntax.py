@@ -628,7 +628,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
 
 @defop.register(Operation)
-def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
@@ -657,7 +657,7 @@ def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
 
 
 @defop.register(types.BuiltinFunctionType)
-def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
