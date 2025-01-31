@@ -53,9 +53,9 @@ def _desugar_tensor_index(shape, key):
             new_shape.append(1)
             new_key.append(slice(None))
         elif k is Ellipsis:
-            assert not any(
-                k is Ellipsis for k in key[i + 1 :]
-            ), "only one Ellipsis allowed"
+            assert not any(k is Ellipsis for k in key[i + 1 :]), (
+                "only one Ellipsis allowed"
+            )
 
             # determine which of the original dimensions this ellipsis refers to
             pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
@@ -84,7 +84,6 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
-@functools.singledispatch
 def sizesof(value) -> Mapping[Operation[[], int], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
@@ -209,10 +208,8 @@ def to_tensor(t: T, order: Optional[Collection[Operation[[], int]]] = None) -> T
 
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
-
     @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
-
         tm = defdata(_torch_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
@@ -374,7 +371,6 @@ class _TensorTerm(Term[torch.Tensor]):
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
-
     op: Operation[..., torch.Tensor] = torch_getitem
     args: Tuple[torch.Tensor, Tuple[IndexElement, ...]]
     kwargs: Mapping[str, object] = {}
