@@ -272,15 +272,22 @@ def named_distribution(
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     match defterm(d):
         case Term(op=_call, args=(dist_constr, *args)) if _call is call:
-            assert dist_constr is not dist.Independent
-            named_args = []
-            for a in args:
-                assert isinstance(a, torch.Tensor)
-                named_args.append(
-                    Indexable(typing.cast(torch.Tensor, a))[tuple(n() for n in names)]
+            if dist_constr is dist.Independent:
+                base_dist, reinterpreted_batch_ndims = args
+                return dist.Independent(
+                    named_distribution(base_dist, *names), reinterpreted_batch_ndims
                 )
-            assert callable(dist_constr)
-            return dist_constr(*named_args)
+            else:
+                named_args = []
+                for a in args:
+                    assert isinstance(a, torch.Tensor)
+                    named_args.append(
+                        Indexable(typing.cast(torch.Tensor, a))[
+                            tuple(n() for n in names)
+                        ]
+                    )
+                assert callable(dist_constr)
+                return dist_constr(*named_args)
         case _:
             raise NotImplementedError
 
@@ -291,14 +298,21 @@ def positional_distribution(
 ) -> Tuple[TorchDistribution, Naming]:
     match defterm(d):
         case Term(op=_call, args=(dist_constr, *args)) if _call is call:
-            assert callable(dist_constr)
-            base_dist = dist_constr(*args)
-            indices = sizesof(d).keys()
-            n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
-            naming = Naming.from_shape(indices, n_base)
-            pos_args = [to_tensor(a, indices) for a in args]
-            pos_dist = dist_constr(*pos_args)
-            return pos_dist, naming
+            if dist_constr is dist.Independent:
+                base_dist, reinterpreted_batch_ndims = args
+                pos_base_dist, naming = positional_distribution(base_dist)
+                return dist.Independent(
+                    pos_base_dist, reinterpreted_batch_ndims
+                ), naming
+            else:
+                assert callable(dist_constr)
+                base_dist = dist_constr(*args)
+                indices = sizesof(d).keys()
+                n_base = len(base_dist.batch_shape) + len(base_dist.event_shape)
+                naming = Naming.from_shape(indices, n_base)
+                pos_args = [to_tensor(a, indices) for a in args]
+                pos_dist = dist_constr(*pos_args)
+                return pos_dist, naming
         case _:
             raise NotImplementedError
 

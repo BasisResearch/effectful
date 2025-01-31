@@ -542,7 +542,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
+    def __fvs_rule__(
+        self, *args: Q.args, **kwargs: Q.kwargs
+    ) -> tuple[
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
@@ -613,7 +615,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-
     @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
@@ -643,7 +644,6 @@ def _(t: Type[T], *, name: Optional[str] = None) -> Operation[[], T]:
 
 @defop.register(types.BuiltinFunctionType)
 def _(t: Callable[P, T], *, name: Optional[str] = None) -> Operation[P, T]:
-
     @functools.wraps(t)
     def func(*args, **kwargs):
         if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
