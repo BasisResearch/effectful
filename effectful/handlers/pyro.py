@@ -1,4 +1,3 @@
-import functools
 import typing
 import warnings
 from typing import (
@@ -166,7 +165,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 return
 
             # We need to identify this pyro shim during post-sample.
-            msg["_pyro_shim_id"] = id(self)
+            msg["_pyro_shim_id"] = id(self)  # type: ignore[typeddict-unknown-key]
 
             if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
@@ -246,7 +245,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         assert msg["value"] is not None
 
         # If this message has been handled already by a different pyro shim, ignore.
-        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):
+        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):  # type: ignore[typeddict-item]
             return
 
         if getattr(self, "_current_site", None) == msg["name"]:
