@@ -151,7 +151,23 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         ):
             return
 
+        # PyroShim turns each call to pyro.sample into two calls. The first
+        # dispatches to pyro_sample and the effectful stack. The effectful stack
+        # eventually calls pyro.sample again. We use state in PyroShim to
+        # recognize that we've been called twice, and we dispatch to the pyro
+        # stack.
+        #
+        # This branch handles the second call, so it massages the message to be
+        # compatible with Pyro. In particular, it removes all named dimensions
+        # and stores naming information in the message. Names are replaced by
+        # _pyro_post_sample.
         if getattr(self, "_current_site", None) == msg["name"]:
+            if "_index_naming" in msg:
+                return
+
+            # We need to identify this pyro shim during post-sample.
+            msg["_pyro_shim_id"] = id(self)
+
             if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
 
@@ -170,6 +186,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             else:
                 mask = msg["mask"]
 
+            assert set(sizesof(mask).keys()) <= (
+                set(indices.keys()) | set(sizesof(obs).keys())
+            )
             pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
 
             pos_obs: Optional[torch.Tensor] = None
@@ -178,52 +197,66 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                     obs, dist.shape(), indices
                 )
 
+            # Each of the batch dimensions on the distribution gets a
+            # cond_indep_stack frame.
             for var, dim in naming.name_to_dim.items():
-                frame = pyro.poutine.indep_messenger.CondIndepStackFrame(
-                    name=str(var), dim=dim, size=-1, counter=0
-                )
-                msg["cond_indep_stack"] = (frame,) + msg["cond_indep_stack"]
+                # There can be additional batch dimensions on the observation
+                # that do not get frames, so only consider dimensions on the
+                # distribution.
+                if var in indices:
+                    frame = pyro.poutine.indep_messenger.CondIndepStackFrame(
+                        name=str(var),
+                        # dims are indexed from the right of the batch shape
+                        dim=dim + len(pdist.event_shape),
+                        size=indices[var],
+                        counter=0,
+                    )
+                    msg["cond_indep_stack"] = (frame,) + msg["cond_indep_stack"]
 
             msg["fn"] = pdist
             msg["value"] = pos_obs
             msg["mask"] = pos_mask
-            msg["infer"]["_index_naming"] = naming  # type: ignore
+            msg["_index_naming"] = naming  # type: ignore
 
             assert sizesof(msg["value"]) == {}
             assert sizesof(msg["mask"]) == {}
 
-            return
+        # This branch handles the first call to pyro.sample by calling pyro_sample.
+        else:
+            try:
+                self._current_site = msg["name"]
+                msg["value"] = pyro_sample(
+                    msg["name"],
+                    msg["fn"],
+                    obs=msg["value"] if msg["is_observed"] else None,
+                    infer=msg["infer"].copy(),
+                )
+            finally:
+                self._current_site = None
 
-        try:
-            self._current_site = msg["name"]
-            msg["value"] = pyro_sample(
-                msg["name"],
-                msg["fn"],
-                obs=msg["value"] if msg["is_observed"] else None,
-                infer=msg["infer"].copy(),
-            )
-        finally:
-            self._current_site = None
-
-        # flags to guarantee commutativity of condition, intervene, trace
-        msg["stop"] = True
-        msg["done"] = True
-        msg["mask"] = False
-        msg["is_observed"] = True
-        msg["infer"]["is_auxiliary"] = True
-        msg["infer"]["_do_not_trace"] = True
+            # flags to guarantee commutativity of condition, intervene, trace
+            msg["stop"] = True
+            msg["done"] = True
+            msg["mask"] = False
+            msg["is_observed"] = True
+            msg["infer"]["is_auxiliary"] = True
+            msg["infer"]["_do_not_trace"] = True
 
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
-        infer = msg.get("infer")
-        if infer is None or "_index_naming" not in infer:
+        assert msg["value"] is not None
+
+        # If this message has been handled already by a different pyro shim, ignore.
+        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):
             return
 
-        # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-        naming = infer["_index_naming"]  # type: ignore
+        if getattr(self, "_current_site", None) == msg["name"]:
+            assert "_index_naming" in msg
 
-        value = msg["value"]
+            # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
+            naming = msg["_index_naming"]  # type: ignore
 
-        if value is not None:
+            value = msg["value"]
+
             # note: is it safe to assume that msg['fn'] is a distribution?
             dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
             if len(value.shape) < len(dist_shape):
@@ -301,9 +334,10 @@ def positional_distribution(
             if dist_constr is dist.Independent:
                 base_dist, reinterpreted_batch_ndims = args
                 pos_base_dist, naming = positional_distribution(base_dist)
-                return dist.Independent(
-                    pos_base_dist, reinterpreted_batch_ndims
-                ), naming
+                return (
+                    dist.Independent(pos_base_dist, reinterpreted_batch_ndims),
+                    naming,
+                )
             else:
                 assert callable(dist_constr)
                 base_dist = dist_constr(*args)
