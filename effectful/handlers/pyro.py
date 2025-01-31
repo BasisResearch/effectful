@@ -1,14 +1,9 @@
 import typing
 import warnings
+from collections.abc import Collection, Mapping
 from typing import (
     Annotated,
     Any,
-    Collection,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
-    Type,
     TypeVar,
 )
 
@@ -328,7 +323,7 @@ def named_distribution(
 @defop
 def positional_distribution(
     d: Annotated[TorchDistribution, Scoped[A]],
-) -> Tuple[TorchDistribution, Naming]:
+) -> tuple[TorchDistribution, Naming]:
     shape = d.shape()
     d = defterm(d)
     dist_constr, args = d.args[0], d.args[1:]
@@ -371,7 +366,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     _args: tuple
     _kwargs: dict
 
-    def __init__(self, dist_constr: Type[TorchDistribution], *args, **kwargs):
+    def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
         self._args = (dist_constr,) + tuple(defterm(a) for a in args)
         self._kwargs = kwargs
 
