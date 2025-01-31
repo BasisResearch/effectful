@@ -53,9 +53,9 @@ def _desugar_tensor_index(shape, key):
             new_shape.append(1)
             new_key.append(slice(None))
         elif k is Ellipsis:
-            assert not any(k is Ellipsis for k in key[i + 1 :]), (
-                "only one Ellipsis allowed"
-            )
+            assert not any(
+                k is Ellipsis for k in key[i + 1 :]
+            ), "only one Ellipsis allowed"
 
             # determine which of the original dimensions this ellipsis refers to
             pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis

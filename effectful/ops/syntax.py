@@ -542,9 +542,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> tuple[
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
