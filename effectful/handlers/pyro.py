@@ -275,7 +275,10 @@ def named_distribution(
             if dist_constr is dist.Independent:
                 base_dist, reinterpreted_batch_ndims = args
                 return dist.Independent(
-                    named_distribution(base_dist, *names), reinterpreted_batch_ndims
+                    named_distribution(
+                        typing.cast(TorchDistribution, base_dist), *names
+                    ),
+                    reinterpreted_batch_ndims,
                 )
             else:
                 named_args = []
@@ -300,10 +303,13 @@ def positional_distribution(
         case Term(op=_call, args=(dist_constr, *args)) if _call is call:
             if dist_constr is dist.Independent:
                 base_dist, reinterpreted_batch_ndims = args
-                pos_base_dist, naming = positional_distribution(base_dist)
-                return dist.Independent(
-                    pos_base_dist, reinterpreted_batch_ndims
-                ), naming
+                pos_base_dist, naming = positional_distribution(
+                    typing.cast(TorchDistribution, base_dist)
+                )
+                return (
+                    dist.Independent(pos_base_dist, reinterpreted_batch_ndims),
+                    naming,
+                )
             else:
                 assert callable(dist_constr)
                 base_dist = dist_constr(*args)
