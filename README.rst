@@ -19,6 +19,7 @@ Install From Source
    git clone git@github.com:BasisResearch/effectful.git
    cd effectful
    git checkout master
+   conda install conda-forge::dm-tree  
    pip install -e .[pyro]
 
 Install With Optional PyTorch/Pyro Support
@@ -85,23 +86,23 @@ We can represent free variables as operations with no arguments, generated using
 
 .. code:: python
 
-   >>> x = defop(int, name="x")
-   >>> y = defop(int, name="y")
+   x = defop(int, name="x")
+   y = defop(int, name="y")
 
 If we evaluate an expression containing free variables, we get a term:
 
 .. code:: python
 
-   >>> e = 1 + 1 + (x() + 1) + (5 + y())
-   >>> print(e)
+   e = 1 + 1 + (x() + 1) + (5 + y())
+   print(e)
    add(2, add(add(x(), 1), add(5, y())))
 
 We can make the evaluation strategy smarter by taking advantage of the commutativity and associativity of addition, as expressed by the ``commute_add`` and ``assoc_add`` handlers.
 
 .. code:: python
 
-   >>> with handler(eager_mixed):
-   >>>     print(evaluate(e))
+   with handler(eager_mixed):
+       print(evaluate(e))
    add(8, add(x(), y()))
    
 Learn More
