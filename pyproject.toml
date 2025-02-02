@@ -1,11 +1,11 @@
 [tool.pyright]
 include = ["tests", "effectful"]
-pythonVersion = "3.12"
 exclude = ["**/node_modules",
     "**/__pycache__",
     "effectful.egg-info"
 ]
-reportMissingImports = false
+pythonVersion = "3.12"
+reportMissingImports = true
 reportAttributeAccessIssue = false
 reportCallIssue = false
 reportGeneralTypeIssues = false

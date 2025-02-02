@@ -124,15 +124,15 @@ def test_smoke_condition_enumerate_hmm_elbo(
     tr.compute_log_prob()
     for t in range(num_steps):
         assert f"x_{t}" in tr.nodes
-        assert tr.nodes[f"x_{t}"]["type"] == "sample"
-        assert not tr.nodes[f"x_{t}"]["is_observed"]
-        assert any(f.name == "plate1" for f in tr.nodes[f"x_{t}"]["cond_indep_stack"])
+        assert tr.nodes.get(f"x_{t}", {}).get("type") == "sample"
+        assert not tr.nodes.get(f"x_{t}", {}).get("is_observed")
+        assert any(f.name == "plate1" for f in tr.nodes.get(f"x_{t}", {}).get("cond_indep_stack", []))
 
         assert f"y_{t}" in tr.nodes
-        assert tr.nodes[f"y_{t}"]["type"] == "sample"
-        assert tr.nodes[f"y_{t}"]["is_observed"]
-        assert (tr.nodes[f"y_{t}"]["value"] == data[t]).all()
-        assert any(f.name == "plate1" for f in tr.nodes[f"x_{t}"]["cond_indep_stack"])
+        assert tr.nodes.get(f"y_{t}", {}).get("type") == "sample"
+        assert tr.nodes.get(f"y_{t}", {}).get("is_observed")
+        assert (tr.nodes.get(f"y_{t}", {}).get("value") == data[t]).all()
+        assert any(f.name == "plate1" for f in tr.nodes.get(f"x_{t}", {}).get("cond_indep_stack", []))
 
     if use_guide:
         guide = pyro.infer.config_enumerate(default="parallel")(
