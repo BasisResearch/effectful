@@ -4,6 +4,9 @@ lint: FORCE
 lint-notebooks:
 	./scripts/lint_notebooks.sh
 
+pyright:
+	./scripts/pyright.sh
+
 format:
 	./scripts/clean.sh
 

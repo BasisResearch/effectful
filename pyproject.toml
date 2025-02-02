@@ -1,0 +1,19 @@
+[tool.pyright]
+include = ["tests", "effectful"]
+pythonVersion = "3.12"
+exclude = ["**/node_modules",
+    "**/__pycache__",
+    "effectful.egg-info"
+]
+reportMissingImports = false
+reportAttributeAccessIssue = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportMissingModuleSource = false
+reportOperatorIssue = false
+reportInvalidTypeForm = false
+reportIncompatibleVariableOverride = false
+reportArgumentType = false
+reportIndexIssue = false
+reportPossiblyUnboundVariable = false
+reportReturnType = false

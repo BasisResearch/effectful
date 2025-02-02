@@ -31,6 +31,7 @@ DEV_REQUIRE = (
         "pytest-xdist",
         "pytest-benchmark",
         "mypy",
+        "pyright",
         "ruff",
         "nbval",
         "nbqa",
