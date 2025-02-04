@@ -242,7 +242,7 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
 
 
 def stack(
-    values: tuple[torch.Tensor, ...] | list[torch.Tensor], name: str, **kwargs
+    values: tuple[torch.Tensor, ...] | list[torch.Tensor], name: str
 ) -> torch.Tensor:
     """Stack a sequence of indexed values, creating a new dimension. The new
     dimension is indexed by `dim`. The indexed values in the stack must have
