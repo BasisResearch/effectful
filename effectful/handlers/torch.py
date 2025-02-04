@@ -156,9 +156,15 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     ]
     ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
 
-    tpe_torch_fn = torch.func.vmap(
-        deffn(t, *[var for (var, _) in ordered_sized_fvs]), randomness="different"
-    )
+    index_fn = deffn(t, *[var for (var, _) in ordered_sized_fvs])
+
+    # note: torch.func.vmap will call repr on the callable, so it's important
+    # that we don't pass something with a slow repr (like a large tensor wrapped
+    # in a deffn)
+    def wrapper(*args):
+        return index_fn(*args)
+
+    tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
     inds = torch.broadcast_tensors(
         *(
