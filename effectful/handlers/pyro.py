@@ -571,7 +571,9 @@ def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
 
 @defterm.register(dist.Delta)
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.Delta, d.v, d.log_density, event_dim=d.event_dim)
+    return _DistributionTerm(
+        dist.Delta, d.v, log_density=d.log_density, event_dim=d.event_dim
+    )
 
 
 def pyro_module_shim(
