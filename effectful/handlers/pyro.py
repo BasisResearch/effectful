@@ -443,6 +443,11 @@ def _embed_independent(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.base_dist, d.reinterpreted_batch_ndims)
 
 
+@defterm.register(dist.MaskedDistribution)
+def _embed_masked(d) -> Term[TorchDistribution]:
+    return _DistributionTerm(type(d), d.base_dist, d._mask)
+
+
 @defterm.register(dist.Cauchy)
 @defterm.register(dist.Gumbel)
 @defterm.register(dist.Laplace)
