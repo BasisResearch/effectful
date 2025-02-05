@@ -167,7 +167,7 @@ def name_to_sym(name: str) -> Operation[[], int]:
     return defop(int, name=name)
 
 
-def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
+def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
