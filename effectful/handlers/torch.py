@@ -405,6 +405,9 @@ class _EagerTensorTerm(torch.Tensor):
     def __torch_function__(
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
+        if func is torch._C.TensorBase.__getitem__ and type(args[0]) is torch.Tensor:
+            return torch_getitem(*args)
+
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
     def __getitem__(self, key) -> torch.Tensor:
