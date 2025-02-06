@@ -423,6 +423,21 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
         return self._base_dist.enumerate_support(expand)
 
 
+@defterm.register(torch.distributions.transforms.AffineTransform)
+def _embed_affine_transform(t):
+    return call(type(t), t.loc, t.scale, event_dim=t._event_dim)
+
+
+@defterm.register(torch.distributions.transforms._InverseTransform)
+def _embed_inverse_transform(t):
+    return call(type(t), t._inv)
+
+
+@defterm.register(torch.distributions.transforms.ExpTransform)
+def _embed_exp_transform(t):
+    return call(type(t), t._inv)
+
+
 @defterm.register(TorchDistribution)
 @defterm.register(TorchDistributionMixin)
 def _embed_distribution(dist: TorchDistribution) -> Term[TorchDistribution]:
@@ -441,6 +456,18 @@ def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.Independent)
 def _embed_independent(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.base_dist, d.reinterpreted_batch_ndims)
+
+
+@defterm.register(dist.TransformedDistribution)
+def _embed_transformed(d) -> Term[TorchDistribution]:
+    return _DistributionTerm(
+        dist.TransformedDistribution, d.base_dist, transforms=d.transforms
+    )
+
+
+@defterm.register(dist.FoldedDistribution)
+def _embed_folded(d) -> Term[TorchDistribution]:
+    return _DistributionTerm(type(d), d.base_dist)
 
 
 @defterm.register(dist.MaskedDistribution)
