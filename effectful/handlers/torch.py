@@ -402,7 +402,9 @@ class _EagerTensorTerm(torch.Tensor):
         return f"{indexed_constr}({tensor_str})[{key_str}]"
 
     @classmethod
-    def __torch_function__(cls, func: Callable[..., T], types, args=(), kwargs=None) -> Expr[T]:
+    def __torch_function__(
+        cls, func: Callable[..., T], types, args=(), kwargs=None
+    ) -> Expr[T]:
         if func is torch._C.TensorBase.__getitem__ and type(args[0]) is torch.Tensor:
             return torch_getitem(*args)
 
