@@ -13,6 +13,7 @@ except ImportError:
     raise ImportError("Pyro is required to use effectful.handlers.pyro.")
 
 import pyro.distributions as dist
+from pyro.distributions import Distribution
 from pyro.distributions.torch_distribution import (
     TorchDistribution,
     TorchDistributionMixin,
@@ -162,12 +163,13 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # We need to identify this pyro shim during post-sample.
             msg["_pyro_shim_id"] = id(self)  # type: ignore[typeddict-unknown-key]
 
-            if "_markov_scope" in msg.get("infer") and self._current_site:
-                if "infer" in msg:
+            if "_markov_scope" in msg.get("infer", {}) and self._current_site:
+                if "infer" in msg and isinstance(msg["infer"], dict):
                     if "_markov_scope" in msg["infer"]:
-                         msg["infer"]["_markov_scope"].pop(self._current_site, None)
+                        msg["infer"]["_markov_scope"].pop(self._current_site, None)
 
             dist = msg.get("fn")
+            assert dist is None or isinstance(dist, Distribution)
             obs = msg.get("value") if msg.get("is_observed") else None
 
             # pdist shape: | named1 | batch_shape | event_shape |
@@ -185,13 +187,19 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             assert set(sizesof(mask).keys()) <= (
                 set(indices.keys()) | set(sizesof(obs).keys())
             )
-            pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
 
-            pos_obs: torch.Tensor | None = None
-            if obs is not None:
-                pos_obs, naming = PyroShim._broadcast_to_named(
-                    obs, dist.shape(), indices
-                )
+            if isinstance(dist, Distribution):
+                pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
+
+                pos_obs: torch.Tensor | None = None
+                if obs is not None:
+                    pos_obs, naming = PyroShim._broadcast_to_named(
+                        obs, dist.shape(), indices
+                    )
+            else:
+                # Handle the case where dist is None safely
+                pos_mask, _ = PyroShim._broadcast_to_named(mask, (), indices)
+                pos_obs = None                    
 
             # Each of the batch dimensions on the distribution gets a
             # cond_indep_stack frame.
@@ -220,12 +228,13 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # This branch handles the first call to pyro.sample by calling pyro_sample.
         else:
             try:
+                infer_data = msg.get("infer") or {} 
                 self._current_site = msg.get("name")
                 msg["value"] = pyro_sample(
                     msg.get("name"),
                     msg.get("fn"),
                     obs=msg.get("value") if msg.get("is_observed") else None,
-                    infer=msg.get("infer").copy(),
+                    infer=infer_data,
                 )
             finally:
                 self._current_site = None
@@ -235,9 +244,13 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["done"] = True
             msg["mask"] = False
             msg["is_observed"] = True
-            if "infer" in msg:
-                msg["infer"]["is_auxiliary"] = True
-                msg["infer"]["_do_not_trace"] = True
+
+            # Ensure msg["infer"] exists before modifying it
+            if "infer" not in msg or msg["infer"] is None:
+                msg["infer"] = {}  # Initialize it as an empty dict
+
+            msg["infer"]["is_auxiliary"] = True
+            msg["infer"]["_do_not_trace"] = True
 
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if msg.get("value", None) is not None:

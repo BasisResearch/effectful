@@ -2,32 +2,30 @@ name: Lint
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master, staging-* ]
+    branches: 
+      - master
+      - 'staging-*'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.10']  # , 3.8, 3.9]
+        python-version: ['3.10']
+        os: [ubuntu-latest]
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: pip cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: lint-pip-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            lint-pip-
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v1
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: setup.py
 
       - name: Install dependencies
         run: |

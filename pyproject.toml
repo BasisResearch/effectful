@@ -6,6 +6,7 @@ exclude = ["**/node_modules",
 ]
 pythonVersion = "3.12"
 reportMissingImports = true
+reportWildcardImportFromLibrary = false
 reportAttributeAccessIssue = false
 reportCallIssue = false
 reportGeneralTypeIssues = false

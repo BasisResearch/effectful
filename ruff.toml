@@ -1,0 +1,9 @@
+target-version = "py310"
+
+[lint]
+select = [
+  "F",       # pyflakes
+  "I",       # isort
+  "PERF",    # performance
+  "UP"       # pyupgrade
+]
