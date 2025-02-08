@@ -35,7 +35,7 @@ def random_scale_tril(*args):
         shape = args
 
     data = torch.randn(shape)
-    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
+    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data) # type: ignore
 
 
 @functools.cache

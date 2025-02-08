@@ -13,6 +13,7 @@ except ImportError:
     raise ImportError("Pyro is required to use effectful.handlers.pyro.")
 
 import pyro.distributions as dist
+from pyro.distributions import Distribution
 from pyro.distributions.torch_distribution import (
     TorchDistribution,
     TorchDistributionMixin,
@@ -135,10 +136,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     def _pyro_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         if typing.TYPE_CHECKING:
-            assert msg["type"] == "sample"
-            assert msg["name"] is not None
-            assert msg["infer"] is not None
-            assert isinstance(msg["fn"], TorchDistributionMixin)
+            assert msg.get("type") == "sample"
+            assert msg.get("name") is not None
+            assert msg.get("infer") is not None
+            assert isinstance(msg.get("fn"), TorchDistributionMixin)
 
         if pyro.poutine.util.site_is_subsample(msg) or pyro.poutine.util.site_is_factor(
             msg
@@ -155,41 +156,50 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # compatible with Pyro. In particular, it removes all named dimensions
         # and stores naming information in the message. Names are replaced by
         # _pyro_post_sample.
-        if getattr(self, "_current_site", None) == msg["name"]:
+        if getattr(self, "_current_site", None) == msg.get("name"):
             if "_index_naming" in msg:
                 return
 
             # We need to identify this pyro shim during post-sample.
             msg["_pyro_shim_id"] = id(self)  # type: ignore[typeddict-unknown-key]
 
-            if "_markov_scope" in msg["infer"] and self._current_site:
-                msg["infer"]["_markov_scope"].pop(self._current_site, None)
+            if "_markov_scope" in msg.get("infer", {}) and self._current_site:
+                if "infer" in msg and isinstance(msg["infer"], dict):
+                    if "_markov_scope" in msg["infer"]:
+                        msg["infer"]["_markov_scope"].pop(self._current_site, None)
 
-            dist = msg["fn"]
-            obs = msg["value"] if msg["is_observed"] else None
+            dist = msg.get("fn")
+            assert dist is None or isinstance(dist, Distribution)
+            obs = msg.get("value") if msg.get("is_observed") else None
 
             # pdist shape: | named1 | batch_shape | event_shape |
             # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
             indices = sizesof(dist)
             pdist, naming = positional_distribution(dist)
 
-            if msg["mask"] is None:
+            if msg.get("mask") is None:
                 mask = torch.tensor(True)
-            elif isinstance(msg["mask"], bool):
-                mask = torch.tensor(msg["mask"])
+            elif isinstance(msg.get("mask"), bool):
+                mask = torch.tensor(msg.get("mask"))
             else:
-                mask = msg["mask"]
+                mask = msg.get("mask")
 
             assert set(sizesof(mask).keys()) <= (
                 set(indices.keys()) | set(sizesof(obs).keys())
             )
-            pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
 
-            pos_obs: torch.Tensor | None = None
-            if obs is not None:
-                pos_obs, naming = PyroShim._broadcast_to_named(
-                    obs, dist.shape(), indices
-                )
+            if isinstance(dist, Distribution):
+                pos_mask, _ = PyroShim._broadcast_to_named(mask, dist.batch_shape, indices)
+
+                pos_obs: torch.Tensor | None = None
+                if obs is not None:
+                    pos_obs, naming = PyroShim._broadcast_to_named(
+                        obs, dist.shape(), indices
+                    )
+            else:
+                # Handle the case where dist is None safely
+                pos_mask, _ = PyroShim._broadcast_to_named(mask, (), indices)
+                pos_obs = None                    
 
             # Each of the batch dimensions on the distribution gets a
             # cond_indep_stack frame.
@@ -205,25 +215,26 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                         size=indices[var],
                         counter=0,
                     )
-                    msg["cond_indep_stack"] = (frame,) + msg["cond_indep_stack"]
+                    msg["cond_indep_stack"] = (frame,) + msg.get("cond_indep_stack")
 
             msg["fn"] = pdist
             msg["value"] = pos_obs
             msg["mask"] = pos_mask
             msg["_index_naming"] = naming  # type: ignore
 
-            assert sizesof(msg["value"]) == {}
-            assert sizesof(msg["mask"]) == {}
+            assert sizesof(msg.get("value")) == {}
+            assert sizesof(msg.get("mask")) == {}
 
         # This branch handles the first call to pyro.sample by calling pyro_sample.
         else:
             try:
-                self._current_site = msg["name"]
+                infer_data = msg.get("infer") or {} 
+                self._current_site = msg.get("name")
                 msg["value"] = pyro_sample(
-                    msg["name"],
-                    msg["fn"],
-                    obs=msg["value"] if msg["is_observed"] else None,
-                    infer=msg["infer"].copy(),
+                    msg.get("name"),
+                    msg.get("fn"),
+                    obs=msg.get("value") if msg.get("is_observed") else None,
+                    infer=infer_data,
                 )
             finally:
                 self._current_site = None
@@ -233,32 +244,37 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["done"] = True
             msg["mask"] = False
             msg["is_observed"] = True
+
+            # Ensure msg["infer"] exists before modifying it
+            if "infer" not in msg or msg["infer"] is None:
+                msg["infer"] = {}  # Initialize it as an empty dict
+
             msg["infer"]["is_auxiliary"] = True
             msg["infer"]["_do_not_trace"] = True
 
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
-        assert msg["value"] is not None
+        if msg.get("value", None) is not None:
+            # If this message has been handled already by a different pyro shim, ignore.
+            if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):  # type: ignore[typeddict-item]
+                return
 
-        # If this message has been handled already by a different pyro shim, ignore.
-        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):  # type: ignore[typeddict-item]
-            return
+            if "name" in msg:
+                if getattr(self, "_current_site", None) == msg["name"]:
+                    assert "_index_naming" in msg
 
-        if getattr(self, "_current_site", None) == msg["name"]:
-            assert "_index_naming" in msg
+                    # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
+                    naming = msg["_index_naming"]  # type: ignore
 
-            # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-            naming = msg["_index_naming"]  # type: ignore
+                    value = msg["value"]
 
-            value = msg["value"]
-
-            # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
-            if len(value.shape) < len(dist_shape):
-                value = value.broadcast_to(
-                    torch.broadcast_shapes(value.shape, dist_shape)
-                )
-            value = naming.apply(value)
-            msg["value"] = value
+                    # note: is it safe to assume that msg['fn'] is a distribution?
+                    dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
+                    if len(value.shape) < len(dist_shape):
+                        value = value.broadcast_to(
+                            torch.broadcast_shapes(value.shape, dist_shape)
+                        )
+                    value = naming.apply(value)
+                    msg["value"] = value
 
 
 class Naming:
