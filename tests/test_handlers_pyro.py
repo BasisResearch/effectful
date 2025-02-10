@@ -271,3 +271,30 @@ def test_sizesof_positional_distribution():
     pos_dist = positional_distribution(base_dist)
 
     assert sizesof(pos_dist) == {}
+
+
+def test_pyro_shim_enumerate():
+    from pyro.distributions import constraints
+    from pyro.infer import TraceEnum_ELBO, config_enumerate
+
+    @config_enumerate
+    @PyroShim()
+    def model():
+        a = defop(int, name="a")
+
+        p = pyro.param(
+            "p",
+            Indexable(torch.randn(4, 2, 3))[a()].exp(),
+            constraint=constraints.simplex,
+        )
+
+        x = pyro.sample("x", dist.Categorical(p[0]))
+        y = pyro.sample("y", dist.Categorical(p[x]))
+
+        assert x.shape == torch.Size([3])
+        assert y.shape == torch.Size([3, 1])
+
+    def guide(): ...
+
+    elbo = TraceEnum_ELBO(max_plate_nesting=0)
+    elbo.loss(model, guide)
