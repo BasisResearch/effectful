@@ -316,7 +316,9 @@ def named_distribution(
         else:
             return a
 
-    return dist_constr(*[_to_named(a) for a in args], **d.kwargs)
+    new_d = dist_constr(*[_to_named(a) for a in args], **d.kwargs)
+    assert new_d.event_shape == d.event_shape
+    return new_d
 
 
 @defop
@@ -347,7 +349,10 @@ def positional_distribution(
         else:
             return a
 
-    return dist_constr(*[_to_positional(a) for a in args], **d.kwargs), naming
+    new_d = dist_constr(*[_to_positional(a) for a in args], **d.kwargs)
+
+    assert new_d.event_shape == d.event_shape
+    return new_d, naming
 
 
 class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
