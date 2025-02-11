@@ -108,6 +108,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         """
         t_indices = sizesof(t)
 
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t)
+
         if len(t.shape) < len(shape):
             t = t.expand(shape)
 
