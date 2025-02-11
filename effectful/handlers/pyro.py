@@ -97,11 +97,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     _current_site: str | None
 
-    def __enter__(self):
-        if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
-            warnings.warn("PyroShim should be installed at most once.")
-        return super().__enter__()
-
     @staticmethod
     def _broadcast_to_named(
         t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
