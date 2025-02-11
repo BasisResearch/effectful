@@ -383,7 +383,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     @property
     def _base_dist(self):
-        return self.args[0](*self.args[1:])
+        return self.args[0](*self.args[1:], **self.kwargs)
 
     @property
     def has_rsample(self):
