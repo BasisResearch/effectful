@@ -246,6 +246,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
             value = msg["value"]
 
+            assert "enumerate" not in msg["infer"], (
+                "Enumeration is not currently supported in PyroShim."
+            )
+
             # note: is it safe to assume that msg['fn'] is a distribution?
             dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
             if len(value.shape) < len(dist_shape):
