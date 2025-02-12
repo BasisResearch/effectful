@@ -876,8 +876,8 @@ def _(value: T) -> T:
     return value
 
 
-@defop  # type: ignore
-def bool_(term: Term[T] | T) -> bool:
+@defop
+def bool_(term: Any) -> bool:
     if not isinstance(term, Term):
         return bool(term)
     raise ValueError("Cannot convert term to bool")
@@ -1006,8 +1006,8 @@ def _get_iterable_type_param(type_hint: Any) -> type | None:
 def filter_map(
     body: Annotated[T, Scoped[A | B]],
     guard: Annotated[bool, Scoped[A | B]],
-    binders: Annotated[list[Operation[[], Any]], Scoped[A]],
-    iterables: Annotated[Iterable[Any], Scoped[B]],
+    binders: Annotated[tuple[Operation[[], Any]], Scoped[A]],
+    iterables: Annotated[tuple[Iterable[Any]], Scoped[B]],
 ) -> Annotated[Iterable[T], Scoped[B]]:
     raise NotImplementedError
 
@@ -1024,7 +1024,7 @@ def _(value: Iterable[T]) -> Iterable[T]:
         param_typ = _get_iterable_type_param(iterator_typ)
         op = defop(param_typ)
         iters[op] = it
-        return op
+        return op()
 
     # capture boolean conversion to identify the if-clause (if exists)
     guard = True
@@ -1038,7 +1038,7 @@ def _(value: Iterable[T]) -> Iterable[T]:
         return True
 
     with handler({next_: next_handler, bool_: bool_handler}):
-        body = next(value)
+        body = next(iter(value))
 
     return filter_map(body, guard, tuple(iters.keys()), tuple(iters.values()))
 
@@ -1048,7 +1048,7 @@ class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def __iter__(self) -> T:
+    def __iter__(self) -> collections.abc.Iterator[T]:
         return self
 
     def __next__(self) -> T:

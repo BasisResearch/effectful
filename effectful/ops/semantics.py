@@ -78,7 +78,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 
 @defop
-def next_(i: Iterable[T]) -> Operation[[], T]:
+def next_(i: Iterable[T]) -> T:
     raise NotImplementedError
 
 
