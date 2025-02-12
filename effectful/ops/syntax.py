@@ -872,6 +872,9 @@ def defdata(
 @defterm.register(Term)
 @defterm.register(type)
 @defterm.register(types.BuiltinFunctionType)
+@defterm.register(str)
+@defterm.register(list)
+@defterm.register(tuple)
 def _(value: T) -> T:
     return value
 

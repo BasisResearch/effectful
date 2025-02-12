@@ -337,6 +337,11 @@ def _embed_tensor(op, *args, **kwargs):
         return _TensorTerm(op, *args, **kwargs)
 
 
+@defterm.register(torch.Tensor)
+def _(x: torch.Tensor) -> Expr[torch.Tensor]:
+    return x
+
+
 class _TensorTerm(Term[torch.Tensor]):
     def __init__(
         self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
