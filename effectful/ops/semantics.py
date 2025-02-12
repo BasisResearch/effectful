@@ -1,6 +1,6 @@
 import contextlib
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar
 
 import tree
@@ -75,6 +75,11 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         return fn(*args, **kwargs)
     else:
         raise NotImplementedError
+
+
+@defop
+def next_(i: Iterable[T]) -> Operation[[], T]:
+    raise NotImplementedError
 
 
 @defop

@@ -5,8 +5,8 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable
-from typing import Annotated, Concatenate, Generic, TypeVar
+from collections.abc import Callable, Iterable
+from typing import Annotated, Any, Concatenate, Generic, TypeVar, get_args, get_origin
 
 import tree
 from typing_extensions import ParamSpec
@@ -511,7 +511,7 @@ def defop(
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
-@defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
+@defop.register(typing.cast(type[Callable], Callable))
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
@@ -964,6 +964,97 @@ def _(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+def _get_iterable_type_param(type_hint: Any) -> type | None:
+    """
+    Check if a type is an Iterable and return its type parameter if it is.
+
+    Args:
+        type_hint: The type to check
+
+    Returns:
+        The type parameter if the input is an Iterable type annotation,
+
+    Examples:
+        >>> get_iterable_type_param(list[str])
+        <class 'str'>
+        >>> get_iterable_type_param(set[int])
+        <class 'int'>
+        >>> get_iterable_type_param(bool)
+        TypeError
+    """
+    # Get the base type (like list, set etc)
+    origin = get_origin(type_hint)
+
+    # If there's no origin, check if it's directly an Iterable
+    if origin is None:
+        origin = type_hint
+
+    # Check if the origin is an Iterable
+    if not issubclass(origin, Iterable):
+        raise TypeError(f"Expected an Iterable type, but got {type_hint}.")
+
+    # Get the type arguments
+    type_args = get_args(type_hint)
+
+    # Return the first type argument if it exists
+    return type_args[0] if type_args else object
+
+
+@defop
+def filter_map(
+    body: Annotated[T, Scoped[A | B]],
+    guard: Annotated[bool, Scoped[A | B]],
+    binders: Annotated[list[Operation[[], Any]], Scoped[A]],
+    iterables: Annotated[Iterable[Any], Scoped[B]],
+) -> Annotated[Iterable[T], Scoped[B]]:
+    raise NotImplementedError
+
+
+@defterm.register(Iterable)
+def _(value: Iterable[T]) -> Iterable[T]:
+    from .semantics import handler, next_, typeof
+
+    # capture calls to next to identify the underlying iterators
+    iters = {}
+
+    def next_handler(it):
+        iterator_typ = typeof(it)
+        param_typ = _get_iterable_type_param(iterator_typ)
+        op = defop(param_typ)
+        iters[op] = it
+        return op
+
+    # capture boolean conversion to identify the if-clause (if exists)
+    guard = True
+
+    def bool_handler(t):
+        nonlocal guard
+        guard = t
+
+        # Note: this could cause strange effects if terms are converted to
+        # booleans inside the guard or body.
+        return True
+
+    with handler({next_: next_handler, bool_: bool_handler}):
+        body = next(value)
+
+    return filter_map(body, guard, tuple(iters.keys()), tuple(iters.values()))
+
+
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __iter__(self) -> T:
+        return self
+
+    def __next__(self) -> T:
+        from effectful.ops.semantics import next_
+
+        return next_(self)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
