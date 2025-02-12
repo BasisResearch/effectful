@@ -193,6 +193,12 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
     def __le__(self, other):
         return le(self, other)
 
+    def __gt__(self, other):
+        return gt(self, other)
+
+    def __ge__(self, other):
+        return ge(self, other)
+
 
 @defdata.register(numbers.Rational)
 @numbers.Rational.register
