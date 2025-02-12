@@ -980,12 +980,14 @@ def _get_iterable_type_param(type_hint: Any) -> type | None:
         The type parameter if the input is an Iterable type annotation,
 
     Examples:
-        >>> get_iterable_type_param(list[str])
+        >>> _get_iterable_type_param(list[str])
         <class 'str'>
-        >>> get_iterable_type_param(set[int])
+        >>> _get_iterable_type_param(set[int])
         <class 'int'>
-        >>> get_iterable_type_param(bool)
-        TypeError
+        >>> _get_iterable_type_param(bool)
+        Traceback (most recent call last):
+        ...
+        TypeError: Expected an Iterable type, but got <class 'bool'>.
     """
     # Get the base type (like list, set etc)
     origin = get_origin(type_hint)
