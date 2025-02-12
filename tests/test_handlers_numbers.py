@@ -1,5 +1,6 @@
 import collections
 import logging
+import typing
 
 import pytest
 
@@ -26,7 +27,7 @@ def test_lambda_calculus_1():
         assert fvsof(Lam(x, e1).args[1]) != fvsof(Lam(x, e1).args[1])
 
         assert typeof(e1) is int
-        assert typeof(f1) is collections.abc.Callable
+        assert typing.get_origin(typeof(f1)) is collections.abc.Callable
 
 
 def test_lambda_calculus_2():
@@ -142,7 +143,7 @@ def test_defun_1():
         def f1(x: int) -> int:
             return x + y() + 1
 
-        assert typeof(f1) is collections.abc.Callable
+        assert typing.get_origin(typeof(f1)) is collections.abc.Callable
         assert y in fvsof(f1)
         assert x not in fvsof(f1)
 
