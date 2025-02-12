@@ -876,6 +876,13 @@ def _(value: T) -> T:
     return value
 
 
+@defop  # type: ignore
+def bool_(term: Term[T] | T) -> bool:
+    if not isinstance(term, Term):
+        return bool(term)
+    raise ValueError("Cannot convert term to bool")
+
+
 @defdata.register(object)
 class _BaseTerm(Generic[T], Term[T]):
     _op: Operation[..., T]
@@ -908,6 +915,9 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
+
+    def __bool__(self):
+        return bool_(self)
 
 
 @defdata.register(collections.abc.Callable)
