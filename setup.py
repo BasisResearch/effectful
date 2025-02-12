@@ -11,8 +11,6 @@ except Exception as e:
     sys.stderr.flush()
     long_description = ""
 
-TORCH_REQUIRE = ["torch"]
-PYRO_REQUIRE = TORCH_REQUIRE + ["pyro-ppl"]
 DOCS_REQUIRE = [
     "setuptools",
     "sphinx",
@@ -22,8 +20,6 @@ DOCS_REQUIRE = [
     "nbsphinx",
 ]
 DEV_REQUIRE = (
-    PYRO_REQUIRE
-    + TORCH_REQUIRE
     + DOCS_REQUIRE
     + [
         "pytest",
@@ -53,12 +49,9 @@ setup(
     install_requires=[
         # if you add any additional libraries, please also
         # add them to `docs/source/requirements.txt`
-        "typing_extensions",
-        "dm-tree",
+        "effectful",
     ],
     extras_require={
-        "torch": TORCH_REQUIRE,
-        "pyro": PYRO_REQUIRE,
         "dev": DEV_REQUIRE,
         "docs": DOCS_REQUIRE,
     },
