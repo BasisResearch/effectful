@@ -1,7 +1,7 @@
 import functools
 import operator
 from collections.abc import Iterable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import torch
 
@@ -321,4 +321,4 @@ def select(tensor: torch.Tensor, **indices: int) -> torch.Tensor:
         name_to_sym(n): functools.partial(lambda x: x, i) for (n, i) in indices.items()
     }
     with handler(intp):
-        return evaluate(tensor)
+        return cast(torch.Tensor, evaluate(tensor))

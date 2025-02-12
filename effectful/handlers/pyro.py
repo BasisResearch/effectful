@@ -1,5 +1,4 @@
 import typing
-import warnings
 from collections.abc import Collection, Mapping
 from typing import (
     Annotated,
@@ -249,7 +248,8 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
             value = msg["value"]
 
-            assert "enumerate" not in msg["infer"], (
+            infer = msg["infer"] if msg["infer"] is not None else {}
+            assert "enumerate" not in infer, (
                 "Enumeration is not currently supported in PyroShim."
             )
 
