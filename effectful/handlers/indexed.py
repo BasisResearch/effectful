@@ -249,6 +249,7 @@ def stack(
     identical shapes.
 
     """
+    values = torch.distributions.utils.broadcast_all(*values)
     return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
