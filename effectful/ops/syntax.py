@@ -829,13 +829,19 @@ def defdata(
     from effectful.ops.semantics import apply, evaluate, typeof
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    args_, kwargs_ = list(args), dict(kwargs)
+
+    if len(args) != len(arg_ctxs):
+        raise ValueError(
+            f"Expected {len(arg_ctxs)} positional arguments to {str(op)} but got {len(args)}."
+        )
+
     renaming = {
         var: defop(var)
         for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
         for var in bound_vars
     }
 
-    args_, kwargs_ = list(args), dict(kwargs)
     for i, (v, c) in (
         *enumerate(zip(args, arg_ctxs)),
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),

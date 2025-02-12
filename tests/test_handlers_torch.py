@@ -515,3 +515,13 @@ def test_to_tensor():
     assert set(sizesof(t__).keys()) == set([])
     assert t__.shape == torch.Size([2, 3, 4])
     assert torch.allclose(t_, t__)
+
+
+def test_indexed_tensor_as_index():
+    t1 = torch.randn(2, 3)
+    i = defop(int, name="i")
+    t2 = Indexable(torch.tensor([0, 1]))[i()]
+
+    t3 = t1[t2]
+    assert sizesof(t3) == sizesof(t2)
+    assert (to_tensor(t3, [i]) == t1).all()
