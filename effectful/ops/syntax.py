@@ -614,11 +614,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 ):
                     arg = bound_sig.arguments[name]
                     tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    return tp
 
             return typing.cast(type[V], object)
 
-        return drop_params(anno)
+        return anno
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -724,7 +724,12 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
 
     @property
     def dispatch(self):
-        return self._registry.dispatch
+        def dispatch_origin_type(typ):
+            origin = typing.get_origin(typ)
+            typ = typ if origin is None else origin
+            return self._registry.dispatch(typ)
+
+        return dispatch_origin_type
 
     @property
     def register(self):
