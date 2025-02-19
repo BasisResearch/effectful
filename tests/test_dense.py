@@ -1,6 +1,8 @@
 import torch
 from effectful.handlers.torch import Indexable
+from effectful.ops.semantics import fvsof
 from effectful.ops.syntax import defop
+from effectful.ops.types import Term
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
 
 
@@ -39,6 +41,13 @@ def test_unfold_simple():
     assert result == expected
 
 
+@defop
+def D(*args):
+    if any(len(fvsof(k)) > 0 for (k, _) in args):
+        raise NotImplementedError
+    return dict(args)
+
+
 def test_matmul():
     # Define dimensions
     B, I, J, K = 2, 3, 4, 5
@@ -58,14 +67,17 @@ def test_matmul():
         k: lambda: range(K),
     }
 
-    def body(x):
-        return {(b(), i(), k()): x}
+    def fold_body(x):
+        return x
 
-    unfold_body = [
-        ((b(), i(), k()), Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()])
-    ]
-    streams = unfold(indices, unfold_body)
-    result = fold(LinAlg, streams, body)
+    unfold_body = D(
+        (
+            (b(), i(), k()),
+            Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()],
+        ),
+    )
+    streams = list(unfold(indices, unfold_body))
+    result = fold(LinAlg, streams, fold_body)
 
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
