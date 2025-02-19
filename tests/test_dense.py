@@ -83,23 +83,20 @@ def test_matmul():
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
     assert torch.allclose(torch.tensor(result), expected)
 
+
 def test_fold_dicts():
     # Test folding a sequence of dictionaries
-    dicts = [
-        {'a': 1, 'b': 2},
-        {'b': 3, 'c': 4},
-        {'a': 5, 'c': 6}
-    ]
-    
+    dicts = [{"a": 1, "b": 2}, {"b": 3, "c": 4}, {"a": 5, "c": 6}]
+
     # Simple fold that accumulates values
     result = fold(LinAlg, dicts, lambda x: x)
-    assert result == {'a': 6, 'b': 5, 'c': 10}
-    
+    assert result == {"a": 6, "b": 5, "c": 10}
+
     # Fold with transformation
     result = fold(
         LinAlg,
         dicts,
         body=lambda d: {k: v * 2 for k, v in d.items()},  # double each value
-        guard=lambda d: 'b' in d  # only include dicts with 'b' key
+        guard=lambda d: "b" in d,  # only include dicts with 'b' key
     )
-    assert result == {'a': 2, 'b': 10}
+    assert result == {"a": 2, "b": 10, "c": 8}
