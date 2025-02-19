@@ -4,6 +4,27 @@ from effectful.ops.syntax import defop
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
 
 
+def test_fold_simple():
+    # Test summing squares with a guard
+    numbers = [1, 2, 3, 4, 5]
+    result = fold(
+        LinAlg,
+        numbers,
+        body=lambda x: x ** 2,  # square each number
+        guard=lambda x: x % 2 == 1  # only odd numbers
+    )
+    # Should sum squares of [1, 3, 5]
+    assert result == 35  # 1² + 3² + 5² = 1 + 9 + 25 = 35
+    
+    # Test dictionary accumulation
+    result = fold(
+        LinAlg,
+        range(3),
+        body=lambda x: {x: x * 10}
+    )
+    assert result == {0: 0, 1: 10, 2: 20}
+
+
 def test_unfold_simple():
     # Define simple index operations
     x, y = defop(int), defop(int)
