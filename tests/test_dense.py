@@ -79,9 +79,14 @@ def test_matmul():
     streams = list(unfold(indices, unfold_body))
     result = fold(LinAlg, streams, fold_body)
 
+    # Convert dictionary result to tensor
+    result_tensor = torch.zeros_like(expected)
+    for (b_idx, i_idx, k_idx), value in result.items():
+        result_tensor[b_idx, i_idx, k_idx] = value
+
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
-    assert torch.allclose(torch.tensor(result), expected)
+    assert torch.allclose(result_tensor, expected)
 
 
 def test_fold_dicts():
