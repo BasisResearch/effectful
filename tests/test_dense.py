@@ -1,4 +1,5 @@
 import torch
+from effectful.handlers.torch import Indexable
 from effectful.ops.syntax import defop
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
 
@@ -22,11 +23,11 @@ def test_matmul():
         k: lambda: range(K),
     }
 
-    result = fold(
-        LinAlg,
-        unfold(indices, A[b, i, j] * B_mat[b, j, k]),
-        lambda x: {(b(), i(), k()): x},
-    )
+    def body(x):
+        return {(b, i, k): x}
+
+    unfold_body = Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()]
+    result = fold(LinAlg, unfold(indices, unfold_body), body)
 
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
