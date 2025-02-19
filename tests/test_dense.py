@@ -85,18 +85,22 @@ def test_matmul():
 
 
 def test_fold_dicts():
-    # Test folding a sequence of dictionaries
-    dicts = [{"a": 1, "b": 2}, {"b": 3, "c": 4}, {"a": 5, "c": 6}]
+    # Test folding a sequence of dictionaries with tuple keys
+    dicts = [
+        {(1, 0): 1, (2, 0): 2},
+        {(2, 0): 3, (3, 0): 4},
+        {(1, 0): 5, (3, 0): 6}
+    ]
 
     # Simple fold that accumulates values
     result = fold(LinAlg, dicts, lambda x: x)
-    assert result == {"a": 6, "b": 5, "c": 10}
+    assert result == {(1, 0): 6, (2, 0): 5, (3, 0): 10}
 
     # Fold with transformation
     result = fold(
         LinAlg,
         dicts,
         body=lambda d: {k: v * 2 for k, v in d.items()},  # double each value
-        guard=lambda d: "b" in d,  # only include dicts with 'b' key
+        guard=lambda d: (2, 0) in d,  # only include dicts with (2,0) key
     )
-    assert result == {"a": 2, "b": 10, "c": 8}
+    assert result == {(1, 0): 2, (2, 0): 10, (3, 0): 8}
