@@ -7,18 +7,15 @@ from weighted.fold_lang_v1 import LinAlg, fold, unfold
 def test_unfold_simple():
     # Define simple index operations
     x, y = defop(int), defop(int)
-    
+
     # Define ranges for indices
-    indices = {
-        x: lambda: range(2),
-        y: lambda: range(3)
-    }
-    
+    indices = {x: lambda: range(2), y: lambda: range(3)}
+
     # Test unfolding x + y
     result = list(unfold(indices, x() + y()))
     expected = [0, 1, 2, 1, 2, 3]  # All possible x + y combinations
     assert result == expected
-    
+
     # Test unfolding x * y
     result = list(unfold(indices, x() * y()))
     expected = [0, 0, 0, 0, 1, 2]  # All possible x * y combinations
@@ -45,7 +42,7 @@ def test_matmul():
     }
 
     def body(x):
-        return {(b, i, k): x}
+        return {(b(), i(), k()): x}
 
     unfold_body = Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()]
     result = fold(LinAlg, unfold(indices, unfold_body), body)
