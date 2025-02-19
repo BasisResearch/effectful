@@ -1,4 +1,4 @@
-import numpy as np
+import torch
 from effectful.ops.syntax import defop
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
 
@@ -8,8 +8,8 @@ def test_matmul():
     B, I, J, K = 2, 3, 4, 5
 
     # Create sample matrices
-    A = np.random.randn(B, I, J)
-    B_mat = np.random.randn(B, J, K)
+    A = torch.randn(B, I, J)
+    B_mat = torch.randn(B, J, K)
 
     # Define index operations
     b, i, j, k = defop(int), defop(int), defop(int), defop(int)
@@ -28,6 +28,6 @@ def test_matmul():
         lambda x: {(b(), i(), k()): x},
     )
 
-    # Compare with numpy
-    expected = np.einsum("bij,bjk->bik", A, B_mat)
-    assert np.allclose(result, expected)
+    # Compare with pytorch
+    expected = torch.einsum("bij,bjk->bik", A, B_mat)
+    assert torch.allclose(torch.tensor(result), expected)
