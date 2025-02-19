@@ -86,12 +86,12 @@ def unfold(
     elif isinstance(body, Term):
         streams = product(streams, {op: streams[op] for op in fvsof(body) if op in streams})
         return fold(
-            lambda a, b: (v for v in (*a, *b)),
+            StreamAlg,
             unfold(streams, (body.args, body.kwargs)),
             lambda ak: unfold(streams, body.op)(*ak[0], **ak[1]),
         )
     elif isinstance(body, collections.abc.Generator):
-        return fold(lambda a, b: (v for v in (*a, *b)), (unfold(streams, b) for b in body))
+        return fold(StreamAlg, (unfold(streams, b) for b in body))
     elif tree.is_nested(body) and any(isinstance(b, Term) for b in tree.flatten(body)):
         return (
             tree.unflatten_as(body, it)
@@ -184,12 +184,12 @@ if __name__ == "__main__":
 
     print(list(unfold({x: lambda: range(2), y: lambda: range(2)}, x() + y())))
 
-    print(fold(LinAlg.add, unfold({x: lambda: range(3), y: lambda: range(3)}, x() * y() ** 2)))
+    print(fold(LinAlg, unfold({x: lambda: range(3), y: lambda: range(3)}, x() * y() ** 2)))
 
     print(fold_weighted(LinAlg, {x: lambda: [(i ** 2, i) for i in range(3)], y: lambda: [(i ** 2, i) for i in range(3)]}, x() * y() ** 2))
 
-    print(fold(operator.add, [1, 2, 3], lambda x: x ** 2, lambda x: x > 0))
+    print(fold(LinAlg, [1, 2, 3], lambda x: x ** 2, lambda x: x > 0))
 
-    sums = functools.partial(fold, operator.add)
+    sums = functools.partial(fold, LinAlg)
 
     print(list(sums(((i, i / k) for i in range(k) if i % 2 == 1) for k in range(1, 10))))
