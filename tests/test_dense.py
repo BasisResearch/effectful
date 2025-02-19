@@ -10,18 +10,14 @@ def test_fold_simple():
     result = fold(
         LinAlg,
         numbers,
-        body=lambda x: x ** 2,  # square each number
-        guard=lambda x: x % 2 == 1  # only odd numbers
+        body=lambda x: x**2,  # square each number
+        guard=lambda x: x % 2 == 1,  # only odd numbers
     )
     # Should sum squares of [1, 3, 5]
     assert result == 35  # 1² + 3² + 5² = 1 + 9 + 25 = 35
-    
+
     # Test dictionary accumulation
-    result = fold(
-        LinAlg,
-        range(3),
-        body=lambda x: {x: x * 10}
-    )
+    result = fold(LinAlg, range(3), body=lambda x: {x: x * 10})
     assert result == {0: 0, 1: 10, 2: 20}
 
 
@@ -65,8 +61,11 @@ def test_matmul():
     def body(x):
         return {(b(), i(), k()): x}
 
-    unfold_body = Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()]
-    result = fold(LinAlg, unfold(indices, unfold_body), body)
+    unfold_body = [
+        ((b(), i(), k()), Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()])
+    ]
+    streams = unfold(indices, unfold_body)
+    result = fold(LinAlg, streams, body)
 
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
