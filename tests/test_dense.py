@@ -63,6 +63,18 @@ def sparse_to_tensor(sparse):
     return tensor
 
 
+def test_unfold_size():
+    I, J = 2, 1
+
+    i, j = defop(int), defop(int)
+
+    indices = {i: lambda: range(I), j: lambda: range(J)}
+    unfold_body = ((i(), j()), (i(), j()))
+    streams = list(unfold(indices, unfold_body))
+
+    assert len(streams) == I * J
+
+
 def test_matmul():
     # Define dimensions
     B, I, J, K = 2, 1, 1, 1
@@ -92,6 +104,8 @@ def test_matmul():
         ),
     )
     streams = list(unfold(indices, unfold_body))
+
+    assert len(streams) == B * I * J * K
 
     result = fold(LinAlg, streams, fold_body)
 
