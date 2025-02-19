@@ -1019,7 +1019,7 @@ def _guard(value: bool) -> bool:
     return value
 
 
-class _IterableWrapper:
+class _IterableWrapper(Generic[T], collections.abc.Iterable[T]):
     def __init__(self, value):
         self.value = value
 
@@ -1027,8 +1027,8 @@ class _IterableWrapper:
         return _IteratorWrapper(iter(self.value), self.value)
 
 
-class _IteratorWrapper:
-    get_iterable = defop(Iterable)
+class _IteratorWrapper(Generic[T], collections.abc.Iterator[T]):
+    get_iterable: Operation[[], Iterable[T]] = defop(Iterable)
 
     def __init__(self, iterator, iterable):
         self.iterator = iterator
@@ -1042,18 +1042,18 @@ class _IteratorWrapper:
 
 
 @defop
-def iter_(value: Iterable[T]) -> Iterable[T]:
+def iter_(value: Iterable[T]) -> Iterator[T]:
     if isinstance(value, Term):
-        return value
+        return typing.cast(Iterator[T], value)
     return iter(value)
 
 
-def _gen(value: Generator[T]) -> Generator[T]:
+def _gen(value: Iterable[T]) -> Iterable[T]:
     return _IterableWrapper(value)
 
 
 @defterm.register(Generator)
-def _(value: Generator[T]) -> Generator[T]:
+def _(value: Generator[T, None, None]) -> Iterable[T]:
     from .semantics import handler, next_, typeof
 
     # capture calls to next to identify the underlying iterators
