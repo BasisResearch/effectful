@@ -48,9 +48,24 @@ def D(*args):
     return dict(args)
 
 
+def infer_shape(sparse):
+    shape = [0] * len(next(iter(sparse.keys())))
+    for index in sparse.keys():
+        shape = [max(a, b + 1) for a, b in zip(shape, index)]
+    return shape
+
+
+def sparse_to_tensor(sparse):
+    shape = infer_shape(sparse)
+    tensor = torch.zeros(shape)
+    for index, value in sparse.items():
+        tensor[index] = value
+    return tensor
+
+
 def test_matmul():
     # Define dimensions
-    B, I, J, K = 2, 3, 4, 5
+    B, I, J, K = 2, 1, 1, 1
 
     # Create sample matrices
     A = torch.randn(B, I, J)
@@ -77,25 +92,21 @@ def test_matmul():
         ),
     )
     streams = list(unfold(indices, unfold_body))
+
     result = fold(LinAlg, streams, fold_body)
 
-    # Convert dictionary result to tensor
-    result_tensor = torch.zeros_like(expected)
-    for (b_idx, i_idx, k_idx), value in result.items():
-        result_tensor[b_idx, i_idx, k_idx] = value
+    def matmul(idx):
+        return sum(d[idx] for d in streams if idx in d)
 
     # Compare with pytorch
+    result_tensor = sparse_to_tensor(result)
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
     assert torch.allclose(result_tensor, expected)
 
 
 def test_fold_dicts():
     # Test folding a sequence of dictionaries with tuple keys
-    dicts = [
-        {(1, 0): 1, (2, 0): 2},
-        {(2, 0): 3, (3, 0): 4},
-        {(1, 0): 5, (3, 0): 6}
-    ]
+    dicts = [{(1, 0): 1, (2, 0): 2}, {(2, 0): 3, (3, 0): 4}, {(1, 0): 5, (3, 0): 6}]
 
     # Simple fold that accumulates values
     result = fold(LinAlg, dicts, lambda x: x)

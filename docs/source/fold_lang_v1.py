@@ -138,6 +138,7 @@ def fold(
     guard: Callable[[S], bool] = lambda _: True,
 ) -> Vec[T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
+        breakpoint()
         if isinstance(b, collections.abc.Generator) or isinstance(
             a, collections.abc.Generator
         ):
@@ -145,7 +146,7 @@ def fold(
             b = b if isinstance(b, collections.abc.Generator) else (b,)
             return (v for v in (*a, *b))
         elif isinstance(b, collections.abc.Mapping):
-            return {
+            result = {
                 k: a[k]
                 if k not in b
                 else b[k]
@@ -153,6 +154,7 @@ def fold(
                 else promote_add(add, a[k], b[k])
                 for k in set(a) | set(b)
             }
+            return result
         elif isinstance(b, collections.abc.Callable):
             return lambda *args, **kwargs: promote_add(
                 add, a(*args, **kwargs), b(*args, **kwargs)
