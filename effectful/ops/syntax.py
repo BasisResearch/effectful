@@ -5,7 +5,7 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable, Iterator
 from typing import Annotated, Any, Concatenate, Generic, TypeVar, get_args, get_origin
 
 import tree
@@ -1014,32 +1014,68 @@ def filter_map(
     raise NotImplementedError
 
 
-@defterm.register(Iterable)
-def _(value: Iterable[T]) -> Iterable[T]:
+@defop
+def _guard(value: bool) -> bool:
+    return value
+
+
+class _IterableWrapper:
+    def __init__(self, value):
+        self.value = value
+
+    def __iter__(self):
+        return _IteratorWrapper(iter(self.value), self.value)
+
+
+class _IteratorWrapper:
+    get_iterable = defop(Iterable)
+
+    def __init__(self, iterator, iterable):
+        self.iterator = iterator
+        self.iterable = iterable
+
+    def __next__(self):
+        from effectful.ops.semantics import handler, next_
+
+        with handler({_IteratorWrapper.get_iterable: lambda: self.iterable}):
+            return next_(self.iterator)
+
+
+@defop
+def iter_(value: Iterable[T]) -> Iterable[T]:
+    if isinstance(value, Term):
+        return value
+    return iter(value)
+
+
+def _gen(value: Generator[T]) -> Generator[T]:
+    return _IterableWrapper(value)
+
+
+@defterm.register(Generator)
+def _(value: Generator[T]) -> Generator[T]:
     from .semantics import handler, next_, typeof
 
     # capture calls to next to identify the underlying iterators
     iters = {}
 
     def next_handler(it):
+        it = defterm(it)
         iterator_typ = typeof(it)
         param_typ = _get_iterable_type_param(iterator_typ)
         op = defop(param_typ)
-        iters[op] = it
+        iters[op] = _IteratorWrapper.get_iterable()
         return op()
 
     # capture boolean conversion to identify the if-clause (if exists)
     guard = True
 
-    def bool_handler(t):
+    def guard_handler(t):
         nonlocal guard
-        guard = t
-
-        # Note: this could cause strange effects if terms are converted to
-        # booleans inside the guard or body.
+        guard = defterm(t)
         return True
 
-    with handler({next_: next_handler, bool_: bool_handler}):
+    with handler({next_: next_handler, _guard: guard_handler}):
         body = next(iter(value))
 
     return filter_map(body, guard, tuple(iters.keys()), tuple(iters.values()))
@@ -1051,7 +1087,7 @@ class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
         super().__init__(*args, **kwargs)
 
     def __iter__(self) -> collections.abc.Iterator[T]:
-        return self
+        return iter_(self)
 
     def __next__(self) -> T:
         from effectful.ops.semantics import next_

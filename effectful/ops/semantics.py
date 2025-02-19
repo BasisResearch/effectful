@@ -79,7 +79,9 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 @defop
 def next_(i: Iterable[T]) -> T:
-    raise NotImplementedError
+    if isinstance(i, Term):
+        raise NotImplementedError
+    return next(i)
 
 
 @defop
