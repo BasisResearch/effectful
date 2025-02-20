@@ -1,8 +1,9 @@
 import torch
 from effectful.handlers.torch import Indexable
-from effectful.ops.semantics import fvsof, handler
-from effectful.ops.syntax import defop
+from effectful.ops.semantics import fvsof, fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
+
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
 
 
@@ -75,49 +76,6 @@ def test_unfold_size():
     assert len(streams) == I * J
 
 
-def test_matmul():
-    # Define dimensions
-    B, I, J, K = 2, 3, 4, 5
-
-    # Create sample matrices
-    A = torch.randn(B, I, J)
-    B_mat = torch.randn(B, J, K)
-
-    # Define index operations
-    b, i, j, k = (
-        defop(int, name="b"),
-        defop(int, name="i"),
-        defop(int, name="j"),
-        defop(int, name="k"),
-    )
-
-    # Define the computation using fold and unfold
-    indices = {b: range(B), i: range(I), j: range(J), k: range(K)}
-
-    def fold_body(x):
-        return x
-
-    unfold_body = D(
-        (
-            (b(), i(), k()),
-            Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()],
-        ),
-    )
-    streams = list(unfold(indices, unfold_body))
-
-    assert len(streams) == B * I * J * K
-
-    result = fold(LinAlg, streams, fold_body)
-
-    def matmul(idx):
-        return sum(d[idx] for d in streams if idx in d)
-
-    # Compare with pytorch
-    result_tensor = sparse_to_tensor(result)
-    expected = torch.einsum("bij,bjk->bik", A, B_mat)
-    assert torch.allclose(result_tensor, expected)
-
-
 def test_fold_dicts():
     # Test folding a sequence of dictionaries with tuple keys
     dicts = [{(1, 0): 1, (2, 0): 2}, {(2, 0): 3, (3, 0): 4}, {(1, 0): 5, (3, 0): 6}]
@@ -134,3 +92,49 @@ def test_fold_dicts():
         guard=lambda d: (2, 0) in d,  # only include dicts with (2,0) key
     )
     assert result == {(1, 0): 2, (2, 0): 10, (3, 0): 8}
+
+
+# class DenseLinAlg(ObjectInterpretation):
+#     @implements(fold)
+#     def fold(self, semiring, streams, body):
+#         if not (isinstance(streams, Term) and streams.op == unfold):
+#             return fwd()
+
+#         indices = streams.args[1]
+#         unfold_body = streams.args[2]
+
+#         if not all
+#         dummy_item = defop(streams.)
+
+#     @implements(unfold)
+#     def unfold(self, indices, body):
+#         raise NotImplementedError
+
+
+def test_batched_matmul():
+    # Define dimensions
+    B, I, J, K = 2, 3, 4, 5
+
+    # Create sample matrices
+    A = torch.randn(B, I, J)
+    B_mat = torch.randn(B, J, K)
+
+    # Define index operations
+    b, i, j, k = (
+        defop(int, name="b"),
+        defop(int, name="i"),
+        defop(int, name="j"),
+        defop(int, name="k"),
+    )
+
+    # Define the computation using fold and unfold
+    result = fold(
+        LinAlg,
+        {b: range(B), i: range(I), j: range(J), k: range(K)},
+        D(((b(), i(), k()), Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()])),
+    )
+
+    # Compare with pytorch
+    result_tensor = sparse_to_tensor(result)
+    expected = torch.einsum("bij,bjk->bik", A, B_mat)
+    assert torch.allclose(result_tensor, expected)

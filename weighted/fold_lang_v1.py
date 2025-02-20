@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import itertools
 import operator
+from collections.abc import Iterable
 from typing import (
     Annotated,
     Any,
@@ -83,15 +84,11 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
 
 LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0.0, 1.0)
 
-DenseLinAlg: Semiring[dict[tuple[int, ...], float]] = None
+MinAlg: Semiring[float] = Semiring(min, operator.mul, float("inf"), 1.0)
 
+MaxAlg: Semiring[float] = Semiring(max, operator.mul, float("-inf"), 1.0)
 
-Vec = (
-    T
-    | tree.StructureKV[object, T]
-    | collections.abc.Callable[..., T]
-    | collections.abc.Generator[T, None, None]
-)
+Vec = T | tree.StructureKV[object, T] | collections.abc.Callable[..., T] | collections.abc.Generator[T, None, None]
 
 
 # @defop
@@ -158,40 +155,36 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
 @defop
 def fold(
     semiring: Semiring[T],
-    stream: collections.abc.Iterable[S],
-    body: Callable[[S], Vec[T]] = lambda s: s,
-    guard: Callable[[S], bool] = lambda _: True,
+    streams: Runner,
+    body: Vec[T],
+    guard: bool = True,
 ) -> Vec[T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
-        if isinstance(b, collections.abc.Generator) or isinstance(
-            a, collections.abc.Generator
-        ):
+        if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
             b = b if isinstance(b, collections.abc.Generator) else (b,)
             return (v for v in (*a, *b))
         elif isinstance(b, collections.abc.Mapping):
             result = {
-                k: a[k]
-                if k not in b
-                else b[k]
-                if k not in a
-                else promote_add(add, a[k], b[k])
-                for k in set(a) | set(b)
+                k: a[k] if k not in b else b[k] if k not in a else promote_add(add, a[k], b[k]) for k in set(a) | set(b)
             }
             return result
         elif isinstance(b, collections.abc.Callable):
-            return lambda *args, **kwargs: promote_add(
-                add, a(*args, **kwargs), b(*args, **kwargs)
-            )
+            return lambda *args, **kwargs: promote_add(add, a(*args, **kwargs), b(*args, **kwargs))
         elif tree.is_nested(b):
             return tree.map_structure(functools.partial(promote_add, add), a, b)
         else:
             return add(a, b)
 
-    return functools.reduce(
-        functools.partial(promote_add, semiring.add),
-        (body(s) for s in stream if guard(s)),
-    )
+    def generator():
+        all_vals = itertools.product(*list(streams.values()))
+        for vals in all_vals:
+            keys = streams.keys()
+            with handler({k: deffn(v) for (k, v) in zip(keys, vals)}):
+                if evaluate(guard):
+                    yield evaluate(body)
+
+    return functools.reduce(functools.partial(promote_add, semiring.add), generator())
 
 
 @defop
@@ -218,18 +211,11 @@ def unfold_weighted(
                 tree.unflatten_as(body, [v for (_, v) in it]),
             )
             for it in itertools.product(
-                *tree.flatten(
-                    tree.map_structure(
-                        functools.partial(unfold_weighted, semiring, streams), body
-                    )
-                )
+                *tree.flatten(tree.map_structure(functools.partial(unfold_weighted, semiring, streams), body))
             )
         )
     else:
-        return (
-            (semiring.one, b)
-            for b in (body if isinstance(body, collections.abc.Iterable) else (body,))
-        )
+        return ((semiring.one, b) for b in (body if isinstance(body, collections.abc.Iterable) else (body,)))
 
 
 @defop
@@ -238,9 +224,7 @@ def fold_weighted(
     streams: Runner[S],
     body: T,
 ) -> T:
-    return functools.reduce(
-        lambda a, b: a + [b], unfold_weighted(semiring, streams, body), []
-    )
+    return functools.reduce(lambda a, b: a + [b], unfold_weighted(semiring, streams, body), [])
 
 
 def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
@@ -259,12 +243,7 @@ def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
 
         with (
             handler(intp),
-            handler(
-                {
-                    op: functools.wraps(op)(functools.partial(_trace_op, env, op))
-                    for op in intp
-                }
-            ),
+            handler({op: functools.wraps(op)(functools.partial(_trace_op, env, op)) for op in intp}),
         ):
             result = fn(*args, **kwargs)
 
@@ -273,14 +252,17 @@ def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
     return _wrapped
 
 
+@defop
+def reals() -> Iterable[float]:
+    raise NotImplementedError
+
+
 if __name__ == "__main__":
     x, y = defop(int), defop(int)
 
     print(list(unfold({x: lambda: range(2), y: lambda: range(2)}, x() + y())))
 
-    print(
-        fold(LinAlg, unfold({x: lambda: range(3), y: lambda: range(3)}, x() * y() ** 2))
-    )
+    print(fold(LinAlg, unfold({x: lambda: range(3), y: lambda: range(3)}, x() * y() ** 2)))
 
     print(
         fold_weighted(
@@ -297,6 +279,4 @@ if __name__ == "__main__":
 
     sums = functools.partial(fold, LinAlg)
 
-    print(
-        list(sums(((i, i / k) for i in range(k) if i % 2 == 1) for k in range(1, 10)))
-    )
+    print(list(sums(((i, i / k) for i in range(k) if i % 2 == 1) for k in range(1, 10))))
