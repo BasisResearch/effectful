@@ -4,19 +4,12 @@ import functools
 import itertools
 import operator
 from collections.abc import Iterable
-from typing import (
-    Annotated,
-    Any,
-    Callable,
-    Concatenate,
-    Generic,
-    Literal,
-    ParamSpec,
-    TypeVar,
-)
+from typing import Callable, Generic, ParamSpec, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
+import torch
 import tree
+from effectful.handlers.torch import Indexable, to_tensor
 from effectful.ops.semantics import (
     apply,
     call,
@@ -28,7 +21,7 @@ from effectful.ops.semantics import (
     product,
     typeof,
 )
-from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
+from effectful.ops.syntax import ObjectInterpretation, Scoped, defdata, deffn, defop, defterm, implements
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -257,6 +250,42 @@ def D(*args) -> dict:
     if any(len(fvsof(k)) > 0 for (k, _) in args):
         raise NotImplementedError
     return dict(args)
+
+
+class DenseLinAlg(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (semiring is LinAlg and all(typeof(k()) is int for k in streams.keys())):
+            return fwd()
+
+        match body:
+            case Term(op, args, {}) if op is D:
+                if not all(isinstance(args, tuple) and len(args) == 2 for args in args):
+                    return fwd()
+                if len(args) <= 0:
+                    return torch.tensor([])
+                if len(args) > 1:
+                    # todo: handle multiple output indices
+                    return fwd()
+                indices, value = args[0]
+
+        # Check that the output is indexed in a subset of the input indices, and
+        # that there are no index transformations
+        if not all(isinstance(i, Term) and i.op in streams for i in indices):
+            return fwd()
+        indices = [i.op for i in indices]
+
+        fresh_indices = {k: defop(k) for k in streams.keys()}
+        indexed_streams = {k: deffn(Indexable(torch.tensor(v))[fresh_indices[k]()]) for k, v in streams.items()}
+        with handler(indexed_streams):
+            result = evaluate(value)
+
+        reduction_indices = [fresh_indices[i] for i in streams.keys() if i not in indices]
+        result = to_tensor(result, reduction_indices)
+        for _ in range(len(reduction_indices)):
+            result = torch.sum(result, dim=0)
+
+        return to_tensor(result, [fresh_indices[i] for i in indices])
 
 
 if __name__ == "__main__":
