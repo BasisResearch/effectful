@@ -91,30 +91,19 @@ class DenseLinAlg(ObjectInterpretation):
         # that there are no index transformations
         if not all(isinstance(i, Term) and i.op in streams for i in indices):
             return fwd()
-        indices = {i.op for i in indices}
+        indices = [i.op for i in indices]
 
-        # Create fresh indices for all streams
-        fresh_indices = {k: defop(int) for k in streams}
-        reduction_indices = [idx for k, idx in fresh_indices.items() if k not in indices]
-        
-        # Map each stream to its fresh index
-        indexed_streams = {
-            k: deffn(Indexable(torch.tensor(v))[fresh_indices[k]()]) 
-            for k, v in streams.items()
-        }
-
-        # Map original indices to fresh indices in the handler
-        stream_mapping = {
-            k: deffn(fresh_indices[k]()) for k in indices
-        }
-
-        with handler({**indexed_streams, **stream_mapping}):
+        fresh_indices = {k: defop(k) for k in streams.keys()}
+        indexed_streams = {k: deffn(Indexable(torch.tensor(v))[fresh_indices[k]()]) for k, v in streams.items()}
+        with handler(indexed_streams):
             result = evaluate(value)
 
+        reduction_indices = [fresh_indices[i] for i in streams.keys() if i not in indices]
         result = to_tensor(result, reduction_indices)
         for _ in range(len(reduction_indices)):
             result = torch.sum(result, dim=0)
-        return result
+
+        return to_tensor(result, [fresh_indices[i] for i in indices])
 
 
 def test_batched_matmul():
@@ -141,13 +130,12 @@ def test_batched_matmul():
         )
 
     result = run_fold()
+    result_tensor = sparse_to_tensor(result)
 
     with handler(DenseLinAlg()):
-        vectorized_result = run_fold()
-
-    breakpoint()
+        vectorized_result_tensor = run_fold()
 
     # Compare with pytorch
-    result_tensor = sparse_to_tensor(result)
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
     assert torch.allclose(result_tensor, expected)
+    assert torch.allclose(vectorized_result_tensor, expected)

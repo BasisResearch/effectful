@@ -153,12 +153,7 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
 
 
 @defop
-def fold(
-    semiring: Semiring[T],
-    streams: Runner,
-    body: Vec[T],
-    guard: bool = True,
-) -> Vec[T]:
+def fold(semiring: Semiring[T], streams: Runner, body: Vec[T], guard: bool = True) -> Vec[T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
         if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
@@ -255,6 +250,13 @@ def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
 @defop
 def reals() -> Iterable[float]:
     raise NotImplementedError
+
+
+@defop
+def D(*args) -> dict:
+    if any(len(fvsof(k)) > 0 for (k, _) in args):
+        raise NotImplementedError
+    return dict(args)
 
 
 if __name__ == "__main__":
