@@ -5,6 +5,7 @@ import itertools
 import operator
 from typing import (
     Annotated,
+    Any,
     Callable,
     Concatenate,
     Generic,
@@ -72,11 +73,12 @@ class Semiring(Generic[T]):
 Runner = Interpretation[T, collections.abc.Iterable[T]]
 
 
+# actually a near-semiring
 StreamAlg: Semiring[collections.abc.Generator] = Semiring(
     add=lambda a, b: (v for v in itertools.chain(a, b)),
     mul=lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
     zero=(),
-    one=(),
+    one=(),  # note: empty tuple is not a valid identity for multiplication
 )
 
 LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0.0, 1.0)
@@ -92,42 +94,65 @@ Vec = (
 )
 
 
+# @defop
+# def unfold(
+#     streams: Runner[S],
+#     body: T,
+#     guard: bool | None = None,
+# ) -> collections.abc.Iterable[T]:
+#     if guard is not None:
+#         return (b for (b, g) in unfold(streams, (body, guard)) if g)
+
+#     if not streams:
+#         return (b for b in (body,))
+
+#     if isinstance(body, Operation) and body in streams:
+#         return handler(streams)(body)
+
+#     if isinstance(body, collections.abc.Callable):
+#         return functools.wraps(body)(lambda *a, **k: unfold(streams, body(*a, **k)))
+
+#     if isinstance(body, Term):
+#         # select streams that are used the body of the term
+#         used_streams = {op: streams[op] for op in streams}
+#         streams = product(streams, used_streams)
+
+#         def fold_body(ak):
+#             return unfold(streams, body.op)(*ak[0], **ak[1])
+
+#         unfolded_body = list(unfold(streams, (body.args, body.kwargs)))
+#         folded_body = fold(StreamAlg, unfolded_body, fold_body)
+#         return folded_body
+
+#     if isinstance(body, collections.abc.Generator):
+#         return fold(StreamAlg, (unfold(streams, b) for b in body))
+
+#     if tree.is_nested(body) and any(isinstance(b, Term) for b in tree.flatten(body)):
+#         if (
+#             isinstance(body, tuple)
+#             and len(body) == 2
+#             and isinstance(body[0], tuple)
+#             and len(body[0]) == 2
+#         ):
+#             breakpoint()
+#         flat_body = tree.flatten(body)
+#         unfolded_bodies = [list(unfold(streams, b)) for b in flat_body]
+#         unflattened_result = [tree.unflatten_as(body, x) for x in zip(*unfolded_bodies)]
+#         return unflattened_result
+
+#     return (body for _ in itertools.product(streams.values()))
+
+
 @defop
-def unfold(
-    streams: Runner[S],
-    body: T,
-    guard: bool | None = None,
-) -> collections.abc.Iterable[T]:
-    if guard is not None:
-        return (b for (b, g) in unfold(streams, (body, guard)) if g)
+def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
+    def generator():
+        all_vals = itertools.product(*list(streams.values()))
+        for vals in all_vals:
+            keys = streams.keys()
+            with handler({k: deffn(v) for (k, v) in zip(keys, vals)}):
+                yield evaluate(body)
 
-    if not streams:
-        return (b for b in (body,))
-
-    if isinstance(body, Operation) and body in streams:
-        return handler(streams)(body)
-    elif isinstance(body, collections.abc.Callable):
-        return functools.wraps(body)(lambda *a, **k: unfold(streams, body(*a, **k)))
-    elif isinstance(body, Term):
-        streams = product(
-            streams, {op: streams[op] for op in fvsof(body) if op in streams}
-        )
-        return fold(
-            StreamAlg,
-            unfold(streams, (body.args, body.kwargs)),
-            lambda ak: unfold(streams, body.op)(*ak[0], **ak[1]),
-        )
-    elif isinstance(body, collections.abc.Generator):
-        return fold(StreamAlg, (unfold(streams, b) for b in body))
-    elif tree.is_nested(body) and any(isinstance(b, Term) for b in tree.flatten(body)):
-        return (
-            tree.unflatten_as(body, it)
-            for it in itertools.product(
-                *map(functools.partial(unfold, streams), tree.flatten(body))
-            )
-        )
-    else:
-        return unfold({}, body)
+    return generator()
 
 
 @defop
@@ -216,6 +241,36 @@ def fold_weighted(
     return functools.reduce(
         lambda a, b: a + [b], unfold_weighted(semiring, streams, body), []
     )
+
+
+def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
+    if fn is None:
+        return functools.partial(unfold_fn, intp)
+
+    def _trace_op(env, op, *args, **kwargs):
+        val = fwd()
+        var = defop(typeof(defdata(op, *args, **kwargs)))
+        env[var] = deffn(val)
+        return var()
+
+    @functools.wraps(fn)
+    def _wrapped(*args: P.args, **kwargs: P.kwargs) -> tuple[Interpretation, T]:
+        env = {}
+
+        with (
+            handler(intp),
+            handler(
+                {
+                    op: functools.wraps(op)(functools.partial(_trace_op, env, op))
+                    for op in intp
+                }
+            ),
+        ):
+            result = fn(*args, **kwargs)
+
+        return env, result
+
+    return _wrapped
 
 
 if __name__ == "__main__":

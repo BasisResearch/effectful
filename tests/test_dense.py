@@ -1,6 +1,6 @@
 import torch
 from effectful.handlers.torch import Indexable
-from effectful.ops.semantics import fvsof
+from effectful.ops.semantics import fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from weighted.fold_lang_v1 import LinAlg, fold, unfold
@@ -66,13 +66,24 @@ def sparse_to_tensor(sparse):
 def test_unfold_size():
     I, J = 2, 1
 
-    i, j = defop(int), defop(int)
+    i, j = defop(int, name="i"), defop(int, name="j")
 
     indices = {i: lambda: range(I), j: lambda: range(J)}
     unfold_body = ((i(), j()), (i(), j()))
     streams = list(unfold(indices, unfold_body))
 
     assert len(streams) == I * J
+
+
+def test_handler_yield():
+    x = defop(int, name="x")
+
+    def generator():
+        for i in range(3):
+            with handler({x: lambda: i}):
+                yield x()
+
+    assert list(generator()) == [0, 1, 2]
 
 
 def test_matmul():
@@ -84,15 +95,15 @@ def test_matmul():
     B_mat = torch.randn(B, J, K)
 
     # Define index operations
-    b, i, j, k = defop(int), defop(int), defop(int), defop(int)
+    b, i, j, k = (
+        defop(int, name="b"),
+        defop(int, name="i"),
+        defop(int, name="j"),
+        defop(int, name="k"),
+    )
 
     # Define the computation using fold and unfold
-    indices = {
-        b: lambda: range(B),
-        i: lambda: range(I),
-        j: lambda: range(J),
-        k: lambda: range(K),
-    }
+    indices = {b: range(B), i: range(I), j: range(J), k: range(K)}
 
     def fold_body(x):
         return x
