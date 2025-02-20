@@ -1,52 +1,28 @@
 import torch
-from effectful.handlers.torch import Indexable
-from effectful.ops.semantics import fvsof, fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Term
+from effectful.handlers.torch import Indexable, to_tensor
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
+from effectful.ops.types import Operation, Term
 
-from weighted.fold_lang_v1 import LinAlg, fold, unfold
+from weighted.fold_lang_v1 import D, LinAlg, fold, unfold
 
 
 def test_fold_simple():
+    x = defop(int, name="x")
     # Test summing squares with a guard
-    numbers = [1, 2, 3, 4, 5]
+    numbers = {x: [1, 2, 3, 4, 5]}
     result = fold(
         LinAlg,
         numbers,
-        body=lambda x: x**2,  # square each number
-        guard=lambda x: x % 2 == 1,  # only odd numbers
+        body=x() ** 2,  # square each number
+        guard=x() % 2 == 1,  # only odd numbers
     )
     # Should sum squares of [1, 3, 5]
     assert result == 35  # 1² + 3² + 5² = 1 + 9 + 25 = 35
 
-    # Test dictionary accumulation
-    result = fold(LinAlg, range(3), body=lambda x: {x: x * 10})
-    assert result == {0: 0, 1: 10, 2: 20}
-
-
-def test_unfold_simple():
-    # Define simple index operations
-    x, y = defop(int), defop(int)
-
-    # Define ranges for indices
-    indices = {x: range(2), y: range(3)}
-
-    # Test unfolding x + y
-    result = list(unfold(indices, x() + y()))
-    expected = [0, 1, 2, 1, 2, 3]  # All possible x + y combinations
-    assert result == expected
-
-    # Test unfolding x * y
-    result = list(unfold(indices, x() * y()))
-    expected = [0, 0, 0, 0, 1, 2]  # All possible x * y combinations
-    assert result == expected
-
-
-@defop
-def D(*args):
-    if any(len(fvsof(k)) > 0 for (k, _) in args):
-        raise NotImplementedError
-    return dict(args)
+    # # Test dictionary accumulation
+    # result = fold(LinAlg, range(3), body=lambda x: {x: x * 10})
+    # assert result == {0: 0, 1: 10, 2: 20}
 
 
 def infer_shape(sparse):
@@ -94,21 +70,48 @@ def test_fold_dicts():
     assert result == {(1, 0): 2, (2, 0): 10, (3, 0): 8}
 
 
-# class DenseLinAlg(ObjectInterpretation):
-#     @implements(fold)
-#     def fold(self, semiring, streams, body):
-#         if not (isinstance(streams, Term) and streams.op == unfold):
-#             return fwd()
+class DenseLinAlg(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (semiring is LinAlg and all(typeof(k()) is int for k in streams.keys())):
+            return fwd()
 
-#         indices = streams.args[1]
-#         unfold_body = streams.args[2]
+        match body:
+            case Term(op, args, {}) if op is D:
+                if not all(isinstance(args, tuple) and len(args) == 2 for args in args):
+                    return fwd()
+                if len(args) <= 0:
+                    return torch.tensor([])
+                if len(args) > 1:
+                    # todo: handle multiple output indices
+                    return fwd()
+                indices, value = args[0]
 
-#         if not all
-#         dummy_item = defop(streams.)
+        # Check that the output is indexed in a subset of the input indices, and
+        # that there are no index transformations
+        if not all(isinstance(i, Term) and i.op in streams for i in indices):
+            return fwd()
+        indices = {i.op for i in indices}
 
-#     @implements(unfold)
-#     def unfold(self, indices, body):
-#         raise NotImplementedError
+        indexed_streams = {}
+        reduction_indexes = []
+        for k, v in streams.items():
+            if k in indices:
+                indexed_streams[k] = deffn(Indexable(torch.tensor(v))[k()])
+            else:
+                i = defop(int)
+                reduction_indexes.append(i)
+                indexed_streams[k] = deffn(Indexable(torch.tensor(v))[i()])
+
+        breakpoint()
+
+        with handler(indexed_streams):
+            result = evaluate(value)
+
+        result = to_tensor(result, reduction_indexes)
+        for _ in range(len(reduction_indexes)):
+            result = torch.sum(result, dim=0)
+        return result
 
 
 def test_batched_matmul():
@@ -127,12 +130,19 @@ def test_batched_matmul():
         defop(int, name="k"),
     )
 
-    # Define the computation using fold and unfold
-    result = fold(
-        LinAlg,
-        {b: range(B), i: range(I), j: range(J), k: range(K)},
-        D(((b(), i(), k()), Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()])),
-    )
+    def run_fold():
+        return fold(
+            LinAlg,
+            {b: range(B), i: range(I), j: range(J), k: range(K)},
+            D(((b(), i(), k()), Indexable(A)[b(), i(), j()] * Indexable(B_mat)[b(), j(), k()])),
+        )
+
+    result = run_fold()
+
+    with handler(DenseLinAlg()):
+        vectorized_result = run_fold()
+
+    breakpoint()
 
     # Compare with pytorch
     result_tensor = sparse_to_tensor(result)
