@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weighted"
+version = "0.0.1"
+description = "Metaprogramming infrastructure"
+readme = "README.rst"
+requires-python = ">=3.10"
+license = {text = "Apache 2.0"}
+authors = [
+    {name = "Basis"}
+]
+keywords = ["machine learning", "statistics", "probabilistic programming", "bayesian modeling", "pytorch"]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education", 
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11"
+]
+dependencies = [
+    "effectful"
+]
+
+[dependency-groups]
+dev = [
+    "setuptools",
+    "sphinx",
+    "sphinxcontrib-bibtex", 
+    "sphinx_rtd_theme",
+    "myst-parser",
+    "nbsphinx",
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-benchmark",
+    "mypy",
+    "ruff",
+    "nbval",
+    "nbqa"
+]
+
+
+[project.optional-dependencies]
+docs = [
+    "setuptools",
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx_rtd_theme",
+    "myst-parser",
+    "nbsphinx"
+]
+
+[project.urls]
+Source = "https://github.com/BasisResearch/weighted"
+
+[tool.setuptools]
+packages = ["weighted"]
+package-data = {"weighted" = ["py.typed"]}
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
+testpaths = ["./tests"]
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["build"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.ruff.lint]
+extend-ignore = ["E203"]
