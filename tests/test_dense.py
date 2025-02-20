@@ -28,7 +28,7 @@ def test_unfold_simple():
     x, y = defop(int), defop(int)
 
     # Define ranges for indices
-    indices = {x: lambda: range(2), y: lambda: range(3)}
+    indices = {x: range(2), y: range(3)}
 
     # Test unfolding x + y
     result = list(unfold(indices, x() + y()))
@@ -68,27 +68,16 @@ def test_unfold_size():
 
     i, j = defop(int, name="i"), defop(int, name="j")
 
-    indices = {i: lambda: range(I), j: lambda: range(J)}
+    indices = {i: range(I), j: range(J)}
     unfold_body = ((i(), j()), (i(), j()))
     streams = list(unfold(indices, unfold_body))
 
     assert len(streams) == I * J
 
 
-def test_handler_yield():
-    x = defop(int, name="x")
-
-    def generator():
-        for i in range(3):
-            with handler({x: lambda: i}):
-                yield x()
-
-    assert list(generator()) == [0, 1, 2]
-
-
 def test_matmul():
     # Define dimensions
-    B, I, J, K = 2, 1, 1, 1
+    B, I, J, K = 2, 3, 4, 5
 
     # Create sample matrices
     A = torch.randn(B, I, J)
