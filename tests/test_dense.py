@@ -93,23 +93,26 @@ class DenseLinAlg(ObjectInterpretation):
             return fwd()
         indices = {i.op for i in indices}
 
-        indexed_streams = {}
-        reduction_indexes = []
-        for k, v in streams.items():
-            if k in indices:
-                indexed_streams[k] = deffn(Indexable(torch.tensor(v))[k()])
-            else:
-                i = defop(int)
-                reduction_indexes.append(i)
-                indexed_streams[k] = deffn(Indexable(torch.tensor(v))[i()])
+        # Create fresh indices for all streams
+        fresh_indices = {k: defop(int) for k in streams}
+        reduction_indices = [idx for k, idx in fresh_indices.items() if k not in indices]
+        
+        # Map each stream to its fresh index
+        indexed_streams = {
+            k: deffn(Indexable(torch.tensor(v))[fresh_indices[k]()]) 
+            for k, v in streams.items()
+        }
 
-        breakpoint()
+        # Map original indices to fresh indices in the handler
+        stream_mapping = {
+            k: deffn(fresh_indices[k]()) for k in indices
+        }
 
-        with handler(indexed_streams):
+        with handler({**indexed_streams, **stream_mapping}):
             result = evaluate(value)
 
-        result = to_tensor(result, reduction_indexes)
-        for _ in range(len(reduction_indexes)):
+        result = to_tensor(result, reduction_indices)
+        for _ in range(len(reduction_indices)):
             result = torch.sum(result, dim=0)
         return result
 
