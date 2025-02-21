@@ -241,11 +241,6 @@ def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
 
 
 @defop
-def reals() -> Iterable[float]:
-    raise NotImplementedError
-
-
-@defop
 def D(*args) -> dict:
     if any(len(fvsof(k)) > 0 for (k, _) in args):
         raise NotImplementedError
@@ -311,6 +306,47 @@ class DenseTensorFold(ObjectInterpretation):
             result = reductor(result, dim=0)
 
         return to_tensor(result, [fresh_indices[i] for i in indices])
+
+
+@defop
+def reals() -> Iterable[float]:
+    raise NotImplementedError
+
+
+class GradientOptimizationFold(ObjectInterpretation):
+    def __init__(self, optimizer=torch.optim.Adam, steps=100, **kwargs):
+        self.optimizer = optimizer
+        self.optimizer_kwargs = kwargs
+        self.steps = steps
+
+    def _optimizer(self, params):
+        return self.optimizer(params, self.optimizer_kwargs)
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (semiring is MinAlg and all(isinstance(v, Term) and v.op is reals for v in streams.values())):
+            return fwd()
+
+        if isinstance(body, Term):
+            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
+                return fwd()
+            if len(body.args) <= 0:
+                return torch.tensor([])
+            if len(body.args) > 1:
+                # todo: handle multiple output indices
+                return fwd()
+            indices, value = body.args[0]
+        elif isinstance(body, dict):
+            if len(body) <= 0:
+                return torch.tensor([])
+            if len(body) > 1:
+                return fwd()
+            indices, value = next(iter(body.items()))
+        else:
+            return fwd()
+
+        if not isinstance(indices, tuple):
+            indices = (indices,)
 
 
 if __name__ == "__main__":

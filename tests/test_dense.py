@@ -4,7 +4,7 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
-from weighted.fold_lang_v1 import D, DenseTensorFold, LinAlg, MinAlg, fold, unfold
+from weighted.fold_lang_v1 import D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, real, unfold
 
 
 def test_fold_simple():
@@ -114,3 +114,11 @@ def test_enum_opt():
 
         f2 = fold(MinAlg, {x: range(-10, 10)}, D(((), x() ** 2)))
         assert f2.item() == 0
+
+
+def test_grad_opt():
+    x = defop(int, name="x")
+
+    with handler(GradientOptimizationFold()):
+        f1 = fold(MinAlg, {x: real()}, D(((), x() ** 2)))
+        assert f1.item() == 0
