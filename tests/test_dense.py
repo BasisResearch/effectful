@@ -4,7 +4,7 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
-from weighted.fold_lang_v1 import D, DenseLinAlg, LinAlg, fold, unfold
+from weighted.fold_lang_v1 import D, DenseTensorFold, LinAlg, MinAlg, fold, unfold
 
 
 def test_fold_simple():
@@ -96,10 +96,21 @@ def test_batched_matmul():
     result = run_fold()
     result_tensor = sparse_to_tensor(result)
 
-    with handler(DenseLinAlg()):
+    with handler(DenseTensorFold()):
         vectorized_result_tensor = run_fold()
 
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
     assert torch.allclose(result_tensor, expected)
     assert torch.allclose(vectorized_result_tensor, expected)
+
+
+def test_enum_opt():
+    x = defop(int, name="x")
+
+    with handler(DenseTensorFold()):
+        f1 = fold(MinAlg, {x: range(100)}, D(((), -x())))
+        assert f1.item() == -99
+
+        f2 = fold(MinAlg, {x: range(-10, 10)}, D(((), x() ** 2)))
+        assert f2.item() == 0

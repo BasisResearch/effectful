@@ -252,22 +252,36 @@ def D(*args) -> dict:
     return dict(args)
 
 
-class DenseLinAlg(ObjectInterpretation):
+class DenseTensorFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
-        if not (semiring is LinAlg and all(typeof(k()) is int for k in streams.keys())):
+        if not (
+            semiring in (LinAlg, MinAlg, MaxAlg)
+            and all(isinstance(s, collections.abc.Sized) for s in streams.values())
+            and all(typeof(k()) is int for k in streams.keys())
+        ):
             return fwd()
 
-        match body:
-            case Term(op, args, {}) if op is D:
-                if not all(isinstance(args, tuple) and len(args) == 2 for args in args):
-                    return fwd()
-                if len(args) <= 0:
-                    return torch.tensor([])
-                if len(args) > 1:
-                    # todo: handle multiple output indices
-                    return fwd()
-                indices, value = args[0]
+        if isinstance(body, Term):
+            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
+                return fwd()
+            if len(body.args) <= 0:
+                return torch.tensor([])
+            if len(body.args) > 1:
+                # todo: handle multiple output indices
+                return fwd()
+            indices, value = body.args[0]
+        elif isinstance(body, dict):
+            if len(body) <= 0:
+                return torch.tensor([])
+            if len(body) > 1:
+                return fwd()
+            indices, value = next(iter(body.items()))
+        else:
+            return fwd()
+
+        if not isinstance(indices, tuple):
+            indices = (indices,)
 
         # Check that the output is indexed in a subset of the input indices, and
         # that there are no index transformations
@@ -282,8 +296,19 @@ class DenseLinAlg(ObjectInterpretation):
 
         reduction_indices = [fresh_indices[i] for i in streams.keys() if i not in indices]
         result = to_tensor(result, reduction_indices)
+
+        reductor = None
+        if semiring is LinAlg:
+            reductor = torch.sum
+        elif semiring is MinAlg:
+            reductor = lambda *args, **kwargs: torch.min(*args, **kwargs).values
+        elif semiring is MaxAlg:
+            reductor = lambda *args, **kwargs: torch.max(*args, **kwargs).values
+        else:
+            assert False, f"unexpected semiring: {semiring}"
+
         for _ in range(len(reduction_indices)):
-            result = torch.sum(result, dim=0)
+            result = reductor(result, dim=0)
 
         return to_tensor(result, [fresh_indices[i] for i in indices])
 
