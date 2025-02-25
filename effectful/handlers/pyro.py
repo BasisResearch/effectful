@@ -142,6 +142,18 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         ):
             return
 
+        if "pyro_shim_status" in msg["infer"]:
+            handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+        else:
+            handler_id = id(self)
+            handler_stage = 0
+            msg["infer"]["pyro_shim_status"] = (handler_id, handler_stage)
+
+        if handler_id != id(self):  # Never handle a message that is not ours.
+            return
+
+        assert handler_stage in (0, 1)
+
         # PyroShim turns each call to pyro.sample into two calls. The first
         # dispatches to pyro_sample and the effectful stack. The effectful stack
         # eventually calls pyro.sample again. We use state in PyroShim to
@@ -152,13 +164,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # compatible with Pyro. In particular, it removes all named dimensions
         # and stores naming information in the message. Names are replaced by
         # _pyro_post_sample.
-        if getattr(self, "_current_site", None) == msg["name"]:
-            if "_index_naming" in msg:
-                return
-
-            # We need to identify this pyro shim during post-sample.
-            msg["_pyro_shim_id"] = id(self)  # type: ignore[typeddict-unknown-key]
-
+        if handler_stage == 1:
             if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
 
@@ -214,16 +220,15 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         # This branch handles the first call to pyro.sample by calling pyro_sample.
         else:
-            try:
-                self._current_site = msg["name"]
-                msg["value"] = pyro_sample(
-                    msg["name"],
-                    msg["fn"],
-                    obs=msg["value"] if msg["is_observed"] else None,
-                    infer=msg["infer"].copy(),
-                )
-            finally:
-                self._current_site = None
+            infer = msg["infer"].copy()
+            infer["pyro_shim_status"] = (handler_id, 1)
+
+            msg["value"] = pyro_sample(
+                msg["name"],
+                msg["fn"],
+                obs=msg["value"] if msg["is_observed"] else None,
+                infer=infer,
+            )
 
             # flags to guarantee commutativity of condition, intervene, trace
             msg["stop"] = True
@@ -237,30 +242,30 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         assert msg["value"] is not None
 
         # If this message has been handled already by a different pyro shim, ignore.
-        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):  # type: ignore[typeddict-item]
+        if "pyro_shim_status" not in msg["infer"]:
+            return
+        handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+        if handler_id != id(self) or handler_stage < 1:
             return
 
-        if getattr(self, "_current_site", None) == msg["name"]:
-            assert "_index_naming" in msg
+        assert "_index_naming" in msg
 
-            # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-            naming = msg["_index_naming"]  # type: ignore
+        # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
+        naming = msg["_index_naming"]  # type: ignore
 
-            value = msg["value"]
+        value = msg["value"]
 
-            infer = msg["infer"] if msg["infer"] is not None else {}
-            assert "enumerate" not in infer, (
-                "Enumeration is not currently supported in PyroShim."
-            )
+        infer = msg["infer"] if msg["infer"] is not None else {}
+        assert "enumerate" not in infer, (
+            "Enumeration is not currently supported in PyroShim."
+        )
 
-            # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
-            if len(value.shape) < len(dist_shape):
-                value = value.broadcast_to(
-                    torch.broadcast_shapes(value.shape, dist_shape)
-                )
-            value = naming.apply(value)
-            msg["value"] = value
+        # note: is it safe to assume that msg['fn'] is a distribution?
+        dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
+        if len(value.shape) < len(dist_shape):
+            value = value.broadcast_to(torch.broadcast_shapes(value.shape, dist_shape))
+        value = naming.apply(value)
+        msg["value"] = value
 
 
 class Naming:
