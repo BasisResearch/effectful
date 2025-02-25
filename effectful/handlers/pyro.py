@@ -346,13 +346,20 @@ def positional_distribution(
 
     def _to_positional(a):
         if isinstance(a, torch.Tensor):
+            a_indices = sizesof(a)
+            assert len(a_indices) == 0 or set(a_indices.keys()) == set(indices)
+            if len(a_indices) == 0:
+                return a
             return to_tensor(a, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
         else:
             return a
 
-    new_d = dist_constr(*[_to_positional(a) for a in args], **d.kwargs)
+    new_d = dist_constr(
+        *[_to_positional(a) for a in args],
+        **{k: _to_positional(v) for (k, v) in d.kwargs.items()},
+    )
 
     assert new_d.event_shape == d.event_shape
     return new_d, naming
@@ -525,7 +532,7 @@ def _embed_half_cauchy(d) -> Term[TorchDistribution]:
 
 @defterm.register(dist.LKJCholesky)
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.LKJCholesky, d.concentration, dim=d.dim)
+    return _DistributionTerm(dist.LKJCholesky, d.dim, concentration=d.concentration)
 
 
 @defterm.register(dist.Multinomial)
@@ -537,7 +544,7 @@ def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
 def _embed_multivariate_normal(
     d: dist.MultivariateNormal,
 ) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.MultivariateNormal, d.loc, d.scale_tril)
+    return _DistributionTerm(dist.MultivariateNormal, d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register(dist.NegativeBinomial)
