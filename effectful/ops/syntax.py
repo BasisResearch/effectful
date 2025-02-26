@@ -530,6 +530,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
+        self._annotations = Scoped.infer_annotations(self.__signature__)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -553,7 +554,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
-        sig = Scoped.infer_annotations(self.__signature__)
+        sig = self._annotations
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
@@ -579,7 +580,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        sig = inspect.signature(self._default)
+        sig = self.__signature__
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
