@@ -1,3 +1,4 @@
+import functools
 import typing
 from collections.abc import Collection, Mapping
 from typing import (
@@ -305,15 +306,8 @@ def named_distribution(
     *names: Annotated[Operation[[], int], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     d = defterm(d)
-    dist_constr, args = d.args[0], d.args[1:]
 
-    if not (
-        d.op is call
-        and (
-            issubclass(dist_constr, TorchDistribution)
-            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
-        )
-    ):
+    if not isinstance(d, _DistributionTerm):
         raise NotImplementedError
 
     def _to_named(a):
@@ -324,7 +318,10 @@ def named_distribution(
         else:
             return a
 
-    new_d = dist_constr(*[_to_named(a) for a in args], **d.kwargs)
+    new_d = d.op(
+        *[_to_named(a) for a in d.args],
+        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
+    )
     assert new_d.event_shape == d.event_shape
     return new_d
 
@@ -335,15 +332,8 @@ def positional_distribution(
 ) -> tuple[TorchDistribution, Naming]:
     shape = d.shape()
     d = defterm(d)
-    dist_constr, args = d.args[0], d.args[1:]
 
-    if not (
-        d.op is call
-        and (
-            issubclass(dist_constr, TorchDistribution)
-            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
-        )
-    ):
+    if not isinstance(d, _DistributionTerm):
         raise NotImplementedError
 
     indices = sizesof(d).keys()
@@ -361,13 +351,24 @@ def positional_distribution(
         else:
             return a
 
-    new_d = dist_constr(
-        *[_to_positional(a) for a in args],
+    new_d = d.op(
+        *[_to_positional(a) for a in d.args],
         **{k: _to_positional(v) for (k, v) in d.kwargs.items()},
     )
 
     assert new_d.event_shape == d.event_shape
     return new_d, naming
+
+
+@functools.cache
+def _register_distribution_op(
+    dist_constr: type[TorchDistribution],
+) -> Operation[Any, TorchDistribution]:
+    # introduce a wrapper so that we can control type annotations
+    def wrapper(*args, **kwargs) -> TorchDistribution:
+        return dist_constr(*args, **kwargs)
+
+    return defop(wrapper)
 
 
 class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
@@ -382,16 +383,18 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     """
 
+    _op: Operation[Any, TorchDistribution]
     _args: tuple
     _kwargs: dict
 
     def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
-        self._args = (dist_constr,) + tuple(defterm(a) for a in args)
-        self._kwargs = kwargs
+        self._op = _register_distribution_op(dist_constr)
+        self._args = tuple(defterm(a) for a in args)
+        self._kwargs = {k: defterm(v) for (k, v) in kwargs.items()}
 
     @property
     def op(self):
-        return call
+        return self._op
 
     @property
     def args(self):
@@ -403,7 +406,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     @property
     def _base_dist(self):
-        return self.args[0](*self.args[1:], **self.kwargs)
+        return self._op(*self.args, **self.kwargs)
 
     @property
     def has_rsample(self):
