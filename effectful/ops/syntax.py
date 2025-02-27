@@ -579,13 +579,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        sig = self.__signature__
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-
+    def __type_rule__(self, typeof, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         def unwrap_annotation(typ):
             """Unwrap Annotated types."""
             return (
@@ -597,12 +591,15 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             origin = typing.get_origin(typ)
             return typ if origin is None else origin
 
-        anno = unwrap_annotation(anno)
+        anno = unwrap_annotation(self.__signature__.return_annotation)
 
         if anno is inspect.Signature.empty:
             return typing.cast(type[V], object)
 
         if isinstance(anno, typing.TypeVar):
+            bound_sig = self.__signature__.bind(*args, **kwargs)
+            bound_sig.apply_defaults()
+
             # rudimentary but sound special-case type inference sufficient for syntax ops:
             # if the return type annotation is a TypeVar,
             # look for a parameter with the same annotation and return its type,
@@ -614,8 +611,9 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    if isinstance(arg, Term):
+                        return typeof(arg)
+                    return drop_params(type(arg))
 
             return typing.cast(type[V], object)
 
