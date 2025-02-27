@@ -16,7 +16,7 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
@@ -113,15 +113,16 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
                         )
                     sizes[k.op] = shape[i]
 
-        return defdata(torch_getitem, x, key)
+        return None
 
-    def _apply(_, op, *args, **kwargs):
-        args, kwargs = tree.map_structure(defterm, (args, kwargs))
-        return defdata(op, *args, **kwargs)
+    def term_iter(t):
+        if isinstance(t, Term):
+            if t.op is torch_getitem:
+                _torch_getitem_sizeof(t.args[0], t.args[1])
+            for x in tree.flatten((t.args, t.kwargs.values())):
+                term_iter(x)
 
-    value = defterm(value)
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
-        evaluate(value)
+    term_iter(defterm(value))
 
     return sizes
 
@@ -133,8 +134,6 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     tensor, in the order they appear. All other variables remain free.
 
     """
-    from effectful.ops.syntax import deffn
-
     if order is None:
         order = []
 
@@ -156,13 +155,16 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     ]
     ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
 
-    index_fn = deffn(t, *[var for (var, _) in ordered_sized_fvs])
-
     # note: torch.func.vmap will call repr on the callable, so it's important
     # that we don't pass something with a slow repr (like a large tensor wrapped
     # in a deffn)
     def wrapper(*args):
-        return index_fn(*args)
+        subs = {
+            v: functools.partial(lambda x: x, a)
+            for (v, _), a in zip(ordered_sized_fvs, args)
+        }
+        with handler(subs):
+            return evaluate(t)
 
     tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
@@ -461,6 +463,9 @@ class _EagerTensorTerm(torch.Tensor):
     @property
     def requires_grad(self):
         return self.args[0].requires_grad
+
+    def requires_grad_(self, requires_grad=True):
+        return self.args[0].requires_grad_(requires_grad=requires_grad)
 
     @property
     def grad_fn(self):

@@ -1,11 +1,12 @@
 import functools
 import operator
 from collections.abc import Iterable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import torch
 
 from effectful.handlers.torch import Indexable, sizesof
+from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation
 
@@ -167,7 +168,7 @@ def name_to_sym(name: str) -> Operation[[], int]:
     return defop(int, name=name)
 
 
-def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
+def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -249,6 +250,7 @@ def stack(
     identical shapes.
 
     """
+    values = torch.distributions.utils.broadcast_all(*values)
     return Indexable(torch.stack(values))[name_to_sym(name)()]
 
 
@@ -303,3 +305,23 @@ def cond_n(values: dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
         result = cond(result if result is not None else value, value, tst)
     assert result is not None
     return result
+
+
+def select(tensor: torch.Tensor, **indices: int) -> torch.Tensor:
+    """Evaluate an indexed tensor at specific indices.
+
+    Example:
+
+    >>> import torch
+    >>> from effectful.handlers.torch import Indexable
+
+    >>> a, b = name_to_sym("a"), name_to_sym("b")
+    >>> x = Indexable(torch.tensor([[1, 2], [3, 4]]))[a(), b()]
+    >>> select(x, a=0, b=1)
+    tensor(2)
+    """
+    intp = {
+        name_to_sym(n): functools.partial(lambda x: x, i) for (n, i) in indices.items()
+    }
+    with handler(intp):
+        return cast(torch.Tensor, evaluate(tensor))

@@ -1,5 +1,5 @@
+import functools
 import typing
-import warnings
 from collections.abc import Collection, Mapping
 from typing import (
     Annotated,
@@ -97,11 +97,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     _current_site: str | None
 
-    def __enter__(self):
-        if any(isinstance(m, PyroShim) for m in pyro.poutine.runtime._PYRO_STACK):
-            warnings.warn("PyroShim should be installed at most once.")
-        return super().__enter__()
-
     @staticmethod
     def _broadcast_to_named(
         t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
@@ -112,6 +107,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         """
         t_indices = sizesof(t)
+
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t)
 
         if len(t.shape) < len(shape):
             t = t.expand(shape)
@@ -145,6 +143,18 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         ):
             return
 
+        if "pyro_shim_status" in msg["infer"]:
+            handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+        else:
+            handler_id = id(self)
+            handler_stage = 0
+            msg["infer"]["pyro_shim_status"] = (handler_id, handler_stage)
+
+        if handler_id != id(self):  # Never handle a message that is not ours.
+            return
+
+        assert handler_stage in (0, 1)
+
         # PyroShim turns each call to pyro.sample into two calls. The first
         # dispatches to pyro_sample and the effectful stack. The effectful stack
         # eventually calls pyro.sample again. We use state in PyroShim to
@@ -155,13 +165,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # compatible with Pyro. In particular, it removes all named dimensions
         # and stores naming information in the message. Names are replaced by
         # _pyro_post_sample.
-        if getattr(self, "_current_site", None) == msg["name"]:
-            if "_index_naming" in msg:
-                return
-
-            # We need to identify this pyro shim during post-sample.
-            msg["_pyro_shim_id"] = id(self)  # type: ignore[typeddict-unknown-key]
-
+        if handler_stage == 1:
             if "_markov_scope" in msg["infer"] and self._current_site:
                 msg["infer"]["_markov_scope"].pop(self._current_site, None)
 
@@ -217,16 +221,15 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         # This branch handles the first call to pyro.sample by calling pyro_sample.
         else:
-            try:
-                self._current_site = msg["name"]
-                msg["value"] = pyro_sample(
-                    msg["name"],
-                    msg["fn"],
-                    obs=msg["value"] if msg["is_observed"] else None,
-                    infer=msg["infer"].copy(),
-                )
-            finally:
-                self._current_site = None
+            infer = msg["infer"].copy()
+            infer["pyro_shim_status"] = (handler_id, 1)
+
+            msg["value"] = pyro_sample(
+                msg["name"],
+                msg["fn"],
+                obs=msg["value"] if msg["is_observed"] else None,
+                infer=infer,
+            )
 
             # flags to guarantee commutativity of condition, intervene, trace
             msg["stop"] = True
@@ -240,25 +243,30 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         assert msg["value"] is not None
 
         # If this message has been handled already by a different pyro shim, ignore.
-        if "_pyro_shim_id" in msg and msg["_pyro_shim_id"] != id(self):  # type: ignore[typeddict-item]
+        if "pyro_shim_status" not in msg["infer"]:
+            return
+        handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+        if handler_id != id(self) or handler_stage < 1:
             return
 
-        if getattr(self, "_current_site", None) == msg["name"]:
-            assert "_index_naming" in msg
+        assert "_index_naming" in msg
 
-            # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-            naming = msg["_index_naming"]  # type: ignore
+        # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
+        naming = msg["_index_naming"]  # type: ignore
 
-            value = msg["value"]
+        value = msg["value"]
 
-            # note: is it safe to assume that msg['fn'] is a distribution?
-            dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
-            if len(value.shape) < len(dist_shape):
-                value = value.broadcast_to(
-                    torch.broadcast_shapes(value.shape, dist_shape)
-                )
-            value = naming.apply(value)
-            msg["value"] = value
+        infer = msg["infer"] if msg["infer"] is not None else {}
+        assert "enumerate" not in infer, (
+            "Enumeration is not currently supported in PyroShim."
+        )
+
+        # note: is it safe to assume that msg['fn'] is a distribution?
+        dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
+        if len(value.shape) < len(dist_shape):
+            value = value.broadcast_to(torch.broadcast_shapes(value.shape, dist_shape))
+        value = naming.apply(value)
+        msg["value"] = value
 
 
 class Naming:
@@ -298,15 +306,8 @@ def named_distribution(
     *names: Annotated[Operation[[], int], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     d = defterm(d)
-    dist_constr, args = d.args[0], d.args[1:]
 
-    if not (
-        d.op is call
-        and (
-            issubclass(dist_constr, TorchDistribution)
-            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
-        )
-    ):
+    if not isinstance(d, _DistributionTerm):
         raise NotImplementedError
 
     def _to_named(a):
@@ -317,7 +318,12 @@ def named_distribution(
         else:
             return a
 
-    return dist_constr(*[_to_named(a) for a in args], **d.kwargs)
+    new_d = d.op(
+        *[_to_named(a) for a in d.args],
+        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
+    )
+    assert new_d.event_shape == d.event_shape
+    return new_d
 
 
 @defop
@@ -326,15 +332,8 @@ def positional_distribution(
 ) -> tuple[TorchDistribution, Naming]:
     shape = d.shape()
     d = defterm(d)
-    dist_constr, args = d.args[0], d.args[1:]
 
-    if not (
-        d.op is call
-        and (
-            issubclass(dist_constr, TorchDistribution)
-            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
-        )
-    ):
+    if not isinstance(d, _DistributionTerm):
         raise NotImplementedError
 
     indices = sizesof(d).keys()
@@ -342,13 +341,34 @@ def positional_distribution(
 
     def _to_positional(a):
         if isinstance(a, torch.Tensor):
+            a_indices = sizesof(a)
+            assert len(a_indices) == 0 or set(a_indices.keys()) == set(indices)
+            if len(a_indices) == 0:
+                return a
             return to_tensor(a, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
         else:
             return a
 
-    return dist_constr(*[_to_positional(a) for a in args], **d.kwargs), naming
+    new_d = d.op(
+        *[_to_positional(a) for a in d.args],
+        **{k: _to_positional(v) for (k, v) in d.kwargs.items()},
+    )
+
+    assert new_d.event_shape == d.event_shape
+    return new_d, naming
+
+
+@functools.cache
+def _register_distribution_op(
+    dist_constr: type[TorchDistribution],
+) -> Operation[Any, TorchDistribution]:
+    # introduce a wrapper so that we can control type annotations
+    def wrapper(*args, **kwargs) -> TorchDistribution:
+        return dist_constr(*args, **kwargs)
+
+    return defop(wrapper)
 
 
 class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
@@ -363,16 +383,18 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     """
 
+    _op: Operation[Any, TorchDistribution]
     _args: tuple
     _kwargs: dict
 
     def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
-        self._args = (dist_constr,) + tuple(defterm(a) for a in args)
-        self._kwargs = kwargs
+        self._op = _register_distribution_op(dist_constr)
+        self._args = tuple(defterm(a) for a in args)
+        self._kwargs = {k: defterm(v) for (k, v) in kwargs.items()}
 
     @property
     def op(self):
-        return call
+        return self._op
 
     @property
     def args(self):
@@ -384,7 +406,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     @property
     def _base_dist(self):
-        return self.args[0](*self.args[1:])
+        return self._op(*self.args, **self.kwargs)
 
     @property
     def has_rsample(self):
@@ -441,6 +463,16 @@ def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.Independent)
 def _embed_independent(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.base_dist, d.reinterpreted_batch_ndims)
+
+
+@defterm.register(dist.FoldedDistribution)
+def _embed_folded(d) -> Term[TorchDistribution]:
+    return _DistributionTerm(type(d), d.base_dist)
+
+
+@defterm.register(dist.MaskedDistribution)
+def _embed_masked(d) -> Term[TorchDistribution]:
+    return _DistributionTerm(type(d), d.base_dist, d._mask)
 
 
 @defterm.register(dist.Cauchy)
@@ -508,7 +540,7 @@ def _embed_half_cauchy(d) -> Term[TorchDistribution]:
 
 @defterm.register(dist.LKJCholesky)
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.LKJCholesky, d.concentration, dim=d.dim)
+    return _DistributionTerm(dist.LKJCholesky, d.dim, concentration=d.concentration)
 
 
 @defterm.register(dist.Multinomial)
@@ -520,7 +552,7 @@ def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
 def _embed_multivariate_normal(
     d: dist.MultivariateNormal,
 ) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.MultivariateNormal, d.loc, d.scale_tril)
+    return _DistributionTerm(dist.MultivariateNormal, d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register(dist.NegativeBinomial)
@@ -566,7 +598,9 @@ def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
 
 @defterm.register(dist.Delta)
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.Delta, d.v, d.log_density, event_dim=d.event_dim)
+    return _DistributionTerm(
+        dist.Delta, d.v, log_density=d.log_density, event_dim=d.event_dim
+    )
 
 
 def pyro_module_shim(
