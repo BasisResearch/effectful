@@ -113,15 +113,16 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
                         )
                     sizes[k.op] = shape[i]
 
-        return defdata(torch_getitem, x, key)
+        return None
 
-    def _apply(_, op, *args, **kwargs):
-        args, kwargs = tree.map_structure(defterm, (args, kwargs))
-        return defdata(op, *args, **kwargs)
+    def term_iter(t):
+        if isinstance(t, Term):
+            if t.op is torch_getitem:
+                _torch_getitem_sizeof(t.args[0], t.args[1])
+            for x in tree.flatten((t.args, t.kwargs.values())):
+                term_iter(x)
 
-    value = defterm(value)
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
-        evaluate(value)
+    term_iter(defterm(value))
 
     return sizes
 
