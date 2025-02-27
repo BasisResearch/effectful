@@ -16,7 +16,7 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
@@ -134,8 +134,6 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     tensor, in the order they appear. All other variables remain free.
 
     """
-    from effectful.ops.syntax import deffn
-
     if order is None:
         order = []
 
@@ -157,13 +155,16 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     ]
     ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
 
-    index_fn = deffn(t, *[var for (var, _) in ordered_sized_fvs])
-
     # note: torch.func.vmap will call repr on the callable, so it's important
     # that we don't pass something with a slow repr (like a large tensor wrapped
     # in a deffn)
     def wrapper(*args):
-        return index_fn(*args)
+        subs = {
+            v: functools.partial(lambda x: x, a)
+            for (v, _), a in zip(ordered_sized_fvs, args)
+        }
+        with handler(subs):
+            return evaluate(t)
 
     tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
