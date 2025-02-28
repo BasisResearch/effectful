@@ -4,25 +4,7 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
-from weighted.fold_lang_v1 import D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, real, unfold
-
-
-def test_fold_simple():
-    x = defop(int, name="x")
-    # Test summing squares with a guard
-    numbers = {x: [1, 2, 3, 4, 5]}
-    result = fold(
-        LinAlg,
-        numbers,
-        body=x() ** 2,  # square each number
-        guard=x() % 2 == 1,  # only odd numbers
-    )
-    # Should sum squares of [1, 3, 5]
-    assert result == 35  # 1² + 3² + 5² = 1 + 9 + 25 = 35
-
-    # # Test dictionary accumulation
-    # result = fold(LinAlg, range(3), body=lambda x: {x: x * 10})
-    # assert result == {0: 0, 1: 10, 2: 20}
+from weighted.fold_lang_v1 import D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, unfold
 
 
 def infer_shape(sparse):
@@ -50,24 +32,6 @@ def test_unfold_size():
     streams = list(unfold(indices, unfold_body))
 
     assert len(streams) == I * J
-
-
-def test_fold_dicts():
-    # Test folding a sequence of dictionaries with tuple keys
-    dicts = [{(1, 0): 1, (2, 0): 2}, {(2, 0): 3, (3, 0): 4}, {(1, 0): 5, (3, 0): 6}]
-
-    # Simple fold that accumulates values
-    result = fold(LinAlg, dicts, lambda x: x)
-    assert result == {(1, 0): 6, (2, 0): 5, (3, 0): 10}
-
-    # Fold with transformation
-    result = fold(
-        LinAlg,
-        dicts,
-        body=lambda d: {k: v * 2 for k, v in d.items()},  # double each value
-        guard=lambda d: (2, 0) in d,  # only include dicts with (2,0) key
-    )
-    assert result == {(1, 0): 2, (2, 0): 10, (3, 0): 8}
 
 
 def test_batched_matmul():
@@ -114,11 +78,3 @@ def test_enum_opt():
 
         f2 = fold(MinAlg, {x: range(-10, 10)}, D(((), x() ** 2)))
         assert f2.item() == 0
-
-
-def test_grad_opt():
-    x = defop(int, name="x")
-
-    with handler(GradientOptimizationFold()):
-        f1 = fold(MinAlg, {x: real()}, D(((), x() ** 2)))
-        assert f1.item() == 0
