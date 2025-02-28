@@ -314,13 +314,13 @@ def reals() -> Iterable[float]:
 
 
 class GradientOptimizationFold(ObjectInterpretation):
-    def __init__(self, optimizer=torch.optim.Adam, steps=100, **kwargs):
+    def __init__(self, optimizer=torch.optim.Adam, steps=1000, **kwargs):
         self.optimizer = optimizer
         self.optimizer_kwargs = kwargs
         self.steps = steps
 
     def _optimizer(self, params):
-        return self.optimizer(params, self.optimizer_kwargs)
+        return self.optimizer(params, **self.optimizer_kwargs)
 
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
@@ -347,6 +347,18 @@ class GradientOptimizationFold(ObjectInterpretation):
 
         if not isinstance(indices, tuple):
             indices = (indices,)
+
+        params = [torch.tensor(0.0, requires_grad=True) for v in streams.values()]
+        param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
+        optimizer = self._optimizer(params)
+        for _ in range(self.steps):
+            optimizer.zero_grad()
+            with handler(param_ctx):
+                loss = evaluate(value)
+            loss.backward()
+            optimizer.step()
+
+        return {indices: loss.detach()}
 
 
 if __name__ == "__main__":
