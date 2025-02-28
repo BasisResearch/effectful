@@ -31,6 +31,4 @@ jobs:
           uv sync --all-extras --dev
 
       - name: Lint
-        run: |
-          uv run ruff check .
-          uv run mypy .
+        run: ./scripts/lint.sh

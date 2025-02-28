@@ -38,4 +38,4 @@ jobs:
     
         - name: Run Notebook Test
           run: |
-            uv run pytest notebooks/ --nbval
+            ./scripts/test_notebooks.sh
