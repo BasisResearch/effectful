@@ -31,4 +31,4 @@ jobs:
           uv sync --all-extras --dev
 
       - name: Lint
-        run: ./scripts/lint.sh
+        run: uv run ./scripts/lint.sh
