@@ -32,4 +32,4 @@ jobs:
       - name: Run tests
         env:
           MKL_NUM_THREADS: 1
-        run: ./scripts/test.sh
+        run: uv run pytest tests/ --doctest-modules
