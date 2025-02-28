@@ -31,7 +31,7 @@ jobs:
       with:
         version: "0.6.3"
     - name: Install build
-      run: uv pip install build
+      run: uv sync build
     - name: Build package
       run: python -m build
     - name: Publish package

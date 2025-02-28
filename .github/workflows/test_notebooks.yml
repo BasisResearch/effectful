@@ -40,7 +40,7 @@ jobs:
 
         - name: Install Python packages
           run: |
-            uv pip install -e .[dev]
+            uv sync --all-extras --dev
     
         - name: Run Notebook Test
           run: | 

@@ -28,7 +28,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          uv pip install .[dev]
+          uv sync --all-extras --dev
       
       - name: Run tests
         env:
