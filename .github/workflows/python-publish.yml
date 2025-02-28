@@ -30,6 +30,7 @@ jobs:
       uses: astral-sh/setup-uv@v5
       with:
         version: "0.6.3"
+        enable-cache: true
     - name: Install build
       run: uv sync build
     - name: Build package
