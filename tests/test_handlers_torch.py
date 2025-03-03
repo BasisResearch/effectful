@@ -522,31 +522,33 @@ def test_tensor_term_operators():
     results = []
 
     # Test basic arithmetic operators
-    results.extend([
-        isinstance(x + y, Term),
-        isinstance(x - y, Term),
-        isinstance(x * y, Term), 
-        isinstance(x / y, Term),
-        isinstance(x // y, Term),
-        isinstance(x @ y, Term),  # matrix multiplication
-        isinstance(x ** 2, Term)  # power
-    ])
+    results.extend(
+        [
+            isinstance(x() + y(), Term),
+            isinstance(x() - y(), Term),
+            isinstance(x() * y(), Term),
+            isinstance(x() / y(), Term),
+            isinstance(x() // y(), Term),
+            isinstance(x() @ y(), Term),  # matrix multiplication
+            isinstance(x() ** y(), Term),  # power
+        ]
+    )
 
     # Test comparison operators
-    results.extend([
-        isinstance(x > y, Term),
-        isinstance(x >= y, Term),
-        isinstance(x < y, Term),
-        isinstance(x <= y, Term),
-        isinstance(x == y, Term),
-        isinstance(x != y, Term)
-    ])
+    results.extend(
+        [
+            isinstance(x() > y(), Term),
+            isinstance(x() >= y(), Term),
+            isinstance(x() < y(), Term),
+            isinstance(x() <= y(), Term),
+            isinstance(x() == y(), Term),
+            isinstance(x() != y(), Term),
+        ]
+    )
 
     # Test unary operators
-    results.extend([
-        isinstance(-x, Term),
-        isinstance(abs(x), Term)
-    ])
+    results.extend([isinstance(-x(), Term), isinstance(abs(x()), Term)])
 
-    # All results should be True
-    assert all(results), f"Failed operators: {[i for i,x in enumerate(results) if not x]}"
+    for t in results:
+        assert isinstance(t, Term)
+        assert {x, y} <= fvsof(t)
