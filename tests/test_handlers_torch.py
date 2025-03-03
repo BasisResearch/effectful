@@ -515,3 +515,7 @@ def test_to_tensor():
     assert set(sizesof(t__).keys()) == set([])
     assert t__.shape == torch.Size([2, 3, 4])
     assert torch.allclose(t_, t__)
+
+
+def test_tensor_term_operators():
+    x, y = defop(torch.Tensor), defop(torch.Tensor)
