@@ -2,9 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Collection, Mapping, Sequence
 from types import EllipsisType
-from typing import (
-    TypeVar,
-)
+from typing import Any, TypeVar
 
 try:
     import torch
@@ -367,6 +365,105 @@ class _TensorTerm(Term[torch.Tensor]):
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+    def __add__(self, other: Any) -> torch.Tensor:
+        return torch.add(self, other)
+
+    def __radd__(self, other: Any) -> torch.Tensor:
+        return torch.add(other, self)
+
+    def __neg__(self):
+        return torch.neg(self)
+
+    def __pos__(self):
+        return torch.pos(self)
+
+    def __sub__(self, other: Any) -> torch.Tensor:
+        return torch.sub(self, other)
+
+    def __rsub__(self, other: Any) -> torch.Tensor:
+        return torch.sub(other, self)
+
+    def __mul__(self, other: Any) -> torch.Tensor:
+        return torch.mul(self, other)
+
+    def __rmul__(self, other: Any) -> torch.Tensor:
+        return torch.mul(other, self)
+
+    def __truediv__(self, other: Any) -> torch.Tensor:
+        return torch.div(self, other)
+
+    def __rtruediv__(self, other: Any) -> torch.Tensor:
+        return torch.div(other, self)
+
+    def __pow__(self, other: Any) -> torch.Tensor:
+        return torch.pow(self, other)
+
+    def __rpow__(self, other: Any) -> torch.Tensor:
+        return torch.pow(other, self)
+
+    def __abs__(self) -> torch.Tensor:
+        return torch.abs(self)
+
+    def __eq__(self, other: Any) -> bool:
+        return torch.eq(self, other)
+
+    def __floordiv__(self, other):
+        return torch.floor_divide(self, other)
+
+    def __rfloordiv__(self, other):
+        return torch.floor_divide(other, self)
+
+    def __mod__(self, other):
+        return torch.mod(self, other)
+
+    def __rmod__(self, other):
+        return torch.mod(other, self)
+
+    def __lt__(self, other):
+        return torch.lt(self, other)
+
+    def __le__(self, other):
+        return torch.le(self, other)
+
+    def __gt__(self, other):
+        return torch.gt(self, other)
+
+    def __ge__(self, other):
+        return torch.ge(self, other)
+
+    def __lshift__(self, other):
+        return torch.lshift(self, other)
+
+    def __rlshift__(self, other):
+        return torch.lshift(other, self)
+
+    def __rshift__(self, other):
+        return torch.rshift(self, other)
+
+    def __rrshift__(self, other):
+        return torch.rshift(other, self)
+
+    def __and__(self, other):
+        return torch.and_(self, other)
+
+    def __rand__(self, other):
+        return torch.and_(other, self)
+
+    def __xor__(self, other):
+        return torch.xor(self, other)
+
+    def __rxor__(self, other):
+        return torch.xor(other, self)
+
+    def __or__(self, other):
+        return torch.or_(self, other)
+
+    def __ror__(self, other):
+        return torch.or_(other, self)
+
+    def __invert__(self):
+        return torch.invert(self)
 
 
 @Term.register
