@@ -369,113 +369,113 @@ class _TensorTerm(Term[torch.Tensor]):
     ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
-    def __add__(self, other: Any) -> torch.Tensor:
-        return torch.add(self, other)
+    def __add__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.add(typing.cast(torch.Tensor, self), other)
 
-    def __radd__(self, other: Any) -> torch.Tensor:
-        return torch.add(other, self)
+    def __radd__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.add(other, typing.cast(torch.Tensor, self))
 
-    def __neg__(self):
-        return torch.neg(self)
+    def __neg__(self) -> torch.Tensor:
+        return torch.neg(typing.cast(torch.Tensor, self))
 
-    def __pos__(self):
-        return torch.pos(self)
+    def __pos__(self) -> torch.Tensor:
+        return torch.positive(typing.cast(torch.Tensor, self))
 
-    def __sub__(self, other: Any) -> torch.Tensor:
-        return torch.sub(self, other)
+    def __sub__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.sub(typing.cast(torch.Tensor, self), other)
 
-    def __rsub__(self, other: Any) -> torch.Tensor:
-        return torch.sub(other, self)
+    def __rsub__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.sub(other, typing.cast(torch.Tensor, self))
 
-    def __mul__(self, other: Any) -> torch.Tensor:
-        return torch.mul(self, other)
+    def __mul__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.mul(typing.cast(torch.Tensor, self), other)
 
-    def __rmul__(self, other: Any) -> torch.Tensor:
-        return torch.mul(other, self)
+    def __rmul__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.mul(other, typing.cast(torch.Tensor, self))
 
-    def __truediv__(self, other: Any) -> torch.Tensor:
-        return torch.div(self, other)
+    def __truediv__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.div(typing.cast(torch.Tensor, self), other)
 
-    def __rtruediv__(self, other: Any) -> torch.Tensor:
-        return torch.div(other, self)
+    def __rtruediv__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.div(other, typing.cast(torch.Tensor, self))
 
-    def __pow__(self, other: Any) -> torch.Tensor:
-        return torch.pow(self, other)
+    def __pow__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.pow(typing.cast(torch.Tensor, self), other)
 
-    def __rpow__(self, other: Any) -> torch.Tensor:
-        return torch.pow(other, self)
+    def __rpow__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.pow(other, typing.cast(torch.Tensor, self))
 
     def __abs__(self) -> torch.Tensor:
-        return torch.abs(self)
+        return torch.abs(typing.cast(torch.Tensor, self))
 
-    def __eq__(self, other: Any) -> bool:
-        return torch.eq(self, other)
+    def __eq__(self, other: Any):
+        return torch.eq(typing.cast(torch.Tensor, self), other)
 
-    def __floordiv__(self, other):
-        return torch.floor_divide(self, other)
+    def __ne__(self, other: Any):
+        return torch.ne(typing.cast(torch.Tensor, self), other)
 
-    def __rfloordiv__(self, other):
-        return torch.floor_divide(other, self)
+    def __floordiv__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.floor_divide(typing.cast(torch.Tensor, self), other)
 
-    def __mod__(self, other):
-        return torch.fmod(self, other)
+    def __rfloordiv__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.floor_divide(other, typing.cast(torch.Tensor, self))
 
-    def __rmod__(self, other):
-        return torch.fmod(other, self)
+    def __mod__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.fmod(typing.cast(torch.Tensor, self), other)
 
-    def __lt__(self, other):
-        return torch.lt(self, other)
+    def __rmod__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.fmod(other, typing.cast(torch.Tensor, self))
 
-    def __le__(self, other):
-        return torch.le(self, other)
+    def __lt__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.lt(typing.cast(torch.Tensor, self), other)
 
-    def __gt__(self, other):
-        return torch.gt(self, other)
+    def __le__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.le(typing.cast(torch.Tensor, self), other)
 
-    def __ge__(self, other):
-        return torch.ge(self, other)
+    def __gt__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.gt(typing.cast(torch.Tensor, self), other)
 
-    def __ne__(self, other):
-        return torch.ne(self, other)
+    def __ge__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.ge(typing.cast(torch.Tensor, self), other)
 
-    def __lshift__(self, other):
-        return torch.lshift(self, other)
+    def __lshift__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_left_shift(typing.cast(torch.Tensor, self), other)
 
-    def __rlshift__(self, other):
-        return torch.lshift(other, self)
+    def __rlshift__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_left_shift(other, typing.cast(torch.Tensor, self))
 
-    def __rshift__(self, other):
-        return torch.rshift(self, other)
+    def __rshift__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_right_shift(typing.cast(torch.Tensor, self), other)
 
-    def __rrshift__(self, other):
-        return torch.rshift(other, self)
+    def __rrshift__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_right_shift(other, typing.cast(torch.Tensor, self))
 
-    def __and__(self, other):
-        return torch.bitwise_and(self, other)
+    def __and__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_and(typing.cast(torch.Tensor, self), other)
 
-    def __rand__(self, other):
-        return torch.bitwise_and(other, self)
+    def __rand__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_and(other, typing.cast(torch.Tensor, self))
 
-    def __xor__(self, other):
-        return torch.bitwise_xor(self, other)
+    def __xor__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_xor(typing.cast(torch.Tensor, self), other)
 
-    def __rxor__(self, other):
-        return torch.bitwise_xor(other, self)
+    def __rxor__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_xor(other, typing.cast(torch.Tensor, self))
 
-    def __or__(self, other):
-        return torch.bitwise_or(self, other)
+    def __or__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_or(typing.cast(torch.Tensor, self), other)
 
-    def __ror__(self, other):
-        return torch.bitwise_or(other, self)
+    def __ror__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.bitwise_or(other, typing.cast(torch.Tensor, self))
 
-    def __invert__(self):
-        return torch.bitwise_not(self)
+    def __invert__(self) -> torch.Tensor:
+        return torch.bitwise_not(typing.cast(torch.Tensor, self))
 
-    def __matmul__(self, other):
-        return torch.matmul(self, other)
+    def __matmul__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(typing.cast(torch.Tensor, self), other)
 
-    def __rmatmul__(self, other):
-        return torch.matmul(other, self)
+    def __rmatmul__(self, other: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(other, typing.cast(torch.Tensor, self))
 
 
 @Term.register
