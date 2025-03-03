@@ -522,33 +522,32 @@ def test_tensor_term_operators():
     results = []
 
     # Test basic arithmetic operators
-    results.extend(
-        [
-            isinstance(x() + y(), Term),
-            isinstance(x() - y(), Term),
-            isinstance(x() * y(), Term),
-            isinstance(x() / y(), Term),
-            isinstance(x() // y(), Term),
-            isinstance(x() @ y(), Term),  # matrix multiplication
-            isinstance(x() ** y(), Term),  # power
-        ]
-    )
+    results.extend([
+        (x() + y(), "add"),
+        (x() - y(), "sub"),
+        (x() * y(), "mul"),
+        (x() / y(), "div"),
+        (x() // y(), "floordiv"),
+        (x() @ y(), "matmul"),
+        (x() ** y(), "pow"),
+    ])
 
     # Test comparison operators
-    results.extend(
-        [
-            isinstance(x() > y(), Term),
-            isinstance(x() >= y(), Term),
-            isinstance(x() < y(), Term),
-            isinstance(x() <= y(), Term),
-            isinstance(x() == y(), Term),
-            isinstance(x() != y(), Term),
-        ]
-    )
+    results.extend([
+        (x() > y(), "gt"),
+        (x() >= y(), "ge"),
+        (x() < y(), "lt"),
+        (x() <= y(), "le"),
+        (x() == y(), "eq"),
+        (x() != y(), "ne"),
+    ])
 
     # Test unary operators
-    results.extend([isinstance(-x(), Term), isinstance(abs(x()), Term)])
+    results.extend([
+        (-x(), "neg"),
+        (abs(x()), "abs"),
+    ])
 
-    for t in results:
-        assert isinstance(t, Term)
-        assert {x, y} <= fvsof(t)
+    for t, op_name in results:
+        assert isinstance(t, Term), f"Failed for operation: {op_name}"
+        assert {x, y} <= fvsof(t), f"Missing variables for operation: {op_name}"
