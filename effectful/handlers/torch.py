@@ -206,6 +206,9 @@ def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
 
 @functools.cache
 def _register_torch_op(torch_fn: Callable[P, T]):
+    if torch_fn is torch._C.TensorBase.__getitem__:
+        return torch_getitem
+
     @defop
     def _torch_op(*args, **kwargs) -> torch.Tensor:
         tm = defdata(_torch_op, *args, **kwargs)

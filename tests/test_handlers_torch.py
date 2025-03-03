@@ -577,3 +577,13 @@ def test_tensor_term_operators():
 
     for t, op_name in unary:
         assert {x} <= fvsof(t), f"Missing variables for operation: {op_name}"
+
+
+def test_indexed_tensor_as_index():
+    t1 = torch.randn(2, 3)
+    i = defop(int, name="i")
+    t2 = Indexable(torch.tensor([0, 1]))[i()]
+
+    t3 = t1[t2]
+    assert sizesof(t3) == sizesof(t2)
+    assert (to_tensor(t3, [i]) == t1).all()
