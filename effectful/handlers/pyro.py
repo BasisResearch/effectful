@@ -166,8 +166,8 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # and stores naming information in the message. Names are replaced by
         # _pyro_post_sample.
         if handler_stage == 1:
-            if "_markov_scope" in msg["infer"] and self._current_site:
-                msg["infer"]["_markov_scope"].pop(self._current_site, None)
+            if "_markov_scope" in msg["infer"]:
+                msg["infer"]["_markov_scope"].pop(msg["name"], None)
 
             dist = msg["fn"]
             obs = msg["value"] if msg["is_observed"] else None
