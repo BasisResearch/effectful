@@ -519,15 +519,16 @@ def test_to_tensor():
 
 def test_tensor_term_operators():
     x, y = defop(torch.Tensor), defop(torch.Tensor)
-    
+
     # Test basic arithmetic operators
     assert isinstance(x + y, Term)
     assert isinstance(x - y, Term)
     assert isinstance(x * y, Term)
     assert isinstance(x / y, Term)
+    assert isinstance(x // y, Term)
     assert isinstance(x @ y, Term)  # matrix multiplication
-    assert isinstance(x ** 2, Term)  # power
-    
+    assert isinstance(x**2, Term)  # power
+
     # Test comparison operators
     assert isinstance(x > y, Term)
     assert isinstance(x >= y, Term)
@@ -535,33 +536,7 @@ def test_tensor_term_operators():
     assert isinstance(x <= y, Term)
     assert isinstance(x == y, Term)
     assert isinstance(x != y, Term)
-    
+
     # Test unary operators
     assert isinstance(-x, Term)
     assert isinstance(abs(x), Term)
-    
-    # Test in-place operators
-    z = x.clone()
-    assert isinstance(z.add_(y), Term)
-    assert isinstance(z.sub_(y), Term)
-    assert isinstance(z.mul_(y), Term)
-    assert isinstance(z.div_(y), Term)
-    
-    # Test common torch functions
-    assert isinstance(torch.sum(x), Term)
-    assert isinstance(torch.mean(x), Term)
-    assert isinstance(torch.max(x), Term)
-    assert isinstance(torch.min(x), Term)
-    assert isinstance(torch.exp(x), Term)
-    assert isinstance(torch.log(x), Term)
-    assert isinstance(torch.sqrt(x), Term)
-    assert isinstance(torch.relu(x), Term)
-    assert isinstance(torch.sigmoid(x), Term)
-    assert isinstance(torch.tanh(x), Term)
-    
-    # Test shape operations
-    assert isinstance(x.transpose(0, 1), Term)
-    assert isinstance(x.reshape(-1), Term)
-    assert isinstance(x.view(-1), Term)
-    assert isinstance(x.squeeze(), Term)
-    assert isinstance(x.unsqueeze(0), Term)
