@@ -415,10 +415,10 @@ class _TensorTerm(Term[torch.Tensor]):
         return torch.floor_divide(other, self)
 
     def __mod__(self, other):
-        return torch.mod(self, other)
+        return torch.fmod(self, other)
 
     def __rmod__(self, other):
-        return torch.mod(other, self)
+        return torch.fmod(other, self)
 
     def __lt__(self, other):
         return torch.lt(self, other)
@@ -431,6 +431,9 @@ class _TensorTerm(Term[torch.Tensor]):
 
     def __ge__(self, other):
         return torch.ge(self, other)
+
+    def __ne__(self, other):
+        return torch.ne(self, other)
 
     def __lshift__(self, other):
         return torch.lshift(self, other)
@@ -445,25 +448,31 @@ class _TensorTerm(Term[torch.Tensor]):
         return torch.rshift(other, self)
 
     def __and__(self, other):
-        return torch.and_(self, other)
+        return torch.bitwise_and(self, other)
 
     def __rand__(self, other):
-        return torch.and_(other, self)
+        return torch.bitwise_and(other, self)
 
     def __xor__(self, other):
-        return torch.xor(self, other)
+        return torch.bitwise_xor(self, other)
 
     def __rxor__(self, other):
-        return torch.xor(other, self)
+        return torch.bitwise_xor(other, self)
 
     def __or__(self, other):
-        return torch.or_(self, other)
+        return torch.bitwise_or(self, other)
 
     def __ror__(self, other):
-        return torch.or_(other, self)
+        return torch.bitwise_or(other, self)
 
     def __invert__(self):
-        return torch.invert(self)
+        return torch.bitwise_not(self)
+
+    def __matmul__(self, other):
+        return torch.matmul(self, other)
+
+    def __rmatmul__(self, other):
+        return torch.matmul(other, self)
 
 
 @Term.register
