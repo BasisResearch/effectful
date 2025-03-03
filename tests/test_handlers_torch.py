@@ -18,7 +18,7 @@ from effectful.handlers.torch import (
     vjp,
     vmap,
 )
-from effectful.ops.semantics import evaluate, handler
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Term
 
@@ -519,10 +519,9 @@ def test_to_tensor():
 
 def test_tensor_term_operators():
     x, y = defop(torch.Tensor), defop(torch.Tensor)
-    results = []
 
     # Test basic arithmetic operators
-    results.extend([
+    binary = [
         (x() + y(), "add"),
         (x() - y(), "sub"),
         (x() * y(), "mul"),
@@ -530,24 +529,25 @@ def test_tensor_term_operators():
         (x() // y(), "floordiv"),
         (x() @ y(), "matmul"),
         (x() ** y(), "pow"),
-    ])
-
-    # Test comparison operators
-    results.extend([
         (x() > y(), "gt"),
         (x() >= y(), "ge"),
         (x() < y(), "lt"),
         (x() <= y(), "le"),
         (x() == y(), "eq"),
         (x() != y(), "ne"),
-    ])
+    ]
 
     # Test unary operators
-    results.extend([
+    unary = [
         (-x(), "neg"),
         (abs(x()), "abs"),
-    ])
+    ]
 
-    for t, op_name in results:
+    for t, op_name in binary + unary:
         assert isinstance(t, Term), f"Failed for operation: {op_name}"
+
+    for t, op_name in binary:
         assert {x, y} <= fvsof(t), f"Missing variables for operation: {op_name}"
+
+    for t, op_name in unary:
+        assert {x} <= fvsof(t), f"Missing variables for operation: {op_name}"
