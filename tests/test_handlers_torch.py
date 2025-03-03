@@ -519,24 +519,34 @@ def test_to_tensor():
 
 def test_tensor_term_operators():
     x, y = defop(torch.Tensor), defop(torch.Tensor)
+    results = []
 
     # Test basic arithmetic operators
-    assert isinstance(x + y, Term)
-    assert isinstance(x - y, Term)
-    assert isinstance(x * y, Term)
-    assert isinstance(x / y, Term)
-    assert isinstance(x // y, Term)
-    assert isinstance(x @ y, Term)  # matrix multiplication
-    assert isinstance(x**2, Term)  # power
+    results.extend([
+        isinstance(x + y, Term),
+        isinstance(x - y, Term),
+        isinstance(x * y, Term), 
+        isinstance(x / y, Term),
+        isinstance(x // y, Term),
+        isinstance(x @ y, Term),  # matrix multiplication
+        isinstance(x ** 2, Term)  # power
+    ])
 
     # Test comparison operators
-    assert isinstance(x > y, Term)
-    assert isinstance(x >= y, Term)
-    assert isinstance(x < y, Term)
-    assert isinstance(x <= y, Term)
-    assert isinstance(x == y, Term)
-    assert isinstance(x != y, Term)
+    results.extend([
+        isinstance(x > y, Term),
+        isinstance(x >= y, Term),
+        isinstance(x < y, Term),
+        isinstance(x <= y, Term),
+        isinstance(x == y, Term),
+        isinstance(x != y, Term)
+    ])
 
     # Test unary operators
-    assert isinstance(-x, Term)
-    assert isinstance(abs(x), Term)
+    results.extend([
+        isinstance(-x, Term),
+        isinstance(abs(x), Term)
+    ])
+
+    # All results should be True
+    assert all(results), f"Failed operators: {[i for i,x in enumerate(results) if not x]}"
