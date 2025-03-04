@@ -126,18 +126,10 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-class PartialEvalError(Exception):
-    pass
-
-
 @defop
 def _partial_eval(
     t: Annotated[T, Scoped[A | B]], *args: Annotated[Operation[[], int], Scoped[A]]
 ) -> Annotated[T, Scoped[B]]:
-    raise NotImplementedError
-
-
-def _partial_eval_vmap(t: T, *order: Operation[[], int]) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -148,15 +140,20 @@ def _partial_eval_vmap(t: T, *order: Operation[[], int]) -> T:
 
     sized_fvs = sizesof(t)
 
-    # if there are no sized free variables, then nothing to do
-    if len(sized_fvs) == 0:
+    # if there are no sized free variables or we are not evaluating any
+    # variables away, then nothing to do
+    if len(sized_fvs) == 0 or len(args) == 0:
         return t
 
-    order_set = set(order)
+    # if there are non-sized free variables, then we can't partially evaluate
+    if fvsof(t) > set(sized_fvs.keys()):
+        raise NotImplementedError
+
+    order_set = set(args)
     reindex_fvs = [
         (var, size) for var, size in sized_fvs.items() if var not in order_set
     ]
-    ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
+    ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in args]
 
     index_fn = deffn(t, *[var for (var, _) in ordered_sized_fvs])
 
@@ -164,10 +161,7 @@ def _partial_eval_vmap(t: T, *order: Operation[[], int]) -> T:
     # that we don't pass something with a slow repr (like a large tensor wrapped
     # in a deffn)
     def wrapper(*args):
-        result = index_fn(*args)
-        if isinstance(result, Term):
-            raise PartialEvalError()
-        return result
+        return index_fn(*args)
 
     tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
@@ -178,12 +172,7 @@ def _partial_eval_vmap(t: T, *order: Operation[[], int]) -> T:
         )
     )
 
-    try:
-        flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
-    except PartialEvalError:
-        # if we can't evaluate the term to a tensor in a context that binds its sized free variables, return the
-        # original term
-        return fwd() if len(order) > 0 else t
+    flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
 
     def reindex_flat_tensor(t):
         if not isinstance(t, torch.Tensor):
@@ -214,8 +203,7 @@ def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
     torch.Size([3, 2])
     """
     order = [] if order is None else order
-    with handler({_partial_eval: _partial_eval_vmap}):
-        return _partial_eval(t, *order)
+    return _partial_eval(t, *order)
 
 
 @functools.cache
