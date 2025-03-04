@@ -14,7 +14,7 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
