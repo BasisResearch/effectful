@@ -1,8 +1,10 @@
 import effectful.handlers.numbers
+import torch
+from effectful.handlers.indexed import Indexable
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from weighted.fold_lang_v1 import GradientOptimizationFold, MinAlg, fold, reals, unfold
+from weighted.fold_lang_v1 import D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, reals, unfold
 
 
 def test_opt():
@@ -16,3 +18,20 @@ def test_opt():
 
     # assert theta is close to 5.
     assert min_loss[(0,)] < 1e-3
+
+
+def test_batched_matmul():
+    expected_w = 3.0
+    expected_b = 5.0
+
+    x = torch.arange(0, 10, 0.1)
+    y = expected_w * x + expected_b + torch.randn(x.size())
+
+    K = x.shape[0]
+
+    # Define index operations
+    b, w, k = defop(torch.Tensor, name="b"), defop(torch.Tensor, name="w"), defop(int, name="k")
+
+    with handler(GradientOptimizationFold()), handler(DenseTensorFold()):
+        loss = fold(LinAlg, {k: range(K)}, D(((), (w() * Indexable(x)[k()] + b() - Indexable(y)[k()]) ** 2)))
+        result = fold(MinAlg, {w: reals(), b: reals()}, D(((), loss)))

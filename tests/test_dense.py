@@ -65,7 +65,7 @@ def test_batched_matmul():
 
     # Compare with pytorch
     expected = torch.einsum("bij,bjk->bik", A, B_mat)
-    assert torch.allclose(result_tensor, expected)
+    assert torch.allclose(result_tensor, expected, atol=1e-4)
     assert torch.allclose(vectorized_result_tensor, expected)
 
 

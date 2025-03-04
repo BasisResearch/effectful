@@ -9,6 +9,7 @@ from typing import Callable, Generic, ParamSpec, TypeVar
 import effectful.handlers.numbers  # noqa: F401
 import torch
 import tree
+from effectful.handlers.indexed import sizesof
 from effectful.handlers.torch import Indexable, to_tensor
 from effectful.ops.semantics import (
     apply,
@@ -284,12 +285,15 @@ class DenseTensorFold(ObjectInterpretation):
             return fwd()
         indices = [i.op for i in indices]
 
-        fresh_indices = {k: defop(k) for k in streams.keys()}
-        indexed_streams = {k: deffn(Indexable(torch.tensor(v))[fresh_indices[k]()]) for k, v in streams.items()}
+        old_to_fresh = {k: defop(k) for k in streams.keys()}
+        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
+        indexed_streams = {k: deffn(Indexable(torch.tensor(v))[old_to_fresh[k]()]) for k, v in streams.items()}
         with handler(indexed_streams):
             result = evaluate(value)
 
-        reduction_indices = [fresh_indices[i] for i in streams.keys() if i not in indices]
+        result_indices = sizesof(result)
+        reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
+
         result = to_tensor(result, reduction_indices)
 
         reductor = None
@@ -305,7 +309,7 @@ class DenseTensorFold(ObjectInterpretation):
         for _ in range(len(reduction_indices)):
             result = reductor(result, dim=0)
 
-        return to_tensor(result, [fresh_indices[i] for i in indices])
+        return to_tensor(result, [i for i in result_indices if i not in reduction_indices])
 
 
 @defop
@@ -350,15 +354,19 @@ class GradientOptimizationFold(ObjectInterpretation):
 
         params = [torch.tensor(0.0, requires_grad=True) for v in streams.values()]
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
+
         optimizer = self._optimizer(params)
-        for _ in range(self.steps):
+        from tqdm import tqdm
+
+        for _ in tqdm(range(self.steps)):
             optimizer.zero_grad()
             with handler(param_ctx):
                 loss = evaluate(value)
-            loss.backward()
+
+            tree.map_structure(lambda p: p.backward(), loss)
             optimizer.step()
 
-        return {indices: loss.detach()}
+        return {indices: tree.map_structure(lambda p: p.detach(), loss)}
 
 
 if __name__ == "__main__":
