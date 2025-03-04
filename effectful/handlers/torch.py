@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Collection, Mapping, Sequence
 from types import EllipsisType
-from typing import Any, TypeVar
+from typing import Annotated, Any, TypeVar
 
 try:
     import torch
@@ -14,8 +14,8 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import defdata, defop, defterm
+from effectful.ops.semantics import apply, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -23,6 +23,8 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 # + An element of a tensor index expression.
@@ -124,7 +126,18 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
+class PartialEvalError(Exception):
+    pass
+
+
+@defop
+def _partial_eval(
+    t: Annotated[T, Scoped[A | B]], *args: Annotated[Operation[[], int], Scoped[A]]
+) -> Annotated[T, Scoped[B]]:
+    raise NotImplementedError
+
+
+def _partial_eval_vmap(t: T, *order: Collection[Operation[[], int]]) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -133,16 +146,7 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     """
     from effectful.ops.syntax import deffn
 
-    if order is None:
-        order = []
-
     sized_fvs = sizesof(t)
-
-    for x in order:
-        if x not in sized_fvs:
-            raise ValueError(
-                f"Tried to partially evaluate nonexistent free variable {x} (free={sized_fvs})"
-            )
 
     # if there are no sized free variables, then nothing to do
     if len(sized_fvs) == 0:
@@ -160,7 +164,10 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     # that we don't pass something with a slow repr (like a large tensor wrapped
     # in a deffn)
     def wrapper(*args):
-        return index_fn(*args)
+        result = index_fn(*args)
+        if isinstance(result, Term):
+            raise PartialEvalError()
+        return result
 
     tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
@@ -171,7 +178,12 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
         )
     )
 
-    flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
+    try:
+        flat_result = tpe_torch_fn(*[i.reshape(-1) for i in inds])
+    except PartialEvalError:
+        # if we can't evaluate the term to a tensor in a context that binds its sized free variables, return the
+        # original term
+        return fwd() if len(order) > 0 else t
 
     def reindex_flat_tensor(t):
         if not isinstance(t, torch.Tensor):
@@ -201,7 +213,9 @@ def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
     >>> to_tensor(Indexable(t)[a(), b()], [b, a]).shape
     torch.Size([3, 2])
     """
-    return _partial_eval(t, order=order)
+    order = [] if order is None else order
+    with handler({_partial_eval: _partial_eval_vmap}):
+        return _partial_eval(t, *order)
 
 
 @functools.cache
@@ -229,7 +243,7 @@ def _register_torch_op(torch_fn: Callable[P, T]):
             # note: this cast is a lie. partial_eval can return non-tensors, as
             # can torch_fn. for example, some torch functions return tuples,
             # which partial_eval handles.
-            return typing.cast(torch.Tensor, _partial_eval(tm))
+            return typing.cast(torch.Tensor, to_tensor(tm))
         elif not any(
             tree.flatten(
                 tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
