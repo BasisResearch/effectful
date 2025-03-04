@@ -546,6 +546,11 @@ def test_to_tensor():
     t8 = to_tensor(t_ijk, [i, j, k])
     assert fvsof(t8) == {w}
 
+    # Test case 9: Eliminate remaining free variables in result
+    with handler({w: lambda: torch.tensor(1.0)}):
+        t9 = evaluate(t8)
+    assert fvsof(t9) == set([])
+
 
 def test_tensor_term_operators():
     x, y = defop(torch.Tensor), defop(torch.Tensor)
