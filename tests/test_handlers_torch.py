@@ -485,36 +485,66 @@ def test_index_incompatible():
 
 
 def test_to_tensor():
+    """Test to_tensor's handling of free variables and tensor shapes"""
     i, j, k = defop(int, name="i"), defop(int, name="j"), defop(int, name="k")
-
-    # test that named dimensions can be removed and reordered
     t = torch.randn([2, 3, 4])
-    t1 = to_tensor(Indexable(t)[i(), j(), k()], [i, j, k])
-    t2 = to_tensor(Indexable(t.permute((2, 0, 1)))[k(), i(), j()], [i, j, k])
-    t3 = to_tensor(Indexable(t.permute((1, 0, 2)))[j(), i(), k()], [i, j, k])
 
-    assert torch.allclose(t1, t2)
-    assert torch.allclose(t1, t3)
-
-    # test that to_tensor can remove some but not all named dimensions
+    # Test case 1: Converting all named dimensions to positional
     t_ijk = Indexable(t)[i(), j(), k()]
-    t_ij = to_tensor(t_ijk, [k])
-    assert set(sizesof(t_ij).keys()) == set([i, j])
-    assert t_ij.shape == torch.Size([4])
+    assert fvsof(t_ijk) == {i, j, k}
 
-    t_i = to_tensor(t_ij, [j])
-    assert set(sizesof(t_i).keys()) == set([i])
-    assert t_i.shape == torch.Size([3, 4])
+    t1 = to_tensor(t_ijk, [i, j, k])
+    assert fvsof(t1) == set()  # No free variables remain
+    assert t1.shape == torch.Size([2, 3, 4])
 
-    t_ = to_tensor(t_i, [i])
-    assert set(sizesof(t_).keys()) == set([])
-    assert t_.shape == torch.Size([2, 3, 4])
-    assert torch.allclose(t_, t)
+    # Test case 2: Different ordering of dimensions
+    t2 = to_tensor(t_ijk, [k, j, i])
+    assert fvsof(t2) == set()
+    assert t2.shape == torch.Size([4, 3, 2])
 
-    t__ = to_tensor(t_, [])
-    assert set(sizesof(t__).keys()) == set([])
-    assert t__.shape == torch.Size([2, 3, 4])
-    assert torch.allclose(t_, t__)
+    # Test case 3: Keeping some dimensions as free variables
+    t3 = to_tensor(t_ijk, [i])  # Convert only i to positional
+    assert fvsof(t3) == {j, k}  # j and k remain free
+    assert isinstance(t3, Term)
+    assert t3.shape == torch.Size([2])
+
+    t4 = to_tensor(t_ijk, [i, j])  # Convert i and j to positional
+    assert fvsof(t4) == {k}  # only k remains free
+    assert isinstance(t4, Term)
+    assert t4.shape == torch.Size([2, 3])
+
+    # Test case 4: Empty order list keeps all variables free
+    t5 = to_tensor(t_ijk, [])
+    assert fvsof(t5) == {i, j, k}  # All variables remain free
+    assert isinstance(t5, Term)
+    assert t5.shape == torch.Size([])
+
+    # Test case 5: Verify permuted tensors maintain correct relationships
+    t_kji = Indexable(t.permute(2, 1, 0))[k(), j(), i()]
+    t6 = to_tensor(t_kji, [i, j, k])
+    t7 = to_tensor(t_ijk, [i, j, k])
+    assert torch.allclose(t6, t7)
+
+    # Test case 6: Mixed operations with free variables
+    x = torch.sin(t_ijk)  # Apply operation to indexed tensor
+    x1 = to_tensor(x, [i, j])  # Convert some dimensions
+    assert fvsof(x1) == {k}  # k remains free
+    assert isinstance(x1, Term)
+    assert x1.shape == torch.Size([2, 3])
+
+    # Test case 7: Multiple tensors sharing variables
+    t2_ijk = Indexable(torch.randn([2, 3, 4]))[i(), j(), k()]
+    sum_t = t_ijk + t2_ijk
+    sum1 = to_tensor(sum_t, [i, j])
+    assert fvsof(sum1) == {k}  # k remains free
+    assert isinstance(sum1, Term)
+    assert sum1.shape == torch.Size([2, 3])
+
+    # Test case 8: Tensor term with non-sized free variables
+    w = defop(torch.Tensor, name="w")
+    t_ijk = Indexable(t)[i(), j(), k()] + w()
+    t8 = to_tensor(t_ijk, [i, j, k])
+    assert fvsof(t8) == {w}
 
 
 def test_tensor_term_operators():
