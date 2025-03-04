@@ -137,7 +137,7 @@ def _partial_eval(
     raise NotImplementedError
 
 
-def _partial_eval_vmap(t: T, *order: Collection[Operation[[], int]]) -> T:
+def _partial_eval_vmap(t: T, *order: Operation[[], int]) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
