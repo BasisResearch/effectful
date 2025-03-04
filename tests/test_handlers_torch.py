@@ -609,6 +609,68 @@ def test_tensor_term_operators():
         assert {x} <= fvsof(t), f"Missing variables for operation: {op_name}"
 
 
+def test_tensor_term_operators():
+    x, y = defop(torch.Tensor), defop(torch.Tensor)
+
+    # Test basic arithmetic operators
+    binary = [
+        # Arithmetic
+        (x() + y(), "add"),
+        (x() - y(), "sub"),
+        (x() * y(), "mul"),
+        (x() / y(), "div"),
+        (x() // y(), "floordiv"),
+        (x() % y(), "mod"),
+        (x() @ y(), "matmul"),
+        (x() ** y(), "pow"),
+        # Bitwise
+        (x() & y(), "and"),
+        (x() | y(), "or"),
+        (x() ^ y(), "xor"),
+        # Comparison
+        (x() > y(), "gt"),
+        (x() >= y(), "ge"),
+        (x() < y(), "lt"),
+        (x() <= y(), "le"),
+        (x() == y(), "eq"),
+        (x() != y(), "ne"),
+        # Additional math operations
+        (torch.maximum(x(), y()), "maximum"),
+        (torch.minimum(x(), y()), "minimum"),
+        (torch.fmod(x(), y()), "fmod"),
+        (torch.remainder(x(), y()), "remainder"),
+    ]
+
+    # Test unary operators
+    unary = [
+        (-x(), "neg"),
+        (~x(), "not"),
+        (abs(x()), "abs"),
+        (torch.exp(x()), "exp"),
+        (torch.log(x()), "log"),
+        (torch.sqrt(x()), "sqrt"),
+        (torch.sin(x()), "sin"),
+        (torch.cos(x()), "cos"),
+        (torch.tan(x()), "tan"),
+        (torch.sigmoid(x()), "sigmoid"),
+        (torch.tanh(x()), "tanh"),
+        (torch.relu(x()), "relu"),
+        (torch.ceil(x()), "ceil"),
+        (torch.floor(x()), "floor"),
+        (torch.round(x()), "round"),
+        (torch.sign(x()), "sign"),
+    ]
+
+    for t, op_name in binary + unary:
+        assert isinstance(t, Term), f"Failed for operation: {op_name}"
+
+    for t, op_name in binary:
+        assert {x, y} <= fvsof(t), f"Missing variables for operation: {op_name}"
+
+    for t, op_name in unary:
+        assert {x} <= fvsof(t), f"Missing variables for operation: {op_name}"
+
+
 def test_indexed_tensor_as_index():
     t1 = torch.randn(2, 3)
     i = defop(int, name="i")
