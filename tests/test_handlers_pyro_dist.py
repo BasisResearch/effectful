@@ -13,6 +13,7 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
+from effectful.handlers.indexed import name_to_sym
 from effectful.handlers.torch import sizesof, to_tensor, torch_getitem
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation
@@ -38,21 +39,14 @@ def random_scale_tril(*args):
     return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
 
 
-@functools.cache
-def _name_to_sym(name: str) -> Operation[[], int]:
-    return defop(int, name=name)
-
-
 def to_indexed(tensor, batch_dims):
-    return torch_getitem(
-        tensor, tuple(_name_to_sym(str(i))() for i in range(batch_dims))
-    )
+    return tensor[tuple(name_to_sym(str(i))() for i in range(batch_dims))]
 
 
 def from_indexed(tensor, batch_dims):
     if sizesof(tensor) == {}:
         return tensor
-    return to_tensor(tensor, [_name_to_sym(str(i)) for i in range(batch_dims)])
+    return to_tensor(tensor, [name_to_sym(str(i)) for i in range(batch_dims)])
 
 
 class DistTestCase:
@@ -114,9 +108,9 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
 
     expanded = indexed_dist.expand(extra_batch_shape + indexed_dist.batch_shape)
     sample = expanded.sample(indexed_sample_shape + sample_shape)
-    indexed_sample = torch_getitem(
-        sample, tuple(defop(int)() for _ in range(len(indexed_sample_shape)))
-    )
+    indexed_sample = sample[
+        tuple(defop(torch.Tensor)() for _ in range(len(indexed_sample_shape)))
+    ]
 
     assert (
         indexed_sample.shape
