@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 
 import torch
 
-from effectful.handlers.torch import Indexable, sizesof
+from effectful.handlers.torch import sizesof
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation
 
@@ -163,8 +163,8 @@ def indices_of(value: Any) -> IndexSet:
 
 
 @functools.cache
-def name_to_sym(name: str) -> Operation[[], int]:
-    return defop(int, name=name)
+def name_to_sym(name: str) -> Operation[[], torch.Tensor]:
+    return defop(torch.Tensor, name=name)
 
 
 def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
@@ -231,9 +231,7 @@ def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
     """
     indexset_vars = {name_to_sym(name): inds for name, inds in indexset.items()}
     binding = {
-        k: functools.partial(
-            lambda v: v, Indexable(torch.tensor(list(indexset_vars[k])))[k()]
-        )
+        k: functools.partial(lambda v: v, torch.tensor(list(indexset_vars[k]))[k()])
         for k in sizesof(value).keys()
         if k in indexset_vars
     }
@@ -249,7 +247,7 @@ def stack(
     identical shapes.
 
     """
-    return Indexable(torch.stack(values))[name_to_sym(name)()]
+    return torch.stack(values)[name_to_sym(name)()]
 
 
 def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Tensor:
@@ -267,8 +265,8 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
         >>> from effectful.ops.syntax import defop
         >>> from effectful.handlers.torch import to_tensor
 
-        >>> b = defop(int, name="b")
-        >>> fst, snd = Indexable(torch.randn(2, 3))[b()], Indexable(torch.randn(2, 3))[b()]
+        >>> b = defop(torch.Tensor, name="b")
+        >>> fst, snd = torch.randn(2, 3)[b()], torch.randn(2, 3)[b()]
         >>> case = (fst < snd).all(-1)
         >>> x = cond(fst, snd, case)
         >>> assert (to_tensor(x, [b]) == to_tensor(torch.where(case[..., None], snd, fst), [b])).all()

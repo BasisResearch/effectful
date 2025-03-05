@@ -76,7 +76,7 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
-def sizesof(value) -> Mapping[Operation[[], int], int]:
+def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
     Sizes are inferred from the tensor shape.
@@ -86,11 +86,11 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
 
     **Example usage**:
 
-    >>> a, b = defop(int, name='a'), defop(int, name='b')
-    >>> sizes = sizesof(Indexable(torch.ones(2, 3))[a(), b()])
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    sizes: dict[Operation[[], int], int] = {}
+    sizes: dict[Operation[[], torch.Tensor], int] = {}
 
     def _torch_getitem_sizeof(
         x: Expr[torch.Tensor], key: tuple[Expr[IndexElement], ...]
@@ -103,7 +103,7 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
                     isinstance(k, Term)
                     and len(k.args) == 0
                     and len(k.kwargs) == 0
-                    and issubclass(typeof(k), int)
+                    and issubclass(typeof(k), torch.Tensor)
                 ):
                     if k.op in sizes and sizes[k.op] != shape[i]:
                         raise ValueError(
@@ -124,7 +124,9 @@ def sizesof(value) -> Mapping[Operation[[], int], int]:
     return sizes
 
 
-def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
+def _partial_eval(
+    t: T, order: Collection[Operation[[], torch.Tensor]] | None = None
+) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -183,7 +185,7 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
-def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
+def to_tensor(t: T, order: Collection[Operation[[], torch.Tensor]] | None = None) -> T:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -196,9 +198,9 @@ def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
 
     **Example usage**:
 
-    >>> a, b = defop(int, name='a'), defop(int, name='b')
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
     >>> t = torch.ones(2, 3)
-    >>> to_tensor(Indexable(t)[a(), b()], [b, a]).shape
+    >>> to_tensor(t[a(), b()], [b, a]).shape
     torch.Size([3, 2])
     """
     return _partial_eval(t, order=order)
@@ -249,8 +251,7 @@ def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tenso
 
     .. note::
 
-      This operation is not intended to be called directly. Instead, use
-      :class:`Indexable` to create indexed tensors. :func:`torch_getitem` is
+      This operation is not intended to be called directly. Instead, it is
       exposed so that it can be handled.
 
     """
@@ -298,29 +299,6 @@ def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tenso
     return torch.ops.aten.index(x, tuple(key_l))
 
 
-class Indexable:
-    """Helper class for constructing indexed tensors.
-
-    **Example usage**:
-
-    >>> width, height = defop(int, name='width'), defop(int, name='height')
-    >>> t = Indexable(torch.ones(2, 3))[width(), height()]
-    >>> t
-    Indexable(tensor([[1., 1., 1.],
-                      [1., 1., 1.]]))[width(), height()]
-    """
-
-    def __init__(self, t: torch.Tensor):
-        if not isinstance(t, torch.Tensor):
-            raise ValueError(f"Expected a torch.Tensor, got {type(t)}")
-        self.t = t
-
-    def __getitem__(self, key) -> torch.Tensor:
-        if not isinstance(key, tuple):
-            key = (key,)
-        return torch_getitem(self.t, key)
-
-
 @defdata.register(torch.Tensor)
 def _embed_tensor(op, *args, **kwargs):
     if (
@@ -328,7 +306,7 @@ def _embed_tensor(op, *args, **kwargs):
         and not isinstance(args[0], Term)
         and len(args[1]) > 0
         and all(
-            typeof(k) is int and not k.args and not k.kwargs
+            typeof(k) is torch.Tensor and not k.args and not k.kwargs
             for k in args[1]
             if isinstance(k, Term)
         )
@@ -491,24 +469,20 @@ class _EagerTensorTerm(torch.Tensor):
 
         for k in key:
             if isinstance(k, Term):
-                assert typeof(k) is int and not k.args and not k.kwargs
+                assert typeof(k) is torch.Tensor and not k.args and not k.kwargs
 
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
         ret.args = (x, key)
         return ret
 
-    def __repr__(self):
-        indexed_constr = "Indexable"
-
-        # correct indentation
-        parts = str(self.args[0]).split("\n")
-        tensor_str = "\n".join(
-            [parts[0]] + [(len(indexed_constr) + 1) * " " + p for p in parts[1:]]
-        )
-
+    def __str__(self):
+        tensor_str = str(self.args[0])
         key_str = ", ".join(str(k) for k in self.args[1])
-        return f"{indexed_constr}({tensor_str})[{key_str}]"
+        return f"{tensor_str}[{key_str}]"
+
+    def __repr__(self):
+        return str(self)
 
     @classmethod
     def __torch_function__(

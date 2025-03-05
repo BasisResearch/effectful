@@ -6,7 +6,6 @@ import torch
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import (
-    Indexable,
     grad,
     hessian,
     jacfwd,
@@ -30,13 +29,13 @@ T = TypeVar("T")
 
 
 def test_tpe_1():
-    i, j = defop(int), defop(int)
+    i, j = defop(torch.Tensor), defop(torch.Tensor)
     xval, y1_val, y2_val = torch.rand(2, 3), torch.rand(2), torch.rand(3)
     expected = torch.add(torch.add(xval, y1_val[..., None]), y2_val[None])
 
-    x_ij = torch_getitem(xval, (i(), j()))
-    x_plus_y1_ij = torch.add(x_ij, torch_getitem(y1_val, (i(),)))
-    actual = torch.add(x_plus_y1_ij, torch_getitem(y2_val, (j(),)))
+    x_ij = xval[i(), j()]
+    x_plus_y1_ij = torch.add(x_ij, y1_val[i()])
+    actual = torch.add(x_plus_y1_ij, y2_val[j()])
 
     assert actual.op == torch_getitem
     assert isinstance(actual.args[0], torch.Tensor)
@@ -55,14 +54,9 @@ def test_tpe_2():
     xval, ival = torch.rand(2, 3), torch.arange(2)
     expected = torch.sum(xval[ival, :], dim=0)
 
-    j = defop(int)
-    x_j = torch_getitem(
-        xval,
-        (
-            ival,
-            j(),
-        ),
-    )
+    j = defop(torch.Tensor)
+    x_j = xval[ival, j()]
+
     assert x_j.shape == (2,)
     assert x_j.size(0) == x_j.shape[0]
     actual = torch.sum(x_j, dim=0)
@@ -82,15 +76,8 @@ def test_tpe_3():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    j, k = defop(int), defop(int)
-    x_j = torch_getitem(
-        xval,
-        (
-            k(),
-            ival,
-            j(),
-        ),
-    )
+    j, k = defop(torch.Tensor), defop(torch.Tensor)
+    x_j = xval[k(), ival, j()]
     actual = torch.sum(x_j, dim=0)
 
     assert actual.op == torch_getitem
@@ -122,14 +109,14 @@ def test_tpe_4():
 
 def test_tpe_known_index():
     """Constant indexes are partially evaluated away."""
-    i, j = defop(int, name="i"), defop(int, name="j")
+    i, j = defop(torch.Tensor, name="i"), defop(torch.Tensor, name="j")
 
     cases = [
-        torch_getitem(torch.ones(2, 3), (i(), 1)),
-        torch_getitem(torch.ones(2, 3), (0, i())),
-        torch_getitem(torch.ones(2, 3, 4), (0, i(), 1)),
-        torch_getitem(torch.ones(2, 3, 4), (0, i(), j())),
-        torch_getitem(torch.ones(2, 3, 4), (i(), j(), 3)),
+        torch.ones(2, 3)[i(), 1],
+        torch.ones(2, 3)[0, i()],
+        torch.ones(2, 3, 4)[0, i(), 1],
+        torch.ones(2, 3, 4)[0, i(), j()],
+        torch.ones(2, 3, 4)[i(), j(), 3],
     ]
 
     for case_ in cases:
@@ -139,14 +126,22 @@ def test_tpe_known_index():
 
 def test_tpe_constant_eval():
     """Constant indexes are partially evaluated away."""
-    height, width = defop(int, name="height"), defop(int, name="width")
+    height, width = (
+        defop(torch.Tensor, name="height"),
+        defop(torch.Tensor, name="width"),
+    )
     t = torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
-    A = torch_getitem(t, (height(), width()))
+    A = t[height(), width()]
 
-    layer = defop(int, name="layer")
-    with handler({height: lambda: layer() // 3, width: lambda: layer() % 3}):
+    layer = defop(torch.Tensor, name="layer")
+    with handler(
+        {
+            height: lambda: layer() // torch.tensor(3),
+            width: lambda: layer() % torch.tensor(3),
+        }
+    ):
         A_layer = evaluate(A)
-    with handler({layer: lambda: 2}):
+    with handler({layer: lambda: torch.tensor(2)}):
         A_final = evaluate(A_layer)
 
     assert not isinstance(A_final, Term)
@@ -155,16 +150,10 @@ def test_tpe_constant_eval():
 def test_tpe_stack():
     xval, yval = torch.rand(10, 5), torch.rand(10, 5)
 
-    i = defop(int)
-    j = defop(int)
-    x_ij = torch_getitem(
-        xval,
-        (i(), j()),
-    )
-    y_ij = torch_getitem(
-        yval,
-        (i(), j()),
-    )
+    i = defop(torch.Tensor)
+    j = defop(torch.Tensor)
+    x_ij = xval[i(), j()]
+    y_ij = yval[i(), j()]
     actual = torch.stack((x_ij, y_ij))
     assert isinstance(actual, torch.Tensor)
     assert actual.shape == (2,)
@@ -290,8 +279,8 @@ def test_grad_1():
         return torch.sin(x)
 
     grad_sin = grad(sin)
-    i = defop(int, name="i")
-    x = Indexable(torch.randn([10]))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn([10])[i()]
     cos_x_actual = grad_sin(x)
 
     assert isinstance(cos_x_actual, Term)
@@ -311,8 +300,8 @@ def test_grad_1():
 
 
 def test_jacfwd_1():
-    i = defop(int, name="i")
-    x = Indexable(torch.randn(11, 5))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn(11, 5)[i()]
     jacobian = jacfwd(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
@@ -320,10 +309,10 @@ def test_jacfwd_1():
 
 
 def test_jacfwd_nested_1():
-    i = defop(int, name="i")
-    a = defop(int, name="a")
-    y = Indexable(torch.randn(7, 5))[a()]
-    x = Indexable(torch.randn(11, 5))[i()]
+    i = defop(torch.Tensor, name="i")
+    a = defop(torch.Tensor, name="a")
+    y = torch.randn(7, 5)[a()]
+    x = torch.randn(11, 5)[i()]
 
     def sin(x):
         return torch.sin(x) + y
@@ -335,10 +324,10 @@ def test_jacfwd_nested_1():
 
 
 def test_jacfwd_nested_2():
-    i = defop(int, name="i")
-    a = defop(int, name="a")
-    y = Indexable(torch.randn(7, 5))[a()]
-    x = Indexable(torch.randn(11, 5))[i()]
+    i = defop(torch.Tensor, name="i")
+    a = defop(torch.Tensor, name="a")
+    y = torch.randn(7, 5)[a()]
+    x = torch.randn(11, 5)[i()]
 
     def sin(x):
         return [torch.sin(x), y]
@@ -350,8 +339,8 @@ def test_jacfwd_nested_2():
 
 
 def test_jacrev_1():
-    i = defop(int, name="i")
-    x = Indexable(torch.randn(11, 5))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn(11, 5)[i()]
     jacobian = jacrev(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
@@ -362,15 +351,15 @@ def test_hessian_1():
     def f(x):
         return x.sin().sum()
 
-    i = defop(int, name="i")
-    x = Indexable(torch.randn(11, 5))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn(11, 5)[i()]
     hess = hessian(f)(x)  # equivalent to jacfwd(jacrev(f))(x)
     assert torch.allclose(to_tensor(hess, [i]), to_tensor(torch.diag(-x.sin()), [i]))
 
 
 def test_jvp_1():
-    i = defop(int, name="i")
-    x = Indexable(torch.randn([10]))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn([10])[i()]
 
     def f(x):
         return x * torch.tensor([1.0, 2.0, 3])
@@ -382,10 +371,10 @@ def test_jvp_1():
 
 
 def test_jvp_nested():
-    i = defop(int, name="i")
-    j = defop(int, name="j")
-    x = Indexable(torch.randn([10]))[i()]
-    a = Indexable(torch.ones([7]))[j()]
+    i = defop(torch.Tensor, name="i")
+    j = defop(torch.Tensor, name="j")
+    x = torch.randn([10])[i()]
+    a = (torch.ones([7]))[j()]
 
     def f(x):
         return a + x * torch.tensor([1.0, 2.0, 3])
@@ -397,10 +386,10 @@ def test_jvp_nested():
 
 
 def test_vjp_1():
-    i = defop(int, name="i")
-    x = Indexable(torch.randn([10, 5]))[i()]
-    y = Indexable(torch.ones([10, 5]))[i()]
-    z = Indexable(torch.ones([10, 5]))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn([10, 5])[i()]
+    y = torch.ones([10, 5])[i()]
+    z = torch.ones([10, 5])[i()]
 
     def f(x):
         return (x.sin(), x.cos())
@@ -411,11 +400,11 @@ def test_vjp_1():
 
 
 def test_vjp_nested():
-    i = defop(int, name="i")
-    a = defop(int, name="a")
-    x = Indexable(torch.randn([10, 5]))[i()]
-    z = Indexable(torch.ones([7, 5]))[a()]
-    y = Indexable(torch.ones([10, 7, 5]))[i(), a()]
+    i = defop(torch.Tensor, name="i")
+    a = defop(torch.Tensor, name="a")
+    x = torch.randn([10, 5])[i()]
+    z = torch.ones([7, 5])[a()]
+    y = torch.ones([10, 7, 5])[i(), a()]
 
     def f(x):
         return x * z
@@ -426,9 +415,9 @@ def test_vjp_nested():
 
 
 def test_vmap_1():
-    i = defop(int, name="i")
+    i = defop(torch.Tensor, name="i")
     x = torch.randn([10, 5])
-    x_i = Indexable(x)[i()]
+    x_i = x[i()]
 
     def f(x):
         return x + 1
@@ -439,12 +428,12 @@ def test_vmap_1():
 
 
 def test_vmap_nested():
-    i = defop(int, name="i")
-    j = defop(int, name="j")
+    i = defop(torch.Tensor, name="i")
+    j = defop(torch.Tensor, name="j")
     x = torch.randn([10, 5, 4])
-    x_i = Indexable(x)[i()]
+    x_i = x[i()]
     y = torch.randn([7])
-    y_j = Indexable(y)[j()]
+    y_j = y[j()]
 
     def f(x):
         return y_j + x
@@ -461,8 +450,8 @@ def test_vmap_and_grad():
     sin = torch.sin
     grad_sin = grad(sin)
 
-    i = defop(int, name="i")
-    x = Indexable(torch.randn([10, 7]))[i()]
+    i = defop(torch.Tensor, name="i")
+    x = torch.randn([10, 7])[i()]
 
     # implicit vmap over i and explicit vmap over first positional dim
     actual = vmap(grad_sin)(x)
@@ -477,27 +466,30 @@ def test_vmap_and_grad():
 
 def test_index_incompatible():
     """Check that using the same index in two incompatible dimensions raises an error."""
-    i = defop(int)
+    i = defop(torch.Tensor)
     with pytest.raises(ValueError):
-        torch_getitem(torch.randn(2, 3), (i(), i()))
-
-    torch_getitem(torch.randn(2, 2), (i(), i()))
+        torch.randn(2, 3)[i(), i()]
+    torch.randn(2, 2)[i(), i()]
 
 
 def test_to_tensor():
-    i, j, k = defop(int, name="i"), defop(int, name="j"), defop(int, name="k")
+    i, j, k = (
+        defop(torch.Tensor, name="i"),
+        defop(torch.Tensor, name="j"),
+        defop(torch.Tensor, name="k"),
+    )
 
     # test that named dimensions can be removed and reordered
     t = torch.randn([2, 3, 4])
-    t1 = to_tensor(Indexable(t)[i(), j(), k()], [i, j, k])
-    t2 = to_tensor(Indexable(t.permute((2, 0, 1)))[k(), i(), j()], [i, j, k])
-    t3 = to_tensor(Indexable(t.permute((1, 0, 2)))[j(), i(), k()], [i, j, k])
+    t1 = to_tensor(t[i(), j(), k()], [i, j, k])
+    t2 = to_tensor(t.permute((2, 0, 1))[k(), i(), j()], [i, j, k])
+    t3 = to_tensor(t.permute((1, 0, 2))[j(), i(), k()], [i, j, k])
 
     assert torch.allclose(t1, t2)
     assert torch.allclose(t1, t3)
 
     # test that to_tensor can remove some but not all named dimensions
-    t_ijk = Indexable(t)[i(), j(), k()]
+    t_ijk = t[i(), j(), k()]
     t_ij = to_tensor(t_ijk, [k])
     assert set(sizesof(t_ij).keys()) == set([i, j])
     assert t_ij.shape == torch.Size([4])
@@ -581,9 +573,23 @@ def test_tensor_term_operators():
 
 def test_indexed_tensor_as_index():
     t1 = torch.randn(2, 3)
-    i = defop(int, name="i")
-    t2 = Indexable(torch.tensor([0, 1]))[i()]
+    i = defop(torch.Tensor, name="i")
+    t2 = torch.tensor([0, 1])[i()]
 
     t3 = t1[t2]
     assert sizesof(t3) == sizesof(t2)
     assert (to_tensor(t3, [i]) == t1).all()
+
+
+def test_longtensor_index_variables():
+    x = torch.rand(2, 3)
+    i = defop(torch.Tensor, name="i")
+
+    assert isinstance(x[i()], Term)  # i().__torch_function__ takes care of this
+
+    x = torch.rand(2, 3)
+    y = torch.rand(4, 3)
+    i, j = defop(torch.Tensor, name="i"), defop(torch.Tensor, name="j")
+
+    z = x[i()] + y[j()]
+    assert isinstance(z, torch.Tensor)

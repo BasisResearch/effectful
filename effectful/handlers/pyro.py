@@ -25,7 +25,7 @@ except ImportError:
 
 from typing_extensions import ParamSpec
 
-from effectful.handlers.torch import Indexable, sizesof, to_tensor
+from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.semantics import call
 from effectful.ops.syntax import Scoped, defop, defterm
 from effectful.ops.types import Operation, Term
@@ -104,7 +104,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     @staticmethod
     def _broadcast_to_named(
-        t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
+        t: torch.Tensor,
+        shape: torch.Size,
+        indices: Mapping[Operation[[], torch.Tensor], int],
     ) -> tuple[torch.Tensor, "Naming"]:
         """Convert a tensor `t` to a fully positional tensor that is
         broadcastable with the positional representation of tensors of shape
@@ -266,12 +268,14 @@ class Naming:
     A mapping from dimensions (indexed from the right) to names.
     """
 
-    def __init__(self, name_to_dim: Mapping[Operation[[], int], int]):
+    def __init__(self, name_to_dim: Mapping[Operation[[], torch.Tensor], int]):
         assert all(v < 0 for v in name_to_dim.values())
         self.name_to_dim = name_to_dim
 
     @staticmethod
-    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
+    def from_shape(
+        names: Collection[Operation[[], torch.Tensor]], event_dims: int
+    ) -> "Naming":
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
@@ -286,7 +290,7 @@ class Naming:
         indexes: list[Any] = [slice(None)] * (len(value.shape))
         for n, d in self.name_to_dim.items():
             indexes[len(value.shape) + d] = n()
-        return Indexable(value)[tuple(indexes)]
+        return value[tuple(indexes)]
 
     def __repr__(self):
         return f"Naming({self.name_to_dim})"
@@ -295,7 +299,7 @@ class Naming:
 @defop
 def named_distribution(
     d: Annotated[TorchDistribution, Scoped[A | B]],
-    *names: Annotated[Operation[[], int], Scoped[B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     d = defterm(d)
     dist_constr, args = d.args[0], d.args[1:]
@@ -311,7 +315,7 @@ def named_distribution(
 
     def _to_named(a):
         if isinstance(a, torch.Tensor):
-            return Indexable(typing.cast(torch.Tensor, a))[tuple(n() for n in names)]
+            return typing.cast(torch.Tensor, a)[tuple(n() for n in names)]
         elif isinstance(a, TorchDistribution):
             return named_distribution(a, *names)
         else:
