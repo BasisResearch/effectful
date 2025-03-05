@@ -14,8 +14,8 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, handler, runner, typeof
-from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
+from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -222,6 +222,7 @@ def to_tensor(
 
     tensor = result.args[0]
     dims = result.args[1]
+    assert isinstance(dims, Sequence)
 
     # ensure that the order is a subset of the named dimensions
     order_set = set(order)

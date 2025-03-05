@@ -7,7 +7,6 @@ from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import (
     Indexable,
-    _partial_eval,
     grad,
     hessian,
     jacfwd,
