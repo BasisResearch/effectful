@@ -70,9 +70,10 @@ def test_batched_matmul():
 
 
 def test_enum_opt():
-    x, y = defop(int, name="x"), defop(int, name="y")
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
 
     def run_folds():
+        # Basic tests
         f1 = fold(MinAlg, {x: range(100)}, {(): -x()})
         assert f1[()] == -99
 
@@ -84,6 +85,43 @@ def test_enum_opt():
 
         f2 = fold(ArgMinAlg, {x: range(1, 5), y: range(4, 8)}, {(): (x() + y(), (x(), y()))})
         assert f2[()] == (5, (1, 4))
+
+        # Edge case: empty range (should use the semiring's one value)
+        f_empty = fold(MinAlg, {x: range(0)}, {(): x() ** 2})
+        assert f_empty[()] == float('inf')  # MinAlg's one value is infinity
+
+        # Edge case: single element range
+        f_single = fold(MinAlg, {x: range(1, 2)}, {(): x() ** 2})
+        assert f_single[()] == 1
+
+        # Edge case: tied minimum values
+        f_tied = fold(ArgMinAlg, {x: range(-3, 4)}, {(): (abs(x()), x())})
+        assert f_tied[()][0] == 0  # The minimum value is 0
+        assert f_tied[()][1] == 0  # The argmin is 0
+
+        # Edge case: large numbers
+        f_large = fold(MinAlg, {x: range(10**6, 10**6 + 10)}, {(): x() - 10**6})
+        assert f_large[()] == 0
+
+        # Edge case: custom function with multiple variables
+        def custom_func(a, b, c=1):
+            return a**2 + b**2 - c
+
+        f_custom = fold(
+            MinAlg, 
+            {x: range(-5, 6), y: range(-5, 6)}, 
+            {(): custom_func(x(), y(), 10)}
+        )
+        assert f_custom[()] == -10  # Minimum is at x=0, y=0: 0²+0²-10 = -10
+
+        # Edge case: complex expression with three variables
+        f_complex = fold(
+            ArgMinAlg,
+            {x: range(-3, 4), y: range(-3, 4), z: range(-3, 4)},
+            {(): ((x() - 1)**2 + (y() + 2)**2 + (z() - 3)**2, (x(), y(), z()))}
+        )
+        assert f_complex[()][0] == 0  # Minimum value is 0
+        assert f_complex[()][1] == (1, -2, 3)  # Argmin is at (1, -2, 3)
 
     run_folds()
     with handler(DenseTensorFold()):
