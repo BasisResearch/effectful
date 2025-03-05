@@ -296,32 +296,31 @@ def typeof(term: Expr[T]) -> type[T]:
 
 
 def fvsof(term: Expr[S]) -> set[Operation]:
-    """Return the free variables of an expression. Only operations with no
-    arguments can be free variables.
+    """Return the free variables of an expression.
 
     **Example usage**:
 
-    >>> import effectful.handlers.numbers
-    >>> x, y = defop(int, name='x'), defop(int, name='y')
-    >>> assert fvsof(x() + y()) == {x, y}
-
+    >>> @defop
+    ... def f(x: int, y: int) -> int:
+    ...     raise NotImplementedError
+    >>> fvs = fvsof(f(1, 2))
+    >>> assert f in fvs
+    >>> assert len(fvs) == 1
     """
     from effectful.internals.runtime import interpreter
 
     _fvs: set[Operation] = set()
 
     def _update_fvs(_, op, *args, **kwargs):
-        if len(args) == 0 and len(kwargs) == 0:
-            _fvs.add(op)
-        else:
-            arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-            bound_vars = set().union(
-                *(a for a in arg_ctxs),
-                *(k for k in kwarg_ctxs.values()),
-            )
-            for bound_var in bound_vars:
-                if bound_var in _fvs:
-                    _fvs.remove(bound_var)
+        _fvs.add(op)
+        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+        bound_vars = set().union(
+            *(a for a in arg_ctxs),
+            *(k for k in kwarg_ctxs.values()),
+        )
+        for bound_var in bound_vars:
+            if bound_var in _fvs:
+                _fvs.remove(bound_var)
 
     with interpreter({apply: _update_fvs}):
         evaluate(term)
