@@ -1,4 +1,3 @@
-import functools
 import re
 from collections import namedtuple
 
@@ -14,9 +13,8 @@ from torch import exp, rand, randint  # noqa: F401
 from torch.testing import assert_close
 
 from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.torch import sizesof, to_tensor, torch_getitem
+from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.syntax import defop
-from effectful.ops.types import Operation
 
 ##################################################
 # Test cases

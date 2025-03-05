@@ -104,7 +104,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
     @staticmethod
     def _broadcast_to_named(
-        t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
+        t: torch.Tensor,
+        shape: torch.Size,
+        indices: Mapping[Operation[[], torch.Tensor], int],
     ) -> tuple[torch.Tensor, "Naming"]:
         """Convert a tensor `t` to a fully positional tensor that is
         broadcastable with the positional representation of tensors of shape
@@ -266,12 +268,14 @@ class Naming:
     A mapping from dimensions (indexed from the right) to names.
     """
 
-    def __init__(self, name_to_dim: Mapping[Operation[[], int], int]):
+    def __init__(self, name_to_dim: Mapping[Operation[[], torch.Tensor], int]):
         assert all(v < 0 for v in name_to_dim.values())
         self.name_to_dim = name_to_dim
 
     @staticmethod
-    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
+    def from_shape(
+        names: Collection[Operation[[], torch.Tensor]], event_dims: int
+    ) -> "Naming":
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
@@ -295,7 +299,7 @@ class Naming:
 @defop
 def named_distribution(
     d: Annotated[TorchDistribution, Scoped[A | B]],
-    *names: Annotated[Operation[[], int], Scoped[B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     d = defterm(d)
     dist_constr, args = d.args[0], d.args[1:]

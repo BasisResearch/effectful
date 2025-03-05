@@ -124,7 +124,9 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     return sizes
 
 
-def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
+def _partial_eval(
+    t: T, order: Collection[Operation[[], torch.Tensor]] | None = None
+) -> T:
     """Partially evaluate a term with respect to its sized free variables.
 
     Variables in `order` are converted to positional dimensions in the result
@@ -183,7 +185,7 @@ def _partial_eval(t: T, order: Collection[Operation[[], int]] | None = None) -> 
     return tree.map_structure(reindex_flat_tensor, flat_result)
 
 
-def to_tensor(t: T, order: Collection[Operation[[], int]] | None = None) -> T:
+def to_tensor(t: T, order: Collection[Operation[[], torch.Tensor]] | None = None) -> T:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -475,6 +477,7 @@ class _EagerTensorTerm(torch.Tensor):
         return ret
 
     def __str__(self):
+        tensor_str = str(self.args[0])
         key_str = ", ".join(str(k) for k in self.args[1])
         return f"{tensor_str}[{key_str}]"
 
