@@ -4,7 +4,7 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
-from weighted.fold_lang_v1 import D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, unfold
+from weighted.fold_lang_v1 import ArgMinAlg, D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, unfold
 
 
 def infer_shape(sparse):
@@ -70,11 +70,21 @@ def test_batched_matmul():
 
 
 def test_enum_opt():
-    x = defop(int, name="x")
+    x, y = defop(int, name="x"), defop(int, name="y")
 
+    def run_folds():
+        f1 = fold(MinAlg, {x: range(100)}, {(): -x()})
+        assert f1[()] == -99
+
+        f2 = fold(MinAlg, {x: range(-10, 10)}, {(): x() ** 2})
+        assert f2[()] == 0
+
+        f2 = fold(ArgMinAlg, {x: range(-10, 10)}, {(): (x() ** 2, x())})
+        assert f2[()] == (0, 0)
+
+        f2 = fold(ArgMinAlg, {x: range(1, 5), y: range(4, 8)}, {(): (x() + y(), (x(), y()))})
+        assert f2[()] == (5, (1, 4))
+
+    run_folds()
     with handler(DenseTensorFold()):
-        f1 = fold(MinAlg, {x: range(100)}, D(((), -x())))
-        assert f1.item() == -99
-
-        f2 = fold(MinAlg, {x: range(-10, 10)}, D(((), x() ** 2)))
-        assert f2.item() == 0
+        run_folds()
