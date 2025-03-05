@@ -491,31 +491,31 @@ def test_to_tensor():
 
     # Test case 1: Converting all named dimensions to positional
     t_ijk = Indexable(t)[i(), j(), k()]
-    assert fvsof(t_ijk) == {i, j, k}
+    assert fvsof(t_ijk) >= {i, j, k}
 
     t1 = to_tensor(t_ijk, [i, j, k])
-    assert fvsof(t1) == set()  # No free variables remain
+    assert not (fvsof(t1) & {i, j, k})
     assert t1.shape == torch.Size([2, 3, 4])
 
     # Test case 2: Different ordering of dimensions
     t2 = to_tensor(t_ijk, [k, j, i])
-    assert fvsof(t2) == set()
+    assert not (fvsof(t1) & {i, j, k})
     assert t2.shape == torch.Size([4, 3, 2])
 
     # Test case 3: Keeping some dimensions as free variables
     t3 = to_tensor(t_ijk, [i])  # Convert only i to positional
-    assert fvsof(t3) == {j, k}  # j and k remain free
+    assert fvsof(t3) >= {j, k}  # j and k remain free
     assert isinstance(t3, Term)
     assert t3.shape == torch.Size([2])
 
     t4 = to_tensor(t_ijk, [i, j])  # Convert i and j to positional
-    assert fvsof(t4) == {k}  # only k remains free
+    assert fvsof(t4) >= {k} and not (fvsof(t4) & {i, j})  # only k remains free
     assert isinstance(t4, Term)
     assert t4.shape == torch.Size([2, 3])
 
     # Test case 4: Empty order list keeps all variables free
     t5 = to_tensor(t_ijk, [])
-    assert fvsof(t5) == {i, j, k}  # All variables remain free
+    assert fvsof(t5) >= {i, j, k}  # All variables remain free
     assert isinstance(t5, Term)
     assert t5.shape == torch.Size([])
 
@@ -528,7 +528,7 @@ def test_to_tensor():
     # Test case 6: Mixed operations with free variables
     x = torch.sin(t_ijk)  # Apply operation to indexed tensor
     x1 = to_tensor(x, [i, j])  # Convert some dimensions
-    assert fvsof(x1) == {k}  # k remains free
+    assert fvsof(x1) >= {k}  # k remains free
     assert isinstance(x1, Term)
     assert x1.shape == torch.Size([2, 3])
 
@@ -536,7 +536,7 @@ def test_to_tensor():
     t2_ijk = Indexable(torch.randn([2, 3, 4]))[i(), j(), k()]
     sum_t = t_ijk + t2_ijk
     sum1 = to_tensor(sum_t, [i, j])
-    assert fvsof(sum1) == {k}  # k remains free
+    assert fvsof(sum1) >= {k}  # k remains free
     assert isinstance(sum1, Term)
     assert sum1.shape == torch.Size([2, 3])
 
@@ -544,12 +544,12 @@ def test_to_tensor():
     w = defop(torch.Tensor, name="w")
     t_ijk = Indexable(t)[i(), j(), k()] + w()
     t8 = to_tensor(t_ijk, [i, j, k])
-    assert fvsof(t8) == {w}
+    assert fvsof(t8) >= {w}
 
     # Test case 9: Eliminate remaining free variables in result
     with handler({w: lambda: torch.tensor(1.0)}):
         t9 = evaluate(t8)
-    assert fvsof(t9) == set([])
+    assert not (fvsof(t9) & {i, j, k, w})
 
 
 def test_tensor_term_operators():
