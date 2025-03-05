@@ -481,6 +481,9 @@ class _EagerTensorTerm(torch.Tensor):
         key_str = ", ".join(str(k) for k in self.args[1])
         return f"{tensor_str}[{key_str}]"
 
+    def __repr__(self):
+        return str(self)
+
     @classmethod
     def __torch_function__(
         cls, func: Callable[..., T], types, args=(), kwargs=None
