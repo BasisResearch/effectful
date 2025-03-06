@@ -115,10 +115,6 @@ def assert_no_base_case(*args, **kwargs):
     assert False, "vectorized fold missed a case"
 
 
-def test_minalg():
-    run_min_folds()
-
-
 def test_minalg_vectorized():
     with handler({fold: assert_no_base_case}), handler(coproduct(DenseTensorArgFold(), DenseTensorFold())):
         run_min_folds()
