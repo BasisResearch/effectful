@@ -14,6 +14,6 @@ Install From Source
 .. code:: sh
 
    git clone git@github.com:BasisResearch/weighted.git
-   cd effectful
+   cd weighted
    git checkout master
    pip install -e .[dev]
