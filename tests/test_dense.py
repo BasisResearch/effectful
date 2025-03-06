@@ -11,9 +11,12 @@ from weighted.fold_lang_v1 import (
     DenseTensorFold,
     GradientOptimizationFold,
     LinAlg,
+    MaxAlg,
     MinAlg,
+    ProductFold,
     dense_fold_intp,
     fold,
+    semi_ring_product,
     unfold,
 )
 
@@ -119,3 +122,110 @@ def assert_no_base_case(*args, **kwargs):
 def test_minalg_vectorized():
     with handler({fold: assert_no_base_case}), handler(dense_fold_intp):
         run_min_folds()
+
+
+def test_product_fold():
+    """Test the ProductFold handler with multiple semirings."""
+    # Define operations
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    
+    # Create a product of semirings
+    product_semiring = semi_ring_product(MinAlg, MaxAlg, LinAlg)
+    
+    # Test with simple expressions
+    with handler(ProductFold()):
+        # Basic test with a single variable
+        result = fold(
+            product_semiring,
+            {x: torch.arange(1, 6)},  # [1, 2, 3, 4, 5]
+            x() ** 2
+        )
+        
+        # Should return a tuple with results from each semiring
+        assert isinstance(result, tuple)
+        assert len(result) == 3
+        
+        # MinAlg should find minimum value
+        assert result[0][()] == 1  # min of [1, 4, 9, 16, 25]
+        
+        # MaxAlg should find maximum value
+        assert result[1][()] == 25  # max of [1, 4, 9, 16, 25]
+        
+        # LinAlg should sum all values
+        assert result[2][()] == 55  # sum of [1, 4, 9, 16, 25]
+        
+        # Test with multiple variables
+        result = fold(
+            product_semiring,
+            {x: torch.arange(1, 4), y: torch.arange(1, 3)},  # x: [1, 2, 3], y: [1, 2]
+            x() + y()
+        )
+        
+        # MinAlg should find minimum sum
+        assert result[0][()] == 2  # min of [2, 3, 3, 4, 4, 5]
+        
+        # MaxAlg should find maximum sum
+        assert result[1][()] == 5  # max of [2, 3, 3, 4, 4, 5]
+        
+        # LinAlg should sum all values
+        assert result[2][()] == 21  # sum of [2, 3, 3, 4, 4, 5]
+        
+        # Test with a more complex expression
+        result = fold(
+            product_semiring,
+            {x: torch.arange(-2, 3), y: torch.arange(-2, 3)},  # x,y: [-2, -1, 0, 1, 2]
+            x()**2 + y()**2
+        )
+        
+        # MinAlg should find minimum value
+        assert result[0][()] == 0  # min of x²+y² is 0 when x=0, y=0
+        
+        # MaxAlg should find maximum value
+        assert result[1][()] == 8  # max of x²+y² is 8 when x,y = ±2
+        
+        # LinAlg should sum all values
+        # Sum of all x²+y² for all combinations
+        expected_sum = sum(x**2 + y**2 for x in range(-2, 3) for y in range(-2, 3))
+        assert result[2][()] == expected_sum
+
+
+def test_product_fold_with_argmin():
+    """Test ProductFold with ArgMinAlg and other semirings."""
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    
+    # Create a product of semirings including ArgMinAlg
+    product_semiring = semi_ring_product(ArgMinAlg, LinAlg)
+    
+    with handler(ProductFold()):
+        # Test with a simple expression
+        result = fold(
+            product_semiring,
+            {x: torch.arange(-5, 6)},  # [-5, -4, ..., 4, 5]
+            D(
+                ((), (x()**2, x()))  # For ArgMinAlg: (value, arg)
+            )
+        )
+        
+        # ArgMinAlg should return the minimum value and its argument
+        assert result[0][()] == (torch.tensor(0), torch.tensor(0))
+        
+        # LinAlg should sum all values
+        expected_sum = sum(x**2 for x in range(-5, 6))
+        assert result[1][()] == expected_sum
+        
+        # Test with multiple variables
+        result = fold(
+            product_semiring,
+            {x: torch.arange(-2, 3), y: torch.arange(-2, 3)},
+            D(
+                ((), ((x() - 1)**2 + (y() + 1)**2, (x(), y())))
+            )
+        )
+        
+        # ArgMinAlg should find the point closest to (1, -1)
+        assert result[0][()][0] == 0  # Minimum value is 0
+        assert result[0][()][1] == (torch.tensor(1), torch.tensor(-1))  # At point (1, -1)
+        
+        # LinAlg should sum all squared distances
+        expected_sum = sum((x-1)**2 + (y+1)**2 for x in range(-2, 3) for y in range(-2, 3))
+        assert result[1][()] == expected_sum
