@@ -111,9 +111,14 @@ def run_min_folds():
     assert f_complex == (torch.tensor(0), (torch.tensor(1), torch.tensor(-2), torch.tensor(3)))
 
 
-def test_minalg_vectorized():
-    def assert_no_base_case(*args, **kwargs):
-        assert False, "vectorized fold missed a case"
+def assert_no_base_case(*args, **kwargs):
+    assert False, "vectorized fold missed a case"
 
+
+def test_minalg():
+    run_min_folds()
+
+
+def test_minalg_vectorized():
     with handler({fold: assert_no_base_case}), handler(coproduct(DenseTensorArgFold(), DenseTensorFold())):
         run_min_folds()

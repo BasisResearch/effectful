@@ -414,7 +414,11 @@ class GradientOptimizationFold(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
-        if not (semiring is MinAlg and all(isinstance(v, Term) and v.op is reals for v in streams.values())):
+        if not (
+            semiring in (MinAlg, ArgMinAlg)
+            and all(isinstance(v, Term) and v.op is reals for v in streams.values())
+            and all(typeof(b) is torch.Tensor for b in tree.flatten(body))
+        ):
             return fwd()
 
         if isinstance(body, Term):
@@ -435,44 +439,30 @@ class GradientOptimizationFold(ObjectInterpretation):
         else:
             return fwd()
 
-        if not isinstance(indices, tuple):
-            indices = (indices,)
+        if indices != ():
+            return fwd()
 
-        params = [torch.tensor(0.0, requires_grad=True) for v in streams.values()]
+        if semiring is ArgMinAlg:
+            if not isinstance(value, tuple) or len(value) != 2:
+                raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
+            value, arg = value
+
+        params = [torch.tensor(0.0, requires_grad=True) for _ in streams.values()]
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)
+        assert self.steps > 0
         for _ in range(self.steps):
             optimizer.zero_grad()
             with handler(param_ctx):
                 loss = evaluate(value)
-
             tree.map_structure(lambda p: p.backward(), loss)
             optimizer.step()
 
-        return {indices: tree.map_structure(lambda p: p.detach(), loss)}
+        loss = tree.map_structure(lambda p: p.detach(), loss)
+        if semiring is MinAlg:
+            return loss
 
-
-if __name__ == "__main__":
-    x, y = defop(int), defop(int)
-
-    print(list(unfold({x: lambda: range(2), y: lambda: range(2)}, x() + y())))
-
-    print(fold(LinAlg, unfold({x: lambda: range(3), y: lambda: range(3)}, x() * y() ** 2)))
-
-    print(
-        fold_weighted(
-            LinAlg,
-            {
-                x: lambda: [(i**2, i) for i in range(3)],
-                y: lambda: [(i**2, i) for i in range(3)],
-            },
-            x() * y() ** 2,
-        )
-    )
-
-    print(fold(LinAlg, [1, 2, 3], lambda x: x**2, lambda x: x > 0))
-
-    sums = functools.partial(fold, LinAlg)
-
-    print(list(sums(((i, i / k) for i in range(k) if i % 2 == 1) for k in range(1, 10))))
+        with handler(param_ctx):
+            arg = evaluate(arg)
+        return loss, arg
