@@ -12,6 +12,7 @@ from weighted.fold_lang_v1 import (
     GradientOptimizationFold,
     LinAlg,
     MinAlg,
+    dense_fold_intp,
     fold,
     unfold,
 )
@@ -58,7 +59,7 @@ def test_batched_matmul():
     result = run_fold()
     result_tensor = sparse_to_tensor(result)
 
-    with handler(DenseTensorFold()):
+    with handler(dense_fold_intp):
         vectorized_result_tensor = run_fold()
 
     # Compare with pytorch
@@ -71,42 +72,42 @@ def run_min_folds():
     x, y, z = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y"), defop(torch.Tensor, name="z")
 
     # Basic tests
-    f1 = fold(MinAlg, {x: torch.arange(100)}, {(): -x()})
+    f1 = fold(MinAlg, {x: torch.arange(100)}, -x())
     assert f1[()] == -99
 
-    f2 = fold(MinAlg, {x: torch.arange(-10, 10)}, {(): x() ** 2})
+    f2 = fold(MinAlg, {x: torch.arange(-10, 10)}, x() ** 2)
     assert f2[()] == 0
 
-    f2 = fold(ArgMinAlg, {x: torch.arange(-10, 10)}, {(): (x() ** 2, x())})
+    f2 = fold(ArgMinAlg, {x: torch.arange(-10, 10)}, (x() ** 2, x()))
     assert f2 == (torch.tensor(0), torch.tensor(0))
 
-    f2 = fold(ArgMinAlg, {x: torch.arange(1, 5), y: torch.arange(4, 8)}, {(): (x() + y(), (x(), y()))})
+    f2 = fold(ArgMinAlg, {x: torch.arange(1, 5), y: torch.arange(4, 8)}, (x() + y(), (x(), y())))
     assert f2 == (torch.tensor(5), (torch.tensor(1), torch.tensor(4)))
 
     # Edge case: single element range
-    f_single = fold(MinAlg, {x: torch.arange(1, 2)}, {(): x() ** 2})
+    f_single = fold(MinAlg, {x: torch.arange(1, 2)}, x() ** 2)
     assert f_single[()] == 1
 
     # Edge case: tied minimum values
-    f_tied = fold(ArgMinAlg, {x: torch.arange(-3, 4)}, {(): (abs(x()), x())})
+    f_tied = fold(ArgMinAlg, {x: torch.arange(-3, 4)}, (abs(x()), x()))
     assert f_tied == (torch.tensor(0), torch.tensor(0))
 
     # Edge case: large numbers
-    f_large = fold(MinAlg, {x: torch.arange(10**6, 10**6 + 10)}, {(): x() - 10**6})
+    f_large = fold(MinAlg, {x: torch.arange(10**6, 10**6 + 10)}, x() - 10**6)
     assert f_large[()] == 0
 
     # Edge case: custom function with multiple variables
     def custom_func(a, b, c=1):
         return a**2 + b**2 - c
 
-    f_custom = fold(MinAlg, {x: torch.arange(-5, 6), y: torch.arange(-5, 6)}, {(): custom_func(x(), y(), 10)})
+    f_custom = fold(MinAlg, {x: torch.arange(-5, 6), y: torch.arange(-5, 6)}, custom_func(x(), y(), 10))
     assert f_custom[()] == -10  # Minimum is at x=0, y=0: 0²+0²-10 = -10
 
     # Edge case: complex expression with three variables
     f_complex = fold(
         ArgMinAlg,
         {x: torch.arange(-3, 4), y: torch.arange(-3, 4), z: torch.arange(-3, 4)},
-        {(): ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z()))},
+        ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z())),
     )
     assert f_complex == (torch.tensor(0), (torch.tensor(1), torch.tensor(-2), torch.tensor(3)))
 
@@ -116,5 +117,5 @@ def assert_no_base_case(*args, **kwargs):
 
 
 def test_minalg_vectorized():
-    with handler({fold: assert_no_base_case}), handler(coproduct(DenseTensorArgFold(), DenseTensorFold())):
+    with handler({fold: assert_no_base_case}), handler(dense_fold_intp):
         run_min_folds()

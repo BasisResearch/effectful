@@ -3,7 +3,17 @@ import torch
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from weighted.fold_lang_v1 import ArgMinAlg, D, DenseTensorFold, GradientOptimizationFold, LinAlg, MinAlg, fold, reals
+from weighted.fold_lang_v1 import (
+    ArgMinAlg,
+    D,
+    DenseTensorFold,
+    GradientOptimizationFold,
+    LinAlg,
+    MinAlg,
+    dense_fold_intp,
+    fold,
+    reals,
+)
 
 
 def assert_no_base_case(*args, **kwargs):
@@ -16,8 +26,8 @@ def test_opt():
 
     theta = defop(torch.Tensor, name="theta")
 
-    with handler(GradientOptimizationFold(lr=0.1)):
-        min_loss = fold(MinAlg, {theta: reals()}, {(): loss(theta)})
+    with handler(GradientOptimizationFold(lr=0.1)), handler(dense_fold_intp):
+        min_loss = fold(MinAlg, {theta: reals()}, loss(theta))
 
     # assert theta is close to 5.
     assert min_loss[()] < 1e-3
@@ -38,8 +48,8 @@ def test_batched_matmul():
     with (
         handler({fold: assert_no_base_case}),
         handler(GradientOptimizationFold(lr=0.1, steps=100)),
-        handler(DenseTensorFold()),
+        handler(dense_fold_intp),
     ):
-        loss = fold(LinAlg, {k: torch.arange(K)}, {(): (w() * x[k()] + b() - y[k()]) ** 2})
-        (_, (predicted_w, predicted_b)) = fold(ArgMinAlg, {w: reals(), b: reals()}, {(): (loss, (w(), b()))})
+        loss = fold(LinAlg, {k: torch.arange(K)}, (w() * x[k()] + b() - y[k()]) ** 2)
+        (_, (predicted_w, predicted_b)) = fold(ArgMinAlg, {w: reals(), b: reals()}, (loss, (w(), b())))
         assert 2 < predicted_w < 4 and 3 < predicted_b < 6

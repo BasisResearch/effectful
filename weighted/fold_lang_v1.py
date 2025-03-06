@@ -4,7 +4,7 @@ import functools
 import itertools
 import operator
 from collections.abc import Iterable
-from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar
+from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar, cast
 
 import effectful.handlers.numbers  # noqa: F401
 import torch
@@ -96,6 +96,24 @@ ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, operator.mul, (float(
 ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(arg_max, operator.mul, (float("-inf"), None), (1.0, None))
 
 
+@defop
+def semi_ring_product(*args: Semiring[Any]) -> Semiring[tuple]:
+    flat_args = []
+    for semiring in args:
+        if isinstance(semiring, Term) and semiring.op is semi_ring_product:
+            flat_args.extend(semiring.args)
+    return defdata(semi_ring_product, *flat_args)
+
+
+def semi_ring_product_value(*args: Semiring[Any]) -> Semiring[tuple]:
+    return Semiring(
+        add=lambda a, b: tuple(semiring.add(a[i], b[i]) for i, semiring in enumerate(args)),
+        mul=lambda a, b: tuple(semiring.mul(a[i], b[i]) for i, semiring in enumerate(args)),
+        zero=tuple(semiring.zero for semiring in args),
+        one=tuple(semiring.one for semiring in args),
+    )
+
+
 Vec = T | tree.StructureKV[object, T] | collections.abc.Callable[..., T] | collections.abc.Generator[T, None, None]
 
 
@@ -183,7 +201,8 @@ def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: boo
             keys = streams.keys()
             with handler({k: deffn(v) for (k, v) in zip(keys, vals)}):
                 if evaluate(guard):
-                    yield evaluate(body)
+                    with handler({D: lambda *args: dict(args)}):
+                        yield evaluate(body)
 
     return functools.reduce(functools.partial(promote_add, semiring.add), generator())
 
@@ -255,9 +274,47 @@ def unfold_fn(intp: Runner[S], fn: Callable[P, T] | None = None):
 
 @defop
 def D(*args) -> dict:
-    if any(len(fvsof(k)) > 0 for (k, _) in args):
-        raise NotImplementedError
-    return dict(args)
+    if not all(isinstance(kv, tuple) and len(kv) == 2 for kv in args):
+        raise ValueError("Expected a sequence of key-value pairs")
+    raise NotImplementedError
+
+
+class NormalizeValueFold(ObjectInterpretation):
+    """Normalization rule for the body of folds."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        modified_body = False
+        if isinstance(body, Term) and body.op is D:
+            kvs = []
+            for k, v in body.args:
+                if not isinstance(k, tuple):
+                    k = (k,)
+                    modified_body = True
+                kvs.append((k, v))
+            body = D(*kvs)
+        elif isinstance(body, dict):
+            body = D(*body.items())
+            modified_body = True
+        else:
+            body = D(((), body))
+            modified_body = True
+
+        if modified_body:
+            return fold(semiring, streams, body)
+        return fwd()
+
+
+class ProductFold(ObjectInterpretation):
+    """Handles products of semirings."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (isinstance(semiring, Term) and semiring.op is semi_ring_product):
+            return fwd()
+
+        semi_rings = semiring.args
+        return tree.map_structure(lambda s: fold(s, streams, body), semi_rings)
 
 
 class DenseTensorArgFold(ObjectInterpretation):
@@ -270,26 +327,20 @@ class DenseTensorArgFold(ObjectInterpretation):
         ):
             return fwd()
 
-        if isinstance(body, Term):
-            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
-                return fwd()
-            if len(body.args) <= 0:
-                return torch.tensor([])
-            if len(body.args) > 1:
-                # todo: handle multiple output indices
-                return fwd()
-            indices, (min_value, argmin_value) = body.args[0]
-        elif isinstance(body, dict):
-            if len(body) <= 0:
-                return torch.tensor([])
-            if len(body) > 1:
-                return fwd()
-            indices, (min_value, argmin_value) = next(iter(body.items()))
-        else:
+        if not (isinstance(body, Term) and body.op is D):
             return fwd()
 
-        if not isinstance(indices, tuple):
-            indices = (indices,)
+        if len(body.args) <= 0:
+            return torch.tensor([])
+
+        if len(body.args) > 1:
+            # todo: handle multiple output indices
+            return fwd()
+
+        indices, value = body.args[0]
+        if not isinstance(value, tuple) and len(value) == 2:
+            raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
+        min_value, argmin_value = value
 
         # Check that the output is indexed in a subset of the input indices, and
         # that there are no index transformations
@@ -322,7 +373,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         return final_result
 
 
-class DenseTensorFold(DenseTensorArgFold):
+class DenseTensorFold(ObjectInterpretation):
     def _sum_reductor(self, tensor, dims):
         for _ in range(dims):
             tensor = torch.sum(tensor, dim=0)
@@ -357,26 +408,17 @@ class DenseTensorFold(DenseTensorArgFold):
         ):
             return fwd()
 
-        if isinstance(body, Term):
-            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
-                return fwd()
-            if len(body.args) <= 0:
-                return torch.tensor([])
-            if len(body.args) > 1:
-                # todo: handle multiple output indices
-                return fwd()
-            indices, value = body.args[0]
-        elif isinstance(body, dict):
-            if len(body) <= 0:
-                return torch.tensor([])
-            if len(body) > 1:
-                return fwd()
-            indices, value = next(iter(body.items()))
-        else:
+        if not (isinstance(body, Term) and body.op is D):
             return fwd()
 
-        if not isinstance(indices, tuple):
-            indices = (indices,)
+        if len(body.args) <= 0:
+            return torch.tensor([])
+
+        if len(body.args) > 1:
+            # todo: handle multiple output indices
+            return fwd()
+
+        indices, value = body.args[0]
 
         # Check that the output is indexed in a subset of the input indices, and
         # that there are no index transformations
@@ -414,31 +456,23 @@ class GradientOptimizationFold(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
+        breakpoint()
         if not (
-            semiring in (MinAlg, ArgMinAlg)
-            and all(isinstance(v, Term) and v.op is reals for v in streams.values())
-            and all(typeof(b) is torch.Tensor for b in tree.flatten(body))
+            semiring in (MinAlg, ArgMinAlg) and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
 
-        if isinstance(body, Term):
-            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
-                return fwd()
-            if len(body.args) <= 0:
-                return torch.tensor([])
-            if len(body.args) > 1:
-                # todo: handle multiple output indices
-                return fwd()
-            indices, value = body.args[0]
-        elif isinstance(body, dict):
-            if len(body) <= 0:
-                return torch.tensor([])
-            if len(body) > 1:
-                return fwd()
-            indices, value = next(iter(body.items()))
-        else:
+        if not (isinstance(body, Term) and body.op is D):
             return fwd()
 
+        if len(body.args) <= 0:
+            return torch.tensor([])
+
+        if len(body.args) > 1:
+            # todo: handle multiple output indices
+            return fwd()
+
+        indices, value = body.args[0]
         if indices != ():
             return fwd()
 
@@ -466,3 +500,6 @@ class GradientOptimizationFold(ObjectInterpretation):
         with handler(param_ctx):
             arg = evaluate(arg)
         return loss, arg
+
+
+dense_fold_intp = functools.reduce(coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold()])
