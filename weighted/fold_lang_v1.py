@@ -4,13 +4,13 @@ import functools
 import itertools
 import operator
 from collections.abc import Iterable
-from typing import Callable, Generic, ParamSpec, TypeVar
+from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 import torch
 import tree
 from effectful.handlers.indexed import sizesof
-from effectful.handlers.torch import Indexable, to_tensor
+from effectful.handlers.torch import to_tensor
 from effectful.ops.semantics import (
     apply,
     call,
@@ -65,7 +65,7 @@ class Semiring(Generic[T]):
     one: T
 
 
-Runner = Interpretation[T, collections.abc.Iterable[T]]
+Runner: TypeAlias = Interpretation[T, collections.abc.Iterable[T]]
 
 
 # actually a near-semiring
@@ -81,6 +81,20 @@ LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0.0, 1.0)
 MinAlg: Semiring[float] = Semiring(min, operator.mul, float("inf"), 1.0)
 
 MaxAlg: Semiring[float] = Semiring(max, operator.mul, float("-inf"), 1.0)
+
+
+def arg_min(a, b):
+    return a if a[0] < b[0] else b
+
+
+def arg_max(a, b):
+    return a if a[0] > b[0] else b
+
+
+ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, operator.mul, (float("inf"), None), (1.0, None))
+
+ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(arg_max, operator.mul, (float("-inf"), None), (1.0, None))
+
 
 Vec = T | tree.StructureKV[object, T] | collections.abc.Callable[..., T] | collections.abc.Generator[T, None, None]
 
@@ -147,7 +161,7 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
 
 
 @defop
-def fold(semiring: Semiring[T], streams: Runner, body: Vec[T], guard: bool = True) -> Vec[T]:
+def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
         if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
@@ -160,12 +174,10 @@ def fold(semiring: Semiring[T], streams: Runner, body: Vec[T], guard: bool = Tru
             return result
         elif isinstance(b, collections.abc.Callable):
             return lambda *args, **kwargs: promote_add(add, a(*args, **kwargs), b(*args, **kwargs))
-        elif tree.is_nested(b):
-            return tree.map_structure(functools.partial(promote_add, add), a, b)
         else:
             return add(a, b)
 
-    def generator():
+    def generator() -> collections.abc.Iterable[Mapping[K, T]]:
         all_vals = itertools.product(*list(streams.values()))
         for vals in all_vals:
             keys = streams.keys()
@@ -248,13 +260,100 @@ def D(*args) -> dict:
     return dict(args)
 
 
-class DenseTensorFold(ObjectInterpretation):
+class DenseTensorArgFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
         if not (
-            semiring in (LinAlg, MinAlg, MaxAlg)
+            semiring in (ArgMinAlg, ArgMaxAlg)
             and all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is int for k in streams.keys())
+            and all(typeof(k()) is torch.Tensor for k in streams.keys())
+        ):
+            return fwd()
+
+        if isinstance(body, Term):
+            if not (body.op is D and all(isinstance(args, tuple) and len(args) == 2 for args in body.args)):
+                return fwd()
+            if len(body.args) <= 0:
+                return torch.tensor([])
+            if len(body.args) > 1:
+                # todo: handle multiple output indices
+                return fwd()
+            indices, (min_value, argmin_value) = body.args[0]
+        elif isinstance(body, dict):
+            if len(body) <= 0:
+                return torch.tensor([])
+            if len(body) > 1:
+                return fwd()
+            indices, (min_value, argmin_value) = next(iter(body.items()))
+        else:
+            return fwd()
+
+        if not isinstance(indices, tuple):
+            indices = (indices,)
+
+        # Check that the output is indexed in a subset of the input indices, and
+        # that there are no index transformations
+        if not all(isinstance(i, Term) and i.op in streams for i in indices):
+            return fwd()
+        indices = [i.op for i in indices]
+
+        old_to_fresh = {k: defop(k) for k in streams.keys()}
+        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
+        indexed_streams = {k: deffn(v[old_to_fresh[k]()]) for k, v in streams.items()}
+        with handler(indexed_streams):
+            result = evaluate(min_value)
+
+        result_indices = sizesof(result)
+        reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
+
+        result = to_tensor(result, reduction_indices)
+
+        flat_result = result.flatten(start_dim=0, end_dim=len(reduction_indices) - 1)
+        mins, flat_indices = flat_result.min(dim=0) if semiring is ArgMinAlg else result.max(dim=0)
+        min_indices = torch.unravel_index(flat_indices, result.shape)
+        with handler(
+            {fresh_to_old[k]: deffn(streams[fresh_to_old[k]][v]) for k, v in zip(reduction_indices, min_indices)}
+        ):
+            argmins = evaluate(argmin_value)
+
+        final_result = tree.map_structure(
+            lambda t: to_tensor(t, [i for i in result_indices if i not in reduction_indices]), (mins, argmins)
+        )
+        return final_result
+
+
+class DenseTensorFold(DenseTensorArgFold):
+    def _sum_reductor(self, tensor, dims):
+        for _ in range(dims):
+            tensor = torch.sum(tensor, dim=0)
+        return tensor
+
+    def _min_reductor(self, tensor, dims):
+        for _ in range(dims):
+            tensor = torch.min(tensor, dim=0).values
+        return tensor
+
+    def _max_reductor(self, tensor, dims):
+        for _ in range(dims):
+            tensor = torch.max(tensor, dim=0).values
+        return tensor
+
+    def _get_reductor(self, semi_ring):
+        if semi_ring is LinAlg:
+            return self._sum_reductor
+        elif semi_ring is MinAlg:
+            return self._min_reductor
+        elif semi_ring is MaxAlg:
+            return self._max_reductor
+        else:
+            return None
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        reductor = self._get_reductor(semiring)
+        if reductor is None or not (
+            all(isinstance(s, collections.abc.Sized) for s in streams.values())
+            and all(typeof(k()) is torch.Tensor for k in streams.keys())
         ):
             return fwd()
 
@@ -287,7 +386,7 @@ class DenseTensorFold(ObjectInterpretation):
 
         old_to_fresh = {k: defop(k) for k in streams.keys()}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
-        indexed_streams = {k: deffn(Indexable(torch.tensor(v))[old_to_fresh[k]()]) for k, v in streams.items()}
+        indexed_streams = {k: deffn(v[old_to_fresh[k]()]) for k, v in streams.items()}
         with handler(indexed_streams):
             result = evaluate(value)
 
@@ -295,20 +394,7 @@ class DenseTensorFold(ObjectInterpretation):
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
         result = to_tensor(result, reduction_indices)
-
-        reductor = None
-        if semiring is LinAlg:
-            reductor = torch.sum
-        elif semiring is MinAlg:
-            reductor = lambda *args, **kwargs: torch.min(*args, **kwargs).values
-        elif semiring is MaxAlg:
-            reductor = lambda *args, **kwargs: torch.max(*args, **kwargs).values
-        else:
-            assert False, f"unexpected semiring: {semiring}"
-
-        for _ in range(len(reduction_indices)):
-            result = reductor(result, dim=0)
-
+        result = reductor(result, len(reduction_indices))
         return to_tensor(result, [i for i in result_indices if i not in reduction_indices])
 
 
@@ -356,9 +442,7 @@ class GradientOptimizationFold(ObjectInterpretation):
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)
-        from tqdm import tqdm
-
-        for _ in tqdm(range(self.steps)):
+        for _ in range(self.steps):
             optimizer.zero_grad()
             with handler(param_ctx):
                 loss = evaluate(value)
