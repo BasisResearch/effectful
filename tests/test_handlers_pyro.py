@@ -13,7 +13,7 @@ from effectful.handlers.pyro import (
     positional_distribution,
     pyro_sample,
 )
-from effectful.handlers.torch import Indexable, sizesof, torch_getitem
+from effectful.handlers.torch import sizesof, torch_getitem
 from effectful.ops.semantics import fvsof, fwd, handler
 from effectful.ops.syntax import defop
 
@@ -153,12 +153,12 @@ def test_smoke_condition_enumerate_hmm_elbo(
 
 
 def test_indexed_sample():
-    b = defop(int, name="b")
+    b = defop(torch.Tensor, name="b")
 
     def model():
         loc, scale = (
-            Indexable(torch.tensor(0.0).expand((3, 2)))[b()],
-            Indexable(torch.tensor(1.0).expand((3, 2)))[b()],
+            (torch.tensor(0.0).expand((3, 2)))[b()],
+            (torch.tensor(1.0).expand((3, 2)))[b()],
         )
         return pyro.sample("x", dist.Normal(loc, scale))
 
@@ -177,7 +177,7 @@ def test_indexed_sample():
 
 
 def test_named_dist():
-    x, y = defop(int, name="x"), defop(int, name="y")
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
     d = named_distribution(dist.Normal(0.0, 1.0).expand((2, 3)), x, y)
 
     expected_indices = {x: 2, y: 3}
@@ -196,9 +196,9 @@ def test_named_dist():
 
 
 def test_positional_dist():
-    x, y = defop(int, name="x"), defop(int, name="y")
-    loc = Indexable(torch.tensor(0.0).expand((2, 3)))[x(), y()]
-    scale = Indexable(torch.tensor(1.0).expand((2, 3)))[x(), y()]
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    loc = (torch.tensor(0.0).expand((2, 3)))[x(), y()]
+    scale = (torch.tensor(1.0).expand((2, 3)))[x(), y()]
 
     expected_indices = {x: 2, y: 3}
 
@@ -221,8 +221,8 @@ def test_positional_dist():
     assert s3.shape == torch.Size([4, 5, 2, 3])
     assert all(n in sizesof(naming.apply(s3)) for n in [x, y])
 
-    loc = Indexable(torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
-    scale = Indexable(torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
+    loc = (torch.tensor(0.0).expand((2, 3, 4, 5)))[x(), y()]
+    scale = (torch.tensor(1.0).expand((2, 3, 4, 5)))[x(), y()]
     d, naming = positional_distribution(dist.Normal(loc, scale))
 
     assert sizesof(naming.apply(d.sample((6, 7)))) == expected_indices
@@ -231,7 +231,7 @@ def test_positional_dist():
 
 
 def test_simple_distribution():
-    i = defop(int)
+    i = defop(torch.Tensor)
     t = torch_getitem(torch.tensor([0.5, 0.2, 0.9]), (i(),))
 
     dist.Beta(t, t, validate_args=False)
@@ -244,8 +244,8 @@ def test_sizesof_named_distribution():
     base_dist = dist.Normal(torch.zeros(3, 4, 5), torch.ones(3, 4, 5))
 
     # Create names for the first two dimensions
-    dim0 = defop(int, name="dim0")
-    dim1 = defop(int, name="dim1")
+    dim0 = defop(torch.Tensor, name="dim0")
+    dim1 = defop(torch.Tensor, name="dim1")
     names = [dim0, dim1]
 
     # Create named distribution
@@ -261,11 +261,11 @@ def test_sizesof_named_distribution():
 
 
 def test_sizesof_positional_distribution():
-    dim0 = defop(int, name="dim0")
-    dim1 = defop(int, name="dim1")
+    dim0 = defop(torch.Tensor, name="dim0")
+    dim1 = defop(torch.Tensor, name="dim1")
 
-    mean = Indexable(torch.zeros(3, 4, 5))[dim0(), dim1()]
-    var = Indexable(torch.ones(3, 4, 5))[dim0(), dim1()]
+    mean = (torch.zeros(3, 4, 5))[dim0(), dim1()]
+    var = (torch.ones(3, 4, 5))[dim0(), dim1()]
     base_dist = dist.Normal(mean, var)
 
     pos_dist = positional_distribution(base_dist)
