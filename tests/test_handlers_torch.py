@@ -482,7 +482,7 @@ def test_to_tensor():
     t = torch.randn([2, 3, 4])
 
     # Test case 1: Converting all named dimensions to positional
-    t_ijk = Indexable(t)[i(), j(), k()]
+    t_ijk = t[i(), j(), k()]
     assert fvsof(t_ijk) >= {i, j, k}
 
     t1 = to_tensor(t_ijk, [i, j, k])
@@ -512,7 +512,7 @@ def test_to_tensor():
     assert t5.shape == torch.Size([])
 
     # Test case 5: Verify permuted tensors maintain correct relationships
-    t_kji = Indexable(t.permute(2, 1, 0))[k(), j(), i()]
+    t_kji = t.permute(2, 1, 0)[k(), j(), i()]
     t6 = to_tensor(t_kji, [i, j, k])
     t7 = to_tensor(t_ijk, [i, j, k])
     assert torch.allclose(t6, t7)
@@ -525,7 +525,7 @@ def test_to_tensor():
     assert x1.shape == torch.Size([2, 3])
 
     # Test case 7: Multiple tensors sharing variables
-    t2_ijk = Indexable(torch.randn([2, 3, 4]))[i(), j(), k()]
+    t2_ijk = torch.randn([2, 3, 4])[i(), j(), k()]
     sum_t = t_ijk + t2_ijk
     sum1 = to_tensor(sum_t, [i, j])
     assert fvsof(sum1) >= {k}  # k remains free
@@ -534,7 +534,7 @@ def test_to_tensor():
 
     # Test case 8: Tensor term with non-sized free variables
     w = defop(torch.Tensor, name="w")
-    t_ijk = Indexable(t)[i(), j(), k()] + w()
+    t_ijk = t[i(), j(), k()] + w()
     t8 = to_tensor(t_ijk, [i, j, k])
     assert fvsof(t8) >= {w}
 

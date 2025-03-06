@@ -240,9 +240,7 @@ def to_tensor(
     dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
     perm = [dim_ops.index(o) for o in order] + reindex_dims
     tensor = tensor.permute(perm)
-    return Indexable(tensor)[
-        (slice(None),) * len(order) + tuple(dims[i] for i in reindex_dims)
-    ]
+    return tensor[(slice(None),) * len(order) + tuple(dims[i] for i in reindex_dims)]
 
 
 @functools.cache
