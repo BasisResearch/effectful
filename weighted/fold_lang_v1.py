@@ -102,6 +102,8 @@ def semi_ring_product(*args: Semiring[Any]) -> Semiring[tuple]:
     for semiring in args:
         if isinstance(semiring, Term) and semiring.op is semi_ring_product:
             flat_args.extend(semiring.args)
+        else:
+            flat_args.append(semiring)
     return defdata(semi_ring_product, *flat_args)
 
 
@@ -314,7 +316,10 @@ class ProductFold(ObjectInterpretation):
             return fwd()
 
         semi_rings = semiring.args
-        return tree.map_structure(lambda s: fold(s, streams, body), semi_rings)
+        if not (isinstance(body, tuple) and len(body) == len(semi_rings)):
+            raise ValueError("Expected a tuple of the same length as the product of semirings")
+
+        return tree.map_structure(lambda r, b: fold(r, streams, b), semi_rings, body)
 
 
 class DenseTensorArgFold(ObjectInterpretation):
