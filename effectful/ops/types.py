@@ -39,7 +39,7 @@ class Operation(abc.ABC, Generic[Q, V]):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __lt__(self):
+    def __lt__(self, other):
         raise NotImplementedError
 
     @abc.abstractmethod
