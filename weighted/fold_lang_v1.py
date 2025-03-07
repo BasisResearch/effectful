@@ -34,29 +34,6 @@ A = TypeVar("A")
 B = TypeVar("B")
 
 
-# Expectation(
-#     f(x)
-#     for z1 in sample(z1_dist)
-#     for z2 in sample(z2_dist(z1))
-#     for x in sample(x_dist(z1, z2))
-# )
-#
-#
-# # unnormalized
-# Expectation(
-#     weight * vars[-1]
-#     for (weight, vars) in Infer(
-#         (w1(z1) * w2(z1, z2) * w3(z1, z2, x), (z1, z2, x))
-#         for z1 in sample(z1_dist)
-#         # if factor(w1(z1)) != 0
-#         for z2 in sample(z2_dist(z1))
-#         # if factor(w2(z1, z2)) != 0
-#         for x in sample(x_dist(z1, z2))
-#         # if factor(w3(z1, z2, x)) != 0
-#     )
-# )
-
-
 @dataclasses.dataclass
 class Semiring(Generic[T]):
     add: Callable[[T, T], T]
@@ -180,8 +157,7 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
     return generator()
 
 
-@defop
-def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
         if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
@@ -207,6 +183,11 @@ def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: boo
                         yield evaluate(body)
 
     return functools.reduce(functools.partial(promote_add, semiring.add), generator())
+
+
+@defop
+def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+    raise NotImplementedError
 
 
 @defop
@@ -405,7 +386,7 @@ class DenseTensorFold(ObjectInterpretation):
             return None
 
     @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
+    def fold(self, semiring, streams, body, guard=True):
         reductor = self._get_reductor(semiring)
         if reductor is None or not (
             all(isinstance(s, collections.abc.Sized) for s in streams.values())
@@ -448,6 +429,10 @@ class DenseTensorFold(ObjectInterpretation):
 @defop
 def reals(shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
     raise NotImplementedError
+
+
+class FlipOptimizationFold(ObjectInterpretation):
+    pass
 
 
 class GradientOptimizationFold(ObjectInterpretation):
