@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import collections.abc
+import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
@@ -16,6 +17,7 @@ T = TypeVar("T")
 V = TypeVar("V")
 
 
+@functools.total_ordering
 class Operation(abc.ABC, Generic[Q, V]):
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -34,6 +36,10 @@ class Operation(abc.ABC, Generic[Q, V]):
 
     @abc.abstractmethod
     def __hash__(self):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def __lt__(self):
         raise NotImplementedError
 
     @abc.abstractmethod
