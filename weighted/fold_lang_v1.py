@@ -508,10 +508,11 @@ class GradientOptimizationFold(ObjectInterpretation):
 
     """
 
-    def __init__(self, optimizer=torch.optim.Adam, steps=1000, **kwargs):
+    def __init__(self, optimizer=torch.optim.Adam, steps=1000, init=None, **kwargs):
         self.optimizer = optimizer
         self.optimizer_kwargs = kwargs
         self.steps = steps
+        self.init = {} if init is None else init
 
     def _optimizer(self, params):
         return self.optimizer(params, **self.optimizer_kwargs)
