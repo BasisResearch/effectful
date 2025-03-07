@@ -18,6 +18,7 @@ from weighted.fold_lang_v1 import (
     ProductFold,
     dense_fold_intp,
     fold,
+    reals,
     semi_ring_product,
     unfold,
 )
