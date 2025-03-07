@@ -545,7 +545,24 @@ class GradientOptimizationFold(ObjectInterpretation):
                 raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
             value, arg = value
 
-        params = [torch.zeros(r.args[0] if len(r.args) > 0 else (), requires_grad=True) for r in streams.values()]
+        # Initialize parameters using provided init values or zeros
+        params = []
+        for k, r in zip(streams.keys(), streams.values()):
+            shape = r.args[0] if len(r.args) > 0 else ()
+            if k in self.init:
+                # Use provided initialization
+                init_value = self.init[k]
+                if not isinstance(init_value, torch.Tensor):
+                    init_value = torch.tensor(init_value, dtype=torch.float)
+                # Ensure the shape matches
+                if init_value.shape != shape and shape != ():
+                    raise ValueError(f"Init shape mismatch for {k}: expected {shape}, got {init_value.shape}")
+                param = init_value.clone().detach().requires_grad_(True)
+            else:
+                # Default to zeros
+                param = torch.zeros(shape, requires_grad=True)
+            params.append(param)
+            
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)

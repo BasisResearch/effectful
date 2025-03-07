@@ -126,6 +126,48 @@ def test_minalg_vectorized():
         run_min_folds()
 
 
+def test_gradient_optimization_init():
+    """Test that GradientOptimizationFold uses initialization values correctly."""
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    
+    # Define a simple quadratic function with minimum at (2, -3)
+    def quadratic(x_val, y_val):
+        return (x_val - 2)**2 + (y_val + 3)**2
+    
+    # Test with default initialization (zeros)
+    with handler(GradientOptimizationFold(steps=100, lr=0.1)):
+        result = fold(
+            MinAlg,
+            {x: reals(), y: reals()},
+            quadratic(x(), y())
+        )
+        # Should be close to the minimum value (0)
+        assert result < 0.1
+        
+        # Test with ArgMinAlg to get both value and argmin
+        result_arg = fold(
+            ArgMinAlg,
+            {x: reals(), y: reals()},
+            (quadratic(x(), y()), (x(), y()))
+        )
+        # Value should be close to minimum
+        assert result_arg[0] < 0.1
+        # Arguments should be close to (2, -3)
+        assert abs(result_arg[1][0] - 2) < 0.1
+        assert abs(result_arg[1][1] + 3) < 0.1
+    
+    # Test with custom initialization
+    # Starting closer to the minimum should converge faster
+    with handler(GradientOptimizationFold(steps=20, lr=0.1, init={x: 1.5, y: -2.5})):
+        result = fold(
+            MinAlg,
+            {x: reals(), y: reals()},
+            quadratic(x(), y())
+        )
+        # Should be very close to the minimum with fewer steps
+        assert result < 0.01
+
+
 def test_product_fold():
     """Test the ProductFold handler with multiple semirings."""
     # Define operations
