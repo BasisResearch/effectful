@@ -5,10 +5,12 @@ from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
 from weighted.fold_lang_v1 import (
+    ArgMaxAlg,
     ArgMinAlg,
     D,
     DenseTensorArgFold,
     DenseTensorFold,
+    FlipOptimizationFold,
     GradientOptimizationFold,
     LinAlg,
     MaxAlg,
@@ -122,6 +124,47 @@ def assert_no_base_case(*args, **kwargs):
 def test_minalg_vectorized():
     with handler({fold: assert_no_base_case}), handler(dense_fold_intp):
         run_min_folds()
+
+
+def test_flip_optimization_fold():
+    """Test the FlipOptimizationFold handler for converting Max to Min problems."""
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    
+    # Test with MaxAlg
+    with handler(FlipOptimizationFold()):
+        # Simple maximization problem
+        f_max = fold(MaxAlg, {x: torch.arange(-10, 10)}, D(((), -x() ** 2)))
+        assert f_max[()] == 0  # max of -x² is 0 at x=0
+        
+        # More complex maximization
+        f_max_complex = fold(MaxAlg, {x: torch.arange(-5, 6)}, D(((), -(x() - 2) ** 2)))
+        assert f_max_complex[()] == 0  # max of -(x-2)² is 0 at x=2
+        
+        # Test with multiple variables
+        f_max_multi = fold(
+            MaxAlg, 
+            {x: torch.arange(-3, 4), y: torch.arange(-3, 4)},
+            D(((), -(x() ** 2 + y() ** 2)))
+        )
+        assert f_max_multi[()] == 0  # max of -(x²+y²) is 0 at x=0,y=0
+    
+    # Test with ArgMaxAlg
+    with handler(FlipOptimizationFold()):
+        # Simple argmax problem
+        f_argmax = fold(
+            ArgMaxAlg, 
+            {x: torch.arange(-10, 10)},
+            D(((), (-x() ** 2, x())))
+        )
+        assert f_argmax == (torch.tensor(0), torch.tensor(0))  # argmax of -x² is at x=0
+        
+        # More complex argmax
+        f_argmax_complex = fold(
+            ArgMaxAlg,
+            {x: torch.arange(-5, 6), y: torch.arange(-5, 6)},
+            D(((), (-(x() - 1) ** 2 - (y() + 2) ** 2, (x(), y()))))
+        )
+        assert f_argmax_complex == (torch.tensor(0), (torch.tensor(1), torch.tensor(-2)))
 
 
 def test_product_fold():
