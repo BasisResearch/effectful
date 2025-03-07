@@ -446,7 +446,7 @@ class DenseTensorFold(ObjectInterpretation):
 
 
 @defop
-def reals() -> Iterable[float]:
+def reals(shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
     raise NotImplementedError
 
 
@@ -456,7 +456,7 @@ class GradientOptimizationFold(ObjectInterpretation):
     Notes:
     - A single empty output index is expected. Nontrivial output indexes would in
     principle allow us to represent partial optimization problems like the following:
-    fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \lambda x. min_{y\in R} f(x, y).
+    fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
 
     - Problems that involve a guard can be solved using a variety of techniques,
     depending on the form of the guard, but we don't implement any.
@@ -499,7 +499,7 @@ class GradientOptimizationFold(ObjectInterpretation):
                 raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
             value, arg = value
 
-        params = [torch.tensor(0.0, requires_grad=True) for _ in streams.values()]
+        params = [torch.zeros(r.args[0] if len(r.args) > 0 else (), requires_grad=True) for r in streams.values()]
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)
