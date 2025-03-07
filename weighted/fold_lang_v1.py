@@ -433,20 +433,20 @@ def reals(shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
 
 class FlipOptimizationFold(ObjectInterpretation):
     """Convert Max/ArgMax problems to Min/ArgMin by negating values.
-    
+
     This handler transforms maximization problems into minimization problems
     by negating the objective function, allowing reuse of minimization algorithms.
     """
-    
+
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
         # Only handle MaxAlg and ArgMaxAlg
         if semiring not in (MaxAlg, ArgMaxAlg):
             return fwd()
-            
+
         # Determine the target semiring (Min for Max, ArgMin for ArgMax)
         target_semiring = MinAlg if semiring is MaxAlg else ArgMinAlg
-        
+
         # Normalize the body to use D if it's not already
         if not (isinstance(body, Term) and body.op is D):
             # For ArgMaxAlg, body should be a tuple of (value, arg)
@@ -456,7 +456,7 @@ class FlipOptimizationFold(ObjectInterpretation):
                 body = D(((), body))
             else:
                 body = D(((), body))
-        
+
         # For each key-value pair in the body
         new_args = []
         for indices, value in body.args:
@@ -470,38 +470,29 @@ class FlipOptimizationFold(ObjectInterpretation):
                     raise ValueError("Expected a tuple of (value, arg) for ArgMaxAlg")
                 val, arg = value
                 new_value = (-val, arg)
-            
+
             new_args.append((indices, new_value))
-        
+
         # Create a new body with negated values
         new_body = D(*new_args)
-        
+
         # Solve as a minimization problem
         result = fold(target_semiring, streams, new_body, **kwargs)
-        
+
         # For MaxAlg, negate the result back
         if semiring is MaxAlg:
             if isinstance(result, dict):
                 return {k: -v for k, v in result.items()}
             else:
-                # Handle the case where result is a Term
-                if isinstance(result, Term):
-                    with handler({evaluate: lambda x: -evaluate(x)}):
-                        return evaluate(result)
                 return -result
         else:  # ArgMaxAlg
             # For ArgMaxAlg, negate the first element of the result tuple back
             if isinstance(result, dict):
                 return {k: (-v[0], v[1]) for k, v in result.items()}
+            elif isinstance(result, tuple):
+                return (-result[0], result[1])
             else:
-                # Handle the case where result is a tuple with a Term as first element
-                if isinstance(result, tuple) and len(result) == 2:
-                    val, arg = result
-                    if isinstance(val, Term):
-                        with handler({evaluate: lambda x: -evaluate(x)}):
-                            return (-evaluate(val), arg)
-                    return (-val, arg)
-                return result  # Return as is if we can't handle it
+                fwd()
 
 
 class GradientOptimizationFold(ObjectInterpretation):
@@ -575,6 +566,5 @@ class GradientOptimizationFold(ObjectInterpretation):
 
 
 dense_fold_intp = functools.reduce(
-    coproduct, 
-    [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), FlipOptimizationFold()]
+    coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), FlipOptimizationFold()]
 )
