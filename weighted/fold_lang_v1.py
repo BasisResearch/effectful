@@ -451,6 +451,18 @@ def reals() -> Iterable[float]:
 
 
 class GradientOptimizationFold(ObjectInterpretation):
+    """Handle min/argmin over reals using gradient descent.
+
+    Notes:
+    - A single empty output index is expected. Nontrivial output indexes would in
+    principle allow us to represent partial optimization problems like the following:
+    fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \lambda x. min_{y\in R} f(x, y).
+
+    - Problems that involve a guard can be solved using a variety of techniques,
+    depending on the form of the guard, but we don't implement any.
+
+    """
+
     def __init__(self, optimizer=torch.optim.Adam, steps=1000, **kwargs):
         self.optimizer = optimizer
         self.optimizer_kwargs = kwargs
@@ -460,10 +472,11 @@ class GradientOptimizationFold(ObjectInterpretation):
         return self.optimizer(params, **self.optimizer_kwargs)
 
     @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
-        breakpoint()
+    def fold(self, semiring, streams, body, guard=True):
         if not (
-            semiring in (MinAlg, ArgMinAlg) and all(isinstance(v, Term) and v.op is reals for v in streams.values())
+            semiring in (MinAlg, ArgMinAlg)
+            and all(isinstance(v, Term) and v.op is reals for v in streams.values())
+            and guard is True
         ):
             return fwd()
 
