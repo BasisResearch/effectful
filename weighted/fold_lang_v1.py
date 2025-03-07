@@ -484,13 +484,24 @@ class FlipOptimizationFold(ObjectInterpretation):
             if isinstance(result, dict):
                 return {k: -v for k, v in result.items()}
             else:
+                # Handle the case where result is a Term
+                if isinstance(result, Term):
+                    with handler({evaluate: lambda x: -evaluate(x)}):
+                        return evaluate(result)
                 return -result
         else:  # ArgMaxAlg
             # For ArgMaxAlg, negate the first element of the result tuple back
             if isinstance(result, dict):
                 return {k: (-v[0], v[1]) for k, v in result.items()}
             else:
-                return (-result[0], result[1])
+                # Handle the case where result is a tuple with a Term as first element
+                if isinstance(result, tuple) and len(result) == 2:
+                    val, arg = result
+                    if isinstance(val, Term):
+                        with handler({evaluate: lambda x: -evaluate(x)}):
+                            return (-evaluate(val), arg)
+                    return (-val, arg)
+                return result  # Return as is if we can't handle it
 
 
 class GradientOptimizationFold(ObjectInterpretation):

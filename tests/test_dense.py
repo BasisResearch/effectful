@@ -131,7 +131,7 @@ def test_flip_optimization_fold():
     x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
     
     # Test with MaxAlg
-    with handler(FlipOptimizationFold()):
+    with handler(FlipOptimizationFold()), handler(dense_fold_intp):
         # Simple maximization problem
         f_max = fold(MaxAlg, {x: torch.arange(-10, 10)}, -x() ** 2)
         assert f_max[()] == 0  # max of -x² is 0 at x=0
@@ -149,14 +149,15 @@ def test_flip_optimization_fold():
         assert f_max_multi[()] == 0  # max of -(x²+y²) is 0 at x=0,y=0
     
     # Test with ArgMaxAlg
-    with handler(FlipOptimizationFold()):
+    with handler(FlipOptimizationFold()), handler(dense_fold_intp):
         # Simple argmax problem
         f_argmax = fold(
             ArgMaxAlg, 
             {x: torch.arange(-10, 10)},
             (-x() ** 2, x())
         )
-        assert f_argmax == (torch.tensor(0), torch.tensor(0))  # argmax of -x² is at x=0
+        assert f_argmax[0] == 0  # argmax value is 0
+        assert f_argmax[1] == 0  # argmax of -x² is at x=0
         
         # More complex argmax
         f_argmax_complex = fold(
@@ -164,7 +165,9 @@ def test_flip_optimization_fold():
             {x: torch.arange(-5, 6), y: torch.arange(-5, 6)},
             (-(x() - 1) ** 2 - (y() + 2) ** 2, (x(), y()))
         )
-        assert f_argmax_complex == (torch.tensor(0), (torch.tensor(1), torch.tensor(-2)))
+        assert f_argmax_complex[0] == 0  # argmax value is 0
+        assert f_argmax_complex[1][0] == 1  # x coordinate is 1
+        assert f_argmax_complex[1][1] == -2  # y coordinate is -2
 
 
 def test_product_fold():
