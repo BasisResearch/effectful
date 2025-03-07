@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Collection, Mapping, Sequence
 from types import EllipsisType
-from typing import Any, TypeVar
+from typing import Annotated, Any, TypeVar
 
 try:
     import torch
@@ -14,8 +14,8 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
-from effectful.ops.syntax import defdata, defop, defterm
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
+from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -23,6 +23,8 @@ Q = ParamSpec("Q")
 S = TypeVar("S")
 T = TypeVar("T")
 V = TypeVar("V")
+A = TypeVar("A")
+B = TypeVar("B")
 
 
 # + An element of a tensor index expression.
@@ -124,52 +126,40 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     return sizes
 
 
-def _partial_eval(
-    t: T, order: Collection[Operation[[], torch.Tensor]] | None = None
-) -> T:
-    """Partially evaluate a term with respect to its sized free variables.
+def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
+    """Partially evaluate a term with respect to its sized free variables."""
 
-    Variables in `order` are converted to positional dimensions in the result
-    tensor, in the order they appear. All other variables remain free.
-
-    """
-    from effectful.ops.syntax import deffn
-
-    if order is None:
-        order = []
-
-    sized_fvs = sizesof(t)
-
-    for x in order:
-        if x not in sized_fvs:
-            raise ValueError(
-                f"Tried to partially evaluate nonexistent free variable {x} (free={sized_fvs})"
-            )
-
-    # if there are no sized free variables, then nothing to do
-    if len(sized_fvs) == 0:
+    if not (
+        isinstance(t, Term)
+        and all(
+            isinstance(a, torch.Tensor) or not isinstance(a, Term)
+            for a in tree.flatten((t.args, t.kwargs))
+        )
+    ):
         return t
 
-    order_set = set(order)
-    reindex_fvs = [
-        (var, size) for var, size in sized_fvs.items() if var not in order_set
-    ]
-    ordered_sized_fvs = reindex_fvs + [(var, sized_fvs[var]) for var in order]
-
-    index_fn = deffn(t, *[var for (var, _) in ordered_sized_fvs])
+    sized_fvs = sizesof(t)
+    if not sized_fvs:
+        return t
 
     # note: torch.func.vmap will call repr on the callable, so it's important
     # that we don't pass something with a slow repr (like a large tensor wrapped
     # in a deffn)
-    def wrapper(*args):
-        return index_fn(*args)
+    def wrapper(*sized_values):
+        with handler(
+            {
+                k: functools.partial(lambda x: x, v)
+                for (k, v) in zip(sized_fvs.keys(), sized_values)
+            }
+        ):
+            return evaluate(t)
 
     tpe_torch_fn = torch.func.vmap(wrapper, randomness="different")
 
     inds = torch.broadcast_tensors(
         *(
-            torch.arange(size)[(...,) + (None,) * (len(ordered_sized_fvs) - i - 1)]
-            for i, (_, size) in enumerate(ordered_sized_fvs)
+            torch.arange(size)[(...,) + (None,) * (len(sized_fvs) - i - 1)]
+            for i, size in enumerate(sized_fvs.values())
         )
     )
 
@@ -180,12 +170,17 @@ def _partial_eval(
             return t
 
         result = t.reshape(inds[0].shape + t.shape[1:])
-        return torch_getitem(result, tuple(var() for (var, _) in reindex_fvs))
+        return torch_getitem(result, tuple(k() for k in sized_fvs.keys()))
 
-    return tree.map_structure(reindex_flat_tensor, flat_result)
+    result = tree.map_structure(reindex_flat_tensor, flat_result)
+    return result
 
 
-def to_tensor(t: T, order: Collection[Operation[[], torch.Tensor]] | None = None) -> T:
+@defop
+def to_tensor(
+    t: Annotated[Expr[torch.Tensor], Scoped[A | B]],
+    order: Collection[Operation[[], torch.Tensor]] | None = None,
+) -> torch.Tensor:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -203,7 +198,49 @@ def to_tensor(t: T, order: Collection[Operation[[], torch.Tensor]] | None = None
     >>> to_tensor(t[a(), b()], [b, a]).shape
     torch.Size([3, 2])
     """
-    return _partial_eval(t, order=order)
+
+    def _evaluate(expr):
+        if isinstance(expr, Term):
+            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
+            return _partial_eval(expr)
+        if tree.is_nested(expr):
+            return tree.map_structure(_evaluate, expr)
+        return expr
+
+    if not isinstance(t, Term):
+        return t
+
+    order = [] if order is None else order
+
+    result = _evaluate(t)
+    if not isinstance(result, Term) or not order:
+        return result
+
+    # ensure that the result is a torch_getitem with a tensor as the first argument
+    if not (result.op is torch_getitem and isinstance(result.args[0], torch.Tensor)):
+        raise NotImplementedError
+
+    tensor = result.args[0]
+    dims = result.args[1]
+    assert isinstance(dims, Sequence)
+
+    # ensure that the order is a subset of the named dimensions
+    order_set = set(order)
+    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
+        raise NotImplementedError
+
+    # permute the inner tensor so that the leading dimensions are in the order
+    # specified and the trailing dimensions are the remaining named dimensions
+    # (or slices)
+    reindex_dims = [
+        i
+        for i, o in enumerate(dims)
+        if not isinstance(o, Term) or o.op not in order_set
+    ]
+    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    perm = [dim_ops.index(o) for o in order] + reindex_dims
+    tensor = tensor.permute(perm)
+    return tensor[(slice(None),) * len(order) + tuple(dims[i] for i in reindex_dims)]
 
 
 @functools.cache
