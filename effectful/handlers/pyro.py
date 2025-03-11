@@ -95,8 +95,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     Sampled y
     """
 
-    _current_site: str | None
-
     @staticmethod
     def _broadcast_to_named(
         t: torch.Tensor, shape: torch.Size, indices: Mapping[Operation[[], int], int]
