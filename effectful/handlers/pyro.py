@@ -203,7 +203,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 # distribution.
                 if var in indices:
                     frame = pyro.poutine.indep_messenger.CondIndepStackFrame(
-                        name=str(var),
+                        name=f"__index_plate_{var}",
                         # dims are indexed from the right of the batch shape
                         dim=dim + len(pdist.event_shape),
                         size=indices[var],
