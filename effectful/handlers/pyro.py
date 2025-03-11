@@ -7,6 +7,8 @@ from typing import (
     TypeVar,
 )
 
+import pyro.poutine.subsample_messenger
+
 try:
     import pyro
 except ImportError:
@@ -55,6 +57,37 @@ def pyro_sample(
         )
 
 
+class Naming:
+    """
+    A mapping from dimensions (indexed from the right) to names.
+    """
+
+    def __init__(self, name_to_dim: Mapping[Operation[[], int], int]):
+        assert all(v < 0 for v in name_to_dim.values())
+        self.name_to_dim = name_to_dim
+
+    @staticmethod
+    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
+        """Create a naming from a set of indices and the number of event dimensions.
+
+        The resulting naming converts tensors of shape
+        ``| batch_shape | named | event_shape |``
+        to tensors of shape ``| batch_shape | event_shape |, | named |``.
+
+        """
+        assert event_dims >= 0
+        return Naming({n: -event_dims - len(names) + i for i, n in enumerate(names)})
+
+    def apply(self, value: torch.Tensor) -> torch.Tensor:
+        indexes: list[Any] = [slice(None)] * (len(value.shape))
+        for n, d in self.name_to_dim.items():
+            indexes[len(value.shape) + d] = n()
+        return Indexable(value)[tuple(indexes)]
+
+    def __repr__(self):
+        return f"Naming({self.name_to_dim})"
+
+
 class PyroShim(pyro.poutine.messenger.Messenger):
     """Pyro handler that wraps all sample sites in a custom effectful type.
 
@@ -94,6 +127,15 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     Sampled x
     Sampled y
     """
+
+    # Tracks the named dimensions on any sample site that we have handled.
+    # Ideally, this information would be carried on the sample message itself.
+    # However, when using guides, sample sites are completely replaced by fresh
+    # guide sample sites that do not carry the same infer dict.
+    #
+    # We can only restore the named dimensions on samples that we have handled
+    # at least once in the shim.
+    _index_naming: Mapping[str, Naming] = {}
 
     @staticmethod
     def _broadcast_to_named(
@@ -212,7 +254,12 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["fn"] = pdist
             msg["value"] = pos_obs
             msg["mask"] = pos_mask
-            msg["_index_naming"] = naming  # type: ignore
+
+            # stash the index naming on the sample message so that future
+            # consumers of the trace can get at it
+            msg["_index_naming"] = naming
+
+            self._index_naming[msg["name"]] = naming
 
             assert sizesof(msg["value"]) == {}
             assert sizesof(msg["mask"]) == {}
@@ -240,17 +287,22 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
         assert msg["value"] is not None
 
-        # If this message has been handled already by a different pyro shim, ignore.
+        # If there is no shim status, assume that we are looking at a guide sample.
+        # In this case, we should handle the sample and claim it as ours if we have naming
+        # information for it.
         if "pyro_shim_status" not in msg["infer"]:
-            return
+            # Except, of course, for subsample messages, which we should ignore.
+            if (
+                pyro.poutine.util.site_is_subsample(msg)
+                or msg["name"] not in self._index_naming
+            ):
+                return
+            msg["infer"]["pyro_shim_status"] = (id(self), 1)
+
+        # If this message has been handled already by a different pyro shim, ignore.
         handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
         if handler_id != id(self) or handler_stage < 1:
             return
-
-        assert "_index_naming" in msg
-
-        # note: Pyro uses a TypedDict for infer, so it doesn't know we've stored this key
-        naming = msg["_index_naming"]  # type: ignore
 
         value = msg["value"]
 
@@ -263,39 +315,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         dist_shape: tuple[int, ...] = msg["fn"].batch_shape + msg["fn"].event_shape  # type: ignore
         if len(value.shape) < len(dist_shape):
             value = value.broadcast_to(torch.broadcast_shapes(value.shape, dist_shape))
+
+        naming = self._index_naming.get(msg["name"], Naming({}))
         value = naming.apply(value)
         msg["value"] = value
-
-
-class Naming:
-    """
-    A mapping from dimensions (indexed from the right) to names.
-    """
-
-    def __init__(self, name_to_dim: Mapping[Operation[[], int], int]):
-        assert all(v < 0 for v in name_to_dim.values())
-        self.name_to_dim = name_to_dim
-
-    @staticmethod
-    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
-        """Create a naming from a set of indices and the number of event dimensions.
-
-        The resulting naming converts tensors of shape
-        ``| batch_shape | named | event_shape |``
-        to tensors of shape ``| batch_shape | event_shape |, | named |``.
-
-        """
-        assert event_dims >= 0
-        return Naming({n: -event_dims - len(names) + i for i, n in enumerate(names)})
-
-    def apply(self, value: torch.Tensor) -> torch.Tensor:
-        indexes: list[Any] = [slice(None)] * (len(value.shape))
-        for n, d in self.name_to_dim.items():
-            indexes[len(value.shape) + d] = n()
-        return Indexable(value)[tuple(indexes)]
-
-    def __repr__(self):
-        return f"Naming({self.name_to_dim})"
 
 
 @defop
