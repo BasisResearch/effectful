@@ -16,7 +16,7 @@ from effectful.handlers.indexed import (
     name_to_sym,
     stack,
 )
-from effectful.handlers.torch import Indexable, sizesof, to_tensor
+from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn
 
@@ -74,7 +74,7 @@ def indexed_batch(t, batch_len, name_to_dim):
     i = [slice(None)] * batch_len
     for n, d in name_to_dim.items():
         i[d] = name_to_sym(n)()
-    return Indexable(t)[tuple(i)]
+    return t[tuple(i)]
 
 
 @pytest.mark.parametrize(
@@ -187,8 +187,8 @@ def test_stack():
     t2 = torch.randn(5, 3)
 
     a, b, x = name_to_sym("a"), name_to_sym("b"), name_to_sym("x")
-    l1 = Indexable(t1)[a(), b()]
-    l2 = Indexable(t2)[a(), b()]
+    l1 = t1[a(), b()]
+    l2 = t2[a(), b()]
     l3 = stack([l1, l2], x.__name__)
 
     f = indexed_to_defun(l3, [x, a, b])
