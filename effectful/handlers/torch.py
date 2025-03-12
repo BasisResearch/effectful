@@ -129,17 +129,17 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
 def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     """Partially evaluate a term with respect to its sized free variables."""
 
+    sized_fvs = sizesof(t)
+    if not sized_fvs:
+        return t
+
     if not (
         isinstance(t, Term)
         and all(
-            isinstance(a, torch.Tensor) or not isinstance(a, Term)
+            isinstance(a, torch.Tensor) or not isinstance(a, Term) or a.op in sized_fvs
             for a in tree.flatten((t.args, t.kwargs))
         )
     ):
-        return t
-
-    sized_fvs = sizesof(t)
-    if not sized_fvs:
         return t
 
     # note: torch.func.vmap will call repr on the callable, so it's important
