@@ -562,7 +562,7 @@ class GradientOptimizationFold(ObjectInterpretation):
                 # Default to zeros
                 param = torch.zeros(shape, requires_grad=True)
             params.append(param)
-            
+
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)
@@ -581,6 +581,14 @@ class GradientOptimizationFold(ObjectInterpretation):
         with handler(param_ctx):
             arg = evaluate(arg)
         return loss, arg
+
+
+class LikelihoodWeightingFold(ObjectInterpretation):
+    """Handle expectation computation using likelihood weighting."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        pass
 
 
 dense_fold_intp = functools.reduce(

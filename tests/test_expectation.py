@@ -75,3 +75,13 @@ def test_maximum_marginal_likelihood_smoke():
         weight = -(log_prob(z_dist, z()) + torch.sum(log_prob(x_dist, data)))
         intg_weight = fold(LinAlg, {z: sample(z_dist, (n_samples,))}, weight)
         min = fold(ArgMinAlg, {m_z: reals(), s_z: reals(), s_x: reals()}, (intg_weight, (m_z(), s_z(), s_x())))
+
+
+def test_integration():
+    loc = 0.0
+    scale = 1.0
+
+    def f(x):
+        return x**2
+
+    intg = fold(LinAlg, {x: dist.Normal(loc, scale)}, x[1] * f(x[0]))
