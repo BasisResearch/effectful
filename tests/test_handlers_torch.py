@@ -628,3 +628,20 @@ def test_longtensor_index_variables():
 
     z = x[i()] + y[j()]
     assert isinstance(z, torch.Tensor)
+
+
+def test_to_tensor():
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    w = defop(torch.Tensor, name="w")
+    t = torch.sum(to_tensor(torch.randn((2, 3))[x(), y()] + w(), [x]), dim=0)
+
+    assert isinstance(t, Term)
+    assert fvsof(t) >= {y, w}
+    assert x not in fvsof(t)
+
+    with handler({w: lambda: torch.tensor(0.0)}):
+        t = evaluate(t)
+
+    assert isinstance(t, torch.Tensor)
+    assert fvsof(t) >= {y}
+    assert t.shape == ()

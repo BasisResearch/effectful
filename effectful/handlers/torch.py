@@ -177,28 +177,10 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
 
 
 @defop
-def to_tensor(
-    t: Annotated[Expr[torch.Tensor], Scoped[A | B]],
-    order: Collection[Operation[[], torch.Tensor]] | None = None,
-) -> torch.Tensor:
-    """Convert named dimensions to positional dimensions.
-
-    :param t: A tensor.
-    :type t: T
-    :param order: A list of named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type order: Optional[Sequence[Operation[[], int]]]
-    :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> to_tensor(t[a(), b()], [b, a]).shape
-    torch.Size([3, 2])
-    """
-
+def to_tensor_(
+    t: Annotated[torch.Tensor, Scoped[A | B]],
+    *args: Annotated[Operation[[], torch.Tensor], Scoped[A]],
+) -> Annotated[torch.Tensor, Scoped[B]]:
     def _evaluate(expr):
         if isinstance(expr, Term):
             (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
@@ -210,10 +192,8 @@ def to_tensor(
     if not isinstance(t, Term):
         return t
 
-    order = [] if order is None else order
-
     result = _evaluate(t)
-    if not isinstance(result, Term) or not order:
+    if not isinstance(result, Term) or not args:
         return result
 
     # ensure that the result is a torch_getitem with a tensor as the first argument
@@ -225,7 +205,7 @@ def to_tensor(
     assert isinstance(dims, Sequence)
 
     # ensure that the order is a subset of the named dimensions
-    order_set = set(order)
+    order_set = set(args)
     if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
         raise NotImplementedError
 
@@ -238,9 +218,32 @@ def to_tensor(
         if not isinstance(o, Term) or o.op not in order_set
     ]
     dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
-    perm = [dim_ops.index(o) for o in order] + reindex_dims
+    perm = [dim_ops.index(o) for o in args] + reindex_dims
     tensor = tensor.permute(perm)
-    return tensor[(slice(None),) * len(order) + tuple(dims[i] for i in reindex_dims)]
+    return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+
+
+def to_tensor(
+    t: Expr[torch.Tensor], order: Collection[Operation[[], torch.Tensor]] | None = None
+) -> Expr[torch.Tensor]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param order: A list of named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type order: Optional[Collection[Operation[[], int]]]
+    :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> to_tensor(t[a(), b()], [b, a]).shape
+    torch.Size([3, 2])
+    """
+    return to_tensor_(t, *order)
 
 
 @functools.cache
