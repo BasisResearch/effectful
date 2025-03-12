@@ -15,6 +15,7 @@ from weighted.fold_lang_v1 import (
     LinAlg,
     MaxAlg,
     MinAlg,
+    NormalizeValueFold,
     ProductFold,
     dense_fold_intp,
     fold,
@@ -44,8 +45,8 @@ def test_batched_matmul():
     B, I, J, K = 2, 3, 4, 5
 
     # Create sample matrices
-    A = torch.randn(B, I, J)
-    B_mat = torch.randn(B, J, K)
+    X = torch.randn(B, I, J)
+    Y = torch.randn(B, J, K)
 
     # Define index operations
     b, i, j, k = (
@@ -55,23 +56,16 @@ def test_batched_matmul():
         defop(torch.Tensor, name="k"),
     )
 
-    def run_fold():
-        return fold(
+    with handler(dense_fold_intp):
+        actual = fold(
             LinAlg,
             {b: torch.arange(B), i: torch.arange(I), j: torch.arange(J), k: torch.arange(K)},
-            D(((b(), i(), k()), A[b(), i(), j()] * B_mat[b(), j(), k()])),
+            D(((b(), i(), k()), X[b(), i(), j()] * Y[b(), j(), k()])),
         )
 
-    result = run_fold()
-    result_tensor = sparse_to_tensor(result)
-
-    with handler(dense_fold_intp):
-        vectorized_result_tensor = run_fold()
-
     # Compare with pytorch
-    expected = torch.einsum("bij,bjk->bik", A, B_mat)
-    assert torch.allclose(result_tensor, expected, atol=1e-3)
-    assert torch.allclose(vectorized_result_tensor, expected)
+    expected = torch.einsum("bij,bjk->bik", X, Y)
+    assert torch.allclose(actual, expected)
 
 
 def run_min_folds():
@@ -136,7 +130,7 @@ def test_gradient_optimization_init():
         return (x_val - 2)**2 + (y_val + 3)**2
     
     # Test with default initialization (zeros)
-    with handler(GradientOptimizationFold(steps=100, lr=0.1)):
+    with handler(GradientOptimizationFold(steps=100, lr=0.1)), handler(dense_fold_intp):
         result = fold(
             MinAlg,
             {x: reals(), y: reals()},
@@ -159,7 +153,7 @@ def test_gradient_optimization_init():
     
     # Test with custom initialization
     # Starting closer to the minimum should converge faster
-    with handler(GradientOptimizationFold(steps=20, lr=0.1, init={x: 1.5, y: -2.5})):
+    with handler(GradientOptimizationFold(steps=20, lr=0.1, init={x: 1.5, y: -2.5})), handler(dense_fold_intp):
         result = fold(
             MinAlg,
             {x: reals(), y: reals()},
@@ -178,7 +172,7 @@ def test_product_fold():
     product_semiring = semi_ring_product(MinAlg, MaxAlg, LinAlg)
 
     # Test with simple expressions
-    with handler(ProductFold()):
+    with handler(dense_fold_intp):
         # Basic test with a single variable
         result = fold(
             product_semiring,

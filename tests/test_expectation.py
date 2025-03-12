@@ -42,21 +42,17 @@ def Normal(m, s):
 
 
 @defop
-def sample(dist, *args, **kwargs) -> torch.Tensor:
-    if any(isinstance(x, Term) for x in (dist, *args, *kwargs.values())):
+def sample(d: dist.Distribution, sample_shape: tuple[int]) -> torch.Tensor:
+    if not (isinstance(d, dist.Distribution) and isinstance(sample_shape, tuple)):
         raise NotImplementedError
-    return dist.sample(*args, **kwargs)
+    return d.rsample(sample_shape=torch.Size(sample_shape))
 
 
 @defop
-def log_prob(dist, *args, **kwargs) -> torch.Tensor:
-    if any(isinstance(x, Term) for x in (dist, *args, *kwargs.values())):
+def log_prob(d: dist.Distribution, value: torch.Tensor) -> torch.Tensor:
+    if not (isinstance(d, dist.Distribution) and isinstance(value, torch.Tensor)):
         raise NotImplementedError
-    return dist.log_prob(*args, **kwargs)
-
-
-def assert_no_base_case(*args, **kwargs):
-    assert False, "vectorized fold missed a case"
+    return d.log_prob(value)
 
 
 def test_maximum_marginal_likelihood_smoke():
@@ -70,10 +66,12 @@ def test_maximum_marginal_likelihood_smoke():
     z_dist = Normal(m_z(), s_z())
     x_dist = Normal(torch.exp(z()), s_x())
 
+    n_samples = 1
+
     with (
         handler(dense_fold_intp),
         handler(GradientOptimizationFold(steps=1, init={s_z: torch.tensor(1.0), s_x: torch.tensor(1.0)})),
     ):
         weight = -(log_prob(z_dist, z()) + torch.sum(log_prob(x_dist, data)))
-        intg_weight = fold(LinAlg, {z: sample(z_dist, (1,))}, weight)
-        fold(ArgMinAlg, {m_z: reals(), s_z: reals(), s_x: reals()}, (intg_weight, (m_z(), s_z(), s_x())))
+        intg_weight = fold(LinAlg, {z: sample(z_dist, (n_samples,))}, weight)
+        min = fold(ArgMinAlg, {m_z: reals(), s_z: reals(), s_x: reals()}, (intg_weight, (m_z(), s_z(), s_x())))

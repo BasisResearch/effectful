@@ -186,7 +186,7 @@ def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard
 
 
 @defop
-def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], *, guard: bool = True) -> Mapping[K, T]:
     raise NotImplementedError
 
 
@@ -427,7 +427,7 @@ class DenseTensorFold(ObjectInterpretation):
 
 
 @defop
-def reals(shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
+def reals(*, shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
     raise NotImplementedError
 
 
@@ -584,5 +584,5 @@ class GradientOptimizationFold(ObjectInterpretation):
 
 
 dense_fold_intp = functools.reduce(
-    coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), FlipOptimizationFold()]
+    coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), FlipOptimizationFold(), ProductFold()]
 )
