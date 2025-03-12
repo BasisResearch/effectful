@@ -841,11 +841,6 @@ def defdata(
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
     args_, kwargs_ = list(args), dict(kwargs)
 
-    if len(args) != len(arg_ctxs):
-        raise ValueError(
-            f"Expected {len(arg_ctxs)} positional arguments to {str(op)} but got {len(args)}."
-        )
-
     renaming = {
         var: defop(var)
         for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
