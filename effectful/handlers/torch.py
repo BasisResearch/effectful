@@ -224,7 +224,7 @@ def to_tensor_(
 
 
 def to_tensor(
-    t: torch.Tensor, order: Collection[Operation[[], torch.Tensor]] | None = None
+    t: torch.Tensor, order: Sequence[Operation[[], torch.Tensor]] | None = None
 ) -> torch.Tensor:
     """Convert named dimensions to positional dimensions.
 
@@ -233,7 +233,7 @@ def to_tensor(
     :param order: A list of named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type order: Optional[Collection[Operation[[], int]]]
+    :type order: Optional[Sequence[Operation[[], int]]]
     :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
 
     **Example usage**:
