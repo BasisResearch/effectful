@@ -166,10 +166,7 @@ def test_indexed_sample():
         def _pyro_sample(self, msg):
             # named dimensions should not be visible to Pyro
             assert sizesof(msg["fn"].sample()) == {}
-            assert any(
-                f.name == "__index_plate_b" and f.dim == -2
-                for f in msg["cond_indep_stack"]
-            )
+            assert any(f.name == "b" and f.dim == -2 for f in msg["cond_indep_stack"])
 
     with CheckSampleMessenger(), PyroShim():
         t = model()
