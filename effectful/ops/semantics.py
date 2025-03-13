@@ -300,6 +300,16 @@ def typeof(term: Expr[T]) -> type[T]:
     return type(term)
 
 
+def _free_var_rule(op, *args, **kwargs):
+    free = {op} | set().union(
+        *[x for x in tree.flatten((args, kwargs.values())) if isinstance(x, set)]
+    )
+    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    bound_vars = set().union(*(a for a in arg_ctxs), *(k for k in kwarg_ctxs.values()))
+    free -= bound_vars
+    return free
+
+
 def fvsof(term: Expr[S]) -> set[Operation]:
     """Return the free variables of an expression.
 
@@ -312,22 +322,6 @@ def fvsof(term: Expr[S]) -> set[Operation]:
     >>> assert f in fvs
     >>> assert len(fvs) == 1
     """
-    from effectful.internals.runtime import interpreter
-
-    _fvs: set[Operation] = set()
-
-    def _update_fvs(_, op, *args, **kwargs):
-        _fvs.add(op)
-        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-        bound_vars = set().union(
-            *(a for a in arg_ctxs),
-            *(k for k in kwarg_ctxs.values()),
-        )
-        for bound_var in bound_vars:
-            if bound_var in _fvs:
-                _fvs.remove(bound_var)
-
-    with interpreter({apply: _update_fvs}):
-        evaluate(term)
-
-    return _fvs
+    if isinstance(term, Term):
+        return term.apply_rule(_free_var_rule)
+    return set()

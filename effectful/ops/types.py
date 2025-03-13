@@ -8,6 +8,7 @@ import typing
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Generic, TypeAlias, TypeVar
 
+import tree
 from typing_extensions import ParamSpec
 
 P = ParamSpec("P")
@@ -91,14 +92,11 @@ class _TermRuleCache:
         if rule in self._rule_cache:
             return self._rule_cache[rule]
 
-        value = rule(
-            term.op,
-            *[a.apply_rule(rule) if isinstance(a, Term) else a for a in term.args],
-            **{
-                k: v.apply_rule(rule) if isinstance(v, Term) else v
-                for k, v in term.kwargs.items()
-            },
+        (args, kwargs) = tree.map_structure(
+            lambda x: x.apply_rule(rule) if isinstance(x, Term) else x,
+            (term.args, term.kwargs),
         )
+        value = rule(term.op, *args, **kwargs)
         self._rule_cache[rule] = value
         return value
 
