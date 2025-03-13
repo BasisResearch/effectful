@@ -303,20 +303,3 @@ def cond_n(values: dict[IndexSet, torch.Tensor], case: torch.Tensor) -> torch.Te
         result = cond(result if result is not None else value, value, tst)
     assert result is not None
     return result
-
-
-def select(tensor: torch.Tensor, **indices: int) -> torch.Tensor:
-    """Evaluate an indexed tensor at specific indices.
-
-    Example:
-
-    >>> a, b = name_to_sym("a"), name_to_sym("b")
-    >>> x = torch.tensor([[1, 2], [3, 4]])[a(), b()]
-    >>> select(x, a=0, b=1)
-    tensor(2)
-    """
-    intp = {
-        name_to_sym(n): functools.partial(lambda x: x, i) for (n, i) in indices.items()
-    }
-    with handler(intp):
-        return cast(torch.Tensor, evaluate(tensor))
