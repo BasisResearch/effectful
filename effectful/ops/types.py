@@ -96,7 +96,7 @@ class _TermRuleCache:
             lambda x: x.apply_rule(rule) if isinstance(x, Term) else x,
             (term.args, term.kwargs),
         )
-        value = rule(term.op, *args, **kwargs)
+        value = rule(term, *args, **kwargs)
         self._rule_cache[rule] = value
         return value
 

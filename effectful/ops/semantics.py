@@ -265,8 +265,8 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
         return expr
 
 
-def _type_rule(op, *args, **kwargs):
-    return op.__type_rule__(*args, **kwargs)
+def _type_rule(term, *args, **kwargs):
+    return term.op.__type_rule__(*args, **kwargs)
 
 
 def typeof(term: Expr[T]) -> type[T]:
@@ -300,11 +300,15 @@ def typeof(term: Expr[T]) -> type[T]:
     return type(term)
 
 
-def _free_var_rule(op, *args, **kwargs):
-    free = {op} | set().union(
+def _fvs_rule(term, *args, **kwargs):
+    return term.op.__fvs_rule__(*args, **kwargs)
+
+
+def _free_var_rule(term, *args, **kwargs):
+    free = {term.op} | set().union(
         *[x for x in tree.flatten((args, kwargs.values())) if isinstance(x, set)]
     )
-    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    arg_ctxs, kwarg_ctxs = term.apply_rule(_fvs_rule)
     bound_vars = set().union(*(a for a in arg_ctxs), *(k for k in kwarg_ctxs.values()))
     free -= bound_vars
     return free
