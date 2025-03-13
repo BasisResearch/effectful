@@ -608,6 +608,12 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             origin = typing.get_origin(typ)
             return typ if origin is None else origin
 
+        def any_to_object(typ):
+            return object if typ is typing.Any else typ
+
+        def cleanup(typ):
+            return any_to_object(drop_params(typ))
+
         anno = unwrap_annotation(anno)
 
         if anno is inspect.Signature.empty:
@@ -626,11 +632,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 ):
                     arg = bound_sig.arguments[name]
                     tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    return cleanup(tp)
 
             return typing.cast(type[V], object)
 
-        return drop_params(anno)
+        return cleanup(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
