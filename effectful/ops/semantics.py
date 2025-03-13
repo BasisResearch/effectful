@@ -289,10 +289,10 @@ def typeof(term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    if isinstance(term, Term):
-        return term.op.__type_rule__(typeof, *term.args, **term.kwargs)
+    from effectful.internals.runtime import interpreter
 
-    return type(term)
+    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
+        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
 
 
 def fvsof(term: Expr[S]) -> set[Operation]:

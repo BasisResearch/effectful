@@ -530,7 +530,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
-        self._annotations = Scoped.infer_annotations(self.__signature__)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -559,7 +558,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         tuple[collections.abc.Set[Operation], ...],
         dict[str, collections.abc.Set[Operation]],
     ]:
-        sig = self._annotations
+        sig = Scoped.infer_annotations(self.__signature__)
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
@@ -584,7 +583,13 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
-    def __type_rule__(self, typeof, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+        sig = inspect.signature(self._default)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
+
+        anno = sig.return_annotation
+
         def unwrap_annotation(typ):
             """Unwrap Annotated types."""
             return (
@@ -596,21 +601,12 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             origin = typing.get_origin(typ)
             return typ if origin is None else origin
 
-        def cleanup(typ):
-            typ = drop_params(typ)
-            if typ is typing.Any:
-                return object
-            return typ
-
-        anno = unwrap_annotation(self.__signature__.return_annotation)
+        anno = unwrap_annotation(anno)
 
         if anno is inspect.Signature.empty:
             return typing.cast(type[V], object)
 
         if isinstance(anno, typing.TypeVar):
-            bound_sig = self.__signature__.bind(*args, **kwargs)
-            bound_sig.apply_defaults()
-
             # rudimentary but sound special-case type inference sufficient for syntax ops:
             # if the return type annotation is a TypeVar,
             # look for a parameter with the same annotation and return its type,
@@ -622,13 +618,12 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     inspect.Parameter.VAR_KEYWORD,
                 ):
                     arg = bound_sig.arguments[name]
-                    if isinstance(arg, Term):
-                        return typeof(arg)
-                    return cleanup(type(arg))
+                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
+                    return drop_params(tp)
 
             return typing.cast(type[V], object)
 
-        return cleanup(anno)
+        return drop_params(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -839,14 +834,13 @@ def defdata(
     from effectful.ops.semantics import apply, evaluate, typeof
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-    args_, kwargs_ = list(args), dict(kwargs)
-
     renaming = {
         var: defop(var)
         for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
         for var in bound_vars
     }
 
+    args_, kwargs_ = list(args), dict(kwargs)
     for i, (v, c) in (
         *enumerate(zip(args, arg_ctxs)),
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
