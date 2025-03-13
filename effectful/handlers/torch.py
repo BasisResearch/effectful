@@ -83,6 +83,12 @@ class _Sizes:
 
 
 def _sizesof_rule(term, *args, **kwargs):
+    def assert_same_size(k, s1, s2):
+        if s1 != s2:
+            raise ValueError(
+                f"Named index {k} used in incompatible dimensions of size {s1} and {s2}"
+            )
+
     all_sizes = list(
         s.sizes for s in tree.flatten((args, kwargs.values())) if isinstance(s, _Sizes)
     )
@@ -99,18 +105,15 @@ def _sizesof_rule(term, *args, **kwargs):
                 and len(k.kwargs) == 0
                 and issubclass(typeof(k), torch.Tensor)
             ):
+                if k.op in getitem_sizes:
+                    assert_same_size(k.op, getitem_sizes[k.op], shape[i])
                 getitem_sizes[k.op] = shape[i]
         all_sizes.append(getitem_sizes)
 
     sizes = {}
     for s in all_sizes:
         for k in set(sizes) & set(s):
-            v1 = sizes[k]
-            v2 = s[k]
-            if v1 != v2:
-                raise ValueError(
-                    f"Named index {k} used in incompatible dimensions of size {v1} and {v2}"
-                )
+            assert_same_size(k, sizes[k], s[k])
         sizes.update(s)
 
     return _Sizes(sizes)
