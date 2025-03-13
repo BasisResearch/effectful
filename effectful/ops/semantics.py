@@ -294,7 +294,6 @@ def typeof(term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    from effectful.internals.runtime import interpreter
 
     if isinstance(term, Term):
         return term.apply_rule(_type_rule)

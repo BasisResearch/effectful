@@ -884,7 +884,7 @@ def _(value: T) -> T:
 
 
 @defdata.register(object)
-class _BaseTerm(Generic[T], Term[T], _TermRuleCache):
+class _BaseTerm(Generic[T], Term[T]):
     _op: Operation[..., T]
     _args: collections.abc.Sequence[Expr]
     _kwargs: collections.abc.Mapping[str, Expr]
@@ -918,7 +918,7 @@ class _BaseTerm(Generic[T], Term[T], _TermRuleCache):
     def kwargs(self):
         return self._kwargs
 
-    def apply_rule(self, rule: Callable[..., T]) -> T:
+    def apply_rule(self, rule: Callable[..., S]) -> S:
         return self._rule_cache.apply_rule(self, rule)
 
 

@@ -14,8 +14,7 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.ops.semantics import fvsof, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term, _TermRuleCache
 
@@ -354,7 +353,7 @@ class _TensorTerm(Term[torch.Tensor]):
     def kwargs(self) -> dict:
         return self._kwargs
 
-    def apply_rule(self, rule):
+    def apply_rule(self, rule: Callable[..., S]) -> S:
         return self._rule_cache.apply_rule(self, rule)
 
     def __getitem__(
@@ -499,8 +498,8 @@ class _EagerTensorTerm(torch.Tensor):
         ret._rule_cache = _TermRuleCache()
         return ret
 
-    def apply_rule(self, rule):
-        return self._rule_cache.apply_rule(self, rule)
+    def apply_rule(self, rule: Callable[..., S]) -> S:
+        return self._rule_cache.apply_rule(typing.cast(Term, self), rule)
 
     def __str__(self):
         tensor_str = str(self.args[0])

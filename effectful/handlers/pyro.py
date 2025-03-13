@@ -1,11 +1,7 @@
 import typing
 import warnings
-from collections.abc import Collection, Mapping
-from typing import (
-    Annotated,
-    Any,
-    TypeVar,
-)
+from collections.abc import Callable, Collection, Mapping
+from typing import Annotated, Any, TypeVar
 
 try:
     import pyro
@@ -375,7 +371,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
         self._kwargs = kwargs
         self._rule_cache = _TermRuleCache()
 
-    def apply_rule(self, rule):
+    def apply_rule(self, rule: Callable[..., A]) -> A:
         return self._rule_cache.apply_rule(self, rule)
 
     @property

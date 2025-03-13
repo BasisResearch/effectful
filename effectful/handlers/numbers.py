@@ -4,6 +4,7 @@ This module provides a term representation for numbers and operations on them.
 
 import numbers
 import operator
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from typing_extensions import ParamSpec
@@ -46,7 +47,7 @@ class _NumberTerm(Term[numbers.Number]):
     def kwargs(self) -> dict:
         return self._kwargs
 
-    def apply_rule(self, rule):
+    def apply_rule(self, rule: Callable[..., S]) -> S:
         return self._rule_cache.apply_rule(self, rule)
 
     def __hash__(self):
