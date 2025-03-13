@@ -14,7 +14,7 @@ from torch.testing import assert_close
 
 from effectful.handlers.indexed import name_to_sym
 from effectful.handlers.pyro import positional_distribution
-from effectful.handlers.torch import sizesof, to_tensor, torch_getitem
+from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.syntax import defop
 
 ##################################################

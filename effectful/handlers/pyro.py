@@ -28,7 +28,6 @@ except ImportError:
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import sizesof, to_tensor
-from effectful.ops.semantics import call
 from effectful.ops.syntax import Scoped, defop, defterm
 from effectful.ops.types import Operation, Term
 
@@ -62,12 +61,14 @@ class Naming:
     A mapping from dimensions (indexed from the right) to names.
     """
 
-    def __init__(self, name_to_dim: Mapping[Operation[[], int], int]):
+    def __init__(self, name_to_dim: Mapping[Operation[[], torch.Tensor], int]):
         assert all(v < 0 for v in name_to_dim.values())
         self.name_to_dim = name_to_dim
 
     @staticmethod
-    def from_shape(names: Collection[Operation[[], int]], event_dims: int) -> "Naming":
+    def from_shape(
+        names: Collection[Operation[[], torch.Tensor]], event_dims: int
+    ) -> "Naming":
         """Create a naming from a set of indices and the number of event dimensions.
 
         The resulting naming converts tensors of shape
@@ -135,7 +136,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
     #
     # We can only restore the named dimensions on samples that we have handled
     # at least once in the shim.
-    _index_naming: Mapping[str, Naming] = {}
+    _index_naming: dict[str, Naming]
+
+    def __init__(self):
+        self._index_naming = {}
 
     @staticmethod
     def _broadcast_to_named(
@@ -186,11 +190,11 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             return
 
         if "pyro_shim_status" in msg["infer"]:
-            handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+            handler_id, handler_stage = msg["infer"]["pyro_shim_status"]  # type: ignore
         else:
             handler_id = id(self)
             handler_stage = 0
-            msg["infer"]["pyro_shim_status"] = (handler_id, handler_stage)
+            msg["infer"]["pyro_shim_status"] = (handler_id, handler_stage)  # type: ignore
 
         if handler_id != id(self):  # Never handle a message that is not ours.
             return
@@ -259,7 +263,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
             # stash the index naming on the sample message so that future
             # consumers of the trace can get at it
-            msg["_index_naming"] = naming
+            msg["_index_naming"] = naming  # type: ignore
 
             self._index_naming[msg["name"]] = naming
 
@@ -269,7 +273,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # This branch handles the first call to pyro.sample by calling pyro_sample.
         else:
             infer = msg["infer"].copy()
-            infer["pyro_shim_status"] = (handler_id, 1)
+            infer["pyro_shim_status"] = (handler_id, 1)  # type: ignore
 
             msg["value"] = pyro_sample(
                 msg["name"],
@@ -287,7 +291,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             msg["infer"]["_do_not_trace"] = True
 
     def _pyro_post_sample(self, msg: pyro.poutine.runtime.Message) -> None:
-        assert msg["value"] is not None
+        if typing.TYPE_CHECKING:
+            assert msg["name"] is not None
+            assert msg["value"] is not None
+            assert msg["infer"] is not None
 
         # If there is no shim status, assume that we are looking at a guide sample.
         # In this case, we should handle the sample and claim it as ours if we have naming
@@ -299,10 +306,10 @@ class PyroShim(pyro.poutine.messenger.Messenger):
                 or msg["name"] not in self._index_naming
             ):
                 return
-            msg["infer"]["pyro_shim_status"] = (id(self), 1)
+            msg["infer"]["pyro_shim_status"] = (id(self), 1)  # type: ignore
 
         # If this message has been handled already by a different pyro shim, ignore.
-        handler_id, handler_stage = msg["infer"]["pyro_shim_status"]
+        handler_id, handler_stage = msg["infer"]["pyro_shim_status"]  # type: ignore
         if handler_id != id(self) or handler_stage < 1:
             return
 
