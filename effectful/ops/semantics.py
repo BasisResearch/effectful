@@ -1,6 +1,7 @@
 import contextlib
 import functools
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 import tree
@@ -297,21 +298,28 @@ def typeof(term: Expr[T]) -> type[T]:
 
     if isinstance(term, Term):
         return term.apply_rule(_type_rule)
-    return type(term)
+    return _type_rule(term)
 
 
 def _fvs_rule(term, *args, **kwargs):
     return term.op.__fvs_rule__(*args, **kwargs)
 
 
+@dataclass
+class Free:
+    """Wrapper for sets of free variables, used so that we can distinguish them from other sets in term trees."""
+
+    free: set[Operation]
+
+
 def _free_var_rule(term, *args, **kwargs):
     free = {term.op} | set().union(
-        *[x for x in tree.flatten((args, kwargs.values())) if isinstance(x, set)]
+        *[x.free for x in tree.flatten((args, kwargs.values())) if isinstance(x, Free)]
     )
     arg_ctxs, kwarg_ctxs = term.apply_rule(_fvs_rule)
     bound_vars = set().union(*(a for a in arg_ctxs), *(k for k in kwarg_ctxs.values()))
     free -= bound_vars
-    return free
+    return Free(free)
 
 
 def fvsof(term: Expr[S]) -> set[Operation]:
@@ -327,5 +335,5 @@ def fvsof(term: Expr[S]) -> set[Operation]:
     >>> assert len(fvs) == 1
     """
     if isinstance(term, Term):
-        return term.apply_rule(_free_var_rule)
+        return term.apply_rule(_free_var_rule).free
     return set()

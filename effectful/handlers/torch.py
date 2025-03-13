@@ -1,6 +1,7 @@
 import functools
 import typing
 from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass
 from types import EllipsisType
 from typing import Any, TypeVar
 
@@ -76,6 +77,45 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
+@dataclass
+class _Sizes:
+    sizes: dict[Operation[[], torch.Tensor], int]
+
+
+def _sizesof_rule(term, *args, **kwargs):
+    all_sizes = list(
+        s.sizes for s in tree.flatten((args, kwargs.values())) if isinstance(s, _Sizes)
+    )
+
+    if term.op is torch_getitem and isinstance(term.args[0], torch.Tensor):
+        tensor, key = term.args[0], term.args[1]
+        shape, key_ = _desugar_tensor_index(tensor.shape, key)
+
+        getitem_sizes = {}
+        for i, k in enumerate(key_):
+            if (
+                isinstance(k, Term)
+                and len(k.args) == 0
+                and len(k.kwargs) == 0
+                and issubclass(typeof(k), torch.Tensor)
+            ):
+                getitem_sizes[k.op] = shape[i]
+        all_sizes.append(getitem_sizes)
+
+    sizes = {}
+    for s in all_sizes:
+        for k in set(sizes) & set(s):
+            v1 = sizes[k]
+            v2 = s[k]
+            if v1 != v2:
+                raise ValueError(
+                    f"Named index {k} used in incompatible dimensions of size {v1} and {v2}"
+                )
+        sizes.update(s)
+
+    return _Sizes(sizes)
+
+
 def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
@@ -90,38 +130,10 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    sizes: dict[Operation[[], torch.Tensor], int] = {}
-
-    def _torch_getitem_sizeof(
-        x: Expr[torch.Tensor], key: tuple[Expr[IndexElement], ...]
-    ) -> Expr[torch.Tensor]:
-        if isinstance(x, torch.Tensor):
-            shape, key_ = _desugar_tensor_index(x.shape, key)
-
-            for i, k in enumerate(key_):
-                if (
-                    isinstance(k, Term)
-                    and len(k.args) == 0
-                    and len(k.kwargs) == 0
-                    and issubclass(typeof(k), torch.Tensor)
-                ):
-                    if k.op in sizes and sizes[k.op] != shape[i]:
-                        raise ValueError(
-                            f"Named index {k.op} used in incompatible dimensions of size {sizes[k.op]} and {shape[i]}"
-                        )
-                    sizes[k.op] = shape[i]
-
-        return defdata(torch_getitem, x, key)
-
-    def _apply(_, op, *args, **kwargs):
-        args, kwargs = tree.map_structure(defterm, (args, kwargs))
-        return defdata(op, *args, **kwargs)
-
     value = defterm(value)
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
-        evaluate(value)
-
-    return sizes
+    if isinstance(value, Term):
+        return value.apply_rule(_sizesof_rule).sizes
+    return {}
 
 
 def _partial_eval(

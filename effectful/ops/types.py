@@ -6,6 +6,7 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Generic, TypeAlias, TypeVar
 
 import tree
@@ -89,6 +90,14 @@ class _TermRuleCache:
         self._rule_cache = {}
 
     def apply_rule(self, term: Term, rule: Callable[..., V]) -> V:
+        """Apply an analysis rule to a term, returning the result.
+
+        The rule is passed the term and the results of applying the rule
+        recursively to the term arguments. If the term arguments are nested, the
+        rule is applied recursively to the nested terms as well. The rule is
+        never applied to ordinary values.
+
+        """
         if rule in self._rule_cache:
             return self._rule_cache[rule]
 
