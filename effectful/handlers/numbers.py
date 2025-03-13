@@ -29,7 +29,6 @@ class _NumberTerm(Term[numbers.Number]):
     def __init__(
         self, op: Operation[..., numbers.Number], *args: Expr, **kwargs: Expr
     ) -> None:
-        super().__init__()
         self._op = op
         self._args = args
         self._kwargs = kwargs
