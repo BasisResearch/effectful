@@ -315,8 +315,9 @@ class PyroShim(pyro.poutine.messenger.Messenger):
 
         value = msg["value"]
 
+        naming = self._index_naming.get(msg["name"], Naming({}))
         infer = msg["infer"] if msg["infer"] is not None else {}
-        assert "enumerate" not in infer, (
+        assert "enumerate" not in infer or len(naming.name_to_dim) == 0, (
             "Enumeration is not currently supported in PyroShim."
         )
 
@@ -325,7 +326,6 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         if len(value.shape) < len(dist_shape):
             value = value.broadcast_to(torch.broadcast_shapes(value.shape, dist_shape))
 
-        naming = self._index_naming.get(msg["name"], Naming({}))
         value = naming.apply(value)
         msg["value"] = value
 

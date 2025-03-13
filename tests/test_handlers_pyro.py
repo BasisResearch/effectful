@@ -88,7 +88,6 @@ class HMM(pyro.nn.PyroModule):
             logger.debug(f"{t}\t{tuple(x.shape)}")
 
 
-@pytest.mark.xfail(raises=AssertionError)
 @pytest.mark.parametrize("num_particles", [1, 10])
 @pytest.mark.parametrize("max_plate_nesting", [3, float("inf")])
 @pytest.mark.parametrize(
