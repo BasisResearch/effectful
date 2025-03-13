@@ -16,7 +16,7 @@ import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import defdata, defop, defterm
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, Operation, Term, _TermRuleCache
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -317,12 +317,15 @@ def _embed_tensor(op, *args, **kwargs):
 
 
 class _TensorTerm(Term[torch.Tensor]):
+    _rule_cache: _TermRuleCache
+
     def __init__(
         self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
     ) -> None:
         self._op = op
         self._args = args
         self._kwargs = kwargs
+        self._rule_cache = _TermRuleCache()
 
     @property
     def op(self) -> Operation[..., torch.Tensor]:
@@ -335,6 +338,9 @@ class _TensorTerm(Term[torch.Tensor]):
     @property
     def kwargs(self) -> dict:
         return self._kwargs
+
+    def apply_rule(self, rule):
+        return self._rule_cache.apply_rule(self, rule)
 
     def __getitem__(
         self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
@@ -461,6 +467,7 @@ class _EagerTensorTerm(torch.Tensor):
     op: Operation[..., torch.Tensor] = torch_getitem
     args: tuple[torch.Tensor, tuple[IndexElement, ...]]
     kwargs: Mapping[str, object] = {}
+    _rule_cache: _TermRuleCache
 
     __match_args__ = ("op", "args", "kwargs")
 
@@ -474,7 +481,11 @@ class _EagerTensorTerm(torch.Tensor):
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
         ret.args = (x, key)
+        ret._rule_cache = _TermRuleCache()
         return ret
+
+    def apply_rule(self, rule):
+        return self._rule_cache.apply_rule(self, rule)
 
     def __str__(self):
         tensor_str = str(self.args[0])

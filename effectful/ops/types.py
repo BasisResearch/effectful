@@ -83,6 +83,26 @@ class Operation(abc.ABC, Generic[Q, V]):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
 
 
+class _TermRuleCache:
+    def __init__(self):
+        self._rule_cache = {}
+
+    def apply_rule(self, term: Term, rule: Callable[..., V]) -> V:
+        if rule in self._rule_cache:
+            return self._rule_cache[rule]
+
+        value = rule(
+            term.op,
+            *[a.apply_rule(rule) if isinstance(a, Term) else a for a in term.args],
+            **{
+                k: v.apply_rule(rule) if isinstance(v, Term) else v
+                for k, v in term.kwargs.items()
+            },
+        )
+        self._rule_cache[rule] = value
+        return value
+
+
 class Term(abc.ABC, Generic[T]):
     """A term in an effectful computation is a is a tree of :class:`Operation`
     applied to values.
@@ -107,6 +127,10 @@ class Term(abc.ABC, Generic[T]):
     @abc.abstractmethod
     def kwargs(self) -> Mapping[str, Expr[Any]]:
         """Abstract property for the keyword arguments."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def apply_rule(self, rule: Callable[..., V]) -> V:
         raise NotImplementedError
 
     def __repr__(self) -> str:

@@ -28,7 +28,7 @@ from typing_extensions import ParamSpec
 from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.semantics import call
 from effectful.ops.syntax import Scoped, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Operation, Term, _TermRuleCache
 
 P = ParamSpec("P")
 A = TypeVar("A")
@@ -373,6 +373,10 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
         self._args = (dist_constr,) + tuple(defterm(a) for a in args)
         self._kwargs = kwargs
+        self._rule_cache = _TermRuleCache()
+
+    def apply_rule(self, rule):
+        return self._rule_cache.apply_rule(self, rule)
 
     @property
     def op(self):

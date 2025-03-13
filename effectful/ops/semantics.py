@@ -265,6 +265,10 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
         return expr
 
 
+def _type_rule(op, *args, **kwargs):
+    return op.__type_rule__(*args, **kwargs)
+
+
 def typeof(term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
@@ -291,8 +295,9 @@ def typeof(term: Expr[T]) -> type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
+    if isinstance(term, Term):
+        return term.apply_rule(_type_rule)
+    return type(term)
 
 
 def fvsof(term: Expr[S]) -> set[Operation]:

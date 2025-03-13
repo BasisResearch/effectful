@@ -11,7 +11,14 @@ from typing import Annotated, Concatenate, Generic, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
+from effectful.ops.types import (
+    Annotation,
+    Expr,
+    Interpretation,
+    Operation,
+    Term,
+    _TermRuleCache,
+)
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -877,10 +884,11 @@ def _(value: T) -> T:
 
 
 @defdata.register(object)
-class _BaseTerm(Generic[T], Term[T]):
+class _BaseTerm(Generic[T], Term[T], _TermRuleCache):
     _op: Operation[..., T]
     _args: collections.abc.Sequence[Expr]
     _kwargs: collections.abc.Mapping[str, Expr]
+    _rule_cache: _TermRuleCache
 
     def __init__(
         self,
@@ -891,6 +899,7 @@ class _BaseTerm(Generic[T], Term[T]):
         self._op = op
         self._args = args
         self._kwargs = kwargs
+        self._rule_cache = _TermRuleCache()
 
     def __eq__(self, other) -> bool:
         from effectful.ops.syntax import syntactic_eq
@@ -908,6 +917,9 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
+
+    def apply_rule(self, rule: Callable[..., T]) -> T:
+        return self._rule_cache.apply_rule(self, rule)
 
 
 @defdata.register(collections.abc.Callable)

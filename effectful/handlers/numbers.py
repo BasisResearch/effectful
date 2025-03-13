@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import defdata, defop, syntactic_eq
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, Operation, Term, _TermRuleCache
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -23,12 +23,16 @@ T_Number = TypeVar("T_Number", bound=numbers.Number)
 @defdata.register(numbers.Number)
 @numbers.Number.register
 class _NumberTerm(Term[numbers.Number]):
+    _rule_cache: _TermRuleCache
+
     def __init__(
         self, op: Operation[..., numbers.Number], *args: Expr, **kwargs: Expr
     ) -> None:
+        super().__init__()
         self._op = op
         self._args = args
         self._kwargs = kwargs
+        self._rule_cache = _TermRuleCache()
 
     @property
     def op(self) -> Operation[..., numbers.Number]:
@@ -41,6 +45,9 @@ class _NumberTerm(Term[numbers.Number]):
     @property
     def kwargs(self) -> dict:
         return self._kwargs
+
+    def apply_rule(self, rule):
+        return self._rule_cache.apply_rule(self, rule)
 
     def __hash__(self):
         return hash((self.op, tuple(self.args), tuple(self.kwargs.items())))
