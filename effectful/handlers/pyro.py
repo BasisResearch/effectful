@@ -27,7 +27,7 @@ except ImportError:
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import sizesof, to_tensor
-from effectful.ops.semantics import call
+from effectful.ops.semantics import call, typeof
 from effectful.ops.syntax import Scoped, defop, defterm
 from effectful.ops.types import Operation, Term
 
@@ -302,11 +302,6 @@ def named_distribution(
     d: Annotated[TorchDistribution, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
-    d = defterm(d)
-
-    if not isinstance(d, _DistributionTerm):
-        raise NotImplementedError
-
     def _to_named(a):
         if isinstance(a, torch.Tensor):
             return typing.cast(torch.Tensor, a)[tuple(n() for n in names)]
@@ -314,6 +309,10 @@ def named_distribution(
             return named_distribution(a, *names)
         else:
             return a
+
+    d = defterm(d)
+    if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
+        raise NotImplementedError
 
     new_d = d.op(
         *[_to_named(a) for a in d.args],
@@ -327,15 +326,6 @@ def named_distribution(
 def positional_distribution(
     d: Annotated[TorchDistribution, Scoped[A]],
 ) -> tuple[TorchDistribution, Naming]:
-    shape = d.shape()
-    d = defterm(d)
-
-    if not isinstance(d, _DistributionTerm):
-        raise NotImplementedError
-
-    indices = sizesof(d).keys()
-    naming = Naming.from_shape(indices, len(shape))
-
     def _to_positional(a):
         if isinstance(a, torch.Tensor):
             a_indices = sizesof(a)
@@ -347,6 +337,14 @@ def positional_distribution(
             return positional_distribution(a)[0]
         else:
             return a
+
+    d = defterm(d)
+    if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
+        raise NotImplementedError
+
+    shape = d.shape()
+    indices = sizesof(d).keys()
+    naming = Naming.from_shape(indices, len(shape))
 
     new_d = d.op(
         *[_to_positional(a) for a in d.args],
