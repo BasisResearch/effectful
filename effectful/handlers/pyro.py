@@ -302,8 +302,28 @@ def named_distribution(
     d: Annotated[TorchDistribution, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
+    batch_shape = None
+
+    def _validate_batch_shape(t):
+        nonlocal batch_shape
+        if len(t.shape) < len(names):
+            raise ValueError(
+                "All tensors must have at least as many dimensions as names"
+            )
+
+        if batch_shape is None:
+            batch_shape = t.shape[: len(names)]
+
+        if (
+            len(t.shape) < len(batch_shape)
+            or t.shape[: len(batch_shape)] != batch_shape
+        ):
+            raise ValueError("All tensors must have the same batch shape.")
+
     def _to_named(a):
+        nonlocal batch_shape
         if isinstance(a, torch.Tensor):
+            _validate_batch_shape(a)
             return typing.cast(torch.Tensor, a)[tuple(n() for n in names)]
         elif isinstance(a, TorchDistribution):
             return named_distribution(a, *names)
