@@ -5,8 +5,8 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable
-from typing import Annotated, Concatenate, Generic, TypeVar
+from collections.abc import Callable, Generator, Iterable, Iterator
+from typing import Annotated, Any, Concatenate, Generic, TypeVar, get_args, get_origin
 
 import tree
 from typing_extensions import ParamSpec
@@ -511,7 +511,7 @@ def defop(
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
-@defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
+@defop.register(typing.cast(type[Callable], Callable))
 class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
@@ -619,11 +619,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 ):
                     arg = bound_sig.arguments[name]
                     tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    return tp
 
             return typing.cast(type[V], object)
 
-        return drop_params(anno)
+        return anno
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -729,7 +729,12 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
 
     @property
     def dispatch(self):
-        return self._registry.dispatch
+        def dispatch_origin_type(typ):
+            origin = typing.get_origin(typ)
+            typ = typ if origin is None else origin
+            return self._registry.dispatch(typ)
+
+        return dispatch_origin_type
 
     @property
     def register(self):
@@ -876,6 +881,13 @@ def _(value: T) -> T:
     return value
 
 
+@defop
+def bool_(term: Any) -> bool:
+    if not isinstance(term, Term):
+        return bool(term)
+    raise ValueError("Cannot convert term to bool")
+
+
 @defdata.register(object)
 class _BaseTerm(Generic[T], Term[T]):
     _op: Operation[..., T]
@@ -908,6 +920,9 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
+
+    def __bool__(self):
+        return bool_(self)
 
 
 @defdata.register(collections.abc.Callable)
@@ -954,6 +969,135 @@ def _(value: Callable[P, T]) -> Expr[Callable[P, T]]:
         )
 
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+def _get_iterable_type_param(type_hint: Any) -> type | None:
+    """
+    Check if a type is an Iterable and return its type parameter if it is.
+
+    Args:
+        type_hint: The type to check
+
+    Returns:
+        The type parameter if the input is an Iterable type annotation,
+
+    Examples:
+        >>> _get_iterable_type_param(list[str])
+        <class 'str'>
+        >>> _get_iterable_type_param(set[int])
+        <class 'int'>
+        >>> _get_iterable_type_param(bool)
+        Traceback (most recent call last):
+        ...
+        TypeError: Expected an Iterable type, but got <class 'bool'>.
+    """
+    # Get the base type (like list, set etc)
+    origin = get_origin(type_hint)
+
+    # If there's no origin, check if it's directly an Iterable
+    if origin is None:
+        origin = type_hint
+
+    # Check if the origin is an Iterable
+    if not issubclass(origin, Iterable):
+        raise TypeError(f"Expected an Iterable type, but got {type_hint}.")
+
+    # Get the type arguments
+    type_args = get_args(type_hint)
+
+    # Return the first type argument if it exists
+    return type_args[0] if type_args else object
+
+
+@defop
+def filter_map(
+    body: Annotated[T, Scoped[A | B]],
+    guard: Annotated[bool, Scoped[A | B]],
+    binders: Annotated[tuple[Operation[[], Any]], Scoped[A]],
+    iterables: Annotated[tuple[Iterable[Any]], Scoped[B]],
+) -> Annotated[Iterable[T], Scoped[B]]:
+    raise NotImplementedError
+
+
+@defop
+def _guard(value: bool) -> bool:
+    return value
+
+
+class _IterableWrapper(Generic[T], collections.abc.Iterable[T]):
+    def __init__(self, value):
+        self.value = value
+
+    def __iter__(self):
+        return _IteratorWrapper(iter(self.value), self.value)
+
+
+class _IteratorWrapper(Generic[T], collections.abc.Iterator[T]):
+    get_iterable: Operation[[], Iterable[T]] = defop(Iterable)
+
+    def __init__(self, iterator, iterable):
+        self.iterator = iterator
+        self.iterable = iterable
+
+    def __next__(self):
+        from effectful.ops.semantics import handler, next_
+
+        with handler({_IteratorWrapper.get_iterable: lambda: self.iterable}):
+            return next_(self.iterator)
+
+
+@defop
+def iter_(value: Iterable[T]) -> Iterator[T]:
+    if isinstance(value, Term):
+        return typing.cast(Iterator[T], value)
+    return iter(value)
+
+
+def _gen(value: Iterable[T]) -> Iterable[T]:
+    return _IterableWrapper(value)
+
+
+@defterm.register(Generator)
+def _(value: Generator[T, None, None]) -> Iterable[T]:
+    from .semantics import handler, next_, typeof
+
+    # capture calls to next to identify the underlying iterators
+    iters = {}
+
+    def next_handler(it):
+        it = defterm(it)
+        iterator_typ = typeof(it)
+        param_typ = _get_iterable_type_param(iterator_typ)
+        op = defop(param_typ)
+        iters[op] = _IteratorWrapper.get_iterable()
+        return op()
+
+    # capture boolean conversion to identify the if-clause (if exists)
+    guard = True
+
+    def guard_handler(t):
+        nonlocal guard
+        guard = defterm(t)
+        return True
+
+    with handler({next_: next_handler, _guard: guard_handler}):
+        body = next(iter(value))
+
+    return filter_map(body, guard, tuple(iters.keys()), tuple(iters.values()))
+
+
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __iter__(self) -> collections.abc.Iterator[T]:
+        return iter_(self)
+
+    def __next__(self) -> T:
+        from effectful.ops.semantics import next_
+
+        return next_(self)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
