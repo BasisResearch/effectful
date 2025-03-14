@@ -326,12 +326,8 @@ def named_distribution(
 def positional_distribution(
     d: Annotated[TorchDistribution, Scoped[A]],
 ) -> tuple[TorchDistribution, Naming]:
-    def _to_positional(a):
+    def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
-            a_indices = sizesof(a)
-            assert len(a_indices) == 0 or set(a_indices.keys()) == set(indices)
-            if len(a_indices) == 0:
-                return a
             return to_tensor(a, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
@@ -347,8 +343,8 @@ def positional_distribution(
     naming = Naming.from_shape(indices, len(shape))
 
     new_d = d.op(
-        *[_to_positional(a) for a in d.args],
-        **{k: _to_positional(v) for (k, v) in d.kwargs.items()},
+        *[_to_positional(a, indices) for a in d.args],
+        **{k: _to_positional(v, indices) for (k, v) in d.kwargs.items()},
     )
 
     assert new_d.event_shape == d.event_shape
