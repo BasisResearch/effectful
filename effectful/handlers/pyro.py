@@ -470,6 +470,7 @@ def _embed_masked(d) -> Term[TorchDistribution]:
 @defterm.register(dist.Gumbel)
 @defterm.register(dist.Laplace)
 @defterm.register(dist.LogNormal)
+@defterm.register(dist.Logistic)
 @defterm.register(dist.LogisticNormal)
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
