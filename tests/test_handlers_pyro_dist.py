@@ -1,7 +1,6 @@
 import re
 from collections import namedtuple
-from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
 
 import pyro.distributions as dist
 import pytest
@@ -15,7 +14,6 @@ from torch import exp, rand, randint  # noqa: F401
 from torch.testing import assert_close
 
 from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.pyro import positional_distribution
 from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.syntax import defop
 
@@ -55,7 +53,7 @@ class DistTestCase:
     raw_dist: str
     params: dict[str, torch.Tensor]
     indexed_params: dict[str, torch.Tensor]
-    batch_shape: tuple[int]
+    batch_shape: tuple[int, ...]
     xfail: str | None
     kind: str
 
@@ -64,7 +62,7 @@ class DistTestCase:
         raw_dist: str,
         params: dict[str, torch.Tensor],
         indexed_params: dict[str, torch.Tensor],
-        batch_shape: tuple[int],
+        batch_shape: tuple[int, ...],
         xfail: str | None,
         kind: str,
     ):
@@ -108,7 +106,7 @@ class DistTestCase:
 def full_indexed_test_case(
     raw_dist: str,
     params: dict[str, torch.Tensor],
-    batch_shape: tuple[int],
+    batch_shape: tuple[int, ...],
     xfail: str | None = None,
 ):
     indexed_params = {}
@@ -128,7 +126,7 @@ def full_indexed_test_case(
 def partial_indexed_test_case(
     raw_dist: str,
     params: dict[str, torch.Tensor],
-    batch_shape: tuple[int],
+    batch_shape: tuple[int, ...],
     xfail: str | None = None,
 ):
     """Produces parameters with a subset of batch dimensions indexed.
@@ -163,7 +161,7 @@ def partial_indexed_test_case(
                 if i == j or j >= len(indexed_param_names):
                     index = name_to_sym(str(j))()
                 else:
-                    index = 0
+                    index = torch.tensor(0)
                     broadcast_params[name] = torch.unsqueeze(
                         torch.select(broadcast_params[name], j, 0), j
                     )
@@ -181,7 +179,7 @@ def partial_indexed_test_case(
 def add_dist_test_case(
     raw_dist: str,
     raw_params: Sequence[tuple[str, str]],
-    batch_shape: tuple[int],
+    batch_shape: tuple[int, ...],
     xfail: str | None = None,
 ):
     params = {name: eval(raw_param) for name, raw_param in raw_params}
