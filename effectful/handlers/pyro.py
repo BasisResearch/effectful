@@ -336,8 +336,15 @@ def named_distribution(
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[TorchDistribution, Scoped[A | B]]:
     d = defterm(d)
+    dist_constr, args = d.args[0], d.args[1:]
 
-    if not isinstance(d, _DistributionTerm):
+    if not (
+        d.op is call
+        and (
+            issubclass(dist_constr, TorchDistribution)
+            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
+        )
+    ):
         raise NotImplementedError
 
     def _to_named(a):
@@ -348,12 +355,7 @@ def named_distribution(
         else:
             return a
 
-    new_d = d.op(
-        *[_to_named(a) for a in d.args],
-        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
-    )
-    assert new_d.event_shape == d.event_shape
-    return new_d
+    return dist_constr(*[_to_named(a) for a in args], **d.kwargs)
 
 
 @defop
@@ -362,8 +364,15 @@ def positional_distribution(
 ) -> tuple[TorchDistribution, Naming]:
     shape = d.shape()
     d = defterm(d)
+    dist_constr, args = d.args[0], d.args[1:]
 
-    if not isinstance(d, _DistributionTerm):
+    if not (
+        d.op is call
+        and (
+            issubclass(dist_constr, TorchDistribution)
+            or issubclass(dist_constr, dist.torch_distribution.TorchDistributionMixin)
+        )
+    ):
         raise NotImplementedError
 
     indices = sizesof(d).keys()
@@ -371,34 +380,13 @@ def positional_distribution(
 
     def _to_positional(a):
         if isinstance(a, torch.Tensor):
-            a_indices = sizesof(a)
-            assert len(a_indices) == 0 or set(a_indices.keys()) == set(indices)
-            if len(a_indices) == 0:
-                return a
             return to_tensor(a, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
         else:
             return a
 
-    new_d = d.op(
-        *[_to_positional(a) for a in d.args],
-        **{k: _to_positional(v) for (k, v) in d.kwargs.items()},
-    )
-
-    assert new_d.event_shape == d.event_shape
-    return new_d, naming
-
-
-@functools.cache
-def _register_distribution_op(
-    dist_constr: type[TorchDistribution],
-) -> Operation[Any, TorchDistribution]:
-    # introduce a wrapper so that we can control type annotations
-    def wrapper(*args, **kwargs) -> TorchDistribution:
-        return dist_constr(*args, **kwargs)
-
-    return defop(wrapper)
+    return dist_constr(*[_to_positional(a) for a in args], **d.kwargs), naming
 
 
 class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
@@ -413,18 +401,16 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     """
 
-    _op: Operation[Any, TorchDistribution]
     _args: tuple
     _kwargs: dict
 
     def __init__(self, dist_constr: type[TorchDistribution], *args, **kwargs):
-        self._op = _register_distribution_op(dist_constr)
-        self._args = tuple(defterm(a) for a in args)
-        self._kwargs = {k: defterm(v) for (k, v) in kwargs.items()}
+        self._args = (dist_constr,) + tuple(defterm(a) for a in args)
+        self._kwargs = kwargs
 
     @property
     def op(self):
-        return self._op
+        return call
 
     @property
     def args(self):
@@ -436,7 +422,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
 
     @property
     def _base_dist(self):
-        return self._op(*self.args, **self.kwargs)
+        return self.args[0](*self.args[1:])
 
     @property
     def has_rsample(self):
@@ -493,16 +479,6 @@ def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.Independent)
 def _embed_independent(d) -> Term[TorchDistribution]:
     return _DistributionTerm(type(d), d.base_dist, d.reinterpreted_batch_ndims)
-
-
-@defterm.register(dist.FoldedDistribution)
-def _embed_folded(d) -> Term[TorchDistribution]:
-    return _DistributionTerm(type(d), d.base_dist)
-
-
-@defterm.register(dist.MaskedDistribution)
-def _embed_masked(d) -> Term[TorchDistribution]:
-    return _DistributionTerm(type(d), d.base_dist, d._mask)
 
 
 @defterm.register(dist.Cauchy)
@@ -570,7 +546,7 @@ def _embed_half_cauchy(d) -> Term[TorchDistribution]:
 
 @defterm.register(dist.LKJCholesky)
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.LKJCholesky, d.dim, concentration=d.concentration)
+    return _DistributionTerm(dist.LKJCholesky, d.concentration, dim=d.dim)
 
 
 @defterm.register(dist.Multinomial)
@@ -582,7 +558,7 @@ def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
 def _embed_multivariate_normal(
     d: dist.MultivariateNormal,
 ) -> Term[TorchDistribution]:
-    return _DistributionTerm(dist.MultivariateNormal, d.loc, scale_tril=d.scale_tril)
+    return _DistributionTerm(dist.MultivariateNormal, d.loc, d.scale_tril)
 
 
 @defterm.register(dist.NegativeBinomial)
@@ -628,9 +604,7 @@ def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
 
 @defterm.register(dist.Delta)
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
-    return _DistributionTerm(
-        dist.Delta, d.v, log_density=d.log_density, event_dim=d.event_dim
-    )
+    return _DistributionTerm(dist.Delta, d.v, d.log_density, event_dim=d.event_dim)
 
 
 def pyro_module_shim(

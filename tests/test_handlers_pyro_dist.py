@@ -13,7 +13,6 @@ from torch import exp, rand, randint  # noqa: F401
 from torch.testing import assert_close
 
 from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.pyro import positional_distribution
 from effectful.handlers.torch import sizesof, to_tensor
 from effectful.ops.syntax import defop
 
@@ -96,20 +95,6 @@ class DistTestCase:
 
     def __hash__(self):
         return hash((self.raw_dist, self.raw_params, self.batch_shape))
-
-
-@pytest.mark.parametrize("case_", TEST_CASES, ids=str)
-def test_dist_to_positional(case_):
-    _, indexed_dist = case_.get_dist()
-
-    try:
-        positional_distribution(indexed_dist)
-    except ValueError as e:
-        if (
-            "No embedding provided for distribution of type TransformedDistribution"
-            in str(e)
-        ):
-            pytest.xfail("TransformedDistribution not supported")
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
