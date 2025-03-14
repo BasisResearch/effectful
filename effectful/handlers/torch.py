@@ -577,6 +577,9 @@ class _EagerTensorTerm(torch.Tensor):
     def requires_grad(self):
         return self.args[0].requires_grad
 
+    def requires_grad_(self, requires_grad=True):
+        return self.args[0].requires_grad_(requires_grad=requires_grad)
+
     @property
     def grad_fn(self):
         return self.args[0].grad_fn
