@@ -1,5 +1,6 @@
 import re
 from collections import namedtuple
+from collections.abc import Sequence
 
 import pyro.distributions as dist
 import pytest
@@ -21,7 +22,11 @@ from effectful.ops.syntax import defop
 # Based on https://github.com/pyro-ppl/funsor/blob/master/test/test_distribution_generic.py
 ##################################################
 
-torch.distributions.Distribution.set_default_validate_args(False)
+
+def setup_module():
+    torch.manual_seed(0)
+    torch.distributions.Distribution.set_default_validate_args(False)
+
 
 TEST_CASES = []
 
@@ -37,47 +42,43 @@ def random_scale_tril(*args):
     return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
 
 
-def to_indexed(tensor, batch_dims):
-    return tensor[tuple(name_to_sym(str(i))() for i in range(batch_dims))]
-
-
 def from_indexed(tensor, batch_dims):
-    if sizesof(tensor) == {}:
-        return tensor
-    return to_tensor(tensor, [name_to_sym(str(i)) for i in range(batch_dims)])
+    tensor_sizes = sizesof(tensor)
+    indices = [name_to_sym(str(i)) for i in range(batch_dims)]
+    indices = [i for i in indices if i in tensor_sizes]
+    return to_tensor(tensor, indices)
 
 
 class DistTestCase:
-    def __init__(self, raw_dist, raw_params, batch_shape, xfail=None):
-        assert isinstance(raw_dist, str)
-        self.xfail = xfail
+    raw_dist: str
+    params: dict[str, torch.Tensor]
+    indexed_params: dict[str, torch.Tensor]
+    batch_shape: tuple[int, ...]
+    xfail: str | None
+    kind: str
+
+    def __init__(
+        self,
+        raw_dist: str,
+        params: dict[str, torch.Tensor],
+        indexed_params: dict[str, torch.Tensor],
+        batch_shape: tuple[int, ...],
+        xfail: str | None,
+        kind: str,
+    ):
         self.raw_dist = re.sub(r"\s+", " ", raw_dist.strip())
-        self.raw_params = raw_params
-        self.params = None
-        self.indexed_params = None
+        self.params = params
+        self.indexed_params = indexed_params
         self.batch_shape = batch_shape
-        TEST_CASES.append(self)
+        self.xfail = xfail
+        self.kind = kind
 
     def get_dist(self):
+        """Return positional and indexed distributions."""
         if self.xfail is not None:
             pytest.xfail(self.xfail)
 
-        Case = namedtuple("Case", tuple(name for name, _ in self.raw_params))
-
-        self.params = {}
-        self.indexed_params = {}
-
-        for name, raw_param in self.raw_params:
-            param = eval(raw_param)
-            self.params[name] = param
-            if (
-                isinstance(param, torch.Tensor)
-                and param.shape[: len(self.batch_shape)] == self.batch_shape
-            ):
-                self.indexed_params[name] = to_indexed(param, len(self.batch_shape))
-            else:
-                self.indexed_params[name] = param
-
+        Case = namedtuple("Case", tuple(name for name, _ in self.params.items()))
         case = Case(**self.params)
         dist_ = eval(self.raw_dist)
 
@@ -87,14 +88,109 @@ class DistTestCase:
 
         return dist_, indexed_dist
 
-    def __str__(self):
-        return self.raw_dist + " " + str(self.raw_params)
-
-    def __repr__(self):
-        return str(self)
+    def __eq__(self, other):
+        if isinstance(other, DistTestCase):
+            return (
+                self.raw_dist == other.raw_dist
+                and self.batch_shape == other.batch_shape
+                and self.kind == other.kind
+            )
 
     def __hash__(self):
-        return hash((self.raw_dist, self.raw_params, self.batch_shape))
+        return hash((self.raw_dist, self.batch_shape, self.kind))
+
+    def __repr__(self):
+        return f"{self.raw_dist} {self.batch_shape} {self.kind}"
+
+
+def full_indexed_test_case(
+    raw_dist: str,
+    params: dict[str, torch.Tensor],
+    batch_shape: tuple[int, ...],
+    xfail: str | None = None,
+):
+    indexed_params = {}
+    for name, param in params.items():
+        if (
+            isinstance(param, torch.Tensor)
+            and param.shape[: len(batch_shape)] == batch_shape
+        ):
+            indexes = tuple(name_to_sym(str(i))() for i in range(len(batch_shape)))
+            indexed_params[name] = param[indexes]
+        else:
+            indexed_params[name] = param
+
+    return DistTestCase(raw_dist, params, indexed_params, batch_shape, xfail, "full")
+
+
+def partial_indexed_test_case(
+    raw_dist: str,
+    params: dict[str, torch.Tensor],
+    batch_shape: tuple[int, ...],
+    xfail: str | None = None,
+):
+    """Produces parameters with a subset of batch dimensions indexed.
+
+    For example, if batch_shape is (2, 3) and params is
+    {"loc": torch.randn(2, 3, 4), "scale": torch.randn(2, 3, 4)},
+    this function will return a test case with indexed parameters
+    {"loc": torch.randn(2, 3, 4)[i0(), 0, i2()], "scale": torch.randn(2, 3, 4)[0, i1(), i2()]}.
+
+
+    """
+    non_indexed_params = {
+        k: v
+        for (k, v) in params.items()
+        if not (
+            isinstance(v, torch.Tensor) and v.shape[: len(batch_shape)] == batch_shape
+        )
+    }
+    broadcast_params = params.copy()
+    indexed_params = {}
+
+    indexed_param_names = set(name for name in params if name not in non_indexed_params)
+    for i, name in enumerate(indexed_param_names):
+        param = params[name]
+
+        if (
+            isinstance(param, torch.Tensor)
+            and param.shape[: len(batch_shape)] == batch_shape
+        ):
+            indexes = []
+            for j in range(len(batch_shape)):
+                if i == j or j >= len(indexed_param_names):
+                    index = name_to_sym(str(j))()
+                else:
+                    index = torch.tensor(0)
+                    broadcast_params[name] = torch.unsqueeze(
+                        torch.select(broadcast_params[name], j, 0), j
+                    )
+                indexes.append(index)
+            indexed_params[name] = param[tuple(indexes)]
+        else:
+            indexed_params[name] = param
+
+    indexed_params.update(non_indexed_params)
+    return DistTestCase(
+        raw_dist, broadcast_params, indexed_params, batch_shape, xfail, "partial"
+    )
+
+
+def add_dist_test_case(
+    raw_dist: str,
+    raw_params: Sequence[tuple[str, str]],
+    batch_shape: tuple[int, ...],
+    xfail: str | None = None,
+):
+    params = {name: eval(raw_param) for name, raw_param in raw_params}
+    TEST_CASES.append(full_indexed_test_case(raw_dist, params, batch_shape, xfail))
+
+    # This case is trivial if there are not multiple batch dimensions and
+    # multiple parameters
+    if len(batch_shape) > 1 and len(params) > 1:
+        TEST_CASES.append(
+            partial_indexed_test_case(raw_dist, params, batch_shape, xfail)
+        )
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
@@ -131,22 +227,22 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
     sample = dist.sample()
     indexed_sample = indexed_dist.sample()
 
-    # Indexed samples should have the same indices as the parameters to their distribution (if those parameters are
-    # indexed)
-    sample_indices = sizesof(indexed_sample)
-    for param in case_.indexed_params.values():
-        param_indices = sizesof(param)
-        assert param_indices in [{}, sample_indices]
+    # Samples should not have any indices that their parameters don't have
+    assert set(sizesof(indexed_sample)) <= set().union(
+        *[set(sizesof(p)) for p in case_.indexed_params.values()]
+    )
 
-    # Indexed samples should have the same shape as regular samples, but with the batch dimensions indexed
+    # Indexed samples should have the same shape as regular samples, modulo
+    # possible extra unit dimensions
     indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))
-    assert sample.shape == indexed_sample_t.shape
+    assert sample.squeeze().shape == indexed_sample_t.squeeze().shape
     assert sample.dtype == indexed_sample_t.dtype
 
     lprob = dist.log_prob(sample)
     indexed_lprob = indexed_dist.log_prob(indexed_sample)
 
-    # Indexed logprobs should have the same shape as regular logprobs, but with the batch dimensions indexed
+    # Indexed logprobs should have the same shape as regular logprobs, but with
+    # the batch dimensions indexed
     indexed_lprob_t = from_indexed(indexed_lprob, len(case_.batch_shape))
     assert lprob.shape == indexed_lprob_t.shape
     assert lprob.dtype == indexed_lprob_t.dtype
@@ -215,32 +311,38 @@ def test_dist_stats(case_, statistic):
     except NotImplementedError:
         pytest.xfail(f"{statistic} not implemented")
 
-    actual_stat_t = from_indexed(actual_stat, len(case_.batch_shape))
-    actual_stat_t, expected_stat = torch.broadcast_tensors(actual_stat_t, expected_stat)
-
     if expected_stat.isnan().all():
         assert to_tensor(actual_stat).isnan().all()
     else:
-        assert_close(actual_stat_t, expected_stat)
+        # Stats may not be indexed in all batch dimensions, but they should be
+        # extensionally equal to the indexed expected stat
+        indexes = [name_to_sym(str(i)) for i in range(len(case_.batch_shape))]
+        expected_stat_i = expected_stat[tuple(n() for n in indexes)]
+        expected_stat_i, actual_stat_i = torch.broadcast_tensors(
+            expected_stat_i, actual_stat
+        )
+        assert_close(
+            to_tensor(expected_stat_i, indexes), to_tensor(actual_stat_i, indexes)
+        )
 
 
-for batch_shape in [(5,), (2, 3), ()]:
+for batch_shape in [(5,), (2, 3, 4), ()]:
     # BernoulliLogits
-    DistTestCase(
+    add_dist_test_case(
         "dist.Bernoulli(logits=case.logits)",
         (("logits", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # BernoulliProbs
-    DistTestCase(
+    add_dist_test_case(
         "dist.Bernoulli(probs=case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # Beta
-    DistTestCase(
+    add_dist_test_case(
         "dist.Beta(case.concentration1, case.concentration0)",
         (
             ("concentration1", f"exp(rand({batch_shape}))"),
@@ -250,7 +352,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # Binomial
-    DistTestCase(
+    add_dist_test_case(
         "dist.Binomial(total_count=case.total_count, probs=case.probs)",
         (
             ("total_count", "5"),
@@ -261,7 +363,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # CategoricalLogits
     for size in [2, 4]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.Categorical(logits=case.logits)",
             (("logits", f"rand({batch_shape + (size,)})"),),
             batch_shape,
@@ -269,28 +371,28 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # CategoricalProbs
     for size in [2, 4]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.Categorical(probs=case.probs)",
             (("probs", f"rand({batch_shape + (size,)})"),),
             batch_shape,
         )
 
     # Cauchy
-    DistTestCase(
+    add_dist_test_case(
         "dist.Cauchy(loc=case.loc, scale=case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Chi2
-    DistTestCase(
+    add_dist_test_case(
         "dist.Chi2(df=case.df)",
         (("df", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # ContinuousBernoulli
-    DistTestCase(
+    add_dist_test_case(
         "dist.ContinuousBernoulli(logits=case.logits)",
         (("logits", f"rand({batch_shape})"),),
         batch_shape,
@@ -298,7 +400,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # Delta
     for event_shape in [(), (4,), (3, 2)]:
-        DistTestCase(
+        add_dist_test_case(
             f"dist.Delta(v=case.v, log_density=case.log_density, event_dim={len(event_shape)})",
             (
                 ("v", f"rand({batch_shape + event_shape})"),
@@ -309,7 +411,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # Dirichlet
     for event_shape in [(1,), (4,)]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.Dirichlet(case.concentration)",
             (("concentration", f"rand({batch_shape + event_shape})"),),
             batch_shape,
@@ -317,7 +419,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # DirichletMultinomial
     for event_shape in [(1,), (4,)]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.DirichletMultinomial(case.concentration, case.total_count)",
             (
                 ("concentration", f"rand({batch_shape + event_shape})"),
@@ -328,63 +430,63 @@ for batch_shape in [(5,), (2, 3), ()]:
         )
 
     # Exponential
-    DistTestCase(
+    add_dist_test_case(
         "dist.Exponential(rate=case.rate)",
         (("rate", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # FisherSnedecor
-    DistTestCase(
+    add_dist_test_case(
         "dist.FisherSnedecor(df1=case.df1, df2=case.df2)",
         (("df1", f"rand({batch_shape})"), ("df2", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Gamma
-    DistTestCase(
+    add_dist_test_case(
         "dist.Gamma(case.concentration, case.rate)",
         (("concentration", f"rand({batch_shape})"), ("rate", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Geometric
-    DistTestCase(
+    add_dist_test_case(
         "dist.Geometric(probs=case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # Gumbel
-    DistTestCase(
+    add_dist_test_case(
         "dist.Gumbel(loc=case.loc, scale=case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # HalfCauchy
-    DistTestCase(
+    add_dist_test_case(
         "dist.HalfCauchy(scale=case.scale)",
         (("scale", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # HalfNormal
-    DistTestCase(
+    add_dist_test_case(
         "dist.HalfNormal(scale=case.scale)",
         (("scale", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # Laplace
-    DistTestCase(
+    add_dist_test_case(
         "dist.Laplace(loc=case.loc, scale=case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Logistic
-    DistTestCase(
+    add_dist_test_case(
         "dist.Logistic(loc=case.loc, scale=case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
@@ -392,7 +494,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # # LowRankMultivariateNormal
     for event_shape in [(3,), (4,)]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.LowRankMultivariateNormal(loc=case.loc, cov_factor=case.cov_factor, cov_diag=case.cov_diag)",
             (
                 ("loc", f"rand({batch_shape + event_shape})"),
@@ -405,7 +507,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # multinomial
     for event_shape in [(1,), (4,)]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.Multinomial(case.total_count, probs=case.probs)",
             (
                 ("total_count", "5"),
@@ -417,7 +519,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # # MultivariateNormal
     for event_shape in [(1,), (3,)]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.MultivariateNormal(loc=case.loc, scale_tril=case.scale_tril)",
             (
                 ("loc", f"rand({batch_shape + event_shape})"),
@@ -427,7 +529,7 @@ for batch_shape in [(5,), (2, 3), ()]:
         )
 
     # NegativeBinomial
-    DistTestCase(
+    add_dist_test_case(
         "dist.NegativeBinomial(total_count=case.total_count, probs=case.probs)",
         (
             ("total_count", "5"),
@@ -437,7 +539,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # Normal
-    DistTestCase(
+    add_dist_test_case(
         "dist.Normal(case.loc, case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
@@ -445,35 +547,35 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # OneHotCategorical
     for size in [2, 4]:
-        DistTestCase(
+        add_dist_test_case(
             "dist.OneHotCategorical(probs=case.probs)",
             (("probs", f"rand({batch_shape + (size,)})"),),
             batch_shape,  # funsor.Bint[size],
         )
 
     # Pareto
-    DistTestCase(
+    add_dist_test_case(
         "dist.Pareto(scale=case.scale, alpha=case.alpha)",
         (("scale", f"rand({batch_shape})"), ("alpha", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Poisson
-    DistTestCase(
+    add_dist_test_case(
         "dist.Poisson(rate=case.rate)",
         (("rate", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # RelaxedBernoulli
-    DistTestCase(
+    add_dist_test_case(
         "dist.RelaxedBernoulli(temperature=case.temperature, logits=case.logits)",
         (("temperature", f"rand({batch_shape})"), ("logits", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # StudentT
-    DistTestCase(
+    add_dist_test_case(
         "dist.StudentT(df=case.df, loc=case.loc, scale=case.scale)",
         (
             ("df", f"rand({batch_shape})"),
@@ -484,14 +586,14 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # Uniform
-    DistTestCase(
+    add_dist_test_case(
         "dist.Uniform(low=case.low, high=case.high)",
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
     )
 
     # VonMises
-    DistTestCase(
+    add_dist_test_case(
         "dist.VonMises(case.loc, case.concentration)",
         (("loc", f"rand({batch_shape})"), ("concentration", f"rand({batch_shape})")),
         batch_shape,
@@ -499,7 +601,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # Weibull
-    DistTestCase(
+    add_dist_test_case(
         "dist.Weibull(scale=case.scale, concentration=case.concentration)",
         (
             ("scale", f"exp(rand({batch_shape}))"),
@@ -510,7 +612,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
     # TransformedDistributions
     # ExpTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -521,7 +623,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # InverseTransform (log)
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -532,7 +634,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # TanhTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -543,7 +645,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # AtanhTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -557,7 +659,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # multiple transforms
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -569,7 +671,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # ComposeTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Uniform(low=case.low, high=case.high),
@@ -582,7 +684,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # PowerTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Exponential(rate=case.rate),
@@ -593,7 +695,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     )
 
     # HaarTransform
-    DistTestCase(
+    add_dist_test_case(
         """
         dist.TransformedDistribution(
             dist.Normal(loc=case.loc, scale=1.).to_event(1),
@@ -606,7 +708,7 @@ for batch_shape in [(5,), (2, 3), ()]:
     # Independent
     for indep_shape in [(3,), (2, 3)]:
         # Beta.to_event
-        DistTestCase(
+        add_dist_test_case(
             f"dist.Beta(case.concentration1, case.concentration0).to_event({len(indep_shape)})",
             (
                 ("concentration1", f"exp(rand({batch_shape + indep_shape}))"),
@@ -617,7 +719,7 @@ for batch_shape in [(5,), (2, 3), ()]:
 
         # Dirichlet.to_event
         for event_shape in [(2,), (4,)]:
-            DistTestCase(
+            add_dist_test_case(
                 f"dist.Dirichlet(case.concentration).to_event({len(indep_shape)})",
                 (
                     (
@@ -629,7 +731,7 @@ for batch_shape in [(5,), (2, 3), ()]:
             )
 
         # TransformedDistribution.to_event
-        DistTestCase(
+        add_dist_test_case(
             f"""
             dist.Independent(
                 dist.TransformedDistribution(
