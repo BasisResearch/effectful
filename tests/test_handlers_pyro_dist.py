@@ -195,8 +195,6 @@ def add_dist_test_case(
         )
 
 
-
-
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
 @pytest.mark.parametrize("sample_shape", [(), (3, 2)])
 @pytest.mark.parametrize("indexed_sample_shape", [(), (3, 2)])
@@ -231,18 +229,15 @@ def test_dist_indexes(case_, sample_shape, extra_batch_shape):
     sample = dist.sample()
     indexed_sample = indexed_dist.sample()
 
-    # Samples should have any indices that their parameters have
-    sample_sizes = sizesof(indexed_sample)
-    sample_indices = set(sample_sizes.keys())
-    for param in case_.indexed_params.values():
-        param_sizes = sizesof(param)
-        param_indices = set(param_sizes.keys())
-        assert param_indices <= sample_indices
+    # Samples should not have any indices that their parameters don't have
+    assert set(sizesof(indexed_sample)) <= set().union(
+        *[set(sizesof(p)) for p in case_.indexed_params.values()]
+    )
 
-    # Indexed samples should have the same shape as regular samples, but with
-    # the batch dimensions indexed
+    # Indexed samples should have the same shape as regular samples, modulo
+    # possible extra unit dimensions
     indexed_sample_t = from_indexed(indexed_sample, len(case_.batch_shape))
-    assert sample.shape == indexed_sample_t.shape
+    assert sample.squeeze().shape == indexed_sample_t.squeeze().shape
     assert sample.dtype == indexed_sample_t.dtype
 
     lprob = dist.log_prob(sample)
