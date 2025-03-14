@@ -288,14 +288,14 @@ def test_grad_1():
 
     cos_x_expected = x.cos()
 
-    assert torch.allclose(to_tensor(cos_x_actual, [i]), to_tensor(cos_x_expected, [i]))
+    assert torch.allclose(to_tensor(cos_x_actual, i), to_tensor(cos_x_expected, i))
 
     # Second-order gradients
     neg_sin_x_actual = grad(grad(lambda x: torch.sin(x)))(x)
     neg_sin_x_expected = -x.sin()
 
     assert torch.allclose(
-        to_tensor(neg_sin_x_actual, [i]), to_tensor(neg_sin_x_expected, [i])
+        to_tensor(neg_sin_x_actual, i), to_tensor(neg_sin_x_expected, i)
     )
 
 
@@ -305,7 +305,7 @@ def test_jacfwd_1():
     jacobian = jacfwd(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
+    assert torch.allclose(to_tensor(jacobian, i), to_tensor(expected, i))
 
 
 def test_jacfwd_nested_1():
@@ -320,7 +320,7 @@ def test_jacfwd_nested_1():
     jacobian = jacfwd(sin)(x)
     expected = torch.diag(torch.cos(x) + 0 * y)
 
-    assert torch.allclose(to_tensor(jacobian, [i, a]), to_tensor(expected, [i, a]))
+    assert torch.allclose(to_tensor(jacobian, i, a), to_tensor(expected, i, a))
 
 
 def test_jacfwd_nested_2():
@@ -335,7 +335,7 @@ def test_jacfwd_nested_2():
     jacobian = jacfwd(sin)(x)[0]
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
+    assert torch.allclose(to_tensor(jacobian, i), to_tensor(expected, i))
 
 
 def test_jacrev_1():
@@ -344,7 +344,7 @@ def test_jacrev_1():
     jacobian = jacrev(torch.sin)(x)
     expected = torch.diag(torch.cos(x))
 
-    assert torch.allclose(to_tensor(jacobian, [i]), to_tensor(expected, [i]))
+    assert torch.allclose(to_tensor(jacobian, i), to_tensor(expected, i))
 
 
 def test_hessian_1():
@@ -354,7 +354,7 @@ def test_hessian_1():
     i = defop(torch.Tensor, name="i")
     x = torch.randn(11, 5)[i()]
     hess = hessian(f)(x)  # equivalent to jacfwd(jacrev(f))(x)
-    assert torch.allclose(to_tensor(hess, [i]), to_tensor(torch.diag(-x.sin()), [i]))
+    assert torch.allclose(to_tensor(hess, i), to_tensor(torch.diag(-x.sin()), i))
 
 
 def test_jvp_1():
@@ -366,8 +366,8 @@ def test_jvp_1():
 
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
-    assert torch.allclose(to_tensor(value, [i]), to_tensor(f(x), [i]))
-    assert torch.allclose(to_tensor(grad, [i]), torch.tensor([1.0, 2, 3]))
+    assert torch.allclose(to_tensor(value, i), to_tensor(f(x), i))
+    assert torch.allclose(to_tensor(grad, i), torch.tensor([1.0, 2, 3]))
 
 
 def test_jvp_nested():
@@ -381,8 +381,8 @@ def test_jvp_nested():
 
     value, grad = jvp(f, (x,), (torch.tensor(1.0),))
 
-    assert torch.allclose(to_tensor(value, [i, j]), to_tensor(f(x), [i, j]))
-    assert torch.allclose(to_tensor(grad, [i, j]), torch.tensor([1.0, 2, 3]))
+    assert torch.allclose(to_tensor(value, i, j), to_tensor(f(x), i, j))
+    assert torch.allclose(to_tensor(grad, i, j), torch.tensor([1.0, 2, 3]))
 
 
 def test_vjp_1():
@@ -396,7 +396,7 @@ def test_vjp_1():
 
     (_, vjpfunc) = vjp(f, x)
     vjps = vjpfunc((y, z))
-    assert torch.allclose(to_tensor(vjps[0], [i]), to_tensor(x.cos() + -x.sin(), [i]))
+    assert torch.allclose(to_tensor(vjps[0], i), to_tensor(x.cos() + -x.sin(), i))
 
 
 def test_vjp_nested():
@@ -411,7 +411,7 @@ def test_vjp_nested():
 
     (result, vjpfunc) = vjp(f, x)
     vjps = vjpfunc(y)
-    assert torch.allclose(to_tensor(vjps[0], [i]), torch.tensor(7.0))
+    assert torch.allclose(to_tensor(vjps[0], i), torch.tensor(7.0))
 
 
 def test_vmap_1():
@@ -424,7 +424,7 @@ def test_vmap_1():
 
     actual = vmap(f)(x_i)
     expected = x + 1
-    assert torch.allclose(to_tensor(actual, [i]), expected)
+    assert torch.allclose(to_tensor(actual, i), expected)
 
 
 def test_vmap_nested():
@@ -439,7 +439,7 @@ def test_vmap_nested():
         return y_j + x
 
     actual = vmap(f)(x_i)
-    actual_t = to_tensor(actual, [i, j])
+    actual_t = to_tensor(actual, i, j)
 
     for ii in range(10):
         for jj in range(7):
@@ -457,8 +457,8 @@ def test_vmap_and_grad():
     actual = vmap(grad_sin)(x)
     assert actual.shape == torch.Size([7])
 
-    actual_t = to_tensor(actual, [i])
-    x_t = to_tensor(x, [i])
+    actual_t = to_tensor(actual, i)
+    x_t = to_tensor(x, i)
     for ii in range(10):
         for jj in range(7):
             assert torch.allclose(actual_t[ii, jj], x_t[ii, jj].cos())
@@ -485,41 +485,41 @@ def test_to_tensor():
     t_ijk = t[i(), j(), k()]
     assert fvsof(t_ijk) >= {i, j, k}
 
-    t1 = to_tensor(t_ijk, [i, j, k])
+    t1 = to_tensor(t_ijk, i, j, k)
     assert not (fvsof(t1) & {i, j, k})
     assert t1.shape == torch.Size([2, 3, 4])
 
     # Test case 2: Different ordering of dimensions
-    t2 = to_tensor(t_ijk, [k, j, i])
+    t2 = to_tensor(t_ijk, k, j, i)
     assert not (fvsof(t1) & {i, j, k})
     assert t2.shape == torch.Size([4, 3, 2])
 
     # Test case 3: Keeping some dimensions as free variables
-    t3 = to_tensor(t_ijk, [i])  # Convert only i to positional
+    t3 = to_tensor(t_ijk, i)  # Convert only i to positional
     assert fvsof(t3) >= {j, k}  # j and k remain free
     assert isinstance(t3, Term)
     assert t3.shape == torch.Size([2])
 
-    t4 = to_tensor(t_ijk, [i, j])  # Convert i and j to positional
+    t4 = to_tensor(t_ijk, i, j)  # Convert i and j to positional
     assert fvsof(t4) >= {k} and not (fvsof(t4) & {i, j})  # only k remains free
     assert isinstance(t4, Term)
     assert t4.shape == torch.Size([2, 3])
 
     # Test case 4: Empty order list keeps all variables free
-    t5 = to_tensor(t_ijk, [])
+    t5 = to_tensor(t_ijk)
     assert fvsof(t5) >= {i, j, k}  # All variables remain free
     assert isinstance(t5, Term)
     assert t5.shape == torch.Size([])
 
     # Test case 5: Verify permuted tensors maintain correct relationships
     t_kji = t.permute(2, 1, 0)[k(), j(), i()]
-    t6 = to_tensor(t_kji, [i, j, k])
-    t7 = to_tensor(t_ijk, [i, j, k])
+    t6 = to_tensor(t_kji, i, j, k)
+    t7 = to_tensor(t_ijk, i, j, k)
     assert torch.allclose(t6, t7)
 
     # Test case 6: Mixed operations with free variables
     x = torch.sin(t_ijk)  # Apply operation to indexed tensor
-    x1 = to_tensor(x, [i, j])  # Convert some dimensions
+    x1 = to_tensor(x, i, j)  # Convert some dimensions
     assert fvsof(x1) >= {k}  # k remains free
     assert isinstance(x1, Term)
     assert x1.shape == torch.Size([2, 3])
@@ -527,7 +527,7 @@ def test_to_tensor():
     # Test case 7: Multiple tensors sharing variables
     t2_ijk = torch.randn([2, 3, 4])[i(), j(), k()]
     sum_t = t_ijk + t2_ijk
-    sum1 = to_tensor(sum_t, [i, j])
+    sum1 = to_tensor(sum_t, i, j)
     assert fvsof(sum1) >= {k}  # k remains free
     assert isinstance(sum1, Term)
     assert sum1.shape == torch.Size([2, 3])
@@ -535,7 +535,7 @@ def test_to_tensor():
     # Test case 8: Tensor term with non-sized free variables
     w = defop(torch.Tensor, name="w")
     t_ijk = t[i(), j(), k()] + w()
-    t8 = to_tensor(t_ijk, [i, j, k])
+    t8 = to_tensor(t_ijk, i, j, k)
     assert fvsof(t8) >= {w}
 
     # Test case 9: Eliminate remaining free variables in result
@@ -613,7 +613,7 @@ def test_indexed_tensor_as_index():
 
     t3 = t1[t2]
     assert sizesof(t3) == sizesof(t2)
-    assert (to_tensor(t3, [i]) == t1).all()
+    assert (to_tensor(t3, i) == t1).all()
 
 
 def test_longtensor_index_variables():

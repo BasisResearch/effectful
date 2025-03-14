@@ -177,10 +177,28 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
 
 
 @defop
-def to_tensor_(
+def to_tensor(
     t: Annotated[torch.Tensor, Scoped[A | B]],
     *args: Annotated[Operation[[], torch.Tensor], Scoped[A]],
 ) -> Annotated[torch.Tensor, Scoped[B]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], torch.Tensor]
+    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> to_tensor(t[a(), b()], b, a).shape
+    torch.Size([3, 2])
+    """
+
     def _evaluate(expr):
         if isinstance(expr, Term):
             (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
@@ -221,30 +239,6 @@ def to_tensor_(
     perm = [dim_ops.index(o) for o in args] + reindex_dims
     tensor = tensor.permute(perm)
     return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
-
-
-def to_tensor(
-    t: torch.Tensor, order: Sequence[Operation[[], torch.Tensor]] | None = None
-) -> torch.Tensor:
-    """Convert named dimensions to positional dimensions.
-
-    :param t: A tensor.
-    :type t: T
-    :param order: A list of named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type order: Optional[Sequence[Operation[[], int]]]
-    :return: A tensor with the named dimensions in ``order`` converted to positional dimensions.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> to_tensor(t[a(), b()], [b, a]).shape
-    torch.Size([3, 2])
-    """
-    order = [] if order is None else order
-    return to_tensor_(t, *order)
 
 
 @functools.cache
@@ -605,7 +599,7 @@ def _indexed_func_wrapper(
         nonlocal indexes
 
         def deindex_tensor(t, i):
-            t_ = to_tensor(t, i.sizes.keys())
+            t_ = to_tensor(t, *i.sizes.keys())
             assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
             return t_
 
@@ -679,7 +673,7 @@ def vjp(func, *indexed_primals, **kwargs):
     unpacked_primals = []
     for t in indexed_primals:
         indices = list(sizesof(t).keys())
-        unpacked = to_tensor(t, indices)
+        unpacked = to_tensor(t, *indices)
         unpacked_primals.append((unpacked, indices))
 
     indexed_result = None
@@ -694,7 +688,7 @@ def vjp(func, *indexed_primals, **kwargs):
         nonlocal indexed_result
         indexed_result = func(*repack_primals(primals))
         return tree.map_structure(
-            lambda t: to_tensor(t, list(sizesof(t).keys())), indexed_result
+            lambda t: to_tensor(t, *list(sizesof(t).keys())), indexed_result
         )
 
     unindexed_primals = [t[0] for t in unpacked_primals]
@@ -702,7 +696,7 @@ def vjp(func, *indexed_primals, **kwargs):
 
     def vjpfunc_wrapper(*tangents):
         unindexed_tangents = tree.map_structure(
-            lambda t: to_tensor(t, list(sizesof(t).keys())), tangents
+            lambda t: to_tensor(t, *list(sizesof(t).keys())), tangents
         )
         grads = vjpfunc(*unindexed_tangents)
         return repack_primals(grads)

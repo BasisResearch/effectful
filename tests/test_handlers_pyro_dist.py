@@ -46,7 +46,7 @@ def from_indexed(tensor, batch_dims):
     tensor_sizes = sizesof(tensor)
     indices = [name_to_sym(str(i)) for i in range(batch_dims)]
     indices = [i for i in indices if i in tensor_sizes]
-    return to_tensor(tensor, indices)
+    return to_tensor(tensor, *indices)
 
 
 class DistTestCase:
@@ -312,7 +312,7 @@ def test_dist_stats(case_, statistic):
         pytest.xfail(f"{statistic} not implemented")
 
     if expected_stat.isnan().all():
-        assert to_tensor(actual_stat).isnan().all()
+        assert to_tensor(actual_stat, *list(sizesof(actual_stat).keys())).isnan().all()
     else:
         # Stats may not be indexed in all batch dimensions, but they should be
         # extensionally equal to the indexed expected stat
@@ -322,7 +322,7 @@ def test_dist_stats(case_, statistic):
             expected_stat_i, actual_stat
         )
         assert_close(
-            to_tensor(expected_stat_i, indexes), to_tensor(actual_stat_i, indexes)
+            to_tensor(expected_stat_i, *indexes), to_tensor(actual_stat_i, *indexes)
         )
 
 

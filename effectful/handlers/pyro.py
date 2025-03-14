@@ -122,7 +122,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         name_to_dim = {}
         for i, (k, v) in enumerate(reversed(list(indices.items()))):
             if k in t_indices:
-                t = to_tensor(t, [k])
+                t = to_tensor(t, k)
             else:
                 t = t.expand((v,) + t.shape)
             name_to_dim[k] = -len(shape) - i - 1
@@ -130,7 +130,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # create a positional dimension for every remaining named index in `t`
         n_batch_and_dist_named = len(t.shape)
         for i, k in enumerate(reversed(list(sizesof(t).keys()))):
-            t = to_tensor(t, [k])
+            t = to_tensor(t, k)
             name_to_dim[k] = -n_batch_and_dist_named - i - 1
 
         return t, Naming(name_to_dim)
@@ -346,7 +346,7 @@ def positional_distribution(
 
     def _to_positional(a):
         if isinstance(a, torch.Tensor):
-            return to_tensor(a, indices)
+            return to_tensor(a, *indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
         else:

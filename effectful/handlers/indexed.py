@@ -269,7 +269,7 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
         >>> fst, snd = torch.randn(2, 3)[b()], torch.randn(2, 3)[b()]
         >>> case = (fst < snd).all(-1)
         >>> x = cond(fst, snd, case)
-        >>> assert (to_tensor(x, [b]) == to_tensor(torch.where(case[..., None], snd, fst), [b])).all()
+        >>> assert (to_tensor(x, b) == to_tensor(torch.where(case[..., None], snd, fst), b)).all()
 
     .. note::
 
