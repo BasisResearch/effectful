@@ -239,5 +239,5 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     )
 
     vars = list(map(name_to_sym, name_to_dim.keys()))
-    assert (to_tensor(actual_full, vars) == to_tensor(actual_left, vars)).all()
-    assert (to_tensor(actual_left, vars) == to_tensor(actual_right, vars)).all()
+    assert (to_tensor(actual_full, *vars) == to_tensor(actual_left, *vars)).all()
+    assert (to_tensor(actual_left, *vars) == to_tensor(actual_right, *vars)).all()
