@@ -103,7 +103,11 @@ def test_dist_to_positional(case_):
     _, indexed_dist = case_.get_dist()
 
     try:
-        positional_distribution(indexed_dist)
+        pos_dist, naming = positional_distribution(indexed_dist)
+        pos_sample = pos_dist.sample()
+        assert sizesof(pos_sample) == {}
+        indexed_sample = indexed_dist.sample()
+        assert sizesof(naming.apply(pos_sample)) == sizesof(indexed_sample)
     except ValueError as e:
         if (
             "No embedding provided for distribution of type TransformedDistribution"
