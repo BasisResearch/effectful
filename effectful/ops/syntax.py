@@ -536,6 +536,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             return NotImplemented
         return self is other
 
+    def __lt__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) < id(other)
+
     def __hash__(self):
         return hash(self._default)
 
