@@ -1,12 +1,11 @@
 import functools
 import operator
 from collections.abc import Iterable
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 import torch
 
 from effectful.handlers.torch import sizesof
-from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation
 

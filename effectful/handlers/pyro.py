@@ -1,4 +1,3 @@
-import functools
 import typing
 from collections.abc import Collection, Mapping
 from typing import (
@@ -28,6 +27,7 @@ except ImportError:
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import sizesof, to_tensor
+from effectful.ops.semantics import call
 from effectful.ops.syntax import Scoped, defop, defterm
 from effectful.ops.types import Operation, Term
 
