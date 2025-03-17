@@ -584,12 +584,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        sig = inspect.signature(self._default)
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-
         def unwrap_annotation(typ):
             """Unwrap Annotated types."""
             return (
@@ -601,7 +595,15 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             origin = typing.get_origin(typ)
             return typ if origin is None else origin
 
+        sig = inspect.signature(self._default)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
+
+        anno = sig.return_annotation
         anno = unwrap_annotation(anno)
+
+        if anno is None:
+            return type(None)
 
         if anno is inspect.Signature.empty:
             return typing.cast(type[V], object)
@@ -861,10 +863,14 @@ def defdata(
             elif isinstance(i, str):
                 kwargs_[i] = res
 
-    tp: type[T] = typeof(
-        __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    )
-    return __dispatch(tp)(op, *args_, **kwargs_)
+    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
+    tp = typeof(base_term)
+    if tp is typing.Union:
+        raise ValueError("Terms that return Union types are not supported.")
+    assert isinstance(tp, type)
+
+    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
+    return typed_term
 
 
 @defterm.register(object)
