@@ -167,7 +167,7 @@ def name_to_sym(name: str) -> Operation[[], torch.Tensor]:
     return defop(torch.Tensor, name=name)
 
 
-def gather(value: torch.Tensor, indexset: IndexSet, **kwargs) -> torch.Tensor:
+def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     """
     Selects entries from an indexed value at the indices in a :class:`IndexSet` .
     :func:`gather` is useful in conjunction with :class:`MultiWorldCounterfactual`
@@ -247,6 +247,7 @@ def stack(
     identical shapes.
 
     """
+    values = torch.distributions.utils.broadcast_all(*values)
     return torch.stack(values)[name_to_sym(name)()]
 
 
