@@ -603,7 +603,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         anno = unwrap_annotation(anno)
 
         if anno is None:
-            return type(None)
+            return typing.cast(type[V], type(None))
 
         if anno is inspect.Signature.empty:
             return typing.cast(type[V], object)

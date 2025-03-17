@@ -1,13 +1,11 @@
-import inspect
 from collections.abc import Callable
-from typing import Annotated, Any, Generic, Optional, TypeVar, Union
+from typing import Annotated, Any, Generic, TypeVar, Union
 
 import pytest
 
-import effectful.handlers.numbers
-from effectful.ops.semantics import handler, typeof
-from effectful.ops.syntax import Scoped, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.semantics import typeof
+from effectful.ops.syntax import Scoped, defop
+from effectful.ops.types import Operation
 
 
 def test_typeof_basic():
@@ -103,7 +101,6 @@ def test_typeof_scoped():
         raise NotImplementedError
 
     x = defop(int, name="x")
-    y = defop(int, name="y")
 
     # Lambda that adds 1 to its argument
     lambda_term = Lambda(x, x() + 1)
@@ -131,7 +128,7 @@ def test_typeof_union():
     """Test typeof with union types."""
 
     @defop
-    def maybe_int(b: bool) -> Union[int, str]:
+    def maybe_int(b: bool) -> int | str:
         raise NotImplementedError
 
     # Union types are simplified to their origin type
@@ -143,7 +140,7 @@ def test_typeof_optional():
     """Test typeof with Optional types."""
 
     @defop
-    def maybe_value(b: bool) -> Optional[int]:
+    def maybe_value(b: bool) -> int | None:
         raise NotImplementedError
 
     # Optional[int] is Union[int, None], so it simplifies to Union
