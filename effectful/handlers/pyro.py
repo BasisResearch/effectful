@@ -348,12 +348,14 @@ def positional_distribution(
 ) -> tuple[TorchDistribution, Naming]:
     def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
+            # broadcast to full indexed shape
             existing_dims = set(sizesof(a).keys())
             missing_dims = set(indices) - existing_dims
-            a = a[
-                tuple([slice(None)] * len(a.shape)) + tuple([None] * len(missing_dims))
-            ][tuple(n() for n in missing_dims)]
-            return to_tensor(a, indices)
+
+            a_indexed = torch.broadcast_to(
+                a, torch.Size([indices[dim] for dim in missing_dims]) + a.shape
+            )[tuple(n() for n in missing_dims)]
+            return to_tensor(a_indexed, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
         else:
@@ -364,7 +366,7 @@ def positional_distribution(
         raise NotImplementedError
 
     shape = d.shape()
-    indices = sizesof(d).keys()
+    indices = sizesof(d)
     naming = Naming.from_shape(indices, len(shape))
 
     pos_args = [_to_positional(a, indices) for a in d.args]
