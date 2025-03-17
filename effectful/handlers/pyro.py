@@ -348,6 +348,11 @@ def positional_distribution(
 ) -> tuple[TorchDistribution, Naming]:
     def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
+            existing_dims = set(sizesof(a).keys())
+            missing_dims = set(indices) - existing_dims
+            a = a[
+                tuple([slice(None)] * len(a.shape)) + tuple([None] * len(missing_dims))
+            ][tuple(n() for n in missing_dims)]
             return to_tensor(a, indices)
         elif isinstance(a, TorchDistribution):
             return positional_distribution(a)[0]
@@ -362,10 +367,9 @@ def positional_distribution(
     indices = sizesof(d).keys()
     naming = Naming.from_shape(indices, len(shape))
 
-    new_d = d.op(
-        *[_to_positional(a, indices) for a in d.args],
-        **{k: _to_positional(v, indices) for (k, v) in d.kwargs.items()},
-    )
+    pos_args = [_to_positional(a, indices) for a in d.args]
+    pos_kwargs = {k: _to_positional(v, indices) for (k, v) in d.kwargs.items()}
+    new_d = d.op(*pos_args, **pos_kwargs)
 
     assert new_d.event_shape == d.event_shape
     return new_d, naming
