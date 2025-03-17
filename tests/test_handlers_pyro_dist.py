@@ -626,7 +626,10 @@ def test_dist_to_positional(case_):
         pos_sample = pos_dist.sample()
         assert sizesof(pos_sample) == {}
         indexed_sample = indexed_dist.sample()
-        assert sizesof(naming.apply(pos_sample)) == sizesof(indexed_sample)
+
+        # positional samples should be broadcastable with indexed samples, but
+        # they may not have the same shape
+        torch.distributions.utils.broadcast_all(pos_sample, indexed_sample)
     except ValueError as e:
         if (
             "No embedding provided for distribution of type TransformedDistribution"
