@@ -2,7 +2,7 @@ import contextlib
 import itertools
 import logging
 from collections.abc import Callable
-from typing import Annotated, Any, Generic, TypeVar
+from typing import Annotated, Any, Generic, TypeVar, Union
 
 import pytest
 from typing_extensions import ParamSpec
