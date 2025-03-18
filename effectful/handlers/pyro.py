@@ -343,10 +343,12 @@ PyroDistribution = (
 )
 
 
-@_unbind_dims.register
+@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
+@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
 def _unbind_dims_distribution(
-    value: PyroDistribution, *names: Operation[[], torch.Tensor]
-) -> PyroDistribution:
+    value: pyro.distributions.torch_distribution.TorchDistribution,
+    *names: Operation[[], torch.Tensor],
+) -> pyro.distributions.torch_distribution.TorchDistribution:
     d = value
     batch_shape = None
 
@@ -388,10 +390,12 @@ def _unbind_dims_distribution(
     return new_d
 
 
-@_bind_dims.register
+@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
+@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
 def _bind_dims_distribution(
-    value: PyroDistribution, *names: Operation[[], torch.Tensor]
-) -> PyroDistribution:
+    value: pyro.distributions.torch_distribution.TorchDistribution,
+    *names: Operation[[], torch.Tensor],
+) -> pyro.distributions.torch_distribution.TorchDistribution:
     d = value
 
     def _to_positional(a, indices):
