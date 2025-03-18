@@ -277,7 +277,7 @@ def _unbind_dims_tensor(
     value: torch.Tensor,
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[torch.Tensor, Scoped[A | B]]:
-    return value[*[n() for n in names]]
+    return value[tuple(n() for n in names)]
 
 
 @defop
