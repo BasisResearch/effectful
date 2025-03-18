@@ -595,7 +595,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
             origin = typing.get_origin(typ)
             return typ if origin is None else origin
 
-        sig = inspect.signature(self._default)
+        sig = self.__signature__
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
