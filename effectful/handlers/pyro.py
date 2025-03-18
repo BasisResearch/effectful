@@ -2,7 +2,6 @@ import functools
 import typing
 from collections.abc import Collection, Mapping
 from typing import (
-    Annotated,
     Any,
     TypeVar,
 )
@@ -27,9 +26,15 @@ except ImportError:
 
 from typing_extensions import ParamSpec
 
-from effectful.handlers.torch import sizesof, to_tensor
+from effectful.handlers.torch import (
+    _bind_dims,
+    _unbind_dims,
+    bind_dims,
+    sizesof,
+    unbind_dims,
+)
 from effectful.ops.semantics import typeof
-from effectful.ops.syntax import Scoped, defop, defterm
+from effectful.ops.syntax import defop, defterm
 from effectful.ops.types import Operation, Term
 
 P = ParamSpec("P")
@@ -165,7 +170,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         name_to_dim = {}
         for i, (k, v) in enumerate(reversed(list(indices.items()))):
             if k in t_indices:
-                t = to_tensor(t, k)
+                t = bind_dims(t, k)
             else:
                 t = t.expand((v,) + t.shape)
             name_to_dim[k] = -len(shape) - i - 1
@@ -173,7 +178,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # create a positional dimension for every remaining named index in `t`
         n_batch_and_dist_named = len(t.shape)
         for i, k in enumerate(reversed(list(sizesof(t).keys()))):
-            t = to_tensor(t, k)
+            t = bind_dims(t, k)
             name_to_dim[k] = -n_batch_and_dist_named - i - 1
 
         return t, Naming(name_to_dim)
@@ -222,7 +227,8 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # pdist shape: | named1 | batch_shape | event_shape |
             # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
             indices = sizesof(dist)
-            pdist, naming = positional_distribution(dist)
+            naming = Naming.from_shape(indices, len(dist.shape()))
+            pdist = bind_dims(dist, *indices.keys())
 
             if msg["mask"] is None:
                 mask = torch.tensor(True)
@@ -331,11 +337,17 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["value"] = value
 
 
-@defop
-def named_distribution(
-    d: Annotated[TorchDistribution, Scoped[A | B]],
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[TorchDistribution, Scoped[A | B]]:
+PyroDistribution = (
+    pyro.distributions.torch_distribution.TorchDistribution
+    | pyro.distributions.torch_distribution.TorchDistributionMixin
+)
+
+
+@_unbind_dims.register
+def _unbind_dims_distribution(
+    value: PyroDistribution, *names: Operation[[], torch.Tensor]
+) -> PyroDistribution:
+    d = value
     batch_shape = None
 
     def _validate_batch_shape(t):
@@ -360,7 +372,7 @@ def named_distribution(
             _validate_batch_shape(a)
             return typing.cast(torch.Tensor, a)[tuple(n() for n in names)]
         elif isinstance(a, TorchDistribution):
-            return named_distribution(a, *names)
+            return unbind_dims(a, *names)
         else:
             return a
 
@@ -376,10 +388,12 @@ def named_distribution(
     return new_d
 
 
-@defop
-def positional_distribution(
-    d: Annotated[TorchDistribution, Scoped[A]],
-) -> tuple[TorchDistribution, Naming]:
+@_bind_dims.register
+def _bind_dims_distribution(
+    value: PyroDistribution, *names: Operation[[], torch.Tensor]
+) -> PyroDistribution:
+    d = value
+
     def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
             # broadcast to full indexed shape
@@ -389,9 +403,9 @@ def positional_distribution(
             a_indexed = torch.broadcast_to(
                 a, torch.Size([indices[dim] for dim in missing_dims]) + a.shape
             )[tuple(n() for n in missing_dims)]
-            return to_tensor(a_indexed, *indices)
+            return bind_dims(a_indexed, *names)
         elif isinstance(a, TorchDistribution):
-            return positional_distribution(a)[0]
+            return bind_dims(a, *names)
         else:
             return a
 
@@ -399,16 +413,15 @@ def positional_distribution(
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
         raise NotImplementedError
 
-    shape = d.shape()
-    indices = sizesof(d)
-    naming = Naming.from_shape(indices, len(shape))
+    sizes = sizesof(d)
+    indices = {k: sizes[k] for k in names}
 
     pos_args = [_to_positional(a, indices) for a in d.args]
     pos_kwargs = {k: _to_positional(v, indices) for (k, v) in d.kwargs.items()}
     new_d = d.op(*pos_args, **pos_kwargs)
 
     assert new_d.event_shape == d.event_shape
-    return new_d, naming
+    return new_d
 
 
 @functools.cache

@@ -176,29 +176,25 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     return result
 
 
-@defop
-def to_tensor(
-    t: Annotated[torch.Tensor, Scoped[A | B]],
-    *args: Annotated[Operation[[], torch.Tensor], Scoped[A]],
-) -> Annotated[torch.Tensor, Scoped[B]]:
-    """Convert named dimensions to positional dimensions.
+HasDims = TypeVar(
+    "HasDims",
+    bound=torch.Tensor
+    | torch.distributions.Distribution
+    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+)
 
-    :param t: A tensor.
-    :type t: T
-    :param args: Named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type args: Operation[[], torch.Tensor]
-    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
 
-    **Example usage**:
+@functools.singledispatch
+def _bind_dims(value, *names: Operation[[], torch.Tensor]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
+    raise NotImplementedError
 
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> to_tensor(t[a(), b()], b, a).shape
-    torch.Size([3, 2])
-    """
 
+@_bind_dims.register
+def _bind_dims_tensor(
+    value: torch.Tensor, *names: Operation[[], torch.Tensor]
+) -> torch.Tensor:
     def _evaluate(expr):
         if isinstance(expr, Term):
             (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
@@ -206,6 +202,9 @@ def to_tensor(
         if tree.is_nested(expr):
             return tree.map_structure(_evaluate, expr)
         return expr
+
+    t = value
+    args = names
 
     if not isinstance(t, Term):
         return t
@@ -239,6 +238,54 @@ def to_tensor(
     perm = [dim_ops.index(o) for o in args] + reindex_dims
     tensor = tensor.permute(perm)
     return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+
+
+@defop
+def bind_dims(
+    value: Annotated[HasDims, Scoped[A | B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[HasDims, Scoped[A]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], torch.Tensor]
+    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> bind_dims(t[a(), b()], b, a).shape
+    torch.Size([3, 2])
+    """
+    return _bind_dims(value, *names)
+
+
+@functools.singledispatch
+def _unbind_dims(value, *names: Operation[[], torch.Tensor]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+    raise NotImplementedError
+
+
+@_unbind_dims.register
+def _unbind_dims_tensor(
+    value: torch.Tensor,
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[torch.Tensor, Scoped[A | B]]:
+    return value[*[n() for n in names]]
+
+
+@defop
+def unbind_dims(
+    value: Annotated[HasDims, Scoped[A | B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[HasDims, Scoped[A | B]]:
+    return _unbind_dims(value, *names)
 
 
 @functools.cache
@@ -602,7 +649,7 @@ def _indexed_func_wrapper(
         nonlocal indexes
 
         def deindex_tensor(t, i):
-            t_ = to_tensor(t, *i.sizes.keys())
+            t_ = bind_dims(t, *i.sizes.keys())
             assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
             return t_
 
@@ -676,7 +723,7 @@ def vjp(func, *indexed_primals, **kwargs):
     unpacked_primals = []
     for t in indexed_primals:
         indices = list(sizesof(t).keys())
-        unpacked = to_tensor(t, *indices)
+        unpacked = bind_dims(t, *indices)
         unpacked_primals.append((unpacked, indices))
 
     indexed_result = None
@@ -691,7 +738,7 @@ def vjp(func, *indexed_primals, **kwargs):
         nonlocal indexed_result
         indexed_result = func(*repack_primals(primals))
         return tree.map_structure(
-            lambda t: to_tensor(t, *list(sizesof(t).keys())), indexed_result
+            lambda t: bind_dims(t, *list(sizesof(t).keys())), indexed_result
         )
 
     unindexed_primals = [t[0] for t in unpacked_primals]
@@ -699,7 +746,7 @@ def vjp(func, *indexed_primals, **kwargs):
 
     def vjpfunc_wrapper(*tangents):
         unindexed_tangents = tree.map_structure(
-            lambda t: to_tensor(t, *list(sizesof(t).keys())), tangents
+            lambda t: bind_dims(t, *list(sizesof(t).keys())), tangents
         )
         grads = vjpfunc(*unindexed_tangents)
         return repack_primals(grads)
