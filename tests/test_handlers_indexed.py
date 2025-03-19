@@ -16,7 +16,7 @@ from effectful.handlers.indexed import (
     name_to_sym,
     stack,
 )
-from effectful.handlers.torch import sizesof, to_tensor
+from effectful.handlers.torch import bind_dims, sizesof
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn
 
@@ -239,5 +239,5 @@ def test_cond_tensor_associate(enum_shape, batch_shape, plate_shape, event_shape
     )
 
     vars = list(map(name_to_sym, name_to_dim.keys()))
-    assert (to_tensor(actual_full, *vars) == to_tensor(actual_left, *vars)).all()
-    assert (to_tensor(actual_left, *vars) == to_tensor(actual_right, *vars)).all()
+    assert (bind_dims(actual_full, *vars) == bind_dims(actual_left, *vars)).all()
+    assert (bind_dims(actual_left, *vars) == bind_dims(actual_right, *vars)).all()
