@@ -119,9 +119,8 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
         args, kwargs = tree.map_structure(defterm, (args, kwargs))
         return defdata(op, *args, **kwargs)
 
-    value = defterm(value)
     with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
-        evaluate(value)
+        evaluate(defterm(value))
 
     return sizes
 
