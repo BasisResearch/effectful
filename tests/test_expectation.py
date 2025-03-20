@@ -84,4 +84,34 @@ def test_integration():
     def f(x):
         return x**2
 
-    intg = fold(LinAlg, {x: dist.Normal(loc, scale)}, x[1] * f(x[0]))
+    x = defop(torch.Tensor, name="x")
+    w = defop(torch.Tensor, name="w")
+    with handler(dense_fold_intp):
+        intg = fold(LinAlg, {(x, w): dist.Normal(loc, scale)}, w() * f(x()))
+
+
+def test_svi():
+    """Implementation of the SVI example from Pyro's documentation (https://pyro.ai/examples/svi_part_i.html)"""
+    # Generate data from a biased coin
+    true_prob = 0.6
+    n_samples = 1000
+    data = dist.Bernoulli(torch.tensor([true_prob])).sample([n_samples])
+
+    latent_fairness = defop(torch.Tensor, name="latent_fairness")
+    alpha_q = defop(torch.Tensor, name="alpha_q")
+    beta_q = defop(torch.Tensor, name="beta_q")
+
+    def model_log_prob(data):
+        """Return the log joint probability of the latent variables and the observed data according to the model."""
+        alpha0 = torch.tensor(10.0)
+        beta0 = torch.tensor(10.0)
+        return dist.Beta(alpha0, beta0).log_prob(latent_fairness()) + torch.sum(
+            dist.Bernoulli(latent_fairness()).log_prob(data)
+        )
+
+    elbo = fold(
+        LinAlg,
+        {(latent_fairness, latent_fairness_w): dist.Beta(alpha_q(), beta_q())},
+        torch.exp(latent_fairness_w()) * (model_log_prob(data) - latent_fairness_w()),
+    )
+    max_phi = fold(ArgMaxAlg, {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q())))

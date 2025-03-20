@@ -8,6 +8,7 @@ from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVa
 
 import effectful.handlers.numbers  # noqa: F401
 import torch
+import torch.distributions as dist
 import tree
 from effectful.handlers.indexed import sizesof
 from effectful.handlers.torch import to_tensor
@@ -303,6 +304,24 @@ class ProductFold(ObjectInterpretation):
         return tree.map_structure(lambda r, b: fold(r, streams, b), semi_rings, body)
 
 
+class FoldOfSum(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (semiring is LinAlg):
+            return fwd()
+
+        if not (isinstance(body, Term) and body.op is D):
+            return fwd()
+
+        if len(body.args) <= 0:
+            return torch.tensor([])
+
+        if len(body.args) > 1:
+            return fwd()
+
+        indices, value = body.args[0]
+
+
 class DenseTensorArgFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
@@ -343,7 +362,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, reduction_indices)
+        result = to_tensor(result, *reduction_indices)
 
         flat_result = result.flatten(start_dim=0, end_dim=len(reduction_indices) - 1)
         mins, flat_indices = flat_result.min(dim=0) if semiring is ArgMinAlg else result.max(dim=0)
@@ -354,7 +373,7 @@ class DenseTensorArgFold(ObjectInterpretation):
             argmins = evaluate(argmin_value)
 
         final_result = tree.map_structure(
-            lambda t: to_tensor(t, [i for i in result_indices if i not in reduction_indices]), (mins, argmins)
+            lambda t: to_tensor(t, *[i for i in result_indices if i not in reduction_indices]), (mins, argmins)
         )
         return final_result
 
@@ -421,9 +440,9 @@ class DenseTensorFold(ObjectInterpretation):
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, reduction_indices)
+        result = to_tensor(result, *reduction_indices)
         result = reductor(result, len(reduction_indices))
-        return to_tensor(result, [i for i in result_indices if i not in reduction_indices])
+        return to_tensor(result, *[i for i in result_indices if i not in reduction_indices])
 
 
 @defop
@@ -586,11 +605,37 @@ class GradientOptimizationFold(ObjectInterpretation):
 class LikelihoodWeightingFold(ObjectInterpretation):
     """Handle expectation computation using likelihood weighting."""
 
+    def __init__(self, samples=1000):
+        self.samples = samples
+
     @implements(fold)
     def fold(self, semiring, streams, body, guard=True):
-        pass
+        if not (
+            semiring is LinAlg and all(isinstance(v, dist.Distribution) for v in streams.values()) and guard is True
+        ):
+            return fwd()
+
+        sample = defop(torch.Tensor, name="sample")
+        sample_streams = {}
+        for k, v in streams.items():
+            if not (isinstance(k, tuple) and len(k) == 2):
+                raise ValueError("Expected a tuple of (value, weight) for likelihood weighting")
+            samples = v.sample((self.samples,))[sample()]
+            weights = torch.exp(v.log_prob(samples))  # TODO: fix this
+            sample_streams[k] = deffn((samples, weights))
+        sample_streams[sample] = range(self.samples)
+
+        return fold(semiring, sample_streams, body)
 
 
 dense_fold_intp = functools.reduce(
-    coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), FlipOptimizationFold(), ProductFold()]
+    coproduct,
+    [
+        NormalizeValueFold(),
+        DenseTensorArgFold(),
+        DenseTensorFold(),
+        FlipOptimizationFold(),
+        ProductFold(),
+        LikelihoodWeightingFold(),
+    ],
 )
