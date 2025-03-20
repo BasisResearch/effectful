@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import defdata, defop, syntactic_eq
+from effectful.ops.syntax import bool_, defdata, defop, syntactic_eq
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -102,7 +102,7 @@ abs = defop(_wrap_unop(operator.abs))
 @numbers.Complex.register
 class _ComplexTerm(_NumberTerm, Term[numbers.Complex]):
     def __bool__(self) -> bool:
-        raise ValueError("Cannot convert term to bool")
+        return bool_(self)
 
     def __add__(self, other: Any) -> numbers.Real:
         return add(self, other)
@@ -192,6 +192,12 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
 
     def __le__(self, other):
         return le(self, other)
+
+    def __gt__(self, other):
+        return gt(self, other)
+
+    def __ge__(self, other):
+        return ge(self, other)
 
 
 @defdata.register(numbers.Rational)
