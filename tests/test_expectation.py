@@ -1,10 +1,11 @@
 import torch
 import torch.distributions as dist
-from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
+from effectful.ops.semantics import handler, evaluate
+from effectful.ops.syntax import defop, deffn
 from effectful.ops.types import Term
+from effectful.handlers.indexed import sizesof
 
-from weighted.fold_lang_v1 import ArgMinAlg, GradientOptimizationFold, LinAlg, dense_fold_intp, fold, reals
+from weighted.fold_lang_v1 import ArgMaxAlg, ArgMinAlg, GradientOptimizationFold, LinAlg, dense_fold_intp, fold, reals
 
 
 def setup_module():
@@ -42,7 +43,28 @@ def Normal(m, s):
 
 
 @defop
+def Beta(*args):
+    if any(isinstance(v, Term) and not isinstance(v, torch.Tensor) for v in args):
+        raise NotImplementedError
+    return dist.Beta(*args)
+
+
+@defop
+def Bernoulli(*args):
+    if any(isinstance(v, Term) and not isinstance(v, torch.Tensor) for v in args):
+        raise NotImplementedError
+    return dist.Bernoulli(*args)
+
+
+@defop
 def sample(d: dist.Distribution, sample_shape: tuple[int]) -> torch.Tensor:
+    if not (isinstance(d, dist.Distribution) and isinstance(sample_shape, tuple)):
+        raise NotImplementedError
+    return d.sample(sample_shape=torch.Size(sample_shape))
+
+
+@defop
+def rsample(d: dist.Distribution, sample_shape: tuple[int]) -> torch.Tensor:
     if not (isinstance(d, dist.Distribution) and isinstance(sample_shape, tuple)):
         raise NotImplementedError
     return d.rsample(sample_shape=torch.Size(sample_shape))
@@ -87,17 +109,19 @@ def test_integration():
     x = defop(torch.Tensor, name="x")
     w = defop(torch.Tensor, name="w")
     with handler(dense_fold_intp):
-        intg = fold(LinAlg, {(x, w): dist.Normal(loc, scale)}, w() * f(x()))
+        intg = fold(LinAlg, {(x, w): Normal(loc, scale)}, torch.exp(w()) * f(x()))
 
+    assert torch.isclose(intg, torch.tensor(0.5), atol=1e-1)
 
 def test_svi():
     """Implementation of the SVI example from Pyro's documentation (https://pyro.ai/examples/svi_part_i.html)"""
     # Generate data from a biased coin
-    true_prob = 0.6
+    true_prob = torch.tensor([0.6])
     n_samples = 1000
-    data = dist.Bernoulli(torch.tensor([true_prob])).sample([n_samples])
+    data = sample(Bernoulli(true_prob), (n_samples,))
 
     latent_fairness = defop(torch.Tensor, name="latent_fairness")
+    latent_fairness_w = defop(torch.Tensor, name="latent_fairness_w")
     alpha_q = defop(torch.Tensor, name="alpha_q")
     beta_q = defop(torch.Tensor, name="beta_q")
 
@@ -105,13 +129,22 @@ def test_svi():
         """Return the log joint probability of the latent variables and the observed data according to the model."""
         alpha0 = torch.tensor(10.0)
         beta0 = torch.tensor(10.0)
-        return dist.Beta(alpha0, beta0).log_prob(latent_fairness()) + torch.sum(
-            dist.Bernoulli(latent_fairness()).log_prob(data)
-        )
+        beta_prior = Beta(alpha0, beta0)
+        return log_prob(beta_prior, latent_fairness()) + torch.sum(log_prob(Bernoulli(latent_fairness()), data))
 
-    elbo = fold(
-        LinAlg,
-        {(latent_fairness, latent_fairness_w): dist.Beta(alpha_q(), beta_q())},
-        torch.exp(latent_fairness_w()) * (model_log_prob(data) - latent_fairness_w()),
-    )
-    max_phi = fold(ArgMaxAlg, {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q())))
+    with handler(GradientOptimizationFold(steps=500, lr=0.5, init={alpha_q: torch.tensor(1.), beta_q: torch.tensor(1.)})), handler(dense_fold_intp):
+        elbo = fold(
+            LinAlg,
+            {(latent_fairness, latent_fairness_w): Beta(alpha_q(), beta_q())},
+            -(torch.exp(latent_fairness_w()) * (model_log_prob(data) - latent_fairness_w())),
+        )
+        (_, (alpha_est, beta_est)) = fold(ArgMinAlg, {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q())))
+
+        with handler({alpha_q: deffn(torch.tensor(15.0)), beta_q: deffn(torch.tensor(15.0))}):
+            x = evaluate(elbo)
+            assert isinstance(x, torch.Tensor) and len(x.shape) == 0 and len(sizesof(x)) == 0
+
+        breakpoint()
+        inferred_prob = alpha_est / (alpha_est + beta_est)
+        assert torch.isclose(inferred_prob, true_prob, atol=1e-1)
+

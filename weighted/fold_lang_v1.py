@@ -446,7 +446,7 @@ class DenseTensorFold(ObjectInterpretation):
 
 
 @defop
-def reals(*, shape: tuple[int] = tuple()) -> Iterable[torch.Tensor]:
+def reals(*, shape: torch.Size = torch.Size()) -> Iterable[torch.Tensor]:
     raise NotImplementedError
 
 
@@ -605,7 +605,7 @@ class GradientOptimizationFold(ObjectInterpretation):
 class LikelihoodWeightingFold(ObjectInterpretation):
     """Handle expectation computation using likelihood weighting."""
 
-    def __init__(self, samples=1000):
+    def __init__(self, samples=2):
         self.samples = samples
 
     @implements(fold)
@@ -615,17 +615,35 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         ):
             return fwd()
 
-        sample = defop(torch.Tensor, name="sample")
         sample_streams = {}
+        index_streams = {}
         for k, v in streams.items():
-            if not (isinstance(k, tuple) and len(k) == 2):
-                raise ValueError("Expected a tuple of (value, weight) for likelihood weighting")
-            samples = v.sample((self.samples,))[sample()]
-            weights = torch.exp(v.log_prob(samples))  # TODO: fix this
-            sample_streams[k] = deffn((samples, weights))
-        sample_streams[sample] = range(self.samples)
+            sample = defop(torch.Tensor, name="sample")
 
-        return fold(semiring, sample_streams, body)
+            if isinstance(k, Operation):
+                value = k
+                samples = v.sample((self.samples,))[sample()]
+                sample_streams[value] = deffn(samples)
+            elif isinstance(k, tuple):
+                if not (len(k) == 2 and all(isinstance(i, Operation) for i in k)):
+                    raise ValueError("Expected a tuple of (value, weight) for likelihood weighting")
+                (value, weight) = k
+                samples = v.sample((self.samples,))
+                weights = v.log_prob(samples)
+                weights = weights - torch.logsumexp(weights, dim=0)
+                samples = samples[sample()]
+                weights = weights[sample()]
+                sample_streams[value] = deffn(samples)
+                sample_streams[weight] = deffn(weights)
+            else:
+                raise ValueError("Unexpected key type")
+
+            index_streams[sample] = torch.arange(self.samples)
+
+        with handler(sample_streams):
+            body = evaluate(body)
+
+        return fold(LinAlg, index_streams, body)
 
 
 dense_fold_intp = functools.reduce(
@@ -634,7 +652,7 @@ dense_fold_intp = functools.reduce(
         NormalizeValueFold(),
         DenseTensorArgFold(),
         DenseTensorFold(),
-        FlipOptimizationFold(),
+        # FlipOptimizationFold(),
         ProductFold(),
         LikelihoodWeightingFold(),
     ],
