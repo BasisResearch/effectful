@@ -8,6 +8,7 @@ from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVa
 
 import effectful.handlers.numbers  # noqa: F401
 import torch
+import torch.distributions as dist
 import tree
 from effectful.handlers.indexed import sizesof
 from effectful.handlers.torch import to_tensor
@@ -32,29 +33,6 @@ K = TypeVar("K")
 V = TypeVar("V")
 A = TypeVar("A")
 B = TypeVar("B")
-
-
-# Expectation(
-#     f(x)
-#     for z1 in sample(z1_dist)
-#     for z2 in sample(z2_dist(z1))
-#     for x in sample(x_dist(z1, z2))
-# )
-#
-#
-# # unnormalized
-# Expectation(
-#     weight * vars[-1]
-#     for (weight, vars) in Infer(
-#         (w1(z1) * w2(z1, z2) * w3(z1, z2, x), (z1, z2, x))
-#         for z1 in sample(z1_dist)
-#         # if factor(w1(z1)) != 0
-#         for z2 in sample(z2_dist(z1))
-#         # if factor(w2(z1, z2)) != 0
-#         for x in sample(x_dist(z1, z2))
-#         # if factor(w3(z1, z2, x)) != 0
-#     )
-# )
 
 
 @dataclasses.dataclass
@@ -180,8 +158,7 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
     return generator()
 
 
-@defop
-def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
         if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
@@ -207,6 +184,11 @@ def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: boo
                         yield evaluate(body)
 
     return functools.reduce(functools.partial(promote_add, semiring.add), generator())
+
+
+@defop
+def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], *, guard: bool = True) -> Mapping[K, T]:
+    raise NotImplementedError
 
 
 @defop
@@ -322,6 +304,24 @@ class ProductFold(ObjectInterpretation):
         return tree.map_structure(lambda r, b: fold(r, streams, b), semi_rings, body)
 
 
+class FoldOfSum(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        if not (semiring is LinAlg):
+            return fwd()
+
+        if not (isinstance(body, Term) and body.op is D):
+            return fwd()
+
+        if len(body.args) <= 0:
+            return torch.tensor([])
+
+        if len(body.args) > 1:
+            return fwd()
+
+        indices, value = body.args[0]
+
+
 class DenseTensorArgFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
@@ -362,7 +362,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, reduction_indices)
+        result = to_tensor(result, *reduction_indices)
 
         flat_result = result.flatten(start_dim=0, end_dim=len(reduction_indices) - 1)
         mins, flat_indices = flat_result.min(dim=0) if semiring is ArgMinAlg else result.max(dim=0)
@@ -373,7 +373,7 @@ class DenseTensorArgFold(ObjectInterpretation):
             argmins = evaluate(argmin_value)
 
         final_result = tree.map_structure(
-            lambda t: to_tensor(t, [i for i in result_indices if i not in reduction_indices]), (mins, argmins)
+            lambda t: to_tensor(t, *[i for i in result_indices if i not in reduction_indices]), (mins, argmins)
         )
         return final_result
 
@@ -405,7 +405,7 @@ class DenseTensorFold(ObjectInterpretation):
             return None
 
     @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
+    def fold(self, semiring, streams, body, guard=True):
         reductor = self._get_reductor(semiring)
         if reductor is None or not (
             all(isinstance(s, collections.abc.Sized) for s in streams.values())
@@ -440,30 +440,108 @@ class DenseTensorFold(ObjectInterpretation):
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, reduction_indices)
+        result = to_tensor(result, *reduction_indices)
         result = reductor(result, len(reduction_indices))
-        return to_tensor(result, [i for i in result_indices if i not in reduction_indices])
+        return to_tensor(result, *[i for i in result_indices if i not in reduction_indices])
 
 
 @defop
-def reals() -> Iterable[float]:
+def reals(*, shape: torch.Size = torch.Size()) -> Iterable[torch.Tensor]:
     raise NotImplementedError
 
 
+class FlipOptimizationFold(ObjectInterpretation):
+    """Convert Max/ArgMax problems to Min/ArgMin by negating values.
+
+    This handler transforms maximization problems into minimization problems
+    by negating the objective function, allowing reuse of minimization algorithms.
+    """
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, **kwargs):
+        # Only handle MaxAlg and ArgMaxAlg
+        if semiring not in (MaxAlg, ArgMaxAlg):
+            return fwd()
+
+        # Determine the target semiring (Min for Max, ArgMin for ArgMax)
+        target_semiring = MinAlg if semiring is MaxAlg else ArgMinAlg
+
+        # Normalize the body to use D if it's not already
+        if not (isinstance(body, Term) and body.op is D):
+            # For ArgMaxAlg, body should be a tuple of (value, arg)
+            if semiring is ArgMaxAlg:
+                if not isinstance(body, tuple) or len(body) != 2:
+                    return fwd()
+                body = D(((), body))
+            else:
+                body = D(((), body))
+
+        # For each key-value pair in the body
+        new_args = []
+        for indices, value in body.args:
+            if semiring is MaxAlg:
+                # For MaxAlg, just negate the value
+                new_value = -value
+            else:  # ArgMaxAlg
+                # For ArgMaxAlg, negate the first element of the tuple (the value)
+                # but keep the second element (the arg) unchanged
+                if not (isinstance(value, tuple) and len(value) == 2):
+                    raise ValueError("Expected a tuple of (value, arg) for ArgMaxAlg")
+                val, arg = value
+                new_value = (-val, arg)
+
+            new_args.append((indices, new_value))
+
+        # Create a new body with negated values
+        new_body = D(*new_args)
+
+        # Solve as a minimization problem
+        result = fold(target_semiring, streams, new_body, **kwargs)
+
+        # For MaxAlg, negate the result back
+        if semiring is MaxAlg:
+            if isinstance(result, dict):
+                return {k: -v for k, v in result.items()}
+            else:
+                return -result
+        else:  # ArgMaxAlg
+            # For ArgMaxAlg, negate the first element of the result tuple back
+            if isinstance(result, dict):
+                return {k: (-v[0], v[1]) for k, v in result.items()}
+            elif isinstance(result, tuple):
+                return (-result[0], result[1])
+            else:
+                fwd()
+
+
 class GradientOptimizationFold(ObjectInterpretation):
-    def __init__(self, optimizer=torch.optim.Adam, steps=1000, **kwargs):
+    """Handle min/argmin over reals using gradient descent.
+
+    Notes:
+    - A single empty output index is expected. Nontrivial output indexes would in
+    principle allow us to represent partial optimization problems like the following:
+    fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
+
+    - Problems that involve a guard can be solved using a variety of techniques,
+    depending on the form of the guard, but we don't implement any.
+
+    """
+
+    def __init__(self, optimizer=torch.optim.Adam, steps=1000, init=None, **kwargs):
         self.optimizer = optimizer
         self.optimizer_kwargs = kwargs
         self.steps = steps
+        self.init = {} if init is None else init
 
     def _optimizer(self, params):
         return self.optimizer(params, **self.optimizer_kwargs)
 
     @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
-        breakpoint()
+    def fold(self, semiring, streams, body, guard=True):
         if not (
-            semiring in (MinAlg, ArgMinAlg) and all(isinstance(v, Term) and v.op is reals for v in streams.values())
+            semiring in (MinAlg, ArgMinAlg)
+            and all(isinstance(v, Term) and v.op is reals for v in streams.values())
+            and guard is True
         ):
             return fwd()
 
@@ -486,7 +564,24 @@ class GradientOptimizationFold(ObjectInterpretation):
                 raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
             value, arg = value
 
-        params = [torch.tensor(0.0, requires_grad=True) for _ in streams.values()]
+        # Initialize parameters using provided init values or zeros
+        params = []
+        for k, r in zip(streams.keys(), streams.values()):
+            shape = r.args[0] if len(r.args) > 0 else ()
+            if k in self.init:
+                # Use provided initialization
+                init_value = self.init[k]
+                if not isinstance(init_value, torch.Tensor):
+                    init_value = torch.tensor(init_value, dtype=torch.float)
+                # Ensure the shape matches
+                if init_value.shape != shape and shape != ():
+                    raise ValueError(f"Init shape mismatch for {k}: expected {shape}, got {init_value.shape}")
+                param = init_value.clone().detach().requires_grad_(True)
+            else:
+                # Default to zeros
+                param = torch.zeros(shape, requires_grad=True)
+            params.append(param)
+
         param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
 
         optimizer = self._optimizer(params)
@@ -507,4 +602,58 @@ class GradientOptimizationFold(ObjectInterpretation):
         return loss, arg
 
 
-dense_fold_intp = functools.reduce(coproduct, [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold()])
+class LikelihoodWeightingFold(ObjectInterpretation):
+    """Handle expectation computation using likelihood weighting."""
+
+    def __init__(self, samples=2):
+        self.samples = samples
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        if not (
+            semiring is LinAlg and all(isinstance(v, dist.Distribution) for v in streams.values()) and guard is True
+        ):
+            return fwd()
+
+        sample_streams = {}
+        index_streams = {}
+        for k, v in streams.items():
+            sample = defop(torch.Tensor, name="sample")
+
+            if isinstance(k, Operation):
+                value = k
+                samples = v.sample((self.samples,))[sample()]
+                sample_streams[value] = deffn(samples)
+            elif isinstance(k, tuple):
+                if not (len(k) == 2 and all(isinstance(i, Operation) for i in k)):
+                    raise ValueError("Expected a tuple of (value, weight) for likelihood weighting")
+                (value, weight) = k
+                samples = v.sample((self.samples,))
+                weights = v.log_prob(samples)
+                weights = weights - torch.logsumexp(weights, dim=0)
+                samples = samples[sample()]
+                weights = weights[sample()]
+                sample_streams[value] = deffn(samples)
+                sample_streams[weight] = deffn(weights)
+            else:
+                raise ValueError("Unexpected key type")
+
+            index_streams[sample] = torch.arange(self.samples)
+
+        with handler(sample_streams):
+            body = evaluate(body)
+
+        return fold(LinAlg, index_streams, body)
+
+
+dense_fold_intp = functools.reduce(
+    coproduct,
+    [
+        NormalizeValueFold(),
+        DenseTensorArgFold(),
+        DenseTensorFold(),
+        # FlipOptimizationFold(),
+        ProductFold(),
+        LikelihoodWeightingFold(),
+    ],
+)

@@ -5,17 +5,21 @@ from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 
 from weighted.fold_lang_v1 import (
+    ArgMaxAlg,
     ArgMinAlg,
     D,
     DenseTensorArgFold,
     DenseTensorFold,
+    FlipOptimizationFold,
     GradientOptimizationFold,
     LinAlg,
     MaxAlg,
     MinAlg,
+    NormalizeValueFold,
     ProductFold,
     dense_fold_intp,
     fold,
+    reals,
     semi_ring_product,
     unfold,
 )
@@ -41,8 +45,8 @@ def test_batched_matmul():
     B, I, J, K = 2, 3, 4, 5
 
     # Create sample matrices
-    A = torch.randn(B, I, J)
-    B_mat = torch.randn(B, J, K)
+    X = torch.randn(B, I, J)
+    Y = torch.randn(B, J, K)
 
     # Define index operations
     b, i, j, k = (
@@ -52,23 +56,16 @@ def test_batched_matmul():
         defop(torch.Tensor, name="k"),
     )
 
-    def run_fold():
-        return fold(
+    with handler(dense_fold_intp):
+        actual = fold(
             LinAlg,
             {b: torch.arange(B), i: torch.arange(I), j: torch.arange(J), k: torch.arange(K)},
-            D(((b(), i(), k()), A[b(), i(), j()] * B_mat[b(), j(), k()])),
+            D(((b(), i(), k()), X[b(), i(), j()] * Y[b(), j(), k()])),
         )
 
-    result = run_fold()
-    result_tensor = sparse_to_tensor(result)
-
-    with handler(dense_fold_intp):
-        vectorized_result_tensor = run_fold()
-
     # Compare with pytorch
-    expected = torch.einsum("bij,bjk->bik", A, B_mat)
-    assert torch.allclose(result_tensor, expected, atol=1e-3)
-    assert torch.allclose(vectorized_result_tensor, expected)
+    expected = torch.einsum("bij,bjk->bik", X, Y)
+    assert torch.allclose(actual, expected)
 
 
 def run_min_folds():
@@ -124,6 +121,48 @@ def test_minalg_vectorized():
         run_min_folds()
 
 
+def test_gradient_optimization_init():
+    """Test that GradientOptimizationFold uses initialization values correctly."""
+    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    
+    # Define a simple quadratic function with minimum at (2, -3)
+    def quadratic(x_val, y_val):
+        return (x_val - 2)**2 + (y_val + 3)**2
+    
+    # Test with default initialization (zeros)
+    with handler(GradientOptimizationFold(steps=100, lr=0.1)), handler(dense_fold_intp):
+        result = fold(
+            MinAlg,
+            {x: reals(), y: reals()},
+            quadratic(x(), y())
+        )
+        # Should be close to the minimum value (0)
+        assert result < 0.1
+        
+        # Test with ArgMinAlg to get both value and argmin
+        result_arg = fold(
+            ArgMinAlg,
+            {x: reals(), y: reals()},
+            (quadratic(x(), y()), (x(), y()))
+        )
+        # Value should be close to minimum
+        assert result_arg[0] < 0.1
+        # Arguments should be close to (2, -3)
+        assert abs(result_arg[1][0] - 2) < 0.1
+        assert abs(result_arg[1][1] + 3) < 0.1
+    
+    # Test with custom initialization
+    # Starting closer to the minimum should converge faster
+    with handler(GradientOptimizationFold(steps=20, lr=0.1, init={x: 1.5, y: -2.5})), handler(dense_fold_intp):
+        result = fold(
+            MinAlg,
+            {x: reals(), y: reals()},
+            quadratic(x(), y())
+        )
+        # Should be very close to the minimum with fewer steps
+        assert result < 0.01
+
+
 def test_product_fold():
     """Test the ProductFold handler with multiple semirings."""
     # Define operations
@@ -133,7 +172,7 @@ def test_product_fold():
     product_semiring = semi_ring_product(MinAlg, MaxAlg, LinAlg)
 
     # Test with simple expressions
-    with handler(ProductFold()):
+    with handler(dense_fold_intp):
         # Basic test with a single variable
         result = fold(
             product_semiring,

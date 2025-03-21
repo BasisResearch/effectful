@@ -34,6 +34,7 @@ def test_opt():
 
 
 def test_batched_matmul():
+    '''Fit a line to noisy data using gradient descent.'''
     expected_w = 3.0
     expected_b = 5.0
 
@@ -45,11 +46,7 @@ def test_batched_matmul():
     # Define index operations
     b, w, k = defop(torch.Tensor, name="b"), defop(torch.Tensor, name="w"), defop(torch.Tensor, name="k")
 
-    with (
-        handler({fold: assert_no_base_case}),
-        handler(GradientOptimizationFold(lr=0.1, steps=100)),
-        handler(dense_fold_intp),
-    ):
+    with handler(GradientOptimizationFold(lr=0.1, steps=100)), handler(dense_fold_intp):
         loss = fold(LinAlg, {k: torch.arange(K)}, (w() * x[k()] + b() - y[k()]) ** 2)
         (_, (predicted_w, predicted_b)) = fold(ArgMinAlg, {w: reals(), b: reals()}, (loss, (w(), b())))
         assert 2 < predicted_w < 4 and 3 < predicted_b < 6
