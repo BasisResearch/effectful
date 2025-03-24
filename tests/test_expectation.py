@@ -1,11 +1,20 @@
 import torch
 import torch.distributions as dist
-from effectful.ops.semantics import handler, evaluate
-from effectful.ops.syntax import defop, deffn
-from effectful.ops.types import Term
 from effectful.handlers.indexed import sizesof
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import deffn, defop
+from effectful.ops.types import Term
 
-from weighted.fold_lang_v1 import ArgMaxAlg, ArgMinAlg, GradientOptimizationFold, LinAlg, dense_fold_intp, fold, reals
+from weighted.fold_lang_v1 import (
+    ArgMaxAlg,
+    ArgMinAlg,
+    GradientOptimizationFold,
+    LikelihoodWeightingFold,
+    LinAlg,
+    dense_fold_intp,
+    fold,
+    reals,
+)
 
 
 def setup_module():
@@ -108,10 +117,11 @@ def test_integration():
 
     x = defop(torch.Tensor, name="x")
     w = defop(torch.Tensor, name="w")
-    with handler(dense_fold_intp):
+    with handler(dense_fold_intp), handler(LikelihoodWeightingFold(samples=1000)):
         intg = fold(LinAlg, {(x, w): Normal(loc, scale)}, torch.exp(w()) * f(x()))
 
     assert torch.isclose(intg, torch.tensor(0.5), atol=1e-1)
+
 
 def test_svi():
     """Implementation of the SVI example from Pyro's documentation (https://pyro.ai/examples/svi_part_i.html)"""
@@ -132,7 +142,13 @@ def test_svi():
         beta_prior = Beta(alpha0, beta0)
         return log_prob(beta_prior, latent_fairness()) + torch.sum(log_prob(Bernoulli(latent_fairness()), data))
 
-    with handler(GradientOptimizationFold(steps=500, lr=0.5, init={alpha_q: torch.tensor(1.), beta_q: torch.tensor(1.)})), handler(dense_fold_intp):
+    with (
+        handler(
+            GradientOptimizationFold(steps=500, lr=0.5, init={alpha_q: torch.tensor(1.0), beta_q: torch.tensor(1.0)})
+        ),
+        handler(LikelihoodWeightingFold(samples=1)),
+        handler(dense_fold_intp),
+    ):
         elbo = fold(
             LinAlg,
             {(latent_fairness, latent_fairness_w): Beta(alpha_q(), beta_q())},
@@ -144,7 +160,5 @@ def test_svi():
             x = evaluate(elbo)
             assert isinstance(x, torch.Tensor) and len(x.shape) == 0 and len(sizesof(x)) == 0
 
-        breakpoint()
         inferred_prob = alpha_est / (alpha_est + beta_est)
         assert torch.isclose(inferred_prob, true_prob, atol=1e-1)
-

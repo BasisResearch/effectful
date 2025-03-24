@@ -654,6 +654,5 @@ dense_fold_intp = functools.reduce(
         DenseTensorFold(),
         # FlipOptimizationFold(),
         ProductFold(),
-        LikelihoodWeightingFold(),
     ],
 )

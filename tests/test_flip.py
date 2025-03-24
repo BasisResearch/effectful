@@ -29,7 +29,7 @@ def test_flip_optimization_max():
     x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
 
     # Test with MaxAlg
-    with handler(dense_fold_intp):
+    with handler(dense_fold_intp), handler(FlipOptimizationFold()):
         # Simple maximization problem
         f_max = fold(MaxAlg, {x: torch.arange(-10, 10)}, -(x() ** 2) + 3)
         assert f_max[()] == 3  # max of -x² is 0 at x=0
@@ -39,7 +39,7 @@ def test_flip_optimization_max_real():
     x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
 
     # Test with MaxAlg
-    with handler(dense_fold_intp), handler(GradientOptimizationFold(lr=0.1)):
+    with handler(dense_fold_intp), handler(GradientOptimizationFold(lr=0.1)), handler(FlipOptimizationFold()):
         # Simple maximization problem
         f_max = fold(MaxAlg, {x: reals()}, -(x() ** 2) + 3)
         assert f_max[()] == 3  # max of -x² is 0 at x=0
@@ -49,7 +49,7 @@ def test_flip_optimization_argmax():
     # Test with ArgMaxAlg
     x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
 
-    with handler(dense_fold_intp):
+    with handler(dense_fold_intp), handler(FlipOptimizationFold()):
         # Simple argmax problem
         f_argmax = fold(ArgMaxAlg, {x: torch.arange(-10, 10)}, (-(x() ** 2), x()))
         assert f_argmax[0] == 0  # argmax value is 0
