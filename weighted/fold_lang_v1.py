@@ -304,24 +304,6 @@ class ProductFold(ObjectInterpretation):
         return tree.map_structure(lambda r, b: fold(r, streams, b), semi_rings, body)
 
 
-class FoldOfSum(ObjectInterpretation):
-    @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
-        if not (semiring is LinAlg):
-            return fwd()
-
-        if not (isinstance(body, Term) and body.op is D):
-            return fwd()
-
-        if len(body.args) <= 0:
-            return torch.tensor([])
-
-        if len(body.args) > 1:
-            return fwd()
-
-        indices, value = body.args[0]
-
-
 class DenseTensorArgFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, **kwargs):
@@ -434,8 +416,12 @@ class DenseTensorFold(ObjectInterpretation):
         old_to_fresh = {k: defop(k) for k in streams.keys()}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
         indexed_streams = {k: deffn(v[old_to_fresh[k]()]) for k, v in streams.items()}
+
+        fvars = fvsof(value)
+        unused_streams = {k: v for k, v in streams.items() if k not in fvars}
         with handler(indexed_streams):
             result = evaluate(value)
+        result = result * functools.reduce(operator.mul, (len(v) for v in unused_streams.values()), 1)
 
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
@@ -646,6 +632,155 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         return fold(LinAlg, index_streams, body)
 
 
+class FoldFusion(ObjectInterpretation):
+    """Implements the identity: fold(R, S1, fold(R, S2, body)) = fold(R, S1 x S2, body)
+
+    This optimization fuses nested folds with the same semiring into a single fold
+    over the product of their streams, which can be more efficient.
+    """
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        # Only proceed if body is a fold operation
+        if not (isinstance(body, Term) and body.op is fold and guard is True):
+            return fwd()
+
+        # Extract the inner fold's parameters
+        inner_semiring, inner_streams, inner_body, inner_kwargs = body.args
+        inner_guard = inner_kwargs.get("guard", True)
+
+        # Only fuse if both folds use the same semiring
+        if not (semiring == inner_semiring):
+            return fwd()
+
+        # Combine the guards
+        combined_guard = inner_guard
+
+        # Return the fused fold
+        return fold(semiring, coproduct(streams, inner_streams), inner_body, guard=inner_guard)
+
+
+class FoldIndexDistributivity(ObjectInterpretation):
+    """Implements the identity: fold(R, S, D((I1, X1), ..., (IN, XN))) = fold(R, S, D((I1, X1))) R.+ ... R.+ fold(R, S, D((IN, XN)))"""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        # Check if the body is a D term with multiple arguments (representing addition)
+        if not (isinstance(body, Term) and body.op is D):
+            return fwd()
+
+        # If there's only 0 or 1 argument, no distribution needed
+        if len(body.args) <= 1:
+            return fwd()
+
+        # Create separate fold operations for each term
+        results = []
+        for indices, value in body.args:
+            # Create a new D term with just this key-value pair
+            term_body = D((indices, value))
+            # Compute fold for this term
+            term_result = fold(semiring, streams, term_body, guard=guard)
+            results.append(term_result)
+
+        # Combine results using semiring addition
+        return functools.reduce(lambda a, b: semiring.add(a, b), results, semiring.zero)
+
+
+class FoldAddDistributivity(ObjectInterpretation):
+    """Implements the identity: fold(R, S, D((I, X1 R.+ ... R.+ XN))) = fold(R, S, D((I1, X1), ..., (IN, XN)))
+
+    This optimization distributes fold over addition within a single index, allowing
+    for parallel computation of individual terms.
+    """
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        if not (semiring is LinAlg):
+            return fwd()
+
+        # Check if the body is a D term with a single argument
+        if not (isinstance(body, Term) and body.op is D and len(body.args) == 1):
+            return fwd()
+
+        indices, value = body.args[0]
+
+        if isinstance(value, Term) and value.op is effectful.handlers.torch._register_torch_op(torch.add):
+            terms = value.args
+        else:
+            # Not a recognized addition pattern
+            return fwd()
+
+        # Create separate D terms for each addend
+        new_terms = []
+        for term in terms:
+            new_terms.append((indices, term))
+
+        # Create a new body with separate terms
+        new_body = D(*new_terms)
+
+        # Apply fold to the new body
+        return fold(semiring, streams, new_body, guard=guard)
+
+
+class FoldFactorization(ObjectInterpretation):
+    """Implements the identity: fold(R, S, A * B), free(A) ∩ S = {} => A * fold(R, S, B)
+
+    This optimization factors out terms that don't depend on the fold variables,
+    which can significantly reduce computation by avoiding redundant calculations.
+    """
+
+    def _mul_op(self, semiring):
+        if semiring is LinAlg:
+            return effectful.handlers.torch._register_torch_op(torch.mul)
+        elif semiring is MinAlg:
+            return effectful.handlers.torch._register_torch_op(torch.min)
+        elif semiring is MaxAlg:
+            return effectful.handlers.torch._register_torch_op(torch.max)
+        else:
+            return None
+
+    @implements(fold)
+    def fold(self, semiring, streams, body, guard=True):
+        # Check if the body is a D term
+        if not (isinstance(body, Term) and body.op is D):
+            return fwd()
+
+        # We only handle single-term bodies for now
+        if len(body.args) != 1:
+            return fwd()
+
+        indices, value = body.args[0]
+
+        # Check if value is a multiplication operation
+        if not (isinstance(value, Term) and value.op is self._mul_op(semiring)):
+            return fwd()
+
+        factors = value.args
+
+        # Determine which factor is independent of the fold variables
+        stream_vars = set(streams.keys())
+
+        # Check first factor
+        indep_factors = []
+        dep_factors = []
+        for f in factors:
+            if len(fvsof(f) & stream_vars) == 0:
+                indep_factors.append(f)
+            else:
+                dep_factors.append(f)
+
+        if indep_factors == []:
+            return fwd()
+
+        indep_prod = functools.reduce(semiring.mul, indep_factors, semiring.one)
+        dep_prod = functools.reduce(semiring.mul, dep_factors, semiring.one) if len(dep_factors) > 1 else dep_factors[0]
+        dep_result = fold(semiring, streams, D((indices, dep_prod)), guard=guard)
+        return semiring.mul(indep_prod, dep_result)
+
+
+# fold(R, S, A * B), free(A) \intersect S = {} => fold(R, S, A) = A * fold(R, S, B)
+
+
 dense_fold_intp = functools.reduce(
     coproduct,
     [
@@ -654,5 +789,9 @@ dense_fold_intp = functools.reduce(
         DenseTensorFold(),
         # FlipOptimizationFold(),
         ProductFold(),
+        FoldFusion(),
+        FoldIndexDistributivity(),
+        FoldAddDistributivity(),
+        FoldFactorization(),
     ],
 )

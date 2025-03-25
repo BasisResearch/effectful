@@ -68,6 +68,35 @@ def test_batched_matmul():
     assert torch.allclose(actual, expected)
 
 
+def test_linalg_folds():
+    x, y, z = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y"), defop(torch.Tensor, name="z")
+    A = torch.randn(3, 3)
+    B = torch.randn(3)
+
+    with handler(dense_fold_intp):
+        f1 = fold(LinAlg, {x: torch.arange(3)}, x())
+        assert f1[()] == 3
+
+        f2 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, x() + y())
+        assert f2[()] == 18
+
+        f3 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, x())
+        assert f3[()] == 9
+
+        f4 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, D(((x(),), A[x(), y()] * B[y()])))
+        assert torch.allclose(f4, torch.einsum("ij,j->i", A, B))
+
+        with handler({z: lambda: torch.tensor(2)}):
+            f5 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, z() + x())
+        assert f5[()] == 3 * (2 + 0 + 2 + 1 + 2 + 2)
+
+        f6 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, torch.tensor(2))
+        assert f6[()] == 18
+
+        f7 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, 2 * x())
+        assert f7[()] == 2 * 9
+        
+
 def run_min_folds():
     x, y, z = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y"), defop(torch.Tensor, name="z")
 
