@@ -1,14 +1,12 @@
-import logging
 from typing import TypeVar
 
 import jax
-import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem, sizesof, to_array
+from effectful.handlers.jax import jax_getitem, to_array
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import deffn, defop, defterm
+from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 
 P = ParamSpec("P")
