@@ -1,4 +1,6 @@
 import functools
+import operator
+import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
@@ -15,6 +17,7 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
+from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -30,53 +33,6 @@ B = TypeVar("B")
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
-
-
-def _desugar_array_index(shape, key):
-    new_shape = []
-    new_key = []
-
-    def extra_dims(key):
-        return sum(1 for k in key if k is None)
-
-    # handle any missing dimensions by adding a trailing Ellipsis
-    if not any(k is Ellipsis for k in key):
-        key = tuple(key) + (...,)
-
-    for i, k in enumerate(key):
-        if k is None:  # add a new singleton dimension
-            new_shape.append(1)
-            new_key.append(slice(None))
-        elif k is Ellipsis:
-            assert not any(k is Ellipsis for k in key[i + 1 :]), (
-                "only one Ellipsis allowed"
-            )
-
-            # determine which of the original dimensions this ellipsis refers to
-            pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
-            elided_dims = (
-                len(shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
-            )  #
-            new_shape += shape[pre_dims : pre_dims + elided_dims]
-            new_key += [slice(None)] * elided_dims
-        else:
-            new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
-            new_key.append(k)
-
-    return new_shape, new_key
-
-
-def _getitem_ellipsis_and_none(
-    x: jax.Array, key: tuple[IndexElement, ...]
-) -> tuple[jax.Array, tuple[IndexElement, ...]]:
-    """Eliminate ellipses and None in an index expression x[key].
-
-    Returns x1, key1 such that x1[key1] == x[key] and key1 does not contain None or Ellipsis.
-
-    """
-
-    new_shape, new_key = _desugar_array_index(x.shape, key)
-    return jnp.reshape(x, new_shape), new_key
 
 
 def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
@@ -107,16 +63,9 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
         x: Expr[jax.Array], key: tuple[Expr[IndexElement], ...]
     ) -> Expr[jax.Array]:
         if isinstance(x, jax.Array):
-            shape, key_ = _desugar_array_index(x.shape, key)
-
-            for i, k in enumerate(key_):
-                if (
-                    isinstance(k, Term)
-                    and len(k.args) == 0
-                    and len(k.kwargs) == 0
-                    and typeof(k) is jax.Array
-                ):
-                    update_sizes(sizes, k.op, shape[i])
+            for i, k in enumerate(key):
+                if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
+                    update_sizes(sizes, k.op, x.shape[i])
 
         return defdata(jax_getitem, x, key)
 
@@ -235,6 +184,70 @@ def to_array(
     return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
 
 
+def to_tensor(
+    t: Annotated[jax.Array, Scoped[A | B]],
+    *args: Annotated[Operation[[], jax.Array], Scoped[A]],
+) -> Annotated[jax.Array, Scoped[B]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], jax.Array]
+    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> to_tensor(t[a(), b()], b, a).shape
+    torch.Size([3, 2])
+    """
+
+    def _evaluate(expr):
+        if isinstance(expr, Term):
+            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
+            return _partial_eval(expr)
+        if tree.is_nested(expr):
+            return tree.map_structure(_evaluate, expr)
+        return expr
+
+    if not isinstance(t, Term):
+        return t
+
+    result = _evaluate(t)
+    if not isinstance(result, Term) or not args:
+        return result
+
+    # ensure that the result is a getitem with a tensor as the first argument
+    if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):
+        raise NotImplementedError
+
+    tensor = result.args[0]
+    dims = result.args[1]
+    assert isinstance(dims, Sequence)
+
+    # ensure that the order is a subset of the named dimensions
+    order_set = set(args)
+    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
+        raise NotImplementedError
+
+    # permute the inner tensor so that the leading dimensions are in the order
+    # specified and the trailing dimensions are the remaining named dimensions
+    # (or slices)
+    reindex_dims = [
+        i
+        for i, o in enumerate(dims)
+        if not isinstance(o, Term) or o.op not in order_set
+    ]
+    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    perm = tuple([dim_ops.index(o) for o in args] + reindex_dims)
+    tensor = jnp.permute_dims(tensor, perm)
+    return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+
+
 @functools.cache
 def _register_jax_op(jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
@@ -300,7 +313,8 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
         return x[tuple(key)]
 
     # handle None, Ellipsis, and missing dimensions
-    x, key = _getitem_ellipsis_and_none(x, key)
+    new_shape, key = _desugar_tensor_index(x.shape, key)
+    x = jnp.reshape(x, new_shape)
 
     # Convert non-array args to arrays and handle advanced indexing
     # JAX's advanced indexing works differently than PyTorch's, so we need to adapt
@@ -326,11 +340,50 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     return x[tuple(indices)]
 
 
+_jax_numpy_ops = {}
+for name, op in jax.numpy.__dict__.items():
+    if callable(op):
+        _jax_numpy_ops[name] = _register_jax_op(op)
+
+numpy = types.SimpleNamespace(**_jax_numpy_ops)
+
+
+# time for crime
+old_getitem = jax._src.array.ArrayImpl.__getitem__
+
+
+def _jax_getitem_override(self, key):
+    key_ = key if isinstance(key, tuple) else (key,)
+    if any(isinstance(k, Term) for k in key_):
+        return jax_getitem(self, key_)
+    return old_getitem(self, key)
+
+
+jax._src.array.ArrayImpl.__getitem__ = _jax_getitem_override
+
+
+def _is_eager(self):
+    return self.op is jax_getitem and all(
+        isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0
+        for a in self.args[1]
+    )
+
+
+@defdata.register(jax.Array)
+def _embed_array(op, *args, **kwargs):
+    if (
+        op is jax_getitem
+        and not isinstance(args[0], Term)
+        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
+    ):
+        return _EagerTensorTerm(args[0], args[1])
+    else:
+        return _TensorTerm(op, *args, **kwargs)
+
+
 @defdata.register(jax.Array)
 class _ArrayTerm(Term[jax.Array]):
-    def __init__(
-        self, op: Operation[..., jax.Array], *args: Expr, **kwargs: Expr
-    ) -> None:
+    def __init__(self, op: Operation[..., jax.Array], *args: Expr, **kwargs: Expr):
         self._op = op
         self._args = args
         self._kwargs = kwargs
@@ -352,110 +405,140 @@ class _ArrayTerm(Term[jax.Array]):
     ) -> Expr[jax.Array]:
         return jax_getitem(self, key if isinstance(key, tuple) else (key,))
 
+    @property
+    def shape(self) -> Expr[tuple[int, ...]]:
+        return numpy.shape(self)
+
+    @property
+    def size(self) -> Expr[int]:
+        return numpy.size(self)
+
+    @property
+    def ndim(self) -> Expr[int]:
+        return numpy.ndim(self)
+
     def __add__(self, other: jax.Array) -> jax.Array:
-        return jnp.add(typing.cast(jax.Array, self), other)
+        return numpy.add(typing.cast(jax.Array, self), other)
 
     def __radd__(self, other: jax.Array) -> jax.Array:
-        return jnp.add(other, typing.cast(jax.Array, self))
+        return numpy.add(other, typing.cast(jax.Array, self))
 
     def __neg__(self) -> jax.Array:
-        return jnp.negative(typing.cast(jax.Array, self))
+        return numpy.negative(typing.cast(jax.Array, self))
 
     def __pos__(self) -> jax.Array:
         return typing.cast(jax.Array, self)
 
     def __sub__(self, other: jax.Array) -> jax.Array:
-        return jnp.subtract(typing.cast(jax.Array, self), other)
+        return numpy.subtract(typing.cast(jax.Array, self), other)
 
     def __rsub__(self, other: jax.Array) -> jax.Array:
-        return jnp.subtract(other, typing.cast(jax.Array, self))
+        return numpy.subtract(other, typing.cast(jax.Array, self))
 
     def __mul__(self, other: jax.Array) -> jax.Array:
-        return jnp.multiply(typing.cast(jax.Array, self), other)
+        return numpy.multiply(typing.cast(jax.Array, self), other)
 
     def __rmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.multiply(other, typing.cast(jax.Array, self))
+        return numpy.multiply(other, typing.cast(jax.Array, self))
 
     def __truediv__(self, other: jax.Array) -> jax.Array:
-        return jnp.divide(typing.cast(jax.Array, self), other)
+        return numpy.divide(typing.cast(jax.Array, self), other)
 
     def __rtruediv__(self, other: jax.Array) -> jax.Array:
-        return jnp.divide(other, typing.cast(jax.Array, self))
+        return numpy.divide(other, typing.cast(jax.Array, self))
 
     def __pow__(self, other: jax.Array) -> jax.Array:
-        return jnp.power(typing.cast(jax.Array, self), other)
+        return numpy.power(typing.cast(jax.Array, self), other)
 
     def __rpow__(self, other: jax.Array) -> jax.Array:
-        return jnp.power(other, typing.cast(jax.Array, self))
+        return numpy.power(other, typing.cast(jax.Array, self))
 
     def __abs__(self) -> jax.Array:
-        return jnp.abs(typing.cast(jax.Array, self))
+        return numpy.abs(typing.cast(jax.Array, self))
 
     def __eq__(self, other: Any):
-        return jnp.equal(typing.cast(jax.Array, self), other)
+        return numpy.equal(typing.cast(jax.Array, self), other)
 
     def __ne__(self, other: Any):
-        return jnp.not_equal(typing.cast(jax.Array, self), other)
+        return numpy.not_equal(typing.cast(jax.Array, self), other)
 
     def __floordiv__(self, other: jax.Array) -> jax.Array:
-        return jnp.floor_divide(typing.cast(jax.Array, self), other)
+        return numpy.floor_divide(typing.cast(jax.Array, self), other)
 
     def __rfloordiv__(self, other: jax.Array) -> jax.Array:
-        return jnp.floor_divide(other, typing.cast(jax.Array, self))
+        return numpy.floor_divide(other, typing.cast(jax.Array, self))
 
     def __mod__(self, other: jax.Array) -> jax.Array:
-        return jnp.mod(typing.cast(jax.Array, self), other)
+        return numpy.mod(typing.cast(jax.Array, self), other)
 
     def __rmod__(self, other: jax.Array) -> jax.Array:
-        return jnp.mod(other, typing.cast(jax.Array, self))
+        return numpy.mod(other, typing.cast(jax.Array, self))
 
     def __lt__(self, other: jax.Array) -> jax.Array:
-        return jnp.less(typing.cast(jax.Array, self), other)
+        return numpy.less(typing.cast(jax.Array, self), other)
 
     def __le__(self, other: jax.Array) -> jax.Array:
-        return jnp.less_equal(typing.cast(jax.Array, self), other)
+        return numpy.less_equal(typing.cast(jax.Array, self), other)
 
     def __gt__(self, other: jax.Array) -> jax.Array:
-        return jnp.greater(typing.cast(jax.Array, self), other)
+        return numpy.greater(typing.cast(jax.Array, self), other)
 
     def __ge__(self, other: jax.Array) -> jax.Array:
-        return jnp.greater_equal(typing.cast(jax.Array, self), other)
+        return numpy.greater_equal(typing.cast(jax.Array, self), other)
 
     def __lshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.left_shift(typing.cast(jax.Array, self), other)
+        return numpy.left_shift(typing.cast(jax.Array, self), other)
 
     def __rlshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.left_shift(other, typing.cast(jax.Array, self))
+        return numpy.left_shift(other, typing.cast(jax.Array, self))
 
     def __rshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.right_shift(typing.cast(jax.Array, self), other)
+        return numpy.right_shift(typing.cast(jax.Array, self), other)
 
     def __rrshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.right_shift(other, typing.cast(jax.Array, self))
+        return numpy.right_shift(other, typing.cast(jax.Array, self))
 
     def __and__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_and(typing.cast(jax.Array, self), other)
+        return numpy.bitwise_and(typing.cast(jax.Array, self), other)
 
     def __rand__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_and(other, typing.cast(jax.Array, self))
+        return numpy.bitwise_and(other, typing.cast(jax.Array, self))
 
     def __xor__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_xor(typing.cast(jax.Array, self), other)
+        return numpy.bitwise_xor(typing.cast(jax.Array, self), other)
 
     def __rxor__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_xor(other, typing.cast(jax.Array, self))
+        return numpy.bitwise_xor(other, typing.cast(jax.Array, self))
 
     def __or__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_or(typing.cast(jax.Array, self), other)
+        return numpy.bitwise_or(typing.cast(jax.Array, self), other)
 
     def __ror__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_or(other, typing.cast(jax.Array, self))
+        return numpy.bitwise_or(other, typing.cast(jax.Array, self))
 
     def __invert__(self) -> jax.Array:
-        return jnp.bitwise_not(typing.cast(jax.Array, self))
+        return numpy.bitwise_not(typing.cast(jax.Array, self))
 
     def __matmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.matmul(typing.cast(jax.Array, self), other)
+        return numpy.matmul(typing.cast(jax.Array, self), other)
 
     def __rmatmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.matmul(other, typing.cast(jax.Array, self))
+        return numpy.matmul(other, typing.cast(jax.Array, self))
+
+
+class _EagerArrayTerm(_ArrayTerm):
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(
+            s
+            for s, k in zip(self.args[0].shape, self.args[1])
+            if not isinstance(k, Term)
+        )
+
+    @property
+    def size(self) -> int:
+        return functools.reduce(operator.mul, self.shape, 1)
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
