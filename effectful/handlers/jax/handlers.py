@@ -86,12 +86,19 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     if not sized_fvs:
         return t
 
-    def _can_evaluate(t):
-        if not isinstance(t, Term) or t.op in sized_fvs:
-            return True
-        return all(_can_evaluate(a) for a in tree.flatten((t.args, t.kwargs)))
+    def _is_eager(t):
+        return not isinstance(t, Term) or (
+            t.op is jax_getitem
+            and all(
+                isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0
+                for a in t.args[1]
+            )
+        )
 
-    if not _can_evaluate(t):
+    if not (
+        isinstance(t, Term)
+        and all(_is_eager(a) for a in tree.flatten((t.args, t.kwargs)))
+    ):
         return t
 
     tpe_jax_fn = jax.vmap(deffn(t, *sized_fvs.keys()))
@@ -182,70 +189,6 @@ def to_array(
     perm = [dim_ops.index(o) for o in args] + reindex_dims
     array = jnp.transpose(array, perm)
     return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
-
-
-def to_tensor(
-    t: Annotated[jax.Array, Scoped[A | B]],
-    *args: Annotated[Operation[[], jax.Array], Scoped[A]],
-) -> Annotated[jax.Array, Scoped[B]]:
-    """Convert named dimensions to positional dimensions.
-
-    :param t: A tensor.
-    :type t: T
-    :param args: Named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type args: Operation[[], jax.Array]
-    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
-
-    **Example usage**:
-
-    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> to_tensor(t[a(), b()], b, a).shape
-    torch.Size([3, 2])
-    """
-
-    def _evaluate(expr):
-        if isinstance(expr, Term):
-            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
-            return _partial_eval(expr)
-        if tree.is_nested(expr):
-            return tree.map_structure(_evaluate, expr)
-        return expr
-
-    if not isinstance(t, Term):
-        return t
-
-    result = _evaluate(t)
-    if not isinstance(result, Term) or not args:
-        return result
-
-    # ensure that the result is a getitem with a tensor as the first argument
-    if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):
-        raise NotImplementedError
-
-    tensor = result.args[0]
-    dims = result.args[1]
-    assert isinstance(dims, Sequence)
-
-    # ensure that the order is a subset of the named dimensions
-    order_set = set(args)
-    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
-        raise NotImplementedError
-
-    # permute the inner tensor so that the leading dimensions are in the order
-    # specified and the trailing dimensions are the remaining named dimensions
-    # (or slices)
-    reindex_dims = [
-        i
-        for i, o in enumerate(dims)
-        if not isinstance(o, Term) or o.op not in order_set
-    ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
-    perm = tuple([dim_ops.index(o) for o in args] + reindex_dims)
-    tensor = jnp.permute_dims(tensor, perm)
-    return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
 
 
 @functools.cache
