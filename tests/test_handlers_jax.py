@@ -1,12 +1,13 @@
 from typing import TypeVar
 
 import jax
+import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem, to_array
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import defop, deffn, defterm
 from effectful.ops.types import Term
 
 P = ParamSpec("P")
@@ -112,72 +113,77 @@ def test_to_array():
 
 
 def test_tpe_2():
-    xval, ival = torch.rand(2, 3), torch.arange(2)
-    expected = torch.sum(xval[ival, :], dim=0)
+    key = jax.random.PRNGKey(0)
+    xval = jax.random.normal(key, (2, 3))
+    ival = jnp.arange(2)
+    expected = jnp.sum(xval[ival, :], axis=0)
 
-    j = defop(torch.Tensor)
+    j = defop(jax.Array)
     x_j = xval[ival, j()]
 
     assert x_j.shape == (2,)
-    assert x_j.size(0) == x_j.shape[0]
-    actual = torch.sum(x_j, dim=0)
+    actual = jnp.sum(x_j, axis=0)
 
-    assert actual.op == torch_getitem
-    assert isinstance(actual.args[0], torch.Tensor)
+    assert actual.op == jax_getitem
+    assert isinstance(actual.args[0], jax.Array)
     assert set(a.op for a in actual.args[1]) == {j}
     assert actual.shape == ()
-    assert actual.numel() == 1
+    assert actual.size == 1
 
     f_actual = deffn(actual, j)
     for jj in range(3):
-        assert f_actual(torch.tensor(jj)) == expected[jj]
+        assert f_actual(jnp.array(jj)) == expected[jj]
 
 
 def test_tpe_3():
-    xval, ival = torch.rand(4, 2, 3), torch.arange(2)
-    expected = torch.sum(xval, dim=1)
+    key = jax.random.PRNGKey(0)
+    xval = jax.random.normal(key, (4, 2, 3))
+    ival = jnp.arange(2)
+    expected = jnp.sum(xval, axis=1)
 
-    j, k = defop(torch.Tensor), defop(torch.Tensor)
+    j, k = defop(jax.Array), defop(jax.Array)
     x_j = xval[k(), ival, j()]
-    actual = torch.sum(x_j, dim=0)
+    actual = jnp.sum(x_j, axis=0)
 
-    assert actual.op == torch_getitem
-    assert isinstance(actual.args[0], torch.Tensor)
+    assert actual.op == jax_getitem
+    assert isinstance(actual.args[0], jax.Array)
     assert set(a.op for a in actual.args[1]) == {j, k}
     assert actual.shape == ()
-    assert actual.numel() == 1
+    assert actual.size == 1
 
     f_actual = deffn(actual, j, k)
     for jj in range(3):
         for kk in range(4):
-            assert f_actual(torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+            assert f_actual(jnp.array(jj), jnp.array(kk)) == expected[kk, jj]
 
 
 def test_tpe_4():
-    xval, ival = torch.rand(4, 2, 3), torch.arange(2)
-    expected = torch.sum(xval, dim=1)
+    key = jax.random.PRNGKey(0)
+    xval = jax.random.normal(key, (4, 2, 3))
+    ival = jnp.arange(2)
+    expected = jnp.sum(xval, axis=1)
 
     @defterm
-    def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:
-        return torch.sum(x[k, ival, j], dim=0)
+    def f_actual(x: jax.Array, j: int, k: int) -> jax.Array:
+        return jnp.sum(x[k, ival, j], axis=0)
 
     for jj in range(3):
         for kk in range(4):
             assert (
-                f_actual(xval, torch.tensor(jj), torch.tensor(kk)) == expected[kk, jj]
+                f_actual(xval, jnp.array(jj), jnp.array(kk)) == expected[kk, jj]
             )
 
 
 def test_tpe_known_index():
     """Constant indexes are partially evaluated away."""
-    i, j = defop(torch.Tensor, name="i"), defop(torch.Tensor, name="j")
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     cases = [
-        torch.ones(2, 3)[i(), 1],
-        torch.ones(2, 3)[0, i()],
-        torch.ones(2, 3, 4)[0, i(), 1],
-        torch.ones(2, 3, 4)[0, i(), j()],
-        torch.ones(2, 3, 4)[i(), j(), 3],
+        jnp.ones((2, 3))[i(), 1],
+        jnp.ones((2, 3))[0, i()],
+        jnp.ones((2, 3, 4))[0, i(), 1],
+        jnp.ones((2, 3, 4))[0, i(), j()],
+        jnp.ones((2, 3, 4))[i(), j(), 3],
     ]
 
     for case_ in cases:
@@ -188,105 +194,109 @@ def test_tpe_known_index():
 def test_tpe_constant_eval():
     """Constant indexes are partially evaluated away."""
     height, width = (
-        defop(torch.Tensor, name="height"),
-        defop(torch.Tensor, name="width"),
+        defop(jax.Array, name="height"),
+        defop(jax.Array, name="width"),
     )
-    t = torch.tensor([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
+    t = jnp.array([[3, 1, 4], [1, 5, 9], [2, 6, 5]])
     A = t[height(), width()]
 
-    layer = defop(torch.Tensor, name="layer")
+    layer = defop(jax.Array, name="layer")
     with handler(
         {
-            height: lambda: layer() // torch.tensor(3),
-            width: lambda: layer() % torch.tensor(3),
+            height: lambda: layer() // jnp.array(3),
+            width: lambda: layer() % jnp.array(3),
         }
     ):
         A_layer = evaluate(A)
-    with handler({layer: lambda: torch.tensor(2)}):
+    with handler({layer: lambda: jnp.array(2)}):
         A_final = evaluate(A_layer)
 
     assert not isinstance(A_final, Term)
 
 
 def test_tpe_stack():
-    xval, yval = torch.rand(10, 5), torch.rand(10, 5)
+    key = jax.random.PRNGKey(0)
+    key1, key2 = jax.random.split(key)
+    xval = jax.random.normal(key1, (10, 5))
+    yval = jax.random.normal(key2, (10, 5))
 
-    i = defop(torch.Tensor)
-    j = defop(torch.Tensor)
+    i = defop(jax.Array)
+    j = defop(jax.Array)
     x_ij = xval[i(), j()]
     y_ij = yval[i(), j()]
-    actual = torch.stack((x_ij, y_ij))
-    assert isinstance(actual, torch.Tensor)
+    actual = jnp.stack((x_ij, y_ij))
+    assert isinstance(actual, jax.Array)
     assert actual.shape == (2,)
     f_actual = deffn(actual, i, j)
 
     for ii in range(10):
         for jj in range(5):
-            actual = f_actual(ii, jj)
-            expected = torch.stack(
-                (deffn(x_ij, i, j)(ii, jj), deffn(y_ij, i, j)(ii, jj))
+            actual = f_actual(jnp.array(ii), jnp.array(jj))
+            expected = jnp.stack(
+                (deffn(x_ij, i, j)(jnp.array(ii), jnp.array(jj)), 
+                 deffn(y_ij, i, j)(jnp.array(ii), jnp.array(jj)))
             )
-            assert torch.equal(actual, expected)
+            assert jnp.array_equal(actual, expected)
 
 
 INDEXING_CASES = [
     # Simple integer indexing
-    (torch.randn(4, 5, 6), (0,)),
+    (jax.random.normal(jax.random.PRNGKey(0), (4, 5, 6)), (0,)),
     # Simple slice indexing
-    (torch.randn(4, 5, 6), (slice(1, 3),)),
-    # Advanced indexing with tensors
-    (torch.randn(4, 5, 6), (torch.tensor([0, 2]),)),
-    (torch.randn(4, 5, 6), (torch.tensor([0, 2]), slice(None), torch.tensor([0, 2]))),
+    (jax.random.normal(jax.random.PRNGKey(1), (4, 5, 6)), (slice(1, 3),)),
+    # Advanced indexing with arrays
+    (jax.random.normal(jax.random.PRNGKey(2), (4, 5, 6)), (jnp.array([0, 2]),)),
+    (jax.random.normal(jax.random.PRNGKey(3), (4, 5, 6)), (jnp.array([0, 2]), slice(None), jnp.array([0, 2]))),
     # Mixed indexing
-    (torch.randn(4, 5, 6), (slice(None), torch.tensor([1, 3]), 2)),
+    (jax.random.normal(jax.random.PRNGKey(4), (4, 5, 6)), (slice(None), jnp.array([1, 3]), 2)),
     # Indexing with None (newaxis)
-    (torch.randn(4, 5, 6), (None, slice(None), None, slice(1, 3))),
+    (jax.random.normal(jax.random.PRNGKey(5), (4, 5, 6)), (None, slice(None), None, slice(1, 3))),
     # Indexing with Ellipsis
-    (torch.randn(4, 5, 6, 7), (Ellipsis, torch.tensor([1, 3]))),
-    # Integer and tensor indexing
-    (torch.randn(4, 5, 6), (2, torch.tensor([1, 3, 4]))),
+    (jax.random.normal(jax.random.PRNGKey(6), (4, 5, 6, 7)), (Ellipsis, jnp.array([1, 3]))),
+    # Integer and array indexing
+    (jax.random.normal(jax.random.PRNGKey(7), (4, 5, 6)), (2, jnp.array([1, 3, 4]))),
     # Indexing with negative indices
-    (torch.randn(4, 5, 6), (-1,)),
+    (jax.random.normal(jax.random.PRNGKey(8), (4, 5, 6)), (-1,)),
     # Indexing with step in slice (currently supports only slice(None))
-    # (torch.randn(4, 5, 6), (slice(None, None, 2),)),
-    # Indexing with empty tensor
-    (torch.randn(4, 5, 6), (torch.tensor([], dtype=torch.long),)),
+    # (jax.random.normal(jax.random.PRNGKey(9), (4, 5, 6)), (slice(None, None, 2),)),
+    # Indexing with empty array
+    (jax.random.normal(jax.random.PRNGKey(10), (4, 5, 6)), (jnp.array([], dtype=jnp.int32),)),
     # Complex mixed indexing
-    (torch.randn(4, 5, 6), (slice(None), torch.tensor([0, 2]), None, Ellipsis)),
+    (jax.random.normal(jax.random.PRNGKey(11), (4, 5, 6)), (slice(None), jnp.array([0, 2]), None, Ellipsis)),
     # Indexing with multiple None
-    (torch.randn(4, 5, 6), (None, None, 1, slice(None), None)),
+    (jax.random.normal(jax.random.PRNGKey(12), (4, 5, 6)), (None, None, 1, slice(None), None)),
     # Additional complex cases
     (
-        torch.randn(4, 5, 6),
-        (torch.tensor([[0, 1], [2, 3]]), torch.tensor([[1, 2], [3, 4]]), slice(None)),
+        jax.random.normal(jax.random.PRNGKey(13), (4, 5, 6)),
+        (jnp.array([[0, 1], [2, 3]]), jnp.array([[1, 2], [3, 4]]), slice(None)),
     ),
-    (torch.randn(4, 5, 6), (Ellipsis, None, torch.tensor([0, 2]))),
-    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None],)),
-    (torch.randn(4, 5, 6), (torch.arange(4)[..., None, None], None, slice(None))),
-    (torch.randn(4, 5, 6), (None, torch.arange(4)[..., None, None], None, slice(None))),
+    (jax.random.normal(jax.random.PRNGKey(14), (4, 5, 6)), (Ellipsis, None, jnp.array([0, 2]))),
+    (jax.random.normal(jax.random.PRNGKey(15), (4, 5, 6)), (jnp.arange(4)[..., None, None],)),
+    (jax.random.normal(jax.random.PRNGKey(16), (4, 5, 6)), (jnp.arange(4)[..., None, None], None, slice(None))),
+    (jax.random.normal(jax.random.PRNGKey(17), (4, 5, 6)), (None, jnp.arange(4)[..., None, None], None, slice(None))),
     (
-        torch.randn(4, 5, 6),
-        (torch.arange(4)[..., None, None], torch.arange(5)[..., None]),
-    ),
-    (
-        torch.randn(4, 5, 6),
-        (torch.arange(4)[..., None, None], torch.arange(5)[..., None], None, 1),
+        jax.random.normal(jax.random.PRNGKey(18), (4, 5, 6)),
+        (jnp.arange(4)[..., None, None], jnp.arange(5)[..., None]),
     ),
     (
-        torch.randn(4, 5, 6),
+        jax.random.normal(jax.random.PRNGKey(19), (4, 5, 6)),
+        (jnp.arange(4)[..., None, None], jnp.arange(5)[..., None], None, 1),
+    ),
+    (
+        jax.random.normal(jax.random.PRNGKey(20), (4, 5, 6)),
         (
-            torch.arange(4)[..., None, None],
-            torch.arange(5)[..., None],
+            jnp.arange(4)[..., None, None],
+            jnp.arange(5)[..., None],
             None,
             slice(None),
         ),
     ),
     (
-        torch.randn(3, 4, 5, 6),
+        jax.random.normal(jax.random.PRNGKey(21), (3, 4, 5, 6)),
         (
             Ellipsis,
-            torch.arange(4)[..., None, None],
-            torch.arange(5)[..., None],
+            jnp.arange(4)[..., None, None],
+            jnp.arange(5)[..., None],
             slice(None),
         ),
     ),
@@ -295,7 +305,7 @@ INDEXING_CASES = [
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_getitem_ellipsis_and_none(tensor, idx):
-    from effectful.handlers.torch import _getitem_ellipsis_and_none
+    from effectful.handlers.jax import _getitem_ellipsis_and_none
 
     expected = tensor[idx]
     t, i = _getitem_ellipsis_and_none(tensor, idx)
@@ -308,14 +318,14 @@ def test_getitem_ellipsis_and_none(tensor, idx):
     assert result.shape == expected.shape, (
         f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
     )
-    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
+    assert jnp.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_custom_getitem(tensor, idx):
     expected = tensor[idx]
-    result = torch_getitem(tensor, idx)
+    result = jax_getitem(tensor, idx)
     assert result.shape == expected.shape, (
         f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
     )
-    assert torch.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
+    assert jnp.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
