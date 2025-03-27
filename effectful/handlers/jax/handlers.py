@@ -85,11 +85,15 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
         return t
 
     def _is_eager(t):
-        return not isinstance(t, Term) or (
-            t.op is jax_getitem
-            and all(
-                isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0
-                for a in t.args[1]
+        return (
+            not isinstance(t, Term)
+            or t.op in sized_fvs
+            or (
+                t.op is jax_getitem
+                and all(
+                    isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0
+                    for a in t.args[1]
+                )
             )
         )
 
@@ -184,7 +188,11 @@ def to_array(
         if not isinstance(o, Term) or o.op not in order_set
     ]
     dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
-    perm = [dim_ops.index(o) for o in args] + reindex_dims
+    perm = (
+        [dim_ops.index(o) for o in args]
+        + reindex_dims
+        + list(range(len(dims), len(array.shape)))
+    )
     array = jnp.transpose(array, perm)
     return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
 
@@ -207,10 +215,7 @@ def _register_jax_op(jax_fn: Callable[P, T]):
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
             raise NotImplementedError
-        elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {
-            jax_getitem,
-            _jax_op,
-        }:
+        elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
             # note: this cast is a lie. partial_eval can return non-arrays, as
             # can jax_fn. for example, some jax functions return tuples,
             # which partial_eval handles.

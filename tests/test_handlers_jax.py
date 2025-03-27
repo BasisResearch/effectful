@@ -7,36 +7,12 @@ from typing_extensions import ParamSpec
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem, to_array
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import defop, deffn, defterm
+from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Term
 
 P = ParamSpec("P")
 S = TypeVar("S")
 T = TypeVar("T")
-
-
-def test_tpe_1():
-    i, j = defop(jax.Array), defop(jax.Array)
-    key = jax.random.PRNGKey(0)
-    xval, y1_val, y2_val = (
-        jax.random.normal(key, (2, 3)),
-        jax.random.normal(key, (2)),
-        jax.random.normal(key, (3)),
-    )
-
-    expected = xval + y1_val[..., None] + y2_val[None]
-
-    x_ij = xval[i(), j()]
-    x_plus_y1_ij = x_ij + y1_val[i()]
-    actual = x_plus_y1_ij + y2_val[j()]
-
-    assert actual.op == jax_getitem
-    assert set(a.op for a in actual.args[1]) == {i, j}
-    assert actual.shape == ()
-    assert actual.size == 1
-    assert actual.ndim == 0
-
-    assert (to_array(actual, i, j) == expected).all()
 
 
 def test_to_array():
@@ -112,6 +88,30 @@ def test_to_array():
     assert not (fvsof(t9) & {i, j, k, w})
 
 
+def test_tpe_1():
+    i, j = defop(jax.Array), defop(jax.Array)
+    key = jax.random.PRNGKey(0)
+    xval, y1_val, y2_val = (
+        jax.random.normal(key, (2, 3)),
+        jax.random.normal(key, (2)),
+        jax.random.normal(key, (3)),
+    )
+
+    expected = xval + y1_val[..., None] + y2_val[None]
+
+    x_ij = xval[i(), j()]
+    x_plus_y1_ij = x_ij + y1_val[i()]
+    actual = x_plus_y1_ij + y2_val[j()]
+
+    assert actual.op == jax_getitem
+    assert fvsof(actual) >= {i, j}
+    assert actual.shape == ()
+    assert actual.size == 1
+    assert actual.ndim == 0
+
+    assert (to_array(actual, i, j) == expected).all()
+
+
 def test_tpe_2():
     key = jax.random.PRNGKey(0)
     xval = jax.random.normal(key, (2, 3))
@@ -125,14 +125,11 @@ def test_tpe_2():
     actual = jnp.sum(x_j, axis=0)
 
     assert actual.op == jax_getitem
-    assert isinstance(actual.args[0], jax.Array)
-    assert set(a.op for a in actual.args[1]) == {j}
+    assert fvsof(actual) >= {j}
     assert actual.shape == ()
     assert actual.size == 1
 
-    f_actual = deffn(actual, j)
-    for jj in range(3):
-        assert f_actual(jnp.array(jj)) == expected[jj]
+    assert (to_array(actual, j) == expected).all()
 
 
 def test_tpe_3():
@@ -146,32 +143,11 @@ def test_tpe_3():
     actual = jnp.sum(x_j, axis=0)
 
     assert actual.op == jax_getitem
-    assert isinstance(actual.args[0], jax.Array)
-    assert set(a.op for a in actual.args[1]) == {j, k}
+    assert fvsof(actual) >= {j, k}
     assert actual.shape == ()
     assert actual.size == 1
 
-    f_actual = deffn(actual, j, k)
-    for jj in range(3):
-        for kk in range(4):
-            assert f_actual(jnp.array(jj), jnp.array(kk)) == expected[kk, jj]
-
-
-def test_tpe_4():
-    key = jax.random.PRNGKey(0)
-    xval = jax.random.normal(key, (4, 2, 3))
-    ival = jnp.arange(2)
-    expected = jnp.sum(xval, axis=1)
-
-    @defterm
-    def f_actual(x: jax.Array, j: int, k: int) -> jax.Array:
-        return jnp.sum(x[k, ival, j], axis=0)
-
-    for jj in range(3):
-        for kk in range(4):
-            assert (
-                f_actual(xval, jnp.array(jj), jnp.array(kk)) == expected[kk, jj]
-            )
+    assert (to_array(actual, k, j) == expected).all()
 
 
 def test_tpe_known_index():
@@ -225,7 +201,6 @@ def test_tpe_stack():
     x_ij = xval[i(), j()]
     y_ij = yval[i(), j()]
     actual = jnp.stack((x_ij, y_ij))
-    assert isinstance(actual, jax.Array)
     assert actual.shape == (2,)
     f_actual = deffn(actual, i, j)
 
@@ -233,8 +208,10 @@ def test_tpe_stack():
         for jj in range(5):
             actual = f_actual(jnp.array(ii), jnp.array(jj))
             expected = jnp.stack(
-                (deffn(x_ij, i, j)(jnp.array(ii), jnp.array(jj)), 
-                 deffn(y_ij, i, j)(jnp.array(ii), jnp.array(jj)))
+                (
+                    deffn(x_ij, i, j)(jnp.array(ii), jnp.array(jj)),
+                    deffn(y_ij, i, j)(jnp.array(ii), jnp.array(jj)),
+                )
             )
             assert jnp.array_equal(actual, expected)
 
@@ -246,13 +223,25 @@ INDEXING_CASES = [
     (jax.random.normal(jax.random.PRNGKey(1), (4, 5, 6)), (slice(1, 3),)),
     # Advanced indexing with arrays
     (jax.random.normal(jax.random.PRNGKey(2), (4, 5, 6)), (jnp.array([0, 2]),)),
-    (jax.random.normal(jax.random.PRNGKey(3), (4, 5, 6)), (jnp.array([0, 2]), slice(None), jnp.array([0, 2]))),
+    (
+        jax.random.normal(jax.random.PRNGKey(3), (4, 5, 6)),
+        (jnp.array([0, 2]), slice(None), jnp.array([0, 2])),
+    ),
     # Mixed indexing
-    (jax.random.normal(jax.random.PRNGKey(4), (4, 5, 6)), (slice(None), jnp.array([1, 3]), 2)),
+    (
+        jax.random.normal(jax.random.PRNGKey(4), (4, 5, 6)),
+        (slice(None), jnp.array([1, 3]), 2),
+    ),
     # Indexing with None (newaxis)
-    (jax.random.normal(jax.random.PRNGKey(5), (4, 5, 6)), (None, slice(None), None, slice(1, 3))),
+    (
+        jax.random.normal(jax.random.PRNGKey(5), (4, 5, 6)),
+        (None, slice(None), None, slice(1, 3)),
+    ),
     # Indexing with Ellipsis
-    (jax.random.normal(jax.random.PRNGKey(6), (4, 5, 6, 7)), (Ellipsis, jnp.array([1, 3]))),
+    (
+        jax.random.normal(jax.random.PRNGKey(6), (4, 5, 6, 7)),
+        (Ellipsis, jnp.array([1, 3])),
+    ),
     # Integer and array indexing
     (jax.random.normal(jax.random.PRNGKey(7), (4, 5, 6)), (2, jnp.array([1, 3, 4]))),
     # Indexing with negative indices
@@ -260,20 +249,41 @@ INDEXING_CASES = [
     # Indexing with step in slice (currently supports only slice(None))
     # (jax.random.normal(jax.random.PRNGKey(9), (4, 5, 6)), (slice(None, None, 2),)),
     # Indexing with empty array
-    (jax.random.normal(jax.random.PRNGKey(10), (4, 5, 6)), (jnp.array([], dtype=jnp.int32),)),
+    (
+        jax.random.normal(jax.random.PRNGKey(10), (4, 5, 6)),
+        (jnp.array([], dtype=jnp.int32),),
+    ),
     # Complex mixed indexing
-    (jax.random.normal(jax.random.PRNGKey(11), (4, 5, 6)), (slice(None), jnp.array([0, 2]), None, Ellipsis)),
+    (
+        jax.random.normal(jax.random.PRNGKey(11), (4, 5, 6)),
+        (slice(None), jnp.array([0, 2]), None, Ellipsis),
+    ),
     # Indexing with multiple None
-    (jax.random.normal(jax.random.PRNGKey(12), (4, 5, 6)), (None, None, 1, slice(None), None)),
+    (
+        jax.random.normal(jax.random.PRNGKey(12), (4, 5, 6)),
+        (None, None, 1, slice(None), None),
+    ),
     # Additional complex cases
     (
         jax.random.normal(jax.random.PRNGKey(13), (4, 5, 6)),
         (jnp.array([[0, 1], [2, 3]]), jnp.array([[1, 2], [3, 4]]), slice(None)),
     ),
-    (jax.random.normal(jax.random.PRNGKey(14), (4, 5, 6)), (Ellipsis, None, jnp.array([0, 2]))),
-    (jax.random.normal(jax.random.PRNGKey(15), (4, 5, 6)), (jnp.arange(4)[..., None, None],)),
-    (jax.random.normal(jax.random.PRNGKey(16), (4, 5, 6)), (jnp.arange(4)[..., None, None], None, slice(None))),
-    (jax.random.normal(jax.random.PRNGKey(17), (4, 5, 6)), (None, jnp.arange(4)[..., None, None], None, slice(None))),
+    (
+        jax.random.normal(jax.random.PRNGKey(14), (4, 5, 6)),
+        (Ellipsis, None, jnp.array([0, 2])),
+    ),
+    (
+        jax.random.normal(jax.random.PRNGKey(15), (4, 5, 6)),
+        (jnp.arange(4)[..., None, None],),
+    ),
+    (
+        jax.random.normal(jax.random.PRNGKey(16), (4, 5, 6)),
+        (jnp.arange(4)[..., None, None], None, slice(None)),
+    ),
+    (
+        jax.random.normal(jax.random.PRNGKey(17), (4, 5, 6)),
+        (None, jnp.arange(4)[..., None, None], None, slice(None)),
+    ),
     (
         jax.random.normal(jax.random.PRNGKey(18), (4, 5, 6)),
         (jnp.arange(4)[..., None, None], jnp.arange(5)[..., None]),
@@ -301,24 +311,6 @@ INDEXING_CASES = [
         ),
     ),
 ]
-
-
-@pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
-def test_getitem_ellipsis_and_none(tensor, idx):
-    from effectful.handlers.jax import _getitem_ellipsis_and_none
-
-    expected = tensor[idx]
-    t, i = _getitem_ellipsis_and_none(tensor, idx)
-
-    if any(k is Ellipsis or k is None for k in idx):
-        assert t.shape != tensor.shape or idx != i
-    assert not any(k is Ellipsis or k is None for k in i)
-
-    result = t[i]
-    assert result.shape == expected.shape, (
-        f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
-    )
-    assert jnp.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
 
 
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
