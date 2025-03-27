@@ -202,18 +202,9 @@ def test_tpe_stack():
     y_ij = yval[i(), j()]
     actual = jnp.stack((x_ij, y_ij))
     assert actual.shape == (2,)
-    f_actual = deffn(actual, i, j)
-
-    for ii in range(10):
-        for jj in range(5):
-            actual = f_actual(jnp.array(ii), jnp.array(jj))
-            expected = jnp.stack(
-                (
-                    deffn(x_ij, i, j)(jnp.array(ii), jnp.array(jj)),
-                    deffn(y_ij, i, j)(jnp.array(ii), jnp.array(jj)),
-                )
-            )
-            assert jnp.array_equal(actual, expected)
+    assert (
+        jnp.transpose(to_array(actual, i, j), [2, 0, 1]) == jnp.stack((xval, yval))
+    ).all()
 
 
 INDEXING_CASES = [
@@ -321,3 +312,14 @@ def test_custom_getitem(tensor, idx):
         f"Shape mismatch for idx: {idx}. Expected: {expected.shape}, Got: {result.shape}"
     )
     assert jnp.allclose(result, expected, equal_nan=True), f"Failed for idx: {idx}"
+
+
+def test_jax_jit_1():
+    @jax.jit
+    def f(x, y):
+        return to_array(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    assert (f(x, y) == x + y).all()
