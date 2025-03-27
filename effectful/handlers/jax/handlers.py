@@ -15,7 +15,10 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
-from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.internals.tensor_utils import (
+    _desugar_tensor_index,
+    _indexed_func_wrapper,
+)
 from effectful.ops.semantics import apply, evaluate, fvsof
 from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -298,3 +301,9 @@ def _jax_getitem_override(self, key):
 
 
 jax._src.array.ArrayImpl.__getitem__ = _jax_getitem_override  # type: ignore
+
+
+def jit(f, *args, **kwargs):
+    f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, to_array, sizesof)
+    f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
+    return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))

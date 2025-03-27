@@ -5,7 +5,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem, to_array
+from effectful.handlers.jax import jax_getitem, jit, to_array
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Term
@@ -315,7 +315,7 @@ def test_custom_getitem(tensor, idx):
 
 
 def test_jax_jit_1():
-    @jax.jit
+    @jit
     def f(x, y):
         return to_array(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
 
@@ -323,3 +323,25 @@ def test_jax_jit_1():
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
 
     assert (f(x, y) == x + y).all()
+
+
+def test_jax_jit_2():
+    @jit
+    def f(x, y):
+        return jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()])
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    assert (to_array(f(x, y), i, j) == x + y).all()
+
+
+def test_jax_jit_3():
+    @jit
+    def f(x, y):
+        return jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()])
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    assert (to_array(f(x, y), i, j) == x + y).all()

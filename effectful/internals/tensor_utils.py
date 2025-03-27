@@ -1,3 +1,15 @@
+from typing import Any, Callable, Collection, Generic, Mapping, Protocol, TypeVar
+
+import tree
+from typing_extensions import ParamSpec
+
+from effectful.ops.types import Operation
+
+P = ParamSpec("P")
+T = TypeVar("T")
+S = TypeVar("S")
+
+
 def _desugar_tensor_index(shape, key):
     new_shape = []
     new_key = []
@@ -30,3 +42,46 @@ def _desugar_tensor_index(shape, key):
             new_key.append(k)
 
     return new_shape, new_key
+
+
+def _indexed_func_wrapper(
+    func: Callable[P, T], getitem, to_tensor, sizesof
+) -> tuple[Callable[P, S], Callable[[S], T]]:
+    # index expressions for the result of the function
+    indexes = None
+
+    # hide index lists from tree.map_structure
+    class Indexes:
+        def __init__(self, sizes):
+            self.sizes = sizes
+            self.indexes = list(sizes.keys())
+
+    # strip named indexes from the result of the function and store them
+    def deindexed(*args, **kwargs):
+        nonlocal indexes
+
+        def deindex_tensor(t, i):
+            t_ = to_tensor(t, *i.sizes.keys())
+            assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
+            return t_
+
+        ret = func(*args, **kwargs)
+        indexes = tree.map_structure(lambda t: Indexes(sizesof(t)), ret)
+        tensors = tree.map_structure(lambda t, i: deindex_tensor(t, i), ret, indexes)
+        return tensors
+
+    # reapply the stored indexes to a result
+    def reindex(ret, starting_dim=0):
+        def index_expr(i):
+            return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
+
+        if tree.is_nested(ret):
+            indexed_ret = tree.map_structure(
+                lambda t, i: getitem(t, index_expr(i)), ret, indexes
+            )
+        else:
+            indexed_ret = getitem(ret, index_expr(indexes))
+
+        return indexed_ret
+
+    return deindexed, reindex

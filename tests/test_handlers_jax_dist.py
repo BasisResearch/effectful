@@ -1,3 +1,4 @@
+import functools
 import re
 from collections import namedtuple
 from collections.abc import Sequence
@@ -7,17 +8,13 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 import pytest
 
-#################################################
-# these imports are used by generated code
-from jax.numpy import exp  # noqa: F401
-
-#################################################
-from jax.tree_util import tree_map
-
-from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.jax import sizesof, to_array
-from effectful.handlers.jax.pyro import named_distribution, positional_distribution
+from effectful.handlers.jax import jax_getitem, sizesof, to_array
+from effectful.handlers.jax.distribution import (
+    named_distribution,
+    positional_distribution,
+)
 from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
 
 from .dist_utils import RAW_TEST_CASES
 
@@ -34,16 +31,9 @@ def setup_module():
 TEST_CASES = []
 
 
-def random_scale_tril(*args):
-    if isinstance(args[0], tuple):
-        assert len(args) == 1
-        shape = args[0]
-    else:
-        shape = args
-
-    key = jax.random.PRNGKey(0)
-    data = jax.random.normal(key, shape)
-    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
+@functools.cache
+def name_to_sym(name: str) -> Operation[[], jax.Array]:
+    return defop(jax.Array, name=name)
 
 
 def from_indexed(tensor, batch_dims):
@@ -83,6 +73,7 @@ class DistTestCase:
             pytest.xfail(self.xfail)
 
         Case = namedtuple("Case", tuple(name for name, _ in self.params.items()))
+
         case = Case(**self.params)
         dist_ = eval(self.raw_dist)
 
@@ -120,7 +111,7 @@ def full_indexed_test_case(
             and param.shape[: len(batch_shape)] == batch_shape
         ):
             indexes = tuple(name_to_sym(str(i))() for i in range(len(batch_shape)))
-            indexed_params[name] = param[indexes]
+            indexed_params[name] = jax_getitem(param, indexes)
         else:
             indexed_params[name] = param
 
@@ -143,9 +134,7 @@ def partial_indexed_test_case(
     non_indexed_params = {
         k: v
         for (k, v) in params.items()
-        if not (
-            isinstance(v, jax.Array) and v.shape[: len(batch_shape)] == batch_shape
-        )
+        if not (isinstance(v, jax.Array) and v.shape[: len(batch_shape)] == batch_shape)
     }
     broadcast_params = params.copy()
     indexed_params = {}
@@ -168,7 +157,7 @@ def partial_indexed_test_case(
                         jnp.take(broadcast_params[name], 0, axis=j), j
                     )
                 indexes.append(index)
-            indexed_params[name] = param[tuple(indexes)]
+            indexed_params[name] = jax_getitem(param, tuple(indexes))
         else:
             indexed_params[name] = param
 
@@ -187,27 +176,27 @@ def add_dist_test_case(
     # Convert PyTorch-style parameters to JAX
     # This assumes RAW_TEST_CASES are defined with PyTorch syntax
     # We'll need to adapt them for JAX
-    
+
     # Create a random key for JAX random operations
     key = jax.random.PRNGKey(0)
-    
-    # Replace torch.randn with jax.random.normal
-    raw_param_jax = []
-    for name, raw_param in raw_params:
-        # Replace torch functions with JAX equivalents
-        jax_param = raw_param.replace("torch.randn", "jax.random.normal(key,")
-        jax_param = jax_param.replace("torch.rand", "jax.random.uniform(key,")
-        jax_param = jax_param.replace("torch.ones", "jnp.ones")
-        jax_param = jax_param.replace("torch.zeros", "jnp.zeros")
-        jax_param = jax_param.replace("torch.tensor", "jnp.array")
-        
-        # Add closing parenthesis for JAX random functions if needed
-        if "jax.random" in jax_param and jax_param.count("(") > jax_param.count(")"):
-            jax_param += ")"
-            
-        raw_param_jax.append((name, jax_param))
-    
-    params = {name: eval(raw_param) for name, raw_param in raw_param_jax}
+
+    def rand(shape):
+        return jax.random.uniform(key, shape=shape)
+
+    def randint(low, high, shape):
+        return jax.random.randint(key, shape, low, high)
+
+    def random_scale_tril(shape):
+        data = jax.random.normal(key, shape)
+        return dist.transforms.biject_to(dist.constraints.lower_cholesky)(data)
+
+    globals = {
+        "rand": rand,
+        "randint": randint,
+        "exp": jax.numpy.exp,
+        "random_scale_tril": random_scale_tril,
+    }
+    params = {name: eval(raw_param, globals) for name, raw_param in raw_params}
     TEST_CASES.append(full_indexed_test_case(raw_dist, params, batch_shape, xfail))
 
     # This case is trivial if there are not multiple batch dimensions and
@@ -218,24 +207,8 @@ def add_dist_test_case(
         )
 
 
-# Comment out for now as we need to adapt RAW_TEST_CASES for JAX
-# for c in RAW_TEST_CASES:
-#     add_dist_test_case(c.raw_dist, c.raw_params, c.batch_shape, c.xfail)
-
-# Instead, add a few simple test cases for JAX
-add_dist_test_case(
-    "dist.Normal(case.loc, case.scale)",
-    [("loc", "jax.random.normal(key, (2, 3, 4))"), 
-     ("scale", "jnp.exp(jax.random.normal(key, (2, 3, 4)))")],
-    (2, 3),
-)
-
-add_dist_test_case(
-    "dist.Uniform(case.low, case.high)",
-    [("low", "jax.random.normal(key, (2, 3, 4))"), 
-     ("high", "jax.random.normal(key, (2, 3, 4)) + 2.0")],
-    (2, 3),
-)
+for c in RAW_TEST_CASES:
+    add_dist_test_case(c.raw_dist, c.raw_params, c.batch_shape, c.xfail)
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
@@ -296,21 +269,26 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
     # Instead, we can use the expand_by method
     try:
         expanded = indexed_dist.expand_by(extra_batch_shape)
-        
+
         # JAX distributions need a random key for sampling
         key = jax.random.PRNGKey(0)
         sample_shape_full = indexed_sample_shape + sample_shape
-        
+
         # Generate samples
         sample = expanded.sample(key, sample_shape_full)
-        
+
         # Index into the sample
         indexed_sample = sample[
             tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
         ]
 
         # Check shapes
-        expected_shape = sample_shape + extra_batch_shape + indexed_dist.batch_shape + indexed_dist.event_shape
+        expected_shape = (
+            sample_shape
+            + extra_batch_shape
+            + indexed_dist.batch_shape
+            + indexed_dist.event_shape
+        )
         assert indexed_sample.shape == expected_shape
 
         # Check log_prob shape
@@ -373,7 +351,7 @@ def test_dist_randomness(case_, sample_shape):
 
     # JAX distributions need a random key for sampling
     key = jax.random.PRNGKey(0)
-    
+
     # JAX doesn't have rsample, only sample
     indexed_sample = indexed_dist.sample(key, sample_shape)
     pos_sample = pos_dist.sample(key, sample_shape)
@@ -381,7 +359,7 @@ def test_dist_randomness(case_, sample_shape):
     indexed_sample_a = from_indexed(indexed_sample, len(case_.batch_shape))
 
     # Reshape to check for uniqueness across batch dimensions
-    new_shape = (-1,) + pos_sample.shape[len(case_.batch_shape):]
+    new_shape = (-1,) + pos_sample.shape[len(case_.batch_shape) :]
     flat_sample = jnp.reshape(pos_sample, new_shape)
     flat_indexed_sample = jnp.reshape(indexed_sample_a, new_shape)
 
@@ -391,7 +369,7 @@ def test_dist_randomness(case_, sample_shape):
         # Check if there's variation in the samples
         sample_std = jnp.std(flat_sample, axis=0)
         indexed_std = jnp.std(flat_indexed_sample, axis=0)
-        
+
         # If there's variation in the original samples, there should be
         # variation in the indexed samples too
         if jnp.any(sample_std > 1e-5):
@@ -429,16 +407,17 @@ def test_dist_stats(case_, statistic):
         # extensionally equal to the indexed expected stat
         indexes = [name_to_sym(str(i)) for i in range(len(case_.batch_shape))]
         expected_stat_i = expected_stat[tuple(n() for n in indexes)]
-        
+
         # JAX doesn't have broadcast_tensors like PyTorch
         # Instead, we can use jnp.broadcast_arrays
         expected_shape = jnp.broadcast_shapes(expected_stat_i.shape, actual_stat.shape)
         expected_stat_i = jnp.broadcast_to(expected_stat_i, expected_shape)
         actual_stat_i = jnp.broadcast_to(actual_stat, expected_shape)
-        
+
         # Check that the stats are close
         assert jnp.allclose(
-            to_array(expected_stat_i, *indexes), 
+            to_array(expected_stat_i, *indexes),
             to_array(actual_stat_i, *indexes),
-            rtol=1e-5, atol=1e-5
+            rtol=1e-5,
+            atol=1e-5,
         )
