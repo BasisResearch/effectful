@@ -152,6 +152,8 @@ def _register_distribution_op(
 ) -> Operation[Any, dist.Distribution]:
     # introduce a wrapper so that we can control type annotations
     def wrapper(*args, **kwargs) -> dist.Distribution:
+        if any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+            raise NotImplementedError
         return dist_constr(*args, **kwargs)
 
     return defop(wrapper)
