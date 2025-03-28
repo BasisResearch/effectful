@@ -74,5 +74,4 @@ testpaths = ["./effectful", "./tests"]
 [tool.mypy]
 ignore_missing_imports = True
 warn_unused_ignores = True
-exclude = build
-
+exclude = "build"
