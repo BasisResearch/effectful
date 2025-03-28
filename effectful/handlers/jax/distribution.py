@@ -9,7 +9,8 @@ from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Operation, Term
 
-from .handlers import jax_getitem, sizesof, to_array
+from .handlers import _register_jax_op, jax_getitem, sizesof, to_array
+from .terms import _EagerArrayTerm
 
 A = TypeVar("A")
 B = TypeVar("B")
@@ -178,12 +179,29 @@ class _DistributionTerm(dist.Distribution):
 
     def __init__(self, op: Operation[Any, dist.Distribution], *args, **kwargs):
         self._op = op
-        self._args = tuple(defterm(a) for a in args)
-        self._kwargs = {k: defterm(v) for (k, v) in kwargs.items()}
-        self._indices = tuple(sizesof(self).keys())
-        pos_args = tuple(to_array(a, *self._indices) for a in self._args)
-        pos_kwargs = {k: to_array(v, *self._indices) for (k, v) in self._kwargs.items()}
-        self._pos_base_dist = self._op(*pos_args, **pos_kwargs)
+        self._args = args
+        self._kwargs = kwargs
+        self.__indices = None
+        self.__pos_base_dist = None
+
+    @property
+    def _indices(self):
+        if self.__indices is None:
+            self.__indices = sizesof(self)
+        return self.__indices
+
+    @property
+    def _pos_base_dist(self):
+        if self.__pos_base_dist is None:
+            pos_args = tuple(to_array(a, *self._indices) for a in self._args)
+            pos_kwargs = {
+                k: to_array(v, *self._indices) for (k, v) in self._kwargs.items()
+            }
+            assert not any(
+                isinstance(a, Term) for a in tree.flatten((pos_args, pos_kwargs))
+            )
+            self.__pos_base_dist = self._op(*pos_args, **pos_kwargs)
+        return self.__pos_base_dist
 
     @property
     def op(self):
@@ -202,19 +220,58 @@ class _DistributionTerm(dist.Distribution):
         return self._pos_base_dist.batch_shape[len(self._indices) :]
 
     @property
+    def has_rsample(self) -> bool:
+        return self._pos_base_dist.has_rsample
+
+    @property
     def event_shape(self):
         return self._pos_base_dist.event_shape
 
-    def _sample_n(self, key, n: int):
-        return jax_getitem(
-            self._pos_base_dist.sample(seed=key, sample_shape=(n,)), self._indices
+    def rsample(self, key, sample_shape=()):
+        return self._reindex_sample(
+            self._pos_base_dist.rsample(key, sample_shape), sample_shape
         )
 
-    def log_prob(self, value) -> jax.Array:
-        # todo
-        indices = sizesof(value)
-        pos_log_prob = self._pos_base_dist.log_prob(to_array(value, *indices))
-        return jax_getitem(pos_log_prob, self._indices)
+    def sample(self, key, sample_shape=()):
+        return self._reindex_sample(
+            self._pos_base_dist.sample(key, sample_shape), sample_shape
+        )
+
+    def _reindex_sample(self, value, sample_shape):
+        index = (slice(None),) * len(sample_shape) + tuple(i() for i in self._indices)
+        ret = jax_getitem(value, index)
+        assert isinstance(ret, _EagerArrayTerm)
+        return ret
+
+    def log_prob(self, value):
+        value = to_array(value, *self._indices)
+        return self._reindex_sample(
+            _register_jax_op(self._pos_base_dist.log_prob)(value), ()
+        )
+
+    @property
+    def mean(self):
+        return self._reindex_sample(self._pos_base_dist.mean, ())
+
+    @property
+    def variance(self):
+        return self._reindex_sample(self._pos_base_dist.variance, ())
+
+    def enumerate_support(self, expand=True):
+        return self._reindex_sample(self._pos_base_dist.enumerate_support(expand), ())
+
+    def entropy(self):
+        return self._pos_base_dist.entropy()
+
+    def to_event(self, reinterpreted_batch_ndims=None):
+        if reinterpreted_batch_ndims is None:
+            reinterpreted_batch_ndims = len(self.batch_shape)
+        if reinterpreted_batch_ndims == 0:
+            return self
+        return Independent(self, reinterpreted_batch_ndims)
+
+    __repr__ = Term.__repr__
+    __str__ = Term.__str__
 
 
 Term.register(_DistributionTerm)
@@ -338,3 +395,40 @@ def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
     return _register_distribution_op(dist.Delta)(
         d.v, log_density=d.log_density, event_dim=d.event_dim
     )
+
+
+BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)
+BernoulliProbs = _register_distribution_op(dist.BernoulliProbs)
+Beta = _register_distribution_op(dist.Beta)
+BinomialProbs = _register_distribution_op(dist.BinomialProbs)
+CategoricalLogits = _register_distribution_op(dist.CategoricalLogits)
+CategoricalProbs = _register_distribution_op(dist.CategoricalProbs)
+Cauchy = _register_distribution_op(dist.Cauchy)
+Chi2 = _register_distribution_op(dist.Chi2)
+Delta = _register_distribution_op(dist.Delta)
+Dirichlet = _register_distribution_op(dist.Dirichlet)
+Distribution = _register_distribution_op(dist.Distribution)
+Exponential = _register_distribution_op(dist.Exponential)
+Gamma = _register_distribution_op(dist.Gamma)
+GeometricLogits = _register_distribution_op(dist.GeometricLogits)
+GeometricProbs = _register_distribution_op(dist.GeometricProbs)
+Gumbel = _register_distribution_op(dist.Gumbel)
+HalfCauchy = _register_distribution_op(dist.HalfCauchy)
+HalfNormal = _register_distribution_op(dist.HalfNormal)
+Independent = _register_distribution_op(dist.Independent)
+Kumaraswamy = _register_distribution_op(dist.Kumaraswamy)
+LKJCholesky = _register_distribution_op(dist.LKJCholesky)
+Laplace = _register_distribution_op(dist.Laplace)
+LogNormal = _register_distribution_op(dist.LogNormal)
+Logistic = _register_distribution_op(dist.Logistic)
+MultinomialProbs = _register_distribution_op(dist.MultinomialProbs)
+MultivariateNormal = _register_distribution_op(dist.MultivariateNormal)
+NegativeBinomialProbs = _register_distribution_op(dist.NegativeBinomialProbs)
+Normal = _register_distribution_op(dist.Normal)
+Pareto = _register_distribution_op(dist.Pareto)
+Poisson = _register_distribution_op(dist.Poisson)
+StudentT = _register_distribution_op(dist.StudentT)
+Uniform = _register_distribution_op(dist.Uniform)
+VonMises = _register_distribution_op(dist.VonMises)
+Weibull = _register_distribution_op(dist.Weibull)
+Wishart = _register_distribution_op(dist.Wishart)

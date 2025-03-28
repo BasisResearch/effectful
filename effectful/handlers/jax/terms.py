@@ -18,12 +18,11 @@ def _embed_array(op, *args, **kwargs):
         and not isinstance(args[0], Term)
         and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
     ):
-        return _EagerArrayTerm(args[0], args[1])
+        return _EagerArrayTerm(jax_getitem, args[0], args[1])
     else:
         return _ArrayTerm(op, *args, **kwargs)
 
 
-@defdata.register(jax.Array)
 class _ArrayTerm(Term[jax.Array]):
     def __init__(self, op: Operation[..., jax.Array], *args: Expr, **kwargs: Expr):
         self._op = op
