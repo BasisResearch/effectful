@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "effectful"
+version = "0.1.0"
+description = "Metaprogramming infrastructure"
+readme = "README.rst"
+license = {text = "Apache License 2.0"}
+requires-python = ">=3.10"
+authors = [
+    { name = "Basis" },
+]
+keywords = [
+    "machine learning",
+    "statistics",
+    "probabilistic programming",
+    "bayesian modeling",
+    "pytorch",
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "typing_extensions",
+    "dm-tree",
+]
+
+[project.urls]
+Homepage = "https://www.basis.ai/"
+Source = "https://github.com/BasisResearch/effectful"
+"Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
+
+[project.optional-dependencies]
+torch = ["torch"]
+pyro = ["pyro-ppl>=1.9.1"]
+
+[dependency-groups]
+dev = [
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx_rtd_theme",
+    "myst-parser",
+    "nbsphinx",
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-benchmark",
+    "mypy",
+    "ruff",
+    "nbval",
+    "nbqa",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "I", "PERF", "UP"]
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
+testpaths = ["./effectful", "./tests"]
+
