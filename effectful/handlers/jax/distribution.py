@@ -5,11 +5,12 @@ import jax
 import numpyro.distributions as dist
 import tree
 
+import effectful.handlers.jax.numpy as jnp
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Operation, Term
 
-from .handlers import _register_jax_op, jax_getitem, sizesof, to_array
+from .handlers import _register_jax_op, is_eager_array, jax_getitem, sizesof, to_array
 from .terms import _EagerArrayTerm
 
 A = TypeVar("A")
@@ -157,10 +158,28 @@ def _register_distribution_op(
             raise NotImplementedError
         return dist_constr(*args, **kwargs)
 
-    return defop(wrapper)
+    return defop(wrapper, name=dist_constr.__name__)
 
 
 @defdata.register(dist.Distribution)
+def _embed_distribution(op, *args, **kwargs):
+    if all(
+        not isinstance(a, Term) or is_eager_array(a.op, *a.args, **a.kwargs)
+        for a in tree.flatten((args, kwargs))
+    ):
+        return _DistributionTerm(op, *args, **kwargs)
+    else:
+        return defdata.dispatch(object)(op, *args, **kwargs)
+
+
+def _broadcast_to_named(t, sizes):
+    missing_dims = set(sizes) - set(sizesof(t))
+    t_broadcast = jnp.broadcast_to(
+        t, tuple(sizes[dim] for dim in missing_dims) + t.shape
+    )
+    return jax_getitem(t_broadcast, tuple(dim() for dim in missing_dims))
+
+
 class _DistributionTerm(dist.Distribution):
     """A distribution wrapper that satisfies the Term interface.
 
@@ -244,7 +263,7 @@ class _DistributionTerm(dist.Distribution):
         return ret
 
     def log_prob(self, value):
-        value = to_array(value, *self._indices)
+        value = to_array(_broadcast_to_named(value, self._indices), *self._indices)
         return self._reindex_sample(
             _register_jax_op(self._pos_base_dist.log_prob)(value), ()
         )

@@ -15,7 +15,7 @@ from effectful.handlers.jax.distribution import (
     positional_distribution,
 )
 from effectful.ops.syntax import defop
-from effectful.ops.types import Operation
+from effectful.ops.types import Operation, Term
 
 ##################################################
 # Test cases
@@ -880,3 +880,23 @@ def test_dist_stats(case_, statistic):
             rtol=1e-5,
             atol=1e-5,
         )
+
+
+def test_distribution_terms():
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+
+    d1 = dist.Normal(x(), y())
+    assert isinstance(d1, Term) and not isinstance(
+        d1, numpyro.distributions.Distribution
+    )
+
+    a = jax_getitem(jnp.array([0.0]), [x()])
+    b = jax_getitem(jnp.array([1.0]), [y()])
+    d2 = dist.Normal(a, b)
+    assert isinstance(d2, Term) and isinstance(d2, numpyro.distributions.Distribution)
+
+    d3 = dist.Normal(jnp.array(0.0), jnp.array(1.0))
+    assert not isinstance(d3, Term) and isinstance(
+        d3, numpyro.distributions.Distribution
+    )

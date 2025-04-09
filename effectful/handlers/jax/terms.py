@@ -6,18 +6,14 @@ from typing import Any
 import jax
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax.handlers import IndexElement, jax_getitem
+from effectful.handlers.jax.handlers import IndexElement, is_eager_array, jax_getitem
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
 
 
 @defdata.register(jax.Array)
 def _embed_array(op, *args, **kwargs):
-    if (
-        op is jax_getitem
-        and not isinstance(args[0], Term)
-        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
-    ):
+    if is_eager_array(op, *args, **kwargs):
         return _EagerArrayTerm(jax_getitem, args[0], args[1])
     else:
         return _ArrayTerm(op, *args, **kwargs)

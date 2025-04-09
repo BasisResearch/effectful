@@ -64,6 +64,10 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
         x: Expr[jax.Array], key: tuple[Expr[IndexElement], ...]
     ) -> Expr[jax.Array]:
         if isinstance(x, jax.Array):
+            if len(key) > x.ndim:
+                raise IndexError(
+                    f"Indexing with too many dimensions: expected {x.ndim} got {len(key)}"
+                )
             for i, k in enumerate(key):
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
@@ -307,3 +311,11 @@ def jit(f, *args, **kwargs):
     f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, to_array, sizesof)
     f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
+
+
+def is_eager_array(op, *args, **kwargs):
+    return (
+        op is jax_getitem
+        and not isinstance(args[0], Term)
+        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
+    )
