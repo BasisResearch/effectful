@@ -7,6 +7,7 @@ import jax
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax.handlers import IndexElement, is_eager_array, jax_getitem
+from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
 
@@ -164,6 +165,10 @@ class _ArrayTerm(Term[jax.Array]):
 
 
 class _EagerArrayTerm(_ArrayTerm):
+    def __init__(self, op, tensor, key):
+        new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
+        super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
+
     @property
     def shape(self) -> tuple[int, ...]:
         return tuple(
