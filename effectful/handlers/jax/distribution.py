@@ -1,5 +1,5 @@
 import functools
-from typing import Annotated, Any, Collection, Mapping, TypeVar
+from typing import Annotated, Any, Collection, Mapping, TypeVar, cast
 
 import jax
 import numpyro.distributions as dist
@@ -77,7 +77,7 @@ def named_distribution(
         nonlocal batch_shape
         if isinstance(a, jax.Array):
             _validate_batch_shape(a)
-            return typing.cast(jax.Array, a)[tuple(n() for n in names)]
+            return cast(jax.Array, a)[tuple(n() for n in names)]
         elif isinstance(a, dist.Distribution):
             return named_distribution(a, *names)
         else:
