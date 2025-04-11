@@ -12,6 +12,7 @@ except Exception as e:
     long_description = ""
 
 TORCH_REQUIRE = ["torch"]
+JAX_REQUIRE = ["jax"]
 PYRO_REQUIRE = TORCH_REQUIRE + ["pyro-ppl"]
 DOCS_REQUIRE = [
     "setuptools",
@@ -24,6 +25,7 @@ DOCS_REQUIRE = [
 DEV_REQUIRE = (
     PYRO_REQUIRE
     + TORCH_REQUIRE
+    + JAX_REQUIRE
     + DOCS_REQUIRE
     + [
         "pytest",
