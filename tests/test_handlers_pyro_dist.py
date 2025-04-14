@@ -13,6 +13,7 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
+import effectful.handlers.pyro
 from effectful.handlers.indexed import name_to_sym
 from effectful.handlers.torch import bind_dims, sizesof, unbind_dims
 from effectful.ops.syntax import defop
