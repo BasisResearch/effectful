@@ -98,7 +98,8 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
             or (
                 t.op is jax_getitem
                 and all(
-                    isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0
+                    (isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0)
+                    or isinstance(a, slice)
                     for a in t.args[1]
                 )
             )

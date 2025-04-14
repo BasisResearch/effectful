@@ -345,3 +345,9 @@ def test_jax_jit_3():
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
 
     assert (to_array(f(x, y), i, j) == x + y).all()
+
+
+def test_jax_broadcast_to():
+    i = defop(jax.Array, name="i")
+    t = jnp.broadcast_to(jax_getitem(jnp.ones((2, 3)), [i(), slice(None)]), (3,))
+    assert not isinstance(t.shape, Term) and t.shape == (3,)
