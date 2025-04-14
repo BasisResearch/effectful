@@ -109,16 +109,20 @@ def positional_distribution(
     d: Annotated[dist.Distribution, Scoped[A]],
 ) -> tuple[dist.Distribution, Naming]:
     def _to_positional(a, indices):
-        if isinstance(a, jax.Array):
+        typ = typeof(a)
+        if typ is jax.Array:
             # broadcast to full indexed shape
             existing_dims = set(sizesof(a).keys())
             missing_dims = set(indices) - existing_dims
 
-            a_indexed = torch.broadcast_to(
-                a, torch.Size([indices[dim] for dim in missing_dims]) + a.shape
-            )[tuple(n() for n in missing_dims)]
+            a_indexed = jax_getitem(
+                jnp.broadcast_to(
+                    a, tuple(indices[dim] for dim in missing_dims) + a.shape
+                ),
+                tuple(n() for n in missing_dims),
+            )
             return to_array(a_indexed, *indices)
-        elif isinstance(a, dist.Distribution):
+        elif issubclass(typ, dist.Distribution):
             return positional_distribution(a)[0]
         else:
             return a
@@ -164,7 +168,9 @@ def _register_distribution_op(
 @defdata.register(dist.Distribution)
 def _embed_distribution(op, *args, **kwargs):
     if all(
-        not isinstance(a, Term) or is_eager_array(a.op, *a.args, **a.kwargs)
+        not isinstance(a, Term)
+        or is_eager_array(a.op, *a.args, **a.kwargs)
+        or isinstance(a, dist.Distribution)
         for a in tree.flatten((args, kwargs))
     ):
         return _DistributionTerm(op, *args, **kwargs)
@@ -206,20 +212,13 @@ class _DistributionTerm(dist.Distribution):
     @property
     def _indices(self):
         if self.__indices is None:
-            self.__indices = sizesof(self)
+            self.__pos_base_dist, self.__indices = positional_distribution(self)
         return self.__indices
 
     @property
     def _pos_base_dist(self):
         if self.__pos_base_dist is None:
-            pos_args = tuple(to_array(a, *self._indices) for a in self._args)
-            pos_kwargs = {
-                k: to_array(v, *self._indices) for (k, v) in self._kwargs.items()
-            }
-            assert not any(
-                isinstance(a, Term) for a in tree.flatten((pos_args, pos_kwargs))
-            )
-            self.__pos_base_dist = self._op(*pos_args, **pos_kwargs)
+            self.__pos_base_dist, self.__indices = positional_distribution(self)
         return self.__pos_base_dist
 
     @property
@@ -283,11 +282,7 @@ class _DistributionTerm(dist.Distribution):
         return self._pos_base_dist.entropy()
 
     def to_event(self, reinterpreted_batch_ndims=None):
-        if reinterpreted_batch_ndims is None:
-            reinterpreted_batch_ndims = len(self.batch_shape)
-        if reinterpreted_batch_ndims == 0:
-            return self
-        return Independent(self, reinterpreted_batch_ndims)
+        raise ValueError("to_event yet implemented")
 
     __repr__ = Term.__repr__
     __str__ = Term.__str__
