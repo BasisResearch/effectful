@@ -684,9 +684,7 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
-@pytest.mark.parametrize("sample_shape", [(), (2,), (3, 2)])
-@pytest.mark.parametrize("extra_batch_shape", [(), (2,), (3, 2)])
-def test_dist_indexes(case_, sample_shape, extra_batch_shape):
+def test_dist_indexes(case_):
     """Test that indexed samples and logprobs have the correct shape and indices."""
     dist, indexed_dist = case_.get_dist()
 
