@@ -564,18 +564,16 @@ def _embed_independent(d: dist.Independent) -> Term[TorchDistribution]:
     with interpreter({}):
         base_dist = d.base_dist
         reinterpreted_batch_ndims = d.reinterpreted_batch_ndims
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(base_dist, reinterpreted_batch_ndims)
+    return _register_distribution_op(type(d))(base_dist, reinterpreted_batch_ndims)
 
 
 @defterm.register
 def _embed_folded(d: dist.FoldedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         base_dist = d.base_dist
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(base_dist)  # type: ignore
+    return _register_distribution_op(type(d))(base_dist)  # type: ignore
 
 
 @defterm.register
@@ -583,9 +581,8 @@ def _embed_masked(d: dist.MaskedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         base_dist = d.base_dist
         mask = d._mask
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(base_dist, mask)
+    return _register_distribution_op(type(d))(base_dist, mask)
 
 
 @defterm.register(dist.Cauchy)
@@ -600,9 +597,8 @@ def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         loc = d.loc
         scale = d.scale
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(loc, scale)
+    return _register_distribution_op(type(d))(loc, scale)
 
 
 @defterm.register(dist.Bernoulli)
@@ -614,9 +610,8 @@ def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
 def _embed_probs(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         probs = d.probs
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(probs)
+    return _register_distribution_op(type(d))(probs)
 
 
 @defterm.register(dist.Beta)
@@ -625,9 +620,8 @@ def _embed_beta(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         concentration1 = d.concentration1
         concentration0 = d.concentration0
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(concentration1, concentration0)
+    return _register_distribution_op(type(d))(concentration1, concentration0)
 
 
 @defterm.register
@@ -686,9 +680,8 @@ def _embed_gamma(d: dist.Gamma) -> Term[TorchDistribution]:
 def _embed_half_cauchy(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         scale = d.scale
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(scale)
+    return _register_distribution_op(type(d))(scale)
 
 
 @defterm.register
@@ -754,9 +747,8 @@ def _embed_relaxed(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         temperature = d.temperature
         probs = d.probs
-        dist_type = type(d)
     
-    return _register_distribution_op(dist_type)(temperature, probs)
+    return _register_distribution_op(type(d))(temperature, probs)
 
 
 @defterm.register
