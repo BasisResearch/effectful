@@ -30,6 +30,7 @@ from effectful.handlers.torch import (
     sizesof,
     unbind_dims,
 )
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
@@ -587,18 +588,21 @@ def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.OneHotCategorical)
 @defterm.register(dist.OneHotCategoricalStraightThrough)
 def _embed_probs(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.probs)
+    with interpreter({}):
+        return _register_distribution_op(type(d))(d.probs)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.concentration1, d.concentration0)
+    with interpreter({}):
+        return _register_distribution_op(type(d))(d.concentration1, d.concentration0)
 
 
 @defterm.register
 def _embed_binomial(d: dist.Binomial) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Binomial)(d.total_count, d.probs)
+    with interpreter({}):
+        return _register_distribution_op(dist.Binomial)(d.total_count, d.probs)
 
 
 @defterm.register
