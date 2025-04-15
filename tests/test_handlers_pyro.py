@@ -90,18 +90,7 @@ class HMM(pyro.nn.PyroModule):
 
 @pytest.mark.parametrize("num_particles", [1, 10])
 @pytest.mark.parametrize("max_plate_nesting", [3, float("inf")])
-@pytest.mark.parametrize(
-    "use_guide",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason="distribution type restrictions in AutoDiscreteParallel"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("use_guide", [False, True])
 @pytest.mark.parametrize("num_steps", [2, 3, 4, 5, 6])
 @pytest.mark.parametrize("Elbo", [pyro.infer.TraceEnum_ELBO, pyro.infer.TraceTMC_ELBO])
 def test_smoke_condition_enumerate_hmm_elbo(
