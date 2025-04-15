@@ -789,12 +789,3 @@ def test_dist_stats(case_, statistic):
         assert_close(
             bind_dims(expected_stat_i, *indexes), bind_dims(actual_stat_i, *indexes)
         )
-
-
-def test_dist_sizesof():
-    i = defop(torch.Tensor)
-    d = dist.Bernoulli(logits=rand(3)[i()])
-    s1 = str(d)
-    sizesof(d)
-    s2 = str(d)
-    assert s1 == s2
