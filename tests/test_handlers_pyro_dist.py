@@ -13,9 +13,9 @@ from torch import exp, rand, randint  # noqa: F401
 #################################################
 from torch.testing import assert_close
 
+import effectful.handlers.pyro  # noqa: F401
 from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.pyro import named_distribution, positional_distribution
-from effectful.handlers.torch import sizesof, to_tensor
+from effectful.handlers.torch import bind_dims, sizesof, unbind_dims
 from effectful.ops.syntax import defop
 
 ##################################################
@@ -47,7 +47,7 @@ def from_indexed(tensor, batch_dims):
     tensor_sizes = sizesof(tensor)
     indices = [name_to_sym(str(i)) for i in range(batch_dims)]
     indices = [i for i in indices if i in tensor_sizes]
-    return to_tensor(tensor, *indices)
+    return bind_dims(tensor, *indices)
 
 
 class DistTestCase:
@@ -622,7 +622,8 @@ def test_dist_to_positional(case_):
     _, indexed_dist = case_.get_dist()
 
     try:
-        pos_dist, naming = positional_distribution(indexed_dist)
+        sizes = sizesof(indexed_dist)
+        pos_dist = bind_dims(indexed_dist, *sizes.keys())
         pos_sample = pos_dist.sample()
         assert sizesof(pos_sample) == {}
         indexed_sample = indexed_dist.sample()
@@ -645,7 +646,7 @@ def test_dist_to_named(case_):
     try:
         dist, _ = case_.get_dist()
         indexes = [name_to_sym(str(i)) for i in range(len(case_.batch_shape))]
-        indexed_dist = named_distribution(dist, *indexes)
+        indexed_dist = unbind_dims(dist, *indexes)
 
         indexed_sample = indexed_dist.sample()
         assert set(sizesof(indexed_sample)) == set(indexes)
@@ -684,9 +685,7 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)
-@pytest.mark.parametrize("sample_shape", [(), (2,), (3, 2)])
-@pytest.mark.parametrize("extra_batch_shape", [(), (2,), (3, 2)])
-def test_dist_indexes(case_, sample_shape, extra_batch_shape):
+def test_dist_indexes(case_):
     """Test that indexed samples and logprobs have the correct shape and indices."""
     dist, indexed_dist = case_.get_dist()
 
@@ -778,7 +777,7 @@ def test_dist_stats(case_, statistic):
         pytest.xfail(f"{statistic} not implemented")
 
     if expected_stat.isnan().all():
-        assert to_tensor(actual_stat).isnan().all()
+        assert bind_dims(actual_stat).isnan().all()
     else:
         # Stats may not be indexed in all batch dimensions, but they should be
         # extensionally equal to the indexed expected stat
@@ -788,5 +787,5 @@ def test_dist_stats(case_, statistic):
             expected_stat_i, actual_stat
         )
         assert_close(
-            to_tensor(expected_stat_i, *indexes), to_tensor(actual_stat_i, *indexes)
+            bind_dims(expected_stat_i, *indexes), bind_dims(actual_stat_i, *indexes)
         )
