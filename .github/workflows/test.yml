@@ -24,7 +24,7 @@ jobs:
           uv sync --all-extras --dev
           
       - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
+        uses: owenthereal/action-upterm@v1
         
       - name: Run tests
         env:
