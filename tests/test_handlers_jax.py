@@ -5,7 +5,8 @@ import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem, jit, to_array
+from effectful.handlers.jax import jax_getitem, jit
+from effectful.ops.dims import bind_dims
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Term
@@ -15,8 +16,8 @@ S = TypeVar("S")
 T = TypeVar("T")
 
 
-def test_to_array():
-    """Test to_array's handling of free variables and tensor shapes"""
+def test_bind_dims():
+    """Test bind_dims's handling of free variables and tensor shapes"""
     i, j, k = (
         defop(jax.Array, name="i"),
         defop(jax.Array, name="j"),
@@ -29,41 +30,41 @@ def test_to_array():
     t_ijk = t[i(), j(), k()]
     assert fvsof(t_ijk) >= {i, j, k}
 
-    t1 = to_array(t_ijk, i, j, k)
+    t1 = bind_dims(t_ijk, i, j, k)
     assert not (fvsof(t1) & {i, j, k})
     assert t1.shape == (2, 3, 4)
 
     # Test case 2: Different ordering of dimensions
-    t2 = to_array(t_ijk, k, j, i)
+    t2 = bind_dims(t_ijk, k, j, i)
     assert not (fvsof(t1) & {i, j, k})
     assert t2.shape == (4, 3, 2)
 
     # Test case 3: Keeping some dimensions as free variables
-    t3 = to_array(t_ijk, i)  # Convert only i to positional
+    t3 = bind_dims(t_ijk, i)  # Convert only i to positional
     assert fvsof(t3) >= {j, k}  # j and k remain free
     assert isinstance(t3, Term)
     assert t3.shape == (2,)
 
-    t4 = to_array(t_ijk, i, j)  # Convert i and j to positional
+    t4 = bind_dims(t_ijk, i, j)  # Convert i and j to positional
     assert fvsof(t4) >= {k} and not (fvsof(t4) & {i, j})  # only k remains free
     assert isinstance(t4, Term)
     assert t4.shape == (2, 3)
 
     # Test case 4: Empty order list keeps all variables free
-    t5 = to_array(t_ijk)
+    t5 = bind_dims(t_ijk)
     assert fvsof(t5) >= {i, j, k}  # All variables remain free
     assert isinstance(t5, Term)
     assert t5.shape == tuple()
 
     # Test case 5: Verify permuted tensors maintain correct relationships
     t_kji = jnp.permute_dims(t, (2, 1, 0))[k(), j(), i()]
-    t6 = to_array(t_kji, i, j, k)
-    t7 = to_array(t_ijk, i, j, k)
+    t6 = bind_dims(t_kji, i, j, k)
+    t7 = bind_dims(t_ijk, i, j, k)
     assert jnp.allclose(t6, t7)
 
     # Test case 6: Mixed operations with free variables
     x = jnp.sin(t_ijk)  # Apply operation to indexed tensor
-    x1 = to_array(x, i, j)  # Convert some dimensions
+    x1 = bind_dims(x, i, j)  # Convert some dimensions
     assert fvsof(x1) >= {k}  # k remains free
     assert isinstance(x1, Term)
     assert x1.shape == (2, 3)
@@ -71,7 +72,7 @@ def test_to_array():
     # Test case 7: Multiple tensors sharing variables
     t2_ijk = jax.random.normal(key, (2, 3, 4))[i(), j(), k()]
     sum_t = t_ijk + t2_ijk
-    sum1 = to_array(sum_t, i, j)
+    sum1 = bind_dims(sum_t, i, j)
     assert fvsof(sum1) >= {k}  # k remains free
     assert isinstance(sum1, Term)
     assert sum1.shape == (2, 3)
@@ -79,7 +80,7 @@ def test_to_array():
     # Test case 8: Tensor term with non-sized free variables
     w = defop(jax.Array, name="w")
     t_ijk = t[i(), j(), k()] + w()
-    t8 = to_array(t_ijk, i, j, k)
+    t8 = bind_dims(t_ijk, i, j, k)
     assert fvsof(t8) >= {w}
 
     # Test case 9: Eliminate remaining free variables in result
@@ -109,7 +110,7 @@ def test_tpe_1():
     assert actual.size == 1
     assert actual.ndim == 0
 
-    assert (to_array(actual, i, j) == expected).all()
+    assert (bind_dims(actual, i, j) == expected).all()
 
 
 def test_tpe_2():
@@ -129,7 +130,7 @@ def test_tpe_2():
     assert actual.shape == ()
     assert actual.size == 1
 
-    assert (to_array(actual, j) == expected).all()
+    assert (bind_dims(actual, j) == expected).all()
 
 
 def test_tpe_3():
@@ -147,7 +148,7 @@ def test_tpe_3():
     assert actual.shape == ()
     assert actual.size == 1
 
-    assert (to_array(actual, k, j) == expected).all()
+    assert (bind_dims(actual, k, j) == expected).all()
 
 
 def test_tpe_known_index():
@@ -203,7 +204,7 @@ def test_tpe_stack():
     actual = jnp.stack((x_ij, y_ij))
     assert actual.shape == (2,)
     assert (
-        jnp.transpose(to_array(actual, i, j), [2, 0, 1]) == jnp.stack((xval, yval))
+        jnp.transpose(bind_dims(actual, i, j), [2, 0, 1]) == jnp.stack((xval, yval))
     ).all()
 
 
@@ -317,7 +318,7 @@ def test_custom_getitem(tensor, idx):
 def test_jax_jit_1():
     @jit
     def f(x, y):
-        return to_array(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
+        return bind_dims(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
 
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
@@ -333,7 +334,7 @@ def test_jax_jit_2():
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
 
-    assert (to_array(f(x, y), i, j) == x + y).all()
+    assert (bind_dims(f(x, y), i, j) == x + y).all()
 
 
 def test_jax_jit_3():
@@ -344,7 +345,7 @@ def test_jax_jit_3():
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
 
-    assert (to_array(f(x, y), i, j) == x + y).all()
+    assert (bind_dims(f(x, y), i, j) == x + y).all()
 
 
 def test_jax_broadcast_to():

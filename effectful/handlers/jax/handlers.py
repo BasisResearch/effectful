@@ -19,6 +19,7 @@ from effectful.internals.tensor_utils import (
     _desugar_tensor_index,
     _indexed_func_wrapper,
 )
+from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.semantics import apply, evaluate, fvsof
 from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -136,11 +137,8 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     return result
 
 
-@defop
-def to_array(
-    t: Annotated[jax.Array, Scoped[A | B]],
-    *args: Annotated[Operation[[], jax.Array], Scoped[A]],
-) -> Annotated[jax.Array, Scoped[B]]:
+@_bind_dims.register
+def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
     :param t: An array.
@@ -155,7 +153,7 @@ def to_array(
 
     >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
     >>> t = jnp.ones((2, 3))
-    >>> to_array(t[a(), b()], b, a).shape
+    >>> bind_dims(t[a(), b()], b, a).shape
     (3, 2)
     """
 
@@ -203,6 +201,11 @@ def to_array(
     )
     array = jnp.transpose(array, perm)
     return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+
+
+@_unbind_dims.register
+def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
+    return jax_getitem(t, tuple(n() for n in args))
 
 
 @functools.cache
@@ -309,7 +312,7 @@ jax._src.array.ArrayImpl.__getitem__ = _jax_getitem_override  # type: ignore
 
 
 def jit(f, *args, **kwargs):
-    f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, to_array, sizesof)
+    f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, sizesof)
     f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
 

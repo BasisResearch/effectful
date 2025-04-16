@@ -6,6 +6,7 @@ import numpyro.distributions as dist
 import tree
 
 import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.indexed import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Operation, Term
@@ -50,11 +51,10 @@ class Naming(dict[Operation[[], jax.Array], int]):
         return f"Naming({super().__repr__()})"
 
 
-@defop
-def named_distribution(
-    d: Annotated[dist.Distribution, Scoped[A | B]],
-    *names: Annotated[Operation[[], jax.Array], Scoped[B]],
-) -> Annotated[dist.Distribution, Scoped[A | B]]:
+@_unbind_dims.register
+def _unbind_distribution(
+    d: dist.Distribution, *names: Operation[[], jax.Array]
+) -> dist.Distribution:
     batch_shape = None
 
     def _validate_batch_shape(t):
@@ -77,9 +77,9 @@ def named_distribution(
         nonlocal batch_shape
         if isinstance(a, jax.Array):
             _validate_batch_shape(a)
-            return cast(jax.Array, a)[tuple(n() for n in names)]
+            return unbind_dims(a, *names)
         elif isinstance(a, dist.Distribution):
-            return named_distribution(a, *names)
+            return unbind_dims(a, *names)
         else:
             return a
 

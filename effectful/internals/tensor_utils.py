@@ -3,6 +3,7 @@ from typing import Any, Callable, Collection, Generic, Mapping, Protocol, TypeVa
 import tree
 from typing_extensions import ParamSpec
 
+from effectful.ops.dims import bind_dims
 from effectful.ops.types import Operation
 
 P = ParamSpec("P")
@@ -45,7 +46,7 @@ def _desugar_tensor_index(shape, key):
 
 
 def _indexed_func_wrapper(
-    func: Callable[P, T], getitem, to_tensor, sizesof
+    func: Callable[P, T], getitem, sizesof
 ) -> tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
     indexes = None
@@ -61,7 +62,7 @@ def _indexed_func_wrapper(
         nonlocal indexes
 
         def deindex_tensor(t, i):
-            t_ = to_tensor(t, *i.sizes.keys())
+            t_ = bind_dims(t, *i.sizes.keys())
             assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
             return t_
 
