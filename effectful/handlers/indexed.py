@@ -264,13 +264,13 @@ def cond(fst: torch.Tensor, snd: torch.Tensor, case_: torch.Tensor) -> torch.Ten
     and both branches are evaluated, as with :func:`torch.where` ::
 
         >>> from effectful.ops.syntax import defop
-        >>> from effectful.handlers.torch import to_tensor
+        >>> from effectful.handlers.torch import bind_dims
 
         >>> b = defop(torch.Tensor, name="b")
         >>> fst, snd = torch.randn(2, 3)[b()], torch.randn(2, 3)[b()]
         >>> case = (fst < snd).all(-1)
         >>> x = cond(fst, snd, case)
-        >>> assert (to_tensor(x, b) == to_tensor(torch.where(case[..., None], snd, fst), b)).all()
+        >>> assert (bind_dims(x, b) == bind_dims(torch.where(case[..., None], snd, fst), b)).all()
 
     .. note::
 

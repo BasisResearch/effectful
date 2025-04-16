@@ -1,7 +1,7 @@
 import functools
 import typing
 from collections.abc import Collection, Mapping
-from typing import Annotated, Any, TypeVar
+from typing import Any, TypeVar
 
 import pyro.poutine.subsample_messenger
 
@@ -23,9 +23,16 @@ except ImportError:
 
 from typing_extensions import ParamSpec
 
-from effectful.handlers.torch import sizesof, to_tensor
+from effectful.handlers.torch import (
+    _bind_dims,
+    _unbind_dims,
+    bind_dims,
+    sizesof,
+    unbind_dims,
+)
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, defterm
+from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
 
 P = ParamSpec("P")
@@ -161,7 +168,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         name_to_dim = {}
         for i, (k, v) in enumerate(reversed(list(indices.items()))):
             if k in t_indices:
-                t = to_tensor(t, k)
+                t = bind_dims(t, k)
             else:
                 t = t.expand((v,) + t.shape)
             name_to_dim[k] = -len(shape) - i - 1
@@ -169,7 +176,7 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         # create a positional dimension for every remaining named index in `t`
         n_batch_and_dist_named = len(t.shape)
         for i, k in enumerate(reversed(list(sizesof(t).keys()))):
-            t = to_tensor(t, k)
+            t = bind_dims(t, k)
             name_to_dim[k] = -n_batch_and_dist_named - i - 1
 
         return t, Naming(name_to_dim)
@@ -218,7 +225,8 @@ class PyroShim(pyro.poutine.messenger.Messenger):
             # pdist shape: | named1 | batch_shape | event_shape |
             # obs shape: | batch_shape | event_shape |, | named2 | where named2 may overlap named1
             indices = sizesof(dist)
-            pdist, naming = positional_distribution(dist)
+            naming = Naming.from_shape(indices, len(dist.shape()))
+            pdist = bind_dims(dist, *indices.keys())
 
             if msg["mask"] is None:
                 mask = torch.tensor(True)
@@ -327,11 +335,19 @@ class PyroShim(pyro.poutine.messenger.Messenger):
         msg["value"] = value
 
 
-@defop
-def named_distribution(
-    d: Annotated[TorchDistribution, Scoped[A | B]],
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[TorchDistribution, Scoped[A | B]]:
+PyroDistribution = (
+    pyro.distributions.torch_distribution.TorchDistribution
+    | pyro.distributions.torch_distribution.TorchDistributionMixin
+)
+
+
+@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
+@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+def _unbind_dims_distribution(
+    value: pyro.distributions.torch_distribution.TorchDistribution,
+    *names: Operation[[], torch.Tensor],
+) -> pyro.distributions.torch_distribution.TorchDistribution:
+    d = value
     batch_shape = None
 
     def _validate_batch_shape(t):
@@ -356,7 +372,7 @@ def named_distribution(
             _validate_batch_shape(a)
             return typing.cast(torch.Tensor, a)[tuple(n() for n in names)]
         elif isinstance(a, TorchDistribution):
-            return named_distribution(a, *names)
+            return unbind_dims(a, *names)
         else:
             return a
 
@@ -385,10 +401,14 @@ def named_distribution(
     return new_d
 
 
-@defop
-def positional_distribution(
-    d: Annotated[TorchDistribution, Scoped[A]],
-) -> tuple[TorchDistribution, Naming]:
+@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
+@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+def _bind_dims_distribution(
+    value: pyro.distributions.torch_distribution.TorchDistribution,
+    *names: Operation[[], torch.Tensor],
+) -> pyro.distributions.torch_distribution.TorchDistribution:
+    d = value
+
     def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
             # broadcast to full indexed shape
@@ -398,9 +418,9 @@ def positional_distribution(
             a_indexed = torch.broadcast_to(
                 a, torch.Size([indices[dim] for dim in missing_dims]) + a.shape
             )[tuple(n() for n in missing_dims)]
-            return to_tensor(a_indexed, *indices)
+            return bind_dims(a_indexed, *names)
         elif isinstance(a, TorchDistribution):
-            return positional_distribution(a)[0]
+            return bind_dims(a, *names)
         else:
             return a
 
@@ -421,16 +441,15 @@ def positional_distribution(
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
         raise NotImplementedError
 
-    shape = d.shape()
-    indices = sizesof(d)
-    naming = Naming.from_shape(indices, len(shape))
+    sizes = sizesof(d)
+    indices = {k: sizes[k] for k in names}
 
     pos_args = [_to_positional(a, indices) for a in d.args]
     pos_kwargs = {k: _to_positional(v, indices) for (k, v) in d.kwargs.items()}
     new_d = d.op(*pos_args, **pos_kwargs)
 
     assert new_d.event_shape == d.event_shape
-    return new_d, naming
+    return new_d
 
 
 @functools.cache
@@ -530,24 +549,40 @@ def _embed_distribution(dist: TorchDistribution) -> Term[TorchDistribution]:
 
 @defterm.register
 def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
-    if d._batch_shape == d.base_dist.batch_shape:
-        return d.base_dist
+    with interpreter({}):
+        batch_shape = d._batch_shape
+        base_dist = d.base_dist
+        base_batch_shape = base_dist.batch_shape
+        if batch_shape == base_batch_shape:
+            return base_dist
+
     raise ValueError("Nontrivial ExpandedDistribution not implemented.")
 
 
 @defterm.register
 def _embed_independent(d: dist.Independent) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.base_dist, d.reinterpreted_batch_ndims)
+    with interpreter({}):
+        base_dist = d.base_dist
+        reinterpreted_batch_ndims = d.reinterpreted_batch_ndims
+
+    return _register_distribution_op(type(d))(base_dist, reinterpreted_batch_ndims)
 
 
 @defterm.register
 def _embed_folded(d: dist.FoldedDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.base_dist)  # type: ignore
+    with interpreter({}):
+        base_dist = d.base_dist
+
+    return _register_distribution_op(type(d))(base_dist)  # type: ignore
 
 
 @defterm.register
 def _embed_masked(d: dist.MaskedDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.base_dist, d._mask)
+    with interpreter({}):
+        base_dist = d.base_dist
+        mask = d._mask
+
+    return _register_distribution_op(type(d))(base_dist, mask)
 
 
 @defterm.register(dist.Cauchy)
@@ -559,7 +594,11 @@ def _embed_masked(d: dist.MaskedDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
 def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.loc, d.scale)
+    with interpreter({}):
+        loc = d.loc
+        scale = d.scale
+
+    return _register_distribution_op(type(d))(loc, scale)
 
 
 @defterm.register(dist.Bernoulli)
@@ -569,115 +608,192 @@ def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
 @defterm.register(dist.OneHotCategorical)
 @defterm.register(dist.OneHotCategoricalStraightThrough)
 def _embed_probs(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.probs)
+    with interpreter({}):
+        probs = d.probs
+
+    return _register_distribution_op(type(d))(probs)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.concentration1, d.concentration0)
+    with interpreter({}):
+        concentration1 = d.concentration1
+        concentration0 = d.concentration0
+
+    return _register_distribution_op(type(d))(concentration1, concentration0)
 
 
 @defterm.register
 def _embed_binomial(d: dist.Binomial) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Binomial)(d.total_count, d.probs)
+    with interpreter({}):
+        total_count = d.total_count
+        probs = d.probs
+
+    return _register_distribution_op(dist.Binomial)(total_count, probs)
 
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Chi2)(d.df)
+    with interpreter({}):
+        df = d.df
+
+    return _register_distribution_op(dist.Chi2)(df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Dirichlet)(d.concentration)
+    with interpreter({}):
+        concentration = d.concentration
+
+    return _register_distribution_op(dist.Dirichlet)(concentration)
 
 
 @defterm.register
 def _embed_exponential(d: dist.Exponential) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Exponential)(d.rate)
+    with interpreter({}):
+        rate = d.rate
+
+    return _register_distribution_op(dist.Exponential)(rate)
 
 
 @defterm.register
 def _embed_fisher_snedecor(d: dist.FisherSnedecor) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.FisherSnedecor)(d.df1, d.df2)
+    with interpreter({}):
+        df1 = d.df1
+        df2 = d.df2
+
+    return _register_distribution_op(dist.FisherSnedecor)(df1, df2)
 
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Gamma)(d.concentration, d.rate)
+    with interpreter({}):
+        concentration = d.concentration
+        rate = d.rate
+
+    return _register_distribution_op(dist.Gamma)(concentration, rate)
 
 
 @defterm.register(dist.HalfCauchy)
 @defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.scale)
+    with interpreter({}):
+        scale = d.scale
+
+    return _register_distribution_op(type(d))(scale)
 
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.LKJCholesky)(
-        d.dim, concentration=d.concentration
-    )
+    with interpreter({}):
+        dim = d.dim
+        concentration = d.concentration
+
+    return _register_distribution_op(dist.LKJCholesky)(dim, concentration=concentration)
 
 
 @defterm.register
 def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Multinomial)(d.total_count, d.probs)
+    with interpreter({}):
+        total_count = d.total_count
+        probs = d.probs
+
+    return _register_distribution_op(dist.Multinomial)(total_count, probs)
 
 
 @defterm.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[TorchDistribution]:
+    with interpreter({}):
+        loc = d.loc
+        scale_tril = d.scale_tril
+
     return _register_distribution_op(dist.MultivariateNormal)(
-        d.loc, scale_tril=d.scale_tril
+        loc, scale_tril=scale_tril
     )
 
 
 @defterm.register
 def _embed_negative_binomial(d: dist.NegativeBinomial) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.NegativeBinomial)(d.total_count, d.probs)
+    with interpreter({}):
+        total_count = d.total_count
+        probs = d.probs
+
+    return _register_distribution_op(dist.NegativeBinomial)(total_count, probs)
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Pareto)(d.scale, d.alpha)
+    with interpreter({}):
+        scale = d.scale
+        alpha = d.alpha
+
+    return _register_distribution_op(dist.Pareto)(scale, alpha)
 
 
 @defterm.register
 def _embed_poisson(d: dist.Poisson) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Poisson)(d.rate)
+    with interpreter({}):
+        rate = d.rate
+
+    return _register_distribution_op(dist.Poisson)(rate)
 
 
 @defterm.register(dist.RelaxedBernoulli)
 @defterm.register(dist.RelaxedOneHotCategorical)
 def _embed_relaxed(d: TorchDistribution) -> Term[TorchDistribution]:
-    return _register_distribution_op(type(d))(d.temperature, d.probs)
+    with interpreter({}):
+        temperature = d.temperature
+        probs = d.probs
+
+    return _register_distribution_op(type(d))(temperature, probs)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Uniform)(d.low, d.high)
+    with interpreter({}):
+        low = d.low
+        high = d.high
+
+    return _register_distribution_op(dist.Uniform)(low, high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.VonMises)(d.loc, d.concentration)
+    with interpreter({}):
+        loc = d.loc
+        concentration = d.concentration
+
+    return _register_distribution_op(dist.VonMises)(loc, concentration)
 
 
 @defterm.register
 def _embed_weibull(d: dist.Weibull) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Weibull)(d.scale, d.concentration)
+    with interpreter({}):
+        scale = d.scale
+        concentration = d.concentration
+
+    return _register_distribution_op(dist.Weibull)(scale, concentration)
 
 
 @defterm.register
 def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
-    return _register_distribution_op(dist.Wishart)(d.df, d.scale_tril)
+    with interpreter({}):
+        df = d.df
+        scale_tril = d.scale_tril
+
+    return _register_distribution_op(dist.Wishart)(df, scale_tril)
 
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
+    with interpreter({}):
+        v = d.v
+        log_density = d.log_density
+        event_dim = d.event_dim
+
     return _register_distribution_op(dist.Delta)(
-        d.v, log_density=d.log_density, event_dim=d.event_dim
+        v, log_density=log_density, event_dim=event_dim
     )
 
 
