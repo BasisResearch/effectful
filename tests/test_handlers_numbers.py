@@ -198,13 +198,19 @@ def test_defun_4():
 
             return fg
 
+        assert callable(compose), f"compose is not callable: {compose}"
+
         @defterm
         def add1(x: int) -> int:
             return x + 1
 
+        assert callable(add1), f"add1 is not callable: {add1}"
+
         @defterm
         def add1_twice(x: int) -> int:
             return compose(add1, add1)(x)
+
+        assert callable(add1_twice), f"add1_twice is not callable: {add1_twice}"
 
         assert add1_twice(1) == compose(add1, add1)(1) == 3
         assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2
