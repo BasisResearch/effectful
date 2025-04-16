@@ -1,13 +1,20 @@
 import functools
 import operator
 import typing
-from typing import Any
+from typing import Any, Sequence
 
 import jax
+import tree
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax.handlers import IndexElement, is_eager_array, jax_getitem
+from effectful.handlers.jax.handlers import (
+    IndexElement,
+    _partial_eval,
+    is_eager_array,
+    jax_getitem,
+)
 from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
 
@@ -184,3 +191,75 @@ class _EagerArrayTerm(_ArrayTerm):
     @property
     def ndim(self) -> int:
         return len(self.shape)
+
+
+@_bind_dims.register(_ArrayTerm)
+@_bind_dims.register(_EagerArrayTerm)
+def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: An array.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], jax.Array]
+    :return: An array with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
+    >>> t = jnp.ones((2, 3))
+    >>> bind_dims(t[a(), b()], b, a).shape
+    (3, 2)
+    """
+
+    def _evaluate(expr):
+        if isinstance(expr, Term):
+            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
+            return _partial_eval(expr)
+        if tree.is_nested(expr):
+            return tree.map_structure(_evaluate, expr)
+        return expr
+
+    if not isinstance(t, Term):
+        return t
+
+    result = _evaluate(t)
+    if not isinstance(result, Term) or not args:
+        return result
+
+    # ensure that the result is a jax_getitem with an array as the first argument
+    if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):
+        raise NotImplementedError
+
+    array = result.args[0]
+    dims = result.args[1]
+    assert isinstance(dims, Sequence)
+
+    # ensure that the order is a subset of the named dimensions
+    order_set = set(args)
+    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
+        raise NotImplementedError
+
+    # permute the inner array so that the leading dimensions are in the order
+    # specified and the trailing dimensions are the remaining named dimensions
+    # (or slices)
+    reindex_dims = [
+        i
+        for i, o in enumerate(dims)
+        if not isinstance(o, Term) or o.op not in order_set
+    ]
+    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    perm = (
+        [dim_ops.index(o) for o in args]
+        + reindex_dims
+        + list(range(len(dims), len(array.shape)))
+    )
+    array = jnp.transpose(array, perm)
+    return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+
+
+@_unbind_dims.register
+def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
+    return jax_getitem(t, tuple(n() for n in args))

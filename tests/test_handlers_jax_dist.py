@@ -9,11 +9,8 @@ import numpyro.distributions
 import pytest
 
 import effectful.handlers.jax.distribution as dist
-from effectful.handlers.jax import jax_getitem, sizesof, to_array
-from effectful.handlers.jax.distribution import (
-    named_distribution,
-    positional_distribution,
-)
+from effectful.handlers.jax import jax_getitem, sizesof
+from effectful.ops.dims import bind_dims, unbind_dims
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation, Term
 
@@ -677,7 +674,7 @@ def test_dist_to_positional(case_):
     _, indexed_dist = case_.get_dist()
 
     try:
-        pos_dist, naming = positional_distribution(indexed_dist)
+        pos_dist = bind_dims(indexed_dist, *sizesof(indexed_dist))
         key = jax.random.PRNGKey(0)
         pos_sample = pos_dist.sample(key)
         assert sizesof(pos_sample) == {}
@@ -704,7 +701,7 @@ def test_dist_to_named(case_):
     try:
         dist, _ = case_.get_dist()
         indexes = [name_to_sym(str(i)) for i in range(len(case_.batch_shape))]
-        indexed_dist = named_distribution(dist, *indexes)
+        indexed_dist = unbind_dims(dist, *indexes)
 
         key = jax.random.PRNGKey(0)
         indexed_sample = indexed_dist.sample(key)

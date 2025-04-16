@@ -6,12 +6,12 @@ import numpyro.distributions as dist
 import tree
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.indexed import _bind_dims, _unbind_dims, bind_dims, unbind_dims
+from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Operation, Term
 
-from .handlers import _register_jax_op, is_eager_array, jax_getitem, sizesof, to_array
+from .handlers import _register_jax_op, is_eager_array, jax_getitem, sizesof
 from .terms import _EagerArrayTerm
 
 A = TypeVar("A")
@@ -104,26 +104,28 @@ def _unbind_distribution(
     return new_d
 
 
-@defop
+@_bind_dims.register
 def positional_distribution(
-    d: Annotated[dist.Distribution, Scoped[A]],
-) -> tuple[dist.Distribution, Naming]:
+    d: dist.Distribution, *names: Operation[[], jax.Array]
+) -> dist.Distribution:
     def _to_positional(a, indices):
         typ = typeof(a)
-        if typ is jax.Array:
+        if issubclass(typ, jax.Array):
             # broadcast to full indexed shape
             existing_dims = set(sizesof(a).keys())
             missing_dims = set(indices) - existing_dims
 
-            a_indexed = jax_getitem(
+            a_indexed = unbind_dims(
                 jnp.broadcast_to(
                     a, tuple(indices[dim] for dim in missing_dims) + a.shape
                 ),
-                tuple(n() for n in missing_dims),
+                missing_dims,
             )
-            return to_array(a_indexed, *indices)
+            return bind_dims(a_indexed, *indices)
         elif issubclass(typ, dist.Distribution):
-            return positional_distribution(a)[0]
+            # We are really assuming that only one distriution appears in our arguments. This is sufficient for cases
+            # like Independent and TransformedDistribution
+            return bind_dims(a, *indices)
         else:
             return a
 
@@ -141,15 +143,15 @@ def positional_distribution(
         raise NotImplementedError
 
     shape = d.shape()
-    indices = sizesof(d)
-    naming = Naming.from_shape(indices, len(shape))
+    sizes = sizesof(d)
+    indices = {k: sizes[k] for k in names}
 
     pos_args = [_to_positional(a, indices) for a in d.args]
     pos_kwargs = {k: _to_positional(v, indices) for (k, v) in d.kwargs.items()}
     new_d = d.op(*pos_args, **pos_kwargs)
 
     assert new_d.event_shape == d.event_shape
-    return new_d, naming
+    return new_d
 
 
 @functools.cache
