@@ -22,7 +22,10 @@ jobs:
       - name: Install Python dependencies
         run: |
           uv sync --all-extras --dev
-      
+          
+      - name: Setup upterm session
+        uses: lhotari/action-upterm@v1
+        
       - name: Run tests
         env:
           MKL_NUM_THREADS: 1
