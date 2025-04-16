@@ -194,6 +194,8 @@ def test_defun_4():
         ) -> collections.abc.Callable[[int], int]:
             @defterm
             def fg(x: int) -> int:
+                assert callable(f), f"f is not callable: {f}"
+                assert callable(g), f"g is not callable: {g}"
                 return f(g(x))
 
             return fg
