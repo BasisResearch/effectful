@@ -24,7 +24,7 @@ jobs:
           uv sync --all-extras --dev
           
       - name: Setup upterm session
-        uses: owenthereal/action-upterm@v1
+        uses: mxschmitt/action-tmate@v3
         
       - name: Run tests
         env:
