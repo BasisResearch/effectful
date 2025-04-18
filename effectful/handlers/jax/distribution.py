@@ -329,7 +329,14 @@ def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.BinomialProbs)
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
-def _embed_binomial(d: dist.Distribution) -> Term[dist.Distribution]:
+def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
+    return _register_distribution_op(type(d))(d.total_count, d.probs)
+
+
+@defterm.register(dist.BinomialLogits)
+@defterm.register(dist.NegativeBinomialLogits)
+@defterm.register(dist.MultinomialLogits)
+def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
     return _register_distribution_op(type(d))(d.total_count, d.probs)
 
 
@@ -341,6 +348,15 @@ def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
     return _register_distribution_op(dist.Dirichlet)(d.concentration)
+
+
+@defterm.register
+def _embed_dirichlet_multinomial(
+    d: dist.DirichletMultinomial,
+) -> Term[dist.Distribution]:
+    return _register_distribution_op(dist.DirichletMultinomial)(
+        d.concentration, total_count=d.total_count
+    )
 
 
 @defterm.register(dist.Exponential)
@@ -409,6 +425,20 @@ def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
 
 
 @defterm.register
+def _embed_low_rank_multivariate_normal(
+    d: dist.LowRankMultivariateNormal,
+) -> Term[dist.Distribution]:
+    return _register_distribution_op(type(d))(d.loc, d.cov_factor, d.cov_diag)
+
+
+@defterm.register
+def _embed_relaxed_bernoulli_logits(
+    d: dist.RelaxedBernoulliLogits,
+) -> Term[dist.Distribution]:
+    return _register_distribution_op(type(d))(d.temperature, d.logits)
+
+
+@defterm.register
 def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
     return _register_distribution_op(type(d))(d.base_dist, d.reinterpreted_batch_ndims)
 
@@ -417,12 +447,14 @@ BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)
 BernoulliProbs = _register_distribution_op(dist.BernoulliProbs)
 Beta = _register_distribution_op(dist.Beta)
 BinomialProbs = _register_distribution_op(dist.BinomialProbs)
+BinomialLogits = _register_distribution_op(dist.BinomialLogits)
 CategoricalLogits = _register_distribution_op(dist.CategoricalLogits)
 CategoricalProbs = _register_distribution_op(dist.CategoricalProbs)
 Cauchy = _register_distribution_op(dist.Cauchy)
 Chi2 = _register_distribution_op(dist.Chi2)
 Delta = _register_distribution_op(dist.Delta)
 Dirichlet = _register_distribution_op(dist.Dirichlet)
+DirichletMultinomial = _register_distribution_op(dist.DirichletMultinomial)
 Distribution = _register_distribution_op(dist.Distribution)
 Exponential = _register_distribution_op(dist.Exponential)
 Gamma = _register_distribution_op(dist.Gamma)
@@ -437,12 +469,16 @@ LKJCholesky = _register_distribution_op(dist.LKJCholesky)
 Laplace = _register_distribution_op(dist.Laplace)
 LogNormal = _register_distribution_op(dist.LogNormal)
 Logistic = _register_distribution_op(dist.Logistic)
+LowRankMultivariateNormal = _register_distribution_op(dist.LowRankMultivariateNormal)
 MultinomialProbs = _register_distribution_op(dist.MultinomialProbs)
+MultinomialLogits = _register_distribution_op(dist.MultinomialLogits)
 MultivariateNormal = _register_distribution_op(dist.MultivariateNormal)
 NegativeBinomialProbs = _register_distribution_op(dist.NegativeBinomialProbs)
+NegativeBinomialLogits = _register_distribution_op(dist.NegativeBinomialLogits)
 Normal = _register_distribution_op(dist.Normal)
 Pareto = _register_distribution_op(dist.Pareto)
 Poisson = _register_distribution_op(dist.Poisson)
+RelaxedBernoulliLogits = _register_distribution_op(dist.RelaxedBernoulliLogits)
 StudentT = _register_distribution_op(dist.StudentT)
 Uniform = _register_distribution_op(dist.Uniform)
 VonMises = _register_distribution_op(dist.VonMises)

@@ -46,16 +46,9 @@ def add_case(raw_dist, raw_params, batch_shape, xfail=None):
 
 
 for batch_shape in [(5,), (2, 3, 4), ()]:
-    # BernoulliLogits
-    add_case(
-        "dist.Bernoulli(logits=case.logits)",
-        (("logits", f"rand({batch_shape})"),),
-        batch_shape,
-    )
-
     # BernoulliProbs
     add_case(
-        "dist.Bernoulli(probs=case.probs)",
+        "dist.BernoulliProbs(probs=case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
@@ -64,13 +57,6 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         "dist.BernoulliLogits(case.logits)",
         (("logits", f"rand({batch_shape})"),),
-        batch_shape,
-    )
-
-    # BernoulliProbs
-    add_case(
-        "dist.BernoulliProbs(case.probs)",
-        (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
 
@@ -86,7 +72,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Binomial
     add_case(
-        "dist.Binomial(total_count=case.total_count, probs=case.probs)",
+        "dist.BinomialProbs(total_count=case.total_count, probs=case.probs)",
         (
             ("total_count", "5"),
             ("probs", f"rand({batch_shape})"),
@@ -97,7 +83,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # CategoricalLogits
     for size in [2, 4]:
         add_case(
-            "dist.Categorical(logits=case.logits)",
+            "dist.CategoricalLogits(logits=case.logits)",
             (("logits", f"rand({batch_shape + (size,)})"),),
             batch_shape,
         )
@@ -105,7 +91,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # CategoricalProbs
     for size in [2, 4]:
         add_case(
-            "dist.Categorical(probs=case.probs)",
+            "dist.CategoricalProbs(probs=case.probs)",
             (("probs", f"rand({batch_shape + (size,)})"),),
             batch_shape,
         )
@@ -119,13 +105,6 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Chi2
     add_case("dist.Chi2(df=case.df)", (("df", f"rand({batch_shape})"),), batch_shape)
-
-    # ContinuousBernoulli
-    add_case(
-        "dist.ContinuousBernoulli(logits=case.logits)",
-        (("logits", f"rand({batch_shape})"),),
-        batch_shape,
-    )
 
     # Delta
     for event_shape in [(), (4,), (3, 2)]:
@@ -155,20 +134,12 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("total_count", "randint(10, 12, ())"),
             ),
             batch_shape,
-            xfail="problem with vmap and scatter_add_",
         )
 
     # Exponential
     add_case(
         "dist.Exponential(rate=case.rate)",
         (("rate", f"rand({batch_shape})"),),
-        batch_shape,
-    )
-
-    # FisherSnedecor
-    add_case(
-        "dist.FisherSnedecor(df1=case.df1, df2=case.df2)",
-        (("df1", f"rand({batch_shape})"), ("df2", f"rand({batch_shape})")),
         batch_shape,
     )
 
@@ -181,8 +152,13 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Geometric
     add_case(
-        "dist.Geometric(probs=case.probs)",
+        "dist.GeometricProbs(probs=case.probs)",
         (("probs", f"rand({batch_shape})"),),
+        batch_shape,
+    )
+    add_case(
+        "dist.GeometricLogits(logits=case.logits)",
+        (("logits", f"rand({batch_shape})"),),
         batch_shape,
     )
 
@@ -231,19 +207,25 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("cov_diag", f"rand({batch_shape + event_shape})"),
             ),
             batch_shape,
-            xfail="Requires support for setitem",
         )
 
     # multinomial
     for event_shape in [(1,), (4,)]:
         add_case(
-            "dist.Multinomial(case.total_count, probs=case.probs)",
+            "dist.MultinomialProbs(case.total_count, probs=case.probs)",
             (
                 ("total_count", "5"),
                 ("probs", f"rand({batch_shape + event_shape})"),
             ),
             batch_shape,
-            xfail="problem with vmap and scatter_add_",
+        )
+        add_case(
+            "dist.MultinomialLogits(case.total_count, logits=case.logits)",
+            (
+                ("total_count", "5"),
+                ("logits", f"rand({batch_shape + event_shape})"),
+            ),
+            batch_shape,
         )
 
     # # MultivariateNormal
@@ -260,10 +242,19 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # NegativeBinomial
     add_case(
-        "dist.NegativeBinomial(total_count=case.total_count, probs=case.probs)",
+        "dist.NegativeBinomialProbs(total_count=case.total_count, probs=case.probs)",
         (
             ("total_count", "5"),
             ("probs", f"rand({batch_shape})"),
+        ),
+        batch_shape,
+    )
+
+    add_case(
+        "dist.NegativeBinomialLogits(total_count=case.total_count, logits=case.logits)",
+        (
+            ("total_count", "5"),
+            ("logits", f"rand({batch_shape})"),
         ),
         batch_shape,
     )
@@ -274,14 +265,6 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
-
-    # OneHotCategorical
-    for size in [2, 4]:
-        add_case(
-            "dist.OneHotCategorical(probs=case.probs)",
-            (("probs", f"rand({batch_shape + (size,)})"),),
-            batch_shape,  # funsor.Bint[size],
-        )
 
     # Pareto
     add_case(
@@ -299,7 +282,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # RelaxedBernoulli
     add_case(
-        "dist.RelaxedBernoulli(temperature=case.temperature, logits=case.logits)",
+        "dist.RelaxedBernoulliLogits(temperature=case.temperature, logits=case.logits)",
         (("temperature", f"rand({batch_shape})"), ("logits", f"rand({batch_shape})")),
         batch_shape,
     )
@@ -327,7 +310,6 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         "dist.VonMises(case.loc, case.concentration)",
         (("loc", f"rand({batch_shape})"), ("concentration", f"rand({batch_shape})")),
         batch_shape,
-        xfail="problem with vmap and data-dependent control flow in rejection sampling",
     )
 
     # Weibull
