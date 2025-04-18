@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import TypeVar
 
 import jax
@@ -5,10 +6,10 @@ import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem, jit
+from effectful.handlers.jax import jax_getitem, jit, sizesof
 from effectful.ops.dims import bind_dims
-from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import deffn, defop, defterm
+from effectful.ops.semantics import apply, evaluate, fvsof, handler
+from effectful.ops.syntax import defdata, deffn, defop, defterm, syntactic_eq
 from effectful.ops.types import Term
 
 P = ParamSpec("P")
@@ -354,3 +355,15 @@ def test_jax_broadcast_to():
     i = defop(jax.Array, name="i")
     t = jnp.broadcast_to(jax_getitem(jnp.ones((2, 3)), [i(), slice(None)]), (3,))
     assert not isinstance(t.shape, Term) and t.shape == (3,)
+
+
+def test_jax_nested_getitem():
+    t = jnp.ones((2, 3))
+    i, j = defop(jax.Array), defop(jax.Array)
+    t_i = jax_getitem(t, [i()])
+
+    t_ij = defdata(jax_getitem, t_i, [j()])
+    assert sizesof(t_ij) == {i: 2, j: 3}
+
+    t_ij = jax_getitem(t_i, [j()])
+    assert sizesof(t_ij) == {i: 2, j: 3}

@@ -167,9 +167,7 @@ def _register_distribution_op(
 @defdata.register(dist.Distribution)
 def _embed_distribution(op, *args, **kwargs):
     if all(
-        not isinstance(a, Term)
-        or is_eager_array(a.op, *a.args, **a.kwargs)
-        or isinstance(a, dist.Distribution)
+        not isinstance(a, Term) or is_eager_array(a) or isinstance(a, dist.Distribution)
         for a in tree.flatten((args, kwargs))
     ):
         return _DistributionTerm(op, *args, **kwargs)
@@ -281,7 +279,7 @@ class _DistributionTerm(dist.Distribution):
         return self._pos_base_dist.entropy()
 
     def to_event(self, reinterpreted_batch_ndims=None):
-        raise ValueError("to_event yet implemented")
+        raise NotImplementedError
 
     __repr__ = Term.__repr__
     __str__ = Term.__str__

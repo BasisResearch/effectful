@@ -21,7 +21,11 @@ from effectful.ops.types import Expr, Operation, Term
 
 @defdata.register(jax.Array)
 def _embed_array(op, *args, **kwargs):
-    if is_eager_array(op, *args, **kwargs):
+    if (
+        op is jax_getitem
+        and not isinstance(args[0], Term)
+        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
+    ):
         return _EagerArrayTerm(jax_getitem, args[0], args[1])
     else:
         return _ArrayTerm(op, *args, **kwargs)

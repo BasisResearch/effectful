@@ -37,6 +37,19 @@ B = TypeVar("B")
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
 
 
+def is_eager_array(x):
+    return isinstance(x, jax.Array) or (
+        isinstance(x, Term)
+        and x.op is jax_getitem
+        and isinstance(x.args[0], jax.Array)
+        and all(
+            (not isinstance(k, Term)) or (not k.args and not k.kwargs)
+            for k in x.args[1]
+        )
+        and not x.kwargs
+    )
+
+
 def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     """Return the sizes of named dimensions in an array expression.
 
@@ -64,7 +77,7 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     def _getitem_sizeof(
         x: Expr[jax.Array], key: tuple[Expr[IndexElement], ...]
     ) -> Expr[jax.Array]:
-        if isinstance(x, jax.Array):
+        if is_eager_array(x):
             if len(key) > x.ndim:
                 raise IndexError(
                     f"Indexing with too many dimensions: expected {x.ndim} got {len(key)}"
@@ -73,15 +86,18 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
 
-        return defdata(jax_getitem, x, key)
+    def _sizesof(expr):
+        expr = defterm(expr)
+        if isinstance(expr, Term):
+            for x in tree.flatten((expr.args, expr.kwargs)):
+                _sizesof(x)
+            if expr.op is jax_getitem:
+                _getitem_sizeof(*expr.args)
+        elif tree.is_nested(expr):
+            for x in tree.flatten(expr):
+                _sizesof(x)
 
-    def _apply(_, op, *args, **kwargs):
-        args, kwargs = tree.map_structure(defterm, (args, kwargs))
-        return defdata(op, *args, **kwargs)
-
-    with interpreter({jax_getitem: _getitem_sizeof, apply: _apply}):
-        evaluate(defterm(value))
-
+    _sizesof(value)
     return sizes
 
 
@@ -93,18 +109,7 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
         return t
 
     def _is_eager(t):
-        return (
-            not isinstance(t, Term)
-            or t.op in sized_fvs
-            or (
-                t.op is jax_getitem
-                and all(
-                    (isinstance(a, Term) and len(a.args) == 0 and len(a.kwargs) == 0)
-                    or isinstance(a, slice)
-                    for a in t.args[1]
-                )
-            )
-        )
+        return not isinstance(t, Term) or t.op in sized_fvs or is_eager_array(t)
 
     if not (
         isinstance(t, Term)
@@ -244,11 +249,3 @@ def jit(f, *args, **kwargs):
     f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, sizesof)
     f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
-
-
-def is_eager_array(op, *args, **kwargs):
-    return (
-        op is jax_getitem
-        and not isinstance(args[0], Term)
-        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
-    )
