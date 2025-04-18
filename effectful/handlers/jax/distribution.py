@@ -408,6 +408,11 @@ def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
     )
 
 
+@defterm.register
+def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
+    return _register_distribution_op(type(d))(d.base_dist, d.reinterpreted_batch_ndims)
+
+
 BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)
 BernoulliProbs = _register_distribution_op(dist.BernoulliProbs)
 Beta = _register_distribution_op(dist.Beta)
