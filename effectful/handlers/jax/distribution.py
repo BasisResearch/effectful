@@ -330,14 +330,14 @@ def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
 def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.total_count, d.probs)
+    return _register_distribution_op(type(d))(d.probs, d.total_count)
 
 
 @defterm.register(dist.BinomialLogits)
 @defterm.register(dist.NegativeBinomialLogits)
 @defterm.register(dist.MultinomialLogits)
 def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.total_count, d.probs)
+    return _register_distribution_op(type(d))(d.logits, d.total_count)
 
 
 @defterm.register

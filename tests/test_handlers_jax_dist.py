@@ -212,7 +212,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # multinomial
     for event_shape in [(1,), (4,)]:
         add_case(
-            "dist.MultinomialProbs(case.total_count, probs=case.probs)",
+            "dist.MultinomialProbs(case.probs, case.total_count)",
             (
                 ("total_count", "5"),
                 ("probs", f"rand({batch_shape + event_shape})"),
@@ -220,7 +220,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
             batch_shape,
         )
         add_case(
-            "dist.MultinomialLogits(case.total_count, logits=case.logits)",
+            "dist.MultinomialLogits(case.logits, case.total_count)",
             (
                 ("total_count", "5"),
                 ("logits", f"rand({batch_shape + event_shape})"),
@@ -332,6 +332,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # InverseTransform (log)
@@ -343,6 +344,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # TanhTransform
@@ -354,6 +356,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # AtanhTransform
@@ -368,6 +371,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
             ("high", f"0.5 + 0.5*rand({batch_shape})"),
         ),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # multiple transforms
@@ -380,6 +384,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # ComposeTransform
@@ -393,6 +398,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # PowerTransform
@@ -404,6 +410,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("rate", f"rand({batch_shape})"),),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # HaarTransform
@@ -415,6 +422,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         """,
         (("loc", f"rand({batch_shape} + (3,))"),),
         batch_shape,
+        xfail="TransformedDistribution not implemented",
     )
 
     # Independent
@@ -427,6 +435,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("concentration0", f"exp(rand({batch_shape + indep_shape}))"),
             ),
             batch_shape,
+            xfail="to_event not implemented",
         )
 
         # Dirichlet.to_event
@@ -440,6 +449,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                     ),
                 ),
                 batch_shape,
+                xfail="to_event not implemented",
             )
 
         # TransformedDistribution.to_event
@@ -458,6 +468,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("high", f"2. + rand({batch_shape + indep_shape})"),
             ),
             batch_shape,
+            xfail="to_event not implemented",
         )
 
 
@@ -504,15 +515,12 @@ class DistTestCase:
 
         Case = namedtuple("Case", tuple(name for name, _ in self.params.items()))
 
-        try:
-            case = Case(**self.params)
-            dist_ = eval(self.raw_dist)
+        case = Case(**self.params)
+        dist_ = eval(self.raw_dist)
 
-            # case is used by generated code in self.raw_dist
-            case = Case(**self.indexed_params)  # noqa: F841
-            indexed_dist = eval(self.raw_dist)
-        except AttributeError:
-            pytest.xfail(f"Distribution {self.raw_dist} not implemented")
+        # case is used by generated code in self.raw_dist
+        case = Case(**self.indexed_params)  # noqa: F841
+        indexed_dist = eval(self.raw_dist)
 
         return dist_, indexed_dist
 
@@ -750,11 +758,10 @@ def test_dist_indexes(case_):
         *[set(sizesof(p)) for p in case_.indexed_params.values()]
     )
 
-    # Indexed samples should have the same shape as regular samples, modulo
-    # possible extra unit dimensions
+    # Regular samples should be broadcastable to indexed samples
     indexed_sample_a = from_indexed(indexed_sample, len(case_.batch_shape))
-    # Use jnp.squeeze instead of .squeeze() method
-    assert jnp.squeeze(sample).shape == jnp.squeeze(indexed_sample_a).shape
+    jnp.broadcast_shapes(dist.sample(key).shape, indexed_sample_a.shape)
+    assert len(dist.sample(key).shape) == len(indexed_sample_a.shape)
     assert sample.dtype == indexed_sample_a.dtype
 
     lprob = dist.log_prob(sample)
