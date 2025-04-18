@@ -14,6 +14,8 @@ from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
+from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -29,40 +31,6 @@ B = TypeVar("B")
 
 # + An element of a tensor index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
-
-
-def _desugar_tensor_index(shape, key):
-    new_shape = []
-    new_key = []
-
-    def extra_dims(key):
-        return sum(1 for k in key if k is None)
-
-    # handle any missing dimensions by adding a trailing Ellipsis
-    if not any(k is Ellipsis for k in key):
-        key = tuple(key) + (...,)
-
-    for i, k in enumerate(key):
-        if k is None:  # add a new singleton dimension
-            new_shape.append(1)
-            new_key.append(slice(None))
-        elif k is Ellipsis:
-            assert not any(k is Ellipsis for k in key[i + 1 :]), (
-                "only one Ellipsis allowed"
-            )
-
-            # determine which of the original dimensions this ellipsis refers to
-            pre_dims = i - extra_dims(key[:i])  # dimensions that precede the ellipsis
-            elided_dims = (
-                len(shape) - pre_dims - (len(key) - i - 1 - extra_dims(key[i + 1 :]))
-            )  #
-            new_shape += shape[pre_dims : pre_dims + elided_dims]
-            new_key += [slice(None)] * elided_dims
-        else:
-            new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
-            new_key.append(k)
-
-    return new_shape, new_key
 
 
 def _getitem_ellipsis_and_none(
@@ -175,21 +143,6 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     return result
 
 
-HasDims = TypeVar(
-    "HasDims",
-    bound=torch.Tensor
-    | torch.distributions.Distribution
-    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
-)
-
-
-@functools.singledispatch
-def _bind_dims(value, *names: Operation[[], torch.Tensor]):
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
-    raise NotImplementedError
-
-
 @_bind_dims.register
 def _bind_dims_tensor(
     value: torch.Tensor, *names: Operation[[], torch.Tensor]
@@ -239,52 +192,11 @@ def _bind_dims_tensor(
     return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
 
 
-@defop
-def bind_dims(
-    value: Annotated[HasDims, Scoped[A | B]],
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[HasDims, Scoped[A]]:
-    """Convert named dimensions to positional dimensions.
-
-    :param t: A tensor.
-    :type t: T
-    :param args: Named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type args: Operation[[], torch.Tensor]
-    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> bind_dims(t[a(), b()], b, a).shape
-    torch.Size([3, 2])
-    """
-    return _bind_dims(value, *names)
-
-
-@functools.singledispatch
-def _unbind_dims(value, *names: Operation[[], torch.Tensor]):
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
-    raise NotImplementedError
-
-
 @_unbind_dims.register
 def _unbind_dims_tensor(
-    value: torch.Tensor,
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[torch.Tensor, Scoped[A | B]]:
+    value: torch.Tensor, *names: Operation[[], torch.Tensor]
+) -> torch.Tensor:
     return value[tuple(n() for n in names)]
-
-
-@defop
-def unbind_dims(
-    value: Annotated[HasDims, Scoped[A | B]],
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[HasDims, Scoped[A | B]]:
-    return _unbind_dims(value, *names)
 
 
 @functools.cache
