@@ -100,12 +100,11 @@ def _unbind_distribution(
         *[_to_named(a) for a in d.args],
         **{k: _to_named(v) for (k, v) in d.kwargs.items()},
     )
-    assert new_d.event_shape == d.event_shape
     return new_d
 
 
 @_bind_dims.register
-def positional_distribution(
+def _bind_dims_distribution(
     d: dist.Distribution, *names: Operation[[], jax.Array]
 ) -> dist.Distribution:
     def _to_positional(a, indices):
@@ -119,7 +118,7 @@ def positional_distribution(
                 jnp.broadcast_to(
                     a, tuple(indices[dim] for dim in missing_dims) + a.shape
                 ),
-                missing_dims,
+                *missing_dims,
             )
             return bind_dims(a_indexed, *indices)
         elif issubclass(typ, dist.Distribution):
@@ -142,7 +141,6 @@ def positional_distribution(
     if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
         raise NotImplementedError
 
-    shape = d.shape()
     sizes = sizesof(d)
     indices = {k: sizes[k] for k in names}
 
@@ -150,7 +148,6 @@ def positional_distribution(
     pos_kwargs = {k: _to_positional(v, indices) for (k, v) in d.kwargs.items()}
     new_d = d.op(*pos_args, **pos_kwargs)
 
-    assert new_d.event_shape == d.event_shape
     return new_d
 
 
@@ -214,13 +211,13 @@ class _DistributionTerm(dist.Distribution):
     @property
     def _indices(self):
         if self.__indices is None:
-            self.__pos_base_dist, self.__indices = positional_distribution(self)
+            self.__indices = sizesof(self)
         return self.__indices
 
     @property
     def _pos_base_dist(self):
         if self.__pos_base_dist is None:
-            self.__pos_base_dist, self.__indices = positional_distribution(self)
+            self.__pos_base_dist = bind_dims(self, *self._indices)
         return self.__pos_base_dist
 
     @property
@@ -264,7 +261,7 @@ class _DistributionTerm(dist.Distribution):
         return ret
 
     def log_prob(self, value):
-        value = to_array(_broadcast_to_named(value, self._indices), *self._indices)
+        value = bind_dims(_broadcast_to_named(value, self._indices), *self._indices)
         return self._reindex_sample(
             _register_jax_op(self._pos_base_dist.log_prob)(value), ()
         )

@@ -493,7 +493,7 @@ def from_indexed(tensor, batch_dims):
     tensor_sizes = sizesof(tensor)
     indices = [name_to_sym(str(i)) for i in range(batch_dims)]
     indices = [i for i in indices if i in tensor_sizes]
-    return to_array(tensor, *indices)
+    return bind_dims(tensor, *indices)
 
 
 class DistTestCase:
@@ -857,7 +857,7 @@ def test_dist_stats(case_, statistic):
 
     # JAX doesn't have isnan().all() method like PyTorch
     if jnp.all(jnp.isnan(expected_stat)):
-        assert jnp.all(jnp.isnan(to_array(actual_stat)))
+        assert jnp.all(jnp.isnan(bind_dims(actual_stat, *sizesof(actual_stat))))
     else:
         # Stats may not be indexed in all batch dimensions, but they should be
         # extensionally equal to the indexed expected stat
@@ -872,8 +872,8 @@ def test_dist_stats(case_, statistic):
 
         # Check that the stats are close
         assert jnp.allclose(
-            to_array(expected_stat_i, *indexes),
-            to_array(actual_stat_i, *indexes),
+            bind_dims(expected_stat_i, *indexes),
+            bind_dims(actual_stat_i, *indexes),
             rtol=1e-5,
             atol=1e-5,
         )
