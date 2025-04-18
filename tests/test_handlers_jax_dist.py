@@ -247,20 +247,15 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
         )
 
     # # MultivariateNormal
-    for event_shape in [(1,), (3,)]:
-        if len(batch_shape) > 0:
-            xfail = "MultivariateNormal is buggy for batched distributions"
-        else:
-            xfail = None
-
+    for n_event in [1, 3]:
+        event_shape = (n_event,)
         add_case(
             "dist.MultivariateNormal(loc=case.loc, scale_tril=case.scale_tril)",
             (
                 ("loc", f"rand({batch_shape + event_shape})"),
-                ("scale_tril", f"random_scale_tril({batch_shape + event_shape * 2})"),
+                ("scale_tril", f"random_scale_tril({batch_shape}, {n_event})"),
             ),
             batch_shape,
-            xfail=xfail,
         )
 
     # NegativeBinomial
@@ -642,11 +637,12 @@ def add_dist_test_case(
     def randint(low, high, shape):
         return jax.random.randint(key, shape, low, high)
 
-    def random_scale_tril(shape):
-        data = jax.random.normal(key, shape)
-        return numpyro.distributions.transforms.biject_to(
+    def random_scale_tril(batch_shape, n_event):
+        data = jax.random.normal(key, batch_shape + ((n_event + 1) * n_event // 2,))
+        result = numpyro.distributions.transforms.biject_to(
             numpyro.distributions.constraints.lower_cholesky
         )(data)
+        return result
 
     globals = {
         "rand": rand,
