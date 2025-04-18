@@ -195,6 +195,7 @@ class _EagerArrayTerm(_ArrayTerm):
 
 @_bind_dims.register(_ArrayTerm)
 @_bind_dims.register(_EagerArrayTerm)
+@_bind_dims.register(jax.Array)
 def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
@@ -257,9 +258,14 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
         + list(range(len(dims), len(array.shape)))
     )
     array = jnp.transpose(array, perm)
-    return array[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+    reindexed = jax_getitem(
+        array, (slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)
+    )
+    return reindexed
 
 
-@_unbind_dims.register
+@_unbind_dims.register(_ArrayTerm)
+@_unbind_dims.register(_EagerArrayTerm)
+@_unbind_dims.register(jax.Array)
 def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     return jax_getitem(t, tuple(n() for n in args))

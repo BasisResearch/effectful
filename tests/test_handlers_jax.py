@@ -318,12 +318,14 @@ def test_custom_getitem(tensor, idx):
 def test_jax_jit_1():
     @jit
     def f(x, y):
-        return bind_dims(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
+        bound = bind_dims(jax_getitem(x, [i(), j()]) + jax_getitem(y, [j()]), i, j)
+        return bound
 
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     x, y = jnp.ones((5, 4)), jnp.ones((4,))
 
-    assert (f(x, y) == x + y).all()
+    z = f(x, y)
+    assert (z == x + y).all()
 
 
 def test_jax_jit_2():
