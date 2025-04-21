@@ -286,9 +286,8 @@ class _DistributionTerm(dist.Distribution):
         if batch_shape == self.batch_shape:
             return self
             
-        # Create expanded versions of all arguments
-        expanded_args = []
-        for arg in self._args:
+        # Helper function to expand a single argument
+        def expand_arg(arg):
             if isinstance(arg, jax.Array) and hasattr(arg, 'shape'):
                 # Broadcast array arguments to the new batch shape
                 arg_batch_shape = arg.shape[:-self._pos_base_dist.event_dim] if self._pos_base_dist.event_dim > 0 else arg.shape
@@ -296,43 +295,25 @@ class _DistributionTerm(dist.Distribution):
                     # Ensure the batch dimensions are compatible
                     if len(batch_shape) >= len(arg_batch_shape):
                         new_shape = batch_shape + arg.shape[len(arg_batch_shape):]
-                        expanded_args.append(jnp.broadcast_to(arg, new_shape))
+                        return jnp.broadcast_to(arg, new_shape)
                     else:
                         # If the new batch shape has fewer dimensions, we need to ensure they're compatible
                         if arg_batch_shape[-len(batch_shape):] == batch_shape:
-                            expanded_args.append(arg)
+                            return arg
                         else:
                             raise ValueError(f"Cannot expand batch shape {arg_batch_shape} to {batch_shape}")
                 else:
                     # If there are no batch dimensions, just repeat the argument
                     new_shape = batch_shape + arg.shape
-                    expanded_args.append(jnp.broadcast_to(arg, new_shape))
+                    return jnp.broadcast_to(arg, new_shape)
             else:
-                expanded_args.append(arg)
+                return arg
+                
+        # Create expanded versions of all arguments
+        expanded_args = [expand_arg(arg) for arg in self._args]
                 
         # Create expanded versions of all keyword arguments
-        expanded_kwargs = {}
-        for key, arg in self._kwargs.items():
-            if isinstance(arg, jax.Array) and hasattr(arg, 'shape'):
-                # Broadcast array arguments to the new batch shape
-                arg_batch_shape = arg.shape[:-self._pos_base_dist.event_dim] if self._pos_base_dist.event_dim > 0 else arg.shape
-                if len(arg_batch_shape) > 0:
-                    # Ensure the batch dimensions are compatible
-                    if len(batch_shape) >= len(arg_batch_shape):
-                        new_shape = batch_shape + arg.shape[len(arg_batch_shape):]
-                        expanded_kwargs[key] = jnp.broadcast_to(arg, new_shape)
-                    else:
-                        # If the new batch shape has fewer dimensions, we need to ensure they're compatible
-                        if arg_batch_shape[-len(batch_shape):] == batch_shape:
-                            expanded_kwargs[key] = arg
-                        else:
-                            raise ValueError(f"Cannot expand batch shape {arg_batch_shape} to {batch_shape}")
-                else:
-                    # If there are no batch dimensions, just repeat the argument
-                    new_shape = batch_shape + arg.shape
-                    expanded_kwargs[key] = jnp.broadcast_to(arg, new_shape)
-            else:
-                expanded_kwargs[key] = arg
+        expanded_kwargs = {key: expand_arg(arg) for key, arg in self._kwargs.items()}
                 
         # Create a new distribution with the expanded arguments
         return type(self)(self._op, *expanded_args, **expanded_kwargs)
