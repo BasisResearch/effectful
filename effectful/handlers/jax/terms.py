@@ -212,6 +212,8 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
 
     **Example usage**:
 
+    >>> from effectful.ops.syntax import defop
+    >>> from effectful.ops.dims import bind_dims
     >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
     >>> t = jnp.ones((2, 3))
     >>> bind_dims(t[a(), b()], b, a).shape

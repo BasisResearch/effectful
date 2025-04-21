@@ -35,6 +35,8 @@ def bind_dims(
 
     **Example usage**:
 
+    >>> import torch
+    >>> from effectful.ops.syntax import defop
     >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
     >>> t = torch.ones(2, 3)
     >>> bind_dims(t[a(), b()], b, a).shape
