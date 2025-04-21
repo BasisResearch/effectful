@@ -4,11 +4,11 @@ from collections import namedtuple
 from collections.abc import Sequence
 
 import jax
-import jax.numpy as jnp
 import numpyro.distributions
 import pytest
 
 import effectful.handlers.jax.distribution as dist
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem, sizesof
 from effectful.ops.dims import bind_dims, unbind_dims
 from effectful.ops.syntax import defop
@@ -821,45 +821,23 @@ def test_dist_stats(case_, statistic):
     """Test that indexed distributions have the same statistics as their unindexed counterparts."""
     dist, indexed_dist = case_.get_dist()
 
-    EXPECTED_FAILURES = [
-        ("StudentT", ["mean", "variance"]),
-        ("FisherSnedecor", ["mean", "variance"]),
-        ("Binomial", ["entropy"]),
-    ]
-    for dist_name, methods in EXPECTED_FAILURES:
-        if dist_name in case_.raw_dist and statistic in methods:
-            pytest.xfail(
-                f"{dist_name} mean uses masking which is not supported by indexed tensors"
-            )
-
     try:
-        actual_stat = getattr(indexed_dist, statistic)
-        expected_stat = getattr(dist, statistic)
-    except (NotImplementedError, AttributeError):
-        pytest.xfail(f"{statistic} not implemented")
+        expected = getattr(dist, statistic)
+    except NotImplementedError:
+        pytest.xfail(f"Statistic {statistic} not implemented for {case_.raw_dist}")
 
-    # JAX doesn't have isnan().all() method like PyTorch
-    if jnp.all(jnp.isnan(expected_stat)):
-        assert jnp.all(jnp.isnan(bind_dims(actual_stat, *sizesof(actual_stat))))
-    else:
-        # Stats may not be indexed in all batch dimensions, but they should be
-        # extensionally equal to the indexed expected stat
-        indexes = [name_to_sym(str(i)) for i in range(len(case_.batch_shape))]
-        expected_stat_i = expected_stat[tuple(n() for n in indexes)]
+    actual = getattr(indexed_dist, statistic)
 
-        # JAX doesn't have broadcast_tensors like PyTorch
-        # Instead, we can use jnp.broadcast_arrays
-        expected_shape = jnp.broadcast_shapes(expected_stat_i.shape, actual_stat.shape)
-        expected_stat_i = jnp.broadcast_to(expected_stat_i, expected_shape)
-        actual_stat_i = jnp.broadcast_to(actual_stat, expected_shape)
+    indexes = []
+    for i, s in enumerate(expected.shape):
+        if s == 1:
+            indexes.append(slice(None))
+        else:
+            indexes.append(name_to_sym(str(i))())
+    expected_i = expected[tuple(indexes)]
 
-        # Check that the stats are close
-        assert jnp.allclose(
-            bind_dims(expected_stat_i, *indexes),
-            bind_dims(actual_stat_i, *indexes),
-            rtol=1e-5,
-            atol=1e-5,
-        )
+    eq = (actual == expected_i) | (jnp.isnan(actual) == jnp.isnan(expected_i))
+    assert jnp.all(bind_dims(eq, *sizesof(eq)))
 
 
 def test_distribution_terms():
