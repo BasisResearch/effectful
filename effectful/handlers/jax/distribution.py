@@ -288,7 +288,7 @@ class _DistributionTerm(dist.Distribution):
 
         # Helper function to expand a single argument
         def expand_arg(arg):
-            if isinstance(arg, jax.Array) and hasattr(arg, "shape"):
+            if isinstance(arg, jax.Array):
                 # Broadcast array arguments to the new batch shape
                 arg_batch_shape = (
                     arg.shape[: -self._pos_base_dist.event_dim]
