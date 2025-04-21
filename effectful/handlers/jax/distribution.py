@@ -165,7 +165,7 @@ def _register_distribution_op(
 
 
 @defdata.register(dist.Distribution)
-def _embed_distribution(op, *args, **kwargs):
+def _(op, *args, **kwargs):
     if all(
         not isinstance(a, Term) or is_eager_array(a) or isinstance(a, dist.Distribution)
         for a in tree.flatten((args, kwargs))
@@ -342,19 +342,19 @@ def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Chi2)(d.df)
+    return _register_distribution_op(type(d))(d.df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Dirichlet)(d.concentration)
+    return _register_distribution_op(type(d))(d.concentration)
 
 
 @defterm.register
 def _embed_dirichlet_multinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.DirichletMultinomial)(
+    return _register_distribution_op(type(d))(
         d.concentration, total_count=d.total_count
     )
 
@@ -367,7 +367,7 @@ def _embed_exponential(d: dist.Distribution) -> Term[dist.Distribution]:
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Gamma)(d.concentration, d.rate)
+    return _register_distribution_op(type(d))(d.concentration, d.rate)
 
 
 @defterm.register(dist.HalfCauchy)
@@ -378,33 +378,27 @@ def _embed_half_cauchy(d: dist.Distribution) -> Term[dist.Distribution]:
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.LKJCholesky)(
-        d.dim, concentration=d.concentration
-    )
+    return _register_distribution_op(type(d))(d.dim, concentration=d.concentration)
 
 
 @defterm.register
-def _embed_multivariate_normal(
-    d: dist.MultivariateNormal,
-) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.MultivariateNormal)(
-        d.loc, scale_tril=d.scale_tril
-    )
+def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[dist.Distribution]:
+    return _register_distribution_op(type(d))(d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Pareto)(d.scale, d.alpha)
+    return _register_distribution_op(type(d))(d.scale, d.alpha)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Uniform)(d.low, d.high)
+    return _register_distribution_op(type(d))(d.low, d.high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.VonMises)(d.loc, d.concentration)
+    return _register_distribution_op(type(d))(d.loc, d.concentration)
 
 
 @defterm.register
@@ -419,7 +413,7 @@ def _embed_wishart(d: dist.Wishart) -> Term[dist.Distribution]:
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Delta)(
+    return _register_distribution_op(type(d))(
         d.v, log_density=d.log_density, event_dim=d.event_dim
     )
 
