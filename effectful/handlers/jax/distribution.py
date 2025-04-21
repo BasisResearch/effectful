@@ -259,7 +259,10 @@ class _DistributionTerm(dist.Distribution):
         return ret
 
     def log_prob(self, value):
+        # value has shape  named_batch_shape + sample_shape + batch_shape + event_shape
         value = bind_dims(_broadcast_to_named(value, self._indices), *self._indices)
+        # reshape value to have shape sample_shape + named_batch_shape + batch_shape + event_shape
+        # todo
         return self._reindex_sample(
             _register_jax_op(self._pos_base_dist.log_prob)(value), ()
         )
@@ -280,49 +283,6 @@ class _DistributionTerm(dist.Distribution):
 
     def to_event(self, reinterpreted_batch_ndims=None):
         raise NotImplementedError
-
-    def expand(self, batch_shape):
-        batch_shape = tuple(batch_shape)
-        if batch_shape == self.batch_shape:
-            return self
-
-        # Helper function to expand a single argument
-        def expand_arg(arg):
-            if isinstance(arg, jax.Array):
-                # Broadcast array arguments to the new batch shape
-                arg_batch_shape = (
-                    arg.shape[: -self._pos_base_dist.event_dim]
-                    if self._pos_base_dist.event_dim > 0
-                    else arg.shape
-                )
-                if len(arg_batch_shape) > 0:
-                    # Ensure the batch dimensions are compatible
-                    if len(batch_shape) >= len(arg_batch_shape):
-                        new_shape = batch_shape + arg.shape[len(arg_batch_shape) :]
-                        return jnp.broadcast_to(arg, new_shape)
-                    else:
-                        # If the new batch shape has fewer dimensions, we need to ensure they're compatible
-                        if arg_batch_shape[-len(batch_shape) :] == batch_shape:
-                            return arg
-                        else:
-                            raise ValueError(
-                                f"Cannot expand batch shape {arg_batch_shape} to {batch_shape}"
-                            )
-                else:
-                    # If there are no batch dimensions, just repeat the argument
-                    new_shape = batch_shape + arg.shape
-                    return jnp.broadcast_to(arg, new_shape)
-            else:
-                return arg
-
-        # Create expanded versions of all arguments
-        expanded_args = [expand_arg(arg) for arg in self._args]
-
-        # Create expanded versions of all keyword arguments
-        expanded_kwargs = {key: expand_arg(arg) for key, arg in self._kwargs.items()}
-
-        # Create a new distribution with the expanded arguments
-        return type(self)(self._op, *expanded_args, **expanded_kwargs)
 
     __repr__ = Term.__repr__
     __str__ = Term.__str__
