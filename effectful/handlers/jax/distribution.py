@@ -96,9 +96,12 @@ def _unbind_distribution(
     if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
         raise NotImplementedError
 
+    # TODO: this is a hack to avoid mangling arguments that are array-valued, but not batched
+    aux_kwargs = set(["total_count"])
+
     new_d = d.op(
         *[_to_named(a) for a in d.args],
-        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
+        **{k: v if k in aux_kwargs else _to_named(v) for (k, v) in d.kwargs.items()},
     )
     return new_d
 
