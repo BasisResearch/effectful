@@ -2,6 +2,7 @@ import functools
 import re
 from collections import namedtuple
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import jax
 import numpyro.distributions
@@ -27,8 +28,6 @@ def setup_module():
 TEST_CASES = []
 RAW_TEST_CASES = []
 
-from dataclasses import dataclass
-
 
 @dataclass
 class RawTestCase:
@@ -36,9 +35,6 @@ class RawTestCase:
     raw_params: dict[str, str]
     batch_shape: tuple[int, ...]
     xfail: str | None = None
-
-
-RAW_TEST_CASES = []
 
 
 def add_case(raw_dist, raw_params, batch_shape, xfail=None):
@@ -474,7 +470,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
 @functools.cache
 def name_to_sym(name: str) -> Operation[[], jax.Array]:
-    return defop(jax.Array, name=name)
+    return defop(jax.Array, name=name)  # type: ignore
 
 
 def from_indexed(tensor, batch_dims):

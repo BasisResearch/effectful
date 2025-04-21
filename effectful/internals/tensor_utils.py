@@ -1,10 +1,10 @@
-from typing import Any, Callable, Collection, Generic, Mapping, Protocol, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
 from effectful.ops.dims import bind_dims
-from effectful.ops.types import Operation
 
 P = ParamSpec("P")
 T = TypeVar("T")

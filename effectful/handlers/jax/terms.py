@@ -1,7 +1,7 @@
 import functools
 import operator
-import typing
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any, cast
 
 import jax
 import tree
@@ -10,11 +10,10 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax.handlers import (
     IndexElement,
     _partial_eval,
-    is_eager_array,
     jax_getitem,
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
-from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
+from effectful.ops.dims import _bind_dims, _unbind_dims
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
 
@@ -56,123 +55,123 @@ class _ArrayTerm(Term[jax.Array]):
 
     @property
     def shape(self) -> Expr[tuple[int, ...]]:
-        return jnp.shape(self)  # type: ignore [attr-defined]
+        return jnp.shape(cast(jax.Array, self))
 
     @property
     def size(self) -> Expr[int]:
-        return jnp.size(self)  # type: ignore [attr-defined]
+        return jnp.size(cast(jax.Array, self))
 
     @property
     def ndim(self) -> Expr[int]:
-        return jnp.ndim(self)  # type: ignore [attr-defined]
+        return jnp.ndim(cast(jax.Array, self))
 
     def __add__(self, other: jax.Array) -> jax.Array:
-        return jnp.add(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.add(cast(jax.Array, self), other)
 
     def __radd__(self, other: jax.Array) -> jax.Array:
-        return jnp.add(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.add(other, cast(jax.Array, self))
 
     def __neg__(self) -> jax.Array:
-        return jnp.negative(typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.negative(cast(jax.Array, self))
 
     def __pos__(self) -> jax.Array:
-        return typing.cast(jax.Array, jnp.positive(self))  # type: ignore [attr-defined]
+        return jnp.positive(cast(jax.Array, self))
 
     def __sub__(self, other: jax.Array) -> jax.Array:
-        return jnp.subtract(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.subtract(cast(jax.Array, self), other)
 
     def __rsub__(self, other: jax.Array) -> jax.Array:
-        return jnp.subtract(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.subtract(other, cast(jax.Array, self))
 
     def __mul__(self, other: jax.Array) -> jax.Array:
-        return jnp.multiply(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.multiply(cast(jax.Array, self), other)
 
     def __rmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.multiply(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.multiply(other, cast(jax.Array, self))
 
     def __truediv__(self, other: jax.Array) -> jax.Array:
-        return jnp.divide(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.divide(cast(jax.Array, self), other)
 
     def __rtruediv__(self, other: jax.Array) -> jax.Array:
-        return jnp.divide(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.divide(other, cast(jax.Array, self))
 
     def __pow__(self, other: jax.Array) -> jax.Array:
-        return jnp.power(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.power(cast(jax.Array, self), other)
 
     def __rpow__(self, other: jax.Array) -> jax.Array:
-        return jnp.power(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.power(other, cast(jax.Array, self))
 
     def __abs__(self) -> jax.Array:
-        return jnp.abs(typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.abs(cast(jax.Array, self))
 
     def __eq__(self, other: Any):
-        return jnp.equal(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.equal(cast(jax.Array, self), other)
 
     def __ne__(self, other: Any):
-        return jnp.not_equal(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.not_equal(cast(jax.Array, self), other)
 
     def __floordiv__(self, other: jax.Array) -> jax.Array:
-        return jnp.floor_divide(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.floor_divide(cast(jax.Array, self), other)
 
     def __rfloordiv__(self, other: jax.Array) -> jax.Array:
-        return jnp.floor_divide(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.floor_divide(other, cast(jax.Array, self))
 
     def __mod__(self, other: jax.Array) -> jax.Array:
-        return jnp.mod(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.mod(cast(jax.Array, self), other)
 
     def __rmod__(self, other: jax.Array) -> jax.Array:
-        return jnp.mod(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.mod(other, cast(jax.Array, self))
 
     def __lt__(self, other: jax.Array) -> jax.Array:
-        return jnp.less(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.less(cast(jax.Array, self), other)
 
     def __le__(self, other: jax.Array) -> jax.Array:
-        return jnp.less_equal(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.less_equal(cast(jax.Array, self), other)
 
     def __gt__(self, other: jax.Array) -> jax.Array:
-        return jnp.greater(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.greater(cast(jax.Array, self), other)
 
     def __ge__(self, other: jax.Array) -> jax.Array:
-        return jnp.greater_equal(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.greater_equal(cast(jax.Array, self), other)
 
     def __lshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.left_shift(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.left_shift(cast(jax.Array, self), other)
 
     def __rlshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.left_shift(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.left_shift(other, cast(jax.Array, self))
 
     def __rshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.right_shift(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.right_shift(cast(jax.Array, self), other)
 
     def __rrshift__(self, other: jax.Array) -> jax.Array:
-        return jnp.right_shift(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.right_shift(other, cast(jax.Array, self))
 
     def __and__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_and(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.bitwise_and(cast(jax.Array, self), other)
 
     def __rand__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_and(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.bitwise_and(other, cast(jax.Array, self))
 
     def __xor__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_xor(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.bitwise_xor(cast(jax.Array, self), other)
 
     def __rxor__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_xor(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.bitwise_xor(other, cast(jax.Array, self))
 
     def __or__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_or(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.bitwise_or(cast(jax.Array, self), other)
 
     def __ror__(self, other: jax.Array) -> jax.Array:
-        return jnp.bitwise_or(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.bitwise_or(other, cast(jax.Array, self))
 
     def __invert__(self) -> jax.Array:
-        return jnp.bitwise_not(typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.bitwise_not(cast(jax.Array, self))
 
     def __matmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.matmul(typing.cast(jax.Array, self), other)  # type: ignore [attr-defined]
+        return jnp.matmul(cast(jax.Array, self), other)
 
     def __rmatmul__(self, other: jax.Array) -> jax.Array:
-        return jnp.matmul(other, typing.cast(jax.Array, self))  # type: ignore [attr-defined]
+        return jnp.matmul(other, cast(jax.Array, self))
 
 
 class _EagerArrayTerm(_ArrayTerm):

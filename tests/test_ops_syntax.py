@@ -1,10 +1,9 @@
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Annotated, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import apply, call, evaluate, fvsof, handler
-from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm, syntactic_eq
+from effectful.ops.semantics import call, evaluate, fvsof
+from effectful.ops.syntax import Scoped, deffn, defop, defterm
 from effectful.ops.types import Operation, Term
 
 
@@ -137,41 +136,3 @@ def test_term_str():
     assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
     assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
     assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
-
-
-def test_term_fold():
-    @defop
-    def op(x: int, y: int):
-        raise ValueError("Base implementation should not be called")
-
-    @dataclass
-    class XAndY:
-        x: int
-        y: int
-
-    @defterm.register(XAndY)
-    def _(t):
-        return op(t.x, t.y)
-
-    def _apply(_, op, *args, **kwargs):
-        print(op, args, kwargs)
-        breakpoint()
-        args, kwargs = tree.map_structure(defterm, (args, kwargs))
-        return defdata(op, *args, **kwargs)
-
-    analysis_result = 0
-
-    def _analyze_op(x, y):
-        nonlocal analysis_result
-        if isinstance(x, int):
-            analysis_result = max(x, analysis_result)
-        if isinstance(y, int):
-            analysis_result = max(y, analysis_result)
-        return defdata(op, x, y)
-
-    term = defdata(op, defdata(op, 1, 2), [defdata(op, 3, XAndY(5, 6))])
-    with handler({apply: _apply, op: _analyze_op}):
-        folded_term = evaluate(term)
-
-    assert syntactic_eq(term, folded_term)
-    assert analysis_result == 6

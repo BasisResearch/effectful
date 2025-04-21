@@ -8,7 +8,8 @@ import pytest
 import torch
 
 from effectful.handlers.pyro import Naming, PyroShim, pyro_sample
-from effectful.handlers.torch import bind_dims, sizesof, torch_getitem, unbind_dims
+from effectful.handlers.torch import sizesof, torch_getitem
+from effectful.ops.dims import bind_dims, unbind_dims
 from effectful.ops.semantics import fvsof, fwd, handler
 from effectful.ops.syntax import defop
 

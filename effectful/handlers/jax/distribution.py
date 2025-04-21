@@ -1,5 +1,6 @@
 import functools
-from typing import Annotated, Any, Collection, Mapping, TypeVar, cast
+from collections.abc import Collection, Hashable, Mapping
+from typing import Any, TypeVar, cast
 
 import jax
 import numpyro.distributions as dist
@@ -8,7 +9,7 @@ import tree
 import effectful.handlers.jax.numpy as jnp
 from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
 from effectful.ops.semantics import apply, runner, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, defterm
+from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
 
 from .handlers import _register_jax_op, is_eager_array, jax_getitem, sizesof
@@ -350,8 +351,11 @@ class _DistributionTerm(dist.Distribution):
         }
         return self.op(*expanded_args, **expanded_kwargs)
 
-    __repr__ = Term.__repr__
-    __str__ = Term.__str__
+    def __repr__(self):
+        return Term.__repr__(self)
+
+    def __str__(self):
+        return Term.__str__(self)
 
 
 Term.register(_DistributionTerm)
@@ -372,58 +376,60 @@ def _embed_distribution(dist: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
 def _embed_loc_scale(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.loc, d.scale)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.scale)
 
 
 @defterm.register(dist.BernoulliProbs)
 @defterm.register(dist.CategoricalProbs)
 @defterm.register(dist.GeometricProbs)
 def _embed_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.probs)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.probs)
 
 
 @defterm.register(dist.BernoulliLogits)
 @defterm.register(dist.CategoricalLogits)
 @defterm.register(dist.GeometricLogits)
-def _embed_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.logits)
+def _embed_logits(d: dist.Distribution) -> Term[dist.Distribution]:
+    return _register_distribution_op(cast(Hashable, type(d)))(d.logits)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.concentration1, d.concentration0)
+    return _register_distribution_op(cast(Hashable, type(d)))(
+        d.concentration1, d.concentration0
+    )
 
 
 @defterm.register(dist.BinomialProbs)
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
 def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.probs, d.total_count)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.probs, d.total_count)
 
 
 @defterm.register(dist.BinomialLogits)
 @defterm.register(dist.NegativeBinomialLogits)
 @defterm.register(dist.MultinomialLogits)
 def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.logits, d.total_count)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.logits, d.total_count)
 
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.df)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.concentration)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration)
 
 
 @defterm.register
 def _embed_dirichlet_multinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(
+    return _register_distribution_op(cast(Hashable, type(d)))(
         d.concentration, total_count=d.total_count
     )
 
@@ -431,43 +437,47 @@ def _embed_dirichlet_multinomial(
 @defterm.register(dist.Exponential)
 @defterm.register(dist.Poisson)
 def _embed_exponential(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.rate)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.rate)
 
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.concentration, d.rate)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration, d.rate)
 
 
 @defterm.register(dist.HalfCauchy)
 @defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.scale)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.scale)
 
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.dim, concentration=d.concentration)
+    return _register_distribution_op(cast(Hashable, type(d)))(
+        d.dim, concentration=d.concentration
+    )
 
 
 @defterm.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.loc, scale_tril=d.scale_tril)
+    return _register_distribution_op(cast(Hashable, type(d)))(
+        d.loc, scale_tril=d.scale_tril
+    )
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.scale, d.alpha)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.scale, d.alpha)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.low, d.high)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.low, d.high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.loc, d.concentration)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.concentration)
 
 
 @defterm.register
@@ -482,7 +492,7 @@ def _embed_wishart(d: dist.Wishart) -> Term[dist.Distribution]:
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(
+    return _register_distribution_op(cast(Hashable, type(d)))(
         d.v, log_density=d.log_density, event_dim=d.event_dim
     )
 
@@ -491,19 +501,23 @@ def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
 def _embed_low_rank_multivariate_normal(
     d: dist.LowRankMultivariateNormal,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.loc, d.cov_factor, d.cov_diag)
+    return _register_distribution_op(cast(Hashable, type(d)))(
+        d.loc, d.cov_factor, d.cov_diag
+    )
 
 
 @defterm.register
 def _embed_relaxed_bernoulli_logits(
     d: dist.RelaxedBernoulliLogits,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.temperature, d.logits)
+    return _register_distribution_op(cast(Hashable, type(d)))(d.temperature, d.logits)
 
 
 @defterm.register
 def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
-    return _register_distribution_op(type(d))(d.base_dist, d.reinterpreted_batch_ndims)
+    return _register_distribution_op(cast(Hashable, type(d)))(
+        d.base_dist, d.reinterpreted_batch_ndims
+    )
 
 
 BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)

@@ -1,6 +1,4 @@
 import functools
-import operator
-from collections.abc import Iterable
 from typing import Annotated, Any, TypeVar
 
 import tree

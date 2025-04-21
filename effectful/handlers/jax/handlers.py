@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, TypeVar
+from typing import TypeVar
 
 try:
     import jax
@@ -14,14 +14,12 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import (
     _desugar_tensor_index,
     _indexed_func_wrapper,
 )
-from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
-from effectful.ops.semantics import apply, evaluate, fvsof
-from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
+from effectful.ops.semantics import fvsof
+from effectful.ops.syntax import defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -74,9 +72,7 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
             )
         sizes[op] = size
 
-    def _getitem_sizeof(
-        x: Expr[jax.Array], key: tuple[Expr[IndexElement], ...]
-    ) -> Expr[jax.Array]:
+    def _getitem_sizeof(x: jax.Array, key: tuple[Expr[IndexElement], ...]):
         if is_eager_array(x):
             if len(key) > x.ndim:
                 raise IndexError(

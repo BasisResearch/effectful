@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, Any, TypeVar
+from typing import Any, TypeVar
 
 try:
     import torch
@@ -15,9 +15,9 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
-from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims, unbind_dims
+from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, defterm
+from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
