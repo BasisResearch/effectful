@@ -227,7 +227,7 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     return x[tuple(indices)]
 
 
-# time for crime
+# TODO: this is a hack that may not be worth keeping
 old_getitem = jax._src.array.ArrayImpl.__getitem__
 
 
