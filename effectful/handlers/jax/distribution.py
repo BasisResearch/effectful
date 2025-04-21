@@ -259,13 +259,26 @@ class _DistributionTerm(dist.Distribution):
         return ret
 
     def log_prob(self, value):
-        # value has shape  named_batch_shape + sample_shape + batch_shape + event_shape
-        value = bind_dims(_broadcast_to_named(value, self._indices), *self._indices)
-        # reshape value to have shape sample_shape + named_batch_shape + batch_shape + event_shape
-        # todo
-        return self._reindex_sample(
-            _register_jax_op(self._pos_base_dist.log_prob)(value), ()
+        # value has shape named_batch_shape + sample_shape + batch_shape + event_shape
+        n_batch_event = len(self.batch_shape) + len(self.event_shape)
+        sample_shape = (
+            value.shape if n_batch_event == 0 else value.shape[:-n_batch_event]
         )
+        value = bind_dims(_broadcast_to_named(value, self._indices), *self._indices)
+        dims = list(range(len(value.shape)))
+        n_named_batch = len(self._indices)
+        perm = (
+            dims[n_named_batch : n_named_batch + len(sample_shape)]
+            + dims[:n_named_batch]
+            + dims[n_named_batch + len(sample_shape) :]
+        )
+        assert len(perm) == len(value.shape)
+
+        # perm_value has shape sample_shape + named_batch_shape + batch_shape + event_shape
+        perm_value = jnp.permute_dims(value, perm)
+        pos_log_prob = self._pos_base_dist.log_prob(perm_value)
+        ind_log_prob = self._reindex_sample(pos_log_prob, sample_shape)
+        return ind_log_prob
 
     @property
     def mean(self):
