@@ -709,38 +709,36 @@ def test_dist_to_named(case_):
 def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shape):
     _, indexed_dist = case_.get_dist()
 
-    # JAX distributions don't have an expand method like PyTorch
-    # Instead, we can use the expand_by method
-    try:
-        expanded = indexed_dist.expand_by(extra_batch_shape)
+    if not isinstance(indexed_dist, Term):
+        pytest.xfail("can't pass indexed samples to raw distributions")
 
-        # JAX distributions need a random key for sampling
-        key = jax.random.PRNGKey(0)
-        sample_shape_full = indexed_sample_shape + sample_shape
+    expanded = indexed_dist.expand_by(extra_batch_shape)
 
-        # Generate samples
-        sample = expanded.sample(key, sample_shape_full)
+    # JAX distributions need a random key for sampling
+    key = jax.random.PRNGKey(0)
+    sample_shape_full = indexed_sample_shape + sample_shape
 
-        # Index into the sample
-        indexed_sample = sample[
-            tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
-        ]
+    # Generate samples
+    sample = expanded.sample(key, sample_shape_full)
 
-        # Check shapes
-        expected_shape = (
-            sample_shape
-            + extra_batch_shape
-            + indexed_dist.batch_shape
-            + indexed_dist.event_shape
-        )
-        assert indexed_sample.shape == expected_shape
+    # Index into the sample
+    indexed_sample = sample[
+        tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
+    ]
 
-        # Check log_prob shape
-        log_prob = expanded.log_prob(indexed_sample)
-        expected_log_prob_shape = extra_batch_shape + sample_shape
-        assert log_prob.shape == expected_log_prob_shape
-    except (AttributeError, NotImplementedError):
-        pytest.xfail("expand_by not implemented for this distribution")
+    # Check shapes
+    expected_shape = (
+        sample_shape
+        + extra_batch_shape
+        + indexed_dist.batch_shape
+        + indexed_dist.event_shape
+    )
+    assert indexed_sample.shape == expected_shape
+
+    # Check log_prob shape
+    log_prob = expanded.log_prob(indexed_sample)
+    expected_log_prob_shape = extra_batch_shape + sample_shape
+    assert log_prob.shape == expected_log_prob_shape
 
 
 @pytest.mark.parametrize("case_", TEST_CASES, ids=str)

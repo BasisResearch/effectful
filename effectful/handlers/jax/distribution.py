@@ -183,6 +183,41 @@ def _broadcast_to_named(t, sizes):
     return jax_getitem(t_broadcast, tuple(dim() for dim in missing_dims))
 
 
+def expand_to_batch_shape(tensor, batch_ndims, expanded_batch_shape):
+    """
+    Expands a tensor of shape batch_shape + remaining_shape to
+    expanded_batch_shape + remaining_shape.
+
+    Args:
+        tensor: JAX array with shape batch_shape + event_shape
+        expanded_batch_shape: tuple of the desired expanded batch dimensions
+        event_ndims: number of dimensions in the event_shape
+
+    Returns:
+        A JAX array with shape expanded_batch_shape + event_shape
+    """
+    # Split the shape into batch and event parts
+    assert len(tensor.shape) >= batch_ndims
+
+    batch_shape = tensor.shape[:batch_ndims] if batch_ndims > 0 else ()
+    remaining_shape = tensor.shape[batch_ndims:]
+
+    # Ensure the expanded batch shape is compatible with the current batch shape
+    if len(expanded_batch_shape) < batch_ndims:
+        raise ValueError(
+            "Expanded batch shape must have at least as many dimensions as current batch shape"
+        )
+    new_batch_shape = jnp.broadcast_shapes(batch_shape, expanded_batch_shape)
+
+    # Create the new shape
+    new_shape = new_batch_shape + remaining_shape
+
+    # Broadcast the tensor to the new shape
+    expanded_tensor = jnp.broadcast_to(tensor, new_shape)
+
+    return expanded_tensor
+
+
 class _DistributionTerm(dist.Distribution):
     """A distribution wrapper that satisfies the Term interface.
 
@@ -276,7 +311,7 @@ class _DistributionTerm(dist.Distribution):
 
         # perm_value has shape sample_shape + named_batch_shape + batch_shape + event_shape
         perm_value = jnp.permute_dims(value, perm)
-        pos_log_prob = self._pos_base_dist.log_prob(perm_value)
+        pos_log_prob = _register_jax_op(self._pos_base_dist.log_prob)(perm_value)
         ind_log_prob = self._reindex_sample(pos_log_prob, sample_shape)
         return ind_log_prob
 
@@ -296,6 +331,21 @@ class _DistributionTerm(dist.Distribution):
 
     def to_event(self, reinterpreted_batch_ndims=None):
         raise NotImplementedError
+
+    def expand(self, batch_shape):
+        def expand_arg(a, batch_shape):
+            if is_eager_array(a):
+                return expand_to_batch_shape(a, len(self.batch_shape), batch_shape)
+            return a
+
+        if self.batch_shape == batch_shape:
+            return self
+
+        expanded_args = [expand_arg(a, batch_shape) for a in self.args]
+        expanded_kwargs = {
+            k: expand_arg(v, batch_shape) for (k, v) in self.kwargs.items()
+        }
+        return self.op(*expanded_args, **expanded_kwargs)
 
     __repr__ = Term.__repr__
     __str__ = Term.__str__
