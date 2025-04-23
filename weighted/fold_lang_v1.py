@@ -2,28 +2,30 @@ import collections.abc
 import dataclasses
 import functools
 import itertools
+import logging
 import operator
 from collections.abc import Iterable
-from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar, cast
+from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar
 
+import effectful.handlers.jax.distribution as dist
+import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
-import torch
-import torch.distributions as dist
+import jax
+import numpyro
+import optax
 import tree
-from effectful.handlers.indexed import sizesof
-from effectful.handlers.torch import to_tensor
+from effectful.handlers.jax import jax_getitem, sizesof
+from effectful.handlers.jax.handlers import _register_jax_op
+from effectful.ops.dims import bind_dims
 from effectful.ops.semantics import (
-    apply,
-    call,
     coproduct,
     evaluate,
     fvsof,
     fwd,
     handler,
-    product,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, defdata, deffn, defop, defterm, implements
+from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, defop, implements
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -33,6 +35,8 @@ K = TypeVar("K")
 V = TypeVar("V")
 A = TypeVar("A")
 B = TypeVar("B")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -263,6 +267,36 @@ def D(*args) -> dict:
     raise NotImplementedError
 
 
+@defop
+def sample(key: jax.Array, d: dist.Distribution, sample_shape: tuple[int]) -> jax.Array:
+    if not (
+        isinstance(d, numpyro.distributions.Distribution)
+        and (not isinstance(d, Term) or all(isinstance(a, jax.Array) for a in d.args))
+    ):
+        raise NotImplementedError
+    return d.sample(key, sample_shape=sample_shape)
+
+
+@defop
+def rsample(key, d: dist.Distribution, sample_shape: tuple[int]) -> jax.Array:
+    if not (isinstance(d, numpyro.distributions.Distribution) and isinstance(sample_shape, tuple)):
+        raise NotImplementedError
+    return d.rsample(key, sample_shape=sample_shape)
+
+
+@defop
+def log_prob(d: dist.Distribution, value: jax.Array) -> jax.Array:  # todo
+    if (isinstance(d, numpyro.distributions.Distribution) and not isinstance(d, Term)) and isinstance(value, Term):
+        return _register_jax_op(d.log_prob)(value)
+    if not (
+        (isinstance(d, numpyro.distributions.Distribution) and isinstance(value, jax.Array))
+        or (isinstance(d, numpyro.distributions.Distribution) and isinstance(d, Term))
+    ):
+        raise NotImplementedError
+
+    return d.log_prob(value)
+
+
 class NormalizeValueFold(ObjectInterpretation):
     """Normalization rule for the body of folds."""
 
@@ -310,7 +344,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         if not (
             semiring in (ArgMinAlg, ArgMaxAlg)
             and all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is torch.Tensor for k in streams.keys())
+            and all(typeof(k()) is jax.Array for k in streams.keys())
         ):
             return fwd()
 
@@ -318,7 +352,7 @@ class DenseTensorArgFold(ObjectInterpretation):
             return fwd()
 
         if len(body.args) <= 0:
-            return torch.tensor([])
+            return jnp.array([])
 
         if len(body.args) > 1:
             # todo: handle multiple output indices
@@ -337,25 +371,30 @@ class DenseTensorArgFold(ObjectInterpretation):
 
         old_to_fresh = {k: defop(k) for k in streams.keys()}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
-        indexed_streams = {k: deffn(v[old_to_fresh[k]()]) for k, v in streams.items()}
+        indexed_streams = {k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()}
         with handler(indexed_streams):
             result = evaluate(min_value)
 
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, *reduction_indices)
+        result = bind_dims(result, *reduction_indices)
 
-        flat_result = result.flatten(start_dim=0, end_dim=len(reduction_indices) - 1)
-        mins, flat_indices = flat_result.min(dim=0) if semiring is ArgMinAlg else result.max(dim=0)
-        min_indices = torch.unravel_index(flat_indices, result.shape)
+        # Flatten the leading len(reduction_indices) dimensions
+        reduction_shape = result.shape[: len(reduction_indices)]
+        flat_shape = (functools.reduce(operator.mul, reduction_shape, 1),) + result.shape[len(reduction_indices) :]
+        flat_result = jnp.reshape(result, flat_shape)
+
+        mins = jnp.min(flat_result, axis=0) if semiring is ArgMinAlg else jnp.max(flat_result, axis=0)
+        flat_indices = jnp.argmin(flat_result, axis=0) if semiring is ArgMinAlg else jnp.argmax(flat_result, axis=0)
+        min_indices = jnp.unravel_index(flat_indices, reduction_shape)
         with handler(
             {fresh_to_old[k]: deffn(streams[fresh_to_old[k]][v]) for k, v in zip(reduction_indices, min_indices)}
         ):
             argmins = evaluate(argmin_value)
 
         final_result = tree.map_structure(
-            lambda t: to_tensor(t, *[i for i in result_indices if i not in reduction_indices]), (mins, argmins)
+            lambda t: bind_dims(t, *[i for i in result_indices if i not in reduction_indices]), (mins, argmins)
         )
         return final_result
 
@@ -363,17 +402,17 @@ class DenseTensorArgFold(ObjectInterpretation):
 class DenseTensorFold(ObjectInterpretation):
     def _sum_reductor(self, tensor, dims):
         for _ in range(dims):
-            tensor = torch.sum(tensor, dim=0)
+            tensor = jnp.sum(tensor, axis=0)
         return tensor
 
     def _min_reductor(self, tensor, dims):
         for _ in range(dims):
-            tensor = torch.min(tensor, dim=0).values
+            tensor = jnp.min(tensor, axis=0)
         return tensor
 
     def _max_reductor(self, tensor, dims):
         for _ in range(dims):
-            tensor = torch.max(tensor, dim=0).values
+            tensor = jnp.max(tensor, axis=0)
         return tensor
 
     def _get_reductor(self, semi_ring):
@@ -391,7 +430,7 @@ class DenseTensorFold(ObjectInterpretation):
         reductor = self._get_reductor(semiring)
         if reductor is None or not (
             all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is torch.Tensor for k in streams.keys())
+            and all(typeof(k()) is jax.Array for k in streams.keys())
         ):
             return fwd()
 
@@ -399,7 +438,7 @@ class DenseTensorFold(ObjectInterpretation):
             return fwd()
 
         if len(body.args) <= 0:
-            return torch.tensor([])
+            return jnp.array([])
 
         if len(body.args) > 1:
             # todo: handle multiple output indices
@@ -415,7 +454,7 @@ class DenseTensorFold(ObjectInterpretation):
 
         old_to_fresh = {k: defop(k) for k in streams.keys()}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
-        indexed_streams = {k: deffn(v[old_to_fresh[k]()]) for k, v in streams.items()}
+        indexed_streams = {k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()}
 
         fvars = fvsof(value)
         unused_streams = {k: v for k, v in streams.items() if k not in fvars}
@@ -426,14 +465,19 @@ class DenseTensorFold(ObjectInterpretation):
         result_indices = sizesof(result)
         reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
 
-        result = to_tensor(result, *reduction_indices)
+        result = bind_dims(result, *reduction_indices)
         result = reductor(result, len(reduction_indices))
-        return to_tensor(result, *[i for i in result_indices if i not in reduction_indices])
+        return bind_dims(result, *[i for i in result_indices if i not in reduction_indices])
 
 
 @defop
-def reals(*, shape: torch.Size = torch.Size()) -> Iterable[torch.Tensor]:
+def reals(*, shape: tuple[int, ...] = ()) -> Iterable[jax.Array]:
     raise NotImplementedError
+
+
+@defop
+def key() -> jax.Array:
+    return jax.random.key(0)
 
 
 class FlipOptimizationFold(ObjectInterpretation):
@@ -513,14 +557,14 @@ class GradientOptimizationFold(ObjectInterpretation):
 
     """
 
-    def __init__(self, optimizer=torch.optim.Adam, steps=1000, init=None, **kwargs):
+    def __init__(self, optimizer=optax.adam, steps=1000, init=None, progress=False, **kwargs):
         self.optimizer = optimizer
         self.optimizer_kwargs = kwargs
+        if steps <= 0:
+            raise ValueError("Expected a positive number of steps")
         self.steps = steps
         self.init = {} if init is None else init
-
-    def _optimizer(self, params):
-        return self.optimizer(params, **self.optimizer_kwargs)
+        self.progress = progress
 
     @implements(fold)
     def fold(self, semiring, streams, body, guard=True):
@@ -535,7 +579,7 @@ class GradientOptimizationFold(ObjectInterpretation):
             return fwd()
 
         if len(body.args) <= 0:
-            return torch.tensor([])
+            return jnp.array([])
 
         if len(body.args) > 1:
             # todo: handle multiple output indices
@@ -551,41 +595,63 @@ class GradientOptimizationFold(ObjectInterpretation):
             value, arg = value
 
         # Initialize parameters using provided init values or zeros
-        params = []
-        for k, r in zip(streams.keys(), streams.values()):
+        param_keys = list(streams.keys())
+        param_values = []
+        for k in param_keys:
+            r = streams[k]
+            if r.op is not reals:
+                raise ValueError("Expected reals as stream values")
             shape = r.args[0] if len(r.args) > 0 else ()
+
             if k in self.init:
                 # Use provided initialization
                 init_value = self.init[k]
-                if not isinstance(init_value, torch.Tensor):
-                    init_value = torch.tensor(init_value, dtype=torch.float)
+                if not isinstance(init_value, jax.Array):
+                    init_value = jnp.array(init_value)
+
                 # Ensure the shape matches
                 if init_value.shape != shape and shape != ():
                     raise ValueError(f"Init shape mismatch for {k}: expected {shape}, got {init_value.shape}")
-                param = init_value.clone().detach().requires_grad_(True)
+                param = init_value
             else:
                 # Default to zeros
-                param = torch.zeros(shape, requires_grad=True)
-            params.append(param)
+                param = jnp.zeros(shape)
+            param_values.append(param)
 
-        param_ctx = {v: deffn(p) for (v, p) in zip(streams.keys(), params)}
+        loss = deffn(value, key, *param_keys)
 
-        optimizer = self._optimizer(params)
-        assert self.steps > 0
-        for _ in range(self.steps):
-            optimizer.zero_grad()
-            with handler(param_ctx):
-                loss = evaluate(value)
-            tree.map_structure(lambda p: p.backward(), loss)
-            optimizer.step()
+        # we must be able to fully evaluate the loss function
+        loss_value = loss(key(), *param_values)
+        if not isinstance(loss_value, jax.Array):
+            raise ValueError(f"Loss must evaluate to an array, but got {loss_value}")
 
-        loss = tree.map_structure(lambda p: p.detach(), loss)
+        loss_grad = jax.jit(jax.grad(loss, argnums=range(1, len(param_values) + 1)))
+
+        optimizer = self.optimizer(**self.optimizer_kwargs)
+        opt_state = optimizer.init(param_values)
+
+        steps_iter = range(self.steps)
+        if self.progress:
+            from tqdm import tqdm
+
+            steps_iter = tqdm(steps_iter)
+
+        keys = jax.random.split(key(), self.steps)
+        for i in steps_iter:
+            grads = list(loss_grad(keys[i], *param_values))
+            assert all(isinstance(g, jax.Array) for g in tree.flatten(grads))
+            updates, opt_state = optimizer.update(grads, opt_state)
+            param_values = optax.apply_updates(param_values, updates)
+
+        final_loss = loss(key, *param_values)
+
         if semiring is MinAlg:
-            return loss
+            return final_loss
 
-        with handler(param_ctx):
-            arg = evaluate(arg)
-        return loss, arg
+        with handler({v: deffn(p) for (v, p) in zip(param_keys, param_values)}):
+            final_arg = evaluate(arg)
+
+        return final_loss, final_arg
 
 
 class LikelihoodWeightingFold(ObjectInterpretation):
@@ -597,34 +663,40 @@ class LikelihoodWeightingFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body, guard=True):
         if not (
-            semiring is LinAlg and all(isinstance(v, dist.Distribution) for v in streams.values()) and guard is True
+            semiring is LinAlg
+            and all(issubclass(typeof(v), numpyro.distributions.Distribution) for v in streams.values())
+            and guard is True
         ):
+            reason = "semiring" if semiring is not LinAlg else "streams"
+            logger.debug(
+                f"Skipping likelihood weighting (reason {reason}): fold({semiring}, {streams}, {body}, guard={guard})"
+            )
             return fwd()
 
         sample_streams = {}
         index_streams = {}
         for k, v in streams.items():
-            sample = defop(torch.Tensor, name="sample")
+            s = defop(jax.Array, name="sample")
 
             if isinstance(k, Operation):
                 value = k
-                samples = v.sample((self.samples,))[sample()]
+                samples = sample(key(), v, (self.samples,))[s()]
                 sample_streams[value] = deffn(samples)
             elif isinstance(k, tuple):
                 if not (len(k) == 2 and all(isinstance(i, Operation) for i in k)):
                     raise ValueError("Expected a tuple of (value, weight) for likelihood weighting")
                 (value, weight) = k
-                samples = v.sample((self.samples,))
-                weights = v.log_prob(samples)
-                weights = weights - torch.logsumexp(weights, dim=0)
-                samples = samples[sample()]
-                weights = weights[sample()]
+                samples = sample(key(), v, (self.samples,))
+                weights = log_prob(v, samples)
+                weights = weights - jnp.logsumexp(weights)
+                samples = jax_getitem(samples, [s()])
+                weights = jax_getitem(weights, [s()])
                 sample_streams[value] = deffn(samples)
                 sample_streams[weight] = deffn(weights)
             else:
                 raise ValueError("Unexpected key type")
 
-            index_streams[sample] = torch.arange(self.samples)
+            index_streams[s] = jnp.arange(self.samples)
 
         with handler(sample_streams):
             body = evaluate(body)
@@ -652,9 +724,6 @@ class FoldFusion(ObjectInterpretation):
         # Only fuse if both folds use the same semiring
         if not (semiring == inner_semiring):
             return fwd()
-
-        # Combine the guards
-        combined_guard = inner_guard
 
         # Return the fused fold
         return fold(semiring, coproduct(streams, inner_streams), inner_body, guard=inner_guard)
@@ -695,7 +764,7 @@ class FoldAddDistributivity(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body, guard=True):
-        if not (semiring is LinAlg):
+        if semiring is not LinAlg:
             return fwd()
 
         # Check if the body is a D term with a single argument
@@ -704,7 +773,7 @@ class FoldAddDistributivity(ObjectInterpretation):
 
         indices, value = body.args[0]
 
-        if isinstance(value, Term) and value.op is effectful.handlers.torch._register_torch_op(torch.add):
+        if isinstance(value, Term) and value.op is jnp.add:
             terms = value.args
         else:
             # Not a recognized addition pattern
@@ -731,11 +800,11 @@ class FoldFactorization(ObjectInterpretation):
 
     def _mul_op(self, semiring):
         if semiring is LinAlg:
-            return effectful.handlers.torch._register_torch_op(torch.mul)
+            return jnp.multiply
         elif semiring is MinAlg:
-            return effectful.handlers.torch._register_torch_op(torch.min)
+            return jnp.min
         elif semiring is MaxAlg:
-            return effectful.handlers.torch._register_torch_op(torch.max)
+            return jnp.max
         else:
             return None
 
@@ -758,7 +827,7 @@ class FoldFactorization(ObjectInterpretation):
         factors = value.args
 
         # Determine which factor is independent of the fold variables
-        stream_vars = set(streams.keys())
+        stream_vars = set(tree.flatten(streams.keys()))
 
         # Check first factor
         indep_factors = []

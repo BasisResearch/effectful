@@ -24,8 +24,9 @@ classifiers = [
     "Programming Language :: Python :: 3.11"
 ]
 dependencies = [
-    "effectful@git+https://github.com/BasisResearch/effectful",
-    "torch"
+    "effectful[jax]@git+https://github.com/BasisResearch/effectful@jf-jax-2",
+    "jax",
+    "optax"
 ]
 
 [dependency-groups]
@@ -81,4 +82,4 @@ line-length = 120
 quote-style = "double"
 
 [tool.ruff.lint]
-extend-ignore = ["E203"]
+extend-ignore = ["E203", "E741"]

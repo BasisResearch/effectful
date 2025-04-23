@@ -1,27 +1,20 @@
-import torch
-from effectful.handlers.torch import to_tensor
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
-from effectful.ops.types import Operation, Term
+import effectful.handlers.jax.numpy as jnp
+import jax
+from effectful.ops.semantics import handler
+from effectful.ops.syntax import defop
+from jax import random as random
 
 from weighted.fold_lang_v1 import (
-    ArgMaxAlg,
     ArgMinAlg,
     D,
-    DenseTensorArgFold,
-    DenseTensorFold,
-    FlipOptimizationFold,
     GradientOptimizationFold,
     LinAlg,
     MaxAlg,
     MinAlg,
-    NormalizeValueFold,
-    ProductFold,
     dense_fold_intp,
     fold,
     reals,
     semi_ring_product,
-    unfold,
 )
 
 
@@ -34,111 +27,135 @@ def infer_shape(sparse):
 
 def sparse_to_tensor(sparse):
     shape = infer_shape(sparse)
-    tensor = torch.zeros(shape)
+    tensor = jnp.zeros(shape)
     for index, value in sparse.items():
         tensor[index] = value
     return tensor
 
 
 def test_batched_matmul():
+    key = jax.random.PRNGKey(0)
     # Define dimensions
     B, I, J, K = 2, 3, 4, 5
 
     # Create sample matrices
-    X = torch.randn(B, I, J)
-    Y = torch.randn(B, J, K)
+    X = random.normal(key, (B, I, J))
+    Y = random.normal(key, (B, J, K))
 
     # Define index operations
     b, i, j, k = (
-        defop(torch.Tensor, name="b"),
-        defop(torch.Tensor, name="i"),
-        defop(torch.Tensor, name="j"),
-        defop(torch.Tensor, name="k"),
+        defop(jax.Array, name="b"),
+        defop(jax.Array, name="i"),
+        defop(jax.Array, name="j"),
+        defop(jax.Array, name="k"),
     )
 
     with handler(dense_fold_intp):
         actual = fold(
             LinAlg,
-            {b: torch.arange(B), i: torch.arange(I), j: torch.arange(J), k: torch.arange(K)},
+            {b: jnp.arange(B), i: jnp.arange(I), j: jnp.arange(J), k: jnp.arange(K)},
             D(((b(), i(), k()), X[b(), i(), j()] * Y[b(), j(), k()])),
         )
 
-    # Compare with pytorch
-    expected = torch.einsum("bij,bjk->bik", X, Y)
-    assert torch.allclose(actual, expected)
+    expected = jnp.einsum("bij,bjk->bik", X, Y)
+    assert jnp.allclose(actual, expected)
 
 
 def test_linalg_folds():
-    x, y, z = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y"), defop(torch.Tensor, name="z")
-    A = torch.randn(3, 3)
-    B = torch.randn(3)
+    key = jax.random.PRNGKey(0)
+    x, y, z = defop(jax.Array, name="x"), defop(jax.Array, name="y"), defop(jax.Array, name="z")
+    A = random.normal(key, (3, 3))
+    B = random.normal(key, (3,))
 
     with handler(dense_fold_intp):
-        f1 = fold(LinAlg, {x: torch.arange(3)}, x())
+        f1 = fold(LinAlg, {x: jnp.arange(3)}, x())
+        assert isinstance(f1, jax.Array)
         assert f1[()] == 3
 
-        f2 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, x() + y())
+        f2 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, x() + y())
+        assert isinstance(f2, jax.Array)
         assert f2[()] == 18
 
-        f3 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, x())
+        f3 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, x())
+        assert isinstance(f3, jax.Array)
         assert f3[()] == 9
 
-        f4 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, D(((x(),), A[x(), y()] * B[y()])))
-        assert torch.allclose(f4, torch.einsum("ij,j->i", A, B))
+        f4 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, D(((x(),), A[x(), y()] * B[y()])))
+        assert isinstance(f4, jax.Array)
+        assert jnp.allclose(f4, jnp.einsum("ij,j->i", A, B))
 
-        with handler({z: lambda: torch.tensor(2)}):
-            f5 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, z() + x())
+        with handler({z: lambda: jnp.array(2)}):
+            f5 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, z() + x())
+        assert isinstance(f5, jax.Array)
         assert f5[()] == 3 * (2 + 0 + 2 + 1 + 2 + 2)
 
-        f6 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, torch.tensor(2))
+        f6 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, jnp.array(2))
+        assert isinstance(f6, jax.Array)
         assert f6[()] == 18
 
-        f7 = fold(LinAlg, {x: torch.arange(3), y: torch.arange(3)}, 2 * x())
+        f7 = fold(LinAlg, {x: jnp.arange(3), y: jnp.arange(3)}, 2 * x())
+        assert isinstance(f7, jax.Array)
         assert f7[()] == 2 * 9
-        
+
 
 def run_min_folds():
-    x, y, z = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y"), defop(torch.Tensor, name="z")
+    x, y, z = defop(jax.Array, name="x"), defop(jax.Array, name="y"), defop(jax.Array, name="z")
 
     # Basic tests
-    f1 = fold(MinAlg, {x: torch.arange(100)}, -x())
+    f1 = fold(MinAlg, {x: jnp.arange(100)}, -x())
+    assert isinstance(f1, jax.Array)
     assert f1[()] == -99
 
-    f2 = fold(MinAlg, {x: torch.arange(-10, 10)}, x() ** 2)
+    f2 = fold(MinAlg, {x: jnp.arange(-10, 10)}, x() ** 2)
+    assert isinstance(f2, jax.Array)
     assert f2[()] == 0
 
-    f2 = fold(ArgMinAlg, {x: torch.arange(-10, 10)}, (x() ** 2, x()))
-    assert f2 == (torch.tensor(0), torch.tensor(0))
+    f2_arg = fold(ArgMinAlg, {x: jnp.arange(-10, 10)}, (x() ** 2, x()))
+    assert isinstance(f2_arg[0], jax.Array)
+    assert isinstance(f2_arg[1], jax.Array)
+    assert f2_arg == (jnp.array(0), jnp.array(0))
 
-    f2 = fold(ArgMinAlg, {x: torch.arange(1, 5), y: torch.arange(4, 8)}, (x() + y(), (x(), y())))
-    assert f2 == (torch.tensor(5), (torch.tensor(1), torch.tensor(4)))
+    f2_arg_pair = fold(ArgMinAlg, {x: jnp.arange(1, 5), y: jnp.arange(4, 8)}, (x() + y(), (x(), y())))
+    assert isinstance(f2_arg_pair[0], jax.Array)
+    assert isinstance(f2_arg_pair[1][0], jax.Array)
+    assert isinstance(f2_arg_pair[1][1], jax.Array)
+    assert f2_arg_pair == (jnp.array(5), (jnp.array(1), jnp.array(4)))
 
     # Edge case: single element range
-    f_single = fold(MinAlg, {x: torch.arange(1, 2)}, x() ** 2)
+    f_single = fold(MinAlg, {x: jnp.arange(1, 2)}, x() ** 2)
+    assert isinstance(f_single, jax.Array)
     assert f_single[()] == 1
 
     # Edge case: tied minimum values
-    f_tied = fold(ArgMinAlg, {x: torch.arange(-3, 4)}, (abs(x()), x()))
-    assert f_tied == (torch.tensor(0), torch.tensor(0))
+    f_tied = fold(ArgMinAlg, {x: jnp.arange(-3, 4)}, (abs(x()), x()))
+    assert isinstance(f_tied[0], jax.Array)
+    assert isinstance(f_tied[1], jax.Array)
+    assert f_tied == (jnp.array(0), jnp.array(0))
 
     # Edge case: large numbers
-    f_large = fold(MinAlg, {x: torch.arange(10**6, 10**6 + 10)}, x() - 10**6)
+    f_large = fold(MinAlg, {x: jnp.arange(10**6, 10**6 + 10)}, x() - 10**6)
+    assert isinstance(f_large, jax.Array)
     assert f_large[()] == 0
 
     # Edge case: custom function with multiple variables
     def custom_func(a, b, c=1):
         return a**2 + b**2 - c
 
-    f_custom = fold(MinAlg, {x: torch.arange(-5, 6), y: torch.arange(-5, 6)}, custom_func(x(), y(), 10))
+    f_custom = fold(MinAlg, {x: jnp.arange(-5, 6), y: jnp.arange(-5, 6)}, custom_func(x(), y(), 10))
+    assert isinstance(f_custom, jax.Array)
     assert f_custom[()] == -10  # Minimum is at x=0, y=0: 0²+0²-10 = -10
 
     # Edge case: complex expression with three variables
     f_complex = fold(
         ArgMinAlg,
-        {x: torch.arange(-3, 4), y: torch.arange(-3, 4), z: torch.arange(-3, 4)},
+        {x: jnp.arange(-3, 4), y: jnp.arange(-3, 4), z: jnp.arange(-3, 4)},
         ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z())),
     )
-    assert f_complex == (torch.tensor(0), (torch.tensor(1), torch.tensor(-2), torch.tensor(3)))
+    assert isinstance(f_complex[0], jax.Array)
+    assert isinstance(f_complex[1][0], jax.Array)
+    assert isinstance(f_complex[1][1], jax.Array)
+    assert isinstance(f_complex[1][2], jax.Array)
+    assert f_complex == (jnp.array(0), (jnp.array(1), jnp.array(-2), jnp.array(3)))
 
 
 def assert_no_base_case(*args, **kwargs):
@@ -152,42 +169,35 @@ def test_minalg_vectorized():
 
 def test_gradient_optimization_init():
     """Test that GradientOptimizationFold uses initialization values correctly."""
-    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
-    
+    x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
+
     # Define a simple quadratic function with minimum at (2, -3)
     def quadratic(x_val, y_val):
-        return (x_val - 2)**2 + (y_val + 3)**2
-    
+        return (x_val - 2) ** 2 + (y_val + 3) ** 2
+
     # Test with default initialization (zeros)
-    with handler(GradientOptimizationFold(steps=100, lr=0.1)), handler(dense_fold_intp):
-        result = fold(
-            MinAlg,
-            {x: reals(), y: reals()},
-            quadratic(x(), y())
-        )
+    with handler(GradientOptimizationFold(steps=100, learning_rate=0.1)), handler(dense_fold_intp):
+        result = fold(MinAlg, {x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be close to the minimum value (0)
+        assert isinstance(result, jax.Array)
         assert result < 0.1
-        
+
         # Test with ArgMinAlg to get both value and argmin
-        result_arg = fold(
-            ArgMinAlg,
-            {x: reals(), y: reals()},
-            (quadratic(x(), y()), (x(), y()))
-        )
+        result_arg = fold(ArgMinAlg, {x: reals(), y: reals()}, (quadratic(x(), y()), (x(), y())))
         # Value should be close to minimum
+        assert all(isinstance(result, jax.Array) for a in result_arg)
         assert result_arg[0] < 0.1
         # Arguments should be close to (2, -3)
-        assert abs(result_arg[1][0] - 2) < 0.1
-        assert abs(result_arg[1][1] + 3) < 0.1
-    
+        assert jnp.isclose(result_arg[1][0], 2, atol=0.1)
+        assert jnp.isclose(result_arg[1][1], -3, atol=0.1)
+
     # Test with custom initialization
     # Starting closer to the minimum should converge faster
-    with handler(GradientOptimizationFold(steps=20, lr=0.1, init={x: 1.5, y: -2.5})), handler(dense_fold_intp):
-        result = fold(
-            MinAlg,
-            {x: reals(), y: reals()},
-            quadratic(x(), y())
-        )
+    with (
+        handler(GradientOptimizationFold(steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5})),
+        handler(dense_fold_intp),
+    ):
+        result = fold(MinAlg, {x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be very close to the minimum with fewer steps
         assert result < 0.01
 
@@ -195,7 +205,7 @@ def test_gradient_optimization_init():
 def test_product_fold():
     """Test the ProductFold handler with multiple semirings."""
     # Define operations
-    x, y = defop(torch.Tensor, name="x"), defop(torch.Tensor, name="y")
+    x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
     # Create a product of semirings
     product_semiring = semi_ring_product(MinAlg, MaxAlg, LinAlg)
@@ -205,7 +215,7 @@ def test_product_fold():
         # Basic test with a single variable
         result = fold(
             product_semiring,
-            {x: torch.arange(1, 6)},  # [1, 2, 3, 4, 5]
+            {x: jnp.arange(1, 6)},  # [1, 2, 3, 4, 5]
             (x() ** 2, x() ** 2, x() ** 2),
         )
 
@@ -225,7 +235,7 @@ def test_product_fold():
         # Test with multiple variables
         result = fold(
             product_semiring,
-            {x: torch.arange(1, 4), y: torch.arange(1, 3)},  # x: [1, 2, 3], y: [1, 2]
+            {x: jnp.arange(1, 4), y: jnp.arange(1, 3)},  # x: [1, 2, 3], y: [1, 2]
             (x() + y(), x() + y(), x() + y()),
         )
 
@@ -241,7 +251,7 @@ def test_product_fold():
         # Test with a more complex expression
         result = fold(
             product_semiring,
-            {x: torch.arange(-2, 3), y: torch.arange(-2, 3)},  # x,y: [-2, -1, 0, 1, 2]
+            {x: jnp.arange(-2, 3), y: jnp.arange(-2, 3)},  # x,y: [-2, -1, 0, 1, 2]
             (x() ** 2 + y() ** 2, x() ** 2 + y() ** 2, x() ** 2 + y() ** 2),
         )
 
