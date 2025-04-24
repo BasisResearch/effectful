@@ -16,6 +16,7 @@ import optax
 import tree
 from effectful.handlers.jax import jax_getitem, sizesof
 from effectful.handlers.jax.handlers import _register_jax_op
+from effectful.handlers.numbers import add, max, min, mul
 from effectful.ops.dims import bind_dims
 from effectful.ops.semantics import (
     coproduct,
@@ -58,18 +59,24 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
     one=(),  # note: empty tuple is not a valid identity for multiplication
 )
 
-LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0.0, 1.0)
+LinAlg: Semiring[float] = Semiring(add, mul, 0.0, 1.0)
 
-MinAlg: Semiring[float] = Semiring(min, operator.mul, float("inf"), 1.0)
+MinAlg: Semiring[float] = Semiring(min, mul, float("inf"), 1.0)
 
-MaxAlg: Semiring[float] = Semiring(max, operator.mul, float("-inf"), 1.0)
+MaxAlg: Semiring[float] = Semiring(max, mul, float("-inf"), 1.0)
 
 
+@defop
 def arg_min(a, b):
+    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+        raise NotImplementedError
     return a if a[0] < b[0] else b
 
 
+@defop
 def arg_max(a, b):
+    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+        raise NotImplementedError
     return a if a[0] > b[0] else b
 
 
@@ -163,6 +170,9 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
 
 
 def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+    if any(isinstance(v, Term) for v in streams.values()):
+        raise NotImplementedError
+
     def promote_add(add: Callable[[V, V], V], a: V, b: V) -> V:
         if isinstance(b, collections.abc.Generator) or isinstance(a, collections.abc.Generator):
             a = a if isinstance(a, collections.abc.Generator) else (a,)
@@ -192,7 +202,7 @@ def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard
 
 @defop
 def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], *, guard: bool = True) -> Mapping[K, T]:
-    raise NotImplementedError
+    return fold_spec(semiring, streams, body, guard)
 
 
 @defop
@@ -310,16 +320,17 @@ class NormalizeValueFold(ObjectInterpretation):
                     k = (k,)
                     modified_body = True
                 kvs.append((k, v))
-            body = D(*kvs)
+            new_body = D(*kvs)
         elif isinstance(body, dict):
-            body = D(*body.items())
+            new_body = D(*body.items())
             modified_body = True
         else:
-            body = D(((), body))
+            new_body = D(((), body))
             modified_body = True
 
         if modified_body:
-            return fold(semiring, streams, body)
+            print(str(body), str(new_body))
+            return fold(semiring, streams, new_body)
         return fwd()
 
 
@@ -853,7 +864,7 @@ class FoldFactorization(ObjectInterpretation):
 dense_fold_intp = functools.reduce(
     coproduct,
     [
-        NormalizeValueFold(),
+        # NormalizeValueFold(),
         DenseTensorArgFold(),
         DenseTensorFold(),
         # FlipOptimizationFold(),
