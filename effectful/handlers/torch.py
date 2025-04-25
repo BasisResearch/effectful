@@ -142,8 +142,16 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     return result
 
 
+HasDims = TypeVar(
+    "HasDims",
+    bound=torch.Tensor
+    | torch.distributions.Distribution
+    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+)
+
+
 @functools.singledispatch
-def _bind_dims(value, *names: Operation[[], Any]):
+def _bind_dims(value, *names: Operation[[], torch.Tensor]):
     if tree.is_nested(value):
         return tree.map_structure(lambda v: _bind_dims(v, *names), value)
     raise NotImplementedError
@@ -200,9 +208,9 @@ def _bind_dims_tensor(
 
 @defop
 def bind_dims(
-    value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], Any], Scoped[B]],
-) -> Annotated[T, Scoped[A]]:
+    value: Annotated[HasDims, Scoped[A | B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[HasDims, Scoped[A]]:
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
@@ -215,8 +223,6 @@ def bind_dims(
 
     **Example usage**:
 
-    >>> import torch
-    >>> from effectful.ops.syntax import defop
     >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
     >>> t = torch.ones(2, 3)
     >>> bind_dims(t[a(), b()], b, a).shape
@@ -226,7 +232,7 @@ def bind_dims(
 
 
 @functools.singledispatch
-def _unbind_dims(value, *names: Operation[[], Any]):
+def _unbind_dims(value, *names: Operation[[], torch.Tensor]):
     if tree.is_nested(value):
         return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
     raise NotImplementedError
@@ -234,16 +240,17 @@ def _unbind_dims(value, *names: Operation[[], Any]):
 
 @_unbind_dims.register
 def _unbind_dims_tensor(
-    value: torch.Tensor, *names: Operation[[], torch.Tensor]
-) -> torch.Tensor:
+    value: torch.Tensor,
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[torch.Tensor, Scoped[A | B]]:
     return value[tuple(n() for n in names)]
 
 
 @defop
 def unbind_dims(
-    value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], Any], Scoped[B]],
-) -> Annotated[T, Scoped[A | B]]:
+    value: Annotated[HasDims, Scoped[A | B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[HasDims, Scoped[A | B]]:
     return _unbind_dims(value, *names)
 
 
