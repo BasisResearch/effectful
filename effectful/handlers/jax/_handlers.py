@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, TypeVar
 
 try:
     import jax
