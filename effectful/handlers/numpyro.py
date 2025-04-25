@@ -1,9 +1,14 @@
+try:
+    import numpyro.distributions as dist
+except ImportError:
+    raise ImportError("Numpyro is required to use effectful.handlers.numpyro")
+
+
 import functools
 from collections.abc import Collection, Hashable, Mapping
 from typing import Any, TypeVar, cast
 
 import jax
-import numpyro.distributions as dist
 import tree
 
 import effectful.handlers.jax.numpy as jnp

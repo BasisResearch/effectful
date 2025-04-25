@@ -1,9 +1,8 @@
 try:
     # Dummy import to check if jax is installed
     import jax  # noqa: F401
-    import numpyro  # noqa: F401
 except ImportError:
-    raise ImportError("Jax and Numpyro are required to use effectful.handlers.jax")
+    raise ImportError("Jax is required to use effectful.handlers.jax")
 
 # side effect: register defdata for jax.Array
 import effectful.handlers.jax._terms  # noqa: F401
