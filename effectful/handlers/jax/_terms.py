@@ -197,9 +197,7 @@ class _EagerArrayTerm(_ArrayTerm):
         return len(self.shape)
 
 
-@_bind_dims.register(_ArrayTerm)
-@_bind_dims.register(_EagerArrayTerm)
-@_bind_dims.register(jax.Array)
+@_bind_dims.register
 def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
@@ -214,10 +212,10 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     **Example usage**:
 
     >>> from effectful.ops.syntax import defop
-    >>> from effectful.ops.dims import bind_dims
+    >>> from effectful.handlers.jax import bind_dims, unbind_dims
     >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> t = jnp.ones((2, 3))
-    >>> bind_dims(t[a(), b()], b, a).shape
+    >>> t = unbind_dims(jnp.ones((2, 3)), a(), b())
+    >>> bind_dims(t, b, a).shape
     (3, 2)
     """
 
@@ -270,8 +268,6 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     return reindexed
 
 
-@_unbind_dims.register(_ArrayTerm)
-@_unbind_dims.register(_EagerArrayTerm)
-@_unbind_dims.register(jax.Array)
+@_unbind_dims.register
 def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     return jax_getitem(t, tuple(n() for n in args))

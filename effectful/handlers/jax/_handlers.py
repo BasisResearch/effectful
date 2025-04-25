@@ -14,8 +14,15 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import fvsof
-from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
+from effectful.ops.semantics import fvsof, typeof
+from effectful.ops.syntax import (
+    Scoped,
+    _CustomSingleDispatchCallable,
+    defdata,
+    deffn,
+    defop,
+    defterm,
+)
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -55,7 +62,7 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     **Example usage**:
 
     >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> sizes = sizesof(jnp.ones((2, 3))[a(), b()])
+    >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
     sizes: dict[Operation[[], jax.Array], int] = {}
@@ -179,24 +186,23 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     return x[tuple(key)]
 
 
-@functools.singledispatch
-def _bind_dims(value, *names: Operation[[], Any]):
+@_CustomSingleDispatchCallable
+def _bind_dims(
+    __dispatch: Callable[[type], Callable[..., T]],
+    value: T,
+    *names: Operation[[], jax.Array],
+) -> T:
     if tree.is_nested(value):
         return tree.map_structure(lambda v: _bind_dims(v, *names), value)
-    raise NotImplementedError
 
-
-@_bind_dims.register
-def _bind_dims_array(value: jax.Array, *names: Operation[[], jax.Array]) -> jax.Array:
-    # Implementation for JAX arrays
-    # This is a placeholder - implement the actual JAX-specific binding logic
-    raise NotImplementedError("bind_dims for JAX arrays is not yet implemented")
+    semantic_type = typeof(value)
+    return __dispatch(semantic_type)(value, *names)
 
 
 @defop
 def bind_dims(
     value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], Any], Scoped[B]],
+    *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A]]:
     """Convert named dimensions to positional dimensions.
 
@@ -213,30 +219,32 @@ def bind_dims(
     >>> import jax.numpy as jnp
     >>> from effectful.ops.syntax import defop
     >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> t = jnp.ones((2, 3))
-    >>> bind_dims(t[a(), b()], b, a).shape
+    >>> t = jax_getitem(jnp.ones((2, 3)), [a(), b()])
+    >>> bind_dims(t, b, a).shape
     (3, 2)
     """
     return _bind_dims(value, *names)
 
 
-@functools.singledispatch
-def _unbind_dims(value, *names: Operation[[], Any]):
+@_CustomSingleDispatchCallable
+def _unbind_dims(
+    __dispatch: Callable[[type], Callable[..., T]],
+    value: T,
+    *names: Operation[[], jax.Array],
+) -> T:
     if tree.is_nested(value):
         return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
-    raise NotImplementedError
 
-
-@_unbind_dims.register
-def _unbind_dims_array(value: jax.Array, *names: Operation[[], jax.Array]) -> jax.Array:
-    return value[tuple(n() for n in names)]
+    semantic_type = typeof(value)
+    return __dispatch(semantic_type)(value, *names)
 
 
 @defop
 def unbind_dims(
     value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], Any], Scoped[B]],
+    *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
+    """Convert positional dimensions to named dimensions."""
     return _unbind_dims(value, *names)
 
 
