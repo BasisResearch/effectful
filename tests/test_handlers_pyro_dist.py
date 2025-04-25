@@ -15,8 +15,7 @@ from torch.testing import assert_close
 
 import effectful.handlers.pyro  # noqa: F401
 from effectful.handlers.indexed import name_to_sym
-from effectful.handlers.torch import sizesof
-from effectful.ops.dims import bind_dims, unbind_dims
+from effectful.handlers.torch import bind_dims, sizesof, unbind_dims
 from effectful.ops.syntax import defop
 
 ##################################################

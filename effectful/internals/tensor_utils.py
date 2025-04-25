@@ -4,7 +4,8 @@ from typing import TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.dims import bind_dims
+# Import from handlers directly instead of ops.dims
+from effectful.handlers.torch import bind_dims
 
 P = ParamSpec("P")
 T = TypeVar("T")

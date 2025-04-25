@@ -9,11 +9,12 @@ import tree
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax.handlers import (
     IndexElement,
+    _bind_dims,
     _partial_eval,
+    _unbind_dims,
     jax_getitem,
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
-from effectful.ops.dims import _bind_dims, _unbind_dims
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
 
