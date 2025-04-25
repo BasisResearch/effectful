@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Any, TypeVar
+from typing import Annotated, Any, TypeVar
 
 try:
     import torch
@@ -15,9 +15,8 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
-from effectful.ops.dims import _bind_dims, _unbind_dims, bind_dims
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import defdata, defop, defterm
+from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -143,6 +142,13 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     return result
 
 
+@functools.singledispatch
+def _bind_dims(value, *names: Operation[[], Any]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
+    raise NotImplementedError
+
+
 @_bind_dims.register
 def _bind_dims_tensor(
     value: torch.Tensor, *names: Operation[[], torch.Tensor]
@@ -192,11 +198,53 @@ def _bind_dims_tensor(
     return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
 
 
+@defop
+def bind_dims(
+    value: Annotated[T, Scoped[A | B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
+) -> Annotated[T, Scoped[A]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], torch.Tensor]
+    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> import torch
+    >>> from effectful.ops.syntax import defop
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> bind_dims(t[a(), b()], b, a).shape
+    torch.Size([3, 2])
+    """
+    return _bind_dims(value, *names)
+
+
+@functools.singledispatch
+def _unbind_dims(value, *names: Operation[[], Any]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+    raise NotImplementedError
+
+
 @_unbind_dims.register
 def _unbind_dims_tensor(
     value: torch.Tensor, *names: Operation[[], torch.Tensor]
 ) -> torch.Tensor:
     return value[tuple(n() for n in names)]
+
+
+@defop
+def unbind_dims(
+    value: Annotated[T, Scoped[A | B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
+) -> Annotated[T, Scoped[A | B]]:
+    return _unbind_dims(value, *names)
 
 
 @functools.cache

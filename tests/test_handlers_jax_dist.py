@@ -10,7 +10,8 @@ import pytest
 
 import effectful.handlers.jax.distribution as dist
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import jax_getitem, sizesof
+from effectful.handlers.jax.handlers import bind_dims, unbind_dims
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation, Term
 

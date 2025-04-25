@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import TypeVar
+from typing import Annotated, Any, TypeVar
 
 try:
     import jax
@@ -19,7 +19,7 @@ from effectful.internals.tensor_utils import (
     _indexed_func_wrapper,
 )
 from effectful.ops.semantics import fvsof
-from effectful.ops.syntax import defdata, deffn, defop, defterm
+from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
 P = ParamSpec("P")
@@ -239,6 +239,67 @@ def _jax_getitem_override(self, key):
 
 
 jax._src.array.ArrayImpl.__getitem__ = _jax_getitem_override  # type: ignore
+
+
+@functools.singledispatch
+def _bind_dims(value, *names: Operation[[], Any]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
+    raise NotImplementedError
+
+
+@_bind_dims.register
+def _bind_dims_array(value: jax.Array, *names: Operation[[], jax.Array]) -> jax.Array:
+    # Implementation for JAX arrays
+    # This is a placeholder - implement the actual JAX-specific binding logic
+    raise NotImplementedError("bind_dims for JAX arrays is not yet implemented")
+
+
+@defop
+def bind_dims(
+    value: Annotated[T, Scoped[A | B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
+) -> Annotated[T, Scoped[A]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: An array.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], jax.Array]
+    :return: An array with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> import jax.numpy as jnp
+    >>> from effectful.ops.syntax import defop
+    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
+    >>> t = jnp.ones((2, 3))
+    >>> bind_dims(t[a(), b()], b, a).shape
+    (3, 2)
+    """
+    return _bind_dims(value, *names)
+
+
+@functools.singledispatch
+def _unbind_dims(value, *names: Operation[[], Any]):
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+    raise NotImplementedError
+
+
+@_unbind_dims.register
+def _unbind_dims_array(value: jax.Array, *names: Operation[[], jax.Array]) -> jax.Array:
+    return value[tuple(n() for n in names)]
+
+
+@defop
+def unbind_dims(
+    value: Annotated[T, Scoped[A | B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
+) -> Annotated[T, Scoped[A | B]]:
+    return _unbind_dims(value, *names)
 
 
 def jit(f, *args, **kwargs):

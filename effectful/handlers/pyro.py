@@ -23,7 +23,13 @@ except ImportError:
 
 from typing_extensions import ParamSpec
 
-from effectful.handlers.torch import _bind_dims, _unbind_dims, bind_dims, sizesof, unbind_dims
+from effectful.handlers.torch import (
+    _bind_dims,
+    _unbind_dims,
+    bind_dims,
+    sizesof,
+    unbind_dims,
+)
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm

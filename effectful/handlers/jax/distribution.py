@@ -7,7 +7,12 @@ import numpyro.distributions as dist
 import tree
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax.handlers import _bind_dims, _unbind_dims, bind_dims, unbind_dims
+from effectful.handlers.jax.handlers import (
+    _bind_dims,
+    _unbind_dims,
+    bind_dims,
+    unbind_dims,
+)
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
