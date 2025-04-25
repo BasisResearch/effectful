@@ -14,7 +14,6 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import fvsof
 from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -173,69 +172,11 @@ def _register_jax_op(jax_fn: Callable[P, T]):
 
 @_register_jax_op
 def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
-    """Operation for indexing an array.
-
-    .. note::
-
-      This operation is not intended to be called directly. Instead, it is
-      exposed so that it can be handled.
+    """Operation for indexing an array. Unlike the standard __getitem__ method,
+    this operation correctly handles indexing with terms.
 
     """
-    if not isinstance(x, jax.Array):
-        raise TypeError(f"expected an array but got {type(x)}")
-
-    for k in key:
-        if isinstance(k, Operation):
-            raise TypeError(
-                f"Got operation symbol {str(k)}. You probably meant {str(k)}()."
-            )
-
-    # fast path for simple cases
-    if len(key) == 0:
-        return x
-    elif not any(isinstance(k, jax.Array) for k in key):
-        return x[tuple(key)]
-
-    # handle None, Ellipsis, and missing dimensions
-    new_shape, key = _desugar_tensor_index(x.shape, key)
-    x = jnp.reshape(x, new_shape)
-
-    # Convert non-array args to arrays and handle advanced indexing
-    # JAX's advanced indexing works differently than PyTorch's, so we need to adapt
-    indices: list[IndexElement] = []
-    for i, k in enumerate(key):
-        if isinstance(k, slice):
-            if k == slice(None):
-                indices.append(k)
-            else:
-                start = 0 if k.start is None else k.start
-                stop = x.shape[i] if k.stop is None else k.stop
-                step = 1 if k.step is None else k.step
-                indices.append(jnp.arange(start, stop, step))
-        elif isinstance(k, int):
-            indices.append(k)
-        elif isinstance(k, list | tuple):
-            indices.append(jnp.array(k))
-        elif isinstance(k, jax.Array):
-            indices.append(k)
-        else:
-            indices.append(k)
-
-    return x[tuple(indices)]
-
-
-# TODO: this is a hack that may not be worth keeping
-old_getitem = jax._src.array.ArrayImpl.__getitem__
-
-
-def _jax_getitem_override(self, key):
-    key_ = key if isinstance(key, tuple) else (key,)
-    if any(isinstance(k, Term) for k in key_):
-        return jax_getitem(self, key_)
-    return old_getitem(self, key)
-
-
-jax._src.array.ArrayImpl.__getitem__ = _jax_getitem_override  # type: ignore
+    return x[tuple(key)]
 
 
 @functools.singledispatch
