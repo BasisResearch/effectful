@@ -5,8 +5,7 @@ import pytest
 from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem, jit, sizesof
-from effectful.handlers.jax.handlers import bind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Term

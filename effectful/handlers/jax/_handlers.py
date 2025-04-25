@@ -14,10 +14,7 @@ import tree
 from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.internals.tensor_utils import (
-    _desugar_tensor_index,
-    _indexed_func_wrapper,
-)
+from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import fvsof
 from effectful.ops.syntax import Scoped, defdata, deffn, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
@@ -306,3 +303,46 @@ def jit(f, *args, **kwargs):
     f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, sizesof)
     f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
+
+
+def _indexed_func_wrapper(
+    func: Callable[P, T], getitem, sizesof
+) -> tuple[Callable[P, S], Callable[[S], T]]:
+    # index expressions for the result of the function
+    indexes = None
+
+    # hide index lists from tree.map_structure
+    class Indexes:
+        def __init__(self, sizes):
+            self.sizes = sizes
+            self.indexes = list(sizes.keys())
+
+    # strip named indexes from the result of the function and store them
+    def deindexed(*args, **kwargs):
+        nonlocal indexes
+
+        def deindex_tensor(t, i):
+            t_ = bind_dims(t, *i.sizes.keys())
+            assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
+            return t_
+
+        ret = func(*args, **kwargs)
+        indexes = tree.map_structure(lambda t: Indexes(sizesof(t)), ret)
+        tensors = tree.map_structure(lambda t, i: deindex_tensor(t, i), ret, indexes)
+        return tensors
+
+    # reapply the stored indexes to a result
+    def reindex(ret, starting_dim=0):
+        def index_expr(i):
+            return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
+
+        if tree.is_nested(ret):
+            indexed_ret = tree.map_structure(
+                lambda t, i: getitem(t, index_expr(i)), ret, indexes
+            )
+        else:
+            indexed_ret = getitem(ret, index_expr(indexes))
+
+        return indexed_ret
+
+    return deindexed, reindex

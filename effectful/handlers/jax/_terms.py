@@ -7,7 +7,7 @@ import jax
 import tree
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax.handlers import (
+from effectful.handlers.jax._handlers import (
     IndexElement,
     _bind_dims,
     _partial_eval,

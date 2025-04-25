@@ -7,18 +7,16 @@ import numpyro.distributions as dist
 import tree
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax.handlers import (
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax._handlers import (
     _bind_dims,
+    _register_jax_op,
     _unbind_dims,
-    bind_dims,
-    unbind_dims,
+    is_eager_array,
 )
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
-
-from .handlers import _register_jax_op, is_eager_array, jax_getitem, sizesof
-from .terms import _EagerArrayTerm
 
 A = TypeVar("A")
 B = TypeVar("B")
@@ -299,7 +297,6 @@ class _DistributionTerm(dist.Distribution):
     def _reindex_sample(self, value, sample_shape):
         index = (slice(None),) * len(sample_shape) + tuple(i() for i in self._indices)
         ret = jax_getitem(value, index)
-        assert isinstance(ret, _EagerArrayTerm)
         return ret
 
     def log_prob(self, value):
