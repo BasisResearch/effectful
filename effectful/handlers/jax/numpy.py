@@ -13,8 +13,6 @@ for name, op in jax.numpy.__dict__.items():
 for name in _no_overload:
     globals()[name] = jax.numpy.__dict__[name]
 
-logsumexp = _register_jax_op(jax.scipy.special.logsumexp)
-
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
     from jax.numpy import *  # noqa: F403
