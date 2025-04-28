@@ -17,7 +17,7 @@ import optax
 import tree
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof
 from effectful.handlers.jax._handlers import _register_jax_op
-from effectful.handlers.numbers import _wrap_binop, add, mul
+from effectful.handlers.numbers import _wrap_binop
 from effectful.ops.semantics import (
     coproduct,
     evaluate,
@@ -74,6 +74,50 @@ class Semiring(Generic[T]):
 # (b + c) * a = (b * a) + (c * a)
 
 
+@defop
+def add(a, b):
+    if a == 0:
+        return b
+    if b == 0:
+        return a
+    if any(isinstance(x, Term) for x in (a, b)):
+        raise NotImplementedError
+    return a + b
+
+
+@defop
+def mul(a, b):
+    if a == 1:
+        return b
+    if b == 1:
+        return a
+    if any(isinstance(x, Term) for x in (a, b)):
+        raise NotImplementedError
+    return a * b
+
+
+@defop
+def arg_min(a, b):
+    if isinstance(a, tuple) and a[0] is float("inf"):
+        return b
+    if isinstance(b, tuple) and b[0] is float("inf"):
+        return a
+    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+        raise NotImplementedError
+    return a if a[0] < b[0] else b
+
+
+@defop
+def arg_max(a, b):
+    if isinstance(a, tuple) and a[0] is float("-inf"):
+        return b
+    if isinstance(b, tuple) and b[0] is float("-inf"):
+        return a
+    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+        raise NotImplementedError
+    return a if a[0] > b[0] else b
+
+
 # actually a near-semiring
 StreamAlg: Semiring[collections.abc.Generator] = Semiring(
     add=lambda a, b: (v for v in itertools.chain(a, b)),
@@ -90,25 +134,9 @@ MinAlg: Semiring[float] = Semiring(min, mul, float("inf"), 1.0, "MinAlg")
 MaxAlg: Semiring[float] = Semiring(max, mul, float("-inf"), 1.0, "MaxAlg")
 
 
-@defop
-def arg_min(a, b):
-    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
-        raise NotImplementedError
-    return a if a[0] < b[0] else b
+ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, mul, (float("inf"), None), (1.0, None), "ArgMinAlg")
 
-
-@defop
-def arg_max(a, b):
-    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
-        raise NotImplementedError
-    return a if a[0] > b[0] else b
-
-
-ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, operator.mul, (float("inf"), None), (1.0, None), "ArgMinAlg")
-
-ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(
-    arg_max, operator.mul, (float("-inf"), None), (1.0, None), "ArgMaxAlg"
-)
+ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(arg_max, mul, (float("-inf"), None), (1.0, None), "ArgMaxAlg")
 
 
 @defop
@@ -801,31 +829,40 @@ class FoldAddDistributivity(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body, guard=True):
-        if semiring is not LinAlg:
+        if not isinstance(body, Term):
             return fwd()
 
         # Check if the body is a D term with a single argument
-        if not (isinstance(body, Term) and body.op is D and len(body.args) == 1):
-            return fwd()
+        if body.op is D and len(body.args) == 1:
+            indices, value = body.args[0]
 
-        indices, value = body.args[0]
+            if not (isinstance(value, Term) and value.op is semiring.add):
+                return fwd()
 
-        if isinstance(value, Term) and value.op is jnp.add:
             terms = value.args
+
+            # Create separate D terms for each addend
+            new_terms = []
+            for term in terms:
+                new_terms.append((indices, term))
+
+                # Create a new body with separate terms
+                new_body = D(*new_terms)
+
+            # Apply fold to the new body
+            return fold(semiring, streams, new_body, guard=guard)
+
+        elif body.op is semiring.add:
+            # Create separate D terms for each addend
+            new_terms = []
+            for term in body.args:
+                new_terms.append(fold(semiring, streams, term, guard=guard))
+
+            # Apply fold to the new body
+            return functools.reduce(semiring.add, new_terms, semiring.zero)
+
         else:
-            # Not a recognized addition pattern
             return fwd()
-
-        # Create separate D terms for each addend
-        new_terms = []
-        for term in terms:
-            new_terms.append((indices, term))
-
-        # Create a new body with separate terms
-        new_body = D(*new_terms)
-
-        # Apply fold to the new body
-        return fold(semiring, streams, new_body, guard=guard)
 
 
 class FoldFactorization(ObjectInterpretation):
