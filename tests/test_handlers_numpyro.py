@@ -829,7 +829,7 @@ def test_dist_stats(case_, statistic):
             indexes.append(slice(None))
         else:
             indexes.append(name_to_sym(str(i))())
-    expected_i = expected[tuple(indexes)]
+    expected_i = jax_getitem(expected, indexes)
 
     eq = (actual == expected_i) | (jnp.isnan(actual) == jnp.isnan(expected_i))
     assert jnp.all(bind_dims(eq, *sizesof(eq)))
