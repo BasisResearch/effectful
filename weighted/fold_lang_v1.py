@@ -4,20 +4,20 @@ import functools
 import itertools
 import logging
 import operator
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar
 
-import effectful.handlers.jax.distribution as dist
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
+import effectful.handlers.numpyro as dist
 import jax
 import numpyro
 import optax
 import tree
-from effectful.handlers.jax import jax_getitem, sizesof
-from effectful.handlers.jax.handlers import _register_jax_op
-from effectful.handlers.numbers import add, max, min, mul
-from effectful.ops.dims import bind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof
+from effectful.handlers.jax._handlers import _register_jax_op
+from effectful.handlers.numbers import _wrap_binop, add, mul
 from effectful.ops.semantics import (
     coproduct,
     evaluate,
@@ -39,6 +39,11 @@ B = TypeVar("B")
 
 logger = logging.getLogger(__name__)
 
+min = _wrap_binop(min)
+max = _wrap_binop(max)
+
+Runner: TypeAlias = Interpretation[T, collections.abc.Iterable[T]]
+
 
 @dataclasses.dataclass
 class Semiring(Generic[T]):
@@ -46,9 +51,27 @@ class Semiring(Generic[T]):
     mul: Callable[[T, T], T]
     zero: T
     one: T
+    name: str | None = None
+
+    def __init__(self, add, mul, zero, one, name=None):
+        self.add = add
+        self.mul = mul
+        self.zero = zero
+        self.one = one
+        self.name = name
+
+    def __str__(self):
+        if self.name is None:
+            return repr(self)
+        return self.name
 
 
-Runner: TypeAlias = Interpretation[T, collections.abc.Iterable[T]]
+# Semiring laws:
+# (R, +) is a commutative monoid with identity 0
+# (R, *) is a monoid with identity 1
+# a * 0 = 0 = 0 * a
+# a * (b + c) = (a * b) + (a * c)
+# (b + c) * a = (b * a) + (c * a)
 
 
 # actually a near-semiring
@@ -57,13 +80,14 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
     mul=lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
     zero=(),
     one=(),  # note: empty tuple is not a valid identity for multiplication
+    name="StreamAlg",
 )
 
-LinAlg: Semiring[float] = Semiring(add, mul, 0.0, 1.0)
+LinAlg: Semiring[float] = Semiring(add, mul, 0.0, 1.0, "LinAlg")
 
-MinAlg: Semiring[float] = Semiring(min, mul, float("inf"), 1.0)
+MinAlg: Semiring[float] = Semiring(min, mul, float("inf"), 1.0, "MinAlg")
 
-MaxAlg: Semiring[float] = Semiring(max, mul, float("-inf"), 1.0)
+MaxAlg: Semiring[float] = Semiring(max, mul, float("-inf"), 1.0, "MaxAlg")
 
 
 @defop
@@ -80,9 +104,11 @@ def arg_max(a, b):
     return a if a[0] > b[0] else b
 
 
-ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, operator.mul, (float("inf"), None), (1.0, None))
+ArgMinAlg: Semiring[tuple[float, Any]] = Semiring(arg_min, operator.mul, (float("inf"), None), (1.0, None), "ArgMinAlg")
 
-ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(arg_max, operator.mul, (float("-inf"), None), (1.0, None))
+ArgMaxAlg: Semiring[tuple[float, Any]] = Semiring(
+    arg_max, operator.mul, (float("-inf"), None), (1.0, None), "ArgMaxAlg"
+)
 
 
 @defop
@@ -860,6 +886,17 @@ class FoldFactorization(ObjectInterpretation):
 
 # fold(R, S, A * B), free(A) \intersect S = {} => fold(R, S, A) = A * fold(R, S, B)
 
+
+simplify_intp = functools.reduce(
+    coproduct,
+    [
+        ProductFold(),
+        FoldFusion(),
+        FoldIndexDistributivity(),
+        FoldAddDistributivity(),
+        FoldFactorization(),
+    ],
+)
 
 dense_fold_intp = functools.reduce(
     coproduct,

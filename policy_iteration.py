@@ -5,7 +5,7 @@ import effectful.handlers.jax.numpy as np
 import effectful.handlers.numbers
 import matplotlib.pyplot as plt
 from effectful.handlers.numbers import add, mul
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import defop, defterm
 from jax import random
 from tqdm import tqdm
 
@@ -102,8 +102,8 @@ def dynamics_and_reward(state: State, action: Action, step_penalty=-0.01, food_r
     return [new_state], reward
 
 
-states = defop(list[State])
-actions = defop(jax.Array)
+states = defop(list[State], name="States")
+actions = defop(jax.Array, name="Actions")
 
 
 @defop
@@ -128,25 +128,58 @@ def tuple_getitem(x, i):
 
 
 def policy_of_value(value, discount_factor):
-    s, sn = defop(State), defop(State)
-    a = defop(Action)
-    w = defop(float)
+    s, sn = defop(State, name="s"), defop(State, name="sn")
+    a = defop(Action, name="a")
+    w = defop(float, name="w")
 
     discounted_value = mul(discount_factor, fold(LinAlg, {sn: dynamics(s(), a())}, value(sn())))
     return deffn(tuple_getitem(fold(ArgMaxAlg, {a: actions()}, (reward(s(), a()) + discounted_value, a())), 1), s)
 
 
-def value_of_policy(policy, discount_factor, horizon=10):
-    s, sn = defop(State), defop(State)
-    w = defop(float)
+def value_of_policy(policy: Callable[[State], Action], discount_factor, horizon=10) -> Callable[[State], float]:
+    s, sn = defop(State, name="s"), defop(State, name="sn")
+    w = defop(float, name="w")
 
-    value = deffn(0, s)
+    value = deffn(0, s)  # make free in s, rather than function
     for _ in range(horizon):
         prev_value = value
         future_payoff = fold(LinAlg, {sn: dynamics(s(), policy(s()))}, prev_value(sn()))
-        value = deffn(mul(add(reward(s(), policy(s())), discount_factor), future_payoff), s)
+        value = deffn(add(reward(s(), policy(s())), mul(discount_factor, future_payoff)), s)
 
     return value
+
+
+def value_of_policy_(policy: Callable[[State], Action], initial: State, horizon: int, discount_factor: float) -> float:
+    if horizon == 0:
+        return reward(initial, policy(initial))
+
+    sn = defop(State)
+    future_reward = fold(
+        LinAlg, {sn: dynamics(initial, policy(initial))}, value_of_policy_(policy, sn(), horizon - 1, discount_factor)
+    )
+    return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
+
+
+def value_of_policy__(policy: Callable[[State], Action], initial: State, horizon: int, discount_factor: float) -> float:
+    states = [defop(State) for _ in range(horizon)]
+
+    total_reward = 0.0
+    for t in range(horizon):
+        action = policy(states[t]())
+        total_reward += reward(states[t + 1](), action) * discount_factor**t
+
+    return fold(
+        LinAlg, {states[t + 1]: dynamics(states[t](), policy(states[t]())) for t in range(horizon)}, total_reward
+    )
+
+    if horizon == 0:
+        return reward(initial, policy(initial))
+
+    sn = defop(State)
+    future_reward = fold(
+        LinAlg, {sn: dynamics(initial, policy(initial))}, value_of_policy_(policy, sn(), horizon - 1, discount_factor)
+    )
+    return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
 
 
 def converged(p1, p2, epsilon=0.01):
@@ -160,8 +193,8 @@ def policy_iteration(discount_factor=0.01, steps=1):
     for _ in tqdm(range(steps)):
         value = value_of_policy(policy, discount_factor)
         next_policy = policy_of_value(value, discount_factor)
-        for st in all_states:
-            print("State:", st, "Policy:", policy(st), "Next Policy:", next_policy(st))
+        # for st in all_states:
+        #     print("State:", st, "Policy:", policy(st), "Next Policy:", next_policy(st))
         policy = next_policy
     return policy
 
@@ -213,19 +246,58 @@ def fold_conv(*args, **kwargs):
     return ret
 
 
-s = defop(State)
-with (
-    handler(dense_fold_intp),
-    handler(
-        {actions: lambda: all_actions, states: lambda: all_states, deffn: partial_eval_state_deffn, fold: fold_conv}
-    ),
-):
-    policy = policy_iteration(steps=5)
+def term_to_json(term):
+    def _op_to_json(op, *args, **kwargs):
+        return {"name": op.__name__, "freshening": op._freshening}
 
-state = State(np.array([0, 0]), np.array([[0, 0], [1, 1]]))
-state.render()
-for _ in range(5):
-    action = policy(state)
-    print("Action:", action)
-    state = dynamics(state, action)[0]
-    state.render()
+    def _term_to_json(expr):
+        expr = defterm(expr)
+        if isinstance(expr, dict):
+            return {"dict": [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.items()]}
+        elif isinstance(expr, list) or isinstance(expr, tuple):
+            return {"list": [_term_to_json(t) for t in expr]}
+        elif isinstance(expr, Term):
+            args = [_term_to_json(t) for t in expr.args]
+            kwargs = [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.kwargs.items()]
+            return {"op": _op_to_json(expr.op), "args": args, "kwargs": kwargs, "type": str(typeof(expr))}
+        elif isinstance(expr, Semiring):
+            semirings = [
+                (LinAlg, "LinAlg"),
+                (MinAlg, "MinAlg"),
+                (MaxAlg, "MaxAlg"),
+                (ArgMinAlg, "ArgMinAlg"),
+                (ArgMaxAlg, "ArgMaxAlg"),
+            ]
+            for r, n in semirings:
+                if expr is r:
+                    return {"value": n}
+            return {"value": str(expr)}
+        else:
+            return {"value": str(expr)}
+
+    import json
+
+    j = _term_to_json(term)
+    return json.dumps(j)
+
+
+with handler(simplify_intp):
+    t = policy_iteration(steps=1)
+
+print(str(t))
+# s = defop(State)
+# with (
+#     handler(dense_fold_intp),
+#     handler(
+#         {actions: lambda: all_actions, states: lambda: all_states, deffn: partial_eval_state_deffn, fold: fold_conv}
+#     ),
+# ):
+#     policy = policy_iteration(steps=5)
+
+# state = State(np.array([0, 0]), np.array([[0, 0], [1, 1]]))
+# state.render()
+# for _ in range(5):
+#     action = policy(state)
+#     print("Action:", action)
+#     state = dynamics(state, action)[0]
+#     state.render()
