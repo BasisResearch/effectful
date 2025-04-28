@@ -774,7 +774,7 @@ class FoldFusion(ObjectInterpretation):
             return fwd()
 
         # Extract the inner fold's parameters
-        inner_semiring, inner_streams, inner_body, inner_kwargs = body.args
+        inner_semiring, inner_streams, inner_body = body.args
 
         # Only fuse if both folds use the same semiring
         if not (semiring == inner_semiring):
@@ -872,28 +872,8 @@ class FoldFactorization(ObjectInterpretation):
         else:
             return None
 
-    @implements(fold)
-    def fold(self, semiring, streams, body):
-        # Check if the body is a D term
-        if not (isinstance(body, Term) and body.op is D):
-            return fwd()
-
-        # We only handle single-term bodies for now
-        if len(body.args) != 1:
-            return fwd()
-
-        indices, value = body.args[0]
-
-        # Check if value is a multiplication operation
-        if not (isinstance(value, Term) and value.op is self._mul_op(semiring)):
-            return fwd()
-
-        factors = value.args
-
-        # Determine which factor is independent of the fold variables
-        stream_vars = set(tree.flatten(streams.keys()))
-
-        # Check first factor
+    @staticmethod
+    def _separate_factors(factors, stream_vars):
         indep_factors = []
         dep_factors = []
         for f in factors:
@@ -902,13 +882,50 @@ class FoldFactorization(ObjectInterpretation):
             else:
                 dep_factors.append(f)
 
-        if indep_factors == []:
+        return indep_factors, dep_factors
+
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        if not isinstance(body, Term):
             return fwd()
 
-        indep_prod = functools.reduce(semiring.mul, indep_factors, semiring.one)
-        dep_prod = functools.reduce(semiring.mul, dep_factors, semiring.one) if len(dep_factors) > 1 else dep_factors[0]
-        dep_result = fold(semiring, streams, D((indices, dep_prod)))
-        return semiring.mul(indep_prod, dep_result)
+        # Check if the body is a D term
+        if body.op is D:
+            # We only handle single-term bodies for now
+            if len(body.args) != 1:
+                return fwd()
+
+            indices, value = body.args[0]
+
+            # Check if value is a multiplication operation
+            if not (isinstance(value, Term) and value.op is self._mul_op(semiring)):
+                return fwd()
+
+            indep_factors, dep_factors = FoldFactorization._separate_factors(
+                value.args, set(tree.flatten(streams.keys()))
+            )
+
+            if indep_factors == []:
+                return fwd()
+
+            indep_prod = functools.reduce(semiring.mul, indep_factors, semiring.one)
+            dep_prod = functools.reduce(semiring.mul, dep_factors, semiring.one)
+            dep_result = fold(semiring, streams, D((indices, dep_prod)))
+            return semiring.mul(indep_prod, dep_result)
+
+        elif body.op is semiring.mul:
+            indep_factors, dep_factors = FoldFactorization._separate_factors(
+                body.args, set(tree.flatten(streams.keys()))
+            )
+
+            if indep_factors == []:
+                return fwd()
+
+            indep_prod = functools.reduce(semiring.mul, indep_factors, semiring.one)
+            dep_prod = functools.reduce(semiring.mul, dep_factors, semiring.one)
+            return semiring.mul(indep_prod, fold(semiring, streams, dep_prod))
+        else:
+            return fwd()
 
 
 # fold(R, S, A * B), free(A) \intersect S = {} => fold(R, S, A) = A * fold(R, S, B)
@@ -918,7 +935,7 @@ simplify_intp = functools.reduce(
     coproduct,
     [
         ProductFold(),
-        FoldFusion(),
+        # FoldFusion(),
         FoldIndexDistributivity(),
         FoldAddDistributivity(),
         FoldFactorization(),
@@ -933,7 +950,7 @@ dense_fold_intp = functools.reduce(
         DenseTensorFold(),
         # FlipOptimizationFold(),
         ProductFold(),
-        FoldFusion(),
+        # FoldFusion(),
         FoldIndexDistributivity(),
         FoldAddDistributivity(),
         FoldFactorization(),
