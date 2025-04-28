@@ -4,7 +4,6 @@ import chex
 import effectful.handlers.jax.numpy as np
 import effectful.handlers.numbers
 import matplotlib.pyplot as plt
-from effectful.handlers.numbers import add, mul
 from effectful.ops.syntax import defop, defterm
 from jax import random
 from tqdm import tqdm
@@ -136,7 +135,7 @@ def policy_of_value(value, discount_factor):
     return deffn(tuple_getitem(fold(ArgMaxAlg, {a: actions()}, (reward(s(), a()) + discounted_value, a())), 1), s)
 
 
-def value_of_policy(policy: Callable[[State], Action], discount_factor, horizon=10) -> Callable[[State], float]:
+def value_of_policy(policy: Callable[[State], Action], discount_factor, horizon=3) -> Callable[[State], float]:
     s, sn = defop(State, name="s"), defop(State, name="sn")
     w = defop(float, name="w")
 
