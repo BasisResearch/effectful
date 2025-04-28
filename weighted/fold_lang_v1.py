@@ -223,7 +223,7 @@ def unfold(streams: Runner, body: T) -> collections.abc.Iterable[T]:
     return generator()
 
 
-def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard: bool = True) -> Mapping[K, T]:
+def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T]) -> Mapping[K, T]:
     if any(isinstance(v, Term) for v in streams.values()):
         raise NotImplementedError
 
@@ -247,16 +247,15 @@ def fold_spec(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], guard
         for vals in all_vals:
             keys = streams.keys()
             with handler({k: deffn(v) for (k, v) in zip(keys, vals)}):
-                if evaluate(guard):
-                    with handler({D: lambda *args: dict(args)}):
-                        yield evaluate(body)
+                with handler({D: lambda *args: dict(args)}):
+                    yield evaluate(body)
 
     return functools.reduce(functools.partial(promote_add, semiring.add), generator())
 
 
 @defop
-def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T], *, guard: bool = True) -> Mapping[K, T]:
-    return fold_spec(semiring, streams, body, guard)
+def fold(semiring: Semiring[T], streams: Runner, body: Mapping[K, T]) -> Mapping[K, T]:
+    return fold_spec(semiring, streams, body)
 
 
 @defop
@@ -491,7 +490,7 @@ class DenseTensorFold(ObjectInterpretation):
             return None
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         reductor = self._get_reductor(semiring)
         if reductor is None or not (
             all(isinstance(s, collections.abc.Sized) for s in streams.values())
@@ -617,9 +616,6 @@ class GradientOptimizationFold(ObjectInterpretation):
     principle allow us to represent partial optimization problems like the following:
     fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
 
-    - Problems that involve a guard can be solved using a variety of techniques,
-    depending on the form of the guard, but we don't implement any.
-
     """
 
     def __init__(self, optimizer=optax.adam, steps=1000, init=None, progress=False, **kwargs):
@@ -632,11 +628,9 @@ class GradientOptimizationFold(ObjectInterpretation):
         self.progress = progress
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         if not (
-            semiring in (MinAlg, ArgMinAlg)
-            and all(isinstance(v, Term) and v.op is reals for v in streams.values())
-            and guard is True
+            semiring in (MinAlg, ArgMinAlg) and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
 
@@ -726,16 +720,13 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         self.samples = samples
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         if not (
             semiring is LinAlg
             and all(issubclass(typeof(v), numpyro.distributions.Distribution) for v in streams.values())
-            and guard is True
         ):
             reason = "semiring" if semiring is not LinAlg else "streams"
-            logger.debug(
-                f"Skipping likelihood weighting (reason {reason}): fold({semiring}, {streams}, {body}, guard={guard})"
-            )
+            logger.debug(f"Skipping likelihood weighting (reason {reason}): fold({semiring}, {streams}, {body}")
             return fwd()
 
         sample_streams = {}
@@ -777,28 +768,27 @@ class FoldFusion(ObjectInterpretation):
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         # Only proceed if body is a fold operation
-        if not (isinstance(body, Term) and body.op is fold and guard is True):
+        if not (isinstance(body, Term) and body.op is fold):
             return fwd()
 
         # Extract the inner fold's parameters
         inner_semiring, inner_streams, inner_body, inner_kwargs = body.args
-        inner_guard = inner_kwargs.get("guard", True)
 
         # Only fuse if both folds use the same semiring
         if not (semiring == inner_semiring):
             return fwd()
 
         # Return the fused fold
-        return fold(semiring, coproduct(streams, inner_streams), inner_body, guard=inner_guard)
+        return fold(semiring, coproduct(streams, inner_streams), inner_body)
 
 
 class FoldIndexDistributivity(ObjectInterpretation):
     """Implements the identity: fold(R, S, D((I1, X1), ..., (IN, XN))) = fold(R, S, D((I1, X1))) R.+ ... R.+ fold(R, S, D((IN, XN)))"""
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         # Check if the body is a D term with multiple arguments (representing addition)
         if not (isinstance(body, Term) and body.op is D):
             return fwd()
@@ -813,7 +803,7 @@ class FoldIndexDistributivity(ObjectInterpretation):
             # Create a new D term with just this key-value pair
             term_body = D((indices, value))
             # Compute fold for this term
-            term_result = fold(semiring, streams, term_body, guard=guard)
+            term_result = fold(semiring, streams, term_body)
             results.append(term_result)
 
         # Combine results using semiring addition
@@ -828,7 +818,7 @@ class FoldAddDistributivity(ObjectInterpretation):
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         if not isinstance(body, Term):
             return fwd()
 
@@ -850,13 +840,13 @@ class FoldAddDistributivity(ObjectInterpretation):
                 new_body = D(*new_terms)
 
             # Apply fold to the new body
-            return fold(semiring, streams, new_body, guard=guard)
+            return fold(semiring, streams, new_body)
 
         elif body.op is semiring.add:
             # Create separate D terms for each addend
             new_terms = []
             for term in body.args:
-                new_terms.append(fold(semiring, streams, term, guard=guard))
+                new_terms.append(fold(semiring, streams, term))
 
             # Apply fold to the new body
             return functools.reduce(semiring.add, new_terms, semiring.zero)
@@ -883,7 +873,7 @@ class FoldFactorization(ObjectInterpretation):
             return None
 
     @implements(fold)
-    def fold(self, semiring, streams, body, guard=True):
+    def fold(self, semiring, streams, body):
         # Check if the body is a D term
         if not (isinstance(body, Term) and body.op is D):
             return fwd()
@@ -917,7 +907,7 @@ class FoldFactorization(ObjectInterpretation):
 
         indep_prod = functools.reduce(semiring.mul, indep_factors, semiring.one)
         dep_prod = functools.reduce(semiring.mul, dep_factors, semiring.one) if len(dep_factors) > 1 else dep_factors[0]
-        dep_result = fold(semiring, streams, D((indices, dep_prod)), guard=guard)
+        dep_result = fold(semiring, streams, D((indices, dep_prod)))
         return semiring.mul(indep_prod, dep_result)
 
 
