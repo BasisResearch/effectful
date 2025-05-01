@@ -76,7 +76,7 @@ warn_unused_ignores = true
 exclude = ["build"]
 
 [tool.ruff]
-line-length = 120
+line-length = 90
 
 [tool.ruff.format]
 quote-style = "double"

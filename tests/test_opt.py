@@ -1,17 +1,12 @@
 import effectful.handlers.jax.numpy as jnp
 import jax
+from effectful.handlers.jax import unbind_dims
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from weighted.fold_lang_v1 import (
-    ArgMinAlg,
-    GradientOptimizationFold,
-    LinAlg,
-    MinAlg,
-    dense_fold_intp,
-    fold,
-    reals,
-)
+from weighted.handlers.jax import GradientOptimizationFold, reals
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.ops.sugar import ArgMin, Min, Sum
 
 
 def assert_no_base_case(*args, **kwargs):
@@ -24,8 +19,8 @@ def test_opt():
 
     theta = defop(jax.Array, name="theta")
 
-    with handler(GradientOptimizationFold(learning_rate=0.1)), handler(dense_fold_intp):
-        min_loss = fold(MinAlg, {theta: reals()}, loss(theta))
+    with handler(GradientOptimizationFold(learning_rate=0.1)), handler(jax_intp):
+        min_loss = Min({theta: reals()}, loss(theta))
 
     # assert theta is close to 5.
     assert min_loss[()] < 1e-3
@@ -43,9 +38,20 @@ def test_batched_matmul():
     K = x.shape[0]
 
     # Define index operations
-    b, w, k = defop(jax.Array, name="b"), defop(jax.Array, name="w"), defop(jax.Array, name="k")
+    b, w, k = (
+        defop(jax.Array, name="b"),
+        defop(jax.Array, name="w"),
+        defop(jax.Array, name="k"),
+    )
 
-    with handler(GradientOptimizationFold(learning_rate=0.1, steps=100)), handler(dense_fold_intp):
-        loss = fold(LinAlg, {k: jnp.arange(K)}, (w() * x[k()] + b() - y[k()]) ** 2)
-        (_, (predicted_w, predicted_b)) = fold(ArgMinAlg, {w: reals(), b: reals()}, (loss, (w(), b())))
+    with (
+        handler(GradientOptimizationFold(learning_rate=0.1, steps=100)),
+        handler(jax_intp),
+    ):
+        loss = Sum(
+            {k: jnp.arange(K)}, (w() * unbind_dims(x, k) + b() - unbind_dims(y, k)) ** 2
+        )
+        (_, (predicted_w, predicted_b)) = ArgMin(
+            {w: reals(), b: reals()}, (loss, (w(), b()))
+        )
         assert 2 < predicted_w < 4 and 3 < predicted_b < 6

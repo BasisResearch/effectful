@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euxo pipefail
 
-SRC="tests/ weighted/"
+SRC="tests weighted examples"
 
 mypy $SRC
 ruff check $SRC

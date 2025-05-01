@@ -1,14 +1,20 @@
+import functools
 from dataclasses import dataclass
+from typing import Callable, TypeAlias
 
 import chex
 import effectful.handlers.jax.numpy as np
-import effectful.handlers.numbers
+import jax
 import matplotlib.pyplot as plt
-from effectful.ops.syntax import defop, defterm
+from effectful.ops.semantics import evaluate, handler, typeof
+from effectful.ops.syntax import deffn, defop, defterm, fwd
+from effectful.ops.types import Term
 from jax import random
 from tqdm import tqdm
 
-from weighted.fold_lang_v1 import *
+from weighted.handlers.optimization import interpretation as opt_intp
+from weighted.ops.semiring import add, mul
+from weighted.ops.sugar import ArgMax, Sum
 
 
 @dataclass(frozen=True)
@@ -20,11 +26,13 @@ class State:
         food_positions: Binary grid of food positions (1 where food exists, 0 otherwise).
     """
 
-    agent_position: chex.Array
-    food_positions: chex.Array
+    agent_position: jax.Array
+    food_positions: jax.Array
 
     @staticmethod
-    def random(key: chex.PRNGKey, grid_size: int = 15, food_probability: float = 0.05) -> "State":
+    def random(
+        key: chex.PRNGKey, grid_size: int = 15, food_probability: float = 0.05
+    ) -> "State":
         # Split the random key
         key1, key2 = random.split(key)
 
@@ -40,7 +48,9 @@ class State:
     def render(self):
         """Render the environment using matplotlib."""
         grid = self.food_positions
-        grid = grid.at[self.agent_position[0], self.agent_position[1]].set(2)  # Mark agent position (2)
+        grid = grid.at[self.agent_position[0], self.agent_position[1]].set(
+            2
+        )  # Mark agent position (2)
 
         # Create a color map: 0 -> white, 1 -> green (food), 2 -> blue (agent)
         cmap = plt.cm.colors.ListedColormap(["white", "green", "blue"])
@@ -56,21 +66,28 @@ class State:
 
     def __hash__(self):
         """Hash function for the state."""
-        return hash((tuple(self.agent_position.tolist()), tuple(self.food_positions.flatten().tolist())))
+        return hash(
+            (
+                tuple(self.agent_position.tolist()),
+                tuple(self.food_positions.flatten().tolist()),
+            )
+        )
 
     def __eq__(self, other):
         """Equality check for the state."""
         if not isinstance(other, State):
             return NotImplemented
-        return np.array_equal(self.agent_position, other.agent_position) and np.array_equal(
-            self.food_positions, other.food_positions
-        )
+        return np.array_equal(
+            self.agent_position, other.agent_position
+        ) and np.array_equal(self.food_positions, other.food_positions)
 
 
 Action: TypeAlias = int
 
 
-def dynamics_and_reward(state: State, action: Action, step_penalty=-0.01, food_reward=1.0) -> tuple[list[State], float]:
+def dynamics_and_reward(
+    state: State, action: Action, step_penalty=-0.01, food_reward=1.0
+) -> tuple[list[State], float]:
     action_to_direction = np.array(
         [
             [-1, 0],  # up
@@ -90,7 +107,10 @@ def dynamics_and_reward(state: State, action: Action, step_penalty=-0.01, food_r
     # Apply boundary constraints using clip to keep the agent within the grid
     new_position = np.clip(new_position, 0, grid_size - 1)
 
-    reward = state.food_positions[new_position[0], new_position[1]] * food_reward + step_penalty
+    reward = (
+        state.food_positions[new_position[0], new_position[1]] * food_reward
+        + step_penalty
+    )
 
     # Remove food from the new position
     new_food = state.food_positions.at[new_position[0], new_position[1]].set(0)
@@ -129,56 +149,72 @@ def tuple_getitem(x, i):
 def policy_of_value(value, discount_factor):
     s, sn = defop(State, name="s"), defop(State, name="sn")
     a = defop(Action, name="a")
-    w = defop(float, name="w")
 
-    discounted_value = mul(discount_factor, fold(LinAlg, {sn: dynamics(s(), a())}, value(sn())))
-    return deffn(tuple_getitem(fold(ArgMaxAlg, {a: actions()}, (reward(s(), a()) + discounted_value, a())), 1), s)
+    discounted_value = mul(discount_factor, Sum({sn: dynamics(s(), a())}, value(sn())))
+    return deffn(
+        tuple_getitem(
+            ArgMax({a: actions()}, (add(reward(s(), a()), discounted_value), a())), 1
+        ),
+        s,
+    )
 
 
-def value_of_policy(policy: Callable[[State], Action], discount_factor, horizon=3) -> Callable[[State], float]:
+def value_of_policy(
+    policy: Callable[[State], Action], discount_factor, horizon=3
+) -> Callable[[State], float]:
     s, sn = defop(State, name="s"), defop(State, name="sn")
-    w = defop(float, name="w")
 
     value = deffn(0, s)  # make free in s, rather than function
     for _ in range(horizon):
         prev_value = value
-        future_payoff = fold(LinAlg, {sn: dynamics(s(), policy(s()))}, prev_value(sn()))
-        value = deffn(add(reward(s(), policy(s())), mul(discount_factor, future_payoff)), s)
+        future_payoff = Sum({sn: dynamics(s(), policy(s()))}, prev_value(sn()))
+        value = deffn(
+            add(reward(s(), policy(s())), mul(discount_factor, future_payoff)), s
+        )
 
     return value
 
 
-def value_of_policy_(policy: Callable[[State], Action], initial: State, horizon: int, discount_factor: float) -> float:
+def value_of_policy_(
+    policy: Callable[[State], Action],
+    initial: State,
+    horizon: int,
+    discount_factor: float,
+) -> float:
     if horizon == 0:
         return reward(initial, policy(initial))
 
     sn = defop(State)
-    future_reward = fold(
-        LinAlg, {sn: dynamics(initial, policy(initial))}, value_of_policy_(policy, sn(), horizon - 1, discount_factor)
+    future_reward = Sum(
+        {sn: dynamics(initial, policy(initial))},
+        value_of_policy_(policy, sn(), horizon - 1, discount_factor),
     )
     return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
 
 
-def value_of_policy__(policy: Callable[[State], Action], initial: State, horizon: int, discount_factor: float) -> float:
-    states = [defop(State) for _ in range(horizon)]
+def value_of_policy__(
+    policy: Callable[[State], Action],
+    horizon: int,
+    discount_factor: float,
+    initial: State,
+) -> float:
+    state_ops = [None] + [defop(State) for _ in range(horizon)]
+    states = [initial] + [state_ops[t + 1]() for t in range(horizon)]
 
     total_reward = 0.0
     for t in range(horizon):
-        action = policy(states[t]())
-        total_reward += reward(states[t + 1](), action) * discount_factor**t
+        action = policy(states[t])
+        total_reward = add(
+            total_reward, mul(reward(states[t + 1], action), discount_factor**t)
+        )
 
-    return fold(
-        LinAlg, {states[t + 1]: dynamics(states[t](), policy(states[t]())) for t in range(horizon)}, total_reward
+    return Sum(
+        {
+            state_ops[t + 1]: dynamics(states[t], policy(states[t]))
+            for t in range(horizon)
+        },
+        total_reward,
     )
-
-    if horizon == 0:
-        return reward(initial, policy(initial))
-
-    sn = defop(State)
-    future_reward = fold(
-        LinAlg, {sn: dynamics(initial, policy(initial))}, value_of_policy_(policy, sn(), horizon - 1, discount_factor)
-    )
-    return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
 
 
 def converged(p1, p2, epsilon=0.01):
@@ -190,7 +226,7 @@ def policy_iteration(discount_factor=0.01, steps=1):
 
     policy = deffn(0, s)
     for _ in tqdm(range(steps)):
-        value = value_of_policy(policy, discount_factor)
+        value = functools.partial(value_of_policy__, policy, 3, discount_factor)
         next_policy = policy_of_value(value, discount_factor)
         # for st in all_states:
         #     print("State:", st, "Policy:", policy(st), "Next Policy:", next_policy(st))
@@ -207,7 +243,11 @@ for i in range(grid_size):
             state = State(
                 agent_position=np.array([i, j]),
                 food_positions=np.array(
-                    [(g >> (i * grid_size + j)) & 1 for i in range(grid_size) for j in range(grid_size)]
+                    [
+                        (g >> (i * grid_size + j)) & 1
+                        for i in range(grid_size)
+                        for j in range(grid_size)
+                    ]
                 ).reshape((grid_size, grid_size)),
             )
             if not state.food_positions[state.agent_position[0], state.agent_position[1]]:
@@ -252,27 +292,23 @@ def term_to_json(term):
     def _term_to_json(expr):
         expr = defterm(expr)
         if isinstance(expr, dict):
-            return {"dict": [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.items()]}
+            return {
+                "dict": [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.items()]
+            }
         elif isinstance(expr, list) or isinstance(expr, tuple):
             return {"list": [_term_to_json(t) for t in expr]}
         elif isinstance(expr, Term):
             args = [_term_to_json(t) for t in expr.args]
-            kwargs = [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.kwargs.items()]
-            return {"op": _op_to_json(expr.op), "args": args, "kwargs": kwargs, "type": str(typeof(expr))}
-        elif isinstance(expr, Semiring):
-            semirings = [
-                (LinAlg, "LinAlg"),
-                (MinAlg, "MinAlg"),
-                (MaxAlg, "MaxAlg"),
-                (ArgMinAlg, "ArgMinAlg"),
-                (ArgMaxAlg, "ArgMaxAlg"),
+            kwargs = [
+                (_term_to_json(k), _term_to_json(v)) for (k, v) in expr.kwargs.items()
             ]
-            for r, n in semirings:
-                if expr is r:
-                    return {"value": n}
-            return {"value": str(expr)}
-        else:
-            return {"value": str(expr)}
+            return {
+                "op": _op_to_json(expr.op),
+                "args": args,
+                "kwargs": kwargs,
+                "type": str(typeof(expr)),
+            }
+        return {"value": str(expr)}
 
     import json
 
@@ -280,7 +316,7 @@ def term_to_json(term):
     return json.dumps(j)
 
 
-with handler(simplify_intp):
+with handler(opt_intp):
     t = policy_iteration(steps=1)
 
 print(str(t))

@@ -1,20 +1,18 @@
-import effectful.handlers.jax.distribution as dist
 import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numpyro as dist
 import jax
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
-from weighted.fold_lang_v1 import (
-    ArgMinAlg,
+from weighted.handlers.jax import (
     GradientOptimizationFold,
     LikelihoodWeightingFold,
-    LinAlg,
-    dense_fold_intp,
-    fold,
     log_prob,
     reals,
     sample,
 )
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.ops.sugar import ArgMin, Sum
 
 # Expectation(
 #     f(x)
@@ -72,17 +70,18 @@ def test_maximum_marginal_likelihood_smoke():
     n_samples = 1
 
     with (
-        handler(dense_fold_intp),
+        handler(jax_intp),
         handler(
             GradientOptimizationFold(
-                steps=1, learning_rate=0.1, init={scale_z: jnp.array(1.0), scale_x: jnp.array(1.0)}
+                steps=1,
+                learning_rate=0.1,
+                init={scale_z: jnp.array(1.0), scale_x: jnp.array(1.0)},
             )
         ),
     ):
         weight = -(log_prob(z_dist, z()) + jnp.sum(log_prob(x_dist, data)))
-        intg_weight = fold(LinAlg, {z: sample(jax.random.key(0), z_dist, (n_samples,))}, weight)
-        _min = fold(
-            ArgMinAlg,
+        intg_weight = Sum({z: sample(jax.random.key(0), z_dist, (n_samples,))}, weight)
+        _min = ArgMin(
             {loc_z: reals(), scale_z: reals(), scale_x: reals()},
             (intg_weight, (loc_z(), scale_z(), scale_x())),
         )
@@ -97,8 +96,8 @@ def run_expectation():
 
     x = defop(jax.Array, name="x")
     w = defop(jax.Array, name="w")
-    with handler(dense_fold_intp), handler(LikelihoodWeightingFold(samples=1000)):
-        return fold(LinAlg, {(x, w): dist.Normal(loc, scale)}, jnp.exp(w()) * f(x()))
+    with handler(jax_intp), handler(LikelihoodWeightingFold(samples=1000)):
+        return Sum({(x, w): dist.Normal(loc, scale)}, jnp.exp(w()) * f(x()))
 
 
 def test_integration(benchmark):

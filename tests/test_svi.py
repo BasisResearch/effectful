@@ -1,21 +1,21 @@
-import effectful.handlers.jax.distribution as dist
 import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numpyro as dist
 import jax
 from effectful.handlers.jax import sizesof
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
-from weighted.fold_lang_v1 import (
-    ArgMinAlg,
+from weighted.handlers.jax import (
     GradientOptimizationFold,
     LikelihoodWeightingFold,
-    LinAlg,
-    dense_fold_intp,
-    fold,
     log_prob,
     reals,
     sample,
 )
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.ops.fold import fold
+from weighted.ops.semiring import LinAlg
+from weighted.ops.sugar import ArgMin
 
 
 def run_svi(data):
@@ -29,21 +29,29 @@ def run_svi(data):
         alpha0 = jnp.array(10.0)
         beta0 = jnp.array(10.0)
         beta_prior = dist.Beta(alpha0, beta0)
-        return log_prob(beta_prior, latent_fairness()) + jnp.sum(log_prob(dist.BernoulliProbs(latent_fairness()), data))
+        return log_prob(beta_prior, latent_fairness()) + jnp.sum(
+            log_prob(dist.BernoulliProbs(latent_fairness()), data)
+        )
 
     with (
         handler(
             GradientOptimizationFold(
-                steps=2000, learning_rate=0.1, progress=True, init={alpha_q: jnp.array(1.0), beta_q: jnp.array(1.0)}
+                steps=2000,
+                learning_rate=0.1,
+                progress=True,
+                init={alpha_q: jnp.array(1.0), beta_q: jnp.array(1.0)},
             )
         ),
         handler(LikelihoodWeightingFold(samples=100)),
-        handler(dense_fold_intp),
+        handler(jax_intp),
     ):
         elbo = fold(
             LinAlg,
             {(latent_fairness, latent_fairness_w): dist.Beta(alpha_q(), beta_q())},
-            -(jnp.exp(latent_fairness_w()) * (model_log_prob(data) - latent_fairness_w())),
+            -(
+                jnp.exp(latent_fairness_w())
+                * (model_log_prob(data) - latent_fairness_w())
+            ),
         )
 
         with handler({alpha_q: deffn(jnp.array(15.0)), beta_q: deffn(jnp.array(15.0))}):
@@ -51,7 +59,9 @@ def run_svi(data):
             x = evaluate(elbo)
             assert isinstance(x, jax.Array) and len(x.shape) == 0 and len(sizesof(x)) == 0
 
-        (_, (alpha_est, beta_est)) = fold(ArgMinAlg, {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q())))
+        (_, (alpha_est, beta_est)) = ArgMin(
+            {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q()))
+        )
 
         inferred_prob = alpha_est / (alpha_est + beta_est)
     return inferred_prob
