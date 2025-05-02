@@ -243,6 +243,20 @@ class FlipOptimizationFold(ObjectInterpretation):
                 fwd()
 
 
+class FoldZero(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        if (
+            isinstance(body, Term)
+            and body.op is D
+            and all(v == semiring.zero for (_, v) in body.args)
+        ):
+            return semiring.zero
+        if body == semiring.zero:
+            return semiring.zero
+        return fwd()
+
+
 class NormalizeValueFold(ObjectInterpretation):
     """Normalization rule for the body of folds."""
 
@@ -276,5 +290,6 @@ interpretation = functools.reduce(
         FoldIndexDistributivity(),
         FoldAddDistributivity(),
         FoldFactorization(),
+        FoldZero(),
     ],
 )

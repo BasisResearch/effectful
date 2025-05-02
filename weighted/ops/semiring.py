@@ -1,6 +1,7 @@
 import collections.abc
 import dataclasses
 import itertools
+import numbers
 from typing import Any, Callable, Generic, ParamSpec, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
@@ -57,9 +58,9 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
 
 @defop
 def add(a, b):
-    if a == 0:
+    if isinstance(a, numbers.Number) and a == 0:
         return b
-    if b == 0:
+    if isinstance(b, numbers.Number) and b == 0:
         return a
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotImplementedError
@@ -68,9 +69,13 @@ def add(a, b):
 
 @defop
 def mul(a, b):
-    if a == 1:
+    if (isinstance(a, numbers.Number) and a == 0) or (
+        isinstance(b, numbers.Number) and b == 0
+    ):
+        return 0
+    if isinstance(a, numbers.Number) and a == 1:
         return b
-    if b == 1:
+    if isinstance(b, numbers.Number) and b == 1:
         return a
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotImplementedError
@@ -79,9 +84,9 @@ def mul(a, b):
 
 @defop
 def arg_min(a, b):
-    if isinstance(a, tuple) and a[0] is float("inf"):
+    if isinstance(a, tuple) and isinstance(a[0], numbers.Number) and a[0] == float("inf"):
         return b
-    if isinstance(b, tuple) and b[0] is float("inf"):
+    if isinstance(b, tuple) and isinstance(b[0], numbers.Number) and b[0] == float("inf"):
         return a
     if any(isinstance(x, Term) for x in tree.flatten((a, b))):
         raise NotImplementedError
@@ -90,9 +95,17 @@ def arg_min(a, b):
 
 @defop
 def arg_max(a, b):
-    if isinstance(a, tuple) and a[0] is float("-inf"):
+    if (
+        isinstance(a, tuple)
+        and isinstance(a[0], numbers.Number)
+        and a[0] == float("-inf")
+    ):
         return b
-    if isinstance(b, tuple) and b[0] is float("-inf"):
+    if (
+        isinstance(b, tuple)
+        and isinstance(b[0], numbers.Number)
+        and b[0] == float("-inf")
+    ):
         return a
     if any(isinstance(x, Term) for x in tree.flatten((a, b))):
         raise NotImplementedError

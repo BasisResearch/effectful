@@ -1,14 +1,16 @@
 import effectful.handlers.jax.numpy as jnp
 import jax
-from effectful.handlers.jax import unbind_dims
+import pytest
+from effectful.handlers.jax import is_eager_array, jax_getitem, sizesof, unbind_dims
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
+from effectful.ops.types import Term
 from jax import random as random
 
 from weighted.handlers.jax import GradientOptimizationFold, reals
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.fold import D, fold
-from weighted.ops.sugar import ArgMin, Min, Sum
+from weighted.ops.sugar import ArgMin, Max, Min, Sum
 
 
 def infer_shape(sparse):
@@ -171,6 +173,109 @@ def assert_no_base_case(*args, **kwargs):
 def test_minalg_vectorized():
     with handler({fold: assert_no_base_case}), handler(jax_intp):
         run_min_folds()
+
+
+def test_nested_folds():
+    """Test nested folds over jnp.arange to verify they work correctly."""
+    a, b, c = (
+        defop(jax.Array, name="a"),
+        defop(jax.Array, name="b"),
+        defop(jax.Array, name="c"),
+    )
+
+    # Define ranges for the nested folds
+    a_range = jnp.arange(3)  # 0, 1, 2
+    b_range = jnp.arange(2)  # 0, 1
+    c_range = jnp.arange(4)  # 0, 1, 2, 3
+
+    with handler(jax_intp):
+        # Test a simple nested fold that computes the sum of all combinations
+        # This is equivalent to: sum(a + b + c for a in range(3) for b in range(2) for c in range(4))
+        nested_result = Sum(
+            {a: a_range}, Sum({b: b_range}, Sum({c: c_range}, a() + b() + c()))
+        )
+
+        # Calculate the expected result manually
+        expected = sum(
+            a_val + b_val + c_val
+            for a_val in range(3)
+            for b_val in range(2)
+            for c_val in range(4)
+        )
+
+        assert isinstance(nested_result, jax.Array)
+        assert nested_result[()] == expected
+
+        # Test a more complex nested fold with a different operation at each level
+        # Outer sum, middle product, inner min
+        complex_nested = Sum(
+            {a: a_range}, Min({b: b_range}, Sum({c: c_range}, a() * b() + c()))
+        )
+
+        # Calculate expected result manually
+        expected_complex = sum(
+            min(sum(a_val * b_val + c_val for c_val in range(4)) for b_val in range(2))
+            for a_val in range(3)
+        )
+
+        assert isinstance(complex_nested, jax.Array)
+        assert jnp.isclose(complex_nested[()], expected_complex)
+
+        # Test a nested fold with the same operation (Sum) at each level
+        # This should be optimizable by FoldFusion
+        fusion_candidate = Sum(
+            {a: a_range}, Sum({b: b_range}, Sum({c: c_range}, a() * b() * c()))
+        )
+
+        # Direct computation using a single fold (what FoldFusion would produce)
+        direct_computation = Sum({a: a_range, b: b_range, c: c_range}, a() * b() * c())
+
+        # Both should give the same result
+        assert jnp.isclose(fusion_candidate[()], direct_computation[()])
+
+
+def test_partial_eval():
+    """Fold over arrays with named dimensions."""
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+
+    indexed_array = unbind_dims(jnp.ones((5, 4)), i)
+    with handler(jax_intp):
+        r1 = Sum({j: indexed_array}, j())
+
+    assert isinstance(r1, Term)
+    assert i in sizesof(r1) and j not in sizesof(r1)
+    assert is_eager_array(r1)
+
+    with handler(jax_intp):
+        r2 = Sum({j: indexed_array}, j() + 1)
+
+    assert isinstance(r2, Term)
+    assert i in sizesof(r2) and j not in sizesof(r2)
+    assert is_eager_array(r2)
+
+
+@pytest.mark.parametrize("ops", [(Sum, sum), (Min, min), (Max, max)])
+def test_dependent_folds(ops):
+    """Test folds where indices depend on other indices within the same fold."""
+    weighted_op, python_op = ops
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+
+    with handler(jax_intp):
+        # Test fold where j depends on i
+        # This is equivalent to: sum(i + j for i in range(5) for j in range(i+1))
+        inner_1 = weighted_op({j: jax_getitem(jnp.ones((5, 4)), [i()])}, j())
+        dependent_result_1 = weighted_op({i: jnp.arange(5)}, inner_1)
+
+        dependent_result_2 = weighted_op(
+            {i: jnp.arange(5), j: jax_getitem(jnp.ones((5, 4)), [i()])}, j()
+        )
+
+        expected = python_op(j for i in jnp.arange(5) for j in jnp.ones((5, 4))[i])
+
+        for d in [dependent_result_1, dependent_result_2]:
+            assert isinstance(d, jax.Array)
+            assert d[()] == expected
 
 
 def test_gradient_optimization_init():

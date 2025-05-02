@@ -173,17 +173,13 @@ class DenseTensorFold(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body):
         reductor = self._get_reductor(semiring)
-        if reductor is None or not (
-            all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is jax.Array for k in streams.keys())
+        if not (
+            reductor and all(issubclass(typeof(s), jax.Array) for s in streams.values())
         ):
             return fwd()
 
         if not (isinstance(body, Term) and body.op is D):
             return fwd()
-
-        if len(body.args) <= 0:
-            return jnp.array([])
 
         if len(body.args) > 1:
             # todo: handle multiple output indices
@@ -198,27 +194,37 @@ class DenseTensorFold(ObjectInterpretation):
         indices = [i.op for i in indices]
 
         old_to_fresh = {k: defop(k) for k in streams.keys()}
-        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
         indexed_streams = {
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
         }
 
-        fvars = fvsof(value)
-        unused_streams = {k: v for k, v in streams.items() if k not in fvars}
         with handler(indexed_streams):
             result = evaluate(value)
-        result = result * functools.reduce(
-            operator.mul, (len(v) for v in unused_streams.values()), 1
-        )
 
-        result_indices = sizesof(result)
-        reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
+        fvars = fvsof(result)
+        unused_streams = {
+            k: v for k, v in streams.items() if old_to_fresh[k] not in fvars
+        }
+        if unused_streams:
+            result = result * functools.reduce(
+                operator.mul, (len(v) for v in unused_streams.values()), 1
+            )
 
+        result_indices = fvsof(result)
+        reduction_indices = [
+            old_to_fresh[i]
+            for i in streams.keys()
+            if old_to_fresh.get(i) in result_indices and i not in indices
+        ]
+
+        # bind and reduce indices from the streams that do not appear in the result indexing expression
         result = bind_dims(result, *reduction_indices)
         result = reductor(result, len(reduction_indices))
-        return bind_dims(
-            result, *[i for i in result_indices if i not in reduction_indices]
-        )
+
+        # bind indices that appear in the indexing expression
+        fresh_indices = [old_to_fresh[i] for i in indices]
+        result = bind_dims(result, *fresh_indices)
+        return result
 
 
 class GradientOptimizationFold(ObjectInterpretation):
