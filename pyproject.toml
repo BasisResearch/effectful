@@ -41,6 +41,8 @@ Source = "https://github.com/BasisResearch/effectful"
 [project.optional-dependencies]
 torch = ["torch"]
 pyro = ["pyro-ppl>=1.9.1"]
+jax = ["jax"]
+numpyro = ["numpyro"]
 
 [dependency-groups]
 dev = [
