@@ -199,6 +199,13 @@ def _bind_dims(
     return __dispatch(semantic_type)(value, *names)
 
 
+@_bind_dims.register(object)
+def _bind_dims_default(value, *names):
+    if isinstance(value, Term):
+        raise NotImplementedError
+    raise ValueError(f"bind_dims not implemented")
+
+
 @defop
 def bind_dims(
     value: Annotated[T, Scoped[A | B]],
@@ -223,6 +230,8 @@ def bind_dims(
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
+    if not names:
+        return value
     return _bind_dims(value, *names)
 
 
@@ -239,12 +248,21 @@ def _unbind_dims(
     return __dispatch(semantic_type)(value, *names)
 
 
+@_unbind_dims.register(object)
+def _unbind_dims_default(value, *names):
+    if isinstance(value, Term):
+        raise NotImplementedError
+    raise ValueError("unbind_dims not implemented")
+
+
 @defop
 def unbind_dims(
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
+    if not names:
+        return value
     return _unbind_dims(value, *names)
 
 
