@@ -278,6 +278,26 @@ def test_dependent_folds(ops):
             assert d[()] == expected
 
 
+@pytest.mark.parametrize("ops", [(Sum, sum), (Min, min), (Max, max)])
+def test_pytree_fold(ops):
+    """A fold where the body is a pytree and the fold indices are arrays should
+    produce a pytree of arrays.
+
+    """
+    weighted_op, python_op = ops
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+
+    breakpoint()
+    with handler(jax_intp):
+        actual = weighted_op({i: jnp.arange(5), j: jnp.arange(7)}, (i() + j(), i() * j()))
+        assert isinstance(actual, tuple)
+        expected = (
+            python_op(i + j for i in jnp.arange(5) for j in jnp.arange(7)),
+            python_op(i * j for i in jnp.arange(5) for j in jnp.arange(7)),
+        )
+        assert expected == actual
+
+
 def test_gradient_optimization_init():
     """Test that GradientOptimizationFold uses initialization values correctly."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")

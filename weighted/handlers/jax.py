@@ -388,11 +388,40 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         return fold(LinAlg, index_streams, body)
 
 
+class PytreeMapFold(ObjectInterpretation):
+    """Map a fold over a pytree body."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        if not (isinstance(body, Term) and body.op is D):
+            return fwd()
+
+        # Check that all values in the body have the same structure
+        structure = None
+        for i, (_, t) in enumerate(body.args):
+            s = jax.tree.structure(t)
+            if structure and structure != s:
+                raise ValueError(
+                    f"Found pytrees with different structures {structure} and {s} in fold body."
+                )
+            structure = s
+
+        # Do no work for trivial structures
+        if structure == jax.tree.structure(0):
+            return fwd()
+
+        flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body.args]
+
+        flat_body = []
+        for vs in zip(*flat_bodies):
+            flat_body.append(
+                fold(semiring, streams, D(*[(k, v) for (k, _), v in zip(body.args, vs)]))
+            )
+
+        return jax.tree.unflatten(structure, flat_body)
+
+
 interpretation = functools.reduce(
     coproduct,
-    [
-        NormalizeValueFold(),
-        DenseTensorArgFold(),
-        DenseTensorFold(),
-    ],
+    [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), PytreeMapFold()],
 )
