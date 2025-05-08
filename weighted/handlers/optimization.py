@@ -28,7 +28,7 @@ class FoldFusion(ObjectInterpretation):
         inner_semiring, inner_streams, inner_body = body.args
 
         # Only fuse if both folds use the same semiring
-        if not (semiring == inner_semiring):
+        if semiring != inner_semiring:
             return fwd()
 
         # Return the fused fold
@@ -284,7 +284,7 @@ class NormalizeValueFold(ObjectInterpretation):
 
 
 interpretation = functools.reduce(
-    coproduct,
+    coproduct,  # type: ignore
     [
         FoldFusion(),
         FoldIndexDistributivity(),

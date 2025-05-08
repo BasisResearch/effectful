@@ -1,14 +1,15 @@
 import functools
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, TypeAlias
+from typing import TypeAlias
 
 import chex
 import effectful.handlers.jax.numpy as np
 import jax
 import matplotlib.pyplot as plt
-from effectful.ops.semantics import evaluate, handler, typeof
-from effectful.ops.syntax import deffn, defop, defterm, fwd
-from effectful.ops.types import Term
+from effectful.ops.semantics import evaluate, fwd, handler, typeof
+from effectful.ops.syntax import deffn, defop, defterm
+from effectful.ops.types import Operation, Term
 from jax import random
 from tqdm import tqdm
 
@@ -162,7 +163,9 @@ def policy_of_value(value, discount_factor):
 def value_of_policy(
     policy: Callable[[State], Action], discount_factor, horizon=3
 ) -> Callable[[State], float]:
-    s, sn = defop(State, name="s"), defop(State, name="sn")
+    s: Operation[[], State]
+    sn: Operation[[], State]
+    s, sn = defop(State, name="s"), defop(State, name="sn")  # type: ignore
 
     value = deffn(0, s)  # make free in s, rather than function
     for _ in range(horizon):
@@ -184,37 +187,13 @@ def value_of_policy_(
     if horizon == 0:
         return reward(initial, policy(initial))
 
-    sn = defop(State)
+    sn: Operation[[], State]
+    sn = defop(State)  # type: ignore
     future_reward = Sum(
         {sn: dynamics(initial, policy(initial))},
         value_of_policy_(policy, sn(), horizon - 1, discount_factor),
     )
     return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
-
-
-def value_of_policy__(
-    policy: Callable[[State], Action],
-    horizon: int,
-    discount_factor: float,
-    initial: State,
-) -> float:
-    state_ops = [None] + [defop(State) for _ in range(horizon)]
-    states = [initial] + [state_ops[t + 1]() for t in range(horizon)]
-
-    total_reward = 0.0
-    for t in range(horizon):
-        action = policy(states[t])
-        total_reward = add(
-            total_reward, mul(reward(states[t + 1], action), discount_factor**t)
-        )
-
-    return Sum(
-        {
-            state_ops[t + 1]: dynamics(states[t], policy(states[t]))
-            for t in range(horizon)
-        },
-        total_reward,
-    )
 
 
 def converged(p1, p2, epsilon=0.01):
@@ -226,7 +205,7 @@ def policy_iteration(discount_factor=0.01, steps=1):
 
     policy = deffn(0, s)
     for _ in tqdm(range(steps)):
-        value = functools.partial(value_of_policy__, policy, 3, discount_factor)
+        value = functools.partial(value_of_policy_, policy, 3, discount_factor)
         next_policy = policy_of_value(value, discount_factor)
         # for st in all_states:
         #     print("State:", st, "Policy:", policy(st), "Next Policy:", next_policy(st))
@@ -259,18 +238,13 @@ def partial_eval_state_deffn(body, *args, **kwargs):
         var = args[0]
         values = {}
         for s in states():
-            with handler({var: lambda: s}):
-                try:
-                    values[s] = evaluate(body)
-                except TypeError:
-                    breakpoint()
+            with handler({var: deffn(s)}):
+                values[s] = evaluate(body)
 
         @defop
         def pfun(x):
             if isinstance(x, Term):
                 raise NotImplementedError
-            if not isinstance(x, State):
-                breakpoint()
             assert isinstance(x, State)
             return values[x]
 
@@ -295,7 +269,7 @@ def term_to_json(term):
             return {
                 "dict": [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.items()]
             }
-        elif isinstance(expr, list) or isinstance(expr, tuple):
+        elif isinstance(expr, list | tuple):
             return {"list": [_term_to_json(t) for t in expr]}
         elif isinstance(expr, Term):
             args = [_term_to_json(t) for t in expr.args]

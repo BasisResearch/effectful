@@ -1,7 +1,8 @@
 import collections.abc
 import functools
 import itertools
-from typing import Mapping, ParamSpec, TypeAlias, TypeVar
+from collections.abc import Mapping
+from typing import ParamSpec, TypeAlias, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import evaluate, handler
@@ -72,12 +73,11 @@ class BaselineFold(ObjectInterpretation):
             all_vals = itertools.product(*list(streams.values()))
             for vals in all_vals:
                 keys = list(streams.keys())
-                with handler({k: deffn(v) for (k, v) in zip(keys, vals)}):
-                    breakpoint()
+                with handler({k: deffn(v) for (k, v) in zip(keys, vals, strict=True)}):
                     b = evaluate(body)
                     if isinstance(b, Term) and b.op is D:
-                        yield dict(b.args)
+                        yield dict(b.args)  # type: ignore
                     else:
-                        yield b
+                        yield b  # type: ignore
 
         return functools.reduce(functools.partial(promote_add, semiring.add), generator())

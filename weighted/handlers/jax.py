@@ -2,14 +2,14 @@ import collections.abc
 import functools
 import logging
 import operator
-from typing import Iterable
+from collections.abc import Iterable
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
 import jax
 import optax
 import tree
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.semantics import (
@@ -20,7 +20,13 @@ from effectful.ops.semantics import (
     handler,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    deffn,
+    defop,
+    implements,
+    syntactic_eq,
+)
 from effectful.ops.types import Operation, Term
 from numpyro.distributions import Distribution
 
@@ -71,7 +77,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         if not (
             semiring in (ArgMinAlg, ArgMaxAlg)
             and all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is jax.Array for k in streams.keys())
+            and all(typeof(k()) is jax.Array for k in streams)
         ):
             return fwd()
 
@@ -96,7 +102,7 @@ class DenseTensorArgFold(ObjectInterpretation):
             return fwd()
         indices = [i.op for i in indices]
 
-        old_to_fresh = {k: defop(k) for k in streams.keys()}
+        old_to_fresh = {k: defop(k) for k in streams}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
         indexed_streams = {
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
@@ -130,7 +136,7 @@ class DenseTensorArgFold(ObjectInterpretation):
         with handler(
             {
                 fresh_to_old[k]: deffn(streams[fresh_to_old[k]][v])
-                for k, v in zip(reduction_indices, min_indices)
+                for k, v in zip(reduction_indices, min_indices, strict=True)
             }
         ):
             argmins = evaluate(argmin_value)
@@ -193,7 +199,7 @@ class DenseTensorFold(ObjectInterpretation):
             return fwd()
         indices = [i.op for i in indices]
 
-        old_to_fresh = {k: defop(k) for k in streams.keys()}
+        old_to_fresh = {k: defop(k) for k in streams}
         indexed_streams = {
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
         }
@@ -207,13 +213,13 @@ class DenseTensorFold(ObjectInterpretation):
         }
         if unused_streams:
             result = result * functools.reduce(
-                operator.mul, (len(v) for v in unused_streams.values()), 1
+                operator.mul, (v.shape[0] for v in unused_streams.values()), 1
             )
 
         result_indices = fvsof(result)
         reduction_indices = [
             old_to_fresh[i]
-            for i in streams.keys()
+            for i in streams
             if old_to_fresh.get(i) in result_indices and i not in indices
         ]
 
@@ -331,7 +337,9 @@ class GradientOptimizationFold(ObjectInterpretation):
         if semiring is MinAlg:
             return final_loss
 
-        with handler({v: deffn(p) for (v, p) in zip(param_keys, param_values)}):
+        with handler(
+            {v: deffn(p) for (v, p) in zip(param_keys, param_values, strict=True)}
+        ):
             final_arg = evaluate(arg)
 
         return final_loss, final_arg
@@ -398,7 +406,7 @@ class PytreeMapFold(ObjectInterpretation):
 
         # Check that all values in the body have the same structure
         structure = None
-        for i, (_, t) in enumerate(body.args):
+        for _, t in body.args:
             s = jax.tree.structure(t)
             if structure and structure != s:
                 raise ValueError(
@@ -412,16 +420,91 @@ class PytreeMapFold(ObjectInterpretation):
 
         flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body.args]
 
-        flat_body = []
-        for vs in zip(*flat_bodies):
-            flat_body.append(
-                fold(semiring, streams, D(*[(k, v) for (k, _), v in zip(body.args, vs)]))
+        flat_body = [
+            fold(
+                semiring,
+                streams,
+                D(*[(k, v) for (k, _), v in zip(body.args, vs, strict=True)]),
             )
+            for vs in zip(*flat_bodies, strict=True)
+        ]
 
         return jax.tree.unflatten(structure, flat_body)
 
 
+def scan(f, init, *args, **kwargs):
+    sizes = sizesof(init)
+    pos_init = bind_dims(init, *sizes.keys())
+
+    def wrapped_f(pos_carry, x):
+        carry = unbind_dims(pos_carry, *sizes.keys())
+        next_carry, next_result = f(carry, x)
+        return bind_dims(next_carry, *sizes.keys()), bind_dims(next_result, *sizes.keys())
+
+    pos_carry, pos_result = jax.lax.scan(wrapped_f, pos_init, *args, **kwargs)
+    carry = unbind_dims(pos_carry, *sizes.keys())
+    result = jax_getitem(pos_result, [slice(None)] + [i() for i in sizes])
+    return carry, result
+
+
+class ScanFold(ObjectInterpretation):
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        # FIXME: This handler does not deal with the case where some but not all
+        # stream variables form a chain
+
+        # check that the streams form a chain
+        stream_vars = set(streams.keys())
+
+        head_var, head_val = None, None
+        for k, v in streams.items():
+            if not (fvsof(v) & stream_vars):
+                head_var, head_val = (k, v)
+                break
+
+        if head_var is None or head_val is None:
+            return fwd()
+
+        # FIXME: This algorithm is O(n^2) in the number of stream variables
+        unlinked_vars = set(stream_vars)
+        unlinked_vars.remove(head_var)
+        chain = [(head_var, head_val)]
+        while unlinked_vars:
+            for var in unlinked_vars:
+                free_vars = fvsof(streams[var]) & stream_vars
+                if free_vars == {chain[-1][0]}:
+                    chain.append((var, streams[var]))
+                    unlinked_vars.remove(var)
+                    break
+            else:
+                # Failed to find the next link in the chain
+                return fwd()
+
+        dummy_var = defop(object)
+        chain_body = None
+        for i in range(1, len(chain)):
+            with handler({chain[i - 1][0]: dummy_var}):
+                if chain_body is None:
+                    chain_body = evaluate(chain[i][1])
+                else:
+                    if not syntactic_eq(chain_body, evaluate(chain[i][1])):
+                        return fwd()
+
+        def func(carry, _idx):
+            with handler({dummy_var: lambda: carry}):
+                result = evaluate(chain_body)
+            return (result, result)
+
+        _, scanned_array = scan(func, head_val, jnp.arange(len(chain) - 1))
+
+        new_streams = {head_var: head_val}
+        for i, (var, _) in enumerate(chain[1:]):
+            new_streams[var] = scanned_array[i]
+
+        return fold(semiring, new_streams, body)
+
+
 interpretation = functools.reduce(
-    coproduct,
-    [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold(), PytreeMapFold()],
+    coproduct,  # type: ignore
+    [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold()],
 )

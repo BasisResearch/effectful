@@ -2,7 +2,8 @@ import collections.abc
 import dataclasses
 import itertools
 import numbers
-from typing import Any, Callable, Generic, ParamSpec, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, ParamSpec, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 import tree

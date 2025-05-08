@@ -1,13 +1,16 @@
+from graphlib import TopologicalSorter
+
 import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
-from effectful.handlers.jax import is_eager_array, jax_getitem, sizesof, unbind_dims
-from effectful.ops.semantics import handler
+from effectful.handlers.jax import jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax._handlers import is_eager_array
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from jax import random as random
 
-from weighted.handlers.jax import GradientOptimizationFold, reals
+from weighted.handlers.jax import GradientOptimizationFold, PytreeMapFold, ScanFold, reals
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.fold import D, fold
 from weighted.ops.sugar import ArgMin, Max, Min, Sum
@@ -15,8 +18,8 @@ from weighted.ops.sugar import ArgMin, Max, Min, Sum
 
 def infer_shape(sparse):
     shape = [0] * len(next(iter(sparse.keys())))
-    for index in sparse.keys():
-        shape = [max(a, b + 1) for a, b in zip(shape, index)]
+    for index in sparse:
+        shape = [max(a, b + 1) for a, b in zip(shape, index, strict=True)]
     return shape
 
 
@@ -278,6 +281,86 @@ def test_dependent_folds(ops):
             assert d[()] == expected
 
 
+def longest_dependency_chain(adj):
+    """Returns the longest dependency chain in a directed graph represented as
+    an adjacency dictionary.
+
+    """
+    ts = TopologicalSorter(adj)
+    ts.prepare()
+    i = 0
+    while ts.is_active():
+        for n in ts.get_ready():
+            ts.done(n)
+        i += 1
+    return i
+
+
+def dependency_graph_of_streams(streams):
+    """Returns the data dependency graph of a streams dictionary."""
+    stream_vars = set(streams.keys())
+    return {var: fvsof(val) & stream_vars for (var, val) in streams.items()}
+
+
+def test_fold_chain():
+    def f(x):
+        return x + 1
+
+    n_iters = 5
+    vs = [defop(jax.Array, name=f"x{i}") for i in range(n_iters)]
+    streams = {vs[0]: jnp.array([[1, 2, 3]])} | {
+        vs[i]: f(vs[i - 1]()) for i in range(1, n_iters)
+    }
+
+    deps = dependency_graph_of_streams(streams)
+    assert longest_dependency_chain(deps) == n_iters
+
+    with handler(ScanFold()):
+        new_fold = Sum(streams, vs[-1]())
+
+    assert isinstance(new_fold, Term) and new_fold.op is fold
+    new_streams = new_fold.args[1]
+
+    # ScanFold should break the dependency graph in the streams
+    deps = dependency_graph_of_streams(new_streams)
+    assert longest_dependency_chain(deps) < n_iters
+
+    with handler(jax_intp):
+        result = evaluate(new_fold)
+
+    assert jnp.allclose(result, jnp.array([5, 6, 7]))
+
+
+def test_fold_chain_named():
+    def f(x):
+        return x + 1
+
+    n_iters = 5
+    i = defop(jax.Array, name="i")
+    init = jnp.expand_dims(jax_getitem(jnp.array([1, 2, 3]), [i()]), 0)
+
+    vs = [defop(jax.Array, name=f"x{i}") for i in range(n_iters)]
+    streams = {vs[0]: init} | {vs[i]: f(vs[i - 1]()) for i in range(1, n_iters)}
+
+    deps = dependency_graph_of_streams(streams)
+    assert longest_dependency_chain(deps) == n_iters
+
+    with handler(ScanFold()):
+        new_fold = Sum(streams, vs[-1]())
+
+    assert isinstance(new_fold, Term) and new_fold.op is fold
+    new_streams = new_fold.args[1]
+
+    # ScanFold should break the dependency graph in the streams
+    deps = dependency_graph_of_streams(new_streams)
+    assert longest_dependency_chain(deps) < n_iters
+
+    with handler(jax_intp):
+        result = evaluate(new_fold)
+
+    assert jnp.allclose(result, jax_getitem(jnp.array([5, 6, 7]), [i()]))
+
+
 @pytest.mark.parametrize("ops", [(Sum, sum), (Min, min), (Max, max)])
 def test_pytree_fold(ops):
     """A fold where the body is a pytree and the fold indices are arrays should
@@ -287,8 +370,7 @@ def test_pytree_fold(ops):
     weighted_op, python_op = ops
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    breakpoint()
-    with handler(jax_intp):
+    with handler(jax_intp), handler(PytreeMapFold()):
         actual = weighted_op({i: jnp.arange(5), j: jnp.arange(7)}, (i() + j(), i() * j()))
         assert isinstance(actual, tuple)
         expected = (
