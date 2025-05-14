@@ -180,6 +180,13 @@ class _EagerArrayTerm(_ArrayTerm):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
         super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
 
+    def __len__(self):
+        return self.shape[0]
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
     @property
     def shape(self) -> tuple[int, ...]:
         return tuple(
