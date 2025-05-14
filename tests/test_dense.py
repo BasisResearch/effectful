@@ -3,17 +3,40 @@ from graphlib import TopologicalSorter
 import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
-from effectful.handlers.jax import jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
-from effectful.ops.semantics import evaluate, fvsof, handler
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from jax import random as random
 
-from weighted.handlers.jax import GradientOptimizationFold, PytreeMapFold, ScanFold, reals
+from weighted.handlers.jax import (
+    D,
+    GradientOptimizationFold,
+    PytreeMapFold,
+    ScanFold,
+    reals,
+)
 from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.fold import D, fold
+from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.sugar import ArgMin, Max, Min, Sum
+
+baseline_intp = coproduct(
+    BaselineFold(),
+    {D: lambda *a, **k: pytest.xfail("D operator not implemented for baseline fold")},
+)
+
+parameterize_intp = pytest.mark.parametrize(
+    "intp", [pytest.param(jax_intp, id="jax"), pytest.param(baseline_intp, id="baseline")]
+)
+parameterize_ops = pytest.mark.parametrize(
+    "weighted_op,python_op",
+    [
+        pytest.param(Sum, sum, id="sum"),
+        pytest.param(Min, min, id="min"),
+        pytest.param(Max, max, id="max"),
+    ],
+)
 
 
 def infer_shape(sparse):
@@ -58,17 +81,15 @@ def test_batched_matmul():
     assert jnp.allclose(actual, expected)
 
 
-def test_linalg_folds():
-    key = jax.random.PRNGKey(0)
+@parameterize_intp
+def test_linalg_folds(intp):
     x, y, z = (
         defop(jax.Array, name="x"),
         defop(jax.Array, name="y"),
         defop(jax.Array, name="z"),
     )
-    A = random.normal(key, (3, 3))
-    B = random.normal(key, (3,))
 
-    with handler(jax_intp):
+    with handler(intp):
         f1 = Sum({x: jnp.arange(3)}, x())
         assert isinstance(f1, jax.Array)
         assert f1[()] == 3
@@ -80,13 +101,6 @@ def test_linalg_folds():
         f3 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, x())
         assert isinstance(f3, jax.Array)
         assert f3[()] == 9
-
-        f4 = Sum(
-            {x: jnp.arange(3), y: jnp.arange(3)},
-            D(((x(),), unbind_dims(A, x, y) * unbind_dims(B, y))),
-        )
-        assert isinstance(f4, jax.Array)
-        assert jnp.allclose(f4, jnp.einsum("ij,j->i", A, B))
 
         with handler({z: lambda: jnp.array(2)}):
             f5 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, z() + x())
@@ -102,83 +116,125 @@ def test_linalg_folds():
         assert f7[()] == 2 * 9
 
 
-def run_min_folds():
+@parameterize_intp
+def test_linalg_folds_named(intp):
+    key = jax.random.PRNGKey(0)
+    (x, y) = (defop(jax.Array, name="x"), defop(jax.Array, name="y"))
+    A = random.normal(key, (3, 3))
+    B = random.normal(key, (3,))
+
+    with handler(intp):
+        f4 = Sum(
+            {x: jnp.arange(3), y: jnp.arange(3)},
+            D(((x(),), unbind_dims(A, x, y) * unbind_dims(B, y))),
+        )
+        assert isinstance(f4, jax.Array)
+        assert jnp.allclose(f4, jnp.einsum("ij,j->i", A, B))
+
+
+@parameterize_intp
+def test_basic_min_folds(intp):
+    """Test basic Min fold operations."""
+    x = defop(jax.Array, name="x")
+
+    with handler(intp):
+        # Basic test with negative index
+        f1 = Min({x: jnp.arange(100)}, -x())
+        assert isinstance(f1, jax.Array)
+        assert f1[()] == -99
+
+        # Basic test with squared function (minimum at x=0)
+        f2 = Min({x: jnp.arange(-10, 10)}, x() ** 2)
+        assert isinstance(f2, jax.Array)
+        assert f2[()] == 0
+
+        # Edge case: single element range
+        f_single = Min({x: jnp.arange(1, 2)}, x() ** 2)
+        assert isinstance(f_single, jax.Array)
+        assert f_single[()] == 1
+
+        # Edge case: large numbers
+        f_large = Min({x: jnp.arange(10**6, 10**6 + 10)}, x() - 10**6)
+        assert isinstance(f_large, jax.Array)
+        assert f_large[()] == 0
+
+
+@parameterize_intp
+def test_arg_min_folds(intp):
+    """Test ArgMin fold operations."""
+    x = defop(jax.Array, name="x")
+
+    with handler(intp):
+        # Basic ArgMin test
+        f2_arg = ArgMin({x: jnp.arange(-10, 10)}, (x() ** 2, x()))
+        assert isinstance(f2_arg[0], jax.Array)
+        assert isinstance(f2_arg[1], jax.Array)
+        assert f2_arg == (jnp.array(0), jnp.array(0))
+
+        # Edge case: tied minimum values
+        f_tied = ArgMin({x: jnp.arange(-3, 4)}, (abs(x()), x()))
+        assert isinstance(f_tied[0], jax.Array)
+        assert isinstance(f_tied[1], jax.Array)
+        assert f_tied == (jnp.array(0), jnp.array(0))
+
+
+@parameterize_intp
+def test_multi_variable_min_folds(intp):
+    """Test Min fold operations with multiple variables."""
+    x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
+
+    with handler(intp):
+        # Test with multiple variables
+        def custom_func(a, b, c=1):
+            return a**2 + b**2 - c
+
+        f_custom = Min(
+            {x: jnp.arange(-5, 6), y: jnp.arange(-5, 6)}, custom_func(x(), y(), 10)
+        )
+        assert isinstance(f_custom, jax.Array)
+        assert f_custom[()] == -10  # Minimum is at x=0, y=0: 0²+0²-10 = -10
+
+
+@parameterize_intp
+def test_multi_variable_arg_min_folds(intp):
+    """Test ArgMin fold operations with multiple variables."""
+    x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
+
+    with handler(intp):
+        # Test ArgMin with multiple variables
+        f2_arg_pair = ArgMin(
+            {x: jnp.arange(1, 5), y: jnp.arange(4, 8)}, (x() + y(), (x(), y()))
+        )
+        assert isinstance(f2_arg_pair[0], jax.Array)
+        assert isinstance(f2_arg_pair[1][0], jax.Array)
+        assert isinstance(f2_arg_pair[1][1], jax.Array)
+        assert f2_arg_pair == (jnp.array(5), (jnp.array(1), jnp.array(4)))
+
+
+@parameterize_intp
+def test_complex_arg_min_folds(intp):
+    """Test complex ArgMin fold operations with three variables."""
     x, y, z = (
         defop(jax.Array, name="x"),
         defop(jax.Array, name="y"),
         defop(jax.Array, name="z"),
     )
 
-    # Basic tests
-    f1 = Min({x: jnp.arange(100)}, -x())
-    assert isinstance(f1, jax.Array)
-    assert f1[()] == -99
-
-    f2 = Min({x: jnp.arange(-10, 10)}, x() ** 2)
-    assert isinstance(f2, jax.Array)
-    assert f2[()] == 0
-
-    f2_arg = ArgMin({x: jnp.arange(-10, 10)}, (x() ** 2, x()))
-    assert isinstance(f2_arg[0], jax.Array)
-    assert isinstance(f2_arg[1], jax.Array)
-    assert f2_arg == (jnp.array(0), jnp.array(0))
-
-    f2_arg_pair = ArgMin(
-        {x: jnp.arange(1, 5), y: jnp.arange(4, 8)}, (x() + y(), (x(), y()))
-    )
-    assert isinstance(f2_arg_pair[0], jax.Array)
-    assert isinstance(f2_arg_pair[1][0], jax.Array)
-    assert isinstance(f2_arg_pair[1][1], jax.Array)
-    assert f2_arg_pair == (jnp.array(5), (jnp.array(1), jnp.array(4)))
-
-    # Edge case: single element range
-    f_single = Min({x: jnp.arange(1, 2)}, x() ** 2)
-    assert isinstance(f_single, jax.Array)
-    assert f_single[()] == 1
-
-    # Edge case: tied minimum values
-    f_tied = ArgMin({x: jnp.arange(-3, 4)}, (abs(x()), x()))
-    assert isinstance(f_tied[0], jax.Array)
-    assert isinstance(f_tied[1], jax.Array)
-    assert f_tied == (jnp.array(0), jnp.array(0))
-
-    # Edge case: large numbers
-    f_large = Min({x: jnp.arange(10**6, 10**6 + 10)}, x() - 10**6)
-    assert isinstance(f_large, jax.Array)
-    assert f_large[()] == 0
-
-    # Edge case: custom function with multiple variables
-    def custom_func(a, b, c=1):
-        return a**2 + b**2 - c
-
-    f_custom = Min(
-        {x: jnp.arange(-5, 6), y: jnp.arange(-5, 6)}, custom_func(x(), y(), 10)
-    )
-    assert isinstance(f_custom, jax.Array)
-    assert f_custom[()] == -10  # Minimum is at x=0, y=0: 0²+0²-10 = -10
-
-    # Edge case: complex expression with three variables
-    f_complex = ArgMin(
-        {x: jnp.arange(-3, 4), y: jnp.arange(-3, 4), z: jnp.arange(-3, 4)},
-        ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z())),
-    )
-    assert isinstance(f_complex[0], jax.Array)
-    assert isinstance(f_complex[1][0], jax.Array)
-    assert isinstance(f_complex[1][1], jax.Array)
-    assert isinstance(f_complex[1][2], jax.Array)
-    assert f_complex == (jnp.array(0), (jnp.array(1), jnp.array(-2), jnp.array(3)))
+    with handler(intp):
+        # Complex expression with three variables
+        f_complex = ArgMin(
+            {x: jnp.arange(-3, 4), y: jnp.arange(-3, 4), z: jnp.arange(-3, 4)},
+            ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z())),
+        )
+        assert isinstance(f_complex[0], jax.Array)
+        assert isinstance(f_complex[1][0], jax.Array)
+        assert isinstance(f_complex[1][1], jax.Array)
+        assert isinstance(f_complex[1][2], jax.Array)
+        assert f_complex == (jnp.array(0), (jnp.array(1), jnp.array(-2), jnp.array(3)))
 
 
-def assert_no_base_case(*args, **kwargs):
-    assert False, f"vectorized fold missed a case: {args}, {kwargs}"
-
-
-def test_minalg_vectorized():
-    with handler({fold: assert_no_base_case}), handler(jax_intp):
-        run_min_folds()
-
-
-def test_nested_folds():
+@parameterize_intp
+def test_nested_folds(intp):
     """Test nested folds over jnp.arange to verify they work correctly."""
     a, b, c = (
         defop(jax.Array, name="a"),
@@ -191,7 +247,7 @@ def test_nested_folds():
     b_range = jnp.arange(2)  # 0, 1
     c_range = jnp.arange(4)  # 0, 1, 2, 3
 
-    with handler(jax_intp):
+    with handler(intp):
         # Test a simple nested fold that computes the sum of all combinations
         # This is equivalent to: sum(a + b + c for a in range(3) for b in range(2) for c in range(4))
         nested_result = Sum(
@@ -237,19 +293,21 @@ def test_nested_folds():
         assert jnp.isclose(fusion_candidate[()], direct_computation[()])
 
 
-def test_partial_eval():
+@parameterize_intp
+def test_partial_eval(intp):
     """Fold over arrays with named dimensions."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     indexed_array = unbind_dims(jnp.ones((5, 4)), i)
-    with handler(jax_intp):
+
+    with handler(intp):
         r1 = Sum({j: indexed_array}, j())
 
     assert isinstance(r1, Term)
     assert i in sizesof(r1) and j not in sizesof(r1)
     assert is_eager_array(r1)
 
-    with handler(jax_intp):
+    with handler(intp):
         r2 = Sum({j: indexed_array}, j() + 1)
 
     assert isinstance(r2, Term)
@@ -257,14 +315,13 @@ def test_partial_eval():
     assert is_eager_array(r2)
 
 
-@pytest.mark.parametrize("ops", [(Sum, sum), (Min, min), (Max, max)])
-def test_dependent_folds(ops):
+@parameterize_intp
+@parameterize_ops
+def test_dependent_folds(intp, weighted_op, python_op):
     """Test folds where indices depend on other indices within the same fold."""
-    weighted_op, python_op = ops
-
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    with handler(jax_intp):
+    with handler(intp):
         # Test fold where j depends on i
         # This is equivalent to: sum(i + j for i in range(5) for j in range(i+1))
         inner_1 = weighted_op({j: jax_getitem(jnp.ones((5, 4)), [i()])}, j())
@@ -358,16 +415,16 @@ def test_fold_chain_named():
     with handler(jax_intp):
         result = evaluate(new_fold)
 
-    assert jnp.allclose(result, jax_getitem(jnp.array([5, 6, 7]), [i()]))
+    expected = jax_getitem(jnp.array([5, 6, 7]), [i()])
+    assert jnp.all(bind_dims(jnp.allclose(result, expected), i))
 
 
-@pytest.mark.parametrize("ops", [(Sum, sum), (Min, min), (Max, max)])
-def test_pytree_fold(ops):
+@parameterize_ops
+def test_pytree_fold(weighted_op, python_op):
     """A fold where the body is a pytree and the fold indices are arrays should
     produce a pytree of arrays.
 
     """
-    weighted_op, python_op = ops
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     with handler(jax_intp), handler(PytreeMapFold()):

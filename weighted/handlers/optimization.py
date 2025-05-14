@@ -7,7 +7,8 @@ from effectful.ops.semantics import coproduct, fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 
-from weighted.ops.fold import D, fold
+from weighted.handlers.jax import D
+from weighted.ops.fold import fold
 from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
 
 
@@ -254,32 +255,6 @@ class FoldZero(ObjectInterpretation):
             return semiring.zero
         if body == semiring.zero:
             return semiring.zero
-        return fwd()
-
-
-class NormalizeValueFold(ObjectInterpretation):
-    """Normalization rule for the body of folds."""
-
-    @implements(fold)
-    def fold(self, semiring, streams, body):
-        modified_body = False
-        if isinstance(body, Term) and body.op is D:
-            kvs = []
-            for k, v in body.args:
-                if not isinstance(k, tuple):
-                    k = (k,)
-                    modified_body = True
-                kvs.append((k, v))
-            new_body = D(*kvs)
-        elif isinstance(body, dict):
-            modified_body = True
-            new_body = D(*body.items())
-        else:
-            modified_body = True
-            new_body = D(((), body))
-
-        if modified_body:
-            return fold(semiring, streams, new_body)
         return fwd()
 
 

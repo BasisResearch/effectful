@@ -30,11 +30,17 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Operation, Term
 from numpyro.distributions import Distribution
 
-from weighted.handlers.optimization import NormalizeValueFold
-from weighted.ops.fold import D, fold
+from weighted.ops.fold import fold
 from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
 
 logger = logging.getLogger(__name__)
+
+
+@defop
+def D(*args: tuple[tuple[int, ...], jax.Array]) -> jax.Array:
+    if not all(isinstance(kv, tuple) and len(kv) == 2 for kv in args):
+        raise ValueError("Expected a sequence of key-value pairs")
+    raise NotImplementedError
 
 
 @defop
@@ -502,6 +508,32 @@ class ScanFold(ObjectInterpretation):
             new_streams[var] = scanned_array[i]
 
         return fold(semiring, new_streams, body)
+
+
+class NormalizeValueFold(ObjectInterpretation):
+    """Normalization rule for the body of folds."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        modified_body = False
+        if isinstance(body, Term) and body.op is D:
+            kvs = []
+            for k, v in body.args:
+                if not isinstance(k, tuple):
+                    k = (k,)
+                    modified_body = True
+                kvs.append((k, v))
+            new_body = D(*kvs)
+        elif isinstance(body, dict):
+            modified_body = True
+            new_body = D(*body.items())
+        else:
+            modified_body = True
+            new_body = D(((), body))
+
+        if modified_body:
+            return fold(semiring, streams, new_body)
+        return fwd()
 
 
 interpretation = functools.reduce(

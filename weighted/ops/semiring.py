@@ -63,8 +63,6 @@ def add(a, b):
         return b
     if isinstance(b, numbers.Number) and b == 0:
         return a
-    if any(isinstance(x, Term) for x in (a, b)):
-        raise NotImplementedError
     return a + b
 
 
@@ -78,9 +76,29 @@ def mul(a, b):
         return b
     if isinstance(b, numbers.Number) and b == 1:
         return a
+    return a * b
+
+
+@defop
+def min(a, b):
+    if isinstance(a, numbers.Number) and a == float("inf"):
+        return b
+    if isinstance(b, numbers.Number) and b == float("inf"):
+        return a
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotImplementedError
-    return a * b
+    return a if a < b else b
+
+
+@defop
+def max(a, b):
+    if isinstance(a, numbers.Number) and a == float("-inf"):
+        return b
+    if isinstance(b, numbers.Number) and b == float("-inf"):
+        return a
+    if any(isinstance(x, Term) for x in (a, b)):
+        raise NotImplementedError
+    return a if a > b else b
 
 
 @defop

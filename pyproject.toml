@@ -83,4 +83,4 @@ quote-style = "double"
 
 [tool.ruff.lint]
 select = ["F", "I", "PERF", "UP", "B", "SIM", "C4", "T10", "FURB", "PLE"]
-extend-ignore = ["E203", "E741", "B011"]
+extend-ignore = ["E203", "E741", "B011", "FURB136"]
