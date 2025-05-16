@@ -7,6 +7,7 @@ from typing import Any, Generic, ParamSpec, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 import tree
+from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 
@@ -58,47 +59,51 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
 
 
 @defop
-def add(a, b):
+def add(a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == 0:
         return b
     if isinstance(b, numbers.Number) and b == 0:
         return a
-    return a + b
+    if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
+        raise NotImplementedError
+    return a + b  # type: ignore
 
 
 @defop
-def mul(a, b):
+def mul(a: T, b: T) -> T:
     if (isinstance(a, numbers.Number) and a == 0) or (
         isinstance(b, numbers.Number) and b == 0
     ):
-        return 0
+        return 0  # type: ignore
     if isinstance(a, numbers.Number) and a == 1:
         return b
     if isinstance(b, numbers.Number) and b == 1:
         return a
-    return a * b
+    if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
+        raise NotImplementedError
+    return a * b  # type: ignore
 
 
 @defop
-def min(a, b):
+def min(a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == float("inf"):
         return b
     if isinstance(b, numbers.Number) and b == float("inf"):
         return a
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotImplementedError
-    return a if a < b else b
+    return a if a < b else b  # type: ignore
 
 
 @defop
-def max(a, b):
+def max(a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == float("-inf"):
         return b
     if isinstance(b, numbers.Number) and b == float("-inf"):
         return a
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotImplementedError
-    return a if a > b else b
+    return a if a > b else b  # type: ignore
 
 
 @defop

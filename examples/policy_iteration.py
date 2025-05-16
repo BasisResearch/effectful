@@ -1,19 +1,26 @@
 import functools
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeAlias
 
 import chex
-import effectful.handlers.jax.numpy as np
+import effectful.handlers.jax.numpy as jnp
+import flax.nnx as nnx
 import jax
 import matplotlib.pyplot as plt
-from effectful.ops.semantics import evaluate, fwd, handler, typeof
-from effectful.ops.syntax import deffn, defop, defterm
+import optax
+from effectful.handlers.jax import jax_getitem
+from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
+from effectful.ops.semantics import fwd, handler, typeof
+from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
 from jax import random
+from matplotlib.animation import FuncAnimation
 from tqdm import tqdm
 
-from weighted.handlers.optimization import interpretation as opt_intp
+from weighted.handlers.jax import D, ScanFold, key
+from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.semiring import add, mul
 from weighted.ops.sugar import ArgMax, Sum
 
@@ -41,12 +48,12 @@ class State:
         agent_position = random.randint(key1, (2,), 0, grid_size)
 
         food_positions = random.uniform(key2, (grid_size, grid_size)) < food_probability
-        food_positions = food_positions.astype(np.int32)
+        food_positions = food_positions.astype(jnp.int32)
         food_positions = food_positions.at[agent_position[0], agent_position[1]].set(0)
 
-        return State(agent_position=agent_position, food_positions=food_positions)
+        return State(agent_position, food_positions)
 
-    def render(self):
+    def render(self, ax):
         """Render the environment using matplotlib."""
         grid = self.food_positions
         grid = grid.at[self.agent_position[0], self.agent_position[1]].set(
@@ -59,11 +66,7 @@ class State:
         norm = plt.cm.colors.BoundaryNorm(bounds, cmap.N)
 
         # Plot the grid
-        plt.imshow(grid, cmap=cmap, norm=norm)
-        plt.xticks([])  # Remove x-axis ticks
-        plt.yticks([])  # Remove y-axis ticks
-        plt.title("Grid World")
-        plt.show()
+        ax.imshow(grid, cmap=cmap, norm=norm)
 
     def __hash__(self):
         """Hash function for the state."""
@@ -78,18 +81,33 @@ class State:
         """Equality check for the state."""
         if not isinstance(other, State):
             return NotImplemented
-        return np.array_equal(
+        return jnp.array_equal(
             self.agent_position, other.agent_position
-        ) and np.array_equal(self.food_positions, other.food_positions)
+        ) and jnp.array_equal(self.food_positions, other.food_positions)
+
+    @staticmethod
+    def of_array(arr):
+        dim = int(math.sqrt(arr.shape[0] - 2))
+        return State(arr[:2], jnp.reshape(arr[2:], (dim, dim)))
+
+    def to_array(self):
+        """Convert the state to a flat array."""
+        return jnp.concatenate(
+            (self.agent_position, jnp.ravel(self.food_positions)), dtype=jnp.int32
+        )
 
 
 Action: TypeAlias = int
 
 
 def dynamics_and_reward(
-    state: State, action: Action, step_penalty=-0.01, food_reward=1.0
-) -> tuple[list[State], float]:
-    action_to_direction = np.array(
+    arr: jax.Array, action: Action, step_penalty=-0.01, food_reward=1.0
+) -> tuple[jax.Array, float]:
+    assert arr.shape == (102,)
+
+    state = State.of_array(arr)
+
+    action_to_direction = jnp.array(
         [
             [-1, 0],  # up
             [0, 1],  # right
@@ -99,214 +117,259 @@ def dynamics_and_reward(
     )
 
     curr_position = state.agent_position
-    direction = action_to_direction[action]
+    direction = jnp.squeeze(jax_getitem(action_to_direction, [action]))
     grid_size = state.food_positions.shape[0]
 
     # Calculate new position
     new_position = curr_position + direction
 
     # Apply boundary constraints using clip to keep the agent within the grid
-    new_position = np.clip(new_position, 0, grid_size - 1)
+    new_position = jnp.clip(new_position, 0, grid_size - 1)
 
     reward = (
-        state.food_positions[new_position[0], new_position[1]] * food_reward
+        jax_getitem(
+            state.food_positions,
+            [jax_getitem(new_position, [0]), jax_getitem(new_position, [1])],
+        )
+        * food_reward
         + step_penalty
     )
 
     # Remove food from the new position
-    new_food = state.food_positions.at[new_position[0], new_position[1]].set(0)
+    # TODO: Implement .at method for indexed jax arrays
+    def _build_food_mask(pos):
+        ret = jnp.ones(state.food_positions.shape).at[pos[0], pos[1]].set(0)
+        return ret
+
+    build_food_mask = _register_jax_op(_build_food_mask)
+    food_mask = build_food_mask(new_position)
+    new_food = state.food_positions * food_mask
 
     # Create new state
     new_state = State(agent_position=new_position, food_positions=new_food)
+    assert new_state.agent_position.shape == (2,)
+    assert (
+        len(new_state.food_positions.shape) == 2
+        and new_state.food_positions.shape[0] == new_state.food_positions.shape[1]
+    )
 
-    return [new_state], reward
+    return new_state.to_array(), reward
 
 
-states = defop(list[State], name="States")
-actions = defop(jax.Array, name="Actions")
+actions: Operation[[], jax.Array]
+states = defop(jax.Array, name="States")
+actions = defop(jax.Array, name="Actions")  # type: ignore
+
+
+def is_eager(x):
+    return not isinstance(x, Term) or is_eager_array(x)
 
 
 @defop
-def reward(s: State, a: Action) -> float:
-    if not any(isinstance(x, Term) for x in [s, a]):
-        return dynamics_and_reward(s, a)[1]
-    raise NotImplementedError
+def reward(s: jax.Array, a: Action) -> float:
+    if not (is_eager(s) and is_eager(a)):
+        raise NotImplementedError
+    return dynamics_and_reward(s, a)[1]
 
 
 @defop
-def dynamics(s: State, a: Action) -> list[State]:
-    if not any(isinstance(x, Term) for x in [s, a]):
-        return dynamics_and_reward(s, a)[0]
-    raise NotImplementedError
+def dynamics(s: jax.Array, a: Action) -> jax.Array:
+    if not (is_eager(s) and is_eager(a)):
+        raise NotImplementedError
+    return dynamics_and_reward(s, a)[0]
 
 
 @defop
 def tuple_getitem(x, i):
-    if not any(isinstance(a, Term) for a in (x, i)):
-        return x[i]
-    raise NotImplementedError
+    if not (isinstance(x, tuple) and isinstance(i, int)):
+        raise NotImplementedError
+    return x[i]
 
 
-def policy_of_value(value, discount_factor):
-    s, sn = defop(State, name="s"), defop(State, name="sn")
+def policy_of_value(
+    value: Callable[[jax.Array], float], state: jax.Array, discount_factor: float
+) -> Action:
     a = defop(Action, name="a")
 
-    discounted_value = mul(discount_factor, Sum({sn: dynamics(s(), a())}, value(sn())))
-    return deffn(
-        tuple_getitem(
-            ArgMax({a: actions()}, (add(reward(s(), a()), discounted_value), a())), 1
-        ),
-        s,
-    )
+    next_state = dynamics(state, a())
+    next_value = value(next_state)
+    discounted_value = mul(discount_factor, next_value)
+    best_action = ArgMax({a: actions()}, (add(reward(state, a()), discounted_value), a()))
+    result = tuple_getitem(best_action, 1)
+    return result
 
 
 def value_of_policy(
-    policy: Callable[[State], Action], discount_factor, horizon=3
-) -> Callable[[State], float]:
-    s: Operation[[], State]
-    sn: Operation[[], State]
-    s, sn = defop(State, name="s"), defop(State, name="sn")  # type: ignore
-
-    value = deffn(0, s)  # make free in s, rather than function
-    for _ in range(horizon):
-        prev_value = value
-        future_payoff = Sum({sn: dynamics(s(), policy(s()))}, prev_value(sn()))
-        value = deffn(
-            add(reward(s(), policy(s())), mul(discount_factor, future_payoff)), s
-        )
-
-    return value
-
-
-def value_of_policy_(
-    policy: Callable[[State], Action],
-    initial: State,
+    policy: Callable[[jax.Array], Action],
+    initial: jax.Array,
     horizon: int,
     discount_factor: float,
 ) -> float:
-    if horizon == 0:
-        return reward(initial, policy(initial))
+    states: list[Operation[[], jax.Array]] = [
+        defop(jax.Array, name=f"s{i}")  # type: ignore
+        for i in range(horizon)
+    ]
+    bindings = {states[0]: jnp.expand_dims(initial, 0)} | {
+        states[i]: jnp.expand_dims(dynamics(states[i - 1](), policy(states[i - 1]())), 0)
+        for i in range(1, horizon)
+    }
 
-    sn: Operation[[], State]
-    sn = defop(State)  # type: ignore
-    future_reward = Sum(
-        {sn: dynamics(initial, policy(initial))},
-        value_of_policy_(policy, sn(), horizon - 1, discount_factor),
+    total_reward = functools.reduce(
+        add,
+        [
+            mul(discount_factor**t, reward(states[t](), policy(states[t]())))
+            for t in range(horizon)
+        ],
     )
-    return add(reward(initial, policy(initial)), mul(discount_factor, future_reward))
+    value = Sum(bindings, total_reward)
+    return value
 
 
-def converged(p1, p2, epsilon=0.01):
-    return np.max(np.abs(p1 - p2)) < epsilon
-
-
-def policy_iteration(discount_factor=0.01, steps=1):
-    s = defop(State)
+def policy_iteration(discount_factor=0.01, steps=1, horizon=1):
+    s = defop(jax.Array)
 
     policy = deffn(0, s)
-    for _ in tqdm(range(steps)):
-        value = functools.partial(value_of_policy_, policy, 3, discount_factor)
-        next_policy = policy_of_value(value, discount_factor)
-        # for st in all_states:
-        #     print("State:", st, "Policy:", policy(st), "Next Policy:", next_policy(st))
-        policy = next_policy
+    keys = jax.random.split(key(), steps)
+    for i in tqdm(range(steps)):
+        with handler({key: deffn(keys[i])}):
+            value = deffn(value_of_policy(policy, s(), horizon, discount_factor), s)
+            policy = deffn(policy_of_value(value, s(), discount_factor), s)
     return policy
 
 
 grid_size = 2
-all_actions = np.array([0, 1, 2, 3])
+all_actions = jnp.array([0, 1, 2, 3])
 all_states = []
 for i in range(grid_size):
     for j in range(grid_size):
         for g in range(2 ** (grid_size * grid_size)):
-            state = State(
-                agent_position=np.array([i, j]),
-                food_positions=np.array(
-                    [
-                        (g >> (i * grid_size + j)) & 1
-                        for i in range(grid_size)
-                        for j in range(grid_size)
-                    ]
-                ).reshape((grid_size, grid_size)),
-            )
-            if not state.food_positions[state.agent_position[0], state.agent_position[1]]:
-                all_states.append(state)
+            agent_position = jnp.array([i, j])
+            food_positions = jnp.array(
+                [
+                    (g >> (i * grid_size + j)) & 1
+                    for i in range(grid_size)
+                    for j in range(grid_size)
+                ]
+            ).reshape((grid_size, grid_size))
+            if not food_positions[agent_position[0], agent_position[1]]:
+                all_states.append(
+                    State(agent_position=agent_position, food_positions=food_positions)
+                )
 
 
-def partial_eval_state_deffn(body, *args, **kwargs):
-    if len(args) == 1 and typeof(args[0]()) == State:
-        var = args[0]
-        values = {}
-        for s in states():
-            with handler({var: deffn(s)}):
-                values[s] = evaluate(body)
+class TabularValueFn(ObjectInterpretation):
+    @implements(deffn)
+    def deffn(self, body, *args, **kwargs):
+        if len(args) == 1 and typeof(args[0]()) == State:
+            values = Sum({args[0]: states()}, D((args[0](), body)))
 
-        @defop
-        def pfun(x):
-            if isinstance(x, Term):
-                raise NotImplementedError
-            assert isinstance(x, State)
-            return values[x]
+            @defop
+            def pfun(x):
+                if isinstance(x, Term):
+                    raise NotImplementedError
+                return values[x]
 
-        return pfun
-    return fwd()
+            return pfun
 
+        return fwd()
 
-def fold_conv(*args, **kwargs):
-    ret = fwd()
-    if isinstance(ret, dict) and () in ret:
-        return ret[()]
-    return ret
+    @implements(states)
+    def _states(self):
+        return all_states
 
 
-def term_to_json(term):
-    def _op_to_json(op, *args, **kwargs):
-        return {"name": op.__name__, "freshening": op._freshening}
+class ValueMLP(nnx.Module):
+    """Simple MLP for value function approximation using NNX."""
 
-    def _term_to_json(expr):
-        expr = defterm(expr)
-        if isinstance(expr, dict):
-            return {
-                "dict": [(_term_to_json(k), _term_to_json(v)) for (k, v) in expr.items()]
-            }
-        elif isinstance(expr, list | tuple):
-            return {"list": [_term_to_json(t) for t in expr]}
-        elif isinstance(expr, Term):
-            args = [_term_to_json(t) for t in expr.args]
-            kwargs = [
-                (_term_to_json(k), _term_to_json(v)) for (k, v) in expr.kwargs.items()
-            ]
-            return {
-                "op": _op_to_json(expr.op),
-                "args": args,
-                "kwargs": kwargs,
-                "type": str(typeof(expr)),
-            }
-        return {"value": str(expr)}
+    def __init__(self, width, rngs):
+        super().__init__()
+        self.dense1 = nnx.Linear(width, width, rngs=rngs)
+        self.dense2 = nnx.Linear(width, 1, rngs=rngs)
 
-    import json
-
-    j = _term_to_json(term)
-    return json.dumps(j)
+    def __call__(self, x):
+        x = self.dense1(x)
+        x = jax.nn.relu(x)
+        x = self.dense2(x)
+        return x
 
 
-with handler(opt_intp):
-    t = policy_iteration(steps=1)
+class NNValueFn(ObjectInterpretation):
+    def __init__(self, num_samples=100, learning_rate=0.01, epochs=100, grid_size=10):
+        self.num_samples = num_samples
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.grid_size = grid_size
 
-print(str(t))
-# s = defop(State)
-# with (
-#     handler(dense_fold_intp),
-#     handler(
-#         {actions: lambda: all_actions, states: lambda: all_states, deffn: partial_eval_state_deffn, fold: fold_conv}
-#     ),
-# ):
-#     policy = policy_iteration(steps=5)
+    def _generate_training_data(self, value_fn):
+        """Generate training data by sampling random states and evaluating them."""
+        keys = jax.random.split(key(), self.num_samples)
+        states = jax.vmap(lambda k: State.random(k, grid_size=self.grid_size).to_array())(
+            keys
+        )
+        values = jax.vmap(value_fn)(states)
+        assert isinstance(values, jax.Array) and values.shape == (self.num_samples,)
+        return states, values
 
-# state = State(np.array([0, 0]), np.array([[0, 0], [1, 1]]))
-# state.render()
-# for _ in range(5):
-#     action = policy(state)
-#     print("Action:", action)
-#     state = dynamics(state, action)[0]
-#     state.render()
+    @implements(deffn)
+    def deffn(self, body, *args, **kwargs):
+        if len(args) == 1 and typeof(args[0]()) == jax.Array and typeof(body) == float:
+            # Get the existing value function computation
+            exact_value_fn = fwd()
+            exact_value_fn_jit = jax.jit(lambda *a, **k: exact_value_fn(*a, **k))
+
+            # generate training data
+            features, values = self._generate_training_data(exact_value_fn_jit)
+
+            # Create the model with NNX
+            model = ValueMLP(self.grid_size**2 + 2, rngs=nnx.Rngs(key()))
+
+            # Define optimizer
+            tx = optax.adam(self.learning_rate)
+            optimizer = nnx.Optimizer(model, tx)
+
+            # Define loss function
+            def loss_fn(model, x, targets):
+                preds = model(x)
+                return optax.squared_error(preds.squeeze(), targets).mean()
+
+            @nnx.jit
+            def train_step(model, optimizer, states, values):
+                grad_fn = nnx.value_and_grad(loss_fn)
+                loss, grads = grad_fn(model, states, values)
+                optimizer = optimizer.update(grads)
+
+            for _ in range(self.epochs):
+                train_step(model, optimizer, features, values)
+
+            # Define prediction function
+            @_register_jax_op
+            @nnx.jit
+            def predict(x):
+                return model(x)
+
+            return predict
+
+        return fwd()
+
+
+with (
+    handler(jax_intp),
+    handler(NNValueFn()),
+    handler(ScanFold()),
+    handler({actions: lambda: all_actions}),
+):
+    policy = policy_iteration(steps=30, horizon=5)
+
+    def frames(n):
+        state = State.random(jax.random.PRNGKey(43), grid_size=10)
+        yield state
+        for _ in tqdm(range(n)):
+            action = policy(state.to_array())
+            state = State.of_array(dynamics(state.to_array(), action))
+            yield state
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    n_frames = 30
+    fs = list(frames(n_frames))
+    ani = FuncAnimation(fig, lambda state: state.render(ax), fs)
+    ani.save("episode.mp4")

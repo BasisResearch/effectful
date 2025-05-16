@@ -1,18 +1,24 @@
+from effectful.ops.types import Term
+
 from weighted.ops.fold import fold
 from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
 
 
 def Exp(streams, body):
     # TODO
-    pass
+    raise NotImplementedError()
 
 
 def ArgMin(streams, body):
-    return fold(ArgMinAlg, streams, body)
+    result = fold(ArgMinAlg, streams, body)
+    assert isinstance(result, Term) or (isinstance(result, tuple) and len(result) == 2)
+    return result
 
 
 def ArgMax(streams, body):
-    return fold(ArgMaxAlg, streams, body)
+    result = fold(ArgMaxAlg, streams, body)
+    assert isinstance(result, Term) or (isinstance(result, tuple) and len(result) == 2)
+    return result
 
 
 def Min(streams, body):

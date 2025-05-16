@@ -265,6 +265,5 @@ interpretation = functools.reduce(
         FoldIndexDistributivity(),
         FoldAddDistributivity(),
         FoldFactorization(),
-        FoldZero(),
     ],
 )

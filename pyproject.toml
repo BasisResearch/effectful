@@ -26,7 +26,8 @@ classifiers = [
 dependencies = [
     "effectful[jax,numpyro]@git+https://github.com/BasisResearch/effectful@jf-staging",
     "jax",
-    "optax"
+    "optax",
+    "flax"
 ]
 
 [dependency-groups]

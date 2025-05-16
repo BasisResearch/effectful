@@ -1,8 +1,8 @@
-import collections.abc
 import functools
 import logging
 import operator
 from collections.abc import Iterable
+from typing import TypeVar
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
@@ -10,7 +10,7 @@ import jax
 import optax
 import tree
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.handlers.jax._handlers import _register_jax_op
+from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.semantics import (
     coproduct,
@@ -25,15 +25,41 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     implements,
-    syntactic_eq,
 )
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
 from weighted.ops.fold import fold
-from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
+from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg, mul
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def timed(f=None, name=None):
+    from datetime import datetime, timedelta
+    from functools import wraps
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwds):
+            start = datetime.now()
+            result = func(*args, **kwds)
+            elapsed = datetime.now() - start
+            if elapsed > timedelta(seconds=0.1):
+                print(
+                    f"{func.__name__ if name is None else name} took {elapsed} time to finish"
+                )
+            return result
+
+        return wrapper
+
+    # This handles the case when called with arguments: @timed(name="something")
+    if f is None:
+        return decorator
+    # This handles the case when called without arguments: @timed
+    return decorator(f)
 
 
 @defop
@@ -77,83 +103,18 @@ def log_prob(d: Distribution, value: jax.Array) -> jax.Array:  # todo
     return _register_jax_op(d.log_prob)(value)
 
 
-class DenseTensorArgFold(ObjectInterpretation):
-    @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
-        if not (
-            semiring in (ArgMinAlg, ArgMaxAlg)
-            and all(isinstance(s, collections.abc.Sized) for s in streams.values())
-            and all(typeof(k()) is jax.Array for k in streams)
-        ):
-            return fwd()
-
-        if not (isinstance(body, Term) and body.op is D):
-            return fwd()
-
-        if len(body.args) <= 0:
-            return jnp.array([])
-
-        if len(body.args) > 1:
-            # todo: handle multiple output indices
-            return fwd()
-
-        indices, value = body.args[0]
-        if not isinstance(value, tuple) and len(value) == 2:
-            raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
-        min_value, argmin_value = value
-
-        # Check that the output is indexed in a subset of the input indices, and
-        # that there are no index transformations
-        if not all(isinstance(i, Term) and i.op in streams for i in indices):
-            return fwd()
-        indices = [i.op for i in indices]
-
-        old_to_fresh = {k: defop(k) for k in streams}
-        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
-        indexed_streams = {
-            k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
-        }
-        with handler(indexed_streams):
-            result = evaluate(min_value)
-
-        result_indices = sizesof(result)
-        reduction_indices = [i for i in result_indices if fresh_to_old[i] not in indices]
-
-        result = bind_dims(result, *reduction_indices)
-
-        # Flatten the leading len(reduction_indices) dimensions
-        reduction_shape = result.shape[: len(reduction_indices)]
-        flat_shape = (functools.reduce(operator.mul, reduction_shape, 1),) + result.shape[
-            len(reduction_indices) :
-        ]
-        flat_result = jnp.reshape(result, flat_shape)
-
-        mins = (
-            jnp.min(flat_result, axis=0)
-            if semiring is ArgMinAlg
-            else jnp.max(flat_result, axis=0)
-        )
-        flat_indices = (
-            jnp.argmin(flat_result, axis=0)
-            if semiring is ArgMinAlg
-            else jnp.argmax(flat_result, axis=0)
-        )
-        min_indices = jnp.unravel_index(flat_indices, reduction_shape)
-        with handler(
-            {
-                fresh_to_old[k]: deffn(streams[fresh_to_old[k]][v])
-                for k, v in zip(reduction_indices, min_indices, strict=True)
-            }
-        ):
-            argmins = evaluate(argmin_value)
-
-        final_result = tree.map_structure(
-            lambda t: bind_dims(
-                t, *[i for i in result_indices if i not in reduction_indices]
-            ),
-            (mins, argmins),
-        )
-        return final_result
+def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
+    if isinstance(body, Term) and body.op is D:
+        kvs = []
+        for arg in body.args:
+            if not isinstance(arg, tuple) or len(arg) != 2:
+                raise ValueError("Expected a tuple of (key, value)")
+            k, v = arg
+            if not isinstance(k, tuple):
+                k = (k,)
+            kvs.append((k, v))
+        return kvs
+    return [((), body)]
 
 
 class DenseTensorFold(ObjectInterpretation):
@@ -172,17 +133,48 @@ class DenseTensorFold(ObjectInterpretation):
             tensor = jnp.max(tensor, axis=0)
         return tensor
 
+    def _argmin_reductor(self, tensor, dims):
+        # Flatten the leading len(reduction_indices) dimensions
+        reduction_shape = tensor.shape[:dims]
+        head_shape = (functools.reduce(operator.mul, reduction_shape, 1),)
+        tail_shape = tensor.shape[dims:]
+        flat_shape = head_shape + tail_shape
+
+        flat_result = jnp.reshape(tensor, flat_shape)
+        mins = jnp.min(flat_result, axis=0)
+        flat_indices = jnp.argmin(flat_result, axis=0)
+        min_indices = jnp.unravel_index(flat_indices, reduction_shape)
+        return mins, min_indices
+
+    def _argmax_reductor(self, tensor, dims):
+        # Flatten the leading len(reduction_indices) dimensions
+        reduction_shape = tensor.shape[:dims]
+        head_shape = (functools.reduce(operator.mul, reduction_shape, 1),)
+        tail_shape = tensor.shape[dims:]
+        flat_shape = head_shape + tail_shape
+
+        flat_result = jnp.reshape(tensor, flat_shape)
+        maxs = jnp.max(flat_result, axis=0)
+        flat_indices = jnp.argmax(flat_result, axis=0)
+        max_indices = jnp.unravel_index(flat_indices, reduction_shape)
+        return maxs, max_indices
+
     def _get_reductor(self, semi_ring):
-        if semi_ring is LinAlg:
+        if semi_ring == LinAlg:
             return self._sum_reductor
-        elif semi_ring is MinAlg:
+        elif semi_ring == MinAlg:
             return self._min_reductor
-        elif semi_ring is MaxAlg:
+        elif semi_ring == MaxAlg:
             return self._max_reductor
+        elif semi_ring == ArgMinAlg:
+            return self._argmin_reductor
+        elif semi_ring == ArgMaxAlg:
+            return self._argmax_reductor
         else:
             return None
 
     @implements(fold)
+    @timed(name="DenseTensorFold")
     def fold(self, semiring, streams, body):
         reductor = self._get_reductor(semiring)
         if not (
@@ -190,14 +182,18 @@ class DenseTensorFold(ObjectInterpretation):
         ):
             return fwd()
 
-        if not (isinstance(body, Term) and body.op is D):
-            return fwd()
+        body_indices = _parse_body(body)
 
-        if len(body.args) > 1:
+        if len(body_indices) > 1:
             # todo: handle multiple output indices
             return fwd()
 
-        indices, value = body.args[0]
+        indices, value = body_indices[0]
+
+        if semiring in (ArgMinAlg, ArgMaxAlg):
+            if not isinstance(value, tuple) and len(value) == 2:
+                raise ValueError("Expected a tuple of (value, arg) for argmin/argmax")
+            value, arg = value
 
         # Check that the output is indexed in a subset of the input indices, and
         # that there are no index transformations
@@ -206,37 +202,72 @@ class DenseTensorFold(ObjectInterpretation):
         indices = [i.op for i in indices]
 
         old_to_fresh = {k: defop(k) for k in streams}
+        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
         indexed_streams = {
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
         }
 
         with handler(indexed_streams):
-            result = evaluate(value)
+            result_1 = evaluate(value)
 
-        fvars = fvsof(result)
+        if not is_eager_array(result_1):
+            return fwd()
+
+        fvars = fvsof(result_1)
+
         unused_streams = {
-            k: v for k, v in streams.items() if old_to_fresh[k] not in fvars
+            k: v for k, v in indexed_streams.items() if old_to_fresh[k] not in fvars
         }
-        if unused_streams:
-            result = result * functools.reduce(
-                operator.mul, (v.shape[0] for v in unused_streams.values()), 1
-            )
 
-        result_indices = fvsof(result)
+        # TODO: there might be other semirings that matter here
+        if unused_streams and semiring is LinAlg:
+            with handler(indexed_streams):
+                factors = []
+                for v in unused_streams.values():
+                    dep_dims = fvsof(v) & set(fresh_to_old.keys())
+                    shape = bind_dims(v(), *dep_dims).shape
+                    f = functools.reduce(mul, shape[: len(dep_dims)], 1)
+                    factors.append(f)
+
+            factor = functools.reduce(mul, factors, 1)
+        else:
+            factor = 1
+
         reduction_indices = [
             old_to_fresh[i]
             for i in streams
-            if old_to_fresh.get(i) in result_indices and i not in indices
+            if old_to_fresh.get(i) in fvars and i not in indices
         ]
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
-        result = bind_dims(result, *reduction_indices)
-        result = reductor(result, len(reduction_indices))
+        result_2 = bind_dims(result_1, *reduction_indices)
+
+        result_3 = reductor(result_2, len(reduction_indices))
+
+        result_4 = mul(factor, result_3)
 
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
-        result = bind_dims(result, *fresh_indices)
-        return result
+
+        if semiring in (ArgMinAlg, ArgMaxAlg):
+            result_4, min_indices = result_4
+
+            with handler(
+                {
+                    fresh_to_old[k]: deffn(jax_getitem(streams[fresh_to_old[k]], [v]))
+                    for k, v in zip(reduction_indices, min_indices, strict=False)
+                }
+            ):
+                args = evaluate(arg)
+
+            result_5 = (
+                bind_dims(result_4, *fresh_indices),
+                bind_dims(args, *fresh_indices),
+            )
+        else:
+            result_5 = bind_dims(result_4, *fresh_indices)
+
+        return result_5
 
 
 class GradientOptimizationFold(ObjectInterpretation):
@@ -262,24 +293,24 @@ class GradientOptimizationFold(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body):
+        # TODO: handle mixed discrete/continuous optimization
         if not (
             semiring in (MinAlg, ArgMinAlg)
             and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
 
-        if not (isinstance(body, Term) and body.op is D):
-            return fwd()
-
-        if len(body.args) <= 0:
+        body_indices = _parse_body(body)
+        if len(body_indices) <= 0:
             return jnp.array([])
 
-        if len(body.args) > 1:
-            # todo: handle multiple output indices
+        if len(body_indices) > 1:
+            # TODO: handle multiple output indices
             return fwd()
 
-        indices, value = body.args[0]
+        indices, value = body_indices[0]
         if indices != ():
+            # TODO: handle indexed outputs
             return fwd()
 
         if semiring is ArgMinAlg:
@@ -407,12 +438,14 @@ class PytreeMapFold(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body):
-        if not (isinstance(body, Term) and body.op is D):
+        if not (semiring in (MinAlg, MaxAlg, LinAlg)):
             return fwd()
+
+        body_indices = _parse_body(body)
 
         # Check that all values in the body have the same structure
         structure = None
-        for _, t in body.args:
+        for _, t in body_indices:
             s = jax.tree.structure(t)
             if structure and structure != s:
                 raise ValueError(
@@ -424,13 +457,13 @@ class PytreeMapFold(ObjectInterpretation):
         if structure == jax.tree.structure(0):
             return fwd()
 
-        flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body.args]
+        flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body_indices]
 
         flat_body = [
             fold(
                 semiring,
                 streams,
-                D(*[(k, v) for (k, _), v in zip(body.args, vs, strict=True)]),
+                D(*[(k, v) for (k, _), v in zip(body_indices, vs, strict=True)]),
             )
             for vs in zip(*flat_bodies, strict=True)
         ]
@@ -453,22 +486,60 @@ def scan(f, init, *args, **kwargs):
     return carry, result
 
 
+def syntactic_eq_jax(x: Expr[T], other: Expr[T]) -> bool:
+    """Syntactic equality, ignoring the interpretation of the terms.
+
+    :param x: A term.
+    :type x: Expr[T]
+    :param other: Another term.
+    :type other: Expr[T]
+    :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
+    """
+    if isinstance(x, Term) and isinstance(other, Term):
+        op, args, kwargs = x.op, x.args, x.kwargs
+        op2, args2, kwargs2 = other.op, other.args, other.kwargs
+        try:
+            tree.assert_same_structure(
+                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
+            )
+        except (TypeError, ValueError):
+            return False
+        return all(
+            tree.flatten(
+                tree.map_structure(
+                    syntactic_eq_jax, (op, args, kwargs), (op2, args2, kwargs2)
+                )
+            )
+        )
+    elif isinstance(x, Term) or isinstance(other, Term):
+        return False
+    elif isinstance(x, jax.Array):
+        return x.tolist() == other.tolist()  # type: ignore
+    else:
+        return x == other
+
+
 class ScanFold(ObjectInterpretation):
+    def __init__(self, min_length=3):
+        self.min_length = min_length
+
     @implements(fold)
     def fold(self, semiring, streams, body):
         # FIXME: This handler does not deal with the case where some but not all
         # stream variables form a chain
 
+        if len(streams) < self.min_length:
+            return fwd()
+
         # check that the streams form a chain
         stream_vars = set(streams.keys())
-
         head_var, head_val = None, None
         for k, v in streams.items():
             if not (fvsof(v) & stream_vars):
                 head_var, head_val = (k, v)
                 break
 
-        if head_var is None or head_val is None:
+        if head_var is None or head_val is None or not is_eager_array(head_val):
             return fwd()
 
         # FIXME: This algorithm is O(n^2) in the number of stream variables
@@ -486,57 +557,42 @@ class ScanFold(ObjectInterpretation):
                 # Failed to find the next link in the chain
                 return fwd()
 
-        dummy_var = defop(object)
+        if len(chain) < 3:
+            return fwd()
+
+        dummy_var = defop(jax.Array)
         chain_body = None
         for i in range(1, len(chain)):
             with handler({chain[i - 1][0]: dummy_var}):
                 if chain_body is None:
                     chain_body = evaluate(chain[i][1])
                 else:
-                    if not syntactic_eq(chain_body, evaluate(chain[i][1])):
+                    if not syntactic_eq_jax(chain_body, evaluate(chain[i][1])):
                         return fwd()
+
+        dummy_idx = defop(jax.Array, name="k")
 
         def func(carry, _idx):
             with handler({dummy_var: lambda: carry}):
                 result = evaluate(chain_body)
+                result = bind_dims(result, dummy_idx)
+                result = jnp.squeeze(result, 0)
+                result = unbind_dims(result, dummy_idx)
             return (result, result)
 
-        _, scanned_array = scan(func, head_val, jnp.arange(len(chain) - 1))
+        head_val_indexed = jax_getitem(head_val, [dummy_idx()])
+        _, scanned_array = scan(func, head_val_indexed, jnp.arange(len(chain) - 1))
 
         new_streams = {head_var: head_val}
         for i, (var, _) in enumerate(chain[1:]):
-            new_streams[var] = scanned_array[i]
+            new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
 
         return fold(semiring, new_streams, body)
 
 
-class NormalizeValueFold(ObjectInterpretation):
-    """Normalization rule for the body of folds."""
-
-    @implements(fold)
-    def fold(self, semiring, streams, body):
-        modified_body = False
-        if isinstance(body, Term) and body.op is D:
-            kvs = []
-            for k, v in body.args:
-                if not isinstance(k, tuple):
-                    k = (k,)
-                    modified_body = True
-                kvs.append((k, v))
-            new_body = D(*kvs)
-        elif isinstance(body, dict):
-            modified_body = True
-            new_body = D(*body.items())
-        else:
-            modified_body = True
-            new_body = D(((), body))
-
-        if modified_body:
-            return fold(semiring, streams, new_body)
-        return fwd()
-
-
 interpretation = functools.reduce(
     coproduct,  # type: ignore
-    [NormalizeValueFold(), DenseTensorArgFold(), DenseTensorFold()],
+    [
+        DenseTensorFold(),
+    ],
 )
