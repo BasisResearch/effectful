@@ -178,7 +178,7 @@ class _ArrayTerm(Term[jax.Array]):
 class _EagerArrayTerm(_ArrayTerm):
     def __init__(self, op, tensor, key):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
-        super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
+        super().__init__(op, jax.numpy.reshape(tensor, new_shape), new_key)
 
     @property
     def shape(self) -> tuple[int, ...]:
