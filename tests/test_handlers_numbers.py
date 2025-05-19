@@ -6,7 +6,7 @@ import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import defop, defterm, trace
+from effectful.ops.syntax import defop, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
