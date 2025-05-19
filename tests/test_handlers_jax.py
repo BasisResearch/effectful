@@ -249,7 +249,7 @@ def test_jax_broadcast_to():
 
 def test_jax_nested_getitem():
     t = jnp.ones((2, 3))
-    i, j = defop(jax.Array), defop(jax.Array)
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     t_i = jax_getitem(t, [i()])
 
     t_ij = defdata(jax_getitem, t_i, [j()])
