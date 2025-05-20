@@ -749,22 +749,6 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     :type value: T
     :returns: A term.
     :rtype: Expr[T]
-
-    **Example usage**:
-
-    :func:`defterm` can be passed a function, and it will convert that function
-    to a term by calling it with appropriately typed free variables:
-
-    >>> def incr(x: int) -> int:
-    ...     return x + 1
-    >>> term = defterm(incr)
-
-    >>> print(str(term))
-    deffn(add(int(), 1), int)
-
-    >>> term(2)
-    3
-
     """
     if isinstance(value, Term):
         return value
@@ -924,8 +908,25 @@ class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
         return call(self, *args, **kwargs)  # type: ignore
 
 
-@defterm.register(collections.abc.Callable)
-def _(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+def trace(value: Callable[P, T]) -> Callable[P, T]:
+    """Convert a callable to a term by calling it with appropriately typed free variables.
+
+    **Example usage**:
+
+    :func:`trace` can be passed a function, and it will convert that function to
+    a term by calling it with appropriately typed free variables:
+
+    >>> def incr(x: int) -> int:
+    ...     return x + 1
+    >>> term = trace(incr)
+
+    >>> print(str(term))
+    deffn(add(int(), 1), int)
+
+    >>> term(2)
+    3
+
+    """
     from effectful.internals.runtime import interpreter
     from effectful.ops.semantics import apply, call
 
