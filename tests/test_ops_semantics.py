@@ -756,3 +756,81 @@ def test_typeof_generic():
 
     # Generic types are simplified to their origin type
     assert typeof(box_value(42)) is Box
+
+
+def test_simul_analysis():
+
+    @defop
+    def plus1(x: int) -> int:
+        raise NotImplementedError
+    
+    @defop
+    def times(x: int, y: int) -> int:
+        raise NotImplementedError
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    type_rules = {
+        plus1: lambda x: int,
+        times: lambda x, y: int,
+        x: lambda: int,
+        y: lambda: int,
+    }
+
+    value_rules = {
+        plus1: lambda x: (x + 1 if typ() is int and argsof(typ)[0] is int else None),  # fail
+        times: lambda x, y: (x * y if argsof(typ)[0] is int else None),  # fail
+        x: lambda: 3,
+        y: lambda: 4,
+    }
+
+    def new_product(
+        intp: Interpretation[S, T],
+        intp2: Interpretation[S, V],
+        prompt: Operation[[], T],
+    ) -> Interpretation[S, V]:
+        def _select_args(fn: Callable[P, T]) -> Callable[P, T]:
+            @functools.wraps(fn)
+            def _wrapped(*args, **kwargs):
+                return fn(
+                    *[traverse(prompt)(arg) for arg in args]
+                    **{k: traverse(prompt)(kwarg) for k, kwarg in kwargs.items()}
+                )
+            return _wrapped
+
+        if any(op in intp for op in intp2):  # alpha-rename
+            renaming = {op: defop(op) for op in intp2 if op in intp}
+            intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
+            intp2_overlap = {
+                op: fn if op not in intp else _set_prompt(
+                    prompt,
+                    _select_args(intp_fresh[renaming[op]]),
+                    intp2[op],
+                )
+                for op, fn in intp2.items()
+            }
+
+            intp = intp_fresh
+            intp2 = intp2_overlap
+
+        refls2 = {op: op.__default_rule__ for op in intp2}
+        intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
+        return {op: runner(intp_)(intp2[op]) for op in intp2}
+
+
+    # analysis
+    analysis = new_product(type_rules, value_rules, prompt=typ)  # TODO
+
+    analysisN = new_productN({typ: type_rules, val: value_rules})
+
+    def f1():
+        v1 = x()            # {typ: lambda: int, val: lambda: 3}
+        v2 = y()            # {typ: lambda: int, val: lambda: 4}
+        v3 = plus1(v1)      # {typ: lambda: int, val: lambda: 4}
+        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 16}
+        v5 = plus1(v4)      # {typ: lambda: int, val: lambda: 17}
+        return v5           # {typ: lambda: int, val: lambda: 17}
+
+    tm1 = f1()
+
+    evaluate(tm1, analysis)  # 
