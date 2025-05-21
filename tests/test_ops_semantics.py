@@ -776,6 +776,10 @@ def test_simul_analysis():
     typ = defop(Interpretation, name="typ")
     value = defop(Interpretation, name="value")
 
+    @defop
+    def argsof(op: Operation) -> tuple[list, dict]:
+        raise RuntimeError("Prompt argsof not bound.")
+
     type_rules = {
         plus1: lambda x: int,
         plus2: lambda x: int,
@@ -791,9 +795,8 @@ def test_simul_analysis():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        if typ() is int:
+        if typ() is int and argsof(typ)[0][0] is int:
             return x * y
-
         raise TypeError("unexpected type!")
 
     value_rules = {
@@ -932,7 +935,16 @@ def test_simul_analysis():
 
                 result_intp[intp_id] = result
 
-            # TODO add forwarding argument retrieval
+            def argsof_impl(intp, op):
+                return (intp[op].args, intp[op].kwargs)
+
+            argsof_impl_ = functools.partial(argsof_impl, result_intp)
+
+            result_intp = {
+                op: handler({argsof: argsof_impl_})(func)
+                for (op, func) in result_intp.items()
+            }
+
             return result_intp
 
         for op in result_ops:
