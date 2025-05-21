@@ -773,6 +773,9 @@ def test_simul_analysis():
 
     x, y = defop(int, name="x"), defop(int, name="y")
 
+    typ = defop(Interpretation, name="typ")
+    value = defop(Interpretation, name="value")
+
     type_rules = {
         plus1: lambda x: int,
         plus2: lambda x: int,
@@ -787,10 +790,16 @@ def test_simul_analysis():
     def plus2_value(x):
         return plus1(plus1(x))
 
+    def times_value(x, y):
+        if typ() is int:
+            return x * y
+
+        raise TypeError("unexpected type!")
+
     value_rules = {
         plus1: plus1_value,  # fail
         plus2: plus2_value,  # fail
-        times: lambda x, y: x * y,  # if argsof(typ)[0] is int else None),  # fail
+        times: times_value,  # if argsof(typ)[0] is int else None),  # fail
         x: lambda: 3,
         y: lambda: 4,
     }
@@ -887,7 +896,6 @@ def test_simul_analysis():
                 intp_args = [get_for_intp(intp_id, a) for a in args]
                 intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
 
-                # TODO add mappings for other handlers in the interpretation
                 # TODO add forwarding prompt
 
                 # Calling an operation inside `intp[op]` should result in the
@@ -903,9 +911,6 @@ def test_simul_analysis():
             isolated_intp[op] = functools.partial(product_op, op)
 
         return isolated_intp
-
-    typ = defop(Interpretation, name="typ")
-    value = defop(Interpretation, name="value")
 
     analysisN = new_productN({typ: type_rules, value: value_rules})
 
