@@ -1,7 +1,7 @@
 import contextlib
 import functools
-from collections.abc import Callable
-from typing import Any, Mapping, TypeVar
+from collections.abc import Callable, Mapping
+from typing import Any, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -251,7 +251,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
 
         """
         result_intp = {}
-        for intp_id, intp in intps.items():
+        for intp_id in intps:
             # Args and kwargs are expected to be either interpretations with
             # bindings for each named analysis in intps or concrete values.
             # `get_for_intp` extracts the value that corresponds to this
