@@ -759,11 +759,10 @@ def test_typeof_generic():
 
 
 def test_simul_analysis():
-
     @defop
     def plus1(x: int) -> int:
         raise NotImplementedError
-    
+
     @defop
     def times(x: int, y: int) -> int:
         raise NotImplementedError
@@ -777,12 +776,17 @@ def test_simul_analysis():
         y: lambda: int,
     }
 
+    def plus1_value(x):
+        return x + 1
+
     value_rules = {
-        plus1: lambda x: (x + 1 if typ() is int and argsof(typ)[0] is int else None),  # fail
-        times: lambda x, y: (x * y if argsof(typ)[0] is int else None),  # fail
+        plus1: plus1_value,  # fail
+        times: lambda x, y: x * y,  # if argsof(typ)[0] is int else None),  # fail
         x: lambda: 3,
         y: lambda: 4,
     }
+
+    V = TypeVar("V")
 
     def new_product(
         intp: Interpretation[S, T],
@@ -794,15 +798,20 @@ def test_simul_analysis():
             def _wrapped(*args, **kwargs):
                 return fn(
                     *[traverse(prompt)(arg) for arg in args]
-                    **{k: traverse(prompt)(kwarg) for k, kwarg in kwargs.items()}
+                    ** {k: traverse(prompt)(kwarg) for k, kwarg in kwargs.items()}
                 )
+
             return _wrapped
 
         if any(op in intp for op in intp2):  # alpha-rename
             renaming = {op: defop(op) for op in intp2 if op in intp}
-            intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
+            intp_fresh = {
+                renaming.get(op, op): handler(renaming)(intp[op]) for op in intp
+            }
             intp2_overlap = {
-                op: fn if op not in intp else _set_prompt(
+                op: fn
+                if op not in intp
+                else _set_prompt(
                     prompt,
                     _select_args(intp_fresh[renaming[op]]),
                     intp2[op],
@@ -817,20 +826,65 @@ def test_simul_analysis():
         intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
         return {op: runner(intp_)(intp2[op]) for op in intp2}
 
+    import functools
+    from dataclasses import dataclass
+    from typing import Mapping
+
+    def new_productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
+        # Create a renaming for all of the original operations
+        renaming = {
+            (intp_id, op): defop(op) for (intp_id, intp) in intps.items() for op in intp
+        }
+
+        # The resulting interpretation supports ops that exist in all the input interpretations
+        result_ops = None
+        for intp in intps.values():
+            ops = set(intp.keys())
+            if result_ops is None:
+                result_ops = ops
+            else:
+                result_ops &= ops
+
+        if result_ops is None:
+            return {}
+
+        def get_for_intp(intp, v):
+            # TODO: Don't love this dynamic check
+            if isinstance(v, dict) and all(isinstance(k, Operation) for k in v):
+                return handler(v)(intp)()
+            return v
+
+        def product_op(op, *args, **kwargs):
+            result_intp = {}
+            for intp_id, intp in intps.items():
+                intp_args = [get_for_intp(intp_id, a) for a in args]
+                intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
+
+                # TODO add mappings for other handlers in the interpretation
+                # TODO add forwarding prompt
+                result = intp[op](*intp_args, **intp_kwargs)
+                result_intp[intp_id] = functools.partial(lambda x: x, result)
+            return result_intp
+
+        result_intp = {op: functools.partial(product_op, op) for op in result_ops}
+        return result_intp
+
+    typ = defop(Interpretation, name="typ")
+    value = defop(Interpretation, name="value")
 
     # analysis
-    analysis = new_product(type_rules, value_rules, prompt=typ)  # TODO
+    # analysis = new_product(type_rules, value_rules, prompt=typ)  # TODO
 
-    analysisN = new_productN({typ: type_rules, val: value_rules})
+    analysisN = new_productN({typ: type_rules, value: value_rules})
 
     def f1():
-        v1 = x()            # {typ: lambda: int, val: lambda: 3}
-        v2 = y()            # {typ: lambda: int, val: lambda: 4}
-        v3 = plus1(v1)      # {typ: lambda: int, val: lambda: 4}
+        breakpoint()
+        v1 = x()  # {typ: lambda: int, val: lambda: 3}
+        v2 = y()  # {typ: lambda: int, val: lambda: 4}
+        v3 = plus1(v1)  # {typ: lambda: int, val: lambda: 4}
         v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 16}
-        v5 = plus1(v4)      # {typ: lambda: int, val: lambda: 17}
-        return v5           # {typ: lambda: int, val: lambda: 17}
+        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 17}
+        return v5  # {typ: lambda: int, val: lambda: 17}
 
-    tm1 = f1()
-
-    evaluate(tm1, analysis)  # 
+    with handler(analysisN):
+        v = f1()
