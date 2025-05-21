@@ -134,6 +134,18 @@ class Term(abc.ABC, Generic[T]):
         def term_str(term):
             if isinstance(term, Operation):
                 return op_str(term)
+            elif isinstance(term, list):
+                return "[" + ", ".join(map(term_str, term)) + "]"
+            elif isinstance(term, tuple):
+                return "(" + ", ".join(map(term_str, term)) + ")"
+            elif isinstance(term, dict):
+                return (
+                    "{"
+                    + ", ".join(
+                        f"{term_str(k)}:{term_str(v)}" for (k, v) in term.items()
+                    )
+                    + "}"
+                )
             return str(term)
 
         def _apply(_, op, *args, **kwargs) -> str:
