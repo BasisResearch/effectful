@@ -764,6 +764,10 @@ def test_simul_analysis():
         raise NotImplementedError
 
     @defop
+    def plus2(x: int) -> int:
+        raise NotImplementedError
+
+    @defop
     def times(x: int, y: int) -> int:
         raise NotImplementedError
 
@@ -771,6 +775,7 @@ def test_simul_analysis():
 
     type_rules = {
         plus1: lambda x: int,
+        plus2: lambda x: int,
         times: lambda x, y: int,
         x: lambda: int,
         y: lambda: int,
@@ -779,8 +784,12 @@ def test_simul_analysis():
     def plus1_value(x):
         return x + 1
 
+    def plus2_value(x):
+        return plus1(plus1(x))
+
     value_rules = {
         plus1: plus1_value,  # fail
+        plus2: plus2_value,  # fail
         times: lambda x, y: x * y,  # if argsof(typ)[0] is int else None),  # fail
         x: lambda: 3,
         y: lambda: 4,
@@ -831,10 +840,22 @@ def test_simul_analysis():
     from typing import Mapping
 
     def new_productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
-        # Create a renaming for all of the original operations
+        # We enforce isolation between the named interpretations by giving every
+        # operation a fresh name and giving each operation a translation from
+        # the fresh names back to the names from their interpretation.
+        #
+        # E.g. { a: { f, g }, b: { f, h } } =>
+        # { handler({f: f_a, g: g_a})(f_a), handler({f: f_a, g: g_a})(g_a),
+        #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
+
         renaming = {
             (intp_id, op): defop(op) for (intp_id, intp) in intps.items() for op in intp
         }
+        isolated_intp = {}
+        for intp_id, intp in intps.items():
+            translation_intp = {op: renaming[(intp_id, op)] for op in intp}
+            for op, func in intp.items():
+                isolated_intp[renaming[(intp_id, op)]] = handler(translation_intp)(func)
 
         # The resulting interpretation supports ops that exist in all the input interpretations
         result_ops = None
@@ -849,7 +870,6 @@ def test_simul_analysis():
             return {}
 
         def get_for_intp(intp, v):
-            # TODO: Don't love this dynamic check
             if isinstance(v, dict) and all(isinstance(k, Operation) for k in v):
                 return handler(v)(intp)()
             return v
@@ -857,23 +877,35 @@ def test_simul_analysis():
         def product_op(op, *args, **kwargs):
             result_intp = {}
             for intp_id, intp in intps.items():
+                # Args and kwargs are expected to be either interpretations with
+                # bindings for each named analysis in intps or concrete values.
+                # `get_for_intp` extracts the value that corresponds to this
+                # analysis.
+                #
+                # TODO: `get_for_intp` has to guess whether a dict value is an
+                # interpretation or not. This is probably a latent bug.
                 intp_args = [get_for_intp(intp_id, a) for a in args]
                 intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
 
                 # TODO add mappings for other handlers in the interpretation
                 # TODO add forwarding prompt
-                result = intp[op](*intp_args, **intp_kwargs)
+
+                # Calling an operation inside `intp[op]` should result in the
+                # behavior from `intp`, so we wrap `intp[op]`
+                result = isolated_intp[renaming[(intp_id, op)]](
+                    *intp_args, **intp_kwargs
+                )
+
                 result_intp[intp_id] = functools.partial(lambda x: x, result)
             return result_intp
 
-        result_intp = {op: functools.partial(product_op, op) for op in result_ops}
-        return result_intp
+        for op in result_ops:
+            isolated_intp[op] = functools.partial(product_op, op)
+
+        return isolated_intp
 
     typ = defop(Interpretation, name="typ")
     value = defop(Interpretation, name="value")
-
-    # analysis
-    # analysis = new_product(type_rules, value_rules, prompt=typ)  # TODO
 
     analysisN = new_productN({typ: type_rules, value: value_rules})
 
@@ -881,10 +913,10 @@ def test_simul_analysis():
         breakpoint()
         v1 = x()  # {typ: lambda: int, val: lambda: 3}
         v2 = y()  # {typ: lambda: int, val: lambda: 4}
-        v3 = plus1(v1)  # {typ: lambda: int, val: lambda: 4}
-        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 16}
-        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 17}
-        return v5  # {typ: lambda: int, val: lambda: 17}
+        v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
+        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 20}
+        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 21}
+        return v5  # {typ: lambda: int, val: lambda: 21}
 
     with handler(analysisN):
         v = f1()
