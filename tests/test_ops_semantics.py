@@ -846,7 +846,26 @@ def test_simul_analysis():
 
     import functools
     from dataclasses import dataclass
-    from typing import Mapping
+    from typing import Generic, Mapping
+
+    @dataclass
+    class CallByNeed(Generic[T]):
+        func: Callable[P, T]
+        args: P.args
+        kwargs: P.kwargs
+        value: T = None
+        initialized: bool = False
+
+        def __init__(self, func, *args, **kwargs):
+            self.func = func
+            self.args = args
+            self.kwargs = kwargs
+
+        def __call__(self):
+            if not self.initialized:
+                self.value = self.func(*self.args, **self.kwargs)
+                self.initialized = True
+            return self.value
 
     def new_productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         # We enforce isolation between the named interpretations by giving every
@@ -883,7 +902,13 @@ def test_simul_analysis():
                 return handler(v)(intp)()
             return v
 
-        def product_op(op, *args, **kwargs):
+        def product_op(intps, op, *args, **kwargs):
+            """Compute the product of operation `op` in named interpretations
+            `intps`. The product operation consumes product arguments and
+            returns product results. These products are represented as
+            interpretations.
+
+            """
             result_intp = {}
             for intp_id, intp in intps.items():
                 # Args and kwargs are expected to be either interpretations with
@@ -896,26 +921,28 @@ def test_simul_analysis():
                 intp_args = [get_for_intp(intp_id, a) for a in args]
                 intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
 
-                # TODO add forwarding prompt
+                intp_op = isolated_intp[renaming[(intp_id, op)]]
 
-                # Calling an operation inside `intp[op]` should result in the
-                # behavior from `intp`, so we wrap `intp[op]`
-                result = isolated_intp[renaming[(intp_id, op)]](
-                    *intp_args, **intp_kwargs
-                )
+                # Making result a CallByNeed has two functions. It avoids some
+                # work when the result is not requested and it delays evaluation
+                # so that when the result is requested in `get_for_intp`, it
+                # evaluates in a context that binds the results of the other
+                # named interpretations.
+                result = CallByNeed(intp_op, *intp_args, **intp_kwargs)
 
-                result_intp[intp_id] = functools.partial(lambda x: x, result)
+                result_intp[intp_id] = result
+
+            # TODO add forwarding argument retrieval
             return result_intp
 
         for op in result_ops:
-            isolated_intp[op] = functools.partial(product_op, op)
+            isolated_intp[op] = functools.partial(product_op, intps, op)
 
         return isolated_intp
 
     analysisN = new_productN({typ: type_rules, value: value_rules})
 
     def f1():
-        breakpoint()
         v1 = x()  # {typ: lambda: int, val: lambda: 3}
         v2 = y()  # {typ: lambda: int, val: lambda: 4}
         v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
@@ -924,4 +951,7 @@ def test_simul_analysis():
         return v5  # {typ: lambda: int, val: lambda: 21}
 
     with handler(analysisN):
-        v = f1()
+        i = f1()
+        t = handler(i)(typ)()
+        v = handler(i)(value)()
+        breakpoint()
