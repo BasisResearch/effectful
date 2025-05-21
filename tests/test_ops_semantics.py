@@ -823,5 +823,95 @@ def test_simul_analysis():
         assert v == 21
 
 def test_simul_analysis_apply():
-    # TODO: Following the pattern above, add a test for an analysis that handles
-    # apply to get polymorphic behavior.
+    """Test for an analysis that handles apply to get polymorphic behavior."""
+    T = TypeVar("T")
+    U = TypeVar("U")
+
+    @defop
+    def identity(x: T) -> T:
+        raise NotImplementedError
+
+    @defop
+    def apply(f: Callable[[T], U], x: T) -> U:
+        raise NotImplementedError
+
+    @defop
+    def add1(x: int) -> int:
+        raise NotImplementedError
+
+    @defop
+    def concat(x: str) -> str:
+        raise NotImplementedError
+
+    x_int = defop(int, name="x_int")
+    x_str = defop(str, name="x_str")
+
+    typ = defop(Interpretation, name="typ")
+    value = defop(Interpretation, name="value")
+
+    # Type rules for our operations
+    type_rules = {
+        identity: lambda x: typeof(x),
+        apply: lambda f, x: typeof(f)(typeof(x)),
+        add1: lambda x: int,
+        concat: lambda x: str,
+        x_int: lambda: int,
+        x_str: lambda: str,
+    }
+
+    # Value rules for our operations
+    value_rules = {
+        identity: lambda x: x,
+        apply: lambda f, x: f(x),
+        add1: lambda x: x + 1,
+        concat: lambda x: x + "!",
+        x_int: lambda: 42,
+        x_str: lambda: "hello",
+    }
+
+    # Combine type and value analyses
+    analysisN = productN({typ: type_rules, value: value_rules})
+
+    def f1():
+        # Apply add1 to an int
+        v1 = x_int()
+        v2 = apply(add1, v1)
+        return v2
+
+    def f2():
+        # Apply concat to a string
+        v1 = x_str()
+        v2 = apply(concat, v1)
+        return v2
+
+    def f3():
+        # Apply identity to both types
+        v1 = x_int()
+        v2 = x_str()
+        v3 = apply(identity, v1)
+        v4 = apply(identity, v2)
+        return (v3, v4)
+
+    with handler(analysisN):
+        # Test int operation
+        i1 = f1()
+        t1 = handler(i1)(typ)()
+        v1 = handler(i1)(value)()
+        assert t1 is int
+        assert v1 == 43  # 42 + 1
+
+        # Test string operation
+        i2 = f2()
+        t2 = handler(i2)(typ)()
+        v2 = handler(i2)(value)()
+        assert t2 is str
+        assert v2 == "hello!"
+
+        # Test polymorphic identity
+        i3 = f3()
+        t3a, t3b = handler(i3)(typ)()
+        v3a, v3b = handler(i3)(value)()
+        assert t3a is int
+        assert t3b is str
+        assert v3a == 42
+        assert v3b == "hello"
