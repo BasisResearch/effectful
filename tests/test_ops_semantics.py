@@ -821,3 +821,7 @@ def test_simul_analysis():
         v = handler(i)(value)()
         assert t is int
         assert v == 21
+
+def test_simul_analysis_apply():
+    # TODO: Following the pattern above, add a test for an analysis that handles
+    # apply to get polymorphic behavior.
