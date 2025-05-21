@@ -1,11 +1,12 @@
 import contextlib
 import functools
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, Mapping, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
+from effectful.internals.runtime import CallByNeed
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
@@ -200,6 +201,94 @@ def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         refls2 = {op: op.__default_rule__ for op in intp2}
         intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
         return {op: runner(intp_)(intp2[op]) for op in intp2}
+
+
+@defop
+def argsof(op: Operation) -> tuple[list, dict]:
+    raise RuntimeError("Prompt argsof not bound.")
+
+
+def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
+    # We enforce isolation between the named interpretations by giving every
+    # operation a fresh name and giving each operation a translation from
+    # the fresh names back to the names from their interpretation.
+    #
+    # E.g. { a: { f, g }, b: { f, h } } =>
+    # { handler({f: f_a, g: g_a})(f_a), handler({f: f_a, g: g_a})(g_a),
+    #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
+
+    renaming = {
+        (intp_id, op): defop(op) for (intp_id, intp) in intps.items() for op in intp
+    }
+    isolated_intp: dict[Operation, Callable] = {}
+    for intp_id, intp in intps.items():
+        translation_intp = {op: renaming[(intp_id, op)] for op in intp}
+        for op, func in intp.items():
+            isolated_intp[renaming[(intp_id, op)]] = handler(translation_intp)(func)
+
+    # The resulting interpretation supports ops that exist in all the input interpretations
+    result_ops = None
+    for intp in intps.values():
+        ops = set(intp.keys())
+        if result_ops is None:
+            result_ops = ops
+        else:
+            result_ops &= ops
+
+    if result_ops is None:
+        return {}
+
+    def get_for_intp(intp, v):
+        if isinstance(v, dict) and all(isinstance(k, Operation) for k in v):
+            return handler(v)(intp)()
+        return v
+
+    def product_op(intps, op, *args, **kwargs):
+        """Compute the product of operation `op` in named interpretations
+        `intps`. The product operation consumes product arguments and
+        returns product results. These products are represented as
+        interpretations.
+
+        """
+        result_intp = {}
+        for intp_id, intp in intps.items():
+            # Args and kwargs are expected to be either interpretations with
+            # bindings for each named analysis in intps or concrete values.
+            # `get_for_intp` extracts the value that corresponds to this
+            # analysis.
+            #
+            # TODO: `get_for_intp` has to guess whether a dict value is an
+            # interpretation or not. This is probably a latent bug.
+            intp_args = [get_for_intp(intp_id, a) for a in args]
+            intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
+
+            intp_op = isolated_intp[renaming[(intp_id, op)]]
+
+            # Making result a CallByNeed has two functions. It avoids some
+            # work when the result is not requested and it delays evaluation
+            # so that when the result is requested in `get_for_intp`, it
+            # evaluates in a context that binds the results of the other
+            # named interpretations.
+            result = CallByNeed(intp_op, *intp_args, **intp_kwargs)
+
+            result_intp[intp_id] = result
+
+        def argsof_impl(intp, op):
+            return (intp[op].args, intp[op].kwargs)
+
+        argsof_impl_ = functools.partial(argsof_impl, result_intp)
+
+        result_intp = {
+            op: handler({argsof: argsof_impl_})(func)
+            for (op, func) in result_intp.items()
+        }
+
+        return result_intp
+
+    for op in result_ops:
+        isolated_intp[op] = functools.partial(product_op, intps, op)
+
+    return isolated_intp
 
 
 @contextlib.contextmanager

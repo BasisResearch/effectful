@@ -2,7 +2,7 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -76,3 +76,23 @@ def _set_prompt(
             return body(*a, **k)
 
     return bound_body
+
+
+@dataclasses.dataclass
+class CallByNeed(Generic[P, T]):
+    func: Callable[P, T]
+    args: Any  # P.args
+    kwargs: Any  # P.kwargs
+    value: T | None = None
+    initialized: bool = False
+
+    def __init__(self, func, *args, **kwargs):
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self):
+        if not self.initialized:
+            self.value = self.func(*self.args, **self.kwargs)
+            self.initialized = True
+        return self.value

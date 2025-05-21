@@ -10,12 +10,14 @@ from typing_extensions import ParamSpec
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
     apply,
+    argsof,
     coproduct,
     evaluate,
     fvsof,
     fwd,
     handler,
     product,
+    productN,
     runner,
     typeof,
 )
@@ -776,10 +778,6 @@ def test_simul_analysis():
     typ = defop(Interpretation, name="typ")
     value = defop(Interpretation, name="value")
 
-    @defop
-    def argsof(op: Operation) -> tuple[list, dict]:
-        raise RuntimeError("Prompt argsof not bound.")
-
     type_rules = {
         plus1: lambda x: int,
         plus2: lambda x: int,
@@ -800,159 +798,14 @@ def test_simul_analysis():
         raise TypeError("unexpected type!")
 
     value_rules = {
-        plus1: plus1_value,  # fail
-        plus2: plus2_value,  # fail
-        times: times_value,  # if argsof(typ)[0] is int else None),  # fail
+        plus1: plus1_value,
+        plus2: plus2_value,
+        times: times_value,
         x: lambda: 3,
         y: lambda: 4,
     }
 
-    V = TypeVar("V")
-
-    def new_product(
-        intp: Interpretation[S, T],
-        intp2: Interpretation[S, V],
-        prompt: Operation[[], T],
-    ) -> Interpretation[S, V]:
-        def _select_args(fn: Callable[P, T]) -> Callable[P, T]:
-            @functools.wraps(fn)
-            def _wrapped(*args, **kwargs):
-                return fn(
-                    *[traverse(prompt)(arg) for arg in args]
-                    ** {k: traverse(prompt)(kwarg) for k, kwarg in kwargs.items()}
-                )
-
-            return _wrapped
-
-        if any(op in intp for op in intp2):  # alpha-rename
-            renaming = {op: defop(op) for op in intp2 if op in intp}
-            intp_fresh = {
-                renaming.get(op, op): handler(renaming)(intp[op]) for op in intp
-            }
-            intp2_overlap = {
-                op: fn
-                if op not in intp
-                else _set_prompt(
-                    prompt,
-                    _select_args(intp_fresh[renaming[op]]),
-                    intp2[op],
-                )
-                for op, fn in intp2.items()
-            }
-
-            intp = intp_fresh
-            intp2 = intp2_overlap
-
-        refls2 = {op: op.__default_rule__ for op in intp2}
-        intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
-        return {op: runner(intp_)(intp2[op]) for op in intp2}
-
-    import functools
-    from dataclasses import dataclass
-    from typing import Generic, Mapping
-
-    @dataclass
-    class CallByNeed(Generic[T]):
-        func: Callable[P, T]
-        args: P.args
-        kwargs: P.kwargs
-        value: T = None
-        initialized: bool = False
-
-        def __init__(self, func, *args, **kwargs):
-            self.func = func
-            self.args = args
-            self.kwargs = kwargs
-
-        def __call__(self):
-            if not self.initialized:
-                self.value = self.func(*self.args, **self.kwargs)
-                self.initialized = True
-            return self.value
-
-    def new_productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
-        # We enforce isolation between the named interpretations by giving every
-        # operation a fresh name and giving each operation a translation from
-        # the fresh names back to the names from their interpretation.
-        #
-        # E.g. { a: { f, g }, b: { f, h } } =>
-        # { handler({f: f_a, g: g_a})(f_a), handler({f: f_a, g: g_a})(g_a),
-        #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
-
-        renaming = {
-            (intp_id, op): defop(op) for (intp_id, intp) in intps.items() for op in intp
-        }
-        isolated_intp = {}
-        for intp_id, intp in intps.items():
-            translation_intp = {op: renaming[(intp_id, op)] for op in intp}
-            for op, func in intp.items():
-                isolated_intp[renaming[(intp_id, op)]] = handler(translation_intp)(func)
-
-        # The resulting interpretation supports ops that exist in all the input interpretations
-        result_ops = None
-        for intp in intps.values():
-            ops = set(intp.keys())
-            if result_ops is None:
-                result_ops = ops
-            else:
-                result_ops &= ops
-
-        if result_ops is None:
-            return {}
-
-        def get_for_intp(intp, v):
-            if isinstance(v, dict) and all(isinstance(k, Operation) for k in v):
-                return handler(v)(intp)()
-            return v
-
-        def product_op(intps, op, *args, **kwargs):
-            """Compute the product of operation `op` in named interpretations
-            `intps`. The product operation consumes product arguments and
-            returns product results. These products are represented as
-            interpretations.
-
-            """
-            result_intp = {}
-            for intp_id, intp in intps.items():
-                # Args and kwargs are expected to be either interpretations with
-                # bindings for each named analysis in intps or concrete values.
-                # `get_for_intp` extracts the value that corresponds to this
-                # analysis.
-                #
-                # TODO: `get_for_intp` has to guess whether a dict value is an
-                # interpretation or not. This is probably a latent bug.
-                intp_args = [get_for_intp(intp_id, a) for a in args]
-                intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
-
-                intp_op = isolated_intp[renaming[(intp_id, op)]]
-
-                # Making result a CallByNeed has two functions. It avoids some
-                # work when the result is not requested and it delays evaluation
-                # so that when the result is requested in `get_for_intp`, it
-                # evaluates in a context that binds the results of the other
-                # named interpretations.
-                result = CallByNeed(intp_op, *intp_args, **intp_kwargs)
-
-                result_intp[intp_id] = result
-
-            def argsof_impl(intp, op):
-                return (intp[op].args, intp[op].kwargs)
-
-            argsof_impl_ = functools.partial(argsof_impl, result_intp)
-
-            result_intp = {
-                op: handler({argsof: argsof_impl_})(func)
-                for (op, func) in result_intp.items()
-            }
-
-            return result_intp
-
-        for op in result_ops:
-            isolated_intp[op] = functools.partial(product_op, intps, op)
-
-        return isolated_intp
-
-    analysisN = new_productN({typ: type_rules, value: value_rules})
+    analysisN = productN({typ: type_rules, value: value_rules})
 
     def f1():
         v1 = x()  # {typ: lambda: int, val: lambda: 3}
@@ -966,4 +819,5 @@ def test_simul_analysis():
         i = f1()
         t = handler(i)(typ)()
         v = handler(i)(value)()
-        breakpoint()
+        assert t is int
+        assert v == 21
