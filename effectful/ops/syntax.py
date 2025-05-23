@@ -817,8 +817,7 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.internals.runtime import get_interpretation
-    from effectful.ops.semantics import apply, call, evaluate, productN, typeof
+    from effectful.ops.semantics import apply, evaluate, productN
 
     # Base case for variables.
     if not args and not kwargs:
@@ -851,46 +850,10 @@ def defdata(
     analysis = productN({renamed: {apply: rename_apply}, typ: {apply: apply_type}})
     base_term = __dispatch(typing.cast(type[T], object))(op, *args, **kwargs)
     result = evaluate(base_term, intp=analysis)
-    renamed_term = result.values(renamed)
-    typed_term = __dispatch(result.values(typ))(
+    renamed_term = result.values(renamed)  # type: ignore
+    typed_term = __dispatch(result.values(typ))(  # type: ignore
         renamed_term.op, *renamed_term.args, **renamed_term.kwargs
     )
-
-    print((op, args, kwargs))
-    print(repr(typed_term))
-
-    # # This is the default rule for the apply operation
-
-    # renaming_intp = {apply: apply_renaming}
-
-    # args_, kwargs_ = list(args), dict(kwargs)
-    # for i, (v, c) in (
-    #     *enumerate(zip(args, arg_ctxs)),
-    #     *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
-    # ):
-    #     if c:
-    #         v = tree.map_structure(
-    #             lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-    #         )
-    #         res = evaluate(
-    #             v,
-    #             intp={
-    #                 apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-    #                 **{op: renaming[op] for op in c},
-    #             },
-    #         )
-    #         if isinstance(i, int):
-    #             args_[i] = res
-    #         elif isinstance(i, str):
-    #             kwargs_[i] = res
-
-    # base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    # tp = typeof(base_term)
-    # if tp is typing.Union:
-    #     raise ValueError("Terms that return Union types are not supported.")
-    # assert isinstance(tp, type)
-
-    # typed_term = __dispatch(tp)(op, *args_, **kwargs_)
     return typed_term
 
 
