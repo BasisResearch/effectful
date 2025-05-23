@@ -1,11 +1,13 @@
 import contextlib
+import dataclasses
 import functools
-from collections.abc import Callable
-from typing import Any, TypeVar
+from collections.abc import Callable, Mapping
+from typing import Any, Generic, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
 
+from effectful.internals.runtime import CallByNeed
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
@@ -200,6 +202,158 @@ def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         refls2 = {op: op.__default_rule__ for op in intp2}
         intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
         return {op: runner(intp_)(intp2[op]) for op in intp2}
+
+
+@defop
+def argsof(op: Operation) -> tuple[list, dict]:
+    raise RuntimeError("Prompt argsof not bound.")
+
+
+@dataclasses.dataclass
+class Product(Generic[S, T]):
+    values: object
+
+
+def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
+    # The resulting interpretation supports ops that exist in at least one input
+    # interpretation
+    result_ops = set(op for intp in intps.values() for op in intp)
+    if result_ops is None:
+        return {}
+
+    renaming = {(prompt, op): defop(op) for prompt in intps for op in result_ops}
+
+    # We enforce isolation between the named interpretations by giving every
+    # operation a fresh name and giving each operation a translation from
+    # the fresh names back to the names from their interpretation.
+    #
+    # E.g. { a: { f, g }, b: { f, h } } =>
+    # { handler({f: f_a, g: g_a, h: h_default})(f_a), handler({f: f_a, g: g_a})(g_a),
+    #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
+    translation_intps = {
+        prompt: {op: renaming[(prompt, op)] for op in result_ops} for prompt in intps
+    }
+
+    # For every prompt, build an isolated interpretation that binds all operations.
+    isolated_intps = {
+        prompt: {
+            renaming[(prompt, op)]: handler(translation_intps[prompt])(func)
+            for op, func in intp.items()
+        }
+        for prompt, intp in intps.items()
+    }
+
+    def is_interpretation(x):
+        return (
+            isinstance(x, dict)
+            and all(isinstance(k, Operation) for k in x)
+            and all(prompt in x for prompt in intps)
+        )
+
+    def pack(intp):
+        return Product(handler(intp)(lambda x: x()))
+
+    def unpack(prompt, x):
+        if isinstance(x, Product):
+            return x.values(prompt)
+        return x
+        # if is_interpretation(intp):
+        #     return handler(intp)(prompt)()
+        # return intp
+
+    def product_op(op, *args, **kwargs):
+        """Compute the product of operation `op` in named interpretations
+        `intps`. The product operation consumes product arguments and
+        returns product results. These products are represented as
+        interpretations.
+
+        """
+        assert isinstance(op, Operation)
+
+        result_intp = {}
+
+        def argsof_direct_call(prompt):
+            return (result_intp[prompt].args, result_intp[prompt].kwargs)
+
+        def argsof_apply(prompt):
+            args, kwargs = argsof_direct_call(prompt)
+            return args[2:], kwargs
+
+        # Every prompt gets an argsof implementation. The implementation is
+        # either for a direct call to a handler or for a call to an apply
+        # handler.
+        argsof_prompts = {}
+
+        for prompt, intp in intps.items():
+            # Args and kwargs are expected to be either interpretations with
+            # bindings for each named analysis in intps or concrete values.
+            # `get_for_intp` extracts the value that corresponds to this
+            # analysis.
+            #
+            # TODO: `get_for_intp` has to guess whether a dict value is an
+            # interpretation or not. This is probably a latent bug.
+            intp_args, intp_kwargs = tree.map_structure(
+                lambda x: unpack(prompt, x), (args, kwargs)
+            )
+
+            argsof_op = defop(argsof)
+            argsof_impl = argsof_direct_call
+
+            # Making result a CallByNeed has two functions. It avoids some
+            # work when the result is not requested and it delays evaluation
+            # so that when the result is requested in `get_for_intp`, it
+            # evaluates in a context that binds the results of the other
+            # named interpretations.
+            if op in intp:
+                result = CallByNeed(
+                    handler(result_intp)(
+                        handler(isolated_intps[prompt])(renaming[(prompt, op)])
+                    ),
+                    *intp_args,
+                    **intp_kwargs,
+                )
+            elif apply in intp:
+                isolated_intp = isolated_intps[prompt]
+                custom_apply = renaming[(prompt, apply)]
+                assert custom_apply in isolated_intp
+                result = CallByNeed(
+                    handler(result_intp)(handler(isolated_intp)(custom_apply)),
+                    isolated_intp,
+                    renaming[(prompt, op)],
+                    *intp_args,
+                    **intp_kwargs,
+                )
+                argsof_impl = argsof_apply
+            else:
+                # TODO: If an intp does not handle an operation and has no apply
+                # handler, use the default rule. In the future, we would like to
+                # instead defer to the enclosing interpretation. This is
+                # difficult right now, because the output interpretation handles
+                # all operations with product handlers which would have to be
+                # skipped over.
+                result = CallByNeed(
+                    handler(result_intp)(
+                        handler(isolated_intps[prompt])(
+                            handler(translation_intps[prompt])(op.__default_rule__)
+                        )
+                    ),
+                    *intp_args,
+                    **intp_kwargs,
+                )
+
+            result_intp[prompt] = result
+            result_intp[argsof_op] = functools.partial(argsof_impl, prompt)
+            argsof_prompts[prompt] = argsof_op
+
+        result_intp = {
+            op: handler({argsof: lambda prompt: argsof_prompts[prompt]()})(func)
+            for (op, func) in result_intp.items()
+        }
+
+        return pack(result_intp)
+
+    product_intp = {op: functools.partial(product_op, op) for op in result_ops}
+    return product_intp
 
 
 @contextlib.contextmanager

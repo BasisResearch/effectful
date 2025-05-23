@@ -817,7 +817,11 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, typeof
+    from effectful.ops.semantics import apply, evaluate, productN
+
+    # Base case for variables.
+    if not args and not kwargs:
+        return __dispatch(op.__type_rule__())(op)
 
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
     renaming = {
@@ -826,34 +830,30 @@ def defdata(
         for var in bound_vars
     }
 
-    args_, kwargs_ = list(args), dict(kwargs)
-    for i, (v, c) in (
-        *enumerate(zip(args, arg_ctxs)),
-        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
-    ):
-        if c:
-            v = tree.map_structure(
-                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-            )
-            res = evaluate(
-                v,
-                intp={
-                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-                    **{op: renaming[op] for op in c},
-                },
-            )
-            if isinstance(i, int):
-                args_[i] = res
-            elif isinstance(i, str):
-                kwargs_[i] = res
+    if not renaming:
+        # No renaming needed, just return the term.
+        return __dispatch(op.__type_rule__(*args, **kwargs))(op, *args, **kwargs)
 
-    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    tp = typeof(base_term)
-    if tp is typing.Union:
-        raise ValueError("Terms that return Union types are not supported.")
-    assert isinstance(tp, type)
+    renamed = defop(object, name="renamed")
+    typ = defop(object, name="typ")
 
-    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
+    def rename_apply(_, op, *args, **kwargs):
+        def rename(x):
+            return renaming.get(x, x) if isinstance(x, Operation) else x
+
+        (op, args, kwargs) = tree.map_structure(rename, (op, args, kwargs))
+        return __dispatch(typ())(op, *args, **kwargs)
+
+    def apply_type(_, op, *args, **kwargs):
+        return op.__type_rule__(*args, **kwargs)
+
+    analysis = productN({renamed: {apply: rename_apply}, typ: {apply: apply_type}})
+    base_term = __dispatch(typing.cast(type[T], object))(op, *args, **kwargs)
+    result = evaluate(base_term, intp=analysis)
+    renamed_term = result.values(renamed)  # type: ignore
+    typed_term = __dispatch(result.values(typ))(  # type: ignore
+        renamed_term.op, *renamed_term.args, **renamed_term.kwargs
+    )
     return typed_term
 
 
