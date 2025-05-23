@@ -18,7 +18,7 @@ from effectful.handlers.torch import (
     vmap,
 )
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import deffn, defop, defterm
+from effectful.ops.syntax import deffn, defop, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def test_tpe_4():
     xval, ival = torch.rand(4, 2, 3), torch.arange(2)
     expected = torch.sum(xval, dim=1)
 
-    @defterm
+    @trace
     def f_actual(x: torch.Tensor, j: int, k: int) -> torch.Tensor:
         return torch.sum(x[k, ival, j], dim=0)
 
