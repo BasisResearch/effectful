@@ -885,5 +885,41 @@ def test_simul_analysis_apply():
         assert v == 21
 
 
+def test_productN_distributive():
+    """Test that productN distributes over coproducts."""
+
+    T = TypeVar("T")
+
+    @defop
+    def add(x: T, y: T) -> T:
+        raise NotImplementedError
+
+    x = defop(object, name="x")
+    i = defop(object, name="i")
+    s = defop(object, name="s")
+
+    intp1 = {add: lambda x, y: x + y}
+    intp2 = {x: lambda: 1}
+    intp3 = {x: lambda: "a"}
+
+    term = add(x(), x())
+
+    prod_intp1 = productN({i: coproduct(intp2, intp1), s: coproduct(intp3, intp1)})
+    prod_intp2 = coproduct(
+        productN({i: intp2, s: intp3}), productN({i: intp1, s: intp1})
+    )
+    result1 = evaluate(term, intp=prod_intp1)
+    result2 = evaluate(term, intp=prod_intp2)
+
+    assert handler(result1)(i)() == handler(result2)(i)() == 2
+    assert handler(result1)(s)() == handler(result2)(s)() == "aa"
+
+
+def test_productN_associative():
+    """Test that productN is associative."""
+
+    # TODO
+
+
 # TODO: add tests for productN distributive, associative, and commutative properties
 # TODO: add tests for productN with nested handlers, checking that the inner handler uses the outer handler's behavior unless overridden
