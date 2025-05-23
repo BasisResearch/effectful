@@ -844,7 +844,6 @@ def test_simul_analysis_apply():
     value = defop(Interpretation, name="value")
 
     def apply_type(_, op, *a, **k):
-        breakpoint()
         return op.__type_rule__(*a, **k)
 
     type_rules = {apply: apply_type}
@@ -856,7 +855,6 @@ def test_simul_analysis_apply():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        breakpoint()
         if typ() is int and argsof(typ)[0][0] is int:
             return x * y
         raise TypeError("unexpected type!")
@@ -872,7 +870,6 @@ def test_simul_analysis_apply():
     analysisN = productN({typ: type_rules, value: value_rules})
 
     def f1():
-        breakpoint()
         v1 = x()  # {typ: lambda: int, val: lambda: 3}
         v2 = y()  # {typ: lambda: int, val: lambda: 4}
         v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
