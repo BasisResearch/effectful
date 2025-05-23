@@ -917,8 +917,50 @@ def test_productN_distributive():
 
 def test_productN_associative():
     """Test that productN is associative."""
+    
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotImplementedError
 
-    # TODO
+    @defop
+    def multiply(x: int, y: int) -> int:
+        raise NotImplementedError
+    
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    
+    a = defop(object, name="a")
+    b = defop(object, name="b")
+    c = defop(object, name="c")
+    
+    intp_a = {x: lambda: 1, y: lambda: 2, add: lambda x, y: x + y}
+    intp_b = {x: lambda: 3, multiply: lambda x, y: x * y}
+    intp_c = {y: lambda: 4, add: lambda x, y: x + y + 1}
+    
+    # Create a term that uses all operations
+    term = add(multiply(x(), y()), add(x(), y()))
+    
+    # Test associativity: (A × B) × C = A × (B × C)
+    prod_left = productN({a: productN({b: intp_b, c: intp_c}), b: intp_a})
+    prod_right = productN({a: intp_a, b: productN({c: intp_c, b: intp_b})})
+    
+    # Evaluate the term in both interpretations
+    result_left = evaluate(term, intp=prod_left)
+    result_right = evaluate(term, intp=prod_right)
+    
+    # Check that the results are the same for each analysis
+    assert handler(result_left)(a)() == handler(result_right)(a)()
+    assert handler(result_left)(b)() == handler(result_right)(b)()
+    
+    # Test with a different grouping
+    prod_a_bc = productN({a: intp_a, b: productN({b: intp_b, c: intp_c})})
+    prod_ab_c = productN({a: productN({a: intp_a, b: intp_b}), b: intp_c})
+    
+    result_a_bc = evaluate(term, intp=prod_a_bc)
+    result_ab_c = evaluate(term, intp=prod_ab_c)
+    
+    assert handler(result_a_bc)(a)() == handler(result_ab_c)(a)()
+    assert handler(result_a_bc)(b)() == handler(result_ab_c)(b)()
 
 
 # TODO: add tests for productN distributive, associative, and commutative properties
