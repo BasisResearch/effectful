@@ -211,7 +211,7 @@ def argsof(op: Operation) -> tuple[list, dict]:
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     # The resulting interpretation supports ops that exist in at least one input
     # interpretation
-    result_ops = set.union(*[set(intp) for intp in intps.values()])
+    result_ops = set(op for intp in intps.values() for op in intp)
     if result_ops is None:
         return {}
 
@@ -238,7 +238,11 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     }
 
     def is_interpretation(x):
-        return isinstance(x, dict) and all(isinstance(k, Operation) for k in x)
+        return (
+            isinstance(x, dict)
+            and all(isinstance(k, Operation) for k in x)
+            and all(prompt in x for prompt in intps)
+        )
 
     def prompt_value(prompt, intp):
         if is_interpretation(intp):
@@ -276,8 +280,9 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             #
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
-            intp_args = [prompt_value(prompt, a) for a in args]
-            intp_kwargs = {k: prompt_value(prompt, v) for (k, v) in kwargs.items()}
+            intp_args, intp_kwargs = tree.map_structure(
+                lambda x: prompt_value(prompt, x), (args, kwargs)
+            )
 
             argsof_op = defop(argsof)
             argsof_impl = argsof_direct_call
@@ -289,7 +294,9 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # named interpretations.
             if op in intp:
                 result = CallByNeed(
-                    handler(isolated_intps[prompt])(renaming[(prompt, op)]),
+                    handler(result_intp)(
+                        handler(isolated_intps[prompt])(renaming[(prompt, op)])
+                    ),
                     *intp_args,
                     **intp_kwargs,
                 )
@@ -298,7 +305,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 custom_apply = renaming[(prompt, apply)]
                 assert custom_apply in isolated_intp
                 result = CallByNeed(
-                    handler(isolated_intp)(custom_apply),
+                    handler(result_intp)(handler(isolated_intp)(custom_apply)),
                     isolated_intp,
                     renaming[(prompt, op)],
                     *intp_args,
@@ -313,8 +320,10 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 # all operations with product handlers which would have to be
                 # skipped over.
                 result = CallByNeed(
-                    handler(isolated_intps[prompt])(
-                        handler(translation_intps[prompt])(op.__default_rule__)
+                    handler(result_intp)(
+                        handler(isolated_intps[prompt])(
+                            handler(translation_intps[prompt])(op.__default_rule__)
+                        )
                     ),
                     *intp_args,
                     **intp_kwargs,

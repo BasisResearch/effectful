@@ -236,7 +236,8 @@ def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
         if k in indexset_vars
     }
 
-    return deffn(value, *binding.keys())(*[v() for v in binding.values()])
+    args = [v() for v in binding.values()]
+    return deffn(value, *binding.keys())(*args)
 
 
 def stack(
