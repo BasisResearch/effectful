@@ -263,7 +263,11 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             args, kwargs = argsof_direct_call(prompt)
             return args[2:], kwargs
 
+        # Every prompt gets an argsof implementation. The implementation is
+        # either for a direct call to a handler or for a call to an apply
+        # handler.
         argsof_prompts = {}
+
         for prompt, intp in intps.items():
             # Args and kwargs are expected to be either interpretations with
             # bindings for each named analysis in intps or concrete values.
@@ -302,6 +306,12 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 )
                 argsof_impl = argsof_apply
             else:
+                # TODO: If an intp does not handle an operation and has no apply
+                # handler, use the default rule. In the future, we would like to
+                # instead defer to the enclosing interpretation. This is
+                # difficult right now, because the output interpretation handles
+                # all operations with product handlers which would have to be
+                # skipped over.
                 result = CallByNeed(
                     handler(isolated_intps[prompt])(
                         handler(translation_intps[prompt])(op.__default_rule__)
