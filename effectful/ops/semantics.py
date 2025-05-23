@@ -1,7 +1,8 @@
 import contextlib
+import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -208,6 +209,11 @@ def argsof(op: Operation) -> tuple[list, dict]:
     raise RuntimeError("Prompt argsof not bound.")
 
 
+@dataclasses.dataclass
+class Product(Generic[S, T]):
+    values: object
+
+
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     # The resulting interpretation supports ops that exist in at least one input
     # interpretation
@@ -244,10 +250,16 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             and all(prompt in x for prompt in intps)
         )
 
-    def prompt_value(prompt, intp):
-        if is_interpretation(intp):
-            return handler(intp)(prompt)()
-        return intp
+    def pack(intp):
+        return Product(handler(intp)(lambda x: x()))
+
+    def unpack(prompt, x):
+        if isinstance(x, Product):
+            return x.values(prompt)
+        return x
+        # if is_interpretation(intp):
+        #     return handler(intp)(prompt)()
+        # return intp
 
     def product_op(op, *args, **kwargs):
         """Compute the product of operation `op` in named interpretations
@@ -281,7 +293,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
             intp_args, intp_kwargs = tree.map_structure(
-                lambda x: prompt_value(prompt, x), (args, kwargs)
+                lambda x: unpack(prompt, x), (args, kwargs)
             )
 
             argsof_op = defop(argsof)
@@ -338,7 +350,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             for (op, func) in result_intp.items()
         }
 
-        return result_intp
+        return pack(result_intp)
 
     product_intp = {op: functools.partial(product_op, op) for op in result_ops}
     return product_intp

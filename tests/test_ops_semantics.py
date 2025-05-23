@@ -817,8 +817,8 @@ def test_simul_analysis():
 
     with handler(analysisN):
         i = f1()
-        t = handler(i)(typ)()
-        v = handler(i)(value)()
+        t = i.values(typ)
+        v = i.values(value)
         assert t is int
         assert v == 21
 
@@ -879,8 +879,8 @@ def test_simul_analysis_apply():
 
     with handler(analysisN):
         i = f1()
-        t = handler(i)(typ)()
-        v = handler(i)(value)()
+        t = i.values(typ)
+        v = i.values(value)
         assert t is int
         assert v == 21
 
@@ -911,5 +911,5 @@ def test_productN_distributive():
     result1 = evaluate(term, intp=prod_intp1)
     result2 = evaluate(term, intp=prod_intp2)
 
-    assert handler(result1)(i)() == handler(result2)(i)() == 2
-    assert handler(result1)(s)() == handler(result2)(s)() == "aa"
+    assert result1.values(i) == result2.values(i) == 2
+    assert result1.values(s) == result2.values(s) == "aa"

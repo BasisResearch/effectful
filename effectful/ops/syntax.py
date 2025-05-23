@@ -845,26 +845,14 @@ def defdata(
         (op, args, kwargs) = tree.map_structure(rename, (op, args, kwargs))
         return __dispatch(typ())(op, *args, **kwargs)
 
-    def rename_call(op, *args, **kwargs):
-        """apply call"""
-        breakpoint()
-        return call.__default_rule__(op, *args, **kwargs)
-
     def apply_type(_, op, *args, **kwargs):
-        """apply type"""
         return op.__type_rule__(*args, **kwargs)
 
-    analysis = productN(
-        {
-            renamed: {apply: rename_apply, call: rename_call},
-            typ: {apply: apply_type},
-        }
-    )
-
+    analysis = productN({renamed: {apply: rename_apply}, typ: {apply: apply_type}})
     base_term = __dispatch(typing.cast(type[T], object))(op, *args, **kwargs)
     result = evaluate(base_term, intp=analysis)
-    renamed_term = evaluate(renamed(), intp=result)
-    typed_term = __dispatch(evaluate(typ(), intp=result))(
+    renamed_term = result.values(renamed)
+    typed_term = __dispatch(result.values(typ))(
         renamed_term.op, *renamed_term.args, **renamed_term.kwargs
     )
 
