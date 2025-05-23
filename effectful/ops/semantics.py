@@ -209,49 +209,53 @@ def argsof(op: Operation) -> tuple[list, dict]:
 
 
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
+    # The resulting interpretation supports ops that exist in at least one input
+    # interpretation
+    result_ops = set.union(*[set(intp) for intp in intps.values()])
+    if result_ops is None:
+        return {}
+
+    renaming = {(prompt, op): defop(op) for prompt in intps for op in result_ops}
+
     # We enforce isolation between the named interpretations by giving every
     # operation a fresh name and giving each operation a translation from
     # the fresh names back to the names from their interpretation.
     #
     # E.g. { a: { f, g }, b: { f, h } } =>
-    # { handler({f: f_a, g: g_a})(f_a), handler({f: f_a, g: g_a})(g_a),
+    # { handler({f: f_a, g: g_a, h: h_default})(f_a), handler({f: f_a, g: g_a})(g_a),
     #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
-
-    renaming = {
-        (intp_id, op): defop(op) for (intp_id, intp) in intps.items() for op in intp
+    translation_intps = {
+        prompt: {op: renaming[(prompt, op)] for op in result_ops} for prompt in intps
     }
-    isolated_intp: dict[Operation, Callable] = {}
-    for intp_id, intp in intps.items():
-        translation_intp = {op: renaming[(intp_id, op)] for op in intp}
-        for op, func in intp.items():
-            isolated_intp[renaming[(intp_id, op)]] = handler(translation_intp)(func)
 
-    # The resulting interpretation supports ops that exist in all the input interpretations
-    result_ops = None
-    for intp in intps.values():
-        ops = set(intp.keys())
-        if result_ops is None:
-            result_ops = ops
-        else:
-            result_ops &= ops
+    # For every prompt, build an isolated interpretation that binds all operations.
+    isolated_intps = {
+        prompt: {
+            renaming[(prompt, op)]: handler(translation_intps[prompt])(func)
+            for op, func in intp.items()
+        }
+        for prompt, intp in intps.items()
+    }
 
-    if result_ops is None:
-        return {}
+    def is_interpretation(x):
+        return isinstance(x, dict) and all(isinstance(k, Operation) for k in x)
 
-    def get_for_intp(intp, v):
-        if isinstance(v, dict) and all(isinstance(k, Operation) for k in v):
-            return handler(v)(intp)()
-        return v
+    def prompt_value(prompt, intp):
+        if is_interpretation(intp):
+            return handler(intp)(prompt)()
+        return intp
 
-    def product_op(intps, op, *args, **kwargs):
+    def product_op(op, *args, **kwargs):
         """Compute the product of operation `op` in named interpretations
         `intps`. The product operation consumes product arguments and
         returns product results. These products are represented as
         interpretations.
 
         """
+        assert isinstance(op, Operation)
+
         result_intp = {}
-        for intp_id in intps:
+        for prompt, intp in intps.items():
             # Args and kwargs are expected to be either interpretations with
             # bindings for each named analysis in intps or concrete values.
             # `get_for_intp` extracts the value that corresponds to this
@@ -259,36 +263,54 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             #
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
-            intp_args = [get_for_intp(intp_id, a) for a in args]
-            intp_kwargs = {k: get_for_intp(intp_id, v) for (k, v) in kwargs.items()}
-
-            intp_op = isolated_intp[renaming[(intp_id, op)]]
+            intp_args = [prompt_value(prompt, a) for a in args]
+            intp_kwargs = {k: prompt_value(prompt, v) for (k, v) in kwargs.items()}
 
             # Making result a CallByNeed has two functions. It avoids some
             # work when the result is not requested and it delays evaluation
             # so that when the result is requested in `get_for_intp`, it
             # evaluates in a context that binds the results of the other
             # named interpretations.
-            result = CallByNeed(intp_op, *intp_args, **intp_kwargs)
+            if op in intp:
+                result = CallByNeed(
+                    handler(isolated_intps[prompt])(renaming[(prompt, op)]),
+                    *intp_args,
+                    **intp_kwargs,
+                )
+            elif apply in intp:
+                isolated_intp = isolated_intps[prompt]
+                custom_apply = renaming[(prompt, apply)]
+                assert custom_apply in isolated_intp
+                result = CallByNeed(
+                    handler(isolated_intp)(custom_apply),
+                    isolated_intp,
+                    renaming[(prompt, op)],
+                    *intp_args,
+                    **intp_kwargs,
+                )
+            else:
+                result = CallByNeed(
+                    handler(isolated_intps[prompt])(
+                        handler(translation_intps[prompt])(op.__default_rule__)
+                    ),
+                    *intp_args,
+                    **intp_kwargs,
+                )
 
-            result_intp[intp_id] = result
+            result_intp[prompt] = result
 
-        def argsof_impl(intp, op):
-            return (intp[op].args, intp[op].kwargs)
-
-        argsof_impl_ = functools.partial(argsof_impl, result_intp)
+        def argsof_impl(prompt):
+            return (result_intp[prompt].args, result_intp[prompt].kwargs)
 
         result_intp = {
-            op: handler({argsof: argsof_impl_})(func)
+            op: handler({argsof: argsof_impl})(func)
             for (op, func) in result_intp.items()
         }
 
         return result_intp
 
-    for op in result_ops:
-        isolated_intp[op] = functools.partial(product_op, intps, op)
-
-    return isolated_intp
+    product_intp = {op: functools.partial(product_op, op) for op in result_ops}
+    return product_intp
 
 
 @contextlib.contextmanager

@@ -584,6 +584,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+        assert all(isinstance(a, type) for a in args) and all(
+            isinstance(a, type) for a in kwargs.values()
+        ), "type_rule only works with types"
+
         def unwrap_annotation(typ):
             """Unwrap Annotated types."""
             return (

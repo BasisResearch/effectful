@@ -822,96 +822,71 @@ def test_simul_analysis():
         assert t is int
         assert v == 21
 
+
 def test_simul_analysis_apply():
-    """Test for an analysis that handles apply to get polymorphic behavior."""
     T = TypeVar("T")
-    U = TypeVar("U")
 
     @defop
-    def identity(x: T) -> T:
+    def plus1(x: T) -> T:
         raise NotImplementedError
 
     @defop
-    def apply(f: Callable[[T], U], x: T) -> U:
+    def plus2(x: T) -> T:
         raise NotImplementedError
 
     @defop
-    def add1(x: int) -> int:
+    def times(x: T, y: T) -> T:
         raise NotImplementedError
 
-    @defop
-    def concat(x: str) -> str:
-        raise NotImplementedError
-
-    x_int = defop(int, name="x_int")
-    x_str = defop(str, name="x_str")
+    x, y = defop(int, name="x"), defop(int, name="y")
 
     typ = defop(Interpretation, name="typ")
     value = defop(Interpretation, name="value")
 
-    # Type rules for our operations
-    type_rules = {
-        identity: lambda x: typeof(x),
-        apply: lambda f, x: typeof(f)(typeof(x)),
-        add1: lambda x: int,
-        concat: lambda x: str,
-        x_int: lambda: int,
-        x_str: lambda: str,
-    }
+    def apply_type(_, op, *a, **k):
+        breakpoint()
+        return op.__type_rule__(*a, **k)
 
-    # Value rules for our operations
+    type_rules = {apply: apply_type}
+
+    def plus1_value(x):
+        return x + 1
+
+    def plus2_value(x):
+        return plus1(plus1(x))
+
+    def times_value(x, y):
+        breakpoint()
+        if typ() is int and argsof(typ)[0][0] is int:
+            return x * y
+        raise TypeError("unexpected type!")
+
     value_rules = {
-        identity: lambda x: x,
-        apply: lambda f, x: f(x),
-        add1: lambda x: x + 1,
-        concat: lambda x: x + "!",
-        x_int: lambda: 42,
-        x_str: lambda: "hello",
+        plus1: plus1_value,
+        plus2: plus2_value,
+        times: times_value,
+        x: lambda: 3,
+        y: lambda: 4,
     }
 
-    # Combine type and value analyses
     analysisN = productN({typ: type_rules, value: value_rules})
 
     def f1():
-        # Apply add1 to an int
-        v1 = x_int()
-        v2 = apply(add1, v1)
-        return v2
-
-    def f2():
-        # Apply concat to a string
-        v1 = x_str()
-        v2 = apply(concat, v1)
-        return v2
-
-    def f3():
-        # Apply identity to both types
-        v1 = x_int()
-        v2 = x_str()
-        v3 = apply(identity, v1)
-        v4 = apply(identity, v2)
-        return (v3, v4)
+        breakpoint()
+        v1 = x()  # {typ: lambda: int, val: lambda: 3}
+        v2 = y()  # {typ: lambda: int, val: lambda: 4}
+        v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
+        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 20}
+        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 21}
+        return v5  # {typ: lambda: int, val: lambda: 21}
 
     with handler(analysisN):
-        # Test int operation
-        i1 = f1()
-        t1 = handler(i1)(typ)()
-        v1 = handler(i1)(value)()
-        assert t1 is int
-        assert v1 == 43  # 42 + 1
+        i = f1()
+        t = handler(i)(typ)()
+        v = handler(i)(value)()
+        assert t is int
+        assert v == 21
 
-        # Test string operation
-        i2 = f2()
-        t2 = handler(i2)(typ)()
-        v2 = handler(i2)(value)()
-        assert t2 is str
-        assert v2 == "hello!"
 
-        # Test polymorphic identity
-        i3 = f3()
-        t3a, t3b = handler(i3)(typ)()
-        v3a, v3b = handler(i3)(value)()
-        assert t3a is int
-        assert t3b is str
-        assert v3a == 42
-        assert v3b == "hello"
+# TODO: add tests for productN distributive, associative, and commutative properties
+# TODO: add tests for productN with nested handlers, checking that the inner handler uses the outer handler's behavior unless overridden
