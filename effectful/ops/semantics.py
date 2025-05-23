@@ -255,6 +255,15 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         assert isinstance(op, Operation)
 
         result_intp = {}
+
+        def argsof_direct_call(prompt):
+            return (result_intp[prompt].args, result_intp[prompt].kwargs)
+
+        def argsof_apply(prompt):
+            args, kwargs = argsof_direct_call(prompt)
+            return args[2:], kwargs
+
+        argsof_prompts = {}
         for prompt, intp in intps.items():
             # Args and kwargs are expected to be either interpretations with
             # bindings for each named analysis in intps or concrete values.
@@ -265,6 +274,9 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # interpretation or not. This is probably a latent bug.
             intp_args = [prompt_value(prompt, a) for a in args]
             intp_kwargs = {k: prompt_value(prompt, v) for (k, v) in kwargs.items()}
+
+            argsof_op = defop(argsof)
+            argsof_impl = argsof_direct_call
 
             # Making result a CallByNeed has two functions. It avoids some
             # work when the result is not requested and it delays evaluation
@@ -288,6 +300,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                     *intp_args,
                     **intp_kwargs,
                 )
+                argsof_impl = argsof_apply
             else:
                 result = CallByNeed(
                     handler(isolated_intps[prompt])(
@@ -298,12 +311,11 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 )
 
             result_intp[prompt] = result
-
-        def argsof_impl(prompt):
-            return (result_intp[prompt].args, result_intp[prompt].kwargs)
+            result_intp[argsof_op] = functools.partial(argsof_impl, prompt)
+            argsof_prompts[prompt] = argsof_op
 
         result_intp = {
-            op: handler({argsof: argsof_impl})(func)
+            op: handler({argsof: lambda prompt: argsof_prompts[prompt]()})(func)
             for (op, func) in result_intp.items()
         }
 
