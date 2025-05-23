@@ -257,3 +257,13 @@ def test_jax_nested_getitem():
 
     t_ij = jax_getitem(t_i, [j()])
     assert sizesof(t_ij) == {i: 2, j: 3}
+
+
+def test_jax_len():
+    i = defop(jax.Array, name="i")
+    t = jnp.ones((2, 3, 4))
+    t_i = jax_getitem(t, [i()])
+    assert len(t_i) == 3
+
+    for row in t_i:
+        assert len(row) == 4
