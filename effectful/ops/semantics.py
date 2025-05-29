@@ -257,9 +257,6 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         if isinstance(x, Product):
             return x.values(prompt)
         return x
-        # if is_interpretation(intp):
-        #     return handler(intp)(prompt)()
-        # return intp
 
     def product_op(op, *args, **kwargs):
         """Compute the product of operation `op` in named interpretations
