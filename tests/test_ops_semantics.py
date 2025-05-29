@@ -913,3 +913,69 @@ def test_productN_distributive():
 
     assert result1.values(i) == result2.values(i) == 2
     assert result1.values(s) == result2.values(s) == "aa"
+
+
+def test_typeof_large():
+    """Test typeof with large nested operations that form a binary tree of arbitrary size."""
+    import random
+
+    T = TypeVar("T")
+    A = TypeVar("A")
+    B = TypeVar("B")
+
+    @defop
+    def f(
+        v: Annotated[Operation[[], int], Scoped[A]],
+        x: Annotated[T, Scoped[A | B]],
+        y: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        """Generic operation that takes two arguments of the same type and returns that type."""
+        raise NotImplementedError
+
+    # @defop
+    # def f(v: Operation[[], int], x: T, y: T) -> T:
+    #     """Generic operation that takes two arguments of the same type and returns that type."""
+    #     raise NotImplementedError
+
+    def build_tree(depth: int) -> Any:
+        """
+        Recursively build a binary tree of f operations with the specified depth.
+
+        Args:
+            depth: The depth of the tree (0 means just a leaf)
+            leaf_type: The type of values at the leaves (int, str, etc.)
+            start_value: The starting value for leaf generation
+
+        Returns:
+            A nested tree of f operations with leaves of the specified type
+        """
+        if depth == 0:
+            if random.random() < 0.5:
+                return 0
+            else:
+                return defop(int)()
+
+        # Recursively build left and right subtrees
+        left = build_tree(depth - 1)
+        right = build_tree(depth - 1)
+
+        return f(defop(int), left, right)
+
+    @defop
+    def height_rule(_, op, *args, **kwargs):
+        return max(list(args) + list(kwargs.values()))
+
+    @defop
+    def height(term):
+        raise NotImplementedError
+
+    height_intp = {apply: height_rule}
+
+    @defop
+    def total_height_rule(_, op, *args, **kwargs):
+        return sum(height(x) for x in args + list(kwargs.values())) * 3
+
+    intp = {}
+
+    # Test a very large tree (depth 8 = 255 leaf nodes)
+    large_expr = build_tree(7)
