@@ -253,7 +253,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     def pack(intp):
         return Product(handler(intp)(lambda x: x()))
 
-    def unpack(prompt, x):
+    def unpack(x, prompt):
         if isinstance(x, Product):
             return x.values(prompt)
         return x
@@ -290,10 +290,9 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
             intp_args, intp_kwargs = tree.map_structure(
-                lambda x: unpack(prompt, x), (args, kwargs)
+                lambda x: unpack(x, prompt), (args, kwargs)
             )
 
-            argsof_op = defop(argsof)
             argsof_impl = argsof_direct_call
 
             # Making result a CallByNeed has two functions. It avoids some
@@ -303,9 +302,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # named interpretations.
             if op in intp:
                 result = CallByNeed(
-                    handler(result_intp)(
-                        handler(isolated_intps[prompt])(renaming[(prompt, op)])
-                    ),
+                    handler(isolated_intps[prompt])(renaming[(prompt, op)]),
                     *intp_args,
                     **intp_kwargs,
                 )
@@ -314,7 +311,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 custom_apply = renaming[(prompt, apply)]
                 assert custom_apply in isolated_intp
                 result = CallByNeed(
-                    handler(result_intp)(handler(isolated_intp)(custom_apply)),
+                    handler(isolated_intp)(custom_apply),
                     isolated_intp,
                     renaming[(prompt, op)],
                     *intp_args,
@@ -329,24 +326,17 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 # all operations with product handlers which would have to be
                 # skipped over.
                 result = CallByNeed(
-                    handler(result_intp)(
-                        handler(isolated_intps[prompt])(
-                            handler(translation_intps[prompt])(op.__default_rule__)
-                        )
-                    ),
+                    handler(
+                        coproduct(isolated_intps[prompt], translation_intps[prompt])
+                    )(op.__default_rule__),
                     *intp_args,
                     **intp_kwargs,
                 )
 
             result_intp[prompt] = result
-            result_intp[argsof_op] = functools.partial(argsof_impl, prompt)
-            argsof_prompts[prompt] = argsof_op
+            argsof_prompts[prompt] = argsof_impl
 
-        result_intp = {
-            op: handler({argsof: lambda prompt: argsof_prompts[prompt]()})(func)
-            for (op, func) in result_intp.items()
-        }
-
+        result_intp[argsof] = lambda prompt: argsof_prompts[prompt](prompt)
         return pack(result_intp)
 
     product_intp = {op: functools.partial(product_op, op) for op in result_ops}
