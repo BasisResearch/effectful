@@ -214,6 +214,16 @@ class Product(Generic[S, T]):
     values: object
 
 
+def _pack(intp):
+    return Product(handler(intp)(lambda x: x()))
+
+
+def _unpack(x, prompt):
+    if isinstance(x, Product):
+        return x.values(prompt)
+    return x
+
+
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     # The resulting interpretation supports ops that exist in at least one input
     # interpretation
@@ -243,21 +253,6 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         for prompt, intp in intps.items()
     }
 
-    def is_interpretation(x):
-        return (
-            isinstance(x, dict)
-            and all(isinstance(k, Operation) for k in x)
-            and all(prompt in x for prompt in intps)
-        )
-
-    def pack(intp):
-        return Product(handler(intp)(lambda x: x()))
-
-    def unpack(x, prompt):
-        if isinstance(x, Product):
-            return x.values(prompt)
-        return x
-
     def product_op(op, *args, **kwargs):
         """Compute the product of operation `op` in named interpretations
         `intps`. The product operation consumes product arguments and
@@ -273,8 +268,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             return (result_intp[prompt].args, result_intp[prompt].kwargs)
 
         def argsof_apply(prompt):
-            args, kwargs = argsof_direct_call(prompt)
-            return args[2:], kwargs
+            return result_intp[prompt].args[2:], result_intp[prompt].kwargs
 
         # Every prompt gets an argsof implementation. The implementation is
         # either for a direct call to a handler or for a call to an apply
@@ -290,30 +284,26 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
             intp_args, intp_kwargs = tree.map_structure(
-                lambda x: unpack(x, prompt), (args, kwargs)
+                lambda x: _unpack(x, prompt), (args, kwargs)
             )
-
-            argsof_impl = argsof_direct_call
 
             # Making result a CallByNeed has two functions. It avoids some
             # work when the result is not requested and it delays evaluation
             # so that when the result is requested in `get_for_intp`, it
             # evaluates in a context that binds the results of the other
             # named interpretations.
+            isolated_intp = isolated_intps[prompt]
+            renamed_op = renaming[(prompt, op)]
             if op in intp:
                 result = CallByNeed(
-                    handler(isolated_intps[prompt])(renaming[(prompt, op)]),
-                    *intp_args,
-                    **intp_kwargs,
+                    handler(isolated_intp)(renamed_op), *intp_args, **intp_kwargs
                 )
+                argsof_impl = argsof_direct_call
             elif apply in intp:
-                isolated_intp = isolated_intps[prompt]
-                custom_apply = renaming[(prompt, apply)]
-                assert custom_apply in isolated_intp
                 result = CallByNeed(
-                    handler(isolated_intp)(custom_apply),
+                    handler(isolated_intp)(renaming[(prompt, apply)]),
                     isolated_intp,
-                    renaming[(prompt, op)],
+                    renamed_op,
                     *intp_args,
                     **intp_kwargs,
                 )
@@ -326,18 +316,19 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
                 # all operations with product handlers which would have to be
                 # skipped over.
                 result = CallByNeed(
-                    handler(
-                        coproduct(isolated_intps[prompt], translation_intps[prompt])
-                    )(op.__default_rule__),
+                    handler(coproduct(isolated_intp, translation_intps[prompt]))(
+                        op.__default_rule__
+                    ),
                     *intp_args,
                     **intp_kwargs,
                 )
+                argsof_impl = argsof_direct_call
 
             result_intp[prompt] = result
             argsof_prompts[prompt] = argsof_impl
 
         result_intp[argsof] = lambda prompt: argsof_prompts[prompt](prompt)
-        return pack(result_intp)
+        return _pack(result_intp)
 
     product_intp = {op: functools.partial(product_op, op) for op in result_ops}
     return product_intp
