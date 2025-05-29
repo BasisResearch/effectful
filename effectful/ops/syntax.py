@@ -590,10 +590,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
             )
 
-        def drop_params(typ):
+        def cleanup_type(typ):
             """Strip parameters from polymorphic types."""
             origin = typing.get_origin(typ)
-            return typ if origin is None else origin
+            typ = typ if origin is None else origin
+
+            if typ is typing.Any:
+                return object
+            return typ
 
         sig = self.__signature__
         bound_sig = sig.bind(*args, **kwargs)
@@ -621,11 +625,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 ):
                     arg = bound_sig.arguments[name]
                     tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    return cleanup_type(tp)
 
             return typing.cast(type[V], object)
 
-        return drop_params(anno)
+        return cleanup_type(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -817,8 +821,13 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, typeof
+    from effectful.ops.semantics import apply, evaluate, productN
 
+    if not args and not kwargs:
+        return __dispatch(op.__type_rule__())(op)
+
+    # If this operation binds variables, we need to rename them in the
+    # appropriate parts of the child term.
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
@@ -826,6 +835,11 @@ def defdata(
         for var in bound_vars
     }
 
+    if not renaming:
+        # No renaming needed, just return the term.
+        return __dispatch(op.__type_rule__(*args, **kwargs))(op, *args, **kwargs)
+
+    # Perform renaming top-down, but reconstruct an untyped term.
     args_, kwargs_ = list(args), dict(kwargs)
     for i, (v, c) in (
         *enumerate(zip(args, arg_ctxs)),
@@ -838,7 +852,9 @@ def defdata(
             res = evaluate(
                 v,
                 intp={
-                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
+                    apply: lambda _, op, *a, **k: __dispatch(
+                        typing.cast(type[T], object)
+                    )(op, *a, **k),
                     **{op: renaming[op] for op in c},
                 },
             )
@@ -847,13 +863,22 @@ def defdata(
             elif isinstance(i, str):
                 kwargs_[i] = res
 
-    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    tp = typeof(base_term)
-    if tp is typing.Union:
-        raise ValueError("Terms that return Union types are not supported.")
-    assert isinstance(tp, type)
+    # In a bottom-up pass, compute the type of the term and simultaneously
+    # reconstruct the term using that type.
+    typ = defop(object, name="typ")
+    cast = defop(object, name="cast")
 
-    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
+    def apply_type(_, op, *args, **kwargs):
+        return op.__type_rule__(*args, **kwargs)
+
+    def apply_cast(_, op, *args, **kwargs):
+        return __dispatch(typ())(op, *args, **kwargs)
+
+    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
+    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
+    result = evaluate(base_term, intp=analysis)
+    typed_term = result.values(cast)  # type: ignore
+
     return typed_term
 
 
