@@ -590,10 +590,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
             )
 
-        def drop_params(typ):
+        def cleanup_type(typ):
             """Strip parameters from polymorphic types."""
             origin = typing.get_origin(typ)
-            return typ if origin is None else origin
+            typ = typ if origin is None else origin
+
+            if typ is typing.Any:
+                return object
+            return typ
 
         sig = self.__signature__
         bound_sig = sig.bind(*args, **kwargs)
@@ -621,11 +625,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                 ):
                     arg = bound_sig.arguments[name]
                     tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
+                    return cleanup_type(tp)
 
             return typing.cast(type[V], object)
 
-        return drop_params(anno)
+        return cleanup_type(anno)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
