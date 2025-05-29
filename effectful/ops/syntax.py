@@ -2,6 +2,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import itertools
 import random
 import types
 import typing
@@ -821,12 +822,13 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, productN
+    from effectful.ops.semantics import apply, argsof, evaluate, handler, productN
 
-    # Base case for variables.
     if not args and not kwargs:
         return __dispatch(op.__type_rule__())(op)
 
+    # If this operation binds variables, we need to rename them in the
+    # appropriate parts of the child term.
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
@@ -838,26 +840,46 @@ def defdata(
         # No renaming needed, just return the term.
         return __dispatch(op.__type_rule__(*args, **kwargs))(op, *args, **kwargs)
 
-    renamed = defop(object, name="renamed")
+    # Perform renaming top-down, but reconstruct an untyped term.
+    args_, kwargs_ = list(args), dict(kwargs)
+    for i, (v, c) in (
+        *enumerate(zip(args, arg_ctxs)),
+        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
+    ):
+        if c:
+            v = tree.map_structure(
+                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
+            )
+            res = evaluate(
+                v,
+                intp={
+                    apply: lambda _, op, *a, **k: __dispatch(
+                        typing.cast(type[T], object)
+                    )(op, *a, **k),
+                    **{op: renaming[op] for op in c},
+                },
+            )
+            if isinstance(i, int):
+                args_[i] = res
+            elif isinstance(i, str):
+                kwargs_[i] = res
+
+    # In a bottom-up pass, compute the type of the term and simultaneously
+    # reconstruct the term using that type.
     typ = defop(object, name="typ")
-
-    def rename_apply(_, op, *args, **kwargs):
-        def rename(x):
-            return renaming.get(x, x) if isinstance(x, Operation) else x
-
-        (op, args, kwargs) = tree.map_structure(rename, (op, args, kwargs))
-        return __dispatch(typ())(op, *args, **kwargs)
+    cast = defop(object, name="cast")
 
     def apply_type(_, op, *args, **kwargs):
         return op.__type_rule__(*args, **kwargs)
 
-    analysis = productN({renamed: {apply: rename_apply}, typ: {apply: apply_type}})
-    base_term = __dispatch(typing.cast(type[T], object))(op, *args, **kwargs)
+    def apply_cast(_, op, *args, **kwargs):
+        return __dispatch(typ())(op, *args, **kwargs)
+
+    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
+    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
     result = evaluate(base_term, intp=analysis)
-    renamed_term = result.values(renamed)  # type: ignore
-    typed_term = __dispatch(result.values(typ))(  # type: ignore
-        renamed_term.op, *renamed_term.args, **renamed_term.kwargs
-    )
+    typed_term = result.values(cast)  # type: ignore
+
     return typed_term
 
 

@@ -136,3 +136,29 @@ def test_term_str():
     assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
     assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
     assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
+
+
+def test_defdata_renaming():
+    T = TypeVar("T")
+    A = TypeVar("A")
+    B = TypeVar("B")
+    S = TypeVar("S")
+
+    @defop
+    def Let(
+        var: Annotated[Operation[[], S], Scoped[A]],
+        val: Annotated[S, Scoped[B]],
+        body: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        raise NotImplementedError
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    # Constructing the term should rename the bound variable x in the right hand
+    # side of the let only.
+    let2 = Let(x, y() + x(), x() + y())
+    assert let2.args[0] != x
+    assert let2.args[1].args[0].op == y
+    assert let2.args[1].args[1].op == x
+    assert let2.args[2].args[0].op == let2.args[0]
+    assert let2.args[2].args[1].op == y
