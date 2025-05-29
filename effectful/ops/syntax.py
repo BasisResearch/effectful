@@ -2,7 +2,6 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
-import itertools
 import random
 import types
 import typing
@@ -822,7 +821,7 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, argsof, evaluate, handler, productN
+    from effectful.ops.semantics import apply, evaluate, productN
 
     if not args and not kwargs:
         return __dispatch(op.__type_rule__())(op)

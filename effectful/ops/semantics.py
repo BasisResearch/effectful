@@ -265,7 +265,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         result_intp = {}
 
         def argsof_direct_call(prompt):
-            return (result_intp[prompt].args, result_intp[prompt].kwargs)
+            return result_intp[prompt].args, result_intp[prompt].kwargs
 
         def argsof_apply(prompt):
             return result_intp[prompt].args[2:], result_intp[prompt].kwargs

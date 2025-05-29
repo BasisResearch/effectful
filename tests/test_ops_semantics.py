@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import itertools
 import logging
 from collections.abc import Callable
@@ -915,8 +916,8 @@ def test_productN_distributive():
     assert result1.values(s) == result2.values(s) == "aa"
 
 
-def test_typeof_large():
-    """Test typeof with large nested operations that form a binary tree of arbitrary size."""
+def test_defdata_large(benchmark):
+    """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random
 
     T = TypeVar("T")
@@ -931,11 +932,6 @@ def test_typeof_large():
     ) -> Annotated[T, Scoped[B]]:
         """Generic operation that takes two arguments of the same type and returns that type."""
         raise NotImplementedError
-
-    # @defop
-    # def f(v: Operation[[], int], x: T, y: T) -> T:
-    #     """Generic operation that takes two arguments of the same type and returns that type."""
-    #     raise NotImplementedError
 
     def build_tree(depth: int) -> Any:
         """
@@ -961,21 +957,5 @@ def test_typeof_large():
 
         return f(defop(int), left, right)
 
-    @defop
-    def height_rule(_, op, *args, **kwargs):
-        return max(list(args) + list(kwargs.values()))
-
-    @defop
-    def height(term):
-        raise NotImplementedError
-
-    height_intp = {apply: height_rule}
-
-    @defop
-    def total_height_rule(_, op, *args, **kwargs):
-        return sum(height(x) for x in args + list(kwargs.values())) * 3
-
-    intp = {}
-
     # Test a very large tree (depth 8 = 255 leaf nodes)
-    large_expr = build_tree(7)
+    benchmark(functools.partial(build_tree, 7))
