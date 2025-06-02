@@ -889,7 +889,7 @@ def defdata(
     base_analyses = {typ: {apply: apply_type}, cast: {apply: apply_cast}}
     with handler(productN(base_analyses)):
         result = op(*renamed_args, **renamed_kwargs)
-    return result.values(cast)
+    return result.values(cast)  # type: ignore
 
 
 @defterm.register(object)
