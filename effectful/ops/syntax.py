@@ -821,7 +821,8 @@ def defdata(
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, handler, productN
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, evaluate, productN
 
     if not args and not kwargs:
         return __dispatch(op.__type_rule__())(op)
@@ -851,28 +852,30 @@ def defdata(
 
     def evaluate_with_renaming(expr, name_prefix, ctx):
         """Evaluate an expression with renaming applied if context is non-empty."""
-        # If expr is an operation that needs renaming, rename it directly
-        if isinstance(expr, Operation) and expr in renaming:
-            return renaming[expr]
-
-        if ctx:
-            # Build analysis for this specific expression
-            expr_analysis = {
-                typ: {apply: apply_type},
-                cast: {
-                    apply: apply_cast,
-                    **{
-                        old_var: new_var
-                        for old_var, new_var in renaming.items()
-                        if old_var in ctx
-                    },
-                },
-            }
-            analysis = productN(expr_analysis)
-            result = evaluate(expr, intp=analysis)
-            return result
-        else:
+        if not ctx:
             return expr
+
+        # If expr is an operation that needs renaming, rename it directly
+        if isinstance(expr, Operation):
+            if expr in ctx:
+                return renaming.get(expr, expr)
+            return expr
+
+        # Build analysis for this specific expression
+        expr_analysis = {
+            typ: {apply: apply_type},
+            cast: {
+                apply: apply_cast,
+                **{
+                    old_var: new_var
+                    for old_var, new_var in renaming.items()
+                    if old_var in ctx
+                },
+            },
+        }
+        analysis = productN(expr_analysis)
+        result = evaluate(expr, intp=analysis)
+        return result
 
     # Process arguments with immediate evaluation
     renamed_args = []
@@ -887,7 +890,7 @@ def defdata(
 
     # Build the final term with type analysis
     base_analyses = {typ: {apply: apply_type}, cast: {apply: apply_cast}}
-    with handler(productN(base_analyses)):
+    with interpreter(productN(base_analyses)):
         result = op(*renamed_args, **renamed_kwargs)
     return result.values(cast)  # type: ignore
 

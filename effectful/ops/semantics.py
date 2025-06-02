@@ -215,7 +215,9 @@ class Product(Generic[S, T]):
 
 
 def _pack(intp):
-    return Product(handler(intp)(lambda x: x()))
+    from effectful.internals.runtime import interpreter
+
+    return Product(interpreter(intp)(lambda x: x()))
 
 
 def _unpack(x, prompt):
