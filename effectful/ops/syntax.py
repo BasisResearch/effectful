@@ -529,7 +529,11 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self._default = default
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
-        self.__signature__ = inspect.signature(default)
+        # For singledispatch, we need to get the signature from the original function
+        if hasattr(default, "func"):
+            self.__signature__ = inspect.signature(default.func)
+        else:
+            self.__signature__ = inspect.signature(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -633,6 +637,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    @property
+    def register(self):
+        return self._default.register
+
+    @property
+    def dispatch(self):
+        return self._default.dispatch
+
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
@@ -725,7 +737,7 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
     def __init__(
         self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
-        self._func = func
+        self.func = func
         self._registry = functools.singledispatch(func)
         functools.update_wrapper(self, func)
 
@@ -738,7 +750,7 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
         return self._registry.register
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        return self._func(self.dispatch, *args, **kwargs)
+        return self.func(self.dispatch, *args, **kwargs)
 
 
 @_CustomSingleDispatchCallable
