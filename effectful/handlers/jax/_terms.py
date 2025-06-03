@@ -11,12 +11,50 @@ from effectful.handlers.jax._handlers import (
     IndexElement,
     _bind_dims,
     _partial_eval,
+    _register_jax_op,
     _unbind_dims,
     jax_getitem,
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, Operation, Term
+
+
+class _IndexUpdateHelper:
+    """Helper class to implement array-style .at[index].set() updates for effectful arrays."""
+
+    def __init__(self, array):
+        self.array = array
+
+    def __getitem__(self, key):
+        return _IndexUpdateRef(self.array, key)
+
+
+class _IndexUpdateRef:
+    """Reference to an array position for updates via .at[index]."""
+
+    def __init__(self, array, key):
+        self.array = array
+        self.key = key
+
+    def set(self, value):
+        """Set values at the indexed positions."""
+
+        # Create a JAX at operation that properly handles the indexing
+        @_register_jax_op
+        def jax_at_set(arr, index_key, val):
+            # JAX's at expects the index to be unpacked correctly
+            if isinstance(index_key, tuple) and len(index_key) == 1:
+                # Single index case
+                return arr.at[index_key[0]].set(val)
+            elif isinstance(index_key, tuple):
+                # Multiple indices case
+                return arr.at[index_key].set(val)
+            else:
+                # Direct index case
+                return arr.at[index_key].set(val)
+
+        return jax_at_set_op(self.array, self.key, value)
 
 
 @defdata.register(jax.Array)
@@ -173,6 +211,11 @@ class _ArrayTerm(Term[jax.Array]):
 
     def __rmatmul__(self, other: jax.Array) -> jax.Array:
         return jnp.matmul(other, cast(jax.Array, self))
+
+    @property
+    def at(self) -> _IndexUpdateHelper:
+        """Return an IndexUpdateHelper for array updates."""
+        return _IndexUpdateHelper(self)
 
 
 class _EagerArrayTerm(_ArrayTerm):

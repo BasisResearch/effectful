@@ -257,3 +257,41 @@ def test_jax_nested_getitem():
 
     t_ij = jax_getitem(t_i, [j()])
     assert sizesof(t_ij) == {i: 2, j: 3}
+
+
+def test_jax_at_updates():
+    """Test .at array update functionality for indexed arrays."""
+    i, j, k = defop(jax.Array), defop(jax.Array), defop(jax.Array)
+
+    # Test the exact case from the original issue
+    a = jax_getitem(jnp.ones((5, 4, 3)), [i(), j()])
+    a = a.at[1].set(0)
+    b = jax_getitem(jnp.array([0, 1]), [k()])
+    a = a.at[b].set(0)
+
+    # Verify the result has the expected properties
+    assert isinstance(a, Term)
+    assert a.shape == (3,)
+
+    # Test with 1D remaining dimension
+    arr_2d = jnp.ones((3, 5))
+    indexed_2d = jax_getitem(arr_2d, [i()])  # Shape (5,)
+    updated_2d = indexed_2d.at[2].set(99.0)
+    assert isinstance(updated_2d, Term)
+    assert updated_2d.shape == (5,)
+
+    # Test with 2D remaining dimensions
+    arr_3d = jnp.ones((2, 3, 4))
+    indexed_3d = jax_getitem(arr_3d, [i()])  # Shape (3, 4)
+    updated_3d = indexed_3d.at[1, 2].set(99.0)
+    assert isinstance(updated_3d, Term)
+    assert updated_3d.shape == (3, 4)
+
+    # Test using term as index
+    arr = jnp.ones((5, 3))
+    a = jax_getitem(arr, [i()])  # Shape (3,)
+    k = defop(jax.Array)
+    b = jax_getitem(jnp.array([0, 1, 2]), [k()])  # Shape ()
+    updated = a.at[b].set(99.0)
+    assert isinstance(updated, Term)
+    assert updated.shape == (3,)
