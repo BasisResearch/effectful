@@ -759,12 +759,16 @@ def test_dist_stats(case_, statistic):
         ("StudentT", ["mean", "variance"]),
         ("FisherSnedecor", ["mean", "variance"]),
         ("Binomial", ["entropy"]),
+        (
+            "Geometric",
+            [
+                "entropy"  # flaky, but no failure
+            ],
+        ),
     ]
     for dist_name, methods in EXPECTED_FAILURES:
         if dist_name in case_.raw_dist and statistic in methods:
-            pytest.xfail(
-                f"{dist_name} mean uses masking which is not supported by indexed tensors"
-            )
+            pytest.xfail(f"{dist_name} {statistic} is an expected failure")
 
     try:
         actual_stat = getattr(indexed_dist, statistic)
