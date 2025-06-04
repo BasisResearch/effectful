@@ -295,3 +295,13 @@ def test_jax_at_updates():
     updated = a.at[b].set(99.0)
     assert isinstance(updated, Term)
     assert updated.shape == (3,)
+
+
+def test_jax_len():
+    i = defop(jax.Array, name="i")
+    t = jnp.ones((2, 3, 4))
+    t_i = jax_getitem(t, [i()])
+    assert len(t_i) == 3
+
+    for row in t_i:
+        assert len(row) == 4

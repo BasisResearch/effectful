@@ -54,7 +54,7 @@ class _IndexUpdateRef:
                 # Direct index case
                 return arr.at[index_key].set(val)
 
-        return jax_at_set_op(self.array, self.key, value)
+        return jax_at_set(self.array, self.key, value)
 
 
 @defdata.register(jax.Array)
@@ -222,6 +222,13 @@ class _EagerArrayTerm(_ArrayTerm):
     def __init__(self, op, tensor, key):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
         super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
 
     @property
     def shape(self) -> tuple[int, ...]:
