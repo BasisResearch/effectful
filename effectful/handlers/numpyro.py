@@ -13,12 +13,7 @@ import tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.handlers.jax._handlers import (
-    _bind_dims,
-    _register_jax_op,
-    _unbind_dims,
-    is_eager_array,
-)
+from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
@@ -60,7 +55,7 @@ class Naming(dict[Operation[[], jax.Array], int]):
         return f"Naming({super().__repr__()})"
 
 
-@_unbind_dims.register
+@unbind_dims.register  # type: ignore
 def _unbind_distribution(
     d: dist.Distribution, *names: Operation[[], jax.Array]
 ) -> dist.Distribution:
@@ -115,7 +110,7 @@ def _unbind_distribution(
     return new_d
 
 
-@_bind_dims.register
+@bind_dims.register  # type: ignore
 def _bind_dims_distribution(
     d: dist.Distribution, *names: Operation[[], jax.Array]
 ) -> dist.Distribution:
