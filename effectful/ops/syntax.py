@@ -346,30 +346,44 @@ class Scoped(Annotation):
         return_ordinal = self._get_param_ordinal(bound_sig.signature.return_annotation)
         for name, param in bound_sig.signature.parameters.items():
             param_ordinal = self._get_param_ordinal(param)
-            if (
-                self._param_is_var(param)
-                and param_ordinal <= self.ordinal
-                and not param_ordinal <= return_ordinal
-            ):
-                if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name]) == len(
-                        set(bound_sig.arguments[name])
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name]}
-                elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name].values()) == len(
-                        set(bound_sig.arguments[name].values())
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name].values()}
-                else:
-                    param_bound_vars = {bound_sig.arguments[name]}
+            if param_ordinal <= self.ordinal and not param_ordinal <= return_ordinal:
+                param_value = bound_sig.arguments[name]
+                param_bound_vars = set()
+
+                if self._param_is_var(param):
+                    # Handle individual Operation parameters (existing behavior)
+                    if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value) == len(set(param_value))
+                        param_bound_vars = set(param_value)
+                    elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value.values()) == len(
+                            set(param_value.values())
+                        )
+                        param_bound_vars = set(param_value.values())
+                    else:
+                        param_bound_vars = {param_value}
+                elif param_ordinal:  # Only process if there's a Scoped annotation
+                    # We can't use tree.flatten here because we want to be able
+                    # to see dict keys
+                    def extract_operations(obj):
+                        if isinstance(obj, Operation):
+                            param_bound_vars.add(obj)
+                        elif isinstance(obj, dict):
+                            for k, v in obj.items():
+                                extract_operations(k)
+                                extract_operations(v)
+                        elif isinstance(obj, list | set | tuple):
+                            for v in obj:
+                                extract_operations(v)
+
+                    extract_operations(param_value)
 
                 # pre-condition: all bound variables should be distinct
-                assert not bound_vars & param_bound_vars
-
-                bound_vars |= param_bound_vars
+                if param_bound_vars:
+                    assert not bound_vars & param_bound_vars
+                    bound_vars |= param_bound_vars
 
         return bound_vars
 

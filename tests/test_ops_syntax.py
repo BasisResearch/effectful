@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
@@ -97,6 +97,58 @@ def test_operation_metadata():
     assert f.__name__ == f_op.__name__
     assert hash(f) == hash(f_op)
     assert f_op != ff_op
+
+
+def test_scoped_collections():
+    """Test that Scoped annotations work with tree-structured collections containing Operations."""
+
+    A, B, S, T = TypeVar("A"), TypeVar("B"), TypeVar("S"), TypeVar("T")
+
+    # Test let_many operation with Mapping[Operation, T]
+    @defop
+    def let_many(
+        bindings: Annotated[Mapping[Operation[[], T], T], Scoped[A]],
+        body: Annotated[S, Scoped[A | B]],
+    ) -> Annotated[S, Scoped[B]]:
+        raise NotImplementedError
+
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    z = defop(int, name="z")
+
+    # Variables in bindings should be bound
+    bindings = {x: 1, y: 2}
+    body = x() + y() + z()
+    term = let_many(bindings, body)
+    free_vars = fvsof(term)
+
+    assert x not in free_vars
+    assert y not in free_vars
+    assert z in free_vars
+
+    # Test with nested collections
+    @defop
+    def let_nested(
+        bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
+        body: Annotated[S, Scoped[A | B]],
+    ) -> Annotated[S, Scoped[B]]:
+        raise NotImplementedError
+
+    w = defop(int, name="w")
+    nested_bindings = [(x, 1), (y, 2)]
+    term2 = let_nested(nested_bindings, x() + y() + w())
+    free_vars2 = fvsof(term2)
+
+    assert x not in free_vars2
+    assert y not in free_vars2
+    assert w in free_vars2
+
+    # Test empty collections
+    empty_bindings = {}
+    term3 = let_many(empty_bindings, z())
+    free_vars3 = fvsof(term3)
+
+    assert z in free_vars3
 
 
 def test_no_default_tracing():
