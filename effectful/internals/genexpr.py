@@ -1109,23 +1109,6 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Constant:
     return ast.Constant(value=value)
 
 
-def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
-    """Build the final comprehension AST from the state"""
-    # Build comprehension generators
-    generators: list[ast.comprehension] = state.loops[:]
-
-    # Add any pending conditions to the last loop
-    if state.pending_conditions and generators:
-        generators[-1].ifs.extend(state.pending_conditions)
-    
-    # Determine the main expression
-    if state.expression:
-        state = replace(state, stack=state.stack + [state.expression])
-
-    assert len(state.stack) == 1
-    return ast.GeneratorExp(elt=ensure_ast(state.stack[-1]), generators=generators)
-
-
 # ============================================================================
 # MAIN RECONSTRUCTION FUNCTION
 # ============================================================================
@@ -1194,4 +1177,15 @@ def reconstruct(genexpr: GeneratorType) -> ast.GeneratorExp:
         state = OP_HANDLERS[instr.opname](state, instr)
     
     # Build and return the final AST
-    return build_comprehension_ast(state)
+    generators: list[ast.comprehension] = state.loops[:]
+
+    # Add any pending conditions to the last loop
+    if state.pending_conditions and generators:
+        generators[-1].ifs.extend(state.pending_conditions)
+    
+    # Determine the main expression
+    if state.expression:
+        state = replace(state, stack=state.stack + [state.expression])
+
+    assert len(state.stack) == 1
+    return ast.GeneratorExp(elt=ensure_ast(state.stack[-1]), generators=generators)
