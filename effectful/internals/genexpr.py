@@ -224,6 +224,23 @@ def handle_gen_start(state: ReconstructionState, instr: dis.Instruction) -> Reco
     return state
 
 
+@register_handler('YIELD_VALUE')
+def handle_yield_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # YIELD_VALUE pops a value from the stack and yields it
+    # This is the expression part of the generator
+    expression = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+    return replace(state, stack=new_stack, expression=expression)
+
+
+@register_handler('RETURN_VALUE')
+def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # RETURN_VALUE ends the generator
+    # Usually preceded by LOAD_CONST None
+    new_stack = state.stack[:-1]  # Remove the None
+    return replace(state, stack=new_stack)
+
+
 # ============================================================================
 # LOOP CONTROL HANDLERS
 # ============================================================================
@@ -333,27 +350,6 @@ def handle_store_name(state: ReconstructionState, instr: dis.Instruction) -> Rec
     # In generator expressions, this is uncommon but we'll handle it like STORE_FAST
     name = instr.argval
     return replace(state, current_loop_var=name)
-
-
-# ============================================================================
-# CORE GENERATOR HANDLERS (continued)
-# ============================================================================
-
-@register_handler('YIELD_VALUE')
-def handle_yield_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # YIELD_VALUE pops a value from the stack and yields it
-    # This is the expression part of the generator
-    expression = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-    return replace(state, stack=new_stack, expression=expression)
-
-
-@register_handler('RETURN_VALUE')
-def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # RETURN_VALUE ends the generator
-    # Usually preceded by LOAD_CONST None
-    new_stack = state.stack[:-1]  # Remove the None
-    return replace(state, stack=new_stack)
 
 
 # ============================================================================
