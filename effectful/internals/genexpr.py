@@ -139,11 +139,11 @@ class ReconstructionState:
         duplicated_for_chain: Tracks if we've seen DUP_TOP followed by ROT_THREE,
                              which indicates we're building a chained comparison.
     """
+    code_obj: types.CodeType
+    frame: types.FrameType
     stack: list[ast.AST] = field(default_factory=list)  # Stack of AST nodes or values
-    loops: list[ast.comprehension] = field(default_factory=list)
     expression: Optional[ast.AST] = None  # Main expression being yielded
-    code_obj: Optional[types.CodeType] = None
-    frame: Optional[types.FrameType] = None
+    loops: list[ast.comprehension] = field(default_factory=list)
     pending_conditions: List[ast.AST] = field(default_factory=list)
     or_conditions: List[ast.AST] = field(default_factory=list)
     chained_compare_state: Optional[ast.Compare] = None  # For building chained comparisons
@@ -1112,17 +1112,8 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Constant:
 def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
     """Build the final comprehension AST from the state"""
     # Build comprehension generators
-    generators = []
-    
-    for loop in state.loops:
-        comp = ast.comprehension(
-            target=loop.target,
-            iter=loop.iter,
-            ifs=loop.ifs,
-            is_async=0
-        )
-        generators.append(comp)
-    
+    generators: list[ast.comprehension] = state.loops[:]
+
     # Add any pending conditions to the last loop
     if state.pending_conditions and generators:
         generators[-1].ifs.extend(state.pending_conditions)
@@ -1131,7 +1122,7 @@ def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
     if state.expression:
         state = replace(state, stack=state.stack + [state.expression])
 
-    assert len(state.stack) > 0
+    assert len(state.stack) == 1
     return ast.GeneratorExp(elt=ensure_ast(state.stack[-1]), generators=generators)
 
 
