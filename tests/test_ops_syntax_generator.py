@@ -1,6 +1,7 @@
 import ast
 import pytest
 import dis
+import inspect
 from types import GeneratorType
 from typing import Any, Union
 
@@ -26,8 +27,21 @@ def compile_and_eval(node: ast.AST, globals_dict: dict = None) -> Any:
 
 def assert_ast_equivalent(genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict = None):
     """Assert that a reconstructed AST produces the same results as the original generator."""
-    # Evaluate both to lists for comparison
+    assert inspect.isgenerator(genexpr), "Input must be a generator"
+    assert inspect.getgeneratorstate(genexpr) == 'GEN_CREATED', "Generator must not be consumed"
+
+    # Save current globals to restore later
+    curr_globals = globals().copy()
+    globals().update(globals_dict or {})
+
+    # Materialize original generator to list for comparison
     original_list = list(genexpr)
+
+    # Clean up globals to avoid pollution
+    for key in globals_dict or {}:
+        if key not in curr_globals:
+            del globals()[key]
+    globals().update(curr_globals)
     
     # Compile and evaluate the reconstructed AST
     reconstructed_gen = compile_and_eval(reconstructed_ast, globals_dict)
@@ -138,6 +152,73 @@ def test_arithmetic_expressions(genexpr):
 
 
 # ============================================================================
+# COMPARISON OPERATORS
+# ============================================================================
+
+@pytest.mark.parametrize("genexpr", [
+    # All comparison operators
+    (x for x in range(10) if x < 5),
+    (x for x in range(10) if x <= 5),
+    (x for x in range(10) if x > 5),
+    (x for x in range(10) if x >= 5),
+    (x for x in range(10) if x == 5),
+    (x for x in range(10) if x != 5),
+    
+    # in/not in operators
+    (x for x in range(10) if x in [2, 4, 6, 8]),
+    (x for x in range(10) if x not in [2, 4, 6, 8]),
+    
+    # is/is not operators (with None)
+    (x for x in [1, None, 3, None, 5] if x is not None),
+    (x for x in [1, None, 3, None, 5] if x is None),
+    
+    # Boolean operations - these are complex cases that might need special handling
+    (x for x in range(10) if x > 2 and x < 8),
+    (x for x in range(10) if x < 3 or x > 7),
+    (x for x in range(10) if not x % 2),
+    (x for x in range(10) if not (x > 5)),
+    
+    # More complex comparison edge cases
+    # Chained comparisons
+    (x for x in range(20) if 5 < x < 15),
+    (x for x in range(20) if 0 <= x <= 10),
+    (x for x in range(20) if x >= 5 and x <= 15),
+    
+    # Comparisons with expressions
+    (x for x in range(10) if x * 2 > 10),
+    (x for x in range(10) if x + 1 <= 5),
+    (x for x in range(10) if x ** 2 < 25),
+    (x for x in range(10) if (x + 1) * 2 != 6),
+    
+    # Complex membership tests
+    (x for x in range(20) if x in range(5, 15)),
+    (x for x in range(10) if x not in range(3, 7)),
+    (x for x in range(10) if x % 2 in [0]),
+    (x for x in range(10) if x not in []),  # Empty container
+    
+    # Complex boolean combinations
+    (x for x in range(20) if x > 5 and x < 15 and x % 2 == 0),
+    (x for x in range(20) if x < 5 or x > 15 or x == 10),
+    (x for x in range(20) if not (x > 5 and x < 15)),
+    (x for x in range(20) if not (x < 5 or x > 15)),
+    
+    # Mixed comparison and boolean operations
+    (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
+    (x for x in range(20) if not (x % 2 == 0 and x % 3 == 0)),
+    
+    # Edge cases with identity comparisons
+    (x for x in [0, 1, 2, None, 4] if x is not None and x > 1),
+    (x for x in [True, False, 1, 0] if x is True),
+    (x for x in [True, False, 1, 0] if x is not False),
+])
+def test_comparison_operators(genexpr):
+    """Test reconstruction of all comparison operators."""
+    ast_node = reconstruct(genexpr)
+    assert isinstance(ast_node, ast.GeneratorExp)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
 # FILTERED GENERATOR TESTS
 # ============================================================================
 
@@ -208,7 +289,7 @@ def test_filtered_generators(genexpr):
     ((x, y) for x in range(3) for y in range(3)),
     (x + y for x in range(3) for y in range(3)),
     (x * y for x in range(1, 4) for y in range(1, 4)),
-    
+
     # Nested with filters
     ((x, y) for x in range(5) for y in range(5) if x < y),
     (x + y for x in range(5) if x % 2 == 0 for y in range(5) if y % 2 == 1),
@@ -248,6 +329,11 @@ def test_filtered_generators(genexpr):
     # Mixed range types
     ((x, y) for x in range(-2, 2) for y in range(0, 4, 2)),
     (x * y for x in range(5, 0, -1) for y in range(1, 6)),
+
+    # Dependent nested loops
+    ((x, y) for x in range(3) for y in range(x, 3)),
+    (x + y for x in range(3) for y in range(x + 1, 3)),
+    (x * y * z for x in range(3) for y in range(x + 1, x + 3) for z in range(y, y + 3)),
 ])
 def test_nested_loops(genexpr):
     """Test reconstruction of generators with nested loops."""
@@ -264,40 +350,51 @@ def test_nested_loops(genexpr):
 # DIFFERENT COMPREHENSION TYPES
 # ============================================================================
 
-@pytest.mark.parametrize("comprehension,expected_type", [
+@pytest.mark.parametrize("genexpr", [
     # List comprehensions
-    ([x for x in range(5)], ast.ListComp),
-    ([x * 2 for x in range(5)], ast.ListComp),
-    ([x for x in range(10) if x % 2 == 0], ast.ListComp),
+    (x_ for x_ in [x for x in range(5)]),
+    (x_ for x_ in [x * 2 for x in range(5)]),
+    (x_ for x_ in [x for x in range(10) if x % 2 == 0]),
     
     # Set comprehensions
-    ({x for x in range(5)}, ast.SetComp),
-    ({x * 2 for x in range(5)}, ast.SetComp),
-    ({x for x in range(10) if x % 2 == 0}, ast.SetComp),
+    (x_ for x_ in {x for x in range(5)}),
+    (x_ for x_ in {x * 2 for x in range(5)}),
+    (x_ for x_ in {x for x in range(10) if x % 2 == 0}),
     
     # Dict comprehensions
-    ({x: x**2 for x in range(5)}, ast.DictComp),
-    ({x: x*2 for x in range(5) if x % 2 == 0}, ast.DictComp),
-    ({str(x): x for x in range(5)}, ast.DictComp),
+    pytest.param((x_ for x_ in {x: x**2 for x in range(5)}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
+    pytest.param((x_ for x_ in {x: x*2 for x in range(5) if x % 2 == 0}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
+    pytest.param((x_ for x_ in {str(x): x for x in range(5)}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
 ])
-def test_different_comprehension_types(comprehension, expected_type):
+def test_different_comprehension_types(genexpr):
     """Test reconstruction of different comprehension types."""
-    # Convert to generator for reconstruction
-    if isinstance(comprehension, list):
-        genexpr = (x for x in comprehension)
-    elif isinstance(comprehension, set):
-        genexpr = (x for x in comprehension)
-    elif isinstance(comprehension, dict):
-        genexpr = ((k, v) for k, v in comprehension.items())
-    else:
-        genexpr = comprehension
-    
-    # Note: The actual implementation would need to detect the comprehension type
-    # from the bytecode. This test assumes it can do that.
     ast_node = reconstruct(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# GENERATOR EXPRESSION WITH GLOBALS
+# ============================================================================
+
+@pytest.mark.parametrize("genexpr,globals_dict", [
+    # Using constants
+    ((x + a for x in range(5)), {'a': 10}),
+    ((data[i] for i in range(2)), {'data': [3, 4]}),
+
+    # Using global functions
+    ((abs(x) for x in range(-5, 5)), {'abs': abs}),
+    ((len(s) for s in ["a", "ab", "abc"]), {'len': len}),
+    ((max(x, 5) for x in range(10)), {'max': max}),
+    ((min(x, 5) for x in range(10)), {'min': min}),
+    ((round(x / 3, 2) for x in range(10)), {'round': round}),
+])
+def test_variable_lookup(genexpr, globals_dict):
+    """Test reconstruction of expressions with globals."""
+    ast_node = reconstruct(genexpr)
+    assert isinstance(ast_node, ast.GeneratorExp)
     
-    # For now, we'll check if it's at least a comprehension
-    assert isinstance(ast_node, (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp))
+    # Need to provide the same globals for evaluation
+    assert_ast_equivalent(genexpr, ast_node, globals_dict)
 
 
 # ============================================================================
@@ -305,13 +402,6 @@ def test_different_comprehension_types(comprehension, expected_type):
 # ============================================================================
 
 @pytest.mark.parametrize("genexpr,globals_dict", [
-    # Using global functions
-    ((abs(x) for x in range(-5, 5)), {'abs': abs}),
-    ((len(s) for s in ["a", "ab", "abc"]), {'len': len}),
-    ((max(x, 5) for x in range(10)), {'max': max}),
-    ((min(x, 5) for x in range(10)), {'min': min}),
-    ((round(x / 3, 2) for x in range(10)), {'round': round}),
-    
     # Using lambdas and functions
     (((lambda y: y * 2)(x) for x in range(5)), {}),
     (((lambda y: y + 1)(x) for x in range(5)), {}),
@@ -365,73 +455,6 @@ def test_complex_scenarios(genexpr, globals_dict):
     
     # Need to provide the same globals for evaluation
     assert_ast_equivalent(genexpr, ast_node, globals_dict)
-
-
-# ============================================================================
-# COMPARISON OPERATORS
-# ============================================================================
-
-@pytest.mark.parametrize("genexpr", [
-    # All comparison operators
-    (x for x in range(10) if x < 5),
-    (x for x in range(10) if x <= 5),
-    (x for x in range(10) if x > 5),
-    (x for x in range(10) if x >= 5),
-    (x for x in range(10) if x == 5),
-    (x for x in range(10) if x != 5),
-    
-    # in/not in operators
-    (x for x in range(10) if x in [2, 4, 6, 8]),
-    (x for x in range(10) if x not in [2, 4, 6, 8]),
-    
-    # is/is not operators (with None)
-    (x for x in [1, None, 3, None, 5] if x is not None),
-    (x for x in [1, None, 3, None, 5] if x is None),
-    
-    # Boolean operations - these are complex cases that might need special handling
-    (x for x in range(10) if x > 2 and x < 8),
-    (x for x in range(10) if x < 3 or x > 7),
-    (x for x in range(10) if not x % 2),
-    (x for x in range(10) if not (x > 5)),
-    
-    # More complex comparison edge cases
-    # Chained comparisons
-    (x for x in range(20) if 5 < x < 15),
-    (x for x in range(20) if 0 <= x <= 10),
-    (x for x in range(20) if x >= 5 and x <= 15),
-    
-    # Comparisons with expressions
-    (x for x in range(10) if x * 2 > 10),
-    (x for x in range(10) if x + 1 <= 5),
-    (x for x in range(10) if x ** 2 < 25),
-    (x for x in range(10) if (x + 1) * 2 != 6),
-    
-    # Complex membership tests
-    (x for x in range(20) if x in range(5, 15)),
-    (x for x in range(10) if x not in range(3, 7)),
-    (x for x in range(10) if x % 2 in [0]),
-    (x for x in range(10) if x not in []),  # Empty container
-    
-    # Complex boolean combinations
-    (x for x in range(20) if x > 5 and x < 15 and x % 2 == 0),
-    (x for x in range(20) if x < 5 or x > 15 or x == 10),
-    (x for x in range(20) if not (x > 5 and x < 15)),
-    (x for x in range(20) if not (x < 5 or x > 15)),
-    
-    # Mixed comparison and boolean operations
-    (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
-    (x for x in range(20) if not (x % 2 == 0 and x % 3 == 0)),
-    
-    # Edge cases with identity comparisons
-    (x for x in [0, 1, 2, None, 4] if x is not None and x > 1),
-    (x for x in [True, False, 1, 0] if x is True),
-    (x for x in [True, False, 1, 0] if x is not False),
-])
-def test_comparison_operators(genexpr):
-    """Test reconstruction of all comparison operators."""
-    ast_node = reconstruct(genexpr)
-    assert isinstance(ast_node, ast.GeneratorExp)
-    assert_ast_equivalent(genexpr, ast_node)
 
 
 # ============================================================================
@@ -526,8 +549,8 @@ def test_comparison_operators(genexpr):
     (999999999999999999999, '999999999999999999999'),
     (1.7976931348623157e+308, '1.7976931348623157e+308'),  # Close to float max
     
-    # Sets - these need special handling as they convert to Name nodes
-    pytest.param({1, 2, 3}, 'set', marks=pytest.mark.xfail(reason="Sets don't have direct AST representation"))
+    # Sets - note unparse equivalence may fail for unordered collections
+    ({1, 2, 3}, '{1, 2, 3}'),
 ])
 def test_ensure_ast(value, expected_str):
     """Test that ensure_ast correctly converts various values to AST nodes."""
