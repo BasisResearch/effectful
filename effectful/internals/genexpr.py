@@ -110,10 +110,6 @@ class ReconstructionState:
                Built up as FOR_ITER instructions are encountered. The order
                matters - outer loops come before inner loops.
                
-        comprehension_type: Type of comprehension being built. Defaults to
-                           'generator' but can be 'list', 'set', or 'dict'.
-                           This affects which AST node type is ultimately created.
-                           
         expression: The main expression that gets yielded/collected. For example,
                    in '[x*2 for x in items]', this would be the AST for 'x*2'.
                    Captured when YIELD_VALUE is encountered.
@@ -131,13 +127,6 @@ class ReconstructionState:
                            
         or_conditions: Conditions that are part of an OR expression. These
                       need to be combined with ast.BoolOp(op=ast.Or()).
-                      
-        chained_compare_state: When building chained comparisons (e.g., a < b < c),
-                              this holds the Compare node being built up. The DUP_TOP
-                              and ROT_THREE pattern indicates a chained comparison.
-        
-        duplicated_for_chain: Tracks if we've seen DUP_TOP followed by ROT_THREE,
-                             which indicates we're building a chained comparison.
     """
     code_obj: types.CodeType
     frame: types.FrameType
@@ -146,8 +135,6 @@ class ReconstructionState:
     loops: list[ast.comprehension] = field(default_factory=list)
     pending_conditions: List[ast.AST] = field(default_factory=list)
     or_conditions: List[ast.AST] = field(default_factory=list)
-    chained_compare_state: Optional[ast.Compare] = None  # For building chained comparisons
-    duplicated_for_chain: bool = False  # Flag for chained comparison detection
 
 
 # Global handler registry
@@ -332,12 +319,6 @@ def handle_pop_top(state: ReconstructionState, instr: dis.Instruction) -> Recons
     # In generators, often used after YIELD_VALUE
     # Also used to clean up the duplicated middle value in failed chained comparisons
     new_stack = state.stack[:-1]
-    
-    # If we're in a chained comparison state, this POP_TOP is cleaning up
-    # after a failed comparison, so clear the chained state
-    if state.chained_compare_state:
-        return replace(state, stack=new_stack, chained_compare_state=None)
-    
     return replace(state, stack=new_stack)
 
 
@@ -365,7 +346,7 @@ def handle_rot_three(state: ReconstructionState, instr: dis.Instruction) -> Reco
     # Check if the top two items are the same (from DUP_TOP)
     # This indicates we're setting up for a chained comparison
     if len(state.stack) >= 3 and state.stack[-1] == state.stack[-2]:
-        return replace(state, stack=new_stack, duplicated_for_chain=True)
+        raise NotImplementedError("Chained comparison not implemented yet")
     
     return replace(state, stack=new_stack)
 
@@ -783,52 +764,13 @@ def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> Rec
     assert instr.argval in op_map, f"Unsupported comparison operation: {instr.argval}"
     
     op_name = instr.argval
-    # Check if we're in a chained comparison
-    if state.duplicated_for_chain and len(state.stack) >= 3:
-        # This is the first comparison in a chain
-        # After DUP_TOP and ROT_THREE, stack is [middle, middle, left]
-        # So we need to swap left and right for the comparison
-        # The actual comparison should be left < middle (not middle < left)
-        left, right = right, left  # Swap because ROT_THREE reversed them
-        middle_value = state.stack[-3]
-        
-        # Create the initial Compare node
-        compare_node = ast.Compare(
-            left=left,
-            ops=[op_map[op_name]],
-            comparators=[right]
-        )
-        
-        # Keep the middle value on the stack for the next comparison
-        new_stack = state.stack[:-3] + [middle_value, compare_node]
-        return replace(state, stack=new_stack, 
-                        chained_compare_state=compare_node,
-                        duplicated_for_chain=False)
-    elif state.chained_compare_state:
-        # This is a continuation of a chained comparison
-        # Stack has [middle_value, previous_compare]
-        middle_value = left  # The duplicated middle value
-        new_comparator = right
-        existing_compare = state.chained_compare_state
-        
-        # The existing compare has the form: left op1 middle
-        # We need to add: middle op2 right
-        # But the compare node stores it as: left [op1, op2] [middle, right]
-        existing_compare.ops.append(op_map[op_name])
-        existing_compare.comparators.append(new_comparator)
-        
-        # Replace the stack with just the extended comparison
-        new_stack = state.stack[:-2] + [existing_compare]
-        return replace(state, stack=new_stack, chained_compare_state=None)
-    else:
-        # Regular comparison
-        compare_node = ast.Compare(
-            left=left,
-            ops=[op_map[op_name]],
-            comparators=[right]
-        )
-        new_stack = state.stack[:-2] + [compare_node]
-        return replace(state, stack=new_stack)
+    compare_node = ast.Compare(
+        left=left,
+        ops=[op_map[op_name]],
+        comparators=[right]
+    )
+    new_stack = state.stack[:-2] + [compare_node]
+    return replace(state, stack=new_stack)
 
 
 @register_handler('CONTAINS_OP')
@@ -875,19 +817,6 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
     # In comprehensions, this is used for filter conditions
     condition = ensure_ast(state.stack[-1])
     new_stack = state.stack[:-1]
-    
-    # Special handling for chained comparisons
-    if state.chained_compare_state:
-        # We're in the middle of building a chained comparison
-        # Check if this is jumping to the cleanup section (POP_TOP)
-        # vs continuing to the next comparison
-        if len(new_stack) > 0 and isinstance(new_stack[-1], ast.AST):
-            # The duplicated middle value is still on the stack
-            # This means the first comparison passed and we're continuing
-            return replace(state, stack=new_stack)
-        else:
-            # First comparison failed, clear the chained state
-            return replace(state, stack=new_stack, chained_compare_state=None)
     
     # If we have pending OR conditions, this is the final condition in an OR expression
     if state.or_conditions:
@@ -999,18 +928,6 @@ def handle_cache(state: ReconstructionState, instr: dis.Instruction) -> Reconstr
     return state
 
 
-@register_handler('RESUME')
-def handle_resume(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # RESUME is used for resuming generators, no effect on AST reconstruction
-    return state
-
-
-@register_handler('EXTENDED_ARG')
-def handle_extended_arg(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # EXTENDED_ARG extends the argument of the next instruction, no direct effect
-    return state
-
-
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
@@ -1113,6 +1030,7 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Constant:
 # MAIN RECONSTRUCTION FUNCTION
 # ============================================================================
 
+@ensure_ast.register
 def reconstruct(genexpr: GeneratorType) -> ast.GeneratorExp:
     """
     Reconstruct an AST from a generator expression's bytecode.
