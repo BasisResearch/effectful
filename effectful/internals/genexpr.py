@@ -87,36 +87,6 @@ OP_CATEGORIES: dict[str, str] = {op: category for category, ops in CATEGORIES.it
 
 
 @dataclass(frozen=True)
-class LoopInfo:
-    """Information about a single loop in a comprehension.
-    
-    This class stores all the components needed to reconstruct a single 'for' clause
-    in a comprehension expression. In Python, comprehensions can have multiple
-    nested loops, and each loop can have zero or more filter conditions.
-    
-    For example, in the comprehension:
-        [x*y for x in range(3) for y in range(4) if x < y if x + y > 2]
-    
-    There would be two LoopInfo objects:
-    1. First loop: target='x', iter_ast=range(3), conditions=[]
-    2. Second loop: target='y', iter_ast=range(4), conditions=[x < y, x + y > 2]
-    
-    Attributes:
-        target: The loop variable(s) as an AST node. Usually an ast.Name node
-                (e.g., 'x'), but can also be a tuple for unpacking 
-                (e.g., '(i, j)' in 'for i, j in pairs').
-        iter_ast: The iterator expression as an AST node. This is what comes
-                  after 'in' in the for clause (e.g., range(3), list_var, etc).
-        conditions: List of filter expressions (if clauses) that apply to this
-                    loop level. Each condition is an AST node representing a
-                    boolean expression.
-    """
-    target: ast.AST  # The loop variable(s) as AST node
-    iter_ast: ast.AST  # The iterator as AST node
-    conditions: List[ast.AST] = field(default_factory=list)  # if conditions as AST nodes
-
-
-@dataclass(frozen=True)
 class ReconstructionState:
     """State maintained during AST reconstruction from bytecode.
     
@@ -148,10 +118,6 @@ class ReconstructionState:
                    in '[x*2 for x in items]', this would be the AST for 'x*2'.
                    Captured when YIELD_VALUE is encountered.
                    
-        key_expression: For dict comprehensions only - the key part of the
-                       key:value pair. In '{k: v for k,v in items}', this
-                       would be the AST for 'k'.
-                       
         code_obj: The code object being analyzed (from generator.gi_code).
                  Contains the bytecode and other metadata like variable names.
                  
@@ -159,27 +125,29 @@ class ReconstructionState:
                Provides access to the runtime state, including local variables
                like the '.0' iterator variable.
                
-        current_loop_var: Name of the most recently stored loop variable.
-                         Helps track which variable is being used in the
-                         current loop context.
-                         
         pending_conditions: Filter conditions that haven't been assigned to
                            a loop yet. Some bytecode patterns require collecting
                            conditions before knowing which loop they belong to.
                            
         or_conditions: Conditions that are part of an OR expression. These
                       need to be combined with ast.BoolOp(op=ast.Or()).
+                      
+        chained_compare_state: When building chained comparisons (e.g., a < b < c),
+                              this holds the Compare node being built up. The DUP_TOP
+                              and ROT_THREE pattern indicates a chained comparison.
+        
+        duplicated_for_chain: Tracks if we've seen DUP_TOP followed by ROT_THREE,
+                             which indicates we're building a chained comparison.
     """
-    stack: List[Any] = field(default_factory=list)  # Stack of AST nodes or values
-    loops: List[LoopInfo] = field(default_factory=list)
-    comprehension_type: str = 'generator'  # 'generator', 'list', 'set', 'dict'
+    stack: list[ast.AST] = field(default_factory=list)  # Stack of AST nodes or values
+    loops: list[ast.comprehension] = field(default_factory=list)
     expression: Optional[ast.AST] = None  # Main expression being yielded
-    key_expression: Optional[ast.AST] = None  # For dict comprehensions
-    code_obj: Any = None
-    frame: Any = None
-    current_loop_var: Optional[str] = None  # Track current loop variable
+    code_obj: Optional[types.CodeType] = None
+    frame: Optional[types.FrameType] = None
     pending_conditions: List[ast.AST] = field(default_factory=list)
     or_conditions: List[ast.AST] = field(default_factory=list)
+    chained_compare_state: Optional[ast.Compare] = None  # For building chained comparisons
+    duplicated_for_chain: bool = False  # Flag for chained comparison detection
 
 
 # Global handler registry
@@ -256,9 +224,11 @@ def handle_for_iter(state: ReconstructionState, instr: dis.Instruction) -> Recon
     
     # Create a new loop variable - we'll get the actual name from STORE_FAST
     # For now, use a placeholder
-    loop_info = LoopInfo(
+    loop_info = ast.comprehension(
         target=ast.Name(id='_temp', ctx=ast.Store()),
-        iter_ast=ensure_ast(iterator)
+        iter=ensure_ast(iterator),
+        ifs=[],
+        is_async=0,
     )
     
     # Create new loops list with the new loop info
@@ -309,23 +279,24 @@ def handle_store_fast(state: ReconstructionState, instr: dis.Instruction) -> Rec
     var_name = instr.argval
     
     # Update the most recent loop's target variable
-    if state.loops:
-        # Create a new LoopInfo with updated target
-        updated_loop = replace(
-            state.loops[-1],
-            target=ast.Name(id=var_name, ctx=ast.Store())
-        )
-        # Create new loops list with the updated loop
-        new_loops = state.loops[:-1] + [updated_loop]
-        return replace(state, loops=new_loops, current_loop_var=var_name)
-    
-    return replace(state, current_loop_var=var_name)
+    assert len(state.loops) > 0, "STORE_FAST must be within a loop context"
+
+    # Create a new LoopInfo with updated target
+    updated_loop = ast.comprehension(
+        target=ast.Name(id=var_name, ctx=ast.Store()),
+        iter=state.loops[-1].iter,
+        ifs=state.loops[-1].ifs,
+        is_async=state.loops[-1].is_async
+    )
+    # Create new loops list with the updated loop
+    new_loops = state.loops[:-1] + [updated_loop]
+    return replace(state, loops=new_loops)
 
 
 @register_handler('LOAD_CONST')
 def handle_load_const(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     const_value = instr.argval
-    new_stack = state.stack + [ast.Constant(value=const_value)]
+    new_stack = state.stack + [ensure_ast(const_value)]
     return replace(state, stack=new_stack)
 
 
@@ -348,8 +319,7 @@ def handle_load_name(state: ReconstructionState, instr: dis.Instruction) -> Reco
 def handle_store_name(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # STORE_NAME stores to a name in the global namespace
     # In generator expressions, this is uncommon but we'll handle it like STORE_FAST
-    name = instr.argval
-    return replace(state, current_loop_var=name)
+    return state
 
 
 # ============================================================================
@@ -360,7 +330,14 @@ def handle_store_name(state: ReconstructionState, instr: dis.Instruction) -> Rec
 def handle_pop_top(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # POP_TOP removes the top item from the stack
     # In generators, often used after YIELD_VALUE
+    # Also used to clean up the duplicated middle value in failed chained comparisons
     new_stack = state.stack[:-1]
+    
+    # If we're in a chained comparison state, this POP_TOP is cleaning up
+    # after a failed comparison, so clear the chained state
+    if state.chained_compare_state:
+        return replace(state, stack=new_stack, chained_compare_state=None)
+    
     return replace(state, stack=new_stack)
 
 
@@ -384,6 +361,12 @@ def handle_rot_three(state: ReconstructionState, instr: dis.Instruction) -> Reco
     # ROT_THREE rotates the top three stack items
     # TOS -> TOS1, TOS1 -> TOS2, TOS2 -> TOS
     new_stack = state.stack[:-3] + [state.stack[-2], state.stack[-1], state.stack[-3]]
+    
+    # Check if the top two items are the same (from DUP_TOP)
+    # This indicates we're setting up for a chained comparison
+    if len(state.stack) >= 3 and state.stack[-1] == state.stack[-2]:
+        return replace(state, stack=new_stack, duplicated_for_chain=True)
+    
     return replace(state, stack=new_stack)
 
 
@@ -720,7 +703,7 @@ def handle_build_tuple(state: ReconstructionState, instr: dis.Instruction) -> Re
 
 @register_handler('BUILD_LIST')
 def handle_build_list(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    list_size = instr.arg
+    list_size: int = instr.arg
     # Pop elements for the list
     elements = [ensure_ast(elem) for elem in state.stack[-list_size:]] if list_size > 0 else []
     new_stack = state.stack[:-list_size] if list_size > 0 else state.stack
@@ -762,18 +745,12 @@ def handle_list_extend(state: ReconstructionState, instr: dis.Instruction) -> Re
 def handle_build_const_key_map(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # BUILD_CONST_KEY_MAP builds a dictionary with constant keys
     # The keys are in a tuple on TOS, values are on the stack below
-    map_size = instr.arg
+    map_size: int = instr.arg
     # Pop the keys tuple and values
-    keys_tuple = state.stack[-1]
+    keys_tuple: ast.Tuple = state.stack[-1]
+    keys = [ensure_ast(key) for key in keys_tuple.elts]
     values = [ensure_ast(val) for val in state.stack[-map_size-1:-1]]
     new_stack = state.stack[:-map_size-1]
-    
-    # Extract keys from the constant tuple
-    if isinstance(keys_tuple, ast.Constant) and isinstance(keys_tuple.value, tuple):
-        keys = [ast.Constant(value=key) for key in keys_tuple.value]
-    else:
-        # Fallback if keys are not in expected format
-        keys = [ast.Constant(value=f'key_{i}') for i in range(len(values))]
     
     # Create dictionary AST
     dict_node = ast.Dict(keys=keys, values=values)
@@ -803,9 +780,48 @@ def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> Rec
         'is': ast.Is(),
         'is not': ast.IsNot(),
     }
+    assert instr.argval in op_map, f"Unsupported comparison operation: {instr.argval}"
     
     op_name = instr.argval
-    if op_name in op_map:
+    # Check if we're in a chained comparison
+    if state.duplicated_for_chain and len(state.stack) >= 3:
+        # This is the first comparison in a chain
+        # After DUP_TOP and ROT_THREE, stack is [middle, middle, left]
+        # So we need to swap left and right for the comparison
+        # The actual comparison should be left < middle (not middle < left)
+        left, right = right, left  # Swap because ROT_THREE reversed them
+        middle_value = state.stack[-3]
+        
+        # Create the initial Compare node
+        compare_node = ast.Compare(
+            left=left,
+            ops=[op_map[op_name]],
+            comparators=[right]
+        )
+        
+        # Keep the middle value on the stack for the next comparison
+        new_stack = state.stack[:-3] + [middle_value, compare_node]
+        return replace(state, stack=new_stack, 
+                        chained_compare_state=compare_node,
+                        duplicated_for_chain=False)
+    elif state.chained_compare_state:
+        # This is a continuation of a chained comparison
+        # Stack has [middle_value, previous_compare]
+        middle_value = left  # The duplicated middle value
+        new_comparator = right
+        existing_compare = state.chained_compare_state
+        
+        # The existing compare has the form: left op1 middle
+        # We need to add: middle op2 right
+        # But the compare node stores it as: left [op1, op2] [middle, right]
+        existing_compare.ops.append(op_map[op_name])
+        existing_compare.comparators.append(new_comparator)
+        
+        # Replace the stack with just the extended comparison
+        new_stack = state.stack[:-2] + [existing_compare]
+        return replace(state, stack=new_stack, chained_compare_state=None)
+    else:
+        # Regular comparison
         compare_node = ast.Compare(
             left=left,
             ops=[op_map[op_name]],
@@ -813,8 +829,6 @@ def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> Rec
         )
         new_stack = state.stack[:-2] + [compare_node]
         return replace(state, stack=new_stack)
-    else:
-        raise TypeError(f"Unsupported comparison operation: {op_name}")
 
 
 @register_handler('CONTAINS_OP')
@@ -862,6 +876,19 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
     condition = ensure_ast(state.stack[-1])
     new_stack = state.stack[:-1]
     
+    # Special handling for chained comparisons
+    if state.chained_compare_state:
+        # We're in the middle of building a chained comparison
+        # Check if this is jumping to the cleanup section (POP_TOP)
+        # vs continuing to the next comparison
+        if len(new_stack) > 0 and isinstance(new_stack[-1], ast.AST):
+            # The duplicated middle value is still on the stack
+            # This means the first comparison passed and we're continuing
+            return replace(state, stack=new_stack)
+        else:
+            # First comparison failed, clear the chained state
+            return replace(state, stack=new_stack, chained_compare_state=None)
+    
     # If we have pending OR conditions, this is the final condition in an OR expression
     if state.or_conditions:
         # Combine all OR conditions into a single BoolOp
@@ -870,9 +897,11 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
         
         # Add the combined condition to the loop and clear OR conditions
         if state.loops:
-            updated_loop = replace(
-                state.loops[-1],
-                conditions=state.loops[-1].conditions + [combined_condition]
+            updated_loop = ast.comprehension(
+                target=state.loops[-1].target,
+                iter=state.loops[-1].iter,
+                ifs=state.loops[-1].ifs + [combined_condition],
+                is_async=state.loops[-1].is_async,
             )
             new_loops = state.loops[:-1] + [updated_loop]
             return replace(state, stack=new_stack, loops=new_loops, or_conditions=[])
@@ -882,9 +911,11 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
     else:
         # Regular condition - add to the most recent loop
         if state.loops:
-            updated_loop = replace(
-                state.loops[-1],
-                conditions=state.loops[-1].conditions + [condition]
+            updated_loop = ast.comprehension(
+                target=state.loops[-1].target,
+                iter=state.loops[-1].iter,
+                ifs=state.loops[-1].ifs + [condition],
+                is_async=state.loops[-1].is_async,
             )
             new_loops = state.loops[:-1] + [updated_loop]
             return replace(state, stack=new_stack, loops=new_loops)
@@ -917,9 +948,11 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
         negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
         
         if state.loops:
-            updated_loop = replace(
-                state.loops[-1],
-                conditions=state.loops[-1].conditions + [negated_condition]
+            updated_loop = ast.comprehension(
+                target=state.loops[-1].target,
+                iter=state.loops[-1].iter,
+                ifs=state.loops[-1].ifs + [negated_condition],
+                is_async=state.loops[-1].is_async,
             )
             new_loops = state.loops[:-1] + [updated_loop]
             return replace(state, stack=new_stack, loops=new_loops)
@@ -1070,6 +1103,12 @@ def _ensure_ast_range_iterator(value: Iterator) -> ast.AST:
     return ensure_ast(value.__reduce__()[1][0])
 
 
+@ensure_ast.register
+def _ensure_ast_codeobj(value: types.CodeType) -> ast.Constant:
+    # TODO recurse or raise an error
+    return ast.Constant(value=value)
+
+
 def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
     """Build the final comprehension AST from the state"""
     # Build comprehension generators
@@ -1078,8 +1117,8 @@ def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
     for loop in state.loops:
         comp = ast.comprehension(
             target=loop.target,
-            iter=loop.iter_ast,
-            ifs=loop.conditions,
+            iter=loop.iter,
+            ifs=loop.ifs,
             is_async=0
         )
         generators.append(comp)
@@ -1090,34 +1129,10 @@ def build_comprehension_ast(state: ReconstructionState) -> ast.AST:
     
     # Determine the main expression
     if state.expression:
-        elt = state.expression
-    elif state.stack:
-        elt = ensure_ast(state.stack[-1])
-    else:
-        elt = ast.Name(id='item', ctx=ast.Load())
-    
-    # Build the appropriate comprehension type
-    if state.comprehension_type == 'dict' and state.key_expression:
-        return ast.DictComp(
-            key=state.key_expression,
-            value=elt,
-            generators=generators
-        )
-    elif state.comprehension_type == 'list':
-        return ast.ListComp(
-            elt=elt,
-            generators=generators
-        )
-    elif state.comprehension_type == 'set':
-        return ast.SetComp(
-            elt=elt,
-            generators=generators
-        )
-    else:  # generator
-        return ast.GeneratorExp(
-            elt=elt,
-            generators=generators
-        )
+        state = replace(state, stack=state.stack + [state.expression])
+
+    assert len(state.stack) > 0
+    return ast.GeneratorExp(elt=ensure_ast(state.stack[-1]), generators=generators)
 
 
 # ============================================================================
