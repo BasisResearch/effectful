@@ -130,8 +130,11 @@ class ReconstructionState:
     """
     code_obj: types.CodeType
     frame: types.FrameType
+
+    yld: Optional[ast.AST] = None  # Main expression being yielded (if any)
+    ret: Optional[ast.AST] = None  # Return value (if any)
+
     stack: list[ast.AST] = field(default_factory=list)  # Stack of AST nodes or values
-    expression: Optional[ast.AST] = None  # Main expression being yielded
     loops: list[ast.comprehension] = field(default_factory=list)
     pending_conditions: List[ast.AST] = field(default_factory=list)
     or_conditions: List[ast.AST] = field(default_factory=list)
@@ -183,17 +186,38 @@ def handle_gen_start(state: ReconstructionState, instr: dis.Instruction) -> Reco
 def handle_yield_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # YIELD_VALUE pops a value from the stack and yields it
     # This is the expression part of the generator
-    expression = ensure_ast(state.stack[-1])
+    assert state.yld is None, "YIELD_VALUE should not be called more than once"
+    assert state.ret is None, "YIELD_VALUE should not be called after RETURN_VALUE"
+
+    yld = ensure_ast(state.stack[-1])
     new_stack = state.stack[:-1]
-    return replace(state, stack=new_stack, expression=expression)
+
+    # Add any pending conditions to the last loop
+    if state.pending_conditions:
+        assert len(state.loops) > 0, "dangling condition"
+        last_loop = ast.comprehension(
+            target=state.loops[-1].target,
+            iter=state.loops[-1].iter,
+            ifs=state.loops[-1].ifs + state.pending_conditions,
+            is_async=state.loops[-1].is_async
+        )
+        return replace(state, stack=new_stack, yld=yld, loops=state.loops[:-1] + [last_loop], pending_conditions=[])
+    else:
+        return replace(state, stack=new_stack, yld=yld)
 
 
 @register_handler('RETURN_VALUE')
 def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # RETURN_VALUE ends the generator
     # Usually preceded by LOAD_CONST None
-    new_stack = state.stack[:-1]  # Remove the None
-    return replace(state, stack=new_stack)
+    assert state.ret is None, "RETURN_VALUE should not be called more than once"
+    new_stack = state.stack[:-1]
+    ret = ensure_ast(state.stack[-1])
+
+    if state.yld is not None:
+        assert isinstance(ret, ast.Constant) and ret.value is None, "RETURN_VALUE must be None"
+
+    return replace(state, stack=new_stack, ret=ret)
 
 
 # ============================================================================
@@ -207,7 +231,7 @@ def handle_for_iter(state: ReconstructionState, instr: dis.Instruction) -> Recon
     # The iterator should be on top of stack
     # Create new stack without the iterator
     new_stack = state.stack[:-1]
-    iterator = state.stack[-1]
+    iterator: ast.AST = state.stack[-1]
     
     # Create a new loop variable - we'll get the actual name from STORE_FAST
     # For now, use a placeholder
@@ -344,7 +368,7 @@ def handle_rot_three(state: ReconstructionState, instr: dis.Instruction) -> Reco
     new_stack = state.stack[:-3] + [state.stack[-2], state.stack[-1], state.stack[-3]]
     
     # Check if the top two items are the same (from DUP_TOP)
-    # This indicates we're setting up for a chained comparison
+    # This heuristic indicates we're setting up for a chained comparison
     if len(state.stack) >= 3 and state.stack[-1] == state.stack[-2]:
         raise NotImplementedError("Chained comparison not implemented yet")
     
@@ -1090,20 +1114,12 @@ def reconstruct(genexpr: GeneratorType) -> ast.GeneratorExp:
     )
     
     # Process each instruction
-    for instr in dis.get_instructions(genexpr.gi_code):
+    for instr in dis.get_instructions(state.code_obj):
         # Call the handler
         state = OP_HANDLERS[instr.opname](state, instr)
-    
-    # Build and return the final AST
-    generators: list[ast.comprehension] = state.loops[:]
 
-    # Add any pending conditions to the last loop
-    if state.pending_conditions and generators:
-        generators[-1].ifs.extend(state.pending_conditions)
-    
     # Determine the main expression
-    if state.expression:
-        state = replace(state, stack=state.stack + [state.expression])
-
-    assert len(state.stack) == 1
-    return ast.GeneratorExp(elt=ensure_ast(state.stack[-1]), generators=generators)
+    assert state.yld is not None, "Yield expression must be set"
+    assert state.loops, "At least one loop must be present"
+    assert isinstance(state.ret, ast.Constant) and state.ret.value is None, "Return value must not be set"
+    return ast.GeneratorExp(elt=state.yld, generators=state.loops)
