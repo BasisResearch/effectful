@@ -1026,8 +1026,7 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 @ensure_ast.register(type(iter({1: 2})))
 def _ensure_ast_dict_iterator(value: Iterator) -> ast.AST:
-    # TODO figure out how to handle dict iterators
-    raise TypeError("dict key iterator not yet supported")
+    return ensure_ast(value.__reduce__()[1][0])
 
 
 @ensure_ast.register
