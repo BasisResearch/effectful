@@ -352,9 +352,9 @@ def test_nested_loops(genexpr):
     (x_ for x_ in {x for x in range(10) if x % 2 == 0}),
     
     # Dict comprehensions
-    pytest.param((x_ for x_ in {x: x**2 for x in range(5)}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
-    pytest.param((x_ for x_ in {x: x*2 for x in range(5) if x % 2 == 0}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
-    pytest.param((x_ for x_ in {str(x): x for x in range(5)}), marks=pytest.mark.xfail(reason="Dict comprehensions not yet supported")),
+    (x_ for x_ in {x: x**2 for x in range(5)}),
+    (x_ for x_ in {x: x*2 for x in range(5) if x % 2 == 0}),
+    (x_ for x_ in {str(x): x for x in range(5)}),
 ])
 def test_different_comprehension_types(genexpr):
     """Test reconstruction of different comprehension types."""
