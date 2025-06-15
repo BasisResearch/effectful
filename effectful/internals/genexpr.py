@@ -32,7 +32,7 @@ CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 class Placeholder(ast.Name):
     """Placeholder for AST nodes that are not yet resolved."""
     def __init__(self):
-        super().__init__(id="", ctx=ast.Load())
+        super().__init__(id=".PLACEHOLDER", ctx=ast.Load())
 
 
 class IterDummyName(ast.Name):
