@@ -341,20 +341,15 @@ def test_nested_loops(genexpr):
 # ============================================================================
 
 @pytest.mark.parametrize("genexpr", [
-    # List comprehensions
+    # Comprehensions as iterator constants
     (x_ for x_ in [x for x in range(5)]),
-    (x_ for x_ in [x * 2 for x in range(5)]),
-    (x_ for x_ in [x for x in range(10) if x % 2 == 0]),
-    
-    # Set comprehensions
     (x_ for x_ in {x for x in range(5)}),
-    (x_ for x_ in {x * 2 for x in range(5)}),
-    (x_ for x_ in {x for x in range(10) if x % 2 == 0}),
-    
-    # Dict comprehensions
     (x_ for x_ in {x: x**2 for x in range(5)}),
-    (x_ for x_ in {x: x*2 for x in range(5) if x % 2 == 0}),
-    (x_ for x_ in {str(x): x for x in range(5)}),
+
+    # Comprehensions as yield expressions
+    ([y for y in range(x + 1)] for x in range(3)),
+    ({y for y in range(x + 1)} for x in range(3)),
+    ({y: y**2 for y in range(x + 1)} for x in range(3)),
 ])
 def test_different_comprehension_types(genexpr):
     """Test reconstruction of different comprehension types."""
