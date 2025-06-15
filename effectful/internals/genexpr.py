@@ -280,6 +280,24 @@ def handle_jump_forward(state: ReconstructionState, instr: dis.Instruction) -> R
     return state
 
 
+@register_handler('UNPACK_SEQUENCE')
+def handle_unpack_sequence(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # UNPACK_SEQUENCE unpacks a sequence into multiple values
+    # arg is the number of values to unpack
+    unpack_count = instr.arg
+    sequence = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+    
+    # For tuple unpacking in comprehensions, we typically see patterns like:
+    # ((k, v) for k, v in items) where items is unpacked into k and v
+    # Create placeholder variables for the unpacked values
+    for i in range(unpack_count):
+        var_name = f'_unpack_{i}'
+        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
+    
+    return replace(state, stack=new_stack)
+
+
 # ============================================================================
 # VARIABLE OPERATIONS HANDLERS
 # ============================================================================
@@ -714,12 +732,8 @@ def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> Rec
         '>=': ast.GtE(),
         '==': ast.Eq(),
         '!=': ast.NotEq(),
-        'in': ast.In(),
-        'not in': ast.NotIn(),
-        'is': ast.Is(),
-        'is not': ast.IsNot(),
     }
-    assert instr.argval in op_map, f"Unsupported comparison operation: {instr.argval}"
+    assert instr.argval in dis.cmp_op, f"Unsupported comparison operation: {instr.argval}"
     
     op_name = instr.argval
     compare_node = ast.Compare(
@@ -876,28 +890,6 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
         else:
             new_pending = state.pending_conditions + [negated_condition]
             return replace(state, stack=new_stack, pending_conditions=new_pending)
-
-
-# ============================================================================
-# UNPACKING HANDLERS
-# ============================================================================
-
-@register_handler('UNPACK_SEQUENCE')
-def handle_unpack_sequence(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # UNPACK_SEQUENCE unpacks a sequence into multiple values
-    # arg is the number of values to unpack
-    unpack_count = instr.arg
-    sequence = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-    
-    # For tuple unpacking in comprehensions, we typically see patterns like:
-    # ((k, v) for k, v in items) where items is unpacked into k and v
-    # Create placeholder variables for the unpacked values
-    for i in range(unpack_count):
-        var_name = f'_unpack_{i}'
-        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
-    
-    return replace(state, stack=new_stack)
 
 
 # ============================================================================
