@@ -639,6 +639,18 @@ def handle_build_tuple(state: ReconstructionState, instr: dis.Instruction) -> Re
     return replace(state, stack=new_stack)
 
 
+@register_handler('LIST_TO_TUPLE')
+def handle_list_to_tuple(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # LIST_TO_TUPLE converts a list on the stack to a tuple
+    list_obj = ensure_ast(state.stack[-1])
+    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
+    
+    # Create tuple AST from the list's elements
+    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
+    new_stack = state.stack[:-1] + [tuple_node]
+    return replace(state, stack=new_stack)
+
+
 @register_handler('LIST_EXTEND')
 def handle_list_extend(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
