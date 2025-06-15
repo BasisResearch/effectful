@@ -26,64 +26,19 @@ from typing import Callable, Any, List, Dict, Iterator, Optional, Union
 from dataclasses import dataclass, field, replace
 
 
-# Categories for organizing opcodes
-CATEGORIES = {
-    'Core Generator': {
-        'GEN_START', 'YIELD_VALUE', 'RETURN_VALUE'
-    },
-    
-    'Loop Control': {
-        'GET_ITER', 'FOR_ITER', 'JUMP_ABSOLUTE', 'JUMP_FORWARD',
-        'POP_JUMP_IF_FALSE', 'POP_JUMP_IF_TRUE'
-    },
-    
-    'Variable Operations': {
-        'LOAD_FAST', 'STORE_FAST', 'LOAD_GLOBAL', 'LOAD_DEREF', 'STORE_DEREF',
-        'LOAD_CONST', 'LOAD_NAME', 'STORE_NAME'
-    },
-    
-    'Arithmetic/Logic': {
-        'BINARY_ADD', 'BINARY_SUBTRACT', 'BINARY_MULTIPLY', 'BINARY_TRUE_DIVIDE',
-        'BINARY_FLOOR_DIVIDE', 'BINARY_MODULO', 'BINARY_POWER', 'BINARY_LSHIFT',
-        'BINARY_RSHIFT', 'BINARY_OR', 'BINARY_XOR', 'BINARY_AND',
-        'UNARY_POSITIVE', 'UNARY_NEGATIVE', 'UNARY_NOT', 'UNARY_INVERT'
-    },
-    
-    'Comparisons': {
-        'COMPARE_OP'
-    },
-    
-    'Object Access': {
-        'LOAD_ATTR', 'BINARY_SUBSCR', 'BUILD_SLICE', 'STORE_ATTR',
-        'STORE_SUBSCR', 'DELETE_SUBSCR'
-    },
-    
-    'Function Calls': {
-        'CALL_FUNCTION', 'CALL_FUNCTION_KW', 'CALL_FUNCTION_EX', 'CALL_METHOD',
-        'LOAD_METHOD', 'CALL', 'PRECALL'
-    },
-    
-    'Container Building': {
-        'BUILD_TUPLE', 'BUILD_LIST', 'BUILD_SET', 'BUILD_MAP',
-        'BUILD_STRING', 'FORMAT_VALUE', 'LIST_APPEND', 'SET_ADD', 'MAP_ADD',
-        'BUILD_CONST_KEY_MAP'
-    },
-    
-    'Stack Management': {
-        'POP_TOP', 'DUP_TOP', 'ROT_TWO', 'ROT_THREE', 'ROT_FOUR',
-        'COPY', 'SWAP'
-    },
-    
-    'Unpacking': {
-        'UNPACK_SEQUENCE', 'UNPACK_EX'
-    },
+CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 
-    'Other': {
-        'NOP', 'EXTENDED_ARG', 'CACHE', 'RESUME', 'MAKE_CELL'
-    }
-}
 
-OP_CATEGORIES: dict[str, str] = {op: category for category, ops in CATEGORIES.items() for op in ops}
+class Placeholder(ast.Name):
+    """Placeholder for AST nodes that are not yet resolved."""
+    def __init__(self):
+        super().__init__(id="", ctx=ast.Load())
+
+
+class IterDummyName(ast.Name):
+    """Dummy name for the iterator variable in generator expressions."""
+    def __init__(self):
+        super().__init__(id=".0", ctx=ast.Load())
 
 
 @dataclass(frozen=True)
@@ -106,17 +61,6 @@ class ReconstructionState:
                like LOAD_FAST push to this stack, while operations like
                BINARY_ADD pop operands and push results.
                
-        loops: List of LoopInfo objects representing the comprehension's loops.
-               Built up as FOR_ITER instructions are encountered. The order
-               matters - outer loops come before inner loops.
-               
-        expression: The main expression that gets yielded/collected. For example,
-                   in '[x*2 for x in items]', this would be the AST for 'x*2'.
-                   Captured when YIELD_VALUE is encountered.
-                   
-        code_obj: The code object being analyzed (from generator.gi_code).
-                 Contains the bytecode and other metadata like variable names.
-                 
         frame: The generator's frame object (from generator.gi_frame).
                Provides access to the runtime state, including local variables
                like the '.0' iterator variable.
@@ -128,16 +72,10 @@ class ReconstructionState:
         or_conditions: Conditions that are part of an OR expression. These
                       need to be combined with ast.BoolOp(op=ast.Or()).
     """
-    code_obj: types.CodeType
-    frame: types.FrameType
-
-    yld: Optional[ast.AST] = None  # Main expression being yielded (if any)
-    ret: Optional[ast.AST] = None  # Return value (if any)
-
-    stack: list[ast.AST] = field(default_factory=list)  # Stack of AST nodes or values
-    loops: list[ast.comprehension] = field(default_factory=list)
-    pending_conditions: List[ast.AST] = field(default_factory=list)
-    or_conditions: List[ast.AST] = field(default_factory=list)
+    ret: ast.Lambda | ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    stack: list[ast.expr] = field(default_factory=list)  # Stack of AST nodes or values
+    pending_conditions: List[ast.expr] = field(default_factory=list)
+    or_conditions: List[ast.expr] = field(default_factory=list)
 
 
 # Global handler registry
@@ -172,13 +110,16 @@ def register_handler(opname: str, handler = None):
 
 
 # ============================================================================
-# CORE GENERATOR HANDLERS
+# GENERATOR COMPREHENSION HANDLERS
 # ============================================================================
 
 @register_handler('GEN_START')
 def handle_gen_start(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # GEN_START is typically the first instruction in generator expressions
     # It initializes the generator
+    assert isinstance(state.ret, ast.GeneratorExp)
+    assert isinstance(state.ret.elt, Placeholder), "GEN_START must be called before yielding"
+    assert len(state.ret.generators) == 0, "GEN_START should not have generators yet"
     return state
 
 
@@ -186,66 +127,167 @@ def handle_gen_start(state: ReconstructionState, instr: dis.Instruction) -> Reco
 def handle_yield_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # YIELD_VALUE pops a value from the stack and yields it
     # This is the expression part of the generator
-    assert state.yld is None, "YIELD_VALUE should not be called more than once"
-    assert state.ret is None, "YIELD_VALUE should not be called after RETURN_VALUE"
+    assert isinstance(state.ret, ast.GeneratorExp), "YIELD_VALUE must be called after GEN_START"
+    assert isinstance(state.ret.elt, Placeholder), "YIELD_VALUE must be called before yielding"
+    assert len(state.ret.generators) > 0, "YIELD_VALUE should have generators"
 
-    yld = ensure_ast(state.stack[-1])
     new_stack = state.stack[:-1]
-
-    # Add any pending conditions to the last loop
-    if state.pending_conditions:
-        assert len(state.loops) > 0, "dangling condition"
-        last_loop = ast.comprehension(
-            target=state.loops[-1].target,
-            iter=state.loops[-1].iter,
-            ifs=state.loops[-1].ifs + state.pending_conditions,
-            is_async=state.loops[-1].is_async
-        )
-        return replace(state, stack=new_stack, yld=yld, loops=state.loops[:-1] + [last_loop], pending_conditions=[])
-    else:
-        return replace(state, stack=new_stack, yld=yld)
-
-
-@register_handler('RETURN_VALUE')
-def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # RETURN_VALUE ends the generator
-    # Usually preceded by LOAD_CONST None
-    assert state.ret is None, "RETURN_VALUE should not be called more than once"
-    new_stack = state.stack[:-1]
-    ret = ensure_ast(state.stack[-1])
-
-    if state.yld is not None:
-        assert isinstance(ret, ast.Constant) and ret.value is None, "RETURN_VALUE must be None"
-
+    ret = ast.GeneratorExp(
+        elt=ensure_ast(state.stack[-1]),
+        generators=state.ret.generators,
+    )
     return replace(state, stack=new_stack, ret=ret)
+
+
+# ============================================================================
+# LIST COMPREHENSION HANDLERS
+# ============================================================================
+
+@register_handler('BUILD_LIST')
+def handle_build_list(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    list_size: int = instr.arg
+    # Pop elements for the list
+    elements = [ensure_ast(elem) for elem in state.stack[-list_size:]] if list_size > 0 else []
+    new_stack = state.stack[:-list_size] if list_size > 0 else state.stack
+    
+    # Create list AST
+    list_node = ast.List(elts=elements, ctx=ast.Load())
+    new_stack = new_stack + [list_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler('LIST_APPEND')
+def handle_list_append(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    assert isinstance(state.ret, ast.ListComp), "LIST_APPEND must be called within a ListComp context"
+    new_stack = state.stack[:-1]
+    new_ret = ast.ListComp(
+        elt=ensure_ast(state.stack[-1]),
+        generators=state.ret.generators,
+    )
+    return replace(state, stack=new_stack, ret=new_ret)
+
+
+# ============================================================================
+# SET COMPREHENSION HANDLERS
+# ============================================================================
+
+@register_handler('BUILD_SET')
+def handle_build_set(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    raise NotImplementedError("BUILD_SET not implemented yet")  # TODO
+
+
+@register_handler('SET_ADD')
+def handle_set_add(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    assert isinstance(state.ret, ast.SetComp), "SET_ADD must be called after BUILD_SET"
+    new_stack = state.stack[:-1]
+    new_ret = ast.SetComp(
+        elt=ensure_ast(state.stack[-1]),
+        generators=state.ret.generators,
+    )
+    return replace(state, stack=new_stack, ret=new_ret)
+
+
+# ============================================================================
+# DICT COMPREHENSION HANDLERS
+# ============================================================================
+
+@register_handler('BUILD_MAP')
+def handle_build_map(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    raise NotImplementedError("BUILD_MAP not implemented yet")  # TODO
+
+
+@register_handler('MAP_ADD')
+def handle_map_add(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    assert isinstance(state.ret, ast.DictComp), "MAP_ADD must be called after BUILD_MAP"
+    new_stack = state.stack[:-2]
+    new_ret = ast.DictComp(
+        key=ensure_ast(state.stack[-2]),
+        value=ensure_ast(state.stack[-1]),
+        generators=state.ret.generators,
+    )
+    return replace(state, stack=new_stack, ret=new_ret)
 
 
 # ============================================================================
 # LOOP CONTROL HANDLERS
 # ============================================================================
 
+@register_handler('RETURN_VALUE')
+def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # RETURN_VALUE ends the generator
+    # Usually preceded by LOAD_CONST None
+    new_stack = state.stack[:-1]
+
+    # Add any pending conditions to the last loop
+    if isinstance(state.ret, CompExp) and state.pending_conditions:
+        assert len(state.ret.generators) > 0, "dangling condition"
+        last_loop = ast.comprehension(
+            target=state.ret.generators[-1].target,
+            iter=state.ret.generators[-1].iter,
+            ifs=state.ret.generators[-1].ifs + state.pending_conditions,
+            is_async=state.ret.generators[-1].is_async
+        )
+        if isinstance(state.ret, ast.DictComp):
+            new_ret = ast.DictComp(
+                key=state.ret.key,
+                value=state.ret.value,
+                generators=state.ret.generators[:-1] + [last_loop],
+            )
+        else:
+            new_ret = type(state.ret)(
+                elt=state.ret.elt,
+                generators=state.ret.generators[:-1] + [last_loop],
+            )
+        return replace(state, stack=new_stack, ret=new_ret, pending_conditions=[])
+    else:
+        return replace(state, stack=new_stack)
+
+
 @register_handler('FOR_ITER')
 def handle_for_iter(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # FOR_ITER pops an iterator from the stack and pushes the next item
     # If the iterator is exhausted, it jumps to the target instruction
+    assert len(state.stack) > 0, "FOR_ITER must have an iterator on the stack"
+    assert isinstance(state.ret, CompExp), "FOR_ITER must be called within a comprehension context"
+
     # The iterator should be on top of stack
     # Create new stack without the iterator
     new_stack = state.stack[:-1]
-    iterator: ast.AST = state.stack[-1]
+    iterator: ast.expr = state.stack[-1]
     
     # Create a new loop variable - we'll get the actual name from STORE_FAST
     # For now, use a placeholder
     loop_info = ast.comprehension(
-        target=ast.Name(id='_temp', ctx=ast.Store()),
+        target=Placeholder(),
         iter=ensure_ast(iterator),
         ifs=[],
         is_async=0,
     )
     
     # Create new loops list with the new loop info
-    new_loops = state.loops + [loop_info]
-    
-    return replace(state, stack=new_stack, loops=new_loops)
+    new_ret: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
+    if isinstance(state.ret, ast.DictComp):
+        # If it's a DictComp, we need to ensure the loop is added to the dict comprehension
+        new_ret = ast.DictComp(
+            key=state.ret.key,
+            value=state.ret.value,
+            generators=state.ret.generators + [loop_info],
+        )
+    else:
+        new_ret = type(state.ret)(
+            elt=state.ret.elt,
+            generators=state.ret.generators + [loop_info],
+        )
+
+    return replace(state, stack=new_stack, ret=new_ret)
+
+
+@register_handler('GET_ITER')
+def handle_get_iter(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # GET_ITER converts the top stack item to an iterator
+    # For AST reconstruction, we typically don't need to change anything
+    # since the iterator will be used directly in the comprehension
+    return state
 
 
 @register_handler('JUMP_ABSOLUTE')
@@ -270,14 +312,9 @@ def handle_jump_forward(state: ReconstructionState, instr: dis.Instruction) -> R
 def handle_load_fast(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     var_name: str = instr.argval
     
-    # Special handling for .0 variable (the iterator)
-    if var_name[0] == '.':
-        # This is loading the iterator passed to the generator
-        # We need to reconstruct what it represents
-        if not state.frame or var_name not in state.frame.f_locals:
-            raise ValueError(f"Iterator variable '{var_name}' not found in frame locals.")
-
-        new_stack = state.stack + [ensure_ast(state.frame.f_locals[var_name])]
+    if var_name == '.0':
+        # Special handling for .0 variable (the iterator)
+        new_stack = state.stack + [IterDummyName()]
     else:
         # Regular variable load
         new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
@@ -287,21 +324,35 @@ def handle_load_fast(state: ReconstructionState, instr: dis.Instruction) -> Reco
 
 @register_handler('STORE_FAST')
 def handle_store_fast(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    assert isinstance(state.ret, CompExp), "STORE_FAST must be called within a comprehension context"
     var_name = instr.argval
     
     # Update the most recent loop's target variable
-    assert len(state.loops) > 0, "STORE_FAST must be within a loop context"
+    assert len(state.ret.generators) > 0, "STORE_FAST must be within a loop context"
 
     # Create a new LoopInfo with updated target
     updated_loop = ast.comprehension(
         target=ast.Name(id=var_name, ctx=ast.Store()),
-        iter=state.loops[-1].iter,
-        ifs=state.loops[-1].ifs,
-        is_async=state.loops[-1].is_async
+        iter=state.ret.generators[-1].iter,
+        ifs=state.ret.generators[-1].ifs,
+        is_async=state.ret.generators[-1].is_async
     )
+
+    # Update the last loop in the generators list
+    if isinstance(state.ret, ast.DictComp):
+        new_ret = ast.DictComp(
+            key=state.ret.key,
+            value=state.ret.value,
+            generators=state.ret.generators[:-1] + [updated_loop],
+        )
+    else:
+        new_ret = type(state.ret)(
+            elt=state.ret.elt,
+            generators=state.ret.generators[:-1] + [updated_loop],
+        )
+
     # Create new loops list with the updated loop
-    new_loops = state.loops[:-1] + [updated_loop]
-    return replace(state, loops=new_loops)
+    return replace(state, ret=new_ret)
 
 
 @register_handler('LOAD_CONST')
@@ -324,13 +375,6 @@ def handle_load_name(state: ReconstructionState, instr: dis.Instruction) -> Reco
     name = instr.argval
     new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
     return replace(state, stack=new_stack)
-
-
-@register_handler('STORE_NAME') 
-def handle_store_name(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # STORE_NAME stores to a name in the global namespace
-    # In generator expressions, this is uncommon but we'll handle it like STORE_FAST
-    return state
 
 
 # ============================================================================
@@ -583,80 +627,14 @@ def handle_call(state: ReconstructionState, instr: dis.Instruction) -> Reconstru
     return replace(state, stack=new_stack)
 
 
-@register_handler('PRECALL')
-def handle_precall(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # PRECALL is used to prepare for a function call (Python 3.11+)
-    # Usually followed by CALL, so we don't need to do much here
-    return state
-
-
 @register_handler('MAKE_FUNCTION')
 def handle_make_function(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # MAKE_FUNCTION creates a function from code object and name on stack
-    # For lambda functions, we need to reconstruct the lambda expression
-    code_obj: ast.Constant = state.stack[-2]  # Code object
-    lambda_code: types.CodeType = code_obj.value
-    
-    # For lambda functions, try to reconstruct the lambda expression
-    lambda_code = code_obj.value
-    
-    # Simple lambda reconstruction - try to extract the basic pattern
-    # This is a simplified approach for common lambda patterns
-    # Get the lambda's bytecode instructions
-    lambda_instructions = list(dis.get_instructions(lambda_code))
+    # For lambda functions, we need to recurse into the body
 
-    # Map binary operations
-    op_map = {
-        'BINARY_MULTIPLY': ast.Mult(),
-        'BINARY_ADD': ast.Add(),
-        'BINARY_SUBTRACT': ast.Sub(),
-        'BINARY_TRUE_DIVIDE': ast.Div(),
-        'BINARY_FLOOR_DIVIDE': ast.FloorDiv(),
-        'BINARY_MODULO': ast.Mod(),
-        'BINARY_POWER': ast.Pow(),
-    }
- 
-    # For simple lambdas like "lambda y: y * 2"
-    # Look for pattern: LOAD_FAST, LOAD_CONST, BINARY_OP, RETURN_VALUE
-    if (len(lambda_instructions) == 4 and
-        lambda_instructions[0].opname == 'LOAD_FAST' and
-        lambda_instructions[1].opname == 'LOAD_CONST' and
-        lambda_instructions[2].opname in op_map and
-        lambda_instructions[3].opname == 'RETURN_VALUE'):
-        
-        param_name = lambda_instructions[0].argval
-        const_value = lambda_instructions[1].argval
-        op_name = lambda_instructions[2].opname
-               
-        # Create lambda AST: lambda param: param op constant
-        lambda_ast = ast.Lambda(
-            args=ast.arguments(
-                posonlyargs=[],
-                args=[ast.arg(arg=param_name, annotation=None)],
-                vararg=None,
-                kwonlyargs=[],
-                kw_defaults=[],
-                kwarg=None,
-                defaults=[]
-            ),
-            body=ast.BinOp(
-                left=ast.Name(id=param_name, ctx=ast.Load()),
-                op=op_map[op_name],
-                right=ast.Constant(value=const_value)
-            )
-        )
-        new_stack = state.stack[:-2] + [lambda_ast]
-        return replace(state, stack=new_stack)
-    else:
-        raise NotImplementedError("Complex lambda reconstruction not implemented yet.")
+    assert instr.arg == 0, "MAKE_FUNCTION with non-zero flags not allowed."
 
-
-@register_handler('GET_ITER')
-def handle_get_iter(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # GET_ITER converts the top stack item to an iterator
-    # For AST reconstruction, we typically don't need to change anything
-    # since the iterator will be used directly in the comprehension
-    return state
+    raise NotImplementedError("Complex lambda reconstruction not implemented yet.")
 
 
 # ============================================================================
@@ -690,7 +668,7 @@ def handle_binary_subscr(state: ReconstructionState, instr: dis.Instruction) -> 
 
 
 # ============================================================================
-# CONTAINER BUILDING HANDLERS
+# OTHER CONTAINER BUILDING HANDLERS
 # ============================================================================
 
 @register_handler('BUILD_TUPLE')
@@ -703,19 +681,6 @@ def handle_build_tuple(state: ReconstructionState, instr: dis.Instruction) -> Re
     # Create tuple AST
     tuple_node = ast.Tuple(elts=elements, ctx=ast.Load())
     new_stack = new_stack + [tuple_node]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BUILD_LIST')
-def handle_build_list(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    list_size: int = instr.arg
-    # Pop elements for the list
-    elements = [ensure_ast(elem) for elem in state.stack[-list_size:]] if list_size > 0 else []
-    new_stack = state.stack[:-list_size] if list_size > 0 else state.stack
-    
-    # Create list AST
-    list_node = ast.List(elts=elements, ctx=ast.Load())
-    new_stack = new_stack + [list_node]
     return replace(state, stack=new_stack)
 
 
@@ -849,29 +814,49 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
         combined_condition = ast.BoolOp(op=ast.Or(), values=all_or_conditions)
         
         # Add the combined condition to the loop and clear OR conditions
-        if state.loops:
+        if isinstance(state.ret, CompExp) and state.ret.generators:
             updated_loop = ast.comprehension(
-                target=state.loops[-1].target,
-                iter=state.loops[-1].iter,
-                ifs=state.loops[-1].ifs + [combined_condition],
-                is_async=state.loops[-1].is_async,
+                target=state.ret.generators[-1].target,
+                iter=state.ret.generators[-1].iter,
+                ifs=state.ret.generators[-1].ifs + [combined_condition],
+                is_async=state.ret.generators[-1].is_async,
             )
-            new_loops = state.loops[:-1] + [updated_loop]
-            return replace(state, stack=new_stack, loops=new_loops, or_conditions=[])
+            if isinstance(state.ret, ast.DictComp):
+                new_ret = ast.DictComp(
+                    key=state.ret.key,
+                    value=state.ret.value,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            else:
+                new_ret = type(state.ret)(
+                    elt=state.ret.elt,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            return replace(state, stack=new_stack, ret=new_ret, or_conditions=[])
         else:
             new_pending = state.pending_conditions + [combined_condition]
             return replace(state, stack=new_stack, pending_conditions=new_pending, or_conditions=[])
     else:
         # Regular condition - add to the most recent loop
-        if state.loops:
+        if isinstance(state.ret, CompExp) and state.ret.generators:
             updated_loop = ast.comprehension(
-                target=state.loops[-1].target,
-                iter=state.loops[-1].iter,
-                ifs=state.loops[-1].ifs + [condition],
-                is_async=state.loops[-1].is_async,
+                target=state.ret.generators[-1].target,
+                iter=state.ret.generators[-1].iter,
+                ifs=state.ret.generators[-1].ifs + [condition],
+                is_async=state.ret.generators[-1].is_async,
             )
-            new_loops = state.loops[:-1] + [updated_loop]
-            return replace(state, stack=new_stack, loops=new_loops)
+            if isinstance(state.ret, ast.DictComp):
+                new_ret = ast.DictComp(
+                    key=state.ret.key,
+                    value=state.ret.value,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            else:
+                new_ret = type(state.ret)(
+                    elt=state.ret.elt,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            return replace(state, stack=new_stack, ret=new_ret)
         else:
             # If no loops yet, add to pending conditions
             new_pending = state.pending_conditions + [condition]
@@ -900,15 +885,25 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
         # So we need to negate the condition to get the filter condition
         negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
         
-        if state.loops:
+        if isinstance(state.ret, CompExp) and state.ret.generators:
             updated_loop = ast.comprehension(
-                target=state.loops[-1].target,
-                iter=state.loops[-1].iter,
-                ifs=state.loops[-1].ifs + [negated_condition],
-                is_async=state.loops[-1].is_async,
+                target=state.ret.generators[-1].target,
+                iter=state.ret.generators[-1].iter,
+                ifs=state.ret.generators[-1].ifs + [negated_condition],
+                is_async=state.ret.generators[-1].is_async,
             )
-            new_loops = state.loops[:-1] + [updated_loop]
-            return replace(state, stack=new_stack, loops=new_loops)
+            if isinstance(state.ret, ast.DictComp):
+                new_ret = ast.DictComp(
+                    key=state.ret.key,
+                    value=state.ret.value,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            else:
+                new_ret = type(state.ret)(
+                    elt=state.ret.elt,
+                    generators=state.ret.generators[:-1] + [updated_loop],
+                )
+            return replace(state, stack=new_stack, ret=new_ret)
         else:
             new_pending = state.pending_conditions + [negated_condition]
             return replace(state, stack=new_stack, pending_conditions=new_pending)
@@ -937,37 +932,22 @@ def handle_unpack_sequence(state: ReconstructionState, instr: dis.Instruction) -
 
 
 # ============================================================================
-# SIMPLE/UTILITY OPCODE HANDLERS
-# ============================================================================
-
-@register_handler('NOP')
-def handle_nop(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # NOP does nothing
-    return state
-
-
-@register_handler('CACHE')  
-def handle_cache(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # CACHE is used for optimization caching, no effect on AST
-    return state
-
-
-# ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 
 @functools.singledispatch
-def ensure_ast(value) -> ast.AST:
+def ensure_ast(value) -> ast.expr:
     """Ensure value is an AST node"""
     raise TypeError(f"Cannot convert {type(value)} to AST node")
 
 
 @ensure_ast.register
-def _ensure_ast_ast(value: ast.AST) -> ast.AST:
+def _ensure_ast_ast(value: ast.expr) -> ast.expr:
     """If already an AST node, return it as is"""
     return value
 
 
+@ensure_ast.register(types.FunctionType)
 @ensure_ast.register(int)
 @ensure_ast.register(float)
 @ensure_ast.register(str)
@@ -992,7 +972,7 @@ def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
 
 
 @ensure_ast.register(type(iter((1,))))
-def _ensure_ast_tuple_iterator(value: Iterator) -> ast.AST:
+def _ensure_ast_tuple_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(tuple(value.__reduce__()[1][0]))
 
 
@@ -1002,7 +982,7 @@ def _ensure_ast_list(value: list) -> ast.List:
 
 
 @ensure_ast.register(type(iter([1])))
-def _ensure_ast_list_iterator(value: Iterator) -> ast.AST:
+def _ensure_ast_list_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(list(value.__reduce__()[1][0]))
 
 
@@ -1012,7 +992,7 @@ def _ensure_ast_set(value: set) -> ast.Set:
 
 
 @ensure_ast.register(type(iter({1})))
-def _ensure_ast_set_iterator(value: Iterator) -> ast.AST:
+def _ensure_ast_set_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(set(value.__reduce__()[1][0]))
 
 
@@ -1025,7 +1005,7 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 
 @ensure_ast.register(type(iter({1: 2})))
-def _ensure_ast_dict_iterator(value: Iterator) -> ast.AST:
+def _ensure_ast_dict_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(value.__reduce__()[1][0])
 
 
@@ -1039,14 +1019,51 @@ def _ensure_ast_range(value: range) -> ast.Call:
 
 
 @ensure_ast.register(type(iter(range(1))))
-def _ensure_ast_range_iterator(value: Iterator) -> ast.AST:
+def _ensure_ast_range_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(value.__reduce__()[1][0])
 
 
 @ensure_ast.register
-def _ensure_ast_codeobj(value: types.CodeType) -> ast.Constant:
-    # TODO recurse or raise an error
-    return ast.Constant(value=value)
+def _ensure_ast_codeobj(value: types.CodeType) -> CompExp | ast.Lambda:
+    # Determine return type based on the first instruction
+    ret: CompExp | ast.Lambda
+    instructions = list(dis.get_instructions(value))
+    if instructions[0].opname == 'GEN_START' and instructions[1].opname == 'LOAD_FAST' and instructions[1].argval == '.0':
+        ret = ast.GeneratorExp(elt=Placeholder(), generators=[])
+    elif instructions[0].opname == 'BUILD_LIST' and instructions[1].opname == 'LOAD_FAST' and instructions[1].argval == '.0':
+        ret = ast.ListComp(elt=Placeholder(), generators=[])
+    elif instructions[0].opname == 'BUILD_SET' and instructions[1].opname == 'LOAD_FAST' and instructions[1].argval == '.0':
+        ret = ast.SetComp(elt=Placeholder(), generators=[])
+    elif instructions[0].opname == 'BUILD_MAP' and instructions[1].opname == 'LOAD_FAST' and instructions[1].argval == '.0':
+        ret = ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
+    elif instructions[0].opname in {'BUILD_LIST', 'BUILD_SET', 'BUILD_MAP'}:
+        raise NotImplementedError("Unpacking construction not implemented yet")
+    elif instructions[-1].opname == 'RETURN_VALUE':
+        # not a comprehension, assume it's a lambda
+        ret = ast.Lambda(
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[],
+                vararg=None,
+                kwonlyargs=[],
+                kwarg=None,
+                defaults=[],
+                kw_defaults=[],
+            ),
+            body=Placeholder()
+        )
+    else:
+        raise TypeError("Code type from unsupported source")
+
+    # Symbolic execution to reconstruct the AST
+    state = ReconstructionState(ret=ret)
+    for instr in instructions:
+        state = OP_HANDLERS[instr.opname](state, instr)
+
+    # Check postconditions
+    assert not any(isinstance(x, Placeholder) for x in ast.walk(state.ret)), "Return value must not contain placeholders"
+    assert isinstance(state.ret, ast.Lambda) or len(state.ret.generators) > 0, "Return value must have generators if not a lambda"
+    return state.ret
 
 
 # ============================================================================
@@ -1104,21 +1121,9 @@ def reconstruct(genexpr: GeneratorType) -> ast.GeneratorExp:
         match the original comprehension.
     """
     assert inspect.isgenerator(genexpr), "Input must be a generator expression"
-    assert inspect.getgeneratorstate(genexpr) == 'GEN_CREATED', "Generator must be in created state"
-    
-    # Initialize reconstruction state
-    state = ReconstructionState(
-        code_obj=genexpr.gi_code,
-        frame=genexpr.gi_frame
-    )
-    
-    # Process each instruction
-    for instr in dis.get_instructions(state.code_obj):
-        # Call the handler
-        state = OP_HANDLERS[instr.opname](state, instr)
-
-    # Determine the main expression
-    assert state.yld is not None, "Yield expression must be set"
-    assert state.loops, "At least one loop must be present"
-    assert isinstance(state.ret, ast.Constant) and state.ret.value is None, "Return value must not be set"
-    return ast.GeneratorExp(elt=state.yld, generators=state.loops)
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
+    genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
+    assert isinstance(genexpr_ast.generators[0].iter, IterDummyName)
+    assert len([x for x in ast.walk(genexpr_ast) if isinstance(x, IterDummyName)]) == 1
+    genexpr_ast.generators[0].iter = ensure_ast(genexpr.gi_frame.f_locals['.0'])
+    return genexpr_ast
