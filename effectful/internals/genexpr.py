@@ -92,6 +92,9 @@ def register_handler(opname: str, handler = None):
     if handler is None:
         return functools.partial(register_handler, opname)
     
+    if opname not in dis.opmap:
+        raise ValueError(f"Invalid operation name: '{opname}'")
+
     if opname in OP_HANDLERS:
         raise ValueError(f"Handler for '{opname}' already exists.")
 
