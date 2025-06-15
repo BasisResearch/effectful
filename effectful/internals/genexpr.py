@@ -216,31 +216,10 @@ def handle_map_add(state: ReconstructionState, instr: dis.Instruction) -> Recons
 def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # RETURN_VALUE ends the generator
     # Usually preceded by LOAD_CONST None
-    new_stack = state.stack[:-1]
-
-    # Add any pending conditions to the last loop
-    if isinstance(state.ret, CompExp) and state.pending_conditions:
-        assert len(state.ret.generators) > 0, "dangling condition"
-        last_loop = ast.comprehension(
-            target=state.ret.generators[-1].target,
-            iter=state.ret.generators[-1].iter,
-            ifs=state.ret.generators[-1].ifs + state.pending_conditions,
-            is_async=state.ret.generators[-1].is_async
-        )
-        if isinstance(state.ret, ast.DictComp):
-            new_ret = ast.DictComp(
-                key=state.ret.key,
-                value=state.ret.value,
-                generators=state.ret.generators[:-1] + [last_loop],
-            )
-        else:
-            new_ret = type(state.ret)(
-                elt=state.ret.elt,
-                generators=state.ret.generators[:-1] + [last_loop],
-            )
-        return replace(state, stack=new_stack, ret=new_ret, pending_conditions=[])
-    else:
-        return replace(state, stack=new_stack)
+    if isinstance(state.ret, CompExp):
+        return replace(state, stack=state.stack[:-1])
+    elif isinstance(state.ret, ast.Lambda):
+        raise NotImplementedError("Lambda reconstruction not implemented yet")
 
 
 @register_handler('FOR_ITER')
@@ -610,31 +589,12 @@ def handle_call_method(state: ReconstructionState, instr: dis.Instruction) -> Re
     return replace(state, stack=new_stack)
 
 
-@register_handler('CALL')
-def handle_call(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    # CALL is the newer unified call instruction (Python 3.11+)
-    # Similar to CALL_FUNCTION but with a different calling convention
-    arg_count = instr.arg
-
-    # Pop arguments and function
-    args = [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
-    func = ensure_ast(state.stack[-arg_count - 1])
-    new_stack = state.stack[:-arg_count - 1]
-    
-    # Create function call AST
-    call_node = ast.Call(func=func, args=args, keywords=[])
-    new_stack = new_stack + [call_node]
-    return replace(state, stack=new_stack)
-
-
 @register_handler('MAKE_FUNCTION')
 def handle_make_function(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # MAKE_FUNCTION creates a function from code object and name on stack
-    # For lambda functions, we need to recurse into the body
+    assert instr.arg == 0, "MAKE_FUNCTION with defaults or annotations not allowed."
 
-    assert instr.arg == 0, "MAKE_FUNCTION with non-zero flags not allowed."
-
-    raise NotImplementedError("Complex lambda reconstruction not implemented yet.")
+    raise NotImplementedError("Lambda reconstruction not implemented yet")
 
 
 # ============================================================================
