@@ -21,8 +21,7 @@ import functools
 import inspect
 import types
 import typing
-from types import GeneratorType, FunctionType
-from typing import Callable, Any, List, Dict, Iterator, Optional, Union
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
 
@@ -61,10 +60,6 @@ class ReconstructionState:
                like LOAD_FAST push to this stack, while operations like
                BINARY_ADD pop operands and push results.
                
-        frame: The generator's frame object (from generator.gi_frame).
-               Provides access to the runtime state, including local variables
-               like the '.0' iterator variable.
-               
         pending_conditions: Filter conditions that haven't been assigned to
                            a loop yet. Some bytecode patterns require collecting
                            conditions before knowing which loop they belong to.
@@ -74,8 +69,8 @@ class ReconstructionState:
     """
     ret: ast.Lambda | ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
     stack: list[ast.expr] = field(default_factory=list)  # Stack of AST nodes or values
-    pending_conditions: List[ast.expr] = field(default_factory=list)
-    or_conditions: List[ast.expr] = field(default_factory=list)
+    pending_conditions: list[ast.expr] = field(default_factory=list)
+    or_conditions: list[ast.expr] = field(default_factory=list)
 
 
 # Global handler registry
@@ -907,7 +902,6 @@ def _ensure_ast_ast(value: ast.expr) -> ast.expr:
     return value
 
 
-@ensure_ast.register(types.FunctionType)
 @ensure_ast.register(int)
 @ensure_ast.register(float)
 @ensure_ast.register(str)
@@ -1031,7 +1025,13 @@ def _ensure_ast_codeobj(value: types.CodeType) -> CompExp | ast.Lambda:
 # ============================================================================
 
 @ensure_ast.register
-def reconstruct(genexpr: GeneratorType) -> ast.GeneratorExp:
+def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
+    assert inspect.isfunction(value), "Input must be a lambda function"
+    raise NotImplementedError("Lambda reconstruction not implemented yet")
+
+
+@ensure_ast.register
+def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     """
     Reconstruct an AST from a generator expression's bytecode.
     
