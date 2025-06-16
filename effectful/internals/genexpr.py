@@ -467,26 +467,28 @@ handle_unary_not = register_handler('UNARY_NOT', functools.partial(handle_unary_
 # COMPARISON OPERATION HANDLERS
 # ============================================================================
 
+CMP_OPMAP: dict[str, ast.cmpop] = {
+    '<': ast.Lt(),
+    '<=': ast.LtE(),
+    '>': ast.Gt(),
+    '>=': ast.GtE(),
+    '==': ast.Eq(),
+    '!=': ast.NotEq(),
+}
+
+
 @register_handler('COMPARE_OP')
 def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    assert dis.cmp_op[instr.arg] == instr.argval, f"Unsupported comparison operation: {instr.argval}"
+
     right = ensure_ast(state.stack[-1])
     left = ensure_ast(state.stack[-2])
     
     # Map comparison operation codes to AST operators
-    op_map = {
-        '<': ast.Lt(),
-        '<=': ast.LtE(),
-        '>': ast.Gt(),
-        '>=': ast.GtE(),
-        '==': ast.Eq(),
-        '!=': ast.NotEq(),
-    }
-    assert instr.argval in dis.cmp_op, f"Unsupported comparison operation: {instr.argval}"
-    
     op_name = instr.argval
     compare_node = ast.Compare(
         left=left,
-        ops=[op_map[op_name]],
+        ops=[CMP_OPMAP[op_name]],
         comparators=[right]
     )
     new_stack = state.stack[:-2] + [compare_node]
