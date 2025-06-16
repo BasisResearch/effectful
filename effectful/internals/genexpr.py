@@ -423,7 +423,7 @@ def handle_rot_four(state: ReconstructionState, instr: dis.Instruction) -> Recon
 
 
 # ============================================================================
-# ARITHMETIC/LOGIC HANDLERS
+# BINARY ARITHMETIC/LOGIC OPERATION HANDLERS
 # ============================================================================
 
 def handle_binop(op: ast.operator, state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
@@ -451,32 +451,16 @@ handler_binop_and = register_handler('BINARY_AND', functools.partial(handle_bino
 # UNARY OPERATION HANDLERS
 # ============================================================================
 
-@register_handler('UNARY_NEGATIVE')
-def handle_unary_negative(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+def handle_unary_op(op: ast.unaryop, state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     operand = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1] + [ast.UnaryOp(op=ast.USub(), operand=operand)]
+    new_stack = state.stack[:-1] + [ast.UnaryOp(op=op, operand=operand)]
     return replace(state, stack=new_stack)
 
 
-@register_handler('UNARY_POSITIVE')
-def handle_unary_positive(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    operand = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1] + [ast.UnaryOp(op=ast.UAdd(), operand=operand)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('UNARY_INVERT')
-def handle_unary_invert(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    operand = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1] + [ast.UnaryOp(op=ast.Invert(), operand=operand)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('UNARY_NOT')
-def handle_unary_not(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    operand = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1] + [ast.UnaryOp(op=ast.Not(), operand=operand)]
-    return replace(state, stack=new_stack)
+handle_unary_negative = register_handler('UNARY_NEGATIVE', functools.partial(handle_unary_op, ast.USub()))
+handle_unary_positive = register_handler('UNARY_POSITIVE', functools.partial(handle_unary_op, ast.UAdd()))
+handle_unary_invert = register_handler('UNARY_INVERT', functools.partial(handle_unary_op, ast.Invert()))
+handle_unary_not = register_handler('UNARY_NOT', functools.partial(handle_unary_op, ast.Not()))
 
 
 # ============================================================================
