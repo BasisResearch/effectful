@@ -426,100 +426,25 @@ def handle_rot_four(state: ReconstructionState, instr: dis.Instruction) -> Recon
 # ARITHMETIC/LOGIC HANDLERS
 # ============================================================================
 
-@register_handler('BINARY_ADD')
-def handle_binary_add(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+def handle_binop(op: ast.operator, state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     right = ensure_ast(state.stack[-1])
     left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Add(), right=right)]
+    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=op, right=right)]
     return replace(state, stack=new_stack)
 
 
-@register_handler('BINARY_SUBTRACT')
-def handle_binary_subtract(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Sub(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_MULTIPLY')
-def handle_binary_multiply(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Mult(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_TRUE_DIVIDE')
-def handle_binary_true_divide(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Div(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_FLOOR_DIVIDE')
-def handle_binary_floor_divide(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.FloorDiv(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_MODULO')
-def handle_binary_modulo(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Mod(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_POWER')
-def handle_binary_power(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.Pow(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_LSHIFT')
-def handle_binary_lshift(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.LShift(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_RSHIFT')
-def handle_binary_rshift(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.RShift(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_OR')
-def handle_binary_or(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.BitOr(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_XOR')
-def handle_binary_xor(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.BitXor(), right=right)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('BINARY_AND')
-def handle_binary_and(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    new_stack = state.stack[:-2] + [ast.BinOp(left=left, op=ast.BitAnd(), right=right)]
-    return replace(state, stack=new_stack)
+handler_binop_add = register_handler('BINARY_ADD', functools.partial(handle_binop, ast.Add()))
+handler_binop_subtract = register_handler('BINARY_SUBTRACT', functools.partial(handle_binop, ast.Sub()))
+handler_binop_multiply = register_handler('BINARY_MULTIPLY', functools.partial(handle_binop, ast.Mult()))
+handler_binop_true_divide = register_handler('BINARY_TRUE_DIVIDE', functools.partial(handle_binop, ast.Div()))
+handler_binop_floor_divide = register_handler('BINARY_FLOOR_DIVIDE', functools.partial(handle_binop, ast.FloorDiv()))
+handler_binop_modulo = register_handler('BINARY_MODULO', functools.partial(handle_binop, ast.Mod()))
+handler_binop_power = register_handler('BINARY_POWER', functools.partial(handle_binop, ast.Pow()))
+handler_binop_lshift = register_handler('BINARY_LSHIFT', functools.partial(handle_binop, ast.LShift()))
+handler_binop_rshift = register_handler('BINARY_RSHIFT', functools.partial(handle_binop, ast.RShift()))
+handler_binop_or = register_handler('BINARY_OR', functools.partial(handle_binop, ast.BitOr()))
+handler_binop_xor = register_handler('BINARY_XOR', functools.partial(handle_binop, ast.BitXor()))
+handler_binop_and = register_handler('BINARY_AND', functools.partial(handle_binop, ast.BitAnd()))
 
 
 # ============================================================================
