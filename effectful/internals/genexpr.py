@@ -464,6 +464,70 @@ handle_unary_not = register_handler('UNARY_NOT', functools.partial(handle_unary_
 
 
 # ============================================================================
+# COMPARISON OPERATION HANDLERS
+# ============================================================================
+
+@register_handler('COMPARE_OP')
+def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    right = ensure_ast(state.stack[-1])
+    left = ensure_ast(state.stack[-2])
+    
+    # Map comparison operation codes to AST operators
+    op_map = {
+        '<': ast.Lt(),
+        '<=': ast.LtE(),
+        '>': ast.Gt(),
+        '>=': ast.GtE(),
+        '==': ast.Eq(),
+        '!=': ast.NotEq(),
+    }
+    assert instr.argval in dis.cmp_op, f"Unsupported comparison operation: {instr.argval}"
+    
+    op_name = instr.argval
+    compare_node = ast.Compare(
+        left=left,
+        ops=[op_map[op_name]],
+        comparators=[right]
+    )
+    new_stack = state.stack[:-2] + [compare_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler('CONTAINS_OP')
+def handle_contains_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    right = ensure_ast(state.stack[-1])  # Container
+    left = ensure_ast(state.stack[-2])   # Item to check
+    
+    # instr.arg determines if it's 'in' (0) or 'not in' (1)
+    op = ast.NotIn() if instr.arg else ast.In()
+    
+    compare_node = ast.Compare(
+        left=left,
+        ops=[op],
+        comparators=[right]
+    )
+    new_stack = state.stack[:-2] + [compare_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler('IS_OP')
+def handle_is_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    right = ensure_ast(state.stack[-1])
+    left = ensure_ast(state.stack[-2])
+    
+    # instr.arg determines if it's 'is' (0) or 'is not' (1)
+    op = ast.IsNot() if instr.arg else ast.Is()
+    
+    compare_node = ast.Compare(
+        left=left,
+        ops=[op],
+        comparators=[right]
+    )
+    new_stack = state.stack[:-2] + [compare_node]
+    return replace(state, stack=new_stack)
+
+
+# ============================================================================
 # FUNCTION CALL HANDLERS
 # ============================================================================
 
@@ -622,70 +686,6 @@ def handle_build_const_key_map(state: ReconstructionState, instr: dis.Instructio
     # Create dictionary AST
     dict_node = ast.Dict(keys=keys, values=values)
     new_stack = new_stack + [dict_node]
-    return replace(state, stack=new_stack)
-
-
-# ============================================================================
-# COMPARISON HANDLERS
-# ============================================================================
-
-@register_handler('COMPARE_OP')
-def handle_compare_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    
-    # Map comparison operation codes to AST operators
-    op_map = {
-        '<': ast.Lt(),
-        '<=': ast.LtE(),
-        '>': ast.Gt(),
-        '>=': ast.GtE(),
-        '==': ast.Eq(),
-        '!=': ast.NotEq(),
-    }
-    assert instr.argval in dis.cmp_op, f"Unsupported comparison operation: {instr.argval}"
-    
-    op_name = instr.argval
-    compare_node = ast.Compare(
-        left=left,
-        ops=[op_map[op_name]],
-        comparators=[right]
-    )
-    new_stack = state.stack[:-2] + [compare_node]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('CONTAINS_OP')
-def handle_contains_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])  # Container
-    left = ensure_ast(state.stack[-2])   # Item to check
-    
-    # instr.arg determines if it's 'in' (0) or 'not in' (1)
-    op = ast.NotIn() if instr.arg else ast.In()
-    
-    compare_node = ast.Compare(
-        left=left,
-        ops=[op],
-        comparators=[right]
-    )
-    new_stack = state.stack[:-2] + [compare_node]
-    return replace(state, stack=new_stack)
-
-
-@register_handler('IS_OP')
-def handle_is_op(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-    
-    # instr.arg determines if it's 'is' (0) or 'is not' (1)
-    op = ast.IsNot() if instr.arg else ast.Is()
-    
-    compare_node = ast.Compare(
-        left=left,
-        ops=[op],
-        comparators=[right]
-    )
-    new_stack = state.stack[:-2] + [compare_node]
     return replace(state, stack=new_stack)
 
 
