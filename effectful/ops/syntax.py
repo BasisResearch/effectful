@@ -1,3 +1,4 @@
+import ast
 import collections.abc
 import dataclasses
 import functools
@@ -5,7 +6,7 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterable, Mapping
 from typing import Annotated, Concatenate, Generic, TypeVar
 
 import tree
@@ -975,6 +976,25 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
         )
 
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+@defop
+def forexpr(
+    body: Annotated[T, Scoped[A | B]],
+    streams: Annotated[Mapping[Operation[..., S], Callable[..., Iterable[S]]], Scoped[B]],
+) -> Annotated[Iterable[T], Scoped[A]]:
+    """A higher-order operation that represents a for-expression."""
+    raise NotImplementedError
+
+
+@defterm.register(Generator)
+def _(genexpr: Generator[T, None, None]) -> Expr[Iterable[T]]:
+    from effectful.internals.disassembler import GeneratorExpToForexpr, reconstruct
+
+    genexpr_ast = reconstruct(genexpr)
+    forexpr_ast = GeneratorExpToForexpr().visit(genexpr_ast)
+    code = compile(ast.fix_missing_locations(forexpr_ast), "<forexpr>", "eval")
+    return eval(code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)  # type: ignore
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:

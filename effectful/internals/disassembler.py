@@ -1075,3 +1075,46 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
     """
     assert inspect.isgenerator(genexpr), "Input must be a generator expression"
     return ast.fix_missing_locations(ast.Expression(ensure_ast(genexpr)))
+
+
+class NameToCall(ast.NodeTransformer):
+    varnames: set[str]
+
+    def __init__(self, varnames: set[str]):
+        self.varnames = varnames
+
+    def visit_Name(self, node: ast.Name) -> ast.Call | ast.Name:
+        if node.id in self.varnames and isinstance(node.ctx, ast.Load):
+            return ast.Call(node, args=[], keywords=[])
+        else:
+            return node
+
+
+class GeneratorExpToForexpr(ast.NodeTransformer):
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.Call:
+        if not all(isinstance(g.target, ast.Name) and not g.ifs for g in node.generators):
+            raise NotImplementedError("Generator expressions with unpacking and filters not yet implemented yet")
+
+        streams = ast.Dict(keys=[], values=[])
+        for gen in node.generators:
+            key: ast.Name = gen.target
+            value: ast.Lambda = ast.Lambda(
+                args=ast.arguments(
+                    posonlyargs=[],
+                    args=[],
+                    kwonlyargs=[],
+                    kw_defaults=[],
+                    defaults=[],
+                ),
+                body=NameToCall(set(v.id for v in streams.keys)).visit(gen.iter),
+            )
+            streams.keys.append(key)
+            streams.values.append(value)
+
+        body: ast.expr = NameToCall(set(v.id for v in streams.keys)).visit(node.elt)
+
+        return ast.Call(
+            func=ast.Name(id='forexpr', ctx=ast.Load()),
+            args=[body, streams],
+            keywords=[]
+        )
