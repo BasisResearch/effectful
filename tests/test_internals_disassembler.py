@@ -5,7 +5,7 @@ import inspect
 from types import GeneratorType
 from typing import Any, Union
 
-from effectful.internals.genexpr import reconstruct
+from effectful.internals.disassembler import reconstruct
 
 
 def compile_and_eval(node: ast.AST, globals_dict: dict = None) -> Any:
@@ -566,7 +566,7 @@ def test_complex_scenarios(genexpr, globals_dict):
 ])
 def test_ensure_ast(value, expected_str):
     """Test that ensure_ast correctly converts various values to AST nodes."""
-    from effectful.internals.genexpr import ensure_ast
+    from effectful.internals.disassembler import ensure_ast
     
     result = ensure_ast(value)
 
