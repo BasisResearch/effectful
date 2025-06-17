@@ -1048,8 +1048,7 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
             (in 'GEN_CREATED' state).
     
     Returns:
-        ast.GeneratorExp: An AST node representing the reconstructed comprehension.
-            The specific type depends on the original comprehension:
+        ast.Expression: An AST node representing the reconstructed comprehension.
     
     Raises:
         AssertionError: If the input is not a generator or if the generator
