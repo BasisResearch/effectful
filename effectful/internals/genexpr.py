@@ -16,6 +16,7 @@ Example:
 """
 
 import ast
+import copy
 import dis
 import functools
 import inspect
@@ -56,6 +57,11 @@ class CompLambda(ast.Lambda):
             ),
             body=body
         )
+
+    def inline(self, iterator: ast.expr) -> CompExp:
+        res: CompExp = copy.copy(self.body)
+        res.generators[0].iter = iterator
+        return res
 
 
 @dataclass(frozen=True)
@@ -595,9 +601,7 @@ def handle_call_function(state: ReconstructionState, instr: dis.Instruction) -> 
 
     if isinstance(func, CompLambda):
         assert len(args) == 1
-        comp_body: CompExp = func.body
-        comp_body.generators[0].iter = args[0]
-        return replace(state, stack=new_stack + [comp_body])
+        return replace(state, stack=new_stack + [func.inline(args[0])])
     else:
         # Create function call AST
         call_node = ast.Call(func=func, args=args, keywords=[])
@@ -999,7 +1003,4 @@ def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
     genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
     geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals['.0'])
-    assert isinstance(genexpr_ast.generators[0].iter, DummyIterName)
-    assert len([x for x in ast.walk(genexpr_ast) if isinstance(x, DummyIterName)]) == 1
-    genexpr_ast.generators[0].iter = geniter_ast
-    return genexpr_ast
+    return CompLambda(genexpr_ast).inline(geniter_ast)
