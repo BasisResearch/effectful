@@ -25,10 +25,10 @@ def compile_and_eval(node: ast.AST, globals_dict: dict = None) -> Any:
     return eval(code, globals_dict)
 
 
-def assert_ast_equivalent(genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict = None):
+def assert_ast_equivalent(genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict | None = None):
     """Assert that a reconstructed AST produces the same results as the original generator."""
     assert inspect.isgenerator(genexpr), "Input must be a generator"
-    assert inspect.getgeneratorstate(genexpr) == 'GEN_CREATED', "Generator must not be consumed"
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must not be consumed"
 
     # Check AST structure
     assert isinstance(reconstructed_ast, ast.GeneratorExp)
