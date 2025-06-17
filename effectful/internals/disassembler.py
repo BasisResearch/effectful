@@ -1078,6 +1078,12 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
 
 
 class NameToCall(ast.NodeTransformer):
+    """
+    Transform variable names into calls to those variables.
+    This transformer replaces occurrences of specified variable names in an AST
+    with calls to those variables. For example, if the variable name is 'x',
+    it will replace 'x' with 'x()'.
+    """
     varnames: set[str]
 
     def __init__(self, varnames: set[str]):
@@ -1091,6 +1097,30 @@ class NameToCall(ast.NodeTransformer):
 
 
 class GeneratorExpToForexpr(ast.NodeTransformer):
+    """
+    Transform generator expressions into calls to `forexpr`.
+    This transformer converts generator expressions of the form:
+    
+        (expr for var in iter)
+    into calls to `forexpr`:
+        forexpr(lambda: expr, {var: lambda: iter})
+    It supports multiple nested loops and ensures that variables are correctly
+    transformed into calls within the expression and iterators.
+    Note: This implementation currently does not support unpacking in loop variables
+    or filter conditions (ifs) in the generators.
+    Raises:
+        NotImplementedError: If the generator expression contains unpacking
+            in loop variables or filter conditions.
+    Example:
+        >>> import ast
+        >>> source = "(x * 2 for x in range(10))"
+        >>> tree = ast.parse(source, mode='eval')
+        >>> transformer = GeneratorExpToForexpr()
+        >>> transformed = transformer.visit(tree)
+        >>> ast.unparse(transformed)
+        'forexpr(x() * 2, {x: lambda: range(10)})'
+
+    """
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.Call:
         if not all(isinstance(g.target, ast.Name) and not g.ifs for g in node.generators):
             raise NotImplementedError("Generator expressions with unpacking and filters not yet implemented yet")
