@@ -1069,4 +1069,6 @@ def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
     genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
     geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals['.0'])
-    return CompLambda(genexpr_ast).inline(geniter_ast)
+    result = CompLambda(genexpr_ast).inline(geniter_ast)
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must stay in created state"
+    return result
