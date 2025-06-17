@@ -55,23 +55,28 @@ class ReconstructionState:
     that represent those operations.
     
     Attributes:
+        result: The current comprehension expression being built. Initially
+                a placeholder, it gets updated as the bytecode is processed.
+                It can be a GeneratorExp, ListComp, SetComp, DictComp, or
+                a Lambda for lambda expressions.
+
         stack: Simulates the Python VM's value stack. Contains AST nodes or
                values that would be on the stack during execution. Operations
                like LOAD_FAST push to this stack, while operations like
                BINARY_ADD pop operands and push results.
                
-        pending_conditions: Filter conditions that haven't been assigned to
+        _pending_conditions: Filter conditions that haven't been assigned to
                            a loop yet. Some bytecode patterns require collecting
                            conditions before knowing which loop they belong to.
                            
-        or_conditions: Conditions that are part of an OR expression. These
+        _or_conditions: Conditions that are part of an OR expression. These
                       need to be combined with ast.BoolOp(op=ast.Or()).
     """
     result: CompExp | ast.Lambda | Placeholder = field(default_factory=Placeholder)
     stack: list[ast.expr] = field(default_factory=list)
 
-    pending_conditions: list[ast.expr] = field(default_factory=list)
-    or_conditions: list[ast.expr] = field(default_factory=list)
+    _pending_conditions: list[ast.expr] = field(default_factory=list)
+    _or_conditions: list[ast.expr] = field(default_factory=list)
 
 
 # Global handler registry
@@ -703,9 +708,9 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
     new_stack = state.stack[:-1]
     
     # If we have pending OR conditions, this is the final condition in an OR expression
-    if state.or_conditions:
+    if state._or_conditions:
         # Combine all OR conditions into a single BoolOp
-        all_or_conditions = state.or_conditions + [condition]
+        all_or_conditions = state._or_conditions + [condition]
         combined_condition = ast.BoolOp(op=ast.Or(), values=all_or_conditions)
         
         # Add the combined condition to the loop and clear OR conditions
@@ -727,10 +732,10 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
                     elt=state.result.elt,
                     generators=state.result.generators[:-1] + [updated_loop],
                 )
-            return replace(state, stack=new_stack, result=new_ret, or_conditions=[])
+            return replace(state, stack=new_stack, result=new_ret, _or_conditions=[])
         else:
-            new_pending = state.pending_conditions + [combined_condition]
-            return replace(state, stack=new_stack, pending_conditions=new_pending, or_conditions=[])
+            new_pending = state._pending_conditions + [combined_condition]
+            return replace(state, stack=new_stack, _pending_conditions=new_pending, _or_conditions=[])
     else:
         # Regular condition - add to the most recent loop
         if isinstance(state.result, CompExp) and state.result.generators:
@@ -754,8 +759,8 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
             return replace(state, stack=new_stack, result=new_ret)
         else:
             # If no loops yet, add to pending conditions
-            new_pending = state.pending_conditions + [condition]
-            return replace(state, stack=new_stack, pending_conditions=new_pending)
+            new_pending = state._pending_conditions + [condition]
+            return replace(state, stack=new_stack, _pending_conditions=new_pending)
 
 
 @register_handler('POP_JUMP_IF_TRUE')
@@ -772,8 +777,8 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
     # In NOT: POP_JUMP_IF_TRUE jumps back to skip this iteration
     if instr.argval > instr.offset:
         # Jumping forward - part of an OR expression
-        new_or_conditions = state.or_conditions + [condition]
-        return replace(state, stack=new_stack, or_conditions=new_or_conditions)
+        new_or_conditions = state._or_conditions + [condition]
+        return replace(state, stack=new_stack, _or_conditions=new_or_conditions)
     else:
         # Jumping backward to loop start - this is a negated condition
         # When POP_JUMP_IF_TRUE jumps back, it means "if true, skip this item"
@@ -800,8 +805,8 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
                 )
             return replace(state, stack=new_stack, result=new_ret)
         else:
-            new_pending = state.pending_conditions + [negated_condition]
-            return replace(state, stack=new_stack, pending_conditions=new_pending)
+            new_pending = state._pending_conditions + [negated_condition]
+            return replace(state, stack=new_stack, _pending_conditions=new_pending)
 
 
 # ============================================================================
@@ -844,7 +849,7 @@ def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
 
 
 @ensure_ast.register(type(iter((1,))))
-def _ensure_ast_tuple_iterator(value: Iterator) -> ast.expr:
+def _ensure_ast_tuple_iterator(value: Iterator) -> ast.Tuple:
     return ensure_ast(tuple(value.__reduce__()[1][0]))
 
 
@@ -854,7 +859,7 @@ def _ensure_ast_list(value: list) -> ast.List:
 
 
 @ensure_ast.register(type(iter([1])))
-def _ensure_ast_list_iterator(value: Iterator) -> ast.expr:
+def _ensure_ast_list_iterator(value: Iterator) -> ast.List:
     return ensure_ast(list(value.__reduce__()[1][0]))
 
 
@@ -864,7 +869,7 @@ def _ensure_ast_set(value: set) -> ast.Set:
 
 
 @ensure_ast.register(type(iter({1})))
-def _ensure_ast_set_iterator(value: Iterator) -> ast.expr:
+def _ensure_ast_set_iterator(value: Iterator) -> ast.Set:
     return ensure_ast(set(value.__reduce__()[1][0]))
 
 
@@ -877,7 +882,7 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 
 @ensure_ast.register(type(iter({1: 2})))
-def _ensure_ast_dict_iterator(value: Iterator) -> ast.expr:
+def _ensure_ast_dict_iterator(value: Iterator) -> ast.Dict:
     return ensure_ast(value.__reduce__()[1][0])
 
 
@@ -891,7 +896,7 @@ def _ensure_ast_range(value: range) -> ast.Call:
 
 
 @ensure_ast.register(type(iter(range(1))))
-def _ensure_ast_range_iterator(value: Iterator) -> ast.expr:
+def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
     return ensure_ast(value.__reduce__()[1][0])
 
 
