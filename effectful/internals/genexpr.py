@@ -1059,7 +1059,7 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
         >>> # Generator expression
         >>> g = (x * 2 for x in range(10) if x % 2 == 0)
         >>> ast_node = reconstruct(g)
-        >>> isinstance(ast_node, ast.GeneratorExp)
+        >>> isinstance(ast_node, ast.Expression)
         True
         
         >>> # The reconstructed AST can be compiled and evaluated
