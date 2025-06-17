@@ -119,7 +119,7 @@ def register_handler(opname: str, handler = None):
     @functools.wraps(handler)
     def _wrapper(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
         assert instr.opname == opname, f"Handler for '{opname}' called with wrong instruction"
-        return handler(copy.deepcopy(state), instr)
+        return handler(state, instr)
     
     OP_HANDLERS[opname] = _wrapper
     return _wrapper
