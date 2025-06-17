@@ -945,8 +945,18 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
 
 @ensure_ast.register
 def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
-    assert inspect.isfunction(value), "Input must be a lambda function"
-    raise NotImplementedError("Lambda reconstruction not implemented yet")
+    assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), "Input must be a lambda function"
+
+    code: types.CodeType = value.__code__
+    body: ast.expr = ensure_ast(code)
+    args = ast.arguments(
+        posonlyargs=[ast.arg(arg=arg) for arg in code.co_varnames[:code.co_posonlyargcount]],
+        args=[ast.arg(arg=arg) for arg in code.co_varnames[code.co_posonlyargcount:code.co_argcount]],
+        kwonlyargs=[ast.arg(arg=arg) for arg in code.co_varnames[code.co_argcount:code.co_argcount + code.co_kwonlyargcount]],
+        kw_defaults=[],
+        defaults=[],
+    )
+    return ast.Lambda(args=args, body=body)
 
 
 @ensure_ast.register
