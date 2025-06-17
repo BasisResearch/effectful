@@ -271,7 +271,7 @@ def handle_return_value(state: ReconstructionState, instr: dis.Instruction) -> R
     # Usually preceded by LOAD_CONST None
     if isinstance(state.result, CompExp):
         return replace(state, stack=state.stack[:-1])
-    elif isinstance(state.result, Placeholder):
+    elif isinstance(state.result, Placeholder) and len(state.stack) == 1:
         return replace(state, stack=state.stack[:-1], result=ensure_ast(state.stack[-1]))
     else:
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
@@ -426,6 +426,56 @@ def handle_load_name(state: ReconstructionState, instr: dis.Instruction) -> Reco
     # LOAD_NAME is similar to LOAD_GLOBAL but for names in the global namespace
     name = instr.argval
     new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler('STORE_DEREF')
+def handle_store_deref(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # STORE_DEREF stores a value into a closure variable
+    assert isinstance(state.result, CompExp), "STORE_DEREF must be called within a comprehension context"
+    var_name = instr.argval
+    
+    # Update the most recent loop's target variable
+    assert len(state.result.generators) > 0, "STORE_DEREF must be within a loop context"
+
+    # Create a new LoopInfo with updated target
+    updated_loop = ast.comprehension(
+        target=ast.Name(id=var_name, ctx=ast.Store()),
+        iter=state.result.generators[-1].iter,
+        ifs=state.result.generators[-1].ifs,
+        is_async=state.result.generators[-1].is_async
+    )
+
+    # Update the last loop in the generators list
+    if isinstance(state.result, ast.DictComp):
+        new_ret = ast.DictComp(
+            key=state.result.key,
+            value=state.result.value,
+            generators=state.result.generators[:-1] + [updated_loop],
+        )
+    else:
+        new_ret = type(state.result)(
+            elt=state.result.elt,
+            generators=state.result.generators[:-1] + [updated_loop],
+        )
+
+    # Create new loops list with the updated loop
+    return replace(state, result=new_ret)
+
+
+@register_handler('LOAD_DEREF')
+def handle_load_deref(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # LOAD_DEREF loads a value from a closure variable
+    var_name = instr.argval
+    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler('LOAD_CLOSURE')
+def handle_load_closure(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
+    # LOAD_CLOSURE loads a closure variable
+    var_name = instr.argval
+    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
     return replace(state, stack=new_stack)
 
 
@@ -644,14 +694,20 @@ def handle_call_method(state: ReconstructionState, instr: dis.Instruction) -> Re
 @register_handler('MAKE_FUNCTION')
 def handle_make_function(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # MAKE_FUNCTION creates a function from code object and name on stack
-    assert instr.arg == 0, "MAKE_FUNCTION with defaults or annotations not allowed."
     assert isinstance(state.stack[-1], ast.Constant) and isinstance(state.stack[-1].value, str), "Function name must be a constant string."
+    if instr.argrepr == 'closure':
+        # This is a closure, remove the environment tuple from the stack for AST purposes
+        new_stack = state.stack[:-3]
+    elif instr.argrepr == '':
+        new_stack = state.stack[:-2]
+    else:
+        raise NotImplementedError("MAKE_FUNCTION with defaults or annotations not implemented.")
+
     body: ast.expr = state.stack[-2]
     name: str = state.stack[-1].value
 
     if isinstance(body, CompExp) and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1:
-        new_stack = state.stack[:-2] + [CompLambda(body)]
-        return replace(state, stack=new_stack)
+        return replace(state, stack=new_stack + [CompLambda(body)])
     else:
         raise NotImplementedError("Lambda reconstruction not implemented yet")
 

@@ -336,6 +336,31 @@ def test_nested_loops(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
+# ===========================================================================
+# NESTED COMPREHENSIONS
+# ===========================================================================
+
+@pytest.mark.parametrize("genexpr", [
+    ([x for x in range(i)] for i in range(5)),
+    ({x: x**2 for x in range(i)} for i in range(5)),
+    ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
+
+    # Nested comprehensions with filters inside
+    ([x for x in range(i)] for i in range(5) if i > 0),
+    ([x for x in range(i) if x < i] for i in range(5) if i > 0),
+    ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5)),
+    ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5) if i > 0),
+
+    # nesting on both sides
+    ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
+    ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
+])
+def test_nested_comprehensions(genexpr):
+    """Test reconstruction of nested comprehensions."""
+    ast_node = reconstruct(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
 # ============================================================================
 # DIFFERENT COMPREHENSION TYPES
 # ============================================================================
