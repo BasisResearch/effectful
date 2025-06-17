@@ -345,6 +345,9 @@ def test_nested_loops(genexpr):
     ({x: x**2 for x in range(i)} for i in range(5)),
     ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
 
+    # function call
+    (sum(x for x in range(i + 1)) for i in range(3)),
+
     # Nested comprehensions with filters inside
     ([x for x in range(i)] for i in range(5) if i > 0),
     ([x for x in range(i) if x < i] for i in range(5) if i > 0),
