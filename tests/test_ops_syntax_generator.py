@@ -28,11 +28,11 @@ def compile_and_eval(node: ast.AST, globals_dict: dict = None) -> Any:
 def assert_ast_equivalent(genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict | None = None):
     """Assert that a reconstructed AST produces the same results as the original generator."""
     # Check AST structure
-    assert isinstance(reconstructed_ast, ast.GeneratorExp)
-    assert hasattr(reconstructed_ast, 'elt')  # The expression part
-    assert hasattr(reconstructed_ast, 'generators')  # The comprehension part
-    assert len(reconstructed_ast.generators) > 0
-    for comp in reconstructed_ast.generators:
+    assert isinstance(reconstructed_ast, ast.Expression)
+    assert hasattr(reconstructed_ast.body, 'elt')  # The expression part
+    assert hasattr(reconstructed_ast.body, 'generators')  # The comprehension part
+    assert len(reconstructed_ast.body.generators) > 0
+    for comp in reconstructed_ast.body.generators:
         assert hasattr(comp, 'target')  # Loop variable
         assert hasattr(comp, 'iter')  # Iterator
         assert hasattr(comp, 'ifs')  # Conditions
