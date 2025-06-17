@@ -1,14 +1,13 @@
 import ast
-import pytest
-import dis
-import inspect
 from types import GeneratorType
-from typing import Any, Union
+from typing import Any
+
+import pytest
 
 from effectful.internals.disassembler import reconstruct
 
 
-def compile_and_eval(node: ast.AST, globals_dict: dict = None) -> Any:
+def compile_and_eval(node: ast.expr | ast.Expression, globals_dict: dict | None = None) -> Any:
     """Compile an AST node and evaluate it."""
     if globals_dict is None:
         globals_dict = {}
