@@ -995,10 +995,6 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
     return state.result
 
 
-# ============================================================================
-# MAIN RECONSTRUCTION FUNCTION
-# ============================================================================
-
 @ensure_ast.register
 def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
     assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), "Input must be a lambda function"
@@ -1016,7 +1012,21 @@ def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
 
 
 @ensure_ast.register
-def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
+def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
+    assert inspect.isgenerator(genexpr), "Input must be a generator expression"
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
+    genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
+    geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals['.0'])
+    result = CompLambda(genexpr_ast).inline(geniter_ast)
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must stay in created state"
+    return result
+
+
+# ============================================================================
+# MAIN RECONSTRUCTION FUNCTION
+# ============================================================================
+
+def reconstruct(genexpr: types.GeneratorType[object, None, None]) -> ast.GeneratorExp:
     """
     Reconstruct an AST from a generator expression's bytecode.
     
@@ -1065,10 +1075,4 @@ def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
         cases. However, the semantic behavior of the reconstructed AST should
         match the original comprehension.
     """
-    assert inspect.isgenerator(genexpr), "Input must be a generator expression"
-    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
-    genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
-    geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals['.0'])
-    result = CompLambda(genexpr_ast).inline(geniter_ast)
-    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must stay in created state"
-    return result
+    return ensure_ast(genexpr)
