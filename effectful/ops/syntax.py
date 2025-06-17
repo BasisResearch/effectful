@@ -993,8 +993,13 @@ def _(genexpr: Generator[T, None, None]) -> Expr[Iterable[T]]:
 
     genexpr_ast = reconstruct(genexpr)
     forexpr_ast = GeneratorExpToForexpr().visit(genexpr_ast)
-    code = compile(ast.fix_missing_locations(forexpr_ast), "<forexpr>", "eval")
-    return eval(code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)  # type: ignore
+    forexpr_name = ".".join(genexpr.gi_code.co_name.split(".")[:-1] + ["<forexpr>"])
+    forexpr_code = compile(
+        ast.fix_missing_locations(forexpr_ast),
+        filename=forexpr_name,
+        mode="eval",
+    )
+    return eval(forexpr_code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)  # type: ignore
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
