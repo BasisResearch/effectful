@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import deffn, defop
+from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -262,6 +262,9 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     elif tree.is_nested(expr):
         return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
     else:
+        term = defterm(expr)
+        if term is not expr:
+            return evaluate(term, intp=intp)
         return expr
 
 
