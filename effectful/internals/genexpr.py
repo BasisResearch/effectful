@@ -34,10 +34,28 @@ class Placeholder(ast.Name):
         super().__init__(id=".PLACEHOLDER", ctx=ast.Load())
 
 
-class IterDummyName(ast.Name):
+class DummyIterName(ast.Name):
     """Dummy name for the iterator variable in generator expressions."""
     def __init__(self):
         super().__init__(id=".0", ctx=ast.Load())
+
+
+class CompLambda(ast.Lambda):
+    """Placeholder AST node representing a lambda function used in comprehensions."""
+    def __init__(self, body: CompExp):
+        assert sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
+        assert len(body.generators) > 0
+        assert isinstance(body.generators[0].iter, DummyIterName)
+        super().__init__(
+            args=ast.arguments(
+                posonlyargs=[ast.arg(DummyIterName().id)],
+                args=[],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[]
+            ),
+            body=body
+        )
 
 
 @dataclass(frozen=True)
@@ -342,7 +360,7 @@ def handle_load_fast(state: ReconstructionState, instr: dis.Instruction) -> Reco
     
     if var_name == '.0':
         # Special handling for .0 variable (the iterator)
-        new_stack = state.stack + [IterDummyName()]
+        new_stack = state.stack + [DummyIterName()]
     else:
         # Regular variable load
         new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
@@ -569,16 +587,22 @@ def handle_is_op(state: ReconstructionState, instr: dis.Instruction) -> Reconstr
 @register_handler('CALL_FUNCTION')
 def handle_call_function(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # CALL_FUNCTION pops function and arguments from stack
-    arg_count = instr.arg
+    arg_count: int = instr.arg
     # Pop arguments and function
     args = [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
     func = ensure_ast(state.stack[-arg_count - 1])
     new_stack = state.stack[:-arg_count - 1]
-    
-    # Create function call AST
-    call_node = ast.Call(func=func, args=args, keywords=[])
-    new_stack = new_stack + [call_node]
-    return replace(state, stack=new_stack)
+
+    if isinstance(func, CompLambda):
+        assert len(args) == 1
+        comp_body: CompExp = func.body
+        comp_body.generators[0].iter = args[0]
+        return replace(state, stack=new_stack + [comp_body])
+    else:
+        # Create function call AST
+        call_node = ast.Call(func=func, args=args, keywords=[])
+        new_stack = new_stack + [call_node]
+        return replace(state, stack=new_stack)
     
 
 @register_handler('LOAD_METHOD')
@@ -617,8 +641,15 @@ def handle_call_method(state: ReconstructionState, instr: dis.Instruction) -> Re
 def handle_make_function(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
     # MAKE_FUNCTION creates a function from code object and name on stack
     assert instr.arg == 0, "MAKE_FUNCTION with defaults or annotations not allowed."
+    assert isinstance(state.stack[-1], ast.Constant) and isinstance(state.stack[-1].value, str), "Function name must be a constant string."
+    body: ast.expr = state.stack[-2]
+    name: str = state.stack[-1].value
 
-    raise NotImplementedError("Lambda reconstruction not implemented yet")
+    if isinstance(body, CompExp) and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1:
+        new_stack = state.stack[:-2] + [CompLambda(body)]
+        return replace(state, stack=new_stack)
+    else:
+        raise NotImplementedError("Lambda reconstruction not implemented yet")
 
 
 # ============================================================================
@@ -967,7 +998,8 @@ def reconstruct(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.isgenerator(genexpr), "Input must be a generator expression"
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, "Generator must be in created state"
     genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
-    assert isinstance(genexpr_ast.generators[0].iter, IterDummyName)
-    assert len([x for x in ast.walk(genexpr_ast) if isinstance(x, IterDummyName)]) == 1
-    genexpr_ast.generators[0].iter = ensure_ast(genexpr.gi_frame.f_locals['.0'])
+    geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals['.0'])
+    assert isinstance(genexpr_ast.generators[0].iter, DummyIterName)
+    assert len([x for x in ast.walk(genexpr_ast) if isinstance(x, DummyIterName)]) == 1
+    genexpr_ast.generators[0].iter = geniter_ast
     return genexpr_ast
