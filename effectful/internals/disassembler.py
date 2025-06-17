@@ -22,9 +22,8 @@ import functools
 import inspect
 import types
 import typing
-from collections.abc import Callable, Iterator, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field, replace
-
 
 CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 
