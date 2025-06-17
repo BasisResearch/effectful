@@ -58,7 +58,7 @@ class CompLambda(ast.Lambda):
         )
 
     def inline(self, iterator: ast.expr) -> CompExp:
-        res: CompExp = copy.copy(self.body)
+        res: CompExp = copy.deepcopy(self.body)
         res.generators[0].iter = iterator
         return res
 
@@ -119,7 +119,7 @@ def register_handler(opname: str, handler = None):
     @functools.wraps(handler)
     def _wrapper(state: ReconstructionState, instr: dis.Instruction) -> ReconstructionState:
         assert instr.opname == opname, f"Handler for '{opname}' called with wrong instruction"
-        return handler(state, instr)
+        return handler(copy.deepcopy(state), instr)
     
     OP_HANDLERS[opname] = _wrapper
     return _wrapper
