@@ -22,7 +22,7 @@ import functools
 import inspect
 import types
 import typing
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Generator
 from dataclasses import dataclass, field, replace
 
 
@@ -1026,7 +1026,7 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
 # MAIN RECONSTRUCTION FUNCTION
 # ============================================================================
 
-def reconstruct(genexpr: types.GeneratorType[object, None, None]) -> ast.GeneratorExp:
+def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
     """
     Reconstruct an AST from a generator expression's bytecode.
     
@@ -1043,8 +1043,8 @@ def reconstruct(genexpr: types.GeneratorType[object, None, None]) -> ast.Generat
     - Various operators and function calls
     
     Args:
-        genexpr (GeneratorType): The generator object to analyze. Must be
-            a freshly created generator that has not been iterated yet
+        genexpr (Generator[object, None, None]): The generator object to analyze.
+            Must be a freshly created generator that has not been iterated yet
             (in 'GEN_CREATED' state).
     
     Returns:
@@ -1075,4 +1075,5 @@ def reconstruct(genexpr: types.GeneratorType[object, None, None]) -> ast.Generat
         cases. However, the semantic behavior of the reconstructed AST should
         match the original comprehension.
     """
-    return ensure_ast(genexpr)
+    assert inspect.isgenerator(genexpr), "Input must be a generator expression"
+    return ast.fix_missing_locations(ast.Expression(ensure_ast(genexpr)))
