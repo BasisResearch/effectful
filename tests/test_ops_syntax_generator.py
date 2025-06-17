@@ -350,6 +350,7 @@ def test_nested_loops(genexpr):
 
     # map
     (list(map(abs, (x + 1 for x in range(i + 1)))) for i in range(3)),
+    (list(enumerate(x + 1 for x in range(i + 1))) for i in range(3)),
 
     # Nested comprehensions with filters inside
     ([x for x in range(i)] for i in range(5) if i > 0),

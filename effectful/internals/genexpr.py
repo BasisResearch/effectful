@@ -850,7 +850,7 @@ def handle_pop_jump_if_false(state: ReconstructionState, instr: dis.Instruction)
             )
         return replace(state, stack=new_stack, result=new_ret)
     else:
-        raise NotImplementedError("POP_JUMP_IF_FALSE jumping forward not implemented yet")
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
 @register_handler('POP_JUMP_IF_TRUE')
@@ -888,7 +888,7 @@ def handle_pop_jump_if_true(state: ReconstructionState, instr: dis.Instruction) 
             )
         return replace(state, stack=new_stack, result=new_ret)
     else:
-        raise NotImplementedError("POP_JUMP_IF_TRUE jumping forward not implemented yet")
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
 # ============================================================================
