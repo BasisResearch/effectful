@@ -1064,7 +1064,7 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
         
         >>> # The reconstructed AST can be compiled and evaluated
         >>> import ast
-        >>> code = compile(ast.Expression(body=ast_node), '<string>', 'eval')
+        >>> code = compile(ast_node, '<string>', 'eval')
         >>> result = eval(code)
         >>> list(result)
         [0, 4, 8, 12, 16]
