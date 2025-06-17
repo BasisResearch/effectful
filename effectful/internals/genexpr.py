@@ -12,7 +12,7 @@ All other functions and classes in this module are internal implementation detai
 Example:
     >>> g = (x * 2 for x in range(10) if x % 2 == 0)
     >>> ast_node = reconstruct(g)
-    >>> # ast_node is now an ast.GeneratorExp representing the original expression
+    >>> # ast_node is now an ast.Expression representing the original expression
 """
 
 import ast
