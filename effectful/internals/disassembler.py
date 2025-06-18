@@ -1319,22 +1319,17 @@ class IfsToIfAnd(ast.NodeTransformer):
                     target=gen.target,
                     iter=gen.iter,
                     ifs=[combined_if],
-                    is_async=gen.is_async
+                    is_async=gen.is_async,
                 )
                 new_generators.append(new_gen)
             else:
                 new_generators.append(gen)
         if isinstance(node, ast.DictComp):
             return ast.DictComp(
-                key=node.key,
-                value=node.value,
-                generators=new_generators
+                key=node.key, value=node.value, generators=new_generators
             )
         else:
-            return type(node)(
-                elt=node.elt,
-                generators=new_generators
-            )
+            return type(node)(elt=node.elt, generators=new_generators)
 
 
 class NameToCall(ast.NodeTransformer):
@@ -1344,6 +1339,7 @@ class NameToCall(ast.NodeTransformer):
     with calls to those variables. For example, if the variable name is 'x',
     it will replace 'x' with 'x()'.
     """
+
     varnames: set[str]
 
     def __init__(self, varnames: set[str]):
@@ -1360,18 +1356,18 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
     """
     Transform generator expressions into calls to `forexpr`.
     This transformer converts generator expressions of the form:
-    
+
         (expr for var in iter)
     into calls to `forexpr`:
-        forexpr(lambda: expr, {var: lambda: iter})
-    It supports multiple nested loops and ensures that variables are correctly
-    transformed into calls within the expression and iterators.
-    Note: This implementation currently does not support unpacking in loop variables
-    or filter conditions (ifs) in the generators.
-    Raises:
-        NotImplementedError: If the generator expression contains unpacking
-            in loop variables or filter conditions.
-    Example:
+        forexpr(expr, {var: lambda: iter})
+
+    It supports:
+    - Multiple nested loops
+    - Filter conditions (if clauses) - converted to filtered generator expressions
+    - Tuple unpacking in loop variables
+    - Variables are correctly transformed into calls within the expression and iterators
+
+    Examples:
         >>> import ast
         >>> source = "(x * 2 for x in range(10))"
         >>> tree = ast.parse(source, mode='eval')
@@ -1380,31 +1376,98 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
         >>> ast.unparse(transformed)
         'forexpr(x() * 2, {x: lambda: range(10)})'
 
+        >>> source = "(x for x in range(10) if x % 2 == 0)"
+        >>> tree = ast.parse(source, mode='eval')
+        >>> transformed = transformer.visit(tree)
+        >>> ast.unparse(transformed)
+        'forexpr(x(), {x: (x for x in range(10) if x % 2 == 0)})'
+
+        >>> source = "((x, y) for x, y in pairs)"
+        >>> tree = ast.parse(source, mode='eval')
+        >>> transformed = transformer.visit(tree)
+        >>> ast.unparse(transformed)
+        'forexpr((x(), y()), {(x, y): lambda: pairs})'
+
     """
+
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.Call:
-        if not all(isinstance(g.target, ast.Name) and not g.ifs for g in node.generators):
-            raise NotImplementedError("Generator expressions with unpacking and filters not yet implemented yet")
+        # Check for unsupported features
+        for gen in node.generators:
+            if not isinstance(gen.target, ast.Name) and not isinstance(
+                gen.target, ast.Tuple
+            ):
+                raise NotImplementedError(
+                    f"Unsupported target type: {type(gen.target)}"
+                )
+
+        # Get all variable names from all targets (including unpacked tuples)
+        def get_names_from_target(target):
+            if isinstance(target, ast.Name):
+                return [target.id]
+            elif isinstance(target, ast.Tuple):
+                names = []
+                for elt in target.elts:
+                    names.extend(get_names_from_target(elt))
+                return names
+            else:
+                raise NotImplementedError(
+                    f"Unsupported target type in unpacking: {type(target)}"
+                )
 
         streams = ast.Dict(keys=[], values=[])
+        all_var_names = set()
+
         for gen in node.generators:
-            key: ast.Name = gen.target
-            value: ast.Lambda = ast.Lambda(
-                args=ast.arguments(
-                    posonlyargs=[],
-                    args=[],
-                    kwonlyargs=[],
-                    kw_defaults=[],
-                    defaults=[],
-                ),
-                body=NameToCall(set(v.id for v in streams.keys)).visit(gen.iter),
-            )
-            streams.keys.append(key)
+            # Collect variable names from previous generators
+            prev_var_names = set(all_var_names)
+
+            # Add current target variables to the set
+            target_names = get_names_from_target(gen.target)
+            all_var_names.update(target_names)
+
+            # Create the value for this generator
+            if gen.ifs:
+                # If there are filters, create a generator expression for the filtered iterator
+                # Note: In the filter conditions, we need to transform previous loop variables
+                # but NOT the current loop variable
+                filtered_gen = ast.GeneratorExp(
+                    elt=gen.target if isinstance(gen.target, ast.Name) else gen.target,
+                    generators=[
+                        ast.comprehension(
+                            target=gen.target,
+                            iter=self.visit(NameToCall(prev_var_names).visit(gen.iter)),
+                            ifs=[
+                                self.visit(NameToCall(prev_var_names).visit(if_clause))
+                                for if_clause in gen.ifs
+                            ],
+                            is_async=gen.is_async,
+                        )
+                    ],
+                )
+                value = filtered_gen
+            else:
+                # No filters, create a lambda
+                value = ast.Lambda(
+                    args=ast.arguments(
+                        posonlyargs=[],
+                        args=[],
+                        kwonlyargs=[],
+                        kw_defaults=[],
+                        defaults=[],
+                    ),
+                    body=self.visit(NameToCall(prev_var_names).visit(gen.iter)),
+                )
+
+            streams.keys.append(gen.target)
             streams.values.append(value)
 
-        body: ast.expr = NameToCall(set(v.id for v in streams.keys)).visit(node.elt)
+        # Transform the body expression
+        # First apply NameToCall, then recursively visit for nested generators
+        body: ast.expr = NameToCall(all_var_names).visit(node.elt)
+        body = self.visit(body)  # Recursively transform nested generator expressions
 
         return ast.Call(
-            func=ast.Name(id='forexpr', ctx=ast.Load()),
+            func=ast.Name(id="forexpr", ctx=ast.Load()),
             args=[body, streams],
-            keywords=[]
+            keywords=[],
         )
