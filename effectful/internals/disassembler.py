@@ -1276,62 +1276,6 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
     return ast.fix_missing_locations(ast.Expression(ensure_ast(genexpr)))
 
 
-class IfsToIfAnd(ast.NodeTransformer):
-    """
-    Transform multiple ifs in comprehensions into a single if with 'and'.
-    This transformer combines multiple filter conditions (ifs) in comprehension
-    generators into a single condition using logical 'and'. For example, it transforms:
-        [x for x in range(10) if x % 2 == 0 if x > 5]
-    into:
-        [x for x in range(10) if (x % 2 == 0 and x > 5)]
-    """
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.GeneratorExp:
-        return self._visit_compexp(node)
-
-    def visit_DictComp(self, node: ast.DictComp) -> ast.DictComp:
-        return self._visit_compexp(node)
-
-    def visit_SetComp(self, node: ast.SetComp) -> ast.SetComp:
-        return self._visit_compexp(node)
-
-    def visit_ListComp(self, node: ast.ListComp) -> ast.ListComp:
-        return self._visit_compexp(node)
-
-    @typing.overload
-    def _visit_compexp(self, node: ast.DictComp) -> ast.DictComp: ...
-    @typing.overload
-    def _visit_compexp(self, node: ast.GeneratorExp) -> ast.GeneratorExp: ...
-    @typing.overload
-    def _visit_compexp(self, node: ast.SetComp) -> ast.SetComp: ...
-    @typing.overload
-    def _visit_compexp(self, node: ast.ListComp) -> ast.ListComp: ...
-
-    def _visit_compexp(self, node: CompExp):
-        new_generators = []
-        for gen in node.generators:
-            if len(gen.ifs) > 1:
-                # Combine multiple ifs into a single if with 'and'
-                combined_if = gen.ifs[0]
-                for cond in gen.ifs[1:]:
-                    combined_if = ast.BoolOp(op=ast.And(), values=[combined_if, cond])
-                new_gen = ast.comprehension(
-                    target=gen.target,
-                    iter=gen.iter,
-                    ifs=[combined_if],
-                    is_async=gen.is_async,
-                )
-                new_generators.append(new_gen)
-            else:
-                new_generators.append(gen)
-        if isinstance(node, ast.DictComp):
-            return ast.DictComp(
-                key=node.key, value=node.value, generators=new_generators
-            )
-        else:
-            return type(node)(elt=node.elt, generators=new_generators)
-
-
 class NameToCall(ast.NodeTransformer):
     """
     Transform variable names into calls to those variables.
