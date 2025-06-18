@@ -4,7 +4,13 @@ from typing import Any
 
 import pytest
 
-from effectful.internals.disassembler import reconstruct
+from effectful.internals.disassembler import (
+    GeneratorExpToForexpr,
+    IfsToIfAnd,
+    NameToCall,
+    ensure_ast,
+    reconstruct,
+)
 
 
 def compile_and_eval(
@@ -628,8 +634,6 @@ def test_complex_scenarios(genexpr, globals_dict):
 )
 def test_ensure_ast(value, expected_str):
     """Test that ensure_ast correctly converts various values to AST nodes."""
-    from effectful.internals.disassembler import ensure_ast
-
     result = ensure_ast(value)
 
     # Compare the unparsed strings
@@ -712,8 +716,6 @@ def test_error_handling():
 )
 def test_ifs_to_if_and_transformer(genexpr_src, expected_src):
     """Test IfsToIfAnd transformer converts multiple ifs to single if with and."""
-    from effectful.internals.disassembler import IfsToIfAnd
-
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
     expected_ast = ast.parse(expected_src, mode="eval")
@@ -821,8 +823,6 @@ def test_ifs_to_if_and_transformer(genexpr_src, expected_src):
 )
 def test_ifs_to_if_and_nested_comprehensions(genexpr_src, expected_src):
     """Test IfsToIfAnd transformer with nested comprehensions."""
-    from effectful.internals.disassembler import IfsToIfAnd
-
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
     expected_ast = ast.parse(expected_src, mode="eval")
@@ -898,8 +898,6 @@ def test_ifs_to_if_and_nested_comprehensions(genexpr_src, expected_src):
 )
 def test_name_to_call_transformer(source_src, varnames, expected_src):
     """Test NameToCall transformer converts specified names to function calls."""
-    from effectful.internals.disassembler import NameToCall
-
     # Parse the source code
     source_ast = ast.parse(source_src, mode="eval")
     expected_ast = ast.parse(expected_src, mode="eval")
@@ -1014,8 +1012,6 @@ def test_name_to_call_transformer(source_src, varnames, expected_src):
 )
 def test_name_to_call_nested_comprehensions(source_src, varnames, expected_src):
     """Test NameToCall transformer with nested comprehensions and complex expressions."""
-    from effectful.internals.disassembler import NameToCall
-
     # Parse the source code
     source_ast = ast.parse(source_src, mode="eval")
     expected_ast = ast.parse(expected_src, mode="eval")
@@ -1137,8 +1133,6 @@ def test_name_to_call_nested_comprehensions(source_src, varnames, expected_src):
 )
 def test_generator_exp_to_forexpr_transformer(genexpr_src, expected_src):
     """Test GeneratorExpToForexpr transformer converts generator expressions to forexpr calls."""
-    from effectful.internals.disassembler import GeneratorExpToForexpr
-
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
 
@@ -1317,8 +1311,6 @@ def test_generator_exp_to_forexpr_transformer(genexpr_src, expected_src):
 )
 def test_generator_exp_to_forexpr_nested_comprehensions(genexpr_src, expected_src):
     """Test GeneratorExpToForexpr transformer with nested comprehensions and complex expressions."""
-    from effectful.internals.disassembler import GeneratorExpToForexpr
-
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
 

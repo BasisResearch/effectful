@@ -981,7 +981,9 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
 @defop
 def forexpr(
     body: Annotated[T, Scoped[A | B]],
-    streams: Annotated[Mapping[Operation[..., S], Callable[..., Iterable[S]]], Scoped[B]],
+    streams: Annotated[
+        Mapping[Operation[..., S], Callable[..., Iterable[S]]], Scoped[B]
+    ],
 ) -> Annotated[Iterable[T], Scoped[A]]:
     """A higher-order operation that represents a for-expression."""
     raise NotImplementedError
