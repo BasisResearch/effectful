@@ -1,6 +1,5 @@
 import ast
-from types import GeneratorType
-from typing import Any
+from typing import Generator
 
 import pytest
 
@@ -14,7 +13,7 @@ from effectful.internals.disassembler import (
 
 def compile_and_eval(
     node: ast.expr | ast.Expression, globals_dict: dict | None = None
-) -> Any:
+) -> object:
     """Compile an AST node and evaluate it."""
     if globals_dict is None:
         globals_dict = {}
@@ -32,7 +31,9 @@ def compile_and_eval(
 
 
 def assert_ast_equivalent(
-    genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict | None = None
+    genexpr: Generator[object, None, None],
+    reconstructed_ast: ast.AST,
+    globals_dict: dict | None = None,
 ):
     """Assert that a reconstructed AST produces the same results as the original generator."""
     # Check AST structure
