@@ -445,8 +445,8 @@ def test_different_comprehension_types(genexpr):
     "genexpr,globals_dict",
     [
         # Using constants
-        ((x + a for x in range(5)), {"a": 10}),  # noqa: F821
-        ((data[i] for i in range(2)), {"data": [3, 4]}),  # noqa: F821
+        ((x + a for x in range(5)), {"a": 10}),  # type: ignore  # noqa: F821
+        ((data[i] for i in range(2)), {"data": [3, 4]}),  # type: ignore  # noqa: F821
         # Using global functions
         ((abs(x) for x in range(-5, 5)), {"abs": abs}),
         ((len(s) for s in ["a", "ab", "abc"]), {"len": len}),
@@ -489,7 +489,7 @@ def test_variable_lookup(genexpr, globals_dict):
         ),
         # More complex lambdas
         # (((lambda a, b: a + b)(x, x) for x in range(5)), {}),
-        ((f(x) for x in range(5)), {"f": lambda y: y * 3}),  # noqa: F821
+        ((f(x) for x in range(5)), {"f": lambda y: y * 3}),  # type: ignore  # noqa: F821
         # Attribute access
         ((x.real for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
         ((x.imag for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
@@ -504,7 +504,7 @@ def test_variable_lookup(genexpr, globals_dict):
         (([10, 20, 30][i] for i in range(3)), {}),
         (({"a": 1, "b": 2, "c": 3}[k] for k in ["a", "b", "c"]), {}),
         (("hello"[i] for i in range(5)), {}),
-        ((data[i][j] for i in range(2) for j in range(2)), {"data": [[1, 2], [3, 4]]}),  # noqa: F821
+        ((data[i][j] for i in range(2) for j in range(2)), {"data": [[1, 2], [3, 4]]}),  # type: ignore  # noqa: F821
         # # More complex attribute chains
         # ((obj.value.bit_length() for obj in [type('', (), {'value': x})() for x in range(1, 5)]), {}),
         # Multiple function calls

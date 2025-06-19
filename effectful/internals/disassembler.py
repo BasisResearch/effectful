@@ -61,6 +61,7 @@ class CompLambda(ast.Lambda):
         )
 
     def inline(self, iterator: ast.expr) -> CompExp:
+        assert isinstance(self.body, CompExp)
         res: CompExp = copy.deepcopy(self.body)
         res.generators[0].iter = iterator
         return res
@@ -188,6 +189,7 @@ def handle_build_list(
         new_stack = state.stack + [ret]
         return replace(state, stack=new_stack, result=ret)
     else:
+        assert instr.arg is not None
         size: int = instr.arg
         # Pop elements for the list
         elements = (
@@ -232,6 +234,7 @@ def handle_build_set(
         new_stack = state.stack + [ret]
         return replace(state, stack=new_stack, result=ret)
     else:
+        assert instr.arg is not None
         size: int = instr.arg
         # Pop elements for the set
         elements = (
@@ -276,9 +279,12 @@ def handle_build_map(
         new_stack = state.stack + [ret]
         return replace(state, stack=new_stack, result=ret)
     else:
+        assert instr.arg is not None
         size: int = instr.arg
         # Pop key-value pairs for the dict
-        keys = [ensure_ast(state.stack[-2 * i - 2]) for i in range(size)]
+        keys: list[ast.expr | None] = [
+            ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
+        ]
         values = [ensure_ast(state.stack[-2 * i - 1]) for i in range(size)]
         new_stack = state.stack[: -2 * size] if size > 0 else state.stack
 
@@ -318,9 +324,9 @@ def handle_return_value(
     if isinstance(state.result, CompExp):
         return replace(state, stack=state.stack[:-1])
     elif isinstance(state.result, Placeholder) and len(state.stack) == 1:
-        return replace(
-            state, stack=state.stack[:-1], result=ensure_ast(state.stack[-1])
-        )
+        new_result = ensure_ast(state.stack[-1])
+        assert isinstance(new_result, CompExp | ast.Lambda)
+        return replace(state, stack=state.stack[:-1], result=new_result)
     else:
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
 
@@ -402,7 +408,8 @@ def handle_unpack_sequence(
 ) -> ReconstructionState:
     # UNPACK_SEQUENCE unpacks a sequence into multiple values
     # arg is the number of values to unpack
-    unpack_count = instr.arg
+    assert instr.arg is not None
+    unpack_count: int = instr.arg
     sequence = ensure_ast(state.stack[-1])  # noqa: F841
     new_stack = state.stack[:-1]
 
@@ -459,19 +466,18 @@ def handle_store_fast(
 
     # Update the last loop in the generators list
     if isinstance(state.result, ast.DictComp):
-        new_ret = ast.DictComp(
+        new_dict: ast.DictComp = ast.DictComp(
             key=state.result.key,
             value=state.result.value,
             generators=state.result.generators[:-1] + [updated_loop],
         )
+        return replace(state, result=new_dict)
     else:
-        new_ret = type(state.result)(
+        new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
             elt=state.result.elt,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-
-    # Create new loops list with the updated loop
-    return replace(state, result=new_ret)
+        return replace(state, result=new_comp)
 
 
 @register_handler("LOAD_CONST")
@@ -525,19 +531,18 @@ def handle_store_deref(
 
     # Update the last loop in the generators list
     if isinstance(state.result, ast.DictComp):
-        new_ret = ast.DictComp(
+        new_dict: ast.DictComp = ast.DictComp(
             key=state.result.key,
             value=state.result.value,
             generators=state.result.generators[:-1] + [updated_loop],
         )
+        return replace(state, result=new_dict)
     else:
-        new_ret = type(state.result)(
+        new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
             elt=state.result.elt,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-
-    # Create new loops list with the updated loop
-    return replace(state, result=new_ret)
+        return replace(state, result=new_comp)
 
 
 @register_handler("LOAD_DEREF")
@@ -724,7 +729,7 @@ def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert (
-        dis.cmp_op[instr.arg] == instr.argval
+        instr.arg is not None and dis.cmp_op[instr.arg] == instr.argval
     ), f"Unsupported comparison operation: {instr.argval}"
 
     right = ensure_ast(state.stack[-1])
@@ -777,6 +782,7 @@ def handle_call_function(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # CALL_FUNCTION pops function and arguments from stack
+    assert instr.arg is not None
     arg_count: int = instr.arg
     # Pop arguments and function
     args = (
@@ -819,7 +825,8 @@ def handle_call_method(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # CALL_METHOD calls a method - similar to CALL_FUNCTION but for methods
-    arg_count = instr.arg
+    assert instr.arg is not None
+    arg_count: int = instr.arg
     # Pop arguments and method
     args = (
         [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
@@ -912,6 +919,7 @@ def handle_binary_subscr(
 def handle_build_tuple(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
+    assert instr.arg is not None
     tuple_size: int = instr.arg
     # Pop elements for the tuple
     elements = (
@@ -955,7 +963,9 @@ def handle_list_extend(
     if isinstance(list_obj, ast.List) and len(list_obj.elts) == 0:
         # If extending with a constant tuple, expand it to list elements
         if isinstance(iterable, ast.Constant) and isinstance(iterable.value, tuple):
-            elements = [ast.Constant(value=elem) for elem in iterable.value]
+            elements: list[ast.expr] = [
+                ast.Constant(value=elem) for elem in iterable.value
+            ]
             list_node = ast.List(elts=elements, ctx=ast.Load())
             new_stack = new_stack + [list_node]
             return replace(state, stack=new_stack)
@@ -974,10 +984,12 @@ def handle_build_const_key_map(
 ) -> ReconstructionState:
     # BUILD_CONST_KEY_MAP builds a dictionary with constant keys
     # The keys are in a tuple on TOS, values are on the stack below
+    assert instr.arg is not None
+    assert isinstance(state.stack[-1], ast.Tuple), "Expected a tuple of keys"
     map_size: int = instr.arg
     # Pop the keys tuple and values
     keys_tuple: ast.Tuple = state.stack[-1]
-    keys = [ensure_ast(key) for key in keys_tuple.elts]
+    keys: list[ast.expr | None] = [ensure_ast(key) for key in keys_tuple.elts]
     values = [ensure_ast(val) for val in state.stack[-map_size - 1 : -1]]
     new_stack = state.stack[: -map_size - 1]
 
@@ -1013,17 +1025,18 @@ def handle_pop_jump_if_false(
             is_async=state.result.generators[-1].is_async,
         )
         if isinstance(state.result, ast.DictComp):
-            new_ret = ast.DictComp(
+            new_dict = ast.DictComp(
                 key=state.result.key,
                 value=state.result.value,
                 generators=state.result.generators[:-1] + [updated_loop],
             )
+            return replace(state, stack=new_stack, result=new_dict)
         else:
-            new_ret = type(state.result)(
+            new_comp = type(state.result)(
                 elt=state.result.elt,
                 generators=state.result.generators[:-1] + [updated_loop],
             )
-        return replace(state, stack=new_stack, result=new_ret)
+            return replace(state, stack=new_stack, result=new_comp)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1053,17 +1066,18 @@ def handle_pop_jump_if_true(
             is_async=state.result.generators[-1].is_async,
         )
         if isinstance(state.result, ast.DictComp):
-            new_ret = ast.DictComp(
+            new_dict = ast.DictComp(
                 key=state.result.key,
                 value=state.result.value,
                 generators=state.result.generators[:-1] + [updated_loop],
             )
+            return replace(state, stack=new_stack, result=new_dict)
         else:
-            new_ret = type(state.result)(
+            new_comp = type(state.result)(
                 elt=state.result.elt,
                 generators=state.result.generators[:-1] + [updated_loop],
             )
-        return replace(state, stack=new_stack, result=new_ret)
+            return replace(state, stack=new_stack, result=new_comp)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1109,7 +1123,7 @@ def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
 
 @ensure_ast.register(type(iter((1,))))
 def _ensure_ast_tuple_iterator(value: Iterator) -> ast.Tuple:
-    return ensure_ast(tuple(value.__reduce__()[1][0]))
+    return ensure_ast(tuple(value.__reduce__()[1][0]))  # type: ignore
 
 
 @ensure_ast.register
@@ -1119,7 +1133,7 @@ def _ensure_ast_list(value: list) -> ast.List:
 
 @ensure_ast.register(type(iter([1])))
 def _ensure_ast_list_iterator(value: Iterator) -> ast.List:
-    return ensure_ast(list(value.__reduce__()[1][0]))
+    return ensure_ast(list(value.__reduce__()[1][0]))  # type: ignore
 
 
 @ensure_ast.register
@@ -1129,7 +1143,7 @@ def _ensure_ast_set(value: set) -> ast.Set:
 
 @ensure_ast.register(type(iter({1})))
 def _ensure_ast_set_iterator(value: Iterator) -> ast.Set:
-    return ensure_ast(set(value.__reduce__()[1][0]))
+    return ensure_ast(set(value.__reduce__()[1][0]))  # type: ignore
 
 
 @ensure_ast.register
@@ -1141,7 +1155,7 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 
 @ensure_ast.register(type(iter({1: 2})))
-def _ensure_ast_dict_iterator(value: Iterator) -> ast.Dict:
+def _ensure_ast_dict_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(value.__reduce__()[1][0])
 
 
@@ -1156,7 +1170,7 @@ def _ensure_ast_range(value: range) -> ast.Call:
 
 @ensure_ast.register(type(iter(range(1))))
 def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
-    return ensure_ast(value.__reduce__()[1][0])
+    return ensure_ast(value.__reduce__()[1][0])  # type: ignore
 
 
 @ensure_ast.register
@@ -1210,9 +1224,11 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert (
         inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
     ), "Generator must be in created state"
-    genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
-    geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals[".0"])
+    genexpr_ast = ensure_ast(genexpr.gi_code)
+    assert isinstance(genexpr_ast, ast.GeneratorExp)
+    geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
     result = CompLambda(genexpr_ast).inline(geniter_ast)
+    assert isinstance(result, ast.GeneratorExp)
     assert (
         inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
     ), "Generator must stay in created state"
