@@ -3,6 +3,7 @@ from types import GeneratorType
 from typing import Any
 
 import pytest
+import tree
 
 from effectful.internals.disassembler import reconstruct
 
@@ -26,6 +27,20 @@ def compile_and_eval(
     return eval(code, globals_dict)
 
 
+def materialize(genexpr: GeneratorType) -> tree.Structure:
+    """Materialize a nested generator expression to a nested list."""
+
+    def _materialize(genexpr):
+        if isinstance(genexpr, GeneratorType):
+            return tree.map_structure(_materialize, list(genexpr))
+        elif tree.is_nested(genexpr):
+            return tree.map_structure(_materialize, genexpr)
+        else:
+            return genexpr
+
+    return _materialize(genexpr)
+
+
 def assert_ast_equivalent(
     genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict | None = None
 ):
@@ -45,7 +60,7 @@ def assert_ast_equivalent(
     globals().update(globals_dict or {})
 
     # Materialize original generator to list for comparison
-    original_list = list(genexpr)
+    original_list = materialize(genexpr)
 
     # Clean up globals to avoid pollution
     for key in globals_dict or {}:
@@ -55,7 +70,7 @@ def assert_ast_equivalent(
 
     # Compile and evaluate the reconstructed AST
     reconstructed_gen = compile_and_eval(reconstructed_ast, globals_dict)
-    reconstructed_list = list(reconstructed_gen)
+    reconstructed_list = materialize(reconstructed_gen)
     assert reconstructed_list == original_list, (
         f"AST produced {reconstructed_list}, expected {original_list}"
     )
@@ -383,8 +398,11 @@ def test_nested_loops(genexpr):
 @pytest.mark.parametrize(
     "genexpr",
     [
+        ((x for x in range(i)) for i in range(5)),
+        ([x for x in range(i)] for i in range(5)),
         ([x for x in range(i)] for i in range(5)),
         ({x: x**2 for x in range(i)} for i in range(5)),
+        (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
         ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
         # aggregation function call
         (sum(x for x in range(i + 1)) for i in range(3)),
