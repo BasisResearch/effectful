@@ -125,9 +125,9 @@ def register_handler(opname: str, handler=None):
     def _wrapper(
         state: ReconstructionState, instr: dis.Instruction
     ) -> ReconstructionState:
-        assert (
-            instr.opname == opname
-        ), f"Handler for '{opname}' called with wrong instruction"
+        assert instr.opname == opname, (
+            f"Handler for '{opname}' called with wrong instruction"
+        )
         return handler(state, instr)
 
     OP_HANDLERS[opname] = _wrapper
@@ -145,9 +145,9 @@ def handle_gen_start(
 ) -> ReconstructionState:
     # GEN_START is typically the first instruction in generator expressions
     # It initializes the generator
-    assert isinstance(
-        state.result, Placeholder
-    ), "GEN_START must be the first instruction"
+    assert isinstance(state.result, Placeholder), (
+        "GEN_START must be the first instruction"
+    )
     return replace(state, result=ast.GeneratorExp(elt=Placeholder(), generators=[]))
 
 
@@ -157,12 +157,12 @@ def handle_yield_value(
 ) -> ReconstructionState:
     # YIELD_VALUE pops a value from the stack and yields it
     # This is the expression part of the generator
-    assert isinstance(
-        state.result, ast.GeneratorExp
-    ), "YIELD_VALUE must be called after GEN_START"
-    assert isinstance(
-        state.result.elt, Placeholder
-    ), "YIELD_VALUE must be called before yielding"
+    assert isinstance(state.result, ast.GeneratorExp), (
+        "YIELD_VALUE must be called after GEN_START"
+    )
+    assert isinstance(state.result.elt, Placeholder), (
+        "YIELD_VALUE must be called before yielding"
+    )
     assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
 
     new_stack = state.stack[:-1]
@@ -207,9 +207,9 @@ def handle_build_list(
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.ListComp
-    ), "LIST_APPEND must be called within a ListComp context"
+    assert isinstance(state.result, ast.ListComp), (
+        "LIST_APPEND must be called within a ListComp context"
+    )
     new_stack = state.stack[:-1]
     new_ret = ast.ListComp(
         elt=ensure_ast(state.stack[-1]),
@@ -252,9 +252,9 @@ def handle_build_set(
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.SetComp
-    ), "SET_ADD must be called after BUILD_SET"
+    assert isinstance(state.result, ast.SetComp), (
+        "SET_ADD must be called after BUILD_SET"
+    )
     new_stack = state.stack[:-1]
     new_ret = ast.SetComp(
         elt=ensure_ast(state.stack[-1]),
@@ -298,9 +298,9 @@ def handle_build_map(
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.DictComp
-    ), "MAP_ADD must be called after BUILD_MAP"
+    assert isinstance(state.result, ast.DictComp), (
+        "MAP_ADD must be called after BUILD_MAP"
+    )
     new_stack = state.stack[:-2]
     new_ret = ast.DictComp(
         key=ensure_ast(state.stack[-2]),
@@ -338,9 +338,9 @@ def handle_for_iter(
     # FOR_ITER pops an iterator from the stack and pushes the next item
     # If the iterator is exhausted, it jumps to the target instruction
     assert len(state.stack) > 0, "FOR_ITER must have an iterator on the stack"
-    assert isinstance(
-        state.result, CompExp
-    ), "FOR_ITER must be called within a comprehension context"
+    assert isinstance(state.result, CompExp), (
+        "FOR_ITER must be called within a comprehension context"
+    )
 
     # The iterator should be on top of stack
     # Create new stack without the iterator
@@ -448,9 +448,9 @@ def handle_load_fast(
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, CompExp
-    ), "STORE_FAST must be called within a comprehension context"
+    assert isinstance(state.result, CompExp), (
+        "STORE_FAST must be called within a comprehension context"
+    )
     var_name = instr.argval
 
     # Update the most recent loop's target variable
@@ -513,9 +513,9 @@ def handle_store_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # STORE_DEREF stores a value into a closure variable
-    assert isinstance(
-        state.result, CompExp
-    ), "STORE_DEREF must be called within a comprehension context"
+    assert isinstance(state.result, CompExp), (
+        "STORE_DEREF must be called within a comprehension context"
+    )
     var_name = instr.argval
 
     # Update the most recent loop's target variable
@@ -728,9 +728,9 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert (
-        instr.arg is not None and dis.cmp_op[instr.arg] == instr.argval
-    ), f"Unsupported comparison operation: {instr.argval}"
+    assert instr.arg is not None and dis.cmp_op[instr.arg] == instr.argval, (
+        f"Unsupported comparison operation: {instr.argval}"
+    )
 
     right = ensure_ast(state.stack[-1])
     left = ensure_ast(state.stack[-2])
@@ -1181,20 +1181,20 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
         state = OP_HANDLERS[instr.opname](state, instr)
 
     # Check postconditions
-    assert not any(
-        isinstance(x, Placeholder) for x in ast.walk(state.result)
-    ), "Return value must not contain placeholders"
-    assert (
-        not isinstance(state.result, CompExp) or len(state.result.generators) > 0
-    ), "Return value must have generators if not a lambda"
+    assert not any(isinstance(x, Placeholder) for x in ast.walk(state.result)), (
+        "Return value must not contain placeholders"
+    )
+    assert not isinstance(state.result, CompExp) or len(state.result.generators) > 0, (
+        "Return value must have generators if not a lambda"
+    )
     return state.result
 
 
 @ensure_ast.register
 def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
-    assert inspect.isfunction(value) and value.__name__.endswith(
-        "<lambda>"
-    ), "Input must be a lambda function"
+    assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), (
+        "Input must be a lambda function"
+    )
 
     code: types.CodeType = value.__code__
     body: ast.expr = ensure_ast(code)
@@ -1221,17 +1221,17 @@ def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
 @ensure_ast.register
 def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.isgenerator(genexpr), "Input must be a generator expression"
-    assert (
-        inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
-    ), "Generator must be in created state"
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
+        "Generator must be in created state"
+    )
     genexpr_ast = ensure_ast(genexpr.gi_code)
     assert isinstance(genexpr_ast, ast.GeneratorExp)
     geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
     result = CompLambda(genexpr_ast).inline(geniter_ast)
     assert isinstance(result, ast.GeneratorExp)
-    assert (
-        inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
-    ), "Generator must stay in created state"
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
+        "Generator must stay in created state"
+    )
     return result
 
 

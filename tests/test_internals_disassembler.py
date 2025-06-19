@@ -56,9 +56,9 @@ def assert_ast_equivalent(
     # Compile and evaluate the reconstructed AST
     reconstructed_gen = compile_and_eval(reconstructed_ast, globals_dict)
     reconstructed_list = list(reconstructed_gen)
-    assert (
-        reconstructed_list == original_list
-    ), f"AST produced {reconstructed_list}, expected {original_list}"
+    assert reconstructed_list == original_list, (
+        f"AST produced {reconstructed_list}, expected {original_list}"
+    )
 
 
 # ============================================================================
@@ -634,9 +634,9 @@ def test_ensure_ast(value, expected_str):
 
     # Compare the unparsed strings
     result_str = ast.unparse(result)
-    assert (
-        result_str == expected_str
-    ), f"ensure_ast({repr(value)}) produced '{result_str}', expected '{expected_str}'"
+    assert result_str == expected_str, (
+        f"ensure_ast({repr(value)}) produced '{result_str}', expected '{expected_str}'"
+    )
 
 
 def test_error_handling():
