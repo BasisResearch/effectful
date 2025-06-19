@@ -1329,36 +1329,13 @@ def handle_make_function_310(
 def handle_make_function(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # MAKE_FUNCTION creates a function from code object and name on stack
-    # In Python 3.13, function attributes are set using SET_FUNCTION_ATTRIBUTE
-    # The stack layout is simpler: just code object and name
+    # MAKE_FUNCTION in Python 3.13 is simplified: it only takes a code object from the stack
+    # and creates a function from it. No flags, no extra attributes on the stack.
+    # All extra attributes are handled by separate SET_FUNCTION_ATTRIBUTE instructions.
 
-    assert isinstance(state.stack[-1], ast.Constant) and isinstance(
-        state.stack[-1].value, str
-    ), "Function name must be a constant string."
-
-    # In Python 3.13, MAKE_FUNCTION typically just has code object and name
-    # Additional attributes like closures are handled by SET_FUNCTION_ATTRIBUTE
-
-    # Check if there are any flags that indicate special handling needed
-    flags = instr.arg or 0
-
-    body: ast.expr
-    if flags & 0x08:  # Closure flag
-        # This is a closure, remove the closure tuple from the stack
-        new_stack = state.stack[:-3]
-        body = state.stack[-3]
-    else:
-        # Simple function without closure
-        new_stack = state.stack[:-2]
-        body = state.stack[-2]
-
-    name: str = state.stack[-1].value
-
-    assert any(
-        name.endswith(suffix)
-        for suffix in ("<genexpr>", "<lambda>", "<dictcomp>", "<listcomp>", "<setcomp>")
-    ), f"Expected a comprehension or lambda function, got '{name}'"
+    # Pop the code object from the stack (it's the only thing expected)
+    body: ast.expr = state.stack[-1]
+    new_stack = state.stack[:-1]
 
     if (
         isinstance(body, CompExp)
