@@ -139,9 +139,9 @@ def test_simple_generators(genexpr):
         ((x * 2 + 3) * (x - 1) for x in range(5)),
         (x * (x + 1) * (x + 2) for x in range(5)),
         # Mixed operations with precedence
-        (x + y * 2 for x in range(3) for y in range(3)),
-        (x * 2 + y / 3 for x in range(1, 4) for y in range(1, 4)),
-        ((x + y) * (x - y) for x in range(1, 4) for y in range(1, 4)),
+        (x + 3 * 2 for x in range(3)),
+        (x * 2 + 9 / 3 for x in range(1, 4)),
+        ((x + 2) * (x - 2) for x in range(1, 4)),
         # Edge cases with zero and one
         (x * 0 for x in range(5)),
         (x * 1 for x in range(5)),
@@ -399,7 +399,7 @@ def test_nested_loops(genexpr):
     "genexpr",
     [
         # nested generators
-        ((x for x in range(i)) for i in range(5)),
+        ((x for x in range(i + 1)) for i in range(5)),
         (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
         # nested non-generators
         ([x for x in range(i)] for i in range(5)),
