@@ -33,18 +33,14 @@ CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 class Placeholder(ast.Name):
     """Placeholder for AST nodes that are not yet resolved."""
 
-    def __init__(self, id=".PLACEHOLDER", ctx=None):
-        if ctx is None:
-            ctx = ast.Load()
+    def __init__(self, id=".PLACEHOLDER", ctx=ast.Load()):
         super().__init__(id=id, ctx=ctx)
 
 
 class DummyIterName(ast.Name):
     """Dummy name for the iterator variable in generator expressions."""
 
-    def __init__(self, id=".0", ctx=None):
-        if ctx is None:
-            ctx = ast.Load()
+    def __init__(self, id=".0", ctx=ast.Load()):
         super().__init__(id=id, ctx=ctx)
 
 
@@ -52,19 +48,28 @@ class CompLambda(ast.Lambda):
     """Placeholder AST node representing a lambda function used in comprehensions."""
 
     def __init__(self, body: CompExp):
+        assert isinstance(body, CompExp)
         assert sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
         assert len(body.generators) > 0
         assert isinstance(body.generators[0].iter, DummyIterName)
-        super().__init__(
-            args=ast.arguments(
-                posonlyargs=[ast.arg(DummyIterName().id)],
-                args=[],
-                kwonlyargs=[],
-                kw_defaults=[],
-                defaults=[],
-            ),
-            body=body,
+        args = ast.arguments(
+            posonlyargs=[ast.arg(DummyIterName().id)],
+            args=[],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
         )
+        super().__init__(args=args, body=body)
+
+    def __copy__(self):
+        """Support copy.copy operation."""
+        assert isinstance(self.body, CompExp)
+        return CompLambda(self.body)
+
+    def __deepcopy__(self, memo):
+        """Support copy.deepcopy operation."""
+        assert isinstance(self.body, CompExp)
+        return CompLambda(copy.deepcopy(self.body, memo))
 
     def inline(self, iterator: ast.expr) -> CompExp:
         assert isinstance(self.body, CompExp)
@@ -1318,7 +1323,7 @@ def handle_make_function_310(
         isinstance(body, CompExp)
         and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
     ):
-        return replace(state, stack=new_stack + [CompLambda(body)])
+        return replace(state, stack=new_stack + [CompLambda(body=body)])
     else:
         raise NotImplementedError("Lambda reconstruction not implemented yet")
 
@@ -1340,7 +1345,7 @@ def handle_make_function(
         isinstance(body, CompExp)
         and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
     ):
-        return replace(state, stack=new_stack + [CompLambda(body)])
+        return replace(state, stack=new_stack + [CompLambda(body=body)])
     else:
         raise NotImplementedError("Lambda reconstruction not implemented yet")
 
@@ -1879,7 +1884,7 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     genexpr_ast = ensure_ast(genexpr.gi_code)
     assert isinstance(genexpr_ast, ast.GeneratorExp)
     geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
-    result = CompLambda(genexpr_ast).inline(geniter_ast)
+    result = CompLambda(body=genexpr_ast).inline(geniter_ast)
     assert isinstance(result, ast.GeneratorExp)
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
         "Generator must stay in created state"

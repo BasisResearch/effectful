@@ -670,3 +670,50 @@ def test_error_handling():
     list(gen)  # Consume it
     with pytest.raises(AssertionError):
         reconstruct(gen)
+
+
+def test_comp_lambda_copy():
+    """Test that CompLambda is compatible with copy.copy and copy.deepcopy."""
+    import copy
+
+    from effectful.internals.disassembler import CompLambda, DummyIterName
+
+    # Create a test generator expression AST
+    genexpr_ast = ast.GeneratorExp(
+        elt=ast.Name(id="x", ctx=ast.Load()),
+        generators=[
+            ast.comprehension(
+                target=ast.Name(id="x", ctx=ast.Store()),
+                iter=DummyIterName(),
+                is_async=0,
+            )
+        ],
+    )
+
+    # Create a CompLambda instance
+    comp_lambda = CompLambda(genexpr_ast)
+
+    # Test copy.copy
+    copied = copy.copy(comp_lambda)
+    assert isinstance(copied, CompLambda)
+    assert ast.unparse(copied.body) == ast.unparse(comp_lambda.body)
+    assert copied.body is comp_lambda.body  # Shallow copy shares the body
+
+    # Test copy.deepcopy
+    deep_copied = copy.deepcopy(comp_lambda)
+    assert isinstance(deep_copied, CompLambda)
+    assert ast.unparse(deep_copied.body) == ast.unparse(comp_lambda.body)
+    assert deep_copied.body is not comp_lambda.body  # Deep copy creates new body
+
+    # Test that deep copied version works the same way
+    iterator = ast.Call(
+        func=ast.Name(id="range", ctx=ast.Load()),
+        args=[ast.Constant(value=5)],
+        keywords=[],
+    )
+
+    original_result = comp_lambda.inline(iterator)
+    deep_copied_result = deep_copied.inline(iterator)
+
+    assert ast.unparse(original_result) == ast.unparse(deep_copied_result)
+    assert type(original_result) == type(deep_copied_result)
