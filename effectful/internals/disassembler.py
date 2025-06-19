@@ -44,6 +44,13 @@ class DummyIterName(ast.Name):
         super().__init__(id=id, ctx=ctx)
 
 
+class Null(ast.Constant):
+    """Placeholder for NULL values generated in bytecode."""
+
+    def __init__(self, value=None):
+        super().__init__(value=value)
+
+
 class CompLambda(ast.Lambda):
     """Placeholder AST node representing a lambda function used in comprehensions."""
 
@@ -162,7 +169,22 @@ def register_handler(
         assert instr.opname == opname, (
             f"Handler for '{opname}' called with wrong instruction"
         )
-        return handler(state, instr)
+
+        new_state = handler(state, instr)
+
+        # post-condition: check stack effect
+        expected_stack_effect = dis.stack_effect(instr.opcode, instr.arg)
+        actual_stack_effect = len(new_state.stack) - len(state.stack)
+        if not (len(state.stack) == len(new_state.stack) == 0):
+            assert len(state.stack) + expected_stack_effect >= 0, (
+                f"Handler for '{opname}' would result in negative stack size"
+            )
+            assert actual_stack_effect == expected_stack_effect, (
+                f"Handler for '{opname}' has incorrect stack effect: "
+                f"expected {expected_stack_effect}, got {actual_stack_effect}"
+            )
+
+        return new_state
 
     OP_HANDLERS[opname] = _wrapper
     return _wrapper
@@ -194,10 +216,12 @@ def handle_return_generator(
     assert isinstance(state.result, Placeholder), (
         "RETURN_GENERATOR must be the first instruction"
     )
-    return replace(state, result=ast.GeneratorExp(elt=Placeholder(), generators=[]))
+    new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
+    new_stack = state.stack + [new_result]
+    return replace(state, result=new_result, stack=new_stack)
 
 
-@register_handler("YIELD_VALUE")
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
 def handle_yield_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -211,7 +235,7 @@ def handle_yield_value(
     )
     assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
 
-    new_stack = state.stack[:-1]
+    new_stack = state.stack  # [:-1]
     ret = ast.GeneratorExp(
         elt=ensure_ast(state.stack[-1]),
         generators=state.result.generators,
@@ -467,8 +491,6 @@ def handle_for_iter(
     )
 
     # The iterator should be on top of stack
-    # Create new stack without the iterator
-    new_stack = state.stack[:-1]
     iterator: ast.expr = state.stack[-1]
 
     # Create a new loop variable - we'll get the actual name from STORE_FAST
@@ -495,6 +517,7 @@ def handle_for_iter(
             generators=state.result.generators + [loop_info],
         )
 
+    new_stack = state.stack + [loop_info.target]
     return replace(state, stack=new_stack, result=new_ret)
 
 
@@ -569,7 +592,8 @@ def handle_end_for(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # END_FOR marks the end of a for loop - no action needed for AST reconstruction
-    return state
+    new_stack = state.stack[:-1]
+    return replace(state, stack=new_stack)
 
 
 @register_handler("RETURN_CONST", version=PythonVersion.PY_313)
@@ -696,6 +720,8 @@ def handle_store_fast(
     # Update the most recent loop's target variable
     assert len(state.result.generators) > 0, "STORE_FAST must be within a loop context"
 
+    new_stack = state.stack[:-1]
+
     # Create a new LoopInfo with updated target
     updated_loop = ast.comprehension(
         target=ast.Name(id=var_name, ctx=ast.Store()),
@@ -711,13 +737,13 @@ def handle_store_fast(
             value=state.result.value,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-        return replace(state, result=new_dict)
+        return replace(state, stack=new_stack, result=new_dict)
     else:
         new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
             elt=state.result.elt,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-        return replace(state, result=new_comp)
+        return replace(state, stack=new_stack, result=new_comp)
 
 
 @register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_313)
@@ -770,7 +796,7 @@ def handle_store_fast_load_fast(
         new_state = replace(state, result=new_comp)
 
     # Now handle the load part - push the variable onto the stack
-    new_stack = new_state.stack + [ast.Name(id=load_name, ctx=ast.Load())]
+    new_stack = new_state.stack[:-1] + [ast.Name(id=load_name, ctx=ast.Load())]
     return replace(new_state, stack=new_stack)
 
 
@@ -788,7 +814,11 @@ def handle_load_global(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     global_name = instr.argval
-    new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
+
+    if instr.argrepr.endswith(" + NULL"):
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load()), Null()]
+    else:
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
     return replace(state, stack=new_stack)
 
 
@@ -852,13 +882,13 @@ def handle_store_deref(
             value=state.result.value,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-        return replace(state, result=new_dict)
+        return replace(state, stack=state.stack[:-1], result=new_dict)
     else:
         new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
             elt=state.result.elt,
             generators=state.result.generators[:-1] + [updated_loop],
         )
-        return replace(state, result=new_comp)
+        return replace(state, stack=state.stack[:-1], result=new_comp)
 
 
 @register_handler("LOAD_DEREF")
@@ -1212,13 +1242,17 @@ def handle_call(
     # CALL pops function and arguments from stack (replaces CALL_FUNCTION in Python 3.13)
     assert instr.arg is not None
     arg_count: int = instr.arg
+
+    func = ensure_ast(state.stack[-arg_count - 2])
+
     # Pop arguments and function
     args = (
         [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
     )
-    func = ensure_ast(state.stack[-arg_count - 1])
-    new_stack = state.stack[: -arg_count - 1]
+    if not isinstance(state.stack[-arg_count - 1], Null):
+        args = [ensure_ast(state.stack[-arg_count - 1])] + args
 
+    new_stack = state.stack[: -arg_count - 2]
     if isinstance(func, CompLambda):
         assert len(args) == 1
         return replace(state, stack=new_stack + [func.inline(args[0])])
@@ -1253,7 +1287,7 @@ def handle_call_function(
         return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_METHOD")
+@register_handler("LOAD_METHOD", version=PythonVersion.PY_310)
 def handle_load_method(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1360,7 +1394,7 @@ def handle_set_function_attribute(
     # Just pop the attribute value and leave the function on the stack
 
     # Pop the attribute value but keep the function
-    new_stack = state.stack[:-1]
+    new_stack = state.stack[:-2] + [state.stack[-1]]  # Keep the function on top
     return replace(state, stack=new_stack)
 
 
@@ -1369,18 +1403,20 @@ def handle_set_function_attribute(
 # ============================================================================
 
 
-@register_handler("LOAD_ATTR")
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
 def handle_load_attr(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # LOAD_ATTR loads an attribute from the object on top of stack
     obj = ensure_ast(state.stack[-1])
     attr_name = instr.argval
-    new_stack = state.stack[:-1]
 
     # Create attribute access AST
     attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
-    new_stack = new_stack + [attr_node]
+    if instr.argrepr.endswith(" + NULL|self"):
+        new_stack = state.stack[:-1] + [attr_node, Null()]
+    else:
+        new_stack = state.stack[:-1] + [attr_node]
     return replace(state, stack=new_stack)
 
 
