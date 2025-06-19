@@ -797,6 +797,28 @@ def handle_load_name(
     return replace(state, stack=new_stack)
 
 
+@register_handler("MAKE_CELL", version=PythonVersion.PY_313)
+def handle_make_cell(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # MAKE_CELL creates a new cell in slot i for closure variables
+    # This is used when variables from outer scopes are captured by inner scopes
+    # For AST reconstruction purposes, this is just a variable scoping mechanism
+    # that we can ignore since the AST doesn't track low-level closure details
+    return state
+
+
+@register_handler("COPY_FREE_VARS", version=PythonVersion.PY_313)
+def handle_copy_free_vars(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # COPY_FREE_VARS copies n free (closure) variables from the closure into the frame
+    # This removes the need for special code on the caller's side when calling closures
+    # For AST reconstruction purposes, this is just a variable scoping mechanism
+    # that we can ignore since the AST doesn't track runtime variable management
+    return state
+
+
 @register_handler("STORE_DEREF")
 def handle_store_deref(
     state: ReconstructionState, instr: dis.Instruction

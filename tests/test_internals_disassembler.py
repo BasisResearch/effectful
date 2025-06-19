@@ -398,11 +398,13 @@ def test_nested_loops(genexpr):
 @pytest.mark.parametrize(
     "genexpr",
     [
+        # nested generators
         ((x for x in range(i)) for i in range(5)),
+        (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
+        # nested non-generators
         ([x for x in range(i)] for i in range(5)),
         ([x for x in range(i)] for i in range(5)),
         ({x: x**2 for x in range(i)} for i in range(5)),
-        (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
         ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
         # aggregation function call
         (sum(x for x in range(i + 1)) for i in range(3)),
