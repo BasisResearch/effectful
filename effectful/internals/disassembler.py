@@ -1147,12 +1147,11 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 }
 
 
-# Python 3.10 version
-@register_handler("COMPARE_OP", version=PythonVersion.PY_310)
-def handle_compare_op_310(
+@register_handler("COMPARE_OP")
+def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert instr.arg is not None and dis.cmp_op[instr.arg] == instr.argval, (
+    assert instr.arg is not None and instr.argval in dis.cmp_op, (
         f"Unsupported comparison operation: {instr.argval}"
     )
 
@@ -1161,28 +1160,6 @@ def handle_compare_op_310(
 
     # Map comparison operation codes to AST operators
     op_name = instr.argval
-    compare_node = ast.Compare(left=left, ops=[CMP_OPMAP[op_name]], comparators=[right])
-    new_stack = state.stack[:-2] + [compare_node]
-    return replace(state, stack=new_stack)
-
-
-# Python 3.13 version
-@register_handler("COMPARE_OP", version=PythonVersion.PY_313)
-def handle_compare_op(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # In Python 3.13, COMPARE_OP arguments have changed
-    # The operation is directly in argval, not indexed through cmp_op
-    assert instr.arg is not None
-
-    right = ensure_ast(state.stack[-1])
-    left = ensure_ast(state.stack[-2])
-
-    # Map comparison operation codes to AST operators
-    op_name = instr.argval
-    if op_name not in CMP_OPMAP:
-        raise NotImplementedError(f"Unsupported comparison operation: {op_name}")
-
     compare_node = ast.Compare(left=left, ops=[CMP_OPMAP[op_name]], comparators=[right])
     new_stack = state.stack[:-2] + [compare_node]
     return replace(state, stack=new_stack)
