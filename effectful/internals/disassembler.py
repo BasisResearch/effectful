@@ -1017,6 +1017,19 @@ def handle_call_intrinsic_1(
         raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
 
 
+@register_handler("TO_BOOL", version=PythonVersion.PY_313)
+def handle_to_bool(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # TO_BOOL converts the top stack item to a boolean
+    # For AST reconstruction, we typically don't need an explicit bool() call
+    # since the boolean context is usually handled by the conditional jump that follows
+    # However, for some cases we might need to preserve the explicit conversion
+
+    # For now, leave the value as-is since the jump instruction will handle the boolean logic
+    return state
+
+
 # ============================================================================
 # COMPARISON OPERATION HANDLERS
 # ============================================================================
@@ -1445,27 +1458,10 @@ def handle_pop_jump_if_false_310(
     if instr.argval < instr.offset:
         # Jumping backward to loop start - this is a condition
         # When POP_JUMP_IF_FALSE jumps back, it means "if false, skip this item"
-        # So we need to negate the condition to get the filter condition
         assert isinstance(state.result, CompExp) and state.result.generators
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1485,26 +1481,9 @@ def handle_pop_jump_if_false(
         # it means "if condition is False, then yield the item"
         # So we need to negate the condition: we want items where NOT condition
         negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
-
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [negated_condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(negated_condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         # Not in a comprehension context - might be boolean logic
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
@@ -1527,27 +1506,10 @@ def handle_pop_jump_if_true_310(
         # When POP_JUMP_IF_TRUE jumps back, it means "if false, skip this item"
         # So we need to negate the condition to get the filter condition
         assert isinstance(state.result, CompExp) and state.result.generators
-        # negate the condition
-        condition = ast.UnaryOp(op=ast.Not(), operand=condition)
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(negated_condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1566,41 +1528,12 @@ def handle_pop_jump_if_true(
     if isinstance(state.result, CompExp) and state.result.generators:
         # For POP_JUMP_IF_TRUE in filters, we want the condition to be true to continue
         # So we add the condition directly (no negation needed)
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         # Not in a comprehension context - might be boolean logic
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
-
-
-@register_handler("TO_BOOL", version=PythonVersion.PY_313)
-def handle_to_bool(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # TO_BOOL converts the top stack item to a boolean
-    # For AST reconstruction, we typically don't need an explicit bool() call
-    # since the boolean context is usually handled by the conditional jump that follows
-    # However, for some cases we might need to preserve the explicit conversion
-
-    # For now, leave the value as-is since the jump instruction will handle the boolean logic
-    return state
 
 
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_313)
@@ -1616,25 +1549,9 @@ def handle_pop_jump_if_none(
         none_condition = ast.Compare(
             left=condition, ops=[ast.Is()], comparators=[ast.Constant(value=None)]
         )
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [none_condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(none_condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1652,25 +1569,9 @@ def handle_pop_jump_if_not_none(
         not_none_condition = ast.Compare(
             left=condition, ops=[ast.IsNot()], comparators=[ast.Constant(value=None)]
         )
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [not_none_condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_dict = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_dict)
-        else:
-            new_comp = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-            return replace(state, stack=new_stack, result=new_comp)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(not_none_condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
