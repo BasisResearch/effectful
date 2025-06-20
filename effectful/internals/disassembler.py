@@ -448,12 +448,12 @@ def handle_get_iter(
     return state
 
 
-@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
-def handle_jump_backward(
+@register_handler("JUMP_FORWARD")
+def handle_jump_forward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
-    # In generator expressions, this typically indicates the end of the loop body
+    # JUMP_FORWARD is used to jump forward in the code
+    # In generator expressions, this is often used to skip code in conditional logic
     return state
 
 
@@ -466,34 +466,13 @@ def handle_jump_absolute(
     return state
 
 
-@register_handler("JUMP_FORWARD")
-def handle_jump_forward(
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
+def handle_jump_backward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # JUMP_FORWARD is used to jump forward in the code
-    # In generator expressions, this is often used to skip code in conditional logic
+    # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
+    # In generator expressions, this typically indicates the end of the loop body
     return state
-
-
-@register_handler("UNPACK_SEQUENCE")
-def handle_unpack_sequence(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # UNPACK_SEQUENCE unpacks a sequence into multiple values
-    # arg is the number of values to unpack
-    assert instr.arg is not None
-    unpack_count: int = instr.arg
-    sequence = ensure_ast(state.stack[-1])  # noqa: F841
-    new_stack = state.stack[:-1]
-
-    # For tuple unpacking in comprehensions, we typically see patterns like:
-    # ((k, v) for k, v in items) where items is unpacked into k and v
-    # Create placeholder variables for the unpacked values
-    for i in range(unpack_count):
-        var_name = f"_unpack_{i}"
-        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
-
-    return replace(state, stack=new_stack)
 
 
 @register_handler("RESUME", version=PythonVersion.PY_313)
@@ -1302,6 +1281,27 @@ def handle_binary_subscr(
 # ============================================================================
 # OTHER CONTAINER BUILDING HANDLERS
 # ============================================================================
+
+
+@register_handler("UNPACK_SEQUENCE")
+def handle_unpack_sequence(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # UNPACK_SEQUENCE unpacks a sequence into multiple values
+    # arg is the number of values to unpack
+    assert instr.arg is not None
+    unpack_count: int = instr.arg
+    sequence = ensure_ast(state.stack[-1])  # noqa: F841
+    new_stack = state.stack[:-1]
+
+    # For tuple unpacking in comprehensions, we typically see patterns like:
+    # ((k, v) for k, v in items) where items is unpacked into k and v
+    # Create placeholder variables for the unpacked values
+    for i in range(unpack_count):
+        var_name = f"_unpack_{i}"
+        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
 
 
 @register_handler("BUILD_TUPLE")
