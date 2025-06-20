@@ -334,7 +334,8 @@ def test_filtered_generators(genexpr):
         ((x, y) for x in range(5) for y in range(5) if x < y),
         (x + y for x in range(5) if x % 2 == 0 for y in range(5) if y % 2 == 1),
         # Triple nested
-        ((x, y, z) for x in range(2) for y in range(2) for z in range(2)),
+        (x + y + z for x in range(2) for y in range(3) for z in range(4)),
+        ((x, y, z) for x in range(2) for y in range(3) for z in range(4)),
         # More complex nested loop edge cases
         # Different sized ranges
         ((x, y) for x in range(2) for y in range(5)),
@@ -402,29 +403,21 @@ def test_nested_loops(genexpr):
         ((x for x in range(i + 1)) for i in range(5)),
         ((x for j in range(i) for x in range(j)) for i in range(5)),
         (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
-        # nested non-generators
-        ([x for x in range(i)] for i in range(5)),
-        ([x for j in range(i) for x in range(j)] for i in range(5)),
-        ({x: x**2 for x in range(i)} for i in range(5)),
-        ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
+        # nested generators with filters
+        ((x for x in range(i)) for i in range(5) if i > 0),
+        ((x for x in range(i) if x < i) for i in range(5) if i > 0),
+        (((x for x in range(i + j) if x < i + j) for j in range(i)) for i in range(5)),
         # aggregation function call
         (sum(x for x in range(i + 1)) for i in range(3)),
         (max(x for x in range(i + 1)) for i in range(3)),
+        (dict((x, x + 1) for x in range(i + 1)) for i in range(3)),
+        (set(x for x in range(i + 1)) for i in range(3)),
         # map
         (list(map(abs, (x + 1 for x in range(i + 1)))) for i in range(3)),
         (list(enumerate(x + 1 for x in range(i + 1))) for i in range(3)),
-        # Nested comprehensions with filters inside
-        ([x for x in range(i)] for i in range(5) if i > 0),
-        ([x for x in range(i) if x < i] for i in range(5) if i > 0),
-        ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5)),
-        (
-            [[x for x in range(i + j) if x < i + j] for j in range(i)]
-            for i in range(5)
-            if i > 0
-        ),
         # nesting on both sides
-        ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
-        ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
+        ((y for y in range(x)) for x in (x_ + 1 for x_ in range(5))),
+        ((y for y in range(x)) for x in (x_ + 1 for x_ in range(5))),
     ],
 )
 def test_nested_comprehensions(genexpr):
@@ -446,9 +439,23 @@ def test_nested_comprehensions(genexpr):
         (x_ for x_ in {x for x in range(5)}),
         (x_ for x_ in {x: x**2 for x in range(5)}),
         # Comprehensions as yield expressions
-        ([y for y in range(x + 1)] for x in range(3)),
-        ({y for y in range(x + 1)} for x in range(3)),
+        ([y * 2 for y in range(x + 1)] for x in range(3)),
+        ({y + 3 for y in range(x + 1)} for x in range(3)),
         ({y: y**2 for y in range(x + 1)} for x in range(3)),
+        # nested non-generators
+        ([x for x in range(i)] for i in range(5)),
+        ([x for j in range(i) for x in range(j)] for i in range(5)),
+        ({x: x**2 for x in range(i)} for i in range(5)),
+        ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
+        # Nested comprehensions with filters inside
+        ([x for x in range(i)] for i in range(5) if i > 0),
+        ([x for x in range(i) if x < i] for i in range(5) if i > 0),
+        ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5)),
+        (
+            [[x for x in range(i + j) if x < i + j] for j in range(i)]
+            for i in range(5)
+            if i > 0
+        ),
     ],
 )
 def test_different_comprehension_types(genexpr):
@@ -522,6 +529,7 @@ def test_variable_lookup(genexpr, globals_dict):
         ((x.bit_length() for x in range(1, 10)), {}),
         ((str(x).zfill(3) for x in range(10)), {"str": str}),
         # Subscript operations
+        (((10, 20, 30)[i] for i in range(3)), {}),
         (([10, 20, 30][i] for i in range(3)), {}),
         (({"a": 1, "b": 2, "c": 3}[k] for k in ["a", "b", "c"]), {}),
         (("hello"[i] for i in range(5)), {}),
@@ -538,6 +546,7 @@ def test_variable_lookup(genexpr, globals_dict):
         ),
         ((s.upper().lower() for s in ["Hello", "World"]), {}),
         # Edge cases with complex data structures
+        (((1, 2, 3)[x % 3] for x in range(10)), {}),
         (([1, 2, 3][x % 3] for x in range(10)), {}),
         # (({"even": x, "odd": x + 1}["even" if x % 2 == 0 else "odd"] for x in range(5)), {}),
         # Function calls with multiple arguments

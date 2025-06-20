@@ -175,7 +175,9 @@ def register_handler(
         # post-condition: check stack effect
         expected_stack_effect = dis.stack_effect(instr.opcode, instr.arg)
         actual_stack_effect = len(new_state.stack) - len(state.stack)
-        if not (len(state.stack) == len(new_state.stack) == 0):
+        if not (
+            len(state.stack) == len(new_state.stack) == 0 or instr.opname == "END_FOR"
+        ):
             assert len(state.stack) + expected_stack_effect >= 0, (
                 f"Handler for '{opname}' would result in negative stack size"
             )
@@ -285,8 +287,9 @@ def handle_build_list(
     if size == 0:
         # Check if this looks like the start of a list comprehension pattern
         # In nested comprehensions, BUILD_LIST(0) starts a new list comprehe
-        new_stack = state.stack + [ast.ListComp(elt=Placeholder(), generators=[])]
-        return replace(state, stack=new_stack)
+        new_ret = ast.ListComp(elt=Placeholder(), generators=[])
+        new_stack = state.stack + [state.result]
+        return replace(state, stack=new_stack, result=new_ret)
     else:
         # BUILD_LIST with elements - create a regular list
         elements = [ensure_ast(elem) for elem in state.stack[-size:]]
@@ -317,19 +320,19 @@ def handle_list_append_310(
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # LIST_APPEND appends to a list comprehension
-    # The list comprehension might be the main result or on the stack (for nested comprehensions)
+    assert isinstance(state.result, ast.ListComp)
+    assert isinstance(state.result.elt, Placeholder)
 
-    comp: ast.ListComp = state.stack[-instr.argval - 1]
-    assert isinstance(comp.elt, Placeholder)
+    # add the body to the comprehension
+    comp: ast.ListComp = copy.deepcopy(state.result)
+    comp.elt = state.stack[-1]
 
-    new_elt = state.stack[-1]
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 1]
     new_stack = state.stack[:-1]
-    new_stack[-instr.argval] = ast.ListComp(
-        elt=new_elt,
-        generators=comp.generators,
-    )
-    return replace(state, stack=new_stack)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -371,8 +374,9 @@ def handle_build_set(
     size: int = instr.arg
 
     if size == 0:
-        new_stack = state.stack + [ast.SetComp(elt=Placeholder(), generators=[])]
-        return replace(state, stack=new_stack)
+        new_result = ast.SetComp(elt=Placeholder(), generators=[])
+        new_stack = state.stack + [state.result]
+        return replace(state, stack=new_stack, result=new_result)
     else:
         elements = [ensure_ast(elem) for elem in state.stack[-size:]]
         new_stack = state.stack[:-size]
@@ -401,16 +405,19 @@ def handle_set_add_310(
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    comp: ast.SetComp = state.stack[-instr.argval - 1]
-    assert isinstance(comp.elt, Placeholder)
+    assert isinstance(state.result, ast.SetComp)
+    assert isinstance(state.result.elt, Placeholder)
 
-    new_elt = state.stack[-1]
+    # add the body to the comprehension
+    comp: ast.SetComp = copy.deepcopy(state.result)
+    comp.elt = state.stack[-1]
+
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 1]
     new_stack = state.stack[:-1]
-    new_stack[-instr.argval] = ast.SetComp(
-        elt=new_elt,
-        generators=comp.generators,
-    )
-    return replace(state, stack=new_stack)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -453,13 +460,10 @@ def handle_build_map(
     size: int = instr.arg
 
     if size == 0:
-        new_stack = state.stack + [
-            ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
-        ]
-        return replace(state, stack=new_stack)
+        new_stack = state.stack + [state.result]
+        new_result = ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
+        return replace(state, stack=new_stack, result=new_result)
     else:
-        assert instr.arg is not None
-        size: int = instr.arg
         # Pop key-value pairs for the dict
         keys: list[ast.expr | None] = [
             ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
@@ -494,17 +498,21 @@ def handle_map_add_310(
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    comp: ast.DictComp = state.stack[-instr.argval - 2]
-    assert isinstance(comp.key, Placeholder)
-    assert isinstance(comp.value, Placeholder)
+    assert isinstance(state.result, ast.DictComp)
+    assert isinstance(state.result.key, Placeholder)
+    assert isinstance(state.result.value, Placeholder)
 
+    # add the body to the comprehension
+    comp: ast.DictComp = copy.deepcopy(state.result)
+    comp.key = state.stack[-2]
+    comp.value = state.stack[-1]
+
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 2]
     new_stack = state.stack[:-2]
-    new_stack[-instr.argval] = ast.DictComp(
-        key=ensure_ast(state.stack[-2]),
-        value=ensure_ast(state.stack[-1]),
-        generators=comp.generators,
-    )
-    return replace(state, stack=new_stack)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -552,21 +560,12 @@ def handle_for_iter(
     )
 
     # Create new loops list with the new loop info
-    new_ret: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
-    if isinstance(state.result, ast.DictComp):
-        # If it's a DictComp, we need to ensure the loop is added to the dict comprehension
-        new_ret = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators + [loop_info],
-        )
-    else:
-        new_ret = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators + [loop_info],
-        )
+    assert isinstance(state.result, CompExp)
+    new_ret = copy.deepcopy(state.result)
+    new_ret.generators = new_ret.generators + [loop_info]
 
     new_stack = state.stack + [loop_info.target]
+    assert isinstance(new_ret, CompExp)
     return replace(state, stack=new_stack, result=new_ret)
 
 
@@ -641,7 +640,7 @@ def handle_end_for(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # END_FOR marks the end of a for loop - no action needed for AST reconstruction
-    new_stack = state.stack[:-1]
+    new_stack = state.stack  # [:-1]
     return replace(state, stack=new_stack)
 
 
@@ -757,7 +756,7 @@ def handle_load_fast_load_fast(
     return replace(state, stack=new_stack)
 
 
-@register_handler("STORE_FAST")
+@register_handler("STORE_FAST", version=PythonVersion.PY_313)
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -766,33 +765,22 @@ def handle_store_fast(
     )
     var_name = instr.argval
 
-    # Update the most recent loop's target variable
-    assert len(state.result.generators) > 0, "STORE_FAST must be within a loop context"
-
-    new_stack = state.stack[:-1]
-
-    # Create a new LoopInfo with updated target
-    updated_loop = ast.comprehension(
-        target=ast.Name(id=var_name, ctx=ast.Store()),
-        iter=state.result.generators[-1].iter,
-        ifs=state.result.generators[-1].ifs,
-        is_async=state.result.generators[-1].is_async,
-    )
-
-    # Update the last loop in the generators list
-    if isinstance(state.result, ast.DictComp):
-        new_dict: ast.DictComp = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-        return replace(state, stack=new_stack, result=new_dict)
+    if not state.stack or (
+        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
+    ):
+        # If the variable is already on the stack, we can skip adding it again
+        # This is common in nested comprehensions where the same variable is reused
+        return replace(state, stack=state.stack[:-1])
     else:
-        new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators[:-1] + [updated_loop],
+        # Update the most recent loop's target variable
+        assert len(state.result.generators) > 0, (
+            "STORE_FAST must be within a loop context"
         )
-        return replace(state, stack=new_stack, result=new_comp)
+
+        new_stack = state.stack[:-1]
+        new_result: CompExp = copy.deepcopy(state.result)
+        new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+        return replace(state, stack=new_stack, result=new_result)
 
 
 @register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_313)
@@ -810,11 +798,8 @@ def handle_store_fast_load_fast(
 
     # In Python 3.13, the instruction argument contains both names
     # argval should be a tuple (store_name, load_name)
-    if isinstance(instr.argval, tuple):
-        store_name, load_name = instr.argval
-    else:
-        # Fallback: assume both names are the same
-        store_name = load_name = instr.argval
+    assert isinstance(instr.argval, tuple)
+    store_name, load_name = instr.argval
 
     # Update the most recent loop's target variable
     assert len(state.result.generators) > 0, (
@@ -1523,8 +1508,8 @@ def handle_list_to_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_EXTEND")
-def handle_list_extend(
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_310)
+def handle_list_extend_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
@@ -1550,6 +1535,27 @@ def handle_list_extend(
     )
     new_stack = new_stack + [list_call]
     return replace(state, stack=new_stack)
+
+
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
+def handle_list_extend(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
+    # initially recognized as list comp
+
+    # The list being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_LIST,
+    # while the actual result expression is in the stack where the list "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.ListComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Tuple | ast.List)
+    prev_result = state.stack[-instr.argval - 1]
+
+    list_obj = ast.List(elts=[ensure_ast(e) for e in state.stack[-1].elts])
+    new_stack = state.stack[:-2] + [list_obj]
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 @register_handler("BUILD_CONST_KEY_MAP")
