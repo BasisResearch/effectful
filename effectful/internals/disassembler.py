@@ -982,6 +982,20 @@ handle_unary_not = register_handler(
 )
 
 
+@register_handler("LIST_TO_TUPLE", version=PythonVersion.PY_310)
+def handle_list_to_tuple(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LIST_TO_TUPLE converts a list on the stack to a tuple
+    list_obj = ensure_ast(state.stack[-1])
+    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
+
+    # Create tuple AST from the list's elements
+    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
+    new_stack = state.stack[:-1] + [tuple_node]
+    return replace(state, stack=new_stack)
+
+
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
 def handle_call_intrinsic_1(
     state: ReconstructionState, instr: dis.Instruction
@@ -989,6 +1003,12 @@ def handle_call_intrinsic_1(
     # CALL_INTRINSIC_1 calls an intrinsic function with one argument
     if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
         return state
+    elif instr.argrepr == "INTRINSIC_LIST_TO_TUPLE":
+        assert isinstance(state.stack[-1], ast.List), (
+            "Expected a list for LIST_TO_TUPLE"
+        )
+        tuple_node = ast.Tuple(elts=state.stack[-1].elts, ctx=ast.Load())
+        return replace(state, stack=state.stack[:-1] + [tuple_node])
     elif instr.argrepr == "INTRINSIC_UNARY_POSITIVE":
         assert len(state.stack) > 0
         new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
@@ -1324,43 +1344,6 @@ def handle_build_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_TO_TUPLE", version=PythonVersion.PY_310)
-def handle_list_to_tuple(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_TO_TUPLE converts a list on the stack to a tuple
-    list_obj = ensure_ast(state.stack[-1])
-    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
-
-    # Create tuple AST from the list's elements
-    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
-    new_stack = state.stack[:-1] + [tuple_node]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LIST_EXTEND")
-def handle_list_extend(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
-    # initially recognized as list comp
-
-    # The list being extended is actually in state.result instead of the stack
-    # because it was initially recognized as a list comprehension in BUILD_LIST,
-    # while the actual result expression is in the stack where the list "should be"
-    # and needs to be put back into the state result slot
-    assert isinstance(state.result, ast.ListComp) and not state.result.generators
-    assert isinstance(state.stack[-1], ast.Tuple | ast.List)
-    prev_result = state.stack[-instr.argval - 1]
-
-    list_obj = ast.List(
-        elts=[ensure_ast(e) for e in state.stack[-1].elts], ctx=ast.Load()
-    )
-    new_stack = state.stack[:-2] + [list_obj]
-
-    return replace(state, stack=new_stack, result=prev_result)
-
-
 @register_handler("BUILD_CONST_KEY_MAP")
 def handle_build_const_key_map(
     state: ReconstructionState, instr: dis.Instruction
@@ -1380,6 +1363,68 @@ def handle_build_const_key_map(
     dict_node = ast.Dict(keys=keys, values=values)
     new_stack = new_stack + [dict_node]
     return replace(state, stack=new_stack)
+
+
+@register_handler("LIST_EXTEND")
+def handle_list_extend(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
+    # initially recognized as list comp
+
+    # The list being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_LIST,
+    # while the actual result expression is in the stack where the list "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.ListComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Tuple | ast.List)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.List(
+        elts=[ensure_ast(e) for e in state.stack[-1].elts], ctx=ast.Load()
+    )
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
+
+
+@register_handler("SET_UPDATE")
+def handle_set_update(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # The set being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_SET,
+    # while the actual result expression is in the stack where the set "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.SetComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Tuple | ast.List | ast.Set)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.Set(elts=[ensure_ast(e) for e in state.stack[-1].elts])
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
+
+
+@register_handler("DICT_UPDATE")
+def handle_dict_update(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # The dict being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_MAP,
+    # while the actual result expression is in the stack where the dict "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.DictComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Dict)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.Dict(
+        keys=[ensure_ast(e) for e in state.stack[-1].keys],
+        values=[ensure_ast(e) for e in state.stack[-1].values],
+    )
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -1684,8 +1729,9 @@ def _ensure_ast_list_iterator(value: Iterator) -> ast.List:
     return ensure_ast(list(value.__reduce__()[1][0]))  # type: ignore
 
 
-@ensure_ast.register
-def _ensure_ast_set(value: set) -> ast.Set:
+@ensure_ast.register(set)
+@ensure_ast.register(frozenset)
+def _ensure_ast_set(value: set | frozenset) -> ast.Set:
     return ast.Set(elts=[ensure_ast(v) for v in value])
 
 

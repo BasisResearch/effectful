@@ -548,6 +548,7 @@ def test_variable_lookup(genexpr, globals_dict):
         # Edge cases with complex data structures
         (((1, 2, 3)[x % 3] for x in range(10)), {}),
         (([1, 2, 3][x % 3] for x in range(10)), {}),
+        (({1, 2, 3} for x in range(10)), {}),
         # (({"even": x, "odd": x + 1}["even" if x % 2 == 0 else "odd"] for x in range(5)), {}),
         # Function calls with multiple arguments
         ((pow(x, 2, 10) for x in range(5)), {"pow": pow}),
