@@ -189,7 +189,7 @@ def register_handler(
         return new_state
 
     OP_HANDLERS[opname] = _wrapper
-    return _wrapper
+    return handler  # return the original handler for multiple decorator usage
 
 
 # ============================================================================
