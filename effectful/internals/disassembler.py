@@ -223,6 +223,27 @@ def handle_return_generator(
     return replace(state, result=new_result, stack=new_stack)
 
 
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_310)
+def handle_yield_value_310(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # YIELD_VALUE pops a value from the stack and yields it
+    # This is the expression part of the generator
+    assert isinstance(state.result, ast.GeneratorExp), (
+        "YIELD_VALUE must be called after RETURN_GENERATOR"
+    )
+    assert isinstance(state.result.elt, Placeholder), (
+        "YIELD_VALUE must be called before yielding"
+    )
+    assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
+
+    ret = ast.GeneratorExp(
+        elt=ensure_ast(state.stack[-1]),
+        generators=state.result.generators,
+    )
+    return replace(state, result=ret)
+
+
 @register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
 def handle_yield_value(
     state: ReconstructionState, instr: dis.Instruction
@@ -650,15 +671,11 @@ def handle_return_const(
 ) -> ReconstructionState:
     # RETURN_CONST returns a constant value (replaces some LOAD_CONST + RETURN_VALUE patterns)
     # Similar to RETURN_VALUE but with a constant
-    if isinstance(state.result, CompExp):
-        return state
-    elif isinstance(state.result, Placeholder) and len(state.stack) == 1:
-        new_result = ensure_ast(state.stack[-1])
-        assert isinstance(new_result, CompExp | ast.Lambda)
-        return replace(state, stack=state.stack[:-1], result=new_result)
-    else:
+    if isinstance(state.result, ast.GeneratorExp):
         # For generators, this typically ends the generator with None
         return state
+    else:
+        raise TypeError("Unexpected RETURN_CONST in reconstruction")
 
 
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
@@ -666,18 +683,14 @@ def handle_call_intrinsic_1(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # CALL_INTRINSIC_1 calls an intrinsic function with one argument
-    # For generator expressions, this is often used for exception handling
-    # We can generally ignore this for AST reconstruction
-    return state
-
-
-@register_handler("CALL_INTRINSIC_2", version=PythonVersion.PY_313)
-def handle_call_intrinsic_2(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # CALL_INTRINSIC_2 calls an intrinsic function with two arguments
-    # We can generally ignore this for AST reconstruction
-    return state
+    if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
+        return state
+    elif instr.argrepr == "INTRINSIC_UNARY_POSITIVE":
+        assert len(state.stack) > 0
+        new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
+        return replace(state, stack=state.stack[:-1] + [new_val])
+    else:
+        raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
 
 
 @register_handler("RERAISE", version=PythonVersion.PY_313)
@@ -685,6 +698,7 @@ def handle_reraise(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RERAISE re-raises an exception - generally ignore for AST reconstruction
+    assert not state.stack  # in generator expressions, we shouldn't have a stack here
     return state
 
 
@@ -754,6 +768,22 @@ def handle_load_fast_load_fast(
         new_stack = new_stack + [ast.Name(id=var2, ctx=ast.Load())]
 
     return replace(state, stack=new_stack)
+
+
+@register_handler("STORE_FAST", version=PythonVersion.PY_310)
+def handle_store_fast_310(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    assert isinstance(state.result, CompExp), (
+        "STORE_FAST must be called within a comprehension context"
+    )
+    var_name = instr.argval
+    assert len(state.result.generators) > 0, "STORE_FAST must be within a loop context"
+
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
 
 
 @register_handler("STORE_FAST", version=PythonVersion.PY_313)
@@ -888,8 +918,8 @@ def handle_copy_free_vars(
     return state
 
 
-@register_handler("STORE_DEREF")
-def handle_store_deref(
+@register_handler("STORE_DEREF", version=PythonVersion.PY_310)
+def handle_store_deref_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # STORE_DEREF stores a value into a closure variable
@@ -901,28 +931,38 @@ def handle_store_deref(
     # Update the most recent loop's target variable
     assert len(state.result.generators) > 0, "STORE_DEREF must be within a loop context"
 
-    # Create a new LoopInfo with updated target
-    updated_loop = ast.comprehension(
-        target=ast.Name(id=var_name, ctx=ast.Store()),
-        iter=state.result.generators[-1].iter,
-        ifs=state.result.generators[-1].ifs,
-        is_async=state.result.generators[-1].is_async,
-    )
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
 
-    # Update the last loop in the generators list
-    if isinstance(state.result, ast.DictComp):
-        new_dict: ast.DictComp = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-        return replace(state, stack=state.stack[:-1], result=new_dict)
+
+@register_handler("STORE_DEREF", version=PythonVersion.PY_313)
+def handle_store_deref(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # STORE_DEREF stores a value into a closure variable
+    assert isinstance(state.result, CompExp), (
+        "STORE_DEREF must be called within a comprehension context"
+    )
+    var_name = instr.argval
+
+    if not state.stack or (
+        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
+    ):
+        # If the variable is already on the stack, we can skip adding it again
+        # This is common in nested comprehensions where the same variable is reused
+        return replace(state, stack=state.stack[:-1])
     else:
-        new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators[:-1] + [updated_loop],
+        # Update the most recent loop's target variable
+        assert len(state.result.generators) > 0, (
+            "STORE_DEREF must be within a loop context"
         )
-        return replace(state, stack=state.stack[:-1], result=new_comp)
+
+        new_stack = state.stack[:-1]
+        new_result: CompExp = copy.deepcopy(state.result)
+        new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+        return replace(state, stack=new_stack, result=new_result)
 
 
 @register_handler("LOAD_DEREF")
@@ -1321,25 +1361,6 @@ def handle_call_function(
         return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_METHOD", version=PythonVersion.PY_310)
-def handle_load_method(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_METHOD loads a method from an object
-    # It pushes the bound method and the object (for the method call)
-    obj = ensure_ast(state.stack[-1])
-    method_name = instr.argval
-    new_stack = state.stack[:-1]
-
-    # Create method access as an attribute
-    method_attr = ast.Attribute(value=obj, attr=method_name, ctx=ast.Load())
-
-    # For LOAD_METHOD, we push both the method and the object
-    # But for AST purposes, we just need the method attribute
-    new_stack = new_stack + [method_attr]
-    return replace(state, stack=new_stack)
-
-
 @register_handler("CALL_METHOD", version=PythonVersion.PY_310)
 def handle_call_method(
     state: ReconstructionState, instr: dis.Instruction
@@ -1351,8 +1372,8 @@ def handle_call_method(
     args = (
         [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
     )
-    method = ensure_ast(state.stack[-arg_count - 1])
-    new_stack = state.stack[: -arg_count - 1]
+    method = ensure_ast(state.stack[-arg_count - 2])
+    new_stack = state.stack[: -arg_count - 2]
 
     # Create method call AST
     call_node = ast.Call(func=method, args=args, keywords=[])
@@ -1435,6 +1456,39 @@ def handle_set_function_attribute(
 # ============================================================================
 # OBJECT ACCESS HANDLERS
 # ============================================================================
+
+
+@register_handler("LOAD_METHOD", version=PythonVersion.PY_310)
+def handle_load_method(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_METHOD loads a method from an object
+    # It pushes the bound method and the object (for the method call)
+    obj = ensure_ast(state.stack[-1])
+    method_name = instr.argval
+    new_stack = state.stack[:-1]
+
+    # Create method access as an attribute
+    method_attr = ast.Attribute(value=obj, attr=method_name, ctx=ast.Load())
+
+    # For LOAD_METHOD, we push both the method and the object
+    # But for AST purposes, we just need the method attribute
+    new_stack = new_stack + [method_attr, obj]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_310)
+def handle_load_attr_310(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_ATTR loads an attribute from the object on top of stack
+    obj = ensure_ast(state.stack[-1])
+    attr_name = instr.argval
+
+    # Create attribute access AST
+    attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
+    new_stack = state.stack[:-1] + [attr_node]
+    return replace(state, stack=new_stack)
 
 
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
