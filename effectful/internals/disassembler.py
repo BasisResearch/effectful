@@ -223,8 +223,8 @@ def handle_return_generator(
     return replace(state, result=new_result, stack=new_stack)
 
 
-@register_handler("YIELD_VALUE", version=PythonVersion.PY_310)
-def handle_yield_value_310(
+@register_handler("YIELD_VALUE")
+def handle_yield_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # YIELD_VALUE pops a value from the stack and yields it
@@ -244,61 +244,12 @@ def handle_yield_value_310(
     return replace(state, result=ret)
 
 
-@register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
-def handle_yield_value(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # YIELD_VALUE pops a value from the stack and yields it
-    # This is the expression part of the generator
-    assert isinstance(state.result, ast.GeneratorExp), (
-        "YIELD_VALUE must be called after RETURN_GENERATOR"
-    )
-    assert isinstance(state.result.elt, Placeholder), (
-        "YIELD_VALUE must be called before yielding"
-    )
-    assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
-
-    new_stack = state.stack  # [:-1]
-    ret = ast.GeneratorExp(
-        elt=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=ret)
-
-
 # ============================================================================
 # LIST COMPREHENSION HANDLERS
 # ============================================================================
 
 
-# Python 3.10 version
-@register_handler("BUILD_LIST", version=PythonVersion.PY_310)
-def handle_build_list_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This BUILD_LIST is the start of a list comprehension
-        # Initialize the result as a ListComp with a placeholder element
-        ret = ast.ListComp(elt=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
-    else:
-        assert instr.arg is not None
-        size: int = instr.arg
-        # Pop elements for the list
-        elements = (
-            [ensure_ast(elem) for elem in state.stack[-size:]] if size > 0 else []
-        )
-        new_stack = state.stack[:-size] if size > 0 else state.stack
-
-        # Create list AST
-        elt_node = ast.List(elts=elements, ctx=ast.Load())
-        new_stack = new_stack + [elt_node]
-        return replace(state, stack=new_stack)
-
-
-# Python 3.13 version
-@register_handler("BUILD_LIST", version=PythonVersion.PY_313)
+@register_handler("BUILD_LIST")
 def handle_build_list(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -361,33 +312,7 @@ def handle_list_append(
 # ============================================================================
 
 
-@register_handler("BUILD_SET", version=PythonVersion.PY_310)
-def handle_build_set_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This BUILD_SET is the start of a list comprehension
-        # Initialize the result as a ListComp with a placeholder element
-        ret = ast.SetComp(elt=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
-    else:
-        assert instr.arg is not None
-        size: int = instr.arg
-        # Pop elements for the set
-        elements = (
-            [ensure_ast(elem) for elem in state.stack[-size:]] if size > 0 else []
-        )
-        new_stack = state.stack[:-size] if size > 0 else state.stack
-
-        # Create set AST
-        elt_node = ast.Set(elts=elements)
-        new_stack = new_stack + [elt_node]
-        return replace(state, stack=new_stack)
-
-
-# Python 3.13 version
-@register_handler("BUILD_SET", version=PythonVersion.PY_313)
+@register_handler("BUILD_SET")
 def handle_build_set(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -446,34 +371,7 @@ def handle_set_add(
 # ============================================================================
 
 
-@register_handler("BUILD_MAP", version=PythonVersion.PY_310)
-def handle_build_map_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This is the start of a comprehension
-        # Initialize the result with a placeholder element
-        ret = ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
-    else:
-        assert instr.arg is not None
-        size: int = instr.arg
-        # Pop key-value pairs for the dict
-        keys: list[ast.expr | None] = [
-            ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
-        ]
-        values = [ensure_ast(state.stack[-2 * i - 1]) for i in range(size)]
-        new_stack = state.stack[: -2 * size] if size > 0 else state.stack
-
-        # Create dict AST
-        dict_node = ast.Dict(keys=keys, values=values)
-        new_stack = new_stack + [dict_node]
-        return replace(state, stack=new_stack)
-
-
-# Python 3.13 version
-@register_handler("BUILD_MAP", version=PythonVersion.PY_313)
+@register_handler("BUILD_MAP")
 def handle_build_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -678,21 +576,6 @@ def handle_return_const(
         raise TypeError("Unexpected RETURN_CONST in reconstruction")
 
 
-@register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
-def handle_call_intrinsic_1(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # CALL_INTRINSIC_1 calls an intrinsic function with one argument
-    if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
-        return state
-    elif instr.argrepr == "INTRINSIC_UNARY_POSITIVE":
-        assert len(state.stack) > 0
-        new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
-        return replace(state, stack=state.stack[:-1] + [new_val])
-    else:
-        raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
-
-
 @register_handler("RERAISE", version=PythonVersion.PY_313)
 def handle_reraise(
     state: ReconstructionState, instr: dis.Instruction
@@ -720,6 +603,58 @@ def handle_load_fast(
         # Regular variable load
         new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
 
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_DEREF")
+def handle_load_deref(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_DEREF loads a value from a closure variable
+    var_name = instr.argval
+    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_CLOSURE")
+def handle_load_closure(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_CLOSURE loads a closure variable
+    var_name = instr.argval
+    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_CONST")
+def handle_load_const(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    const_value = instr.argval
+    new_stack = state.stack + [ensure_ast(const_value)]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_GLOBAL")
+def handle_load_global(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    global_name = instr.argval
+
+    if instr.argrepr.endswith(" + NULL"):
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load()), Null()]
+    else:
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_NAME")
+def handle_load_name(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_NAME is similar to LOAD_GLOBAL but for names in the global namespace
+    name = instr.argval
+    new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
     return replace(state, stack=new_stack)
 
 
@@ -770,27 +705,11 @@ def handle_load_fast_load_fast(
     return replace(state, stack=new_stack)
 
 
-@register_handler("STORE_FAST", version=PythonVersion.PY_310)
-def handle_store_fast_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    assert isinstance(state.result, CompExp), (
-        "STORE_FAST must be called within a comprehension context"
-    )
-    var_name = instr.argval
-    assert len(state.result.generators) > 0, "STORE_FAST must be within a loop context"
-
-    new_stack = state.stack[:-1]
-    new_result: CompExp = copy.deepcopy(state.result)
-    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
-    return replace(state, stack=new_stack, result=new_result)
-
-
-@register_handler("STORE_FAST", version=PythonVersion.PY_313)
+@register_handler("STORE_FAST")
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(state.result, CompExp), (
+    assert isinstance(state.result, CompExp) and state.result.generators, (
         "STORE_FAST must be called within a comprehension context"
     )
     var_name = instr.argval
@@ -801,16 +720,34 @@ def handle_store_fast(
         # If the variable is already on the stack, we can skip adding it again
         # This is common in nested comprehensions where the same variable is reused
         return replace(state, stack=state.stack[:-1])
-    else:
-        # Update the most recent loop's target variable
-        assert len(state.result.generators) > 0, (
-            "STORE_FAST must be within a loop context"
-        )
 
-        new_stack = state.stack[:-1]
-        new_result: CompExp = copy.deepcopy(state.result)
-        new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
-        return replace(state, stack=new_stack, result=new_result)
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
+
+
+@register_handler("STORE_DEREF")
+def handle_store_deref(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # STORE_DEREF stores a value into a closure variable
+    assert isinstance(state.result, CompExp) and state.result.generators, (
+        "STORE_DEREF must be called within a comprehension context"
+    )
+    var_name = instr.argval
+
+    if not state.stack or (
+        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
+    ):
+        # If the variable is already on the stack, we can skip adding it again
+        # This is common in nested comprehensions where the same variable is reused
+        return replace(state, stack=state.stack[:-1])
+
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
 
 
 @register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_313)
@@ -822,7 +759,7 @@ def handle_store_fast_load_fast(
     # In Python 3.13, this is often used for loop variables
 
     # First handle the store part
-    assert isinstance(state.result, CompExp), (
+    assert isinstance(state.result, CompExp) and state.result.generators, (
         "STORE_FAST_LOAD_FAST must be called within a comprehension context"
     )
 
@@ -831,69 +768,10 @@ def handle_store_fast_load_fast(
     assert isinstance(instr.argval, tuple)
     store_name, load_name = instr.argval
 
-    # Update the most recent loop's target variable
-    assert len(state.result.generators) > 0, (
-        "STORE_FAST_LOAD_FAST must be within a loop context"
-    )
-
-    # Create a new LoopInfo with updated target
-    updated_loop = ast.comprehension(
-        target=ast.Name(id=store_name, ctx=ast.Store()),
-        iter=state.result.generators[-1].iter,
-        ifs=state.result.generators[-1].ifs,
-        is_async=state.result.generators[-1].is_async,
-    )
-
-    # Update the last loop in the generators list
-    if isinstance(state.result, ast.DictComp):
-        new_dict: ast.DictComp = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-        new_state = replace(state, result=new_dict)
-    else:
-        new_comp: ast.GeneratorExp | ast.ListComp | ast.SetComp = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-        new_state = replace(state, result=new_comp)
-
-    # Now handle the load part - push the variable onto the stack
-    new_stack = new_state.stack[:-1] + [ast.Name(id=load_name, ctx=ast.Load())]
-    return replace(new_state, stack=new_stack)
-
-
-@register_handler("LOAD_CONST")
-def handle_load_const(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    const_value = instr.argval
-    new_stack = state.stack + [ensure_ast(const_value)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_GLOBAL")
-def handle_load_global(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    global_name = instr.argval
-
-    if instr.argrepr.endswith(" + NULL"):
-        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load()), Null()]
-    else:
-        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_NAME")
-def handle_load_name(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_NAME is similar to LOAD_GLOBAL but for names in the global namespace
-    name = instr.argval
-    new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
+    new_stack = state.stack[:-1] + [ast.Name(id=load_name, ctx=ast.Load())]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
 
 
 @register_handler("MAKE_CELL", version=PythonVersion.PY_313)
@@ -916,73 +794,6 @@ def handle_copy_free_vars(
     # For AST reconstruction purposes, this is just a variable scoping mechanism
     # that we can ignore since the AST doesn't track runtime variable management
     return state
-
-
-@register_handler("STORE_DEREF", version=PythonVersion.PY_310)
-def handle_store_deref_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # STORE_DEREF stores a value into a closure variable
-    assert isinstance(state.result, CompExp), (
-        "STORE_DEREF must be called within a comprehension context"
-    )
-    var_name = instr.argval
-
-    # Update the most recent loop's target variable
-    assert len(state.result.generators) > 0, "STORE_DEREF must be within a loop context"
-
-    new_stack = state.stack[:-1]
-    new_result: CompExp = copy.deepcopy(state.result)
-    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
-    return replace(state, stack=new_stack, result=new_result)
-
-
-@register_handler("STORE_DEREF", version=PythonVersion.PY_313)
-def handle_store_deref(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # STORE_DEREF stores a value into a closure variable
-    assert isinstance(state.result, CompExp), (
-        "STORE_DEREF must be called within a comprehension context"
-    )
-    var_name = instr.argval
-
-    if not state.stack or (
-        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
-    ):
-        # If the variable is already on the stack, we can skip adding it again
-        # This is common in nested comprehensions where the same variable is reused
-        return replace(state, stack=state.stack[:-1])
-    else:
-        # Update the most recent loop's target variable
-        assert len(state.result.generators) > 0, (
-            "STORE_DEREF must be within a loop context"
-        )
-
-        new_stack = state.stack[:-1]
-        new_result: CompExp = copy.deepcopy(state.result)
-        new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
-        return replace(state, stack=new_stack, result=new_result)
-
-
-@register_handler("LOAD_DEREF")
-def handle_load_deref(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_DEREF loads a value from a closure variable
-    var_name = instr.argval
-    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_CLOSURE")
-def handle_load_closure(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_CLOSURE loads a closure variable
-    var_name = instr.argval
-    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
 
 
 # ============================================================================
@@ -1240,6 +1051,21 @@ handle_unary_invert = register_handler(
 handle_unary_not = register_handler(
     "UNARY_NOT", functools.partial(handle_unary_op, ast.Not())
 )
+
+
+@register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
+def handle_call_intrinsic_1(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CALL_INTRINSIC_1 calls an intrinsic function with one argument
+    if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
+        return state
+    elif instr.argrepr == "INTRINSIC_UNARY_POSITIVE":
+        assert len(state.stack) > 0
+        new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
+        return replace(state, stack=state.stack[:-1] + [new_val])
+    else:
+        raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
 
 
 # ============================================================================
@@ -1562,36 +1388,7 @@ def handle_list_to_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_EXTEND", version=PythonVersion.PY_310)
-def handle_list_extend_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
-    iterable = ensure_ast(state.stack[-1])
-    list_obj = state.stack[-2]  # This should be a list from BUILD_LIST
-    new_stack = state.stack[:-2]
-
-    # If the list is empty and we're extending with a tuple/iterable,
-    # we can convert this to a simple list of the iterable's elements
-    if isinstance(list_obj, ast.List) and len(list_obj.elts) == 0:
-        # If extending with a constant tuple, expand it to list elements
-        if isinstance(iterable, ast.Constant) and isinstance(iterable.value, tuple):
-            elements: list[ast.expr] = [
-                ast.Constant(value=elem) for elem in iterable.value
-            ]
-            list_node = ast.List(elts=elements, ctx=ast.Load())
-            new_stack = new_stack + [list_node]
-            return replace(state, stack=new_stack)
-
-    # Fallback: create a list from the iterable using list() constructor
-    list_call = ast.Call(
-        func=ast.Name(id="list", ctx=ast.Load()), args=[iterable], keywords=[]
-    )
-    new_stack = new_stack + [list_call]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
+@register_handler("LIST_EXTEND")
 def handle_list_extend(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1606,7 +1403,9 @@ def handle_list_extend(
     assert isinstance(state.stack[-1], ast.Tuple | ast.List)
     prev_result = state.stack[-instr.argval - 1]
 
-    list_obj = ast.List(elts=[ensure_ast(e) for e in state.stack[-1].elts])
+    list_obj = ast.List(
+        elts=[ensure_ast(e) for e in state.stack[-1].elts], ctx=ast.Load()
+    )
     new_stack = state.stack[:-2] + [list_obj]
 
     return replace(state, stack=new_stack, result=prev_result)
