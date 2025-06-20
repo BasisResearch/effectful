@@ -271,24 +271,7 @@ def handle_build_list(
         return replace(state, stack=new_stack)
 
 
-# Python 3.10 version
-@register_handler("LIST_APPEND", version=PythonVersion.PY_310)
-def handle_list_append_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    assert isinstance(state.result, ast.ListComp), (
-        "LIST_APPEND must be called within a ListComp context"
-    )
-    new_stack = state.stack[:-1]
-    new_ret = ast.ListComp(
-        elt=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
-
-
-# Python 3.13 version
-@register_handler("LIST_APPEND", version=PythonVersion.PY_313)
+@register_handler("LIST_APPEND")
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -331,23 +314,7 @@ def handle_build_set(
         return replace(state, stack=new_stack)
 
 
-@register_handler("SET_ADD", version=PythonVersion.PY_310)
-def handle_set_add_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    assert isinstance(state.result, ast.SetComp), (
-        "SET_ADD must be called after BUILD_SET"
-    )
-    new_stack = state.stack[:-1]
-    new_ret = ast.SetComp(
-        elt=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
-
-
-# Python 3.13 version
-@register_handler("SET_ADD", version=PythonVersion.PY_313)
+@register_handler("SET_ADD")
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -396,24 +363,7 @@ def handle_build_map(
         return replace(state, stack=new_stack)
 
 
-@register_handler("MAP_ADD", version=PythonVersion.PY_310)
-def handle_map_add_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    assert isinstance(state.result, ast.DictComp), (
-        "MAP_ADD must be called after BUILD_MAP"
-    )
-    new_stack = state.stack[:-2]
-    new_ret = ast.DictComp(
-        key=ensure_ast(state.stack[-2]),
-        value=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
-
-
-# Python 3.13 version
-@register_handler("MAP_ADD", version=PythonVersion.PY_313)
+@register_handler("MAP_ADD")
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -447,10 +397,10 @@ def handle_return_value(
     # Usually preceded by LOAD_CONST None
     if isinstance(state.result, CompExp):
         return replace(state, stack=state.stack[:-1])
-    elif isinstance(state.result, Placeholder) and len(state.stack) == 1:
-        new_result = ensure_ast(state.stack[-1])
+    elif isinstance(state.result, Placeholder):
+        new_result = ensure_ast(state.stack[0])
         assert isinstance(new_result, CompExp | ast.Lambda)
-        return replace(state, stack=state.stack[:-1], result=new_result)
+        return replace(state, stack=state.stack[1:], result=new_result)
     else:
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
 
@@ -658,53 +608,6 @@ def handle_load_name(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_313)
-def handle_load_fast_and_clear(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_FAST_AND_CLEAR pushes a local variable onto the stack and clears it
-    # For AST reconstruction, we treat this the same as LOAD_FAST
-    var_name: str = instr.argval
-
-    if var_name == ".0":
-        # Special handling for .0 variable (the iterator)
-        new_stack = state.stack + [DummyIterName()]
-    else:
-        # Regular variable load
-        new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_FAST_LOAD_FAST", version=PythonVersion.PY_313)
-def handle_load_fast_load_fast(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_FAST_LOAD_FAST loads two variables (optimization in Python 3.13)
-    # The instruction argument contains both variable names
-    if isinstance(instr.argval, tuple):
-        var1, var2 = instr.argval
-    else:
-        # Fallback: assume both names are the same
-        var1 = var2 = instr.argval
-
-    new_stack = state.stack
-
-    # Load first variable
-    if var1 == ".0":
-        new_stack = new_stack + [DummyIterName()]
-    else:
-        new_stack = new_stack + [ast.Name(id=var1, ctx=ast.Load())]
-
-    # Load second variable
-    if var2 == ".0":
-        new_stack = new_stack + [DummyIterName()]
-    else:
-        new_stack = new_stack + [ast.Name(id=var2, ctx=ast.Load())]
-
-    return replace(state, stack=new_stack)
-
-
 @register_handler("STORE_FAST")
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
@@ -772,6 +675,53 @@ def handle_store_fast_load_fast(
     new_result: CompExp = copy.deepcopy(state.result)
     new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Store())
     return replace(state, stack=new_stack, result=new_result)
+
+
+@register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_313)
+def handle_load_fast_and_clear(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_FAST_AND_CLEAR pushes a local variable onto the stack and clears it
+    # For AST reconstruction, we treat this the same as LOAD_FAST
+    var_name: str = instr.argval
+
+    if var_name == ".0":
+        # Special handling for .0 variable (the iterator)
+        new_stack = state.stack + [DummyIterName()]
+    else:
+        # Regular variable load
+        new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_FAST_LOAD_FAST", version=PythonVersion.PY_313)
+def handle_load_fast_load_fast(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_FAST_LOAD_FAST loads two variables (optimization in Python 3.13)
+    # The instruction argument contains both variable names
+    if isinstance(instr.argval, tuple):
+        var1, var2 = instr.argval
+    else:
+        # Fallback: assume both names are the same
+        var1 = var2 = instr.argval
+
+    new_stack = state.stack
+
+    # Load first variable
+    if var1 == ".0":
+        new_stack = new_stack + [DummyIterName()]
+    else:
+        new_stack = new_stack + [ast.Name(id=var1, ctx=ast.Load())]
+
+    # Load second variable
+    if var2 == ".0":
+        new_stack = new_stack + [DummyIterName()]
+    else:
+        new_stack = new_stack + [ast.Name(id=var2, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
 
 
 @register_handler("MAKE_CELL", version=PythonVersion.PY_313)
