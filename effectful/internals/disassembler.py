@@ -283,24 +283,10 @@ def handle_build_list(
     size: int = instr.arg
 
     if size == 0:
-        # BUILD_LIST with 0 elements can mean two things:
-        # 1. Start of a list comprehension (if we're at the start or in a nested context)
-        # 2. Creating an empty list
-
         # Check if this looks like the start of a list comprehension pattern
-        # In nested comprehensions, BUILD_LIST(0) starts a new list comprehension
-        if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-            # This is the start of a standalone list comprehension
-            ret = ast.ListComp(elt=Placeholder(), generators=[])
-            new_stack = state.stack + [ret]
-            return replace(state, stack=new_stack, result=ret)
-        else:
-            # This might be a nested list comprehension or just an empty list
-            # For nested comprehensions, we create a ListComp and put it on the stack
-            # without changing the main result (which is the outer generator)
-            ret = ast.ListComp(elt=Placeholder(), generators=[])
-            new_stack = state.stack + [ret]
-            return replace(state, stack=new_stack)
+        # In nested comprehensions, BUILD_LIST(0) starts a new list comprehe
+        new_stack = state.stack + [ast.ListComp(elt=Placeholder(), generators=[])]
+        return replace(state, stack=new_stack)
     else:
         # BUILD_LIST with elements - create a regular list
         elements = [ensure_ast(elem) for elem in state.stack[-size:]]
@@ -334,36 +320,16 @@ def handle_list_append(
     # LIST_APPEND appends to a list comprehension
     # The list comprehension might be the main result or on the stack (for nested comprehensions)
 
-    if isinstance(state.result, ast.ListComp):
-        # Main result is a list comprehension
-        new_stack = state.stack[:-1]
-        new_ret = ast.ListComp(
-            elt=ensure_ast(state.stack[-1]),
-            generators=state.result.generators,
-        )
-        return replace(state, stack=new_stack, result=new_ret)
-    elif len(state.stack) >= 2 and isinstance(state.stack[-2], ast.ListComp):
-        # There's a list comprehension on the stack (nested case)
-        # LIST_APPEND with argument 2 means append to the list 2 positions down
-        assert instr.arg == 2, f"Expected LIST_APPEND with arg 2, got {instr.arg}"
+    comp: ast.ListComp = state.stack[-instr.argval - 1]
+    assert isinstance(comp.elt, Placeholder)
 
-        list_comp = state.stack[-2]
-        element = ensure_ast(state.stack[-1])
-
-        # Update the list comprehension with the element
-        new_list_comp = ast.ListComp(
-            elt=element,
-            generators=list_comp.generators,
-        )
-
-        # Replace the list comprehension on the stack
-        new_stack = state.stack[:-2] + [new_list_comp]
-        return replace(state, stack=new_stack)
-    else:
-        raise AssertionError(
-            f"LIST_APPEND must be called within a ListComp context. "
-            f"State result: {type(state.result)}, Stack: {[type(x) for x in state.stack]}"
-        )
+    new_elt = state.stack[-1]
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = ast.ListComp(
+        elt=new_elt,
+        generators=comp.generators,
+    )
+    return replace(state, stack=new_stack)
 
 
 # ============================================================================
@@ -371,8 +337,8 @@ def handle_list_append(
 # ============================================================================
 
 
-@register_handler("BUILD_SET")
-def handle_build_set(
+@register_handler("BUILD_SET", version=PythonVersion.PY_310)
+def handle_build_set_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     if isinstance(state.result, Placeholder) and len(state.stack) == 0:
@@ -396,8 +362,27 @@ def handle_build_set(
         return replace(state, stack=new_stack)
 
 
-@register_handler("SET_ADD")
-def handle_set_add(
+# Python 3.13 version
+@register_handler("BUILD_SET", version=PythonVersion.PY_313)
+def handle_build_set(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    assert instr.arg is not None
+    size: int = instr.arg
+
+    if size == 0:
+        new_stack = state.stack + [ast.SetComp(elt=Placeholder(), generators=[])]
+        return replace(state, stack=new_stack)
+    else:
+        elements = [ensure_ast(elem) for elem in state.stack[-size:]]
+        new_stack = state.stack[:-size]
+        elt_node = ast.Set(elts=elements)
+        new_stack = new_stack + [elt_node]
+        return replace(state, stack=new_stack)
+
+
+@register_handler("SET_ADD", version=PythonVersion.PY_310)
+def handle_set_add_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.result, ast.SetComp), (
@@ -411,13 +396,30 @@ def handle_set_add(
     return replace(state, stack=new_stack, result=new_ret)
 
 
+# Python 3.13 version
+@register_handler("SET_ADD", version=PythonVersion.PY_313)
+def handle_set_add(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    comp: ast.SetComp = state.stack[-instr.argval - 1]
+    assert isinstance(comp.elt, Placeholder)
+
+    new_elt = state.stack[-1]
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = ast.SetComp(
+        elt=new_elt,
+        generators=comp.generators,
+    )
+    return replace(state, stack=new_stack)
+
+
 # ============================================================================
 # DICT COMPREHENSION HANDLERS
 # ============================================================================
 
 
-@register_handler("BUILD_MAP")
-def handle_build_map(
+@register_handler("BUILD_MAP", version=PythonVersion.PY_310)
+def handle_build_map_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     if isinstance(state.result, Placeholder) and len(state.stack) == 0:
@@ -442,8 +444,37 @@ def handle_build_map(
         return replace(state, stack=new_stack)
 
 
-@register_handler("MAP_ADD")
-def handle_map_add(
+# Python 3.13 version
+@register_handler("BUILD_MAP", version=PythonVersion.PY_313)
+def handle_build_map(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    assert instr.arg is not None
+    size: int = instr.arg
+
+    if size == 0:
+        new_stack = state.stack + [
+            ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
+        ]
+        return replace(state, stack=new_stack)
+    else:
+        assert instr.arg is not None
+        size: int = instr.arg
+        # Pop key-value pairs for the dict
+        keys: list[ast.expr | None] = [
+            ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
+        ]
+        values = [ensure_ast(state.stack[-2 * i - 1]) for i in range(size)]
+        new_stack = state.stack[: -2 * size] if size > 0 else state.stack
+
+        # Create dict AST
+        dict_node = ast.Dict(keys=keys, values=values)
+        new_stack = new_stack + [dict_node]
+        return replace(state, stack=new_stack)
+
+
+@register_handler("MAP_ADD", version=PythonVersion.PY_310)
+def handle_map_add_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.result, ast.DictComp), (
@@ -456,6 +487,24 @@ def handle_map_add(
         generators=state.result.generators,
     )
     return replace(state, stack=new_stack, result=new_ret)
+
+
+# Python 3.13 version
+@register_handler("MAP_ADD", version=PythonVersion.PY_313)
+def handle_map_add(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    comp: ast.DictComp = state.stack[-instr.argval - 2]
+    assert isinstance(comp.key, Placeholder)
+    assert isinstance(comp.value, Placeholder)
+
+    new_stack = state.stack[:-2]
+    new_stack[-instr.argval] = ast.DictComp(
+        key=ensure_ast(state.stack[-2]),
+        value=ensure_ast(state.stack[-1]),
+        generators=comp.generators,
+    )
+    return replace(state, stack=new_stack)
 
 
 # ============================================================================
