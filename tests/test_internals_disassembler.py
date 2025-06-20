@@ -695,6 +695,7 @@ def test_comp_lambda_copy():
             ast.comprehension(
                 target=ast.Name(id="x", ctx=ast.Store()),
                 iter=DummyIterName(),
+                ifs=[],
                 is_async=0,
             )
         ],
