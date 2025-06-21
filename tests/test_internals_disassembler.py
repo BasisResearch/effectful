@@ -2,6 +2,7 @@ import ast
 from typing import Generator
 
 import pytest
+import tree
 
 from effectful.internals.disassembler import (
     GeneratorExpToForexpr,
@@ -30,6 +31,20 @@ def compile_and_eval(
     return eval(code, globals_dict)
 
 
+def materialize(genexpr: GeneratorType) -> tree.Structure:
+    """Materialize a nested generator expression to a nested list."""
+
+    def _materialize(genexpr):
+        if isinstance(genexpr, GeneratorType):
+            return tree.map_structure(_materialize, list(genexpr))
+        elif tree.is_nested(genexpr):
+            return tree.map_structure(_materialize, genexpr)
+        else:
+            return genexpr
+
+    return _materialize(genexpr)
+
+
 def assert_ast_equivalent(
     genexpr: Generator[object, None, None],
     reconstructed_ast: ast.AST,
@@ -51,7 +66,7 @@ def assert_ast_equivalent(
     globals().update(globals_dict or {})
 
     # Materialize original generator to list for comparison
-    original_list = list(genexpr)
+    original_list = materialize(genexpr)
 
     # Clean up globals to avoid pollution
     for key in globals_dict or {}:
@@ -61,10 +76,10 @@ def assert_ast_equivalent(
 
     # Compile and evaluate the reconstructed AST
     reconstructed_gen = compile_and_eval(reconstructed_ast, globals_dict)
-    reconstructed_list = list(reconstructed_gen)
-    assert (
-        reconstructed_list == original_list
-    ), f"AST produced {reconstructed_list}, expected {original_list}"
+    reconstructed_list = materialize(reconstructed_gen)
+    assert reconstructed_list == original_list, (
+        f"AST produced {reconstructed_list}, expected {original_list}"
+    )
 
 
 # ============================================================================
@@ -130,9 +145,9 @@ def test_simple_generators(genexpr):
         ((x * 2 + 3) * (x - 1) for x in range(5)),
         (x * (x + 1) * (x + 2) for x in range(5)),
         # Mixed operations with precedence
-        (x + y * 2 for x in range(3) for y in range(3)),
-        (x * 2 + y / 3 for x in range(1, 4) for y in range(1, 4)),
-        ((x + y) * (x - y) for x in range(1, 4) for y in range(1, 4)),
+        (x + 3 * 2 for x in range(3)),
+        (x * 2 + 9 / 3 for x in range(1, 4)),
+        ((x + 2) * (x - 2) for x in range(1, 4)),
         # Edge cases with zero and one
         (x * 0 for x in range(5)),
         (x * 1 for x in range(5)),
@@ -325,7 +340,8 @@ def test_filtered_generators(genexpr):
         ((x, y) for x in range(5) for y in range(5) if x < y),
         (x + y for x in range(5) if x % 2 == 0 for y in range(5) if y % 2 == 1),
         # Triple nested
-        ((x, y, z) for x in range(2) for y in range(2) for z in range(2)),
+        (x + y + z for x in range(2) for y in range(3) for z in range(4)),
+        ((x, y, z) for x in range(2) for y in range(3) for z in range(4)),
         # More complex nested loop edge cases
         # Different sized ranges
         ((x, y) for x in range(2) for y in range(5)),
@@ -389,27 +405,25 @@ def test_nested_loops(genexpr):
 @pytest.mark.parametrize(
     "genexpr",
     [
-        ([x for x in range(i)] for i in range(5)),
-        ({x: x**2 for x in range(i)} for i in range(5)),
-        ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
+        # nested generators
+        ((x for x in range(i + 1)) for i in range(5)),
+        ((x for j in range(i) for x in range(j)) for i in range(5)),
+        (((x for x in range(i + j)) for j in range(i)) for i in range(5)),
+        # nested generators with filters
+        ((x for x in range(i)) for i in range(5) if i > 0),
+        ((x for x in range(i) if x < i) for i in range(5) if i > 0),
+        (((x for x in range(i + j) if x < i + j) for j in range(i)) for i in range(5)),
         # aggregation function call
         (sum(x for x in range(i + 1)) for i in range(3)),
         (max(x for x in range(i + 1)) for i in range(3)),
+        (dict((x, x + 1) for x in range(i + 1)) for i in range(3)),
+        (set(x for x in range(i + 1)) for i in range(3)),
         # map
         (list(map(abs, (x + 1 for x in range(i + 1)))) for i in range(3)),
         (list(enumerate(x + 1 for x in range(i + 1))) for i in range(3)),
-        # Nested comprehensions with filters inside
-        ([x for x in range(i)] for i in range(5) if i > 0),
-        ([x for x in range(i) if x < i] for i in range(5) if i > 0),
-        ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5)),
-        (
-            [[x for x in range(i + j) if x < i + j] for j in range(i)]
-            for i in range(5)
-            if i > 0
-        ),
         # nesting on both sides
-        ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
-        ([y for y in range(x)] for x in (x_ + 1 for x_ in range(5))),
+        ((y for y in range(x)) for x in (x_ + 1 for x_ in range(5))),
+        ((y for y in range(x)) for x in (x_ + 1 for x_ in range(5))),
     ],
 )
 def test_nested_comprehensions(genexpr):
@@ -431,9 +445,23 @@ def test_nested_comprehensions(genexpr):
         (x_ for x_ in {x for x in range(5)}),
         (x_ for x_ in {x: x**2 for x in range(5)}),
         # Comprehensions as yield expressions
-        ([y for y in range(x + 1)] for x in range(3)),
-        ({y for y in range(x + 1)} for x in range(3)),
+        ([y * 2 for y in range(x + 1)] for x in range(3)),
+        ({y + 3 for y in range(x + 1)} for x in range(3)),
         ({y: y**2 for y in range(x + 1)} for x in range(3)),
+        # nested non-generators
+        ([x for x in range(i)] for i in range(5)),
+        ([x for j in range(i) for x in range(j)] for i in range(5)),
+        ({x: x**2 for x in range(i)} for i in range(5)),
+        ([[x for x in range(i + j)] for j in range(i)] for i in range(5)),
+        # Nested comprehensions with filters inside
+        ([x for x in range(i)] for i in range(5) if i > 0),
+        ([x for x in range(i) if x < i] for i in range(5) if i > 0),
+        ([[x for x in range(i + j) if x < i + j] for j in range(i)] for i in range(5)),
+        (
+            [[x for x in range(i + j) if x < i + j] for j in range(i)]
+            for i in range(5)
+            if i > 0
+        ),
     ],
 )
 def test_different_comprehension_types(genexpr):
@@ -451,8 +479,8 @@ def test_different_comprehension_types(genexpr):
     "genexpr,globals_dict",
     [
         # Using constants
-        ((x + a for x in range(5)), {"a": 10}),  # noqa: F821
-        ((data[i] for i in range(2)), {"data": [3, 4]}),  # noqa: F821
+        ((x + a for x in range(5)), {"a": 10}),  # type: ignore  # noqa: F821
+        ((data[i] for i in range(2)), {"data": [3, 4]}),  # type: ignore  # noqa: F821
         # Using global functions
         ((abs(x) for x in range(-5, 5)), {"abs": abs}),
         ((len(s) for s in ["a", "ab", "abc"]), {"len": len}),
@@ -478,24 +506,12 @@ def test_variable_lookup(genexpr, globals_dict):
     "genexpr,globals_dict",
     [
         # Using lambdas and functions
-        pytest.param(
-            ((lambda y: y * 2)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            ((lambda y: y + 1)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            ((lambda y: y**2)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        # More complex lambdas
-        # (((lambda a, b: a + b)(x, x) for x in range(5)), {}),
-        ((f(x) for x in range(5)), {"f": lambda y: y * 3}),  # noqa: F821
+        (((lambda y: y * 2)(x) for x in range(5)), {}),
+        (((lambda y: y + 1)(x) for x in range(5)), {}),
+        (((lambda y: y**2)(x) for x in range(5)), {}),
+        (((lambda a, b: a + b)(x, x) for x in range(5)), {}),
+        (((lambda: (x for x in range(i)))() for i in range(3)), {}),
+        ((f(x) for x in range(5)), {"f": lambda y: y * 3}),  # type: ignore  # noqa: F821
         # Attribute access
         ((x.real for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
         ((x.imag for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
@@ -507,10 +523,11 @@ def test_variable_lookup(genexpr, globals_dict):
         ((x.bit_length() for x in range(1, 10)), {}),
         ((str(x).zfill(3) for x in range(10)), {"str": str}),
         # Subscript operations
+        (((10, 20, 30)[i] for i in range(3)), {}),
         (([10, 20, 30][i] for i in range(3)), {}),
         (({"a": 1, "b": 2, "c": 3}[k] for k in ["a", "b", "c"]), {}),
         (("hello"[i] for i in range(5)), {}),
-        ((data[i][j] for i in range(2) for j in range(2)), {"data": [[1, 2], [3, 4]]}),  # noqa: F821
+        ((data[i][j] for i in range(2) for j in range(2)), {"data": [[1, 2], [3, 4]]}),  # type: ignore  # noqa: F821
         # # More complex attribute chains
         # ((obj.value.bit_length() for obj in [type('', (), {'value': x})() for x in range(1, 5)]), {}),
         # Multiple function calls
@@ -523,7 +540,9 @@ def test_variable_lookup(genexpr, globals_dict):
         ),
         ((s.upper().lower() for s in ["Hello", "World"]), {}),
         # Edge cases with complex data structures
+        (((1, 2, 3)[x % 3] for x in range(10)), {}),
         (([1, 2, 3][x % 3] for x in range(10)), {}),
+        (({1, 2, 3} for x in range(10)), {}),
         # (({"even": x, "odd": x + 1}["even" if x % 2 == 0 else "odd"] for x in range(5)), {}),
         # Function calls with multiple arguments
         ((pow(x, 2, 10) for x in range(5)), {"pow": pow}),
@@ -638,9 +657,9 @@ def test_ensure_ast(value, expected_str):
 
     # Compare the unparsed strings
     result_str = ast.unparse(result)
-    assert (
-        result_str == expected_str
-    ), f"ensure_ast({repr(value)}) produced '{result_str}', expected '{expected_str}'"
+    assert result_str == expected_str, (
+        f"ensure_ast({repr(value)}) produced '{result_str}', expected '{expected_str}'"
+    )
 
 
 def test_error_handling():
@@ -654,6 +673,54 @@ def test_error_handling():
     list(gen)  # Consume it
     with pytest.raises(AssertionError):
         reconstruct(gen)
+
+
+def test_comp_lambda_copy():
+    """Test that CompLambda is compatible with copy.copy and copy.deepcopy."""
+    import copy
+
+    from effectful.internals.disassembler import CompLambda, DummyIterName
+
+    # Create a test generator expression AST
+    genexpr_ast = ast.GeneratorExp(
+        elt=ast.Name(id="x", ctx=ast.Load()),
+        generators=[
+            ast.comprehension(
+                target=ast.Name(id="x", ctx=ast.Store()),
+                iter=DummyIterName(),
+                ifs=[],
+                is_async=0,
+            )
+        ],
+    )
+
+    # Create a CompLambda instance
+    comp_lambda = CompLambda(genexpr_ast)
+
+    # Test copy.copy
+    copied = copy.copy(comp_lambda)
+    assert isinstance(copied, CompLambda)
+    assert ast.unparse(copied.body) == ast.unparse(comp_lambda.body)
+    assert copied.body is comp_lambda.body  # Shallow copy shares the body
+
+    # Test copy.deepcopy
+    deep_copied = copy.deepcopy(comp_lambda)
+    assert isinstance(deep_copied, CompLambda)
+    assert ast.unparse(deep_copied.body) == ast.unparse(comp_lambda.body)
+    assert deep_copied.body is not comp_lambda.body  # Deep copy creates new body
+
+    # Test that deep copied version works the same way
+    iterator = ast.Call(
+        func=ast.Name(id="range", ctx=ast.Load()),
+        args=[ast.Constant(value=5)],
+        keywords=[],
+    )
+
+    original_result = comp_lambda.inline(iterator)
+    deep_copied_result = deep_copied.inline(iterator)
+
+    assert ast.unparse(original_result) == ast.unparse(deep_copied_result)
+    assert type(original_result) == type(deep_copied_result)
 
 
 # ============================================================================

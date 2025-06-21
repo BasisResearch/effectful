@@ -18,8 +18,10 @@ Example:
 import ast
 import copy
 import dis
+import enum
 import functools
 import inspect
+import sys
 import types
 import typing
 from collections.abc import Callable, Generator, Iterator
@@ -31,36 +33,53 @@ CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 class Placeholder(ast.Name):
     """Placeholder for AST nodes that are not yet resolved."""
 
-    def __init__(self):
-        super().__init__(id=".PLACEHOLDER", ctx=ast.Load())
+    def __init__(self, id=".PLACEHOLDER", ctx=ast.Load()):
+        super().__init__(id=id, ctx=ctx)
 
 
 class DummyIterName(ast.Name):
     """Dummy name for the iterator variable in generator expressions."""
 
-    def __init__(self):
-        super().__init__(id=".0", ctx=ast.Load())
+    def __init__(self, id=".0", ctx=ast.Load()):
+        super().__init__(id=id, ctx=ctx)
+
+
+class Null(ast.Constant):
+    """Placeholder for NULL values generated in bytecode."""
+
+    def __init__(self, value=None):
+        super().__init__(value=value)
 
 
 class CompLambda(ast.Lambda):
     """Placeholder AST node representing a lambda function used in comprehensions."""
 
     def __init__(self, body: CompExp):
+        assert isinstance(body, CompExp)
         assert sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
         assert len(body.generators) > 0
         assert isinstance(body.generators[0].iter, DummyIterName)
-        super().__init__(
-            args=ast.arguments(
-                posonlyargs=[ast.arg(DummyIterName().id)],
-                args=[],
-                kwonlyargs=[],
-                kw_defaults=[],
-                defaults=[],
-            ),
-            body=body,
+        args = ast.arguments(
+            posonlyargs=[ast.arg(DummyIterName().id)],
+            args=[],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
         )
+        super().__init__(args=args, body=body)
+
+    def __copy__(self):
+        """Support copy.copy operation."""
+        assert isinstance(self.body, CompExp)
+        return CompLambda(self.body)
+
+    def __deepcopy__(self, memo):
+        """Support copy.deepcopy operation."""
+        assert isinstance(self.body, CompExp)
+        return CompLambda(copy.deepcopy(self.body, memo))
 
     def inline(self, iterator: ast.expr) -> CompExp:
+        assert isinstance(self.body, CompExp)
         res: CompExp = copy.deepcopy(self.body)
         res.generators[0].iter = iterator
         return res
@@ -92,8 +111,14 @@ class ReconstructionState:
                BINARY_ADD pop operands and push results.
     """
 
-    result: CompExp | ast.Lambda | Placeholder = field(default_factory=Placeholder)
+    result: ast.expr = field(default_factory=Placeholder)
     stack: list[ast.expr] = field(default_factory=list)
+
+
+# Python version enum for version-specific handling
+class PythonVersion(enum.Enum):
+    PY_310 = 10
+    PY_313 = 13
 
 
 # Global handler registry
@@ -103,34 +128,68 @@ OP_HANDLERS: dict[str, OpHandler] = {}
 
 
 @typing.overload
-def register_handler(opname: str) -> Callable[[OpHandler], OpHandler]: ...
+def register_handler(
+    opname: str, *, version: PythonVersion = PythonVersion(sys.version_info.minor)
+) -> Callable[[OpHandler], OpHandler]: ...
 
 
 @typing.overload
-def register_handler(opname: str, handler: OpHandler) -> OpHandler: ...
+def register_handler(
+    opname: str,
+    handler: OpHandler,
+    *,
+    version: PythonVersion = PythonVersion(sys.version_info.minor),
+) -> OpHandler: ...
 
 
-def register_handler(opname: str, handler=None):
-    """Register a handler for a specific operation name"""
+def register_handler(
+    opname: str,
+    handler=None,
+    *,
+    version: PythonVersion = PythonVersion(sys.version_info.minor),
+):
+    """Register a handler for a specific operation name and optional version"""
     if handler is None:
-        return functools.partial(register_handler, opname)
+        return functools.partial(register_handler, opname, version=version)
 
+    # Skip registration if version doesn't match current version
+    if version != PythonVersion(sys.version_info.minor):
+        return handler
+
+    # Only check opmap if the version matches (or no version specified)
     assert opname in dis.opmap, f"Invalid operation name: '{opname}'"
 
     if opname in OP_HANDLERS:
-        raise ValueError(f"Handler for '{opname}' already exists.")
+        raise ValueError(f"Handler for '{opname}' (version {version}) already exists.")
 
     @functools.wraps(handler)
     def _wrapper(
         state: ReconstructionState, instr: dis.Instruction
     ) -> ReconstructionState:
-        assert (
-            instr.opname == opname
-        ), f"Handler for '{opname}' called with wrong instruction"
-        return handler(state, instr)
+        assert instr.opname == opname, (
+            f"Handler for '{opname}' called with wrong instruction"
+        )
+
+        new_state = handler(state, instr)
+
+        # post-condition: check stack effect
+        expected_stack_effect = dis.stack_effect(instr.opcode, instr.arg)
+        actual_stack_effect = len(new_state.stack) - len(state.stack)
+        if not (
+            len(state.stack) == len(new_state.stack) == 0 or instr.opname == "END_FOR"
+        ):
+            assert len(state.stack) + expected_stack_effect >= 0, (
+                f"Handler for '{opname}' would result in negative stack size"
+            )
+            assert actual_stack_effect == expected_stack_effect, (
+                f"Handler for '{opname}' has incorrect stack effect: "
+                f"expected {expected_stack_effect}, got {actual_stack_effect}"
+            )
+
+        return new_state
 
     OP_HANDLERS[opname] = _wrapper
-    return _wrapper
+    return handler  # return the original handler for multiple decorator usage
 
 
 # ============================================================================
@@ -138,16 +197,30 @@ def register_handler(opname: str, handler=None):
 # ============================================================================
 
 
-@register_handler("GEN_START")
+@register_handler("GEN_START", version=PythonVersion.PY_310)
 def handle_gen_start(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # GEN_START is typically the first instruction in generator expressions
+    # GEN_START is the first instruction in generator expressions in Python 3.10
     # It initializes the generator
-    assert isinstance(
-        state.result, Placeholder
-    ), "GEN_START must be the first instruction"
+    assert isinstance(state.result, Placeholder), (
+        "GEN_START must be the first instruction"
+    )
     return replace(state, result=ast.GeneratorExp(elt=Placeholder(), generators=[]))
+
+
+@register_handler("RETURN_GENERATOR", version=PythonVersion.PY_313)
+def handle_return_generator(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
+    # It initializes the generator
+    assert isinstance(state.result, Placeholder), (
+        "RETURN_GENERATOR must be the first instruction"
+    )
+    new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
+    new_stack = state.stack + [new_result]
+    return replace(state, result=new_result, stack=new_stack)
 
 
 @register_handler("YIELD_VALUE")
@@ -156,20 +229,19 @@ def handle_yield_value(
 ) -> ReconstructionState:
     # YIELD_VALUE pops a value from the stack and yields it
     # This is the expression part of the generator
-    assert isinstance(
-        state.result, ast.GeneratorExp
-    ), "YIELD_VALUE must be called after GEN_START"
-    assert isinstance(
-        state.result.elt, Placeholder
-    ), "YIELD_VALUE must be called before yielding"
+    assert isinstance(state.result, ast.GeneratorExp), (
+        "YIELD_VALUE must be called after RETURN_GENERATOR"
+    )
+    assert isinstance(state.result.elt, Placeholder), (
+        "YIELD_VALUE must be called before yielding"
+    )
     assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
 
-    new_stack = state.stack[:-1]
     ret = ast.GeneratorExp(
         elt=ensure_ast(state.stack[-1]),
         generators=state.result.generators,
     )
-    return replace(state, stack=new_stack, result=ret)
+    return replace(state, result=ret)
 
 
 # ============================================================================
@@ -181,21 +253,19 @@ def handle_yield_value(
 def handle_build_list(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This BUILD_LIST is the start of a list comprehension
-        # Initialize the result as a ListComp with a placeholder element
-        ret = ast.ListComp(elt=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
-    else:
-        size: int = instr.arg
-        # Pop elements for the list
-        elements = (
-            [ensure_ast(elem) for elem in state.stack[-size:]] if size > 0 else []
-        )
-        new_stack = state.stack[:-size] if size > 0 else state.stack
+    assert instr.arg is not None
+    size: int = instr.arg
 
-        # Create list AST
+    if size == 0:
+        # Check if this looks like the start of a list comprehension pattern
+        # In nested comprehensions, BUILD_LIST(0) starts a new list comprehe
+        new_ret = ast.ListComp(elt=Placeholder(), generators=[])
+        new_stack = state.stack + [state.result]
+        return replace(state, stack=new_stack, result=new_ret)
+    else:
+        # BUILD_LIST with elements - create a regular list
+        elements = [ensure_ast(elem) for elem in state.stack[-size:]]
+        new_stack = state.stack[:-size]
         elt_node = ast.List(elts=elements, ctx=ast.Load())
         new_stack = new_stack + [elt_node]
         return replace(state, stack=new_stack)
@@ -205,15 +275,19 @@ def handle_build_list(
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.ListComp
-    ), "LIST_APPEND must be called within a ListComp context"
+    assert isinstance(state.result, ast.ListComp)
+    assert isinstance(state.result.elt, Placeholder)
+
+    # add the body to the comprehension
+    comp: ast.ListComp = copy.deepcopy(state.result)
+    comp.elt = state.stack[-1]
+
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 1]
     new_stack = state.stack[:-1]
-    new_ret = ast.ListComp(
-        elt=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -225,21 +299,16 @@ def handle_list_append(
 def handle_build_set(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This BUILD_SET is the start of a list comprehension
-        # Initialize the result as a ListComp with a placeholder element
-        ret = ast.SetComp(elt=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
-    else:
-        size: int = instr.arg
-        # Pop elements for the set
-        elements = (
-            [ensure_ast(elem) for elem in state.stack[-size:]] if size > 0 else []
-        )
-        new_stack = state.stack[:-size] if size > 0 else state.stack
+    assert instr.arg is not None
+    size: int = instr.arg
 
-        # Create set AST
+    if size == 0:
+        new_result = ast.SetComp(elt=Placeholder(), generators=[])
+        new_stack = state.stack + [state.result]
+        return replace(state, stack=new_stack, result=new_result)
+    else:
+        elements = [ensure_ast(elem) for elem in state.stack[-size:]]
+        new_stack = state.stack[:-size]
         elt_node = ast.Set(elts=elements)
         new_stack = new_stack + [elt_node]
         return replace(state, stack=new_stack)
@@ -249,15 +318,19 @@ def handle_build_set(
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.SetComp
-    ), "SET_ADD must be called after BUILD_SET"
+    assert isinstance(state.result, ast.SetComp)
+    assert isinstance(state.result.elt, Placeholder)
+
+    # add the body to the comprehension
+    comp: ast.SetComp = copy.deepcopy(state.result)
+    comp.elt = state.stack[-1]
+
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 1]
     new_stack = state.stack[:-1]
-    new_ret = ast.SetComp(
-        elt=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -269,16 +342,18 @@ def handle_set_add(
 def handle_build_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    if isinstance(state.result, Placeholder) and len(state.stack) == 0:
-        # This is the start of a comprehension
-        # Initialize the result with a placeholder element
-        ret = ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
-        new_stack = state.stack + [ret]
-        return replace(state, stack=new_stack, result=ret)
+    assert instr.arg is not None
+    size: int = instr.arg
+
+    if size == 0:
+        new_stack = state.stack + [state.result]
+        new_result = ast.DictComp(key=Placeholder(), value=Placeholder(), generators=[])
+        return replace(state, stack=new_stack, result=new_result)
     else:
-        size: int = instr.arg
         # Pop key-value pairs for the dict
-        keys = [ensure_ast(state.stack[-2 * i - 2]) for i in range(size)]
+        keys: list[ast.expr | None] = [
+            ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
+        ]
         values = [ensure_ast(state.stack[-2 * i - 1]) for i in range(size)]
         new_stack = state.stack[: -2 * size] if size > 0 else state.stack
 
@@ -292,16 +367,21 @@ def handle_build_map(
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(
-        state.result, ast.DictComp
-    ), "MAP_ADD must be called after BUILD_MAP"
+    assert isinstance(state.result, ast.DictComp)
+    assert isinstance(state.result.key, Placeholder)
+    assert isinstance(state.result.value, Placeholder)
+
+    # add the body to the comprehension
+    comp: ast.DictComp = copy.deepcopy(state.result)
+    comp.key = state.stack[-2]
+    comp.value = state.stack[-1]
+
+    # swap the return value
+    prev_result: CompExp = state.stack[-instr.argval - 2]
     new_stack = state.stack[:-2]
-    new_ret = ast.DictComp(
-        key=ensure_ast(state.stack[-2]),
-        value=ensure_ast(state.stack[-1]),
-        generators=state.result.generators,
-    )
-    return replace(state, stack=new_stack, result=new_ret)
+    new_stack[-instr.argval] = comp
+
+    return replace(state, stack=new_stack, result=prev_result)
 
 
 # ============================================================================
@@ -317,10 +397,10 @@ def handle_return_value(
     # Usually preceded by LOAD_CONST None
     if isinstance(state.result, CompExp):
         return replace(state, stack=state.stack[:-1])
-    elif isinstance(state.result, Placeholder) and len(state.stack) == 1:
-        return replace(
-            state, stack=state.stack[:-1], result=ensure_ast(state.stack[-1])
-        )
+    elif isinstance(state.result, Placeholder):
+        new_result = ensure_ast(state.stack[0])
+        assert isinstance(new_result, ast.expr)
+        return replace(state, stack=state.stack[1:], result=new_result)
     else:
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
 
@@ -332,13 +412,11 @@ def handle_for_iter(
     # FOR_ITER pops an iterator from the stack and pushes the next item
     # If the iterator is exhausted, it jumps to the target instruction
     assert len(state.stack) > 0, "FOR_ITER must have an iterator on the stack"
-    assert isinstance(
-        state.result, CompExp
-    ), "FOR_ITER must be called within a comprehension context"
+    assert isinstance(state.result, CompExp), (
+        "FOR_ITER must be called within a comprehension context"
+    )
 
     # The iterator should be on top of stack
-    # Create new stack without the iterator
-    new_stack = state.stack[:-1]
     iterator: ast.expr = state.stack[-1]
 
     # Create a new loop variable - we'll get the actual name from STORE_FAST
@@ -351,20 +429,12 @@ def handle_for_iter(
     )
 
     # Create new loops list with the new loop info
-    new_ret: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
-    if isinstance(state.result, ast.DictComp):
-        # If it's a DictComp, we need to ensure the loop is added to the dict comprehension
-        new_ret = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators + [loop_info],
-        )
-    else:
-        new_ret = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators + [loop_info],
-        )
+    assert isinstance(state.result, CompExp)
+    new_ret = copy.deepcopy(state.result)
+    new_ret.generators = new_ret.generators + [loop_info]
 
+    new_stack = state.stack + [loop_info.target]
+    assert isinstance(new_ret, CompExp)
     return replace(state, stack=new_stack, result=new_ret)
 
 
@@ -378,15 +448,6 @@ def handle_get_iter(
     return state
 
 
-@register_handler("JUMP_ABSOLUTE")
-def handle_jump_absolute(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # JUMP_ABSOLUTE is used to jump back to the beginning of a loop
-    # In generator expressions, this typically indicates the end of the loop body
-    return state
-
-
 @register_handler("JUMP_FORWARD")
 def handle_jump_forward(
     state: ReconstructionState, instr: dis.Instruction
@@ -396,24 +457,61 @@ def handle_jump_forward(
     return state
 
 
-@register_handler("UNPACK_SEQUENCE")
-def handle_unpack_sequence(
+@register_handler("JUMP_ABSOLUTE", version=PythonVersion.PY_310)
+def handle_jump_absolute(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # UNPACK_SEQUENCE unpacks a sequence into multiple values
-    # arg is the number of values to unpack
-    unpack_count = instr.arg
-    sequence = ensure_ast(state.stack[-1])  # noqa: F841
-    new_stack = state.stack[:-1]
+    # JUMP_ABSOLUTE is used to jump back to the beginning of a loop
+    # In generator expressions, this typically indicates the end of the loop body
+    return state
 
-    # For tuple unpacking in comprehensions, we typically see patterns like:
-    # ((k, v) for k, v in items) where items is unpacked into k and v
-    # Create placeholder variables for the unpacked values
-    for i in range(unpack_count):
-        var_name = f"_unpack_{i}"
-        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
 
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
+def handle_jump_backward(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
+    # In generator expressions, this typically indicates the end of the loop body
+    return state
+
+
+@register_handler("RESUME", version=PythonVersion.PY_313)
+def handle_resume(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RESUME is used for resuming execution after yield/await - mostly no-op for AST reconstruction
+    return state
+
+
+@register_handler("END_FOR", version=PythonVersion.PY_313)
+def handle_end_for(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # END_FOR marks the end of a for loop - no action needed for AST reconstruction
+    new_stack = state.stack  # [:-1]
     return replace(state, stack=new_stack)
+
+
+@register_handler("RETURN_CONST", version=PythonVersion.PY_313)
+def handle_return_const(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RETURN_CONST returns a constant value (replaces some LOAD_CONST + RETURN_VALUE patterns)
+    # Similar to RETURN_VALUE but with a constant
+    if isinstance(state.result, ast.GeneratorExp):
+        # For generators, this typically ends the generator with None
+        return state
+    else:
+        raise TypeError("Unexpected RETURN_CONST in reconstruction")
+
+
+@register_handler("RERAISE", version=PythonVersion.PY_313)
+def handle_reraise(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RERAISE re-raises an exception - generally ignore for AST reconstruction
+    assert not state.stack  # in generator expressions, we shouldn't have a stack here
+    return state
 
 
 # ============================================================================
@@ -437,109 +535,6 @@ def handle_load_fast(
     return replace(state, stack=new_stack)
 
 
-@register_handler("STORE_FAST")
-def handle_store_fast(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    assert isinstance(
-        state.result, CompExp
-    ), "STORE_FAST must be called within a comprehension context"
-    var_name = instr.argval
-
-    # Update the most recent loop's target variable
-    assert len(state.result.generators) > 0, "STORE_FAST must be within a loop context"
-
-    # Create a new LoopInfo with updated target
-    updated_loop = ast.comprehension(
-        target=ast.Name(id=var_name, ctx=ast.Store()),
-        iter=state.result.generators[-1].iter,
-        ifs=state.result.generators[-1].ifs,
-        is_async=state.result.generators[-1].is_async,
-    )
-
-    # Update the last loop in the generators list
-    if isinstance(state.result, ast.DictComp):
-        new_ret = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-    else:
-        new_ret = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-
-    # Create new loops list with the updated loop
-    return replace(state, result=new_ret)
-
-
-@register_handler("LOAD_CONST")
-def handle_load_const(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    const_value = instr.argval
-    new_stack = state.stack + [ensure_ast(const_value)]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_GLOBAL")
-def handle_load_global(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    global_name = instr.argval
-    new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_NAME")
-def handle_load_name(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_NAME is similar to LOAD_GLOBAL but for names in the global namespace
-    name = instr.argval
-    new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("STORE_DEREF")
-def handle_store_deref(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # STORE_DEREF stores a value into a closure variable
-    assert isinstance(
-        state.result, CompExp
-    ), "STORE_DEREF must be called within a comprehension context"
-    var_name = instr.argval
-
-    # Update the most recent loop's target variable
-    assert len(state.result.generators) > 0, "STORE_DEREF must be within a loop context"
-
-    # Create a new LoopInfo with updated target
-    updated_loop = ast.comprehension(
-        target=ast.Name(id=var_name, ctx=ast.Store()),
-        iter=state.result.generators[-1].iter,
-        ifs=state.result.generators[-1].ifs,
-        is_async=state.result.generators[-1].is_async,
-    )
-
-    # Update the last loop in the generators list
-    if isinstance(state.result, ast.DictComp):
-        new_ret = ast.DictComp(
-            key=state.result.key,
-            value=state.result.value,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-    else:
-        new_ret = type(state.result)(
-            elt=state.result.elt,
-            generators=state.result.generators[:-1] + [updated_loop],
-        )
-
-    # Create new loops list with the updated loop
-    return replace(state, result=new_ret)
-
-
 @register_handler("LOAD_DEREF")
 def handle_load_deref(
     state: ReconstructionState, instr: dis.Instruction
@@ -560,6 +555,176 @@ def handle_load_closure(
     return replace(state, stack=new_stack)
 
 
+@register_handler("LOAD_CONST")
+def handle_load_const(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    const_value = instr.argval
+    new_stack = state.stack + [ensure_ast(const_value)]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_GLOBAL")
+def handle_load_global(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    global_name = instr.argval
+
+    if instr.argrepr.endswith(" + NULL"):
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load()), Null()]
+    else:
+        new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_NAME")
+def handle_load_name(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_NAME is similar to LOAD_GLOBAL but for names in the global namespace
+    name = instr.argval
+    new_stack = state.stack + [ast.Name(id=name, ctx=ast.Load())]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("STORE_FAST")
+def handle_store_fast(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    assert isinstance(state.result, CompExp) and state.result.generators, (
+        "STORE_FAST must be called within a comprehension context"
+    )
+    var_name = instr.argval
+
+    if not state.stack or (
+        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
+    ):
+        # If the variable is already on the stack, we can skip adding it again
+        # This is common in nested comprehensions where the same variable is reused
+        return replace(state, stack=state.stack[:-1])
+
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
+
+
+@register_handler("STORE_DEREF")
+def handle_store_deref(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # STORE_DEREF stores a value into a closure variable
+    assert isinstance(state.result, CompExp) and state.result.generators, (
+        "STORE_DEREF must be called within a comprehension context"
+    )
+    var_name = instr.argval
+
+    if not state.stack or (
+        isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == var_name
+    ):
+        # If the variable is already on the stack, we can skip adding it again
+        # This is common in nested comprehensions where the same variable is reused
+        return replace(state, stack=state.stack[:-1])
+
+    new_stack = state.stack[:-1]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
+
+
+@register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_313)
+def handle_store_fast_load_fast(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # STORE_FAST_LOAD_FAST stores and then loads the same variable (optimization)
+    # The instruction has two names: store_name and load_name
+    # In Python 3.13, this is often used for loop variables
+
+    # First handle the store part
+    assert isinstance(state.result, CompExp) and state.result.generators, (
+        "STORE_FAST_LOAD_FAST must be called within a comprehension context"
+    )
+
+    # In Python 3.13, the instruction argument contains both names
+    # argval should be a tuple (store_name, load_name)
+    assert isinstance(instr.argval, tuple)
+    store_name, load_name = instr.argval
+
+    new_stack = state.stack[:-1] + [ast.Name(id=load_name, ctx=ast.Load())]
+    new_result: CompExp = copy.deepcopy(state.result)
+    new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Store())
+    return replace(state, stack=new_stack, result=new_result)
+
+
+@register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_313)
+def handle_load_fast_and_clear(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_FAST_AND_CLEAR pushes a local variable onto the stack and clears it
+    # For AST reconstruction, we treat this the same as LOAD_FAST
+    var_name: str = instr.argval
+
+    if var_name == ".0":
+        # Special handling for .0 variable (the iterator)
+        new_stack = state.stack + [DummyIterName()]
+    else:
+        # Regular variable load
+        new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
+
+
+@register_handler("LOAD_FAST_LOAD_FAST", version=PythonVersion.PY_313)
+def handle_load_fast_load_fast(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_FAST_LOAD_FAST loads two variables (optimization in Python 3.13)
+    # The instruction argument contains both variable names
+    if isinstance(instr.argval, tuple):
+        var1, var2 = instr.argval
+    else:
+        # Fallback: assume both names are the same
+        var1 = var2 = instr.argval
+
+    new_stack = state.stack
+
+    # Load first variable
+    if var1 == ".0":
+        new_stack = new_stack + [DummyIterName()]
+    else:
+        new_stack = new_stack + [ast.Name(id=var1, ctx=ast.Load())]
+
+    # Load second variable
+    if var2 == ".0":
+        new_stack = new_stack + [DummyIterName()]
+    else:
+        new_stack = new_stack + [ast.Name(id=var2, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
+
+
+@register_handler("MAKE_CELL", version=PythonVersion.PY_313)
+def handle_make_cell(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # MAKE_CELL creates a new cell in slot i for closure variables
+    # This is used when variables from outer scopes are captured by inner scopes
+    # For AST reconstruction purposes, this is just a variable scoping mechanism
+    # that we can ignore since the AST doesn't track low-level closure details
+    return state
+
+
+@register_handler("COPY_FREE_VARS", version=PythonVersion.PY_313)
+def handle_copy_free_vars(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # COPY_FREE_VARS copies n free (closure) variables from the closure into the frame
+    # This removes the need for special code on the caller's side when calling closures
+    # For AST reconstruction purposes, this is just a variable scoping mechanism
+    # that we can ignore since the AST doesn't track runtime variable management
+    return state
+
+
 # ============================================================================
 # STACK MANAGEMENT HANDLERS
 # ============================================================================
@@ -576,7 +741,7 @@ def handle_pop_top(
     return replace(state, stack=new_stack)
 
 
-@register_handler("DUP_TOP")
+@register_handler("DUP_TOP", version=PythonVersion.PY_310)
 def handle_dup_top(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -586,7 +751,7 @@ def handle_dup_top(
     return replace(state, stack=new_stack)
 
 
-@register_handler("ROT_TWO")
+@register_handler("ROT_TWO", version=PythonVersion.PY_310)
 def handle_rot_two(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -595,7 +760,7 @@ def handle_rot_two(
     return replace(state, stack=new_stack)
 
 
-@register_handler("ROT_THREE")
+@register_handler("ROT_THREE", version=PythonVersion.PY_310)
 def handle_rot_three(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -611,7 +776,7 @@ def handle_rot_three(
     return replace(state, stack=new_stack)
 
 
-@register_handler("ROT_FOUR")
+@register_handler("ROT_FOUR", version=PythonVersion.PY_310)
 def handle_rot_four(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -624,6 +789,66 @@ def handle_rot_four(
         state.stack[-3],
     ]
     return replace(state, stack=new_stack)
+
+
+# Python 3.13 replacement for stack manipulation
+@register_handler("SWAP", version=PythonVersion.PY_313)
+def handle_swap(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # SWAP exchanges the top two stack items (replaces ROT_TWO in many cases)
+    assert instr.arg is not None
+    depth = instr.arg
+    stack_size = len(state.stack)
+
+    if depth > stack_size:
+        # Not enough items on stack - this might be a pattern where some items were optimized away
+        # For AST reconstruction, we can often ignore certain stack manipulations
+        return state
+
+    if depth == 2 and stack_size >= 2:
+        # Equivalent to ROT_TWO
+        new_stack = state.stack[:-2] + [state.stack[-1], state.stack[-2]]
+        return replace(state, stack=new_stack)
+    elif depth <= stack_size:
+        # For other depths, swap TOS with the item at specified depth
+        idx = stack_size - depth
+        new_stack = state.stack.copy()
+        new_stack[-1], new_stack[idx] = new_stack[idx], new_stack[-1]
+        return replace(state, stack=new_stack)
+    else:
+        # Edge case - not enough items, just return unchanged
+        return state
+
+
+@register_handler("COPY", version=PythonVersion.PY_313)
+def handle_copy(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # COPY duplicates the item at the specified depth (replaces DUP_TOP in many cases)
+    assert instr.arg is not None
+    depth = instr.arg
+    if depth == 1:
+        # Equivalent to DUP_TOP
+        top_item = state.stack[-1]
+        new_stack = state.stack + [top_item]
+        return replace(state, stack=new_stack)
+    else:
+        # Copy the item at specified depth to top of stack
+        stack_size = len(state.stack)
+        if depth > stack_size:
+            raise ValueError(f"COPY depth {depth} exceeds stack size {stack_size}")
+        idx = stack_size - depth
+        copied_item = state.stack[idx]
+        new_stack = state.stack + [copied_item]
+        return replace(state, stack=new_stack)
+
+
+@register_handler("PUSH_NULL", version=PythonVersion.PY_313)
+def handle_push_null(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    return replace(state, stack=state.stack + [Null()])
 
 
 # ============================================================================
@@ -640,41 +865,98 @@ def handle_binop(
     return replace(state, stack=new_stack)
 
 
+# Python 3.13 BINARY_OP handler
+@register_handler("BINARY_OP", version=PythonVersion.PY_313)
+def handle_binary_op(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # BINARY_OP in Python 3.13 consolidates all binary operations
+    # The operation type is determined by the instruction argument
+    assert instr.arg is not None
+
+    # Map argument values to AST operators based on Python 3.13 implementation
+    op_map = {
+        0: ast.Add(),  # +
+        1: ast.BitAnd(),  # &
+        2: ast.FloorDiv(),  # //
+        3: ast.LShift(),  # <<
+        5: ast.Mult(),  # *
+        6: ast.Mod(),  # %
+        7: ast.BitOr(),  # | (guessing based on pattern)
+        8: ast.Pow(),  # **
+        9: ast.RShift(),  # >>
+        10: ast.Sub(),  # -
+        11: ast.Div(),  # /
+        12: ast.BitXor(),  # ^
+    }
+
+    op = op_map.get(instr.arg)
+    if op is None:
+        raise NotImplementedError(f"Unknown binary operation: {instr.arg}")
+
+    return handle_binop(op, state, instr)
+
+
+# Legacy binary operation handlers (for Python 3.10 compatibility)
 handler_binop_add = register_handler(
-    "BINARY_ADD", functools.partial(handle_binop, ast.Add())
+    "BINARY_ADD",
+    functools.partial(handle_binop, ast.Add()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_subtract = register_handler(
-    "BINARY_SUBTRACT", functools.partial(handle_binop, ast.Sub())
+    "BINARY_SUBTRACT",
+    functools.partial(handle_binop, ast.Sub()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_multiply = register_handler(
-    "BINARY_MULTIPLY", functools.partial(handle_binop, ast.Mult())
+    "BINARY_MULTIPLY",
+    functools.partial(handle_binop, ast.Mult()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_true_divide = register_handler(
-    "BINARY_TRUE_DIVIDE", functools.partial(handle_binop, ast.Div())
+    "BINARY_TRUE_DIVIDE",
+    functools.partial(handle_binop, ast.Div()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_floor_divide = register_handler(
-    "BINARY_FLOOR_DIVIDE", functools.partial(handle_binop, ast.FloorDiv())
+    "BINARY_FLOOR_DIVIDE",
+    functools.partial(handle_binop, ast.FloorDiv()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_modulo = register_handler(
-    "BINARY_MODULO", functools.partial(handle_binop, ast.Mod())
+    "BINARY_MODULO",
+    functools.partial(handle_binop, ast.Mod()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_power = register_handler(
-    "BINARY_POWER", functools.partial(handle_binop, ast.Pow())
+    "BINARY_POWER",
+    functools.partial(handle_binop, ast.Pow()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_lshift = register_handler(
-    "BINARY_LSHIFT", functools.partial(handle_binop, ast.LShift())
+    "BINARY_LSHIFT",
+    functools.partial(handle_binop, ast.LShift()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_rshift = register_handler(
-    "BINARY_RSHIFT", functools.partial(handle_binop, ast.RShift())
+    "BINARY_RSHIFT",
+    functools.partial(handle_binop, ast.RShift()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_or = register_handler(
-    "BINARY_OR", functools.partial(handle_binop, ast.BitOr())
+    "BINARY_OR",
+    functools.partial(handle_binop, ast.BitOr()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_xor = register_handler(
-    "BINARY_XOR", functools.partial(handle_binop, ast.BitXor())
+    "BINARY_XOR",
+    functools.partial(handle_binop, ast.BitXor()),
+    version=PythonVersion.PY_310,
 )
 handler_binop_and = register_handler(
-    "BINARY_AND", functools.partial(handle_binop, ast.BitAnd())
+    "BINARY_AND",
+    functools.partial(handle_binop, ast.BitAnd()),
+    version=PythonVersion.PY_310,
 )
 
 
@@ -695,7 +977,9 @@ handle_unary_negative = register_handler(
     "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub())
 )
 handle_unary_positive = register_handler(
-    "UNARY_POSITIVE", functools.partial(handle_unary_op, ast.UAdd())
+    "UNARY_POSITIVE",
+    functools.partial(handle_unary_op, ast.UAdd()),
+    version=PythonVersion.PY_310,
 )
 handle_unary_invert = register_handler(
     "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert())
@@ -703,6 +987,54 @@ handle_unary_invert = register_handler(
 handle_unary_not = register_handler(
     "UNARY_NOT", functools.partial(handle_unary_op, ast.Not())
 )
+
+
+@register_handler("LIST_TO_TUPLE", version=PythonVersion.PY_310)
+def handle_list_to_tuple(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LIST_TO_TUPLE converts a list on the stack to a tuple
+    list_obj = ensure_ast(state.stack[-1])
+    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
+
+    # Create tuple AST from the list's elements
+    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
+    new_stack = state.stack[:-1] + [tuple_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
+def handle_call_intrinsic_1(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CALL_INTRINSIC_1 calls an intrinsic function with one argument
+    if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
+        return state
+    elif instr.argrepr == "INTRINSIC_LIST_TO_TUPLE":
+        assert isinstance(state.stack[-1], ast.List), (
+            "Expected a list for LIST_TO_TUPLE"
+        )
+        tuple_node = ast.Tuple(elts=state.stack[-1].elts, ctx=ast.Load())
+        return replace(state, stack=state.stack[:-1] + [tuple_node])
+    elif instr.argrepr == "INTRINSIC_UNARY_POSITIVE":
+        assert len(state.stack) > 0
+        new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
+        return replace(state, stack=state.stack[:-1] + [new_val])
+    else:
+        raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
+
+
+@register_handler("TO_BOOL", version=PythonVersion.PY_313)
+def handle_to_bool(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # TO_BOOL converts the top stack item to a boolean
+    # For AST reconstruction, we typically don't need an explicit bool() call
+    # since the boolean context is usually handled by the conditional jump that follows
+    # However, for some cases we might need to preserve the explicit conversion
+
+    # For now, leave the value as-is since the jump instruction will handle the boolean logic
+    return state
 
 
 # ============================================================================
@@ -723,9 +1055,9 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert (
-        dis.cmp_op[instr.arg] == instr.argval
-    ), f"Unsupported comparison operation: {instr.argval}"
+    assert instr.arg is not None and instr.argval in dis.cmp_op, (
+        f"Unsupported comparison operation: {instr.argval}"
+    )
 
     right = ensure_ast(state.stack[-1])
     left = ensure_ast(state.stack[-2])
@@ -772,11 +1104,40 @@ def handle_is_op(
 # ============================================================================
 
 
-@register_handler("CALL_FUNCTION")
+@register_handler("CALL", version=PythonVersion.PY_313)
+def handle_call(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CALL pops function and arguments from stack (replaces CALL_FUNCTION in Python 3.13)
+    assert instr.arg is not None
+    arg_count: int = instr.arg
+
+    func = ensure_ast(state.stack[-arg_count - 2])
+
+    # Pop arguments and function
+    args = (
+        [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
+    )
+    if not isinstance(state.stack[-arg_count - 1], Null):
+        args = [ensure_ast(state.stack[-arg_count - 1])] + args
+
+    new_stack = state.stack[: -arg_count - 2]
+    if isinstance(func, CompLambda):
+        assert len(args) == 1
+        return replace(state, stack=new_stack + [func.inline(args[0])])
+    else:
+        # Create function call AST
+        call_node = ast.Call(func=func, args=args, keywords=[])
+        new_stack = new_stack + [call_node]
+        return replace(state, stack=new_stack)
+
+
+@register_handler("CALL_FUNCTION", version=PythonVersion.PY_310)
 def handle_call_function(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # CALL_FUNCTION pops function and arguments from stack
+    assert instr.arg is not None
     arg_count: int = instr.arg
     # Pop arguments and function
     args = (
@@ -795,7 +1156,95 @@ def handle_call_function(
         return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_METHOD")
+@register_handler("CALL_METHOD", version=PythonVersion.PY_310)
+def handle_call_method(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CALL_METHOD calls a method - similar to CALL_FUNCTION but for methods
+    assert instr.arg is not None
+    arg_count: int = instr.arg
+    # Pop arguments and method
+    args = (
+        [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
+    )
+    method = ensure_ast(state.stack[-arg_count - 2])
+    new_stack = state.stack[: -arg_count - 2]
+
+    # Create method call AST
+    call_node = ast.Call(func=method, args=args, keywords=[])
+    new_stack = new_stack + [call_node]
+    return replace(state, stack=new_stack)
+
+
+# Python 3.10 version
+@register_handler("MAKE_FUNCTION", version=PythonVersion.PY_310)
+def handle_make_function_310(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # MAKE_FUNCTION creates a function from code object and name on stack
+    assert isinstance(state.stack[-2], ast.Lambda | CompLambda)
+    assert isinstance(state.stack[-1], ast.Constant) and isinstance(
+        state.stack[-1].value, str
+    ), "Function name must be a constant string."
+    if instr.argrepr == "closure":
+        # This is a closure, remove the environment tuple from the stack for AST purposes
+        new_stack = state.stack[:-3]
+    elif instr.argrepr == "":
+        new_stack = state.stack[:-2]
+    else:
+        raise NotImplementedError(
+            "MAKE_FUNCTION with defaults or annotations not implemented."
+        )
+
+    # Pop the function object and name from the stack
+    # Conversion from CodeType to ast.Lambda should have happened already
+    func: ast.Lambda | CompLambda = state.stack[-2]
+    name: str = state.stack[-1].value
+
+    assert any(
+        name.endswith(suffix)
+        for suffix in ("<genexpr>", "<lambda>", "<dictcomp>", "<listcomp>", "<setcomp>")
+    ), f"Expected a comprehension or lambda function, got '{name}'"
+    return replace(state, stack=new_stack + [func])
+
+
+# Python 3.13 version
+@register_handler("MAKE_FUNCTION", version=PythonVersion.PY_313)
+def handle_make_function(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # MAKE_FUNCTION in Python 3.13 is simplified: it only takes a code object from the stack
+    # and creates a function from it. No flags, no extra attributes on the stack.
+    # All extra attributes are handled by separate SET_FUNCTION_ATTRIBUTE instructions.
+
+    # Pop the function object from the stack (it's the only thing expected)
+    # Conversion from CodeType to ast.Lambda should have happened already
+    assert isinstance(state.stack[-1], ast.Lambda | CompLambda), (
+        "Expected a function object (Lambda or CompLambda) on the stack."
+    )
+    return state
+
+
+@register_handler("SET_FUNCTION_ATTRIBUTE", version=PythonVersion.PY_313)
+def handle_set_function_attribute(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # SET_FUNCTION_ATTRIBUTE sets an attribute on a function object
+    # In Python 3.13, this is used instead of flags in MAKE_FUNCTION
+    # For AST reconstruction, we typically don't need to track function attributes
+    # Just pop the attribute value and leave the function on the stack
+
+    # Pop the attribute value but keep the function
+    new_stack = state.stack[:-2] + [state.stack[-1]]  # Keep the function on top
+    return replace(state, stack=new_stack)
+
+
+# ============================================================================
+# OBJECT ACCESS HANDLERS
+# ============================================================================
+
+
+@register_handler("LOAD_METHOD", version=PythonVersion.PY_310)
 def handle_load_method(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -810,81 +1259,38 @@ def handle_load_method(
 
     # For LOAD_METHOD, we push both the method and the object
     # But for AST purposes, we just need the method attribute
-    new_stack = new_stack + [method_attr]
+    new_stack = new_stack + [method_attr, obj]
     return replace(state, stack=new_stack)
 
 
-@register_handler("CALL_METHOD")
-def handle_call_method(
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_310)
+def handle_load_attr_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # CALL_METHOD calls a method - similar to CALL_FUNCTION but for methods
-    arg_count = instr.arg
-    # Pop arguments and method
-    args = (
-        [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
-    )
-    method = ensure_ast(state.stack[-arg_count - 1])
-    new_stack = state.stack[: -arg_count - 1]
+    # LOAD_ATTR loads an attribute from the object on top of stack
+    obj = ensure_ast(state.stack[-1])
+    attr_name = instr.argval
 
-    # Create method call AST
-    call_node = ast.Call(func=method, args=args, keywords=[])
-    new_stack = new_stack + [call_node]
+    # Create attribute access AST
+    attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
+    new_stack = state.stack[:-1] + [attr_node]
     return replace(state, stack=new_stack)
 
 
-@register_handler("MAKE_FUNCTION")
-def handle_make_function(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # MAKE_FUNCTION creates a function from code object and name on stack
-    assert isinstance(state.stack[-1], ast.Constant) and isinstance(
-        state.stack[-1].value, str
-    ), "Function name must be a constant string."
-    if instr.argrepr == "closure":
-        # This is a closure, remove the environment tuple from the stack for AST purposes
-        new_stack = state.stack[:-3]
-    elif instr.argrepr == "":
-        new_stack = state.stack[:-2]
-    else:
-        raise NotImplementedError(
-            "MAKE_FUNCTION with defaults or annotations not implemented."
-        )
-
-    body: ast.expr = state.stack[-2]
-    name: str = state.stack[-1].value
-
-    assert any(
-        name.endswith(suffix)
-        for suffix in ("<genexpr>", "<lambda>", "<dictcomp>", "<listcomp>", "<setcomp>")
-    ), f"Expected a comprehension or lambda function, got '{name}'"
-
-    if (
-        isinstance(body, CompExp)
-        and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
-    ):
-        return replace(state, stack=new_stack + [CompLambda(body)])
-    else:
-        raise NotImplementedError("Lambda reconstruction not implemented yet")
-
-
-# ============================================================================
-# OBJECT ACCESS HANDLERS
-# ============================================================================
-
-
-@register_handler("LOAD_ATTR")
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
 def handle_load_attr(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # LOAD_ATTR loads an attribute from the object on top of stack
     obj = ensure_ast(state.stack[-1])
     attr_name = instr.argval
-    new_stack = state.stack[:-1]
 
     # Create attribute access AST
     attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
-    new_stack = new_stack + [attr_node]
+    if instr.argrepr.endswith(" + NULL|self"):
+        new_stack = state.stack[:-1] + [attr_node, Null()]
+    else:
+        new_stack = state.stack[:-1] + [attr_node]
     return replace(state, stack=new_stack)
 
 
@@ -908,10 +1314,32 @@ def handle_binary_subscr(
 # ============================================================================
 
 
+@register_handler("UNPACK_SEQUENCE")
+def handle_unpack_sequence(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # UNPACK_SEQUENCE unpacks a sequence into multiple values
+    # arg is the number of values to unpack
+    assert instr.arg is not None
+    unpack_count: int = instr.arg
+    sequence = ensure_ast(state.stack[-1])  # noqa: F841
+    new_stack = state.stack[:-1]
+
+    # For tuple unpacking in comprehensions, we typically see patterns like:
+    # ((k, v) for k, v in items) where items is unpacked into k and v
+    # Create placeholder variables for the unpacked values
+    for i in range(unpack_count):
+        var_name = f"_unpack_{i}"
+        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
+
+    return replace(state, stack=new_stack)
+
+
 @register_handler("BUILD_TUPLE")
 def handle_build_tuple(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
+    assert instr.arg is not None
     tuple_size: int = instr.arg
     # Pop elements for the tuple
     elements = (
@@ -927,57 +1355,18 @@ def handle_build_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_TO_TUPLE")
-def handle_list_to_tuple(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_TO_TUPLE converts a list on the stack to a tuple
-    list_obj = ensure_ast(state.stack[-1])
-    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
-
-    # Create tuple AST from the list's elements
-    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
-    new_stack = state.stack[:-1] + [tuple_node]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LIST_EXTEND")
-def handle_list_extend(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
-    iterable = ensure_ast(state.stack[-1])
-    list_obj = state.stack[-2]  # This should be a list from BUILD_LIST
-    new_stack = state.stack[:-2]
-
-    # If the list is empty and we're extending with a tuple/iterable,
-    # we can convert this to a simple list of the iterable's elements
-    if isinstance(list_obj, ast.List) and len(list_obj.elts) == 0:
-        # If extending with a constant tuple, expand it to list elements
-        if isinstance(iterable, ast.Constant) and isinstance(iterable.value, tuple):
-            elements = [ast.Constant(value=elem) for elem in iterable.value]
-            list_node = ast.List(elts=elements, ctx=ast.Load())
-            new_stack = new_stack + [list_node]
-            return replace(state, stack=new_stack)
-
-    # Fallback: create a list from the iterable using list() constructor
-    list_call = ast.Call(
-        func=ast.Name(id="list", ctx=ast.Load()), args=[iterable], keywords=[]
-    )
-    new_stack = new_stack + [list_call]
-    return replace(state, stack=new_stack)
-
-
 @register_handler("BUILD_CONST_KEY_MAP")
 def handle_build_const_key_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # BUILD_CONST_KEY_MAP builds a dictionary with constant keys
     # The keys are in a tuple on TOS, values are on the stack below
+    assert instr.arg is not None
+    assert isinstance(state.stack[-1], ast.Tuple), "Expected a tuple of keys"
     map_size: int = instr.arg
     # Pop the keys tuple and values
     keys_tuple: ast.Tuple = state.stack[-1]
-    keys = [ensure_ast(key) for key in keys_tuple.elts]
+    keys: list[ast.expr | None] = [ensure_ast(key) for key in keys_tuple.elts]
     values = [ensure_ast(val) for val in state.stack[-map_size - 1 : -1]]
     new_stack = state.stack[: -map_size - 1]
 
@@ -987,13 +1376,76 @@ def handle_build_const_key_map(
     return replace(state, stack=new_stack)
 
 
+@register_handler("LIST_EXTEND")
+def handle_list_extend(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
+    # initially recognized as list comp
+
+    # The list being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_LIST,
+    # while the actual result expression is in the stack where the list "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.ListComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Tuple | ast.List)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.List(
+        elts=[ensure_ast(e) for e in state.stack[-1].elts], ctx=ast.Load()
+    )
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
+
+
+@register_handler("SET_UPDATE")
+def handle_set_update(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # The set being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_SET,
+    # while the actual result expression is in the stack where the set "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.SetComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Tuple | ast.List | ast.Set)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.Set(elts=[ensure_ast(e) for e in state.stack[-1].elts])
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
+
+
+@register_handler("DICT_UPDATE")
+def handle_dict_update(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # The dict being extended is actually in state.result instead of the stack
+    # because it was initially recognized as a list comprehension in BUILD_MAP,
+    # while the actual result expression is in the stack where the dict "should be"
+    # and needs to be put back into the state result slot
+    assert isinstance(state.result, ast.DictComp) and not state.result.generators
+    assert isinstance(state.stack[-1], ast.Dict)
+    prev_result = state.stack[-instr.argval - 1]
+
+    new_val = ast.Dict(
+        keys=[ensure_ast(e) for e in state.stack[-1].keys],
+        values=[ensure_ast(e) for e in state.stack[-1].values],
+    )
+    new_stack = state.stack[:-2] + [new_val]
+
+    return replace(state, stack=new_stack, result=prev_result)
+
+
 # ============================================================================
 # CONDITIONAL JUMP HANDLERS
 # ============================================================================
 
 
-@register_handler("POP_JUMP_IF_FALSE")
-def handle_pop_jump_if_false(
+# Python 3.10 version
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_310)
+def handle_pop_jump_if_false_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
@@ -1004,32 +1456,40 @@ def handle_pop_jump_if_false(
     if instr.argval < instr.offset:
         # Jumping backward to loop start - this is a condition
         # When POP_JUMP_IF_FALSE jumps back, it means "if false, skip this item"
-        # So we need to negate the condition to get the filter condition
         assert isinstance(state.result, CompExp) and state.result.generators
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [condition],
-            is_async=state.result.generators[-1].is_async,
-        )
-        if isinstance(state.result, ast.DictComp):
-            new_ret = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-        else:
-            new_ret = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-        return replace(state, stack=new_stack, result=new_ret)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
-@register_handler("POP_JUMP_IF_TRUE")
-def handle_pop_jump_if_true(
+# Python 3.13 version
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
+def handle_pop_jump_if_false(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
+    # In comprehensions, this is used for filter conditions
+    condition = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    if isinstance(state.result, CompExp) and state.result.generators:
+        # In Python 3.13, when POP_JUMP_IF_FALSE jumps forward to the yield,
+        # it means "if condition is False, then yield the item"
+        # So we need to negate the condition: we want items where NOT condition
+        negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(negated_condition)
+        return replace(state, stack=new_stack, result=new_result)
+    else:
+        # Not in a comprehension context - might be boolean logic
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+
+
+# Python 3.10 version
+@register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_310)
+def handle_pop_jump_if_true_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_TRUE pops a value from the stack and jumps if it's true
@@ -1044,26 +1504,72 @@ def handle_pop_jump_if_true(
         # When POP_JUMP_IF_TRUE jumps back, it means "if false, skip this item"
         # So we need to negate the condition to get the filter condition
         assert isinstance(state.result, CompExp) and state.result.generators
-        # negate the condition
-        condition = ast.UnaryOp(op=ast.Not(), operand=condition)
-        updated_loop = ast.comprehension(
-            target=state.result.generators[-1].target,
-            iter=state.result.generators[-1].iter,
-            ifs=state.result.generators[-1].ifs + [condition],
-            is_async=state.result.generators[-1].is_async,
+        negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(negated_condition)
+        return replace(state, stack=new_stack, result=new_result)
+    else:
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+
+
+# Python 3.13 version
+@register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_313)
+def handle_pop_jump_if_true(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_JUMP_IF_TRUE pops a value from the stack and jumps if it's true
+    # In Python 3.13, this is used for filter conditions where True means continue
+    condition = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    # In Python 3.13, if we have a comprehension and generators, this is likely a filter
+    if isinstance(state.result, CompExp) and state.result.generators:
+        # For POP_JUMP_IF_TRUE in filters, we want the condition to be true to continue
+        # So we add the condition directly (no negation needed)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(condition)
+        return replace(state, stack=new_stack, result=new_result)
+    else:
+        # Not in a comprehension context - might be boolean logic
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+
+
+@register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_313)
+def handle_pop_jump_if_none(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_JUMP_IF_NONE pops a value and jumps if it's None
+    condition = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    if isinstance(state.result, CompExp) and state.result.generators:
+        # Create "x is None" condition
+        none_condition = ast.Compare(
+            left=condition, ops=[ast.Is()], comparators=[ast.Constant(value=None)]
         )
-        if isinstance(state.result, ast.DictComp):
-            new_ret = ast.DictComp(
-                key=state.result.key,
-                value=state.result.value,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-        else:
-            new_ret = type(state.result)(
-                elt=state.result.elt,
-                generators=state.result.generators[:-1] + [updated_loop],
-            )
-        return replace(state, stack=new_stack, result=new_ret)
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(none_condition)
+        return replace(state, stack=new_stack, result=new_result)
+    else:
+        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+
+
+@register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_313)
+def handle_pop_jump_if_not_none(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_JUMP_IF_NOT_NONE pops a value and jumps if it's not None
+    condition = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    if isinstance(state.result, CompExp) and state.result.generators:
+        # Create "x is not None" condition
+        not_none_condition = ast.Compare(
+            left=condition, ops=[ast.IsNot()], comparators=[ast.Constant(value=None)]
+        )
+        new_result = copy.deepcopy(state.result)
+        new_result.generators[-1].ifs.append(not_none_condition)
+        return replace(state, stack=new_stack, result=new_result)
     else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
@@ -1109,7 +1615,7 @@ def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
 
 @ensure_ast.register(type(iter((1,))))
 def _ensure_ast_tuple_iterator(value: Iterator) -> ast.Tuple:
-    return ensure_ast(tuple(value.__reduce__()[1][0]))
+    return ensure_ast(tuple(value.__reduce__()[1][0]))  # type: ignore
 
 
 @ensure_ast.register
@@ -1119,17 +1625,18 @@ def _ensure_ast_list(value: list) -> ast.List:
 
 @ensure_ast.register(type(iter([1])))
 def _ensure_ast_list_iterator(value: Iterator) -> ast.List:
-    return ensure_ast(list(value.__reduce__()[1][0]))
+    return ensure_ast(list(value.__reduce__()[1][0]))  # type: ignore
 
 
-@ensure_ast.register
-def _ensure_ast_set(value: set) -> ast.Set:
+@ensure_ast.register(set)
+@ensure_ast.register(frozenset)
+def _ensure_ast_set(value: set | frozenset) -> ast.Set:
     return ast.Set(elts=[ensure_ast(v) for v in value])
 
 
 @ensure_ast.register(type(iter({1})))
 def _ensure_ast_set_iterator(value: Iterator) -> ast.Set:
-    return ensure_ast(set(value.__reduce__()[1][0]))
+    return ensure_ast(set(value.__reduce__()[1][0]))  # type: ignore
 
 
 @ensure_ast.register
@@ -1141,7 +1648,7 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 
 @ensure_ast.register(type(iter({1: 2})))
-def _ensure_ast_dict_iterator(value: Iterator) -> ast.Dict:
+def _ensure_ast_dict_iterator(value: Iterator) -> ast.expr:
     return ensure_ast(value.__reduce__()[1][0])
 
 
@@ -1156,66 +1663,118 @@ def _ensure_ast_range(value: range) -> ast.Call:
 
 @ensure_ast.register(type(iter(range(1))))
 def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
-    return ensure_ast(value.__reduce__()[1][0])
+    return ensure_ast(value.__reduce__()[1][0])  # type: ignore
 
 
 @ensure_ast.register
-def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
+def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
+    assert inspect.iscode(value), "Input must be a code object"
+
+    name: str = value.co_name.split(".")[-1]
+
+    # Check preconditions
+    if name in {"<genexpr>", "<dictcomp>", "<listcomp>", "<setcomp>"}:
+        assert name == "<genexpr>" or sys.version_info < (3, 13)
+        assert name != "<genexpr>" or value.co_flags & inspect.CO_GENERATOR
+        assert value.co_flags & inspect.CO_NEWLOCALS
+        assert value.co_argcount == 1
+        assert value.co_kwonlyargcount == value.co_posonlyargcount == 0
+        assert DummyIterName().id in value.co_varnames
+    elif name == "<lambda>":
+        assert not value.co_flags & inspect.CO_GENERATOR
+        assert value.co_flags & inspect.CO_NEWLOCALS
+        assert DummyIterName().id not in value.co_varnames
+    else:
+        raise TypeError(f"Unsupported code object type: {value.co_name}")
+
     # Symbolic execution to reconstruct the AST
     state = ReconstructionState()
     for instr in dis.get_instructions(value):
         state = OP_HANDLERS[instr.opname](state, instr)
+    result: ast.expr = state.result
 
     # Check postconditions
+    assert not any(isinstance(x, ast.stmt) for x in ast.walk(result)), (
+        "Final return value must not contain statement nodes"
+    )
     assert not any(
-        isinstance(x, Placeholder) for x in ast.walk(state.result)
-    ), "Return value must not contain placeholders"
-    assert (
-        not isinstance(state.result, CompExp) or len(state.result.generators) > 0
-    ), "Return value must have generators if not a lambda"
-    return state.result
+        isinstance(x, Placeholder | Null | CompLambda) for x in ast.walk(result)
+    ), "Final return value must not contain temporary nodes"
+    assert not any(x.arg == ".0" for x in ast.walk(result) if isinstance(x, ast.arg)), (
+        "Final return value must not contain .0 argument"
+    )
+    assert not any(
+        isinstance(x, ast.Name) and x.id == ".0"
+        for x in ast.walk(result)
+        if not isinstance(x, DummyIterName)
+    ), "Final return value must not contain .0 names"
+    assert sum(1 for x in ast.walk(result) if isinstance(x, DummyIterName)) <= 1, (
+        "Final return value must contain at most 1 dummy iterator names"
+    )
+    assert all(x.generators for x in ast.walk(result) if isinstance(x, CompExp)), (
+        "Return value must have generators if not a lambda"
+    )
+
+    if name == "<lambda>" and isinstance(result, ast.expr):
+        args = ast.arguments(
+            posonlyargs=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[: value.co_posonlyargcount]
+            ],
+            args=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[
+                    value.co_posonlyargcount : value.co_argcount
+                ]
+            ],
+            kwonlyargs=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[
+                    value.co_argcount : value.co_argcount + value.co_kwonlyargcount
+                ]
+            ],
+            kw_defaults=[],
+            defaults=[],
+        )
+        return ast.Lambda(args=args, body=result)
+    elif name == "<genexpr>" and isinstance(result, ast.GeneratorExp):
+        return CompLambda(body=result)
+    elif name == "<dictcomp>" and isinstance(result, ast.DictComp):
+        return CompLambda(body=result)
+    elif name == "<listcomp>" and isinstance(result, ast.ListComp):
+        return CompLambda(body=result)
+    elif name == "<setcomp>" and isinstance(result, ast.SetComp):
+        return CompLambda(body=result)
+    else:
+        raise TypeError(f"Invalid result for type {name}: {result}")
 
 
 @ensure_ast.register
 def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
-    assert inspect.isfunction(value) and value.__name__.endswith(
-        "<lambda>"
-    ), "Input must be a lambda function"
-
-    code: types.CodeType = value.__code__
-    body: ast.expr = ensure_ast(code)
-    args = ast.arguments(
-        posonlyargs=[
-            ast.arg(arg=arg) for arg in code.co_varnames[: code.co_posonlyargcount]
-        ],
-        args=[
-            ast.arg(arg=arg)
-            for arg in code.co_varnames[code.co_posonlyargcount : code.co_argcount]
-        ],
-        kwonlyargs=[
-            ast.arg(arg=arg)
-            for arg in code.co_varnames[
-                code.co_argcount : code.co_argcount + code.co_kwonlyargcount
-            ]
-        ],
-        kw_defaults=[],
-        defaults=[],
+    assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), (
+        "Input must be a lambda function"
     )
-    return ast.Lambda(args=args, body=body)
+    code: types.CodeType = value.__code__
+    result = ensure_ast(code)
+    assert isinstance(result, ast.Lambda), "Lambda body must be an AST Lambda node"
+    assert not isinstance(result, CompLambda), "Lambda must not be a CompLambda"
+    return result
 
 
 @ensure_ast.register
 def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.isgenerator(genexpr), "Input must be a generator expression"
-    assert (
-        inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
-    ), "Generator must be in created state"
-    genexpr_ast: ast.GeneratorExp = ensure_ast(genexpr.gi_code)
-    geniter_ast: ast.expr = ensure_ast(genexpr.gi_frame.f_locals[".0"])
-    result = CompLambda(genexpr_ast).inline(geniter_ast)
-    assert (
-        inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED
-    ), "Generator must stay in created state"
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
+        "Generator must be in created state"
+    )
+    genexpr_ast = ensure_ast(genexpr.gi_code)
+    assert isinstance(genexpr_ast, CompLambda)
+    geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
+    result = genexpr_ast.inline(geniter_ast)
+    assert isinstance(result, ast.GeneratorExp)
+    assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
+        "Generator must stay in created state"
+    )
     return result
 
 
