@@ -1694,6 +1694,9 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
     result: ast.expr = state.result
 
     # Check postconditions
+    assert not any(isinstance(x, ast.stmt) for x in ast.walk(result)), (
+        "Final return value must not contain statement nodes"
+    )
     assert not any(
         isinstance(x, Placeholder | Null | CompLambda) for x in ast.walk(result)
     ), "Final return value must not contain temporary nodes"
