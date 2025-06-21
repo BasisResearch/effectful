@@ -18,6 +18,7 @@ Example:
 import ast
 import copy
 import dis
+import enum
 import functools
 import inspect
 import sys
@@ -25,7 +26,6 @@ import types
 import typing
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field, replace
-from enum import Enum
 
 CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 
@@ -116,7 +116,7 @@ class ReconstructionState:
 
 
 # Python version enum for version-specific handling
-class PythonVersion(Enum):
+class PythonVersion(enum.Enum):
     PY_310 = 10
     PY_313 = 13
 
