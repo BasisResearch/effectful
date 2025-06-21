@@ -111,7 +111,7 @@ class ReconstructionState:
                BINARY_ADD pop operands and push results.
     """
 
-    result: CompExp | ast.Lambda | Placeholder = field(default_factory=Placeholder)
+    result: ast.expr = field(default_factory=Placeholder)
     stack: list[ast.expr] = field(default_factory=list)
 
 
@@ -399,7 +399,7 @@ def handle_return_value(
         return replace(state, stack=state.stack[:-1])
     elif isinstance(state.result, Placeholder):
         new_result = ensure_ast(state.stack[0])
-        assert isinstance(new_result, CompExp | ast.Lambda)
+        assert isinstance(new_result, ast.expr)
         return replace(state, stack=state.stack[1:], result=new_result)
     else:
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
@@ -844,6 +844,13 @@ def handle_copy(
         return replace(state, stack=new_stack)
 
 
+@register_handler("PUSH_NULL", version=PythonVersion.PY_313)
+def handle_push_null(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    return replace(state, stack=state.stack + [Null()])
+
+
 # ============================================================================
 # BINARY ARITHMETIC/LOGIC OPERATION HANDLERS
 # ============================================================================
@@ -1175,6 +1182,7 @@ def handle_make_function_310(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # MAKE_FUNCTION creates a function from code object and name on stack
+    assert isinstance(state.stack[-2], ast.Lambda | CompLambda)
     assert isinstance(state.stack[-1], ast.Constant) and isinstance(
         state.stack[-1].value, str
     ), "Function name must be a constant string."
@@ -1188,21 +1196,16 @@ def handle_make_function_310(
             "MAKE_FUNCTION with defaults or annotations not implemented."
         )
 
-    body: ast.expr = state.stack[-2]
+    # Pop the function object and name from the stack
+    # Conversion from CodeType to ast.Lambda should have happened already
+    func: ast.Lambda | CompLambda = state.stack[-2]
     name: str = state.stack[-1].value
 
     assert any(
         name.endswith(suffix)
         for suffix in ("<genexpr>", "<lambda>", "<dictcomp>", "<listcomp>", "<setcomp>")
     ), f"Expected a comprehension or lambda function, got '{name}'"
-
-    if (
-        isinstance(body, CompExp)
-        and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
-    ):
-        return replace(state, stack=new_stack + [CompLambda(body=body)])
-    else:
-        raise NotImplementedError("Lambda reconstruction not implemented yet")
+    return replace(state, stack=new_stack + [func])
 
 
 # Python 3.13 version
@@ -1214,17 +1217,12 @@ def handle_make_function(
     # and creates a function from it. No flags, no extra attributes on the stack.
     # All extra attributes are handled by separate SET_FUNCTION_ATTRIBUTE instructions.
 
-    # Pop the code object from the stack (it's the only thing expected)
-    body: ast.expr = state.stack[-1]
-    new_stack = state.stack[:-1]
-
-    if (
-        isinstance(body, CompExp)
-        and sum(1 for x in ast.walk(body) if isinstance(x, DummyIterName)) == 1
-    ):
-        return replace(state, stack=new_stack + [CompLambda(body=body)])
-    else:
-        raise NotImplementedError("Lambda reconstruction not implemented yet")
+    # Pop the function object from the stack (it's the only thing expected)
+    # Conversion from CodeType to ast.Lambda should have happened already
+    assert isinstance(state.stack[-1], ast.Lambda | CompLambda), (
+        "Expected a function object (Lambda or CompLambda) on the stack."
+    )
+    return state
 
 
 @register_handler("SET_FUNCTION_ATTRIBUTE", version=PythonVersion.PY_313)
@@ -1669,7 +1667,26 @@ def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
 
 
 @ensure_ast.register
-def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
+def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
+    assert inspect.iscode(value), "Input must be a code object"
+
+    name: str = value.co_name.split(".")[-1]
+
+    # Check preconditions
+    if name in {"<genexpr>", "<dictcomp>", "<listcomp>", "<setcomp>"}:
+        assert name == "<genexpr>" or sys.version_info < (3, 13)
+        assert name != "<genexpr>" or value.co_flags & inspect.CO_GENERATOR
+        assert value.co_flags & inspect.CO_NEWLOCALS
+        assert value.co_argcount == 1
+        assert value.co_kwonlyargcount == value.co_posonlyargcount == 0
+        assert DummyIterName().id in value.co_varnames
+    elif name == "<lambda>":
+        assert not value.co_flags & inspect.CO_GENERATOR
+        assert value.co_flags & inspect.CO_NEWLOCALS
+        assert DummyIterName().id not in value.co_varnames
+    else:
+        raise TypeError(f"Unsupported code object type: {value.co_name}")
+
     # Symbolic execution to reconstruct the AST
     state = ReconstructionState()
     for instr in dis.get_instructions(value):
@@ -1682,10 +1699,47 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.expr:
     assert not any(isinstance(x, Placeholder) for x in ast.walk(state.result)), (
         "Return value must not contain placeholders"
     )
-    assert not isinstance(state.result, CompExp) or len(state.result.generators) > 0, (
-        "Return value must have generators if not a lambda"
-    )
-    return state.result
+    assert all(
+        x.generators for x in ast.walk(state.result) if isinstance(x, CompExp)
+    ), "Return value must have generators if not a lambda"
+
+    if name == "<lambda>":
+        assert isinstance(state.result, ast.expr)
+        args = ast.arguments(
+            posonlyargs=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[: value.co_posonlyargcount]
+            ],
+            args=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[
+                    value.co_posonlyargcount : value.co_argcount
+                ]
+            ],
+            kwonlyargs=[
+                ast.arg(arg=arg)
+                for arg in value.co_varnames[
+                    value.co_argcount : value.co_argcount + value.co_kwonlyargcount
+                ]
+            ],
+            kw_defaults=[],
+            defaults=[],
+        )
+        return ast.Lambda(args=args, body=state.result)
+    elif name == "<genexpr>":
+        assert isinstance(state.result, ast.GeneratorExp)
+        return CompLambda(body=state.result)
+    elif name == "<dictcomp>" and sys.version_info < (3, 13):
+        assert isinstance(state.result, ast.DictComp)
+        return CompLambda(body=state.result)
+    elif name == "<listcomp>" and sys.version_info < (3, 13):
+        assert isinstance(state.result, ast.ListComp)
+        return CompLambda(body=state.result)
+    elif name == "<setcomp>" and sys.version_info < (3, 13):
+        assert isinstance(state.result, ast.SetComp)
+        return CompLambda(body=state.result)
+    else:
+        raise TypeError(f"Unsupported code object type: {value.co_name}")
 
 
 @ensure_ast.register
@@ -1693,27 +1747,11 @@ def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
     assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), (
         "Input must be a lambda function"
     )
-
     code: types.CodeType = value.__code__
-    body: ast.expr = ensure_ast(code)
-    args = ast.arguments(
-        posonlyargs=[
-            ast.arg(arg=arg) for arg in code.co_varnames[: code.co_posonlyargcount]
-        ],
-        args=[
-            ast.arg(arg=arg)
-            for arg in code.co_varnames[code.co_posonlyargcount : code.co_argcount]
-        ],
-        kwonlyargs=[
-            ast.arg(arg=arg)
-            for arg in code.co_varnames[
-                code.co_argcount : code.co_argcount + code.co_kwonlyargcount
-            ]
-        ],
-        kw_defaults=[],
-        defaults=[],
-    )
-    return ast.Lambda(args=args, body=body)
+    result = ensure_ast(code)
+    assert isinstance(result, ast.Lambda), "Lambda body must be an AST Lambda node"
+    assert not isinstance(result, CompLambda), "Lambda must not be a CompLambda"
+    return result
 
 
 @ensure_ast.register
@@ -1723,9 +1761,9 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
         "Generator must be in created state"
     )
     genexpr_ast = ensure_ast(genexpr.gi_code)
-    assert isinstance(genexpr_ast, ast.GeneratorExp)
+    assert isinstance(genexpr_ast, CompLambda)
     geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
-    result = CompLambda(body=genexpr_ast).inline(geniter_ast)
+    result = genexpr_ast.inline(geniter_ast)
     assert isinstance(result, ast.GeneratorExp)
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
         "Generator must stay in created state"
