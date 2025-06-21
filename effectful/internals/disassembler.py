@@ -1690,21 +1690,29 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
     # Symbolic execution to reconstruct the AST
     state = ReconstructionState()
     for instr in dis.get_instructions(value):
-        if instr.opname not in OP_HANDLERS:
-            raise KeyError(f"No handler found for opcode '{instr.opname}'")
-
         state = OP_HANDLERS[instr.opname](state, instr)
+    result: ast.expr = state.result
 
     # Check postconditions
-    assert not any(isinstance(x, Placeholder) for x in ast.walk(state.result)), (
-        "Return value must not contain placeholders"
+    assert not any(
+        isinstance(x, Placeholder | Null | CompLambda) for x in ast.walk(result)
+    ), "Final return value must not contain temporary nodes"
+    assert not any(x.arg == ".0" for x in ast.walk(result) if isinstance(x, ast.arg)), (
+        "Final return value must not contain .0 argument"
     )
-    assert all(
-        x.generators for x in ast.walk(state.result) if isinstance(x, CompExp)
-    ), "Return value must have generators if not a lambda"
+    assert not any(
+        isinstance(x, ast.Name) and x.id == ".0"
+        for x in ast.walk(result)
+        if not isinstance(x, DummyIterName)
+    ), "Final return value must not contain .0 names"
+    assert sum(1 for x in ast.walk(result) if isinstance(x, DummyIterName)) <= 1, (
+        "Final return value must contain at most 1 dummy iterator names"
+    )
+    assert all(x.generators for x in ast.walk(result) if isinstance(x, CompExp)), (
+        "Return value must have generators if not a lambda"
+    )
 
-    if name == "<lambda>":
-        assert isinstance(state.result, ast.expr)
+    if name == "<lambda>" and isinstance(result, ast.expr):
         args = ast.arguments(
             posonlyargs=[
                 ast.arg(arg=arg)
@@ -1725,21 +1733,17 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
             kw_defaults=[],
             defaults=[],
         )
-        return ast.Lambda(args=args, body=state.result)
-    elif name == "<genexpr>":
-        assert isinstance(state.result, ast.GeneratorExp)
-        return CompLambda(body=state.result)
-    elif name == "<dictcomp>" and sys.version_info < (3, 13):
-        assert isinstance(state.result, ast.DictComp)
-        return CompLambda(body=state.result)
-    elif name == "<listcomp>" and sys.version_info < (3, 13):
-        assert isinstance(state.result, ast.ListComp)
-        return CompLambda(body=state.result)
-    elif name == "<setcomp>" and sys.version_info < (3, 13):
-        assert isinstance(state.result, ast.SetComp)
-        return CompLambda(body=state.result)
+        return ast.Lambda(args=args, body=result)
+    elif name == "<genexpr>" and isinstance(result, ast.GeneratorExp):
+        return CompLambda(body=result)
+    elif name == "<dictcomp>" and isinstance(result, ast.DictComp):
+        return CompLambda(body=result)
+    elif name == "<listcomp>" and isinstance(result, ast.ListComp):
+        return CompLambda(body=result)
+    elif name == "<setcomp>" and isinstance(result, ast.SetComp):
+        return CompLambda(body=result)
     else:
-        raise TypeError(f"Unsupported code object type: {value.co_name}")
+        raise TypeError(f"Invalid result for type {name}: {result}")
 
 
 @ensure_ast.register
