@@ -500,23 +500,10 @@ def test_variable_lookup(genexpr, globals_dict):
     "genexpr,globals_dict",
     [
         # Using lambdas and functions
-        pytest.param(
-            ((lambda y: y * 2)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            ((lambda y: y + 1)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            ((lambda y: y**2)(x) for x in range(5)),
-            {},
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        # More complex lambdas
-        # (((lambda a, b: a + b)(x, x) for x in range(5)), {}),
+        (((lambda y: y * 2)(x) for x in range(5)), {}),
+        (((lambda y: y + 1)(x) for x in range(5)), {}),
+        (((lambda y: y**2)(x) for x in range(5)), {}),
+        (((lambda a, b: a + b)(x, x) for x in range(5)), {}),
         ((f(x) for x in range(5)), {"f": lambda y: y * 3}),  # type: ignore  # noqa: F821
         # Attribute access
         ((x.real for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
