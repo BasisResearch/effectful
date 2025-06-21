@@ -1,4 +1,5 @@
 import ast
+from types import GeneratorType
 from typing import Generator
 
 import pytest
