@@ -1918,7 +1918,7 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
                 )
 
         streams = ast.Dict(keys=[], values=[])
-        all_var_names = set()
+        all_var_names: set[str] = set()
 
         for gen in node.generators:
             # Collect variable names from previous generators
@@ -1929,6 +1929,7 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
             all_var_names.update(target_names)
 
             # Create the value for this generator
+            value: ast.expr  # TODO : Specify type more precisely
             if gen.ifs:
                 # If there are filters, create a generator expression for the filtered iterator
                 # Note: In the filter conditions, we need to transform previous loop variables

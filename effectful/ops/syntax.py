@@ -6,7 +6,7 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate, Generic, TypeVar
 
 import tree
@@ -989,8 +989,8 @@ def forexpr(
     raise NotImplementedError
 
 
-@defterm.register(Generator)
-def _(genexpr: Generator[T, None, None]) -> Expr[Iterable[T]]:
+@defterm.register(types.GeneratorType)
+def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
     from effectful.internals.disassembler import GeneratorExpToForexpr, reconstruct
 
     genexpr_ast = reconstruct(genexpr)
@@ -1001,7 +1001,7 @@ def _(genexpr: Generator[T, None, None]) -> Expr[Iterable[T]]:
         filename=forexpr_name,
         mode="eval",
     )
-    return eval(forexpr_code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)  # type: ignore
+    return eval(forexpr_code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
