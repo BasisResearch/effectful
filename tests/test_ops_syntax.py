@@ -213,6 +213,7 @@ def test_defop_method():
     )
 
     assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_method"
     assert term.args == (
         instance,
@@ -228,6 +229,23 @@ def test_defop_method():
     with handler({MyClass.my_method: lambda self, x: x + 2}):
         assert instance.my_method(5) == 7
         assert another_instance.my_method(10) == 12
+
+
+def test_defop_bound_method():
+    """Test that defop can be used as a bound method decorator."""
+
+    class MyClass:
+        def my_bound_method(self, x: int) -> int:
+            raise NotImplementedError
+
+    instance = MyClass()
+    my_bound_method_op = defop(instance.my_bound_method)
+
+    assert isinstance(my_bound_method_op, Operation)
+
+    # Test that the bound method can be called with a handler
+    with handler({my_bound_method_op: lambda x: x + 1}):
+        assert my_bound_method_op(5) == 6
 
 
 @pytest.mark.xfail(reason="defop does not support classmethod yet")
@@ -249,6 +267,7 @@ def test_defop_classmethod():
     )
 
     assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_classmethod"
     assert term.args == (
         MyClass,
@@ -284,6 +303,7 @@ def test_defop_staticmethod():
     )
 
     assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_staticmethod"
     assert term.args == (5,)
     assert term.kwargs == {}
@@ -316,6 +336,7 @@ def test_defop_property():
     )
 
     assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_property"
     assert term.args == (instance,)
     assert term.kwargs == {}
