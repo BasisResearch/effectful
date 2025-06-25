@@ -150,14 +150,35 @@ HasDims = TypeVar(
 )
 
 
+@defop
 @functools.singledispatch
-def _bind_dims(value, *names: Operation[[], torch.Tensor]):
+def bind_dims(
+    value: Annotated[HasDims, Scoped[A | B]],
+    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
+) -> Annotated[HasDims, Scoped[A]]:
+    """Convert named dimensions to positional dimensions.
+
+    :param t: A tensor.
+    :type t: T
+    :param args: Named dimensions to convert to positional dimensions.
+                  These positional dimensions will appear at the beginning of the
+                  shape.
+    :type args: Operation[[], torch.Tensor]
+    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> t = torch.ones(2, 3)
+    >>> bind_dims(t[a(), b()], b, a).shape
+    torch.Size([3, 2])
+    """
     if tree.is_nested(value):
-        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
+        return tree.map_structure(lambda v: bind_dims(v, *names), value)
     raise NotImplementedError
 
 
-@_bind_dims.register
+@bind_dims.register  # type: ignore
 def _bind_dims_tensor(
     value: torch.Tensor, *names: Operation[[], torch.Tensor]
 ) -> torch.Tensor:
@@ -207,51 +228,22 @@ def _bind_dims_tensor(
 
 
 @defop
-def bind_dims(
+@functools.singledispatch
+def unbind_dims(
     value: Annotated[HasDims, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[HasDims, Scoped[A]]:
-    """Convert named dimensions to positional dimensions.
-
-    :param t: A tensor.
-    :type t: T
-    :param args: Named dimensions to convert to positional dimensions.
-                  These positional dimensions will appear at the beginning of the
-                  shape.
-    :type args: Operation[[], torch.Tensor]
-    :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> t = torch.ones(2, 3)
-    >>> bind_dims(t[a(), b()], b, a).shape
-    torch.Size([3, 2])
-    """
-    return _bind_dims(value, *names)
-
-
-@functools.singledispatch
-def _unbind_dims(value, *names: Operation[[], torch.Tensor]):
+) -> Annotated[HasDims, Scoped[A | B]]:
     if tree.is_nested(value):
-        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+        return tree.map_structure(lambda v: unbind_dims(v, *names), value)
     raise NotImplementedError
 
 
-@_unbind_dims.register
+@unbind_dims.register  # type: ignore
 def _unbind_dims_tensor(
     value: torch.Tensor,
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[torch.Tensor, Scoped[A | B]]:
     return value[tuple(n() for n in names)]
-
-
-@defop
-def unbind_dims(
-    value: Annotated[HasDims, Scoped[A | B]],
-    *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
-) -> Annotated[HasDims, Scoped[A | B]]:
-    return _unbind_dims(value, *names)
 
 
 @functools.cache

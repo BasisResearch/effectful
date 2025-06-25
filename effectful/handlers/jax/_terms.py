@@ -9,11 +9,11 @@ import tree
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
     IndexElement,
-    _bind_dims,
     _partial_eval,
     _register_jax_op,
-    _unbind_dims,
+    bind_dims,
     jax_getitem,
+    unbind_dims,
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.syntax import defdata
@@ -247,7 +247,7 @@ class _EagerArrayTerm(_ArrayTerm):
         return len(self.shape)
 
 
-@_bind_dims.register
+@bind_dims.register  # type: ignore
 def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
@@ -318,6 +318,6 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     return reindexed
 
 
-@_unbind_dims.register
+@unbind_dims.register  # type: ignore
 def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     return jax_getitem(t, tuple(n() for n in args))
