@@ -704,19 +704,6 @@ def _(  # type: ignore
     raise NotImplementedError("classmethod operations are not yet supported")
 
 
-@defop.register(types.WrapperDescriptorType)
-class _WrapperDescriptorOperation(
-    Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]
-):
-    def __init__(self, default: types.WrapperDescriptorType, **kwargs):
-        super().__init__(default=default, **kwargs)
-
-    def __get__(
-        self, instance: S, owner: type[S] | None = None
-    ) -> Callable[Concatenate[S, P], T]:
-        return self
-
-
 @defop.register(staticmethod)
 class _StaticMethodOperation(Generic[P, S, T], _BaseOperation[P, T]):
     def __init__(self, default: staticmethod, **kwargs):
