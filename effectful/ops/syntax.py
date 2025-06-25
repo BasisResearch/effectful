@@ -529,11 +529,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self._default = default
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
-        # For singledispatch, we need to get the signature from the original function
-        if hasattr(default, "func"):
-            self.__signature__ = inspect.signature(default.func)
-        else:
-            self.__signature__ = inspect.signature(default)
+        self.__signature__ = inspect.signature(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -637,14 +633,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
-    @property
-    def register(self):
-        return self._default.register
-
-    @property
-    def dispatch(self):
-        return self._default.dispatch
-
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
@@ -685,6 +673,34 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
             raise NotImplementedError
 
     return defop(func, name=name)
+
+
+class _SingleDispatchOperation(Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]):
+    _default: "functools._SingleDispatchCallable[T]"
+
+    @property
+    def register(self):
+        return self._default.register
+
+    @property
+    def dispatch(self):
+        return self._default.dispatch
+
+
+if typing.TYPE_CHECKING:
+    defop.register(functools._SingleDispatchCallable)(_SingleDispatchOperation)
+else:
+
+    @typing.runtime_checkable
+    class _SingleDispatchCallable(typing.Protocol):
+        registry: types.MappingProxyType[object, Callable]
+
+        def dispatch(self, cls: type) -> Callable: ...
+        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
+        def _clear_cache(self) -> None: ...
+        def __call__(self, /, *args, **kwargs): ...
+
+    defop.register(_SingleDispatchCallable)(_SingleDispatchOperation)
 
 
 @defop
@@ -751,6 +767,23 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         return self.func(self.dispatch, *args, **kwargs)
+
+
+@defop.register(_CustomSingleDispatchCallable)
+class _CustomSingleDispatchOperation(Generic[P, Q, S, T], _BaseOperation[P, T]):
+    _default: _CustomSingleDispatchCallable[P, Q, S, T]
+
+    def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
+        super().__init__(default, **kwargs)
+        self.__signature__ = inspect.signature(functools.partial(default.func, None))  # type: ignore
+
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
 
 
 @_CustomSingleDispatchCallable
