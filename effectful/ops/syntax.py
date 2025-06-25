@@ -6,7 +6,7 @@ import random
 import types
 import typing
 from collections.abc import Callable
-from typing import Annotated, Concatenate, Generic, TypeVar
+from typing import Annotated, Concatenate, Generic, Protocol, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -388,6 +388,12 @@ class Scoped(Annotation):
         return bound_vars
 
 
+class _MethodDescriptor(Protocol):
+    def __get__(
+        self, instance: object | None = None, owner: type[object] | None = None
+    ): ...
+
+
 @functools.singledispatch
 def defop(
     t: Callable[P, T], *, name: str | None = None, freshening=list[int] | None
@@ -647,6 +653,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    def __get__(self, instance, owner):
+        if instance is not None:
+            # This is an instance-level operation, so we need to bind the instance
+            return functools.partial(self, instance)
+        else:
+            # This is a static operation, so we return the operation itself
+            return self
+
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
@@ -687,6 +701,73 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
             raise NotImplementedError
 
     return defop(func, name=name)
+
+
+@defop.register(classmethod)
+def _(  # type: ignore
+    t: classmethod, *, name: str | None = None
+) -> Operation[Concatenate[type[S], P], T]:
+    raise NotImplementedError("classmethod operations are not yet supported")
+
+
+@defop.register(staticmethod)
+class _StaticMethodOperation(Generic[P, S, T], _BaseOperation[P, T]):
+    def __init__(self, default: staticmethod, **kwargs):
+        super().__init__(default=default.__func__, **kwargs)
+
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]:
+        return self
+
+
+@defop.register(property)
+class _PropertyOperation(Generic[S, T], _BaseOperation[[S], T]):
+    def __init__(self, default: property, **kwargs):  # type: ignore
+        assert not default.fset, "property with setter is not supported"
+        assert not default.fdel, "property with deleter is not supported"
+        super().__init__(default=typing.cast(Callable[[S], T], default.fget), **kwargs)
+
+    def __get__(self, instance: S, owner: type[S] | None = None) -> T:
+        return self(instance)
+
+
+@defop.register(functools.singledispatchmethod)
+class _SingleDispatchMethodOperation(
+    Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]
+):
+    _default: Callable[Concatenate[S, P], T]
+
+    def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
+        if isinstance(default.func, classmethod):
+            raise NotImplementedError("Operations as classmethod are not yet supported")
+
+        @functools.wraps(default.func)
+        def _wrapper(obj: S, *args: P.args, **kwargs: P.kwargs) -> T:
+            return default.__get__(obj)(*args, **kwargs)
+
+        self._registry: functools.singledispatchmethod = default
+        super().__init__(_wrapper, **kwargs)
+
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_SingleDispatchMethodOperation[P, S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return functools.partial(self, instance)
+        else:
+            return self
+
+    @property
+    def register(self):
+        return self._registry.register
+
+    @property
+    def __isabstractmethod__(self):
+        return self._registry.__isabstractmethod__
 
 
 @defop
