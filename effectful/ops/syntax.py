@@ -6,7 +6,7 @@ import random
 import types
 import typing
 from collections.abc import Callable
-from typing import Annotated, Concatenate, Generic, Protocol, TypeVar
+from typing import Annotated, Concatenate, Generic, TypeVar
 
 import tree
 from typing_extensions import ParamSpec
@@ -386,12 +386,6 @@ class Scoped(Annotation):
                     bound_vars |= param_bound_vars
 
         return bound_vars
-
-
-class _MethodDescriptor(Protocol):
-    def __get__(
-        self, instance: object | None = None, owner: type[object] | None = None
-    ): ...
 
 
 @functools.singledispatch
