@@ -720,8 +720,19 @@ class _PropertyOperation(Generic[S, T], _BaseOperation[[S], T]):
         assert not default.fdel, "property with deleter is not supported"
         super().__init__(default=typing.cast(Callable[[S], T], default.fget), **kwargs)
 
-    def __get__(self, instance: S, owner: type[S] | None = None) -> T:
-        return self(instance)
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_PropertyOperation[S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> T: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return self(instance)
+        else:
+            return self
 
 
 @defop.register(functools.singledispatchmethod)

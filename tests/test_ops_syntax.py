@@ -280,6 +280,34 @@ def test_defop_staticmethod():
         assert MyClass.my_staticmethod(10) == 14
 
 
+def test_defop_property():
+    """Test that defop can be used as a property decorator."""
+
+    class MyClass:
+        @defop
+        @property
+        def my_property(self) -> int:
+            raise NotImplementedError
+
+    instance = MyClass()
+    term = instance.my_property
+
+    assert isinstance(MyClass.my_property, Operation)
+    assert isinstance(term, Term)
+    assert term.op.__name__ == "my_property"
+    assert term.args == (instance,)
+    assert term.kwargs == {}
+
+    # Ensure the operation is unique
+    another_instance = MyClass()
+    assert instance.my_property is not another_instance.my_property
+
+    # Test that the property can be called with a handler
+    with handler({MyClass.my_property: lambda self: 42}):
+        assert instance.my_property == 42
+        assert another_instance.my_property == 42
+
+
 def test_defop_singledispatchmethod():
     """Test that defop can be used as a singledispatchmethod decorator."""
 
