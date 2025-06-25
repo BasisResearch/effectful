@@ -1,10 +1,12 @@
 import functools
 import inspect
 from collections.abc import Callable, Mapping
-from typing import Annotated, TypeVar
+from typing import Annotated, ClassVar, TypeVar
+
+import pytest
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import call, evaluate, fvsof
+from effectful.ops.semantics import call, evaluate, fvsof, handler
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
@@ -240,3 +242,245 @@ def test_defop_customsingledispatch():
     assert process("hello") == "HELLO"
 
     assert process.__signature__ == inspect.signature(process)
+
+
+def test_defop_method():
+    """Test that defop can be used as a method decorator."""
+
+    class MyClass:
+        @defop
+        def my_method(self, x: int) -> int:
+            raise NotImplementedError
+
+    instance = MyClass()
+    term = instance.my_method(5)
+
+    assert isinstance(MyClass.my_method, Operation)
+
+    # check signature
+    assert MyClass.my_method.__signature__ == inspect.signature(
+        MyClass.my_method._default
+    )
+
+    assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
+    assert term.op.__name__ == "my_method"
+    assert term.args == (
+        instance,
+        5,
+    )
+    assert term.kwargs == {}
+
+    # Ensure the operation is unique
+    another_instance = MyClass()
+    assert instance.my_method is not another_instance.my_method
+
+    # Test that the method can be called with a handler
+    with handler({MyClass.my_method: lambda self, x: x + 2}):
+        assert instance.my_method(5) == 7
+        assert another_instance.my_method(10) == 12
+
+
+def test_defop_bound_method():
+    """Test that defop can be used as a bound method decorator."""
+
+    class MyClass:
+        def my_bound_method(self, x: int) -> int:
+            raise NotImplementedError
+
+    instance = MyClass()
+    my_bound_method_op = defop(instance.my_bound_method)
+
+    assert isinstance(my_bound_method_op, Operation)
+
+    # Test that the bound method can be called with a handler
+    with handler({my_bound_method_op: lambda x: x + 1}):
+        assert my_bound_method_op(5) == 6
+
+
+def test_defop_setattr():
+    class MyClass:
+        def __init__(self, my_op: Operation):
+            self.my_op = my_op
+
+    @defop
+    def my_op(x: int) -> int:
+        raise NotImplementedError
+
+    instance = MyClass(my_op)
+    assert isinstance(instance.my_op, Operation)
+    assert instance.my_op is my_op
+
+    tm = instance.my_op(5)
+    assert isinstance(tm, Term)
+    assert isinstance(tm.op, Operation)
+    assert tm.op is my_op
+
+
+def test_defop_setattr_class():
+    class MyClass:
+        my_op: ClassVar[Operation]
+
+    @defop
+    def my_op(x: int) -> int:
+        raise NotImplementedError
+
+    MyClass.my_op = my_op
+
+    tm = MyClass.my_op(5)
+    assert isinstance(tm, Term)
+    assert isinstance(tm.op, Operation)
+    assert tm.op is my_op
+    assert tm.args == (5,)
+
+    with pytest.raises(TypeError):
+        MyClass().my_op(5)
+
+
+@pytest.mark.xfail(reason="defop does not support classmethod yet")
+def test_defop_classmethod():
+    """Test that defop can be used as a classmethod decorator."""
+
+    class MyClass:
+        @defop
+        @classmethod
+        def my_classmethod(cls, x: int) -> int:
+            raise NotImplementedError
+
+    term = MyClass.my_classmethod(5)
+
+    assert isinstance(MyClass.my_classmethod, Operation)
+    # check signature
+    assert MyClass.my_classmethod.__signature__ == inspect.signature(
+        MyClass.my_classmethod._default
+    )
+
+    assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
+    assert term.op.__name__ == "my_classmethod"
+    assert term.args == (
+        MyClass,
+        5,
+    )
+    assert term.kwargs == {}
+
+    # Ensure the operation is unique
+    another_term = MyClass.my_classmethod(10)
+    assert term.op is another_term.op
+
+    # Test that the classmethod can be called with a handler
+    with handler({MyClass.my_classmethod: lambda cls, x: x + 3}):
+        assert MyClass.my_classmethod(5) == 8
+        assert MyClass.my_classmethod(10) == 13
+
+
+def test_defop_staticmethod():
+    """Test that defop can be used as a staticmethod decorator."""
+
+    class MyClass:
+        @defop
+        @staticmethod
+        def my_staticmethod(x: int) -> int:
+            raise NotImplementedError
+
+    term = MyClass.my_staticmethod(5)
+
+    assert isinstance(MyClass.my_staticmethod, Operation)
+    # check signature
+    assert MyClass.my_staticmethod.__signature__ == inspect.signature(
+        MyClass.my_staticmethod._default
+    )
+
+    assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
+    assert term.op.__name__ == "my_staticmethod"
+    assert term.args == (5,)
+    assert term.kwargs == {}
+
+    # Ensure the operation is unique
+    another_term = MyClass.my_staticmethod(10)
+    assert term.op is another_term.op
+
+    # Test that the staticmethod can be called with a handler
+    with handler({MyClass.my_staticmethod: lambda x: x + 4}):
+        assert MyClass.my_staticmethod(5) == 9
+        assert MyClass.my_staticmethod(10) == 14
+
+
+def test_defop_property():
+    """Test that defop can be used as a property decorator."""
+
+    class MyClass:
+        @defop
+        @property
+        def my_property(self) -> int:
+            raise NotImplementedError
+
+    instance = MyClass()
+    term = instance.my_property
+
+    assert isinstance(MyClass.my_property, Operation)
+    assert MyClass.my_property.__signature__ == inspect.signature(
+        MyClass.my_property._default
+    )
+
+    assert isinstance(term, Term)
+    assert isinstance(term.op, Operation)
+    assert term.op.__name__ == "my_property"
+    assert term.args == (instance,)
+    assert term.kwargs == {}
+
+    # Ensure the operation is unique
+    another_instance = MyClass()
+    assert instance.my_property is not another_instance.my_property
+
+    # Test that the property can be called with a handler
+    with handler({MyClass.my_property: lambda self: 42}):
+        assert instance.my_property == 42
+        assert another_instance.my_property == 42
+
+
+def test_defop_singledispatchmethod():
+    """Test that defop can be used as a singledispatchmethod decorator."""
+
+    class MyClass:
+        @defop
+        @functools.singledispatchmethod
+        def my_singledispatch(self, x: object) -> object:
+            raise NotImplementedError
+
+        @my_singledispatch.register
+        def _(self, x: int) -> int:
+            return x + 1
+
+        @my_singledispatch.register
+        def _(self, x: str) -> str:
+            return x + "!"
+
+    class MySubClass(MyClass):
+        @MyClass.my_singledispatch.register
+        def _(self, x: bool) -> bool:
+            return x
+
+    instance = MyClass()
+    assert instance.my_singledispatch is not MyClass().my_singledispatch
+    assert MySubClass.my_singledispatch is MyClass.my_singledispatch
+
+    term_float = instance.my_singledispatch(1.5)
+
+    assert isinstance(MyClass.my_singledispatch, Operation)
+    assert MyClass.my_singledispatch.__signature__ == inspect.signature(
+        MyClass.my_singledispatch._default
+    )
+
+    assert isinstance(term_float, Term)
+    assert term_float.op.__name__ == "my_singledispatch"
+    assert term_float.args == (
+        instance,
+        1.5,
+    )
+    assert term_float.kwargs == {}
+
+    # Test that the method can be called with a handler
+    with handler({MyClass.my_singledispatch: lambda self, x: x + 6}):
+        assert instance.my_singledispatch(5) == 11

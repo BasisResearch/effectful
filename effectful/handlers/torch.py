@@ -498,7 +498,6 @@ class _TensorTerm(Term[torch.Tensor]):
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
-    op: Operation[..., torch.Tensor] = torch_getitem
     args: tuple[torch.Tensor, tuple[IndexElement, ...]]
     kwargs: Mapping[str, object] = {}
 
@@ -515,6 +514,10 @@ class _EagerTensorTerm(torch.Tensor):
         ret = x.as_subclass(cls)
         ret.args = (x, key)
         return ret
+
+    @property
+    def op(self) -> Operation[..., torch.Tensor]:
+        return torch_getitem
 
     def __str__(self):
         tensor_str = str(self.args[0])
