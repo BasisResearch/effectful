@@ -689,6 +689,34 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
+class _SingleDispatchOperation(Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]):
+    _default: "functools._SingleDispatchCallable[T]"
+
+    @property
+    def register(self):
+        return self._default.register
+
+    @property
+    def dispatch(self):
+        return self._default.dispatch
+
+
+if typing.TYPE_CHECKING:
+    defop.register(functools._SingleDispatchCallable)(_SingleDispatchOperation)
+else:
+
+    @typing.runtime_checkable
+    class _SingleDispatchCallable(typing.Protocol):
+        registry: types.MappingProxyType[object, Callable]
+
+        def dispatch(self, cls: type) -> Callable: ...
+        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
+        def _clear_cache(self) -> None: ...
+        def __call__(self, /, *args, **kwargs): ...
+
+    defop.register(_SingleDispatchCallable)(_SingleDispatchOperation)
+
+
 @defop
 def deffn(
     body: Annotated[T, Scoped[A | B]],
@@ -739,7 +767,7 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
     def __init__(
         self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
-        self._func = func
+        self.func = func
         self._registry = functools.singledispatch(func)
         functools.update_wrapper(self, func)
 
@@ -752,7 +780,24 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
         return self._registry.register
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        return self._func(self.dispatch, *args, **kwargs)
+        return self.func(self.dispatch, *args, **kwargs)
+
+
+@defop.register(_CustomSingleDispatchCallable)
+class _CustomSingleDispatchOperation(Generic[P, Q, S, T], _BaseOperation[P, T]):
+    _default: _CustomSingleDispatchCallable[P, Q, S, T]
+
+    def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
+        super().__init__(default, **kwargs)
+        self.__signature__ = inspect.signature(functools.partial(default.func, None))  # type: ignore
+
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
 
 
 @_CustomSingleDispatchCallable
