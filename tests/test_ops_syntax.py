@@ -319,11 +319,11 @@ def test_defop_singledispatchmethod():
         def my_singledispatch(self, x: object) -> object:
             raise NotImplementedError
 
-        @my_singledispatch.register(int)
+        @my_singledispatch.register
         def _(self, x: int) -> int:
             return x + 1
 
-        @my_singledispatch.register(str)
+        @my_singledispatch.register
         def _(self, x: str) -> str:
             return x + "!"
 
