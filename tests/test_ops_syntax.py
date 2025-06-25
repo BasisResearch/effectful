@@ -1,3 +1,4 @@
+import functools
 import inspect
 from collections.abc import Callable, Mapping
 from typing import Annotated, TypeVar
@@ -332,11 +333,9 @@ def test_defop_property():
 def test_defop_singledispatchmethod():
     """Test that defop can be used as a singledispatchmethod decorator."""
 
-    from functools import singledispatchmethod
-
     class MyClass:
         @defop
-        @singledispatchmethod
+        @functools.singledispatchmethod
         def my_singledispatch(self, x: object) -> object:
             raise NotImplementedError
 
