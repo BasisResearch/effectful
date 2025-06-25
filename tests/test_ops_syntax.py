@@ -1,7 +1,7 @@
 import functools
 import inspect
 from collections.abc import Callable, Mapping
-from typing import Annotated, TypeVar
+from typing import Annotated, ClassVar, TypeVar
 
 import pytest
 
@@ -246,6 +246,45 @@ def test_defop_bound_method():
     # Test that the bound method can be called with a handler
     with handler({my_bound_method_op: lambda x: x + 1}):
         assert my_bound_method_op(5) == 6
+
+
+def test_defop_setattr():
+    class MyClass:
+        def __init__(self, my_op: Operation):
+            self.my_op = my_op
+
+    @defop
+    def my_op(x: int) -> int:
+        raise NotImplementedError
+
+    instance = MyClass(my_op)
+    assert isinstance(instance.my_op, Operation)
+    assert instance.my_op is my_op
+
+    tm = instance.my_op(5)
+    assert isinstance(tm, Term)
+    assert isinstance(tm.op, Operation)
+    assert tm.op is my_op
+
+
+def test_defop_setattr_class():
+    class MyClass:
+        my_op: ClassVar[Operation]
+
+    @defop
+    def my_op(x: int) -> int:
+        raise NotImplementedError
+
+    MyClass.my_op = my_op
+
+    tm = MyClass.my_op(5)
+    assert isinstance(tm, Term)
+    assert isinstance(tm.op, Operation)
+    assert tm.op is my_op
+    assert tm.args == (5,)
+
+    with pytest.raises(TypeError):
+        MyClass().my_op(5)
 
 
 @pytest.mark.xfail(reason="defop does not support classmethod yet")
