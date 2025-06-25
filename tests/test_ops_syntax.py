@@ -1,9 +1,17 @@
+import functools
+import inspect
 from collections.abc import Callable, Mapping
 from typing import Annotated, TypeVar
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import call, evaluate, fvsof
-from effectful.ops.syntax import Scoped, deffn, defop, defterm
+from effectful.ops.syntax import (
+    Scoped,
+    _CustomSingleDispatchCallable,
+    deffn,
+    defop,
+    defterm,
+)
 from effectful.ops.types import Operation, Term
 
 
@@ -188,3 +196,47 @@ def test_term_str():
     assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
     assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
     assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
+
+
+def test_defop_singledispatch():
+    """Test that defop can be used with singledispatch functions."""
+
+    @defop
+    @functools.singledispatch
+    def process(x: object) -> object:
+        raise NotImplementedError("Unsupported type")
+
+    @process.register(int)
+    def _(x: int):
+        return x + 1
+
+    @process.register(str)
+    def _(x: str):
+        return x.upper()
+
+    assert process(1) == 2
+    assert process("hello") == "HELLO"
+
+    assert process.__signature__ == inspect.signature(process)
+
+
+def test_defop_customsingledispatch():
+    """Test that defop can be used with CustomSingleDispatch functions."""
+
+    @defop
+    @_CustomSingleDispatchCallable
+    def process(__dispatch: Callable, x: object) -> object:
+        return __dispatch(type(x))(x)
+
+    @process.register(int)
+    def _(x: int):
+        return x + 1
+
+    @process.register(str)
+    def _(x: str):
+        return x.upper()
+
+    assert process(1) == 2
+    assert process("hello") == "HELLO"
+
+    assert process.__signature__ == inspect.signature(process)
