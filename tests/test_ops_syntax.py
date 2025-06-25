@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Callable, Mapping
 from typing import Annotated, TypeVar
 
@@ -204,6 +205,12 @@ def test_defop_method():
     term = instance.my_method(5)
 
     assert isinstance(MyClass.my_method, Operation)
+
+    # check signature
+    assert MyClass.my_method.__signature__ == inspect.signature(
+        MyClass.my_method._default
+    )
+
     assert isinstance(term, Term)
     assert term.op.__name__ == "my_method"
     assert term.args == (
@@ -235,6 +242,11 @@ def test_defop_classmethod():
     term = MyClass.my_classmethod(5)
 
     assert isinstance(MyClass.my_classmethod, Operation)
+    # check signature
+    assert MyClass.my_classmethod.__signature__ == inspect.signature(
+        MyClass.my_classmethod._default
+    )
+
     assert isinstance(term, Term)
     assert term.op.__name__ == "my_classmethod"
     assert term.args == (
@@ -265,6 +277,11 @@ def test_defop_staticmethod():
     term = MyClass.my_staticmethod(5)
 
     assert isinstance(MyClass.my_staticmethod, Operation)
+    # check signature
+    assert MyClass.my_staticmethod.__signature__ == inspect.signature(
+        MyClass.my_staticmethod._default
+    )
+
     assert isinstance(term, Term)
     assert term.op.__name__ == "my_staticmethod"
     assert term.args == (5,)
@@ -293,6 +310,10 @@ def test_defop_property():
     term = instance.my_property
 
     assert isinstance(MyClass.my_property, Operation)
+    assert MyClass.my_property.__signature__ == inspect.signature(
+        MyClass.my_property._default
+    )
+
     assert isinstance(term, Term)
     assert term.op.__name__ == "my_property"
     assert term.args == (instance,)
@@ -339,6 +360,10 @@ def test_defop_singledispatchmethod():
     term_float = instance.my_singledispatch(1.5)
 
     assert isinstance(MyClass.my_singledispatch, Operation)
+    assert MyClass.my_singledispatch.__signature__ == inspect.signature(
+        MyClass.my_singledispatch._default
+    )
+
     assert isinstance(term_float, Term)
     assert term_float.op.__name__ == "my_singledispatch"
     assert term_float.args == (
