@@ -1108,6 +1108,20 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
 
 
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+    @defop
+    def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
+        raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterator)
+class _IteratorTerm(Generic[T], _IterableTerm[T]):
+    @defop
+    def __next__(self: collections.abc.Iterator[T]) -> T:
+        raise NotImplementedError
+
+
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
