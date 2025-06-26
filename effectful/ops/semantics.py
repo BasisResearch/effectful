@@ -193,7 +193,7 @@ def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     """
     if any(op in intp for op in intp2):  # alpha-rename
-        renaming = {op: defop(op) for op in intp2 if op in intp}
+        renaming: Interpretation = {op: defop(op) for op in intp2 if op in intp}
         intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
         return product(intp_fresh, intp2)
     else:
