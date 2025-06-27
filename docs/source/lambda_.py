@@ -51,7 +51,7 @@ def beta_app(f: Expr[Callable[[S], T]], arg: Expr[S]) -> Expr[T]:
     """beta reduction"""
     match f, arg:
         case Term(op, (var, body)), _ if op == Lam:
-            return handler({var: lambda: arg})(evaluate)(body)  # type: ignore
+            return handler({var: lambda: arg})(evaluate)(body)
         case _:
             return fwd()
 
