@@ -1967,17 +1967,8 @@ class GeneratorExpToDefstream(ast.NodeTransformer):
                 )
                 value = filtered_gen
             else:
-                # No filters, create a lambda
-                value = ast.Lambda(
-                    args=ast.arguments(
-                        posonlyargs=[],
-                        args=[],
-                        kwonlyargs=[],
-                        kw_defaults=[],
-                        defaults=[],
-                    ),
-                    body=self.visit(NameToCall(prev_var_names).visit(gen.iter)),
-                )
+                # No filters, create an expression
+                value = self.visit(NameToCall(prev_var_names).visit(gen.iter))
 
             streams.keys.append(NameStoreToLoad().visit(gen.target))
             streams.values.append(value)

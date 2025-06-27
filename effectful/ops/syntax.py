@@ -1119,7 +1119,6 @@ def defstream(
 
 
 @defdata.register(collections.abc.Iterable)
-@collections.abc.Iterable.register
 class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
@@ -1130,7 +1129,6 @@ class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
 
 
 @defdata.register(collections.abc.Iterator)
-@collections.abc.Iterator.register
 class _IteratorTerm(Generic[T], _IterableTerm[T]):
     @defop
     def __next__(self: collections.abc.Iterator[T]) -> T:
