@@ -12,7 +12,7 @@ from typing import Annotated, Concatenate, Generic, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
+from effectful.ops.types import Annotation, Expr, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -1192,7 +1192,7 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
         return x == other
 
 
-class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
+class ObjectInterpretation(Generic[T, V], collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
 
