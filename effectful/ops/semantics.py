@@ -47,7 +47,7 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
 
     """
     if op in intp:
-        return intp[op](*args, **kwargs)
+        return handler(intp)(intp[op])(*args, **kwargs)
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:

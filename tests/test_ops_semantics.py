@@ -19,7 +19,7 @@ from effectful.ops.semantics import (
     runner,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
 logger = logging.getLogger(__name__)
@@ -756,3 +756,17 @@ def test_typeof_generic():
 
     # Generic types are simplified to their origin type
     assert typeof(box_value(42)) is Box
+
+
+def test_evaluate_deep():
+    x, y, z = defop(int), defop(int), defop(int)
+    intp = {x: deffn(1), y: deffn(2), z: deffn(x() + y())}
+
+    with handler(intp):
+        assert z() == 3
+
+    assert handler(intp)(z)() == 3
+
+    assert evaluate(evaluate(z(), intp=intp), intp=intp) == 3
+
+    assert evaluate(z(), intp=intp) == 3
