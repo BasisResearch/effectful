@@ -1118,25 +1118,6 @@ def defstream(
     raise NotImplementedError
 
 
-@defterm.register(types.GeneratorType)
-def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
-    from effectful.internals.disassembler import GeneratorExpToDefstream, reconstruct
-
-    genexpr_ast = reconstruct(genexpr)
-    forexpr_ast = GeneratorExpToDefstream().visit(genexpr_ast)
-    forexpr_name = ".".join(genexpr.gi_code.co_name.split(".")[:-1] + ["<defstream>"])
-    forexpr_code = compile(
-        ast.fix_missing_locations(forexpr_ast),
-        filename=forexpr_name,
-        mode="eval",
-    )
-    return eval(
-        forexpr_code,
-        genexpr.gi_frame.f_globals | {"defstream": defstream},
-        genexpr.gi_frame.f_locals,  # TODO infer types and construct stream variables
-    )
-
-
 @defdata.register(collections.abc.Iterable)
 @collections.abc.Iterable.register
 class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
@@ -1161,6 +1142,25 @@ class _IteratorTerm(Generic[T], _IterableTerm[T]):
 
 iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
+
+
+@defterm.register(types.GeneratorType)
+def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
+    from effectful.internals.disassembler import GeneratorExpToDefstream, reconstruct
+
+    genexpr_ast = reconstruct(genexpr)
+    forexpr_ast = GeneratorExpToDefstream().visit(genexpr_ast)
+    forexpr_name = ".".join(genexpr.gi_code.co_name.split(".")[:-1] + ["<defstream>"])
+    forexpr_code = compile(
+        ast.fix_missing_locations(forexpr_ast),
+        filename=forexpr_name,
+        mode="eval",
+    )
+    return eval(
+        forexpr_code,
+        genexpr.gi_frame.f_globals | {"defstream": defstream},
+        genexpr.gi_frame.f_locals,  # TODO infer types and construct stream variables
+    )
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
