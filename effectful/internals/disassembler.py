@@ -1851,8 +1851,25 @@ class NameToCall(ast.NodeTransformer):
     def visit_Name(self, node: ast.Name) -> ast.Call | ast.Name:
         if node.id in self.varnames and isinstance(node.ctx, ast.Load):
             return ast.Call(node, args=[], keywords=[])
+        elif node.id in self.varnames and isinstance(node.ctx, ast.Store):
+            # If it's a store context, we don't want to transform it into a call
+            return ast.Name(id=node.id, ctx=ast.Load())
         else:
             return node
+
+
+class NameStoreToLoad(ast.NodeTransformer):
+    """
+    Transform variable names in store context to load context.
+    This transformer changes all variable names in store context (e.g., assignments)
+    to load context, effectively treating them as read-only variables.
+    """
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        return ast.Name(id=node.id, ctx=ast.Load())
+
+    def visit_Tuple(self, node: ast.Tuple) -> ast.Tuple:
+        return ast.Tuple(elts=[self.visit(elt) for elt in node.elts], ctx=ast.Load())
 
 
 class GeneratorExpToDefstream(ast.NodeTransformer):
@@ -1962,7 +1979,7 @@ class GeneratorExpToDefstream(ast.NodeTransformer):
                     body=self.visit(NameToCall(prev_var_names).visit(gen.iter)),
                 )
 
-            streams.keys.append(gen.target)
+            streams.keys.append(NameStoreToLoad().visit(gen.target))
             streams.values.append(value)
 
         # Transform the body expression
