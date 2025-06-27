@@ -46,8 +46,10 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     mul(add(1, 2), 3)
 
     """
+    from effectful.internals.runtime import interpreter
+
     if op in intp:
-        return handler(intp)(intp[op])(*args, **kwargs)
+        return interpreter(intp)(intp[op])(*args, **kwargs)
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:
