@@ -605,7 +605,7 @@ def handle_store_fast(
 
     new_stack = state.stack[:-1]
     new_result: CompExp = copy.deepcopy(state.result)
-    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Load())
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
     return replace(state, stack=new_stack, result=new_result)
 
 
@@ -628,7 +628,7 @@ def handle_store_deref(
 
     new_stack = state.stack[:-1]
     new_result: CompExp = copy.deepcopy(state.result)
-    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Load())
+    new_result.generators[-1].target = ast.Name(id=var_name, ctx=ast.Store())
     return replace(state, stack=new_stack, result=new_result)
 
 
@@ -652,7 +652,7 @@ def handle_store_fast_load_fast(
 
     new_stack = state.stack[:-1] + [ast.Name(id=load_name, ctx=ast.Load())]
     new_result: CompExp = copy.deepcopy(state.result)
-    new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Load())
+    new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Store())
     return replace(state, stack=new_stack, result=new_result)
 
 
