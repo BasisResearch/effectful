@@ -5,7 +5,7 @@ import pytest
 import tree
 
 from effectful.internals.disassembler import (
-    GeneratorExpToForexpr,
+    GeneratorExpToDefstream,
     NameToCall,
     ensure_ast,
     reconstruct,
@@ -925,105 +925,105 @@ def test_name_to_call_nested_comprehensions(source_src, varnames, expected_src):
         # Simple generator expressions
         (
             "(x for x in range(10))",
-            "forexpr(x(), {x: lambda: range(10)})",
+            "defstream(x(), {x: lambda: range(10)})",
         ),
         (
             "(x * 2 for x in range(10))",
-            "forexpr(x() * 2, {x: lambda: range(10)})",
+            "defstream(x() * 2, {x: lambda: range(10)})",
         ),
         (
             "(x + 1 for x in items)",
-            "forexpr(x() + 1, {x: lambda: items})",
+            "defstream(x() + 1, {x: lambda: items})",
         ),
         # Complex expressions
         (
             "(x ** 2 + 2 * x + 1 for x in range(5))",
-            "forexpr(x() ** 2 + 2 * x() + 1, {x: lambda: range(5)})",
+            "defstream(x() ** 2 + 2 * x() + 1, {x: lambda: range(5)})",
         ),
         (
             "(f(x) for x in data)",
-            "forexpr(f(x()), {x: lambda: data})",
+            "defstream(f(x()), {x: lambda: data})",
         ),
         # Multiple nested loops
         (
             "(x + y for x in range(3) for y in range(4))",
-            "forexpr(x() + y(), {x: lambda: range(3), y: lambda: range(4)})",
+            "defstream(x() + y(), {x: lambda: range(3), y: lambda: range(4)})",
         ),
         (
             "(x * y for x in items1 for y in items2)",
-            "forexpr(x() * y(), {x: lambda: items1, y: lambda: items2})",
+            "defstream(x() * y(), {x: lambda: items1, y: lambda: items2})",
         ),
         # Nested loops with dependencies
         (
             "(x + y for x in range(3) for y in range(x))",
-            "forexpr(x() + y(), {x: lambda: range(3), y: lambda: range(x())})",
+            "defstream(x() + y(), {x: lambda: range(3), y: lambda: range(x())})",
         ),
         (
             "((x, y) for x in range(3) for y in range(x, 5))",
-            "forexpr((x(), y()), {x: lambda: range(3), y: lambda: range(x(), 5)})",
+            "defstream((x(), y()), {x: lambda: range(3), y: lambda: range(x(), 5)})",
         ),
         # Triple nested loops
         (
             "(x + y + z for x in range(2) for y in range(2) for z in range(2))",
-            "forexpr(x() + y() + z(), {x: lambda: range(2), y: lambda: range(2), z: lambda: range(2)})",
+            "defstream(x() + y() + z(), {x: lambda: range(2), y: lambda: range(2), z: lambda: range(2)})",
         ),
         # Complex iterators
         (
             "(x for x in [1, 2, 3])",
-            "forexpr(x(), {x: lambda: [1, 2, 3]})",
+            "defstream(x(), {x: lambda: [1, 2, 3]})",
         ),
         (
             "(x for x in list(range(5)))",
-            "forexpr(x(), {x: lambda: list(range(5))})",
+            "defstream(x(), {x: lambda: list(range(5))})",
         ),
         # Expressions with function calls on iterators
         (
             "(x for x in sorted(items))",
-            "forexpr(x(), {x: lambda: sorted(items)})",
+            "defstream(x(), {x: lambda: sorted(items)})",
         ),
         # Generator expressions with filters
         (
             "(x for x in range(10) if x % 2 == 0)",
-            "forexpr(x(), {x: (x for x in range(10) if x % 2 == 0)})",
+            "defstream(x(), {x: (x for x in range(10) if x % 2 == 0)})",
         ),
         (
             "(x + y for x in range(3) if x > 0 for y in range(3))",
-            "forexpr(x() + y(), {x: (x for x in range(3) if x > 0), y: lambda: range(3)})",
+            "defstream(x() + y(), {x: (x for x in range(3) if x > 0), y: lambda: range(3)})",
         ),
         (
             "(x * 2 for x in items if x > 5)",
-            "forexpr(x() * 2, {x: (x for x in items if x > 5)})",
+            "defstream(x() * 2, {x: (x for x in items if x > 5)})",
         ),
         (
             "(x + y for x in range(5) for y in range(5) if x < y)",
-            "forexpr(x() + y(), {x: lambda: range(5), y: (y for y in range(5) if x() < y)})",
+            "defstream(x() + y(), {x: lambda: range(5), y: (y for y in range(5) if x() < y)})",
         ),
         (
             "(x for x in range(20) if x % 2 == 0 if x % 3 == 0)",
-            "forexpr(x(), {x: (x for x in range(20) if x % 2 == 0 if x % 3 == 0)})",
+            "defstream(x(), {x: (x for x in range(20) if x % 2 == 0 if x % 3 == 0)})",
         ),
         # Generator expressions with unpacking
         (
             "((x, y) for x, y in pairs)",
-            "forexpr((x(), y()), {(x, y): lambda: pairs})",
+            "defstream((x(), y()), {(x, y): lambda: pairs})",
         ),
         (
             "(a + b for a, b in zip(list1, list2))",
-            "forexpr(a() + b(), {(a, b): lambda: zip(list1, list2)})",
+            "defstream(a() + b(), {(a, b): lambda: zip(list1, list2)})",
         ),
         (
             "(x + y + z for x, (y, z) in nested_pairs)",
-            "forexpr(x() + y() + z(), {(x, (y, z)): lambda: nested_pairs})",
+            "defstream(x() + y() + z(), {(x, (y, z)): lambda: nested_pairs})",
         ),
     ],
 )
-def test_generator_exp_to_forexpr_transformer(genexpr_src, expected_src):
-    """Test GeneratorExpToForexpr transformer converts generator expressions to forexpr calls."""
+def test_generator_exp_to_defstream_transformer(genexpr_src, expected_src):
+    """Test GeneratorExpToDefstream transformer converts generator expressions to defstream calls."""
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
 
     # Apply the transformer
-    transformer = GeneratorExpToForexpr()
+    transformer = GeneratorExpToDefstream()
 
     # For test cases that should raise NotImplementedError
     if expected_src == "NOT_APPLICABLE":
@@ -1052,156 +1052,156 @@ def test_generator_exp_to_forexpr_transformer(genexpr_src, expected_src):
         # Generator expressions yielding comprehensions
         (
             "([x for x in range(i)] for i in range(5))",
-            "forexpr([x for x in range(i())], {i: lambda: range(5)})",
+            "defstream([x for x in range(i())], {i: lambda: range(5)})",
         ),
         (
             "({x: x**2 for x in range(i)} for i in range(5))",
-            "forexpr({x: x**2 for x in range(i())}, {i: lambda: range(5)})",
+            "defstream({x: x**2 for x in range(i())}, {i: lambda: range(5)})",
         ),
         (
             "({x for x in range(i) if x > 2} for i in range(10))",
-            "forexpr({x for x in range(i()) if x > 2}, {i: lambda: range(10)})",
+            "defstream({x for x in range(i()) if x > 2}, {i: lambda: range(10)})",
         ),
         # Double nested comprehensions
         (
             "([[x for x in range(j)] for j in range(i)] for i in range(3))",
-            "forexpr([[x for x in range(j)] for j in range(i())], {i: lambda: range(3)})",
+            "defstream([[x for x in range(j)] for j in range(i())], {i: lambda: range(3)})",
         ),
         (
             "([[x + y for y in range(j)] for j in range(i)] for i in range(3))",
-            "forexpr([[x + y for y in range(j)] for j in range(i())], {i: lambda: range(3)})",
+            "defstream([[x + y for y in range(j)] for j in range(i())], {i: lambda: range(3)})",
         ),
         # Generator with comprehension in iterator
         (
             "(x * 2 for x in [y**2 for y in range(5)])",
-            "forexpr(x() * 2, {x: lambda: [y**2 for y in range(5)]})",
+            "defstream(x() * 2, {x: lambda: [y**2 for y in range(5)]})",
         ),
         (
             "(x for x in {y: y**2 for y in range(3)}.values())",
-            "forexpr(x(), {x: lambda: {y: y**2 for y in range(3)}.values()})",
+            "defstream(x(), {x: lambda: {y: y**2 for y in range(3)}.values()})",
         ),
         # Complex expressions with nested calls
         (
             "(sum([x for x in range(i)]) for i in range(5))",
-            "forexpr(sum([x for x in range(i())]), {i: lambda: range(5)})",
+            "defstream(sum([x for x in range(i())]), {i: lambda: range(5)})",
         ),
         (
             "(max(x for x in range(i + 1)) for i in range(3))",
-            "forexpr(max(forexpr(x(), {x: lambda: range(i() + 1)})), {i: lambda: range(3)})",
+            "defstream(max(defstream(x(), {x: lambda: range(i() + 1)})), {i: lambda: range(3)})",
         ),
         (
             "(list(enumerate(x + 1 for x in range(i + 1))) for i in range(3))",
-            "forexpr(list(enumerate(forexpr(x() + 1, {x: lambda: range(i() + 1)}))), {i: lambda: range(3)})",
+            "defstream(list(enumerate(defstream(x() + 1, {x: lambda: range(i() + 1)}))), {i: lambda: range(3)})",
         ),
         # Nested generators in iterator
         (
             "([y for y in range(x)] for x in (z + 1 for z in range(5)))",
-            "forexpr([y for y in range(x())], {x: lambda: forexpr(z() + 1, {z: lambda: range(5)})})",
+            "defstream([y for y in range(x())], {x: lambda: defstream(z() + 1, {z: lambda: range(5)})})",
         ),
         # Complex filters with nested comprehensions
         (
             "(x for x in range(10) if x in [y**2 for y in range(5)])",
-            "forexpr(x(), {x: (x for x in range(10) if x in [y**2 for y in range(5)])})",
+            "defstream(x(), {x: (x for x in range(10) if x in [y**2 for y in range(5)])})",
         ),
         (
             "([x, y] for x in range(3) if x > 0 for y in range(3) if y in [z for z in range(x)])",
-            "forexpr([x(), y()], {x: (x for x in range(3) if x > 0), y: (y for y in range(3) if y in [z for z in range(x())])})",
+            "defstream([x(), y()], {x: (x for x in range(3) if x > 0), y: (y for y in range(3) if y in [z for z in range(x())])})",
         ),
         # Multiple filters with dependencies
         (
             "(x + y for x in range(5) if x > 1 for y in range(x) if y < x - 1)",
-            "forexpr(x() + y(), {x: (x for x in range(5) if x > 1), y: (y for y in range(x()) if y < x() - 1)})",
+            "defstream(x() + y(), {x: (x for x in range(5) if x > 1), y: (y for y in range(x()) if y < x() - 1)})",
         ),
         (
             "((x, y, z) for x in range(3) for y in range(x, 5) if y > x for z in range(y) if z < y)",
-            "forexpr((x(), y(), z()), {x: lambda: range(3), y: (y for y in range(x(), 5) if y > x()), z: (z for z in range(y()) if z < y())})",
+            "defstream((x(), y(), z()), {x: lambda: range(3), y: (y for y in range(x(), 5) if y > x()), z: (z for z in range(y()) if z < y())})",
         ),
         # Unpacking with nested structures
         (
             "(a + b + c for (a, b), c in [((1, 2), 3), ((4, 5), 6)])",
-            "forexpr(a() + b() + c(), {((a, b), c): lambda: [((1, 2), 3), ((4, 5), 6)]})",
+            "defstream(a() + b() + c(), {((a, b), c): lambda: [((1, 2), 3), ((4, 5), 6)]})",
         ),
         (
             "(x + sum(lst) for x, lst in [(1, [2, 3]), (4, [5, 6])])",
-            "forexpr(x() + sum(lst()), {(x, lst): lambda: [(1, [2, 3]), (4, [5, 6])]})",
+            "defstream(x() + sum(lst()), {(x, lst): lambda: [(1, [2, 3]), (4, [5, 6])]})",
         ),
         # Complex iterators
         (
             "(x for x in sorted([y**2 for y in range(5)]))",
-            "forexpr(x(), {x: lambda: sorted([y**2 for y in range(5)])})",
+            "defstream(x(), {x: lambda: sorted([y**2 for y in range(5)])})",
         ),
         (
             "(item for sublist in [[1, 2], [3, 4], [5, 6]] for item in sublist)",
-            "forexpr(item(), {sublist: lambda: [[1, 2], [3, 4], [5, 6]], item: lambda: sublist()})",
+            "defstream(item(), {sublist: lambda: [[1, 2], [3, 4], [5, 6]], item: lambda: sublist()})",
         ),
         # Expressions with method calls
         (
             "(s.upper() for s in ['hello', 'world'] if s.startswith('h'))",
-            "forexpr(s().upper(), {s: (s for s in ['hello', 'world'] if s.startswith('h'))})",
+            "defstream(s().upper(), {s: (s for s in ['hello', 'world'] if s.startswith('h'))})",
         ),
         (
             "(obj.value for obj in objects if hasattr(obj, 'value'))",
-            "forexpr(obj().value, {obj: (obj for obj in objects if hasattr(obj, 'value'))})",
+            "defstream(obj().value, {obj: (obj for obj in objects if hasattr(obj, 'value'))})",
         ),
         # CRITICAL: Generator expressions yielding generator expressions
         (
             "((x for x in range(i)) for i in range(5))",
-            "forexpr(forexpr(x(), {x: lambda: range(i())}), {i: lambda: range(5)})",
+            "defstream(defstream(x(), {x: lambda: range(i())}), {i: lambda: range(5)})",
         ),
         (
             "((x * 2 for x in range(i)) for i in range(3))",
-            "forexpr(forexpr(x() * 2, {x: lambda: range(i())}), {i: lambda: range(3)})",
+            "defstream(defstream(x() * 2, {x: lambda: range(i())}), {i: lambda: range(3)})",
         ),
         (
             "((x + y for x in range(3) for y in range(x)) for i in range(2))",
-            "forexpr(forexpr(x() + y(), {x: lambda: range(3), y: lambda: range(x())}), {i: lambda: range(2)})",
+            "defstream(defstream(x() + y(), {x: lambda: range(3), y: lambda: range(x())}), {i: lambda: range(2)})",
         ),
         # Generator yielding filtered generator
         (
             "((x for x in range(10) if x % 2 == 0) for i in range(3))",
-            "forexpr(forexpr(x(), {x: (x for x in range(10) if x % 2 == 0)}), {i: lambda: range(3)})",
+            "defstream(defstream(x(), {x: (x for x in range(10) if x % 2 == 0)}), {i: lambda: range(3)})",
         ),
         (
             "((x for x in range(i) if x > 0) for i in range(5))",
-            "forexpr(forexpr(x(), {x: (x for x in range(i()) if x > 0)}), {i: lambda: range(5)})",
+            "defstream(defstream(x(), {x: (x for x in range(i()) if x > 0)}), {i: lambda: range(5)})",
         ),
         # Nested generators with multiple levels
         (
             "((y for y in (x for x in range(i))) for i in range(3))",
-            "forexpr(forexpr(y(), {y: lambda: forexpr(x(), {x: lambda: range(i())})}), {i: lambda: range(3)})",
+            "defstream(defstream(y(), {y: lambda: defstream(x(), {x: lambda: range(i())})}), {i: lambda: range(3)})",
         ),
         (
             "(((x + y for x in range(2)) for y in range(3)) for z in range(4))",
-            "forexpr(forexpr(forexpr(x() + y(), {x: lambda: range(2)}), {y: lambda: range(3)}), {z: lambda: range(4)})",
+            "defstream(defstream(defstream(x() + y(), {x: lambda: range(2)}), {y: lambda: range(3)}), {z: lambda: range(4)})",
         ),
         # Generator with unpacking yielding generator
         (
             "((x + b for x in range(a)) for a, b in [(2, 3), (4, 5)])",
-            "forexpr(forexpr(x() + b(), {x: lambda: range(a())}), {(a, b): lambda: [(2, 3), (4, 5)]})",
+            "defstream(defstream(x() + b(), {x: lambda: range(a())}), {(a, b): lambda: [(2, 3), (4, 5)]})",
         ),
         # Complex case: generator yielding generator with filters and dependencies
         (
             "((x + y for x in range(i) if x > 0 for y in range(x)) for i in range(5) if i > 2)",
-            "forexpr(forexpr(x() + y(), {x: (x for x in range(i()) if x > 0), y: lambda: range(x())}), {i: (i for i in range(5) if i > 2)})",
+            "defstream(defstream(x() + y(), {x: (x for x in range(i()) if x > 0), y: lambda: range(x())}), {i: (i for i in range(5) if i > 2)})",
         ),
         # Generator expression yielding sum of generator expression
         (
             "(sum(x for x in range(i)) for i in range(5))",
-            "forexpr(sum(forexpr(x(), {x: lambda: range(i())})), {i: lambda: range(5)})",
+            "defstream(sum(defstream(x(), {x: lambda: range(i())})), {i: lambda: range(5)})",
         ),
         (
             "(max(x * 2 for x in range(i) if x > 0) for i in range(10))",
-            "forexpr(max(forexpr(x() * 2, {x: (x for x in range(i()) if x > 0)})), {i: lambda: range(10)})",
+            "defstream(max(defstream(x() * 2, {x: (x for x in range(i()) if x > 0)})), {i: lambda: range(10)})",
         ),
     ],
 )
-def test_generator_exp_to_forexpr_nested_comprehensions(genexpr_src, expected_src):
-    """Test GeneratorExpToForexpr transformer with nested comprehensions and complex expressions."""
+def test_generator_exp_to_defstream_nested_comprehensions(genexpr_src, expected_src):
+    """Test GeneratorExpToDefstream transformer with nested comprehensions and complex expressions."""
     # Parse the source code
     source_ast = ast.parse(genexpr_src, mode="eval")
 
     # Apply the transformer
-    transformer = GeneratorExpToForexpr()
+    transformer = GeneratorExpToDefstream()
     transformed_ast = transformer.visit(source_ast)
     expected_ast = ast.parse(expected_src, mode="eval")
 

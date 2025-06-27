@@ -1110,11 +1110,9 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
 
 
 @defop
-def forexpr(
+def defstream(
     body: Annotated[T, Scoped[A | B]],
-    streams: Annotated[
-        Mapping[Operation[..., S], Callable[..., Iterable[S]]], Scoped[B]
-    ],
+    streams: Annotated[Mapping[Operation[[], S], Iterable[S]], Scoped[B]],
 ) -> Annotated[Iterable[T], Scoped[A]]:
     """A higher-order operation that represents a for-expression."""
     raise NotImplementedError
@@ -1122,11 +1120,11 @@ def forexpr(
 
 @defterm.register(types.GeneratorType)
 def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
-    from effectful.internals.disassembler import GeneratorExpToForexpr, reconstruct
+    from effectful.internals.disassembler import GeneratorExpToDefstream, reconstruct
 
     genexpr_ast = reconstruct(genexpr)
-    forexpr_ast = GeneratorExpToForexpr().visit(genexpr_ast)
-    forexpr_name = ".".join(genexpr.gi_code.co_name.split(".")[:-1] + ["<forexpr>"])
+    forexpr_ast = GeneratorExpToDefstream().visit(genexpr_ast)
+    forexpr_name = ".".join(genexpr.gi_code.co_name.split(".")[:-1] + ["<defstream>"])
     forexpr_code = compile(
         ast.fix_missing_locations(forexpr_ast),
         filename=forexpr_name,
@@ -1134,7 +1132,7 @@ def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
     )
     return eval(
         forexpr_code,
-        genexpr.gi_frame.f_globals | {"forexpr": forexpr},
+        genexpr.gi_frame.f_globals | {"defstream": defstream},
         genexpr.gi_frame.f_locals,  # TODO infer types and construct stream variables
     )
 

@@ -1855,14 +1855,14 @@ class NameToCall(ast.NodeTransformer):
             return node
 
 
-class GeneratorExpToForexpr(ast.NodeTransformer):
+class GeneratorExpToDefstream(ast.NodeTransformer):
     """
-    Transform generator expressions into calls to `forexpr`.
+    Transform generator expressions into calls to `defstream`.
     This transformer converts generator expressions of the form:
 
         (expr for var in iter)
-    into calls to `forexpr`:
-        forexpr(expr, {var: lambda: iter})
+    into calls to `defstream`:
+        defstream(expr, {var: lambda: iter})
 
     It supports:
     - Multiple nested loops
@@ -1874,22 +1874,22 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
         >>> import ast
         >>> source = "(x * 2 for x in range(10))"
         >>> tree = ast.parse(source, mode='eval')
-        >>> transformer = GeneratorExpToForexpr()
+        >>> transformer = GeneratorExpTodefstream()
         >>> transformed = transformer.visit(tree)
         >>> ast.unparse(transformed)
-        'forexpr(x() * 2, {x: lambda: range(10)})'
+        'defstream(x() * 2, {x: lambda: range(10)})'
 
         >>> source = "(x for x in range(10) if x % 2 == 0)"
         >>> tree = ast.parse(source, mode='eval')
         >>> transformed = transformer.visit(tree)
         >>> ast.unparse(transformed)
-        'forexpr(x(), {x: (x for x in range(10) if x % 2 == 0)})'
+        'defstream(x(), {x: (x for x in range(10) if x % 2 == 0)})'
 
         >>> source = "((x, y) for x, y in pairs)"
         >>> tree = ast.parse(source, mode='eval')
         >>> transformed = transformer.visit(tree)
         >>> ast.unparse(transformed)
-        'forexpr((x(), y()), {(x, y): lambda: pairs})'
+        'defstream((x(), y()), {(x, y): lambda: pairs})'
 
     """
 
@@ -1971,7 +1971,7 @@ class GeneratorExpToForexpr(ast.NodeTransformer):
         body = self.visit(body)  # Recursively transform nested generator expressions
 
         return ast.Call(
-            func=ast.Name(id="forexpr", ctx=ast.Load()),
+            func=ast.Name(id="defstream", ctx=ast.Load()),
             args=[body, streams],
             keywords=[],
         )

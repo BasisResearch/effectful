@@ -12,8 +12,8 @@ from effectful.ops.syntax import (
     _CustomSingleDispatchCallable,
     deffn,
     defop,
+    defstream,
     defterm,
-    forexpr,
     iter_,
     next_,
 )
@@ -521,4 +521,4 @@ def test_defterm_genexpr():
 
     tm = defterm(xs)
     assert isinstance(tm, Term)
-    assert tm.op is forexpr
+    assert tm.op is defstream
