@@ -11,7 +11,7 @@ from typing import Annotated, Concatenate, Generic, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
+from effectful.ops.types import Annotation, Expr, Operation, Term
 
 P = ParamSpec("P")
 Q = ParamSpec("Q")
@@ -346,30 +346,44 @@ class Scoped(Annotation):
         return_ordinal = self._get_param_ordinal(bound_sig.signature.return_annotation)
         for name, param in bound_sig.signature.parameters.items():
             param_ordinal = self._get_param_ordinal(param)
-            if (
-                self._param_is_var(param)
-                and param_ordinal <= self.ordinal
-                and not param_ordinal <= return_ordinal
-            ):
-                if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name]) == len(
-                        set(bound_sig.arguments[name])
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name]}
-                elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name].values()) == len(
-                        set(bound_sig.arguments[name].values())
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name].values()}
-                else:
-                    param_bound_vars = {bound_sig.arguments[name]}
+            if param_ordinal <= self.ordinal and not param_ordinal <= return_ordinal:
+                param_value = bound_sig.arguments[name]
+                param_bound_vars = set()
+
+                if self._param_is_var(param):
+                    # Handle individual Operation parameters (existing behavior)
+                    if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value) == len(set(param_value))
+                        param_bound_vars = set(param_value)
+                    elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value.values()) == len(
+                            set(param_value.values())
+                        )
+                        param_bound_vars = set(param_value.values())
+                    else:
+                        param_bound_vars = {param_value}
+                elif param_ordinal:  # Only process if there's a Scoped annotation
+                    # We can't use tree.flatten here because we want to be able
+                    # to see dict keys
+                    def extract_operations(obj):
+                        if isinstance(obj, Operation):
+                            param_bound_vars.add(obj)
+                        elif isinstance(obj, dict):
+                            for k, v in obj.items():
+                                extract_operations(k)
+                                extract_operations(v)
+                        elif isinstance(obj, list | set | tuple):
+                            for v in obj:
+                                extract_operations(v)
+
+                    extract_operations(param_value)
 
                 # pre-condition: all bound variables should be distinct
-                assert not bound_vars & param_bound_vars
-
-                bound_vars |= param_bound_vars
+                if param_bound_vars:
+                    assert not bound_vars & param_bound_vars
+                    bound_vars |= param_bound_vars
 
         return bound_vars
 
@@ -633,6 +647,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    def __get__(self, instance, owner):
+        if instance is not None:
+            # This is an instance-level operation, so we need to bind the instance
+            return functools.partial(self, instance)
+        else:
+            # This is a static operation, so we return the operation itself
+            return self
+
 
 @defop.register(Operation)
 def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
@@ -673,6 +695,112 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
             raise NotImplementedError
 
     return defop(func, name=name)
+
+
+@defop.register(classmethod)
+def _(  # type: ignore
+    t: classmethod, *, name: str | None = None
+) -> Operation[Concatenate[type[S], P], T]:
+    raise NotImplementedError("classmethod operations are not yet supported")
+
+
+@defop.register(staticmethod)
+class _StaticMethodOperation(Generic[P, S, T], _BaseOperation[P, T]):
+    def __init__(self, default: staticmethod, **kwargs):
+        super().__init__(default=default.__func__, **kwargs)
+
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]:
+        return self
+
+
+@defop.register(property)
+class _PropertyOperation(Generic[S, T], _BaseOperation[[S], T]):
+    def __init__(self, default: property, **kwargs):  # type: ignore
+        assert not default.fset, "property with setter is not supported"
+        assert not default.fdel, "property with deleter is not supported"
+        super().__init__(default=typing.cast(Callable[[S], T], default.fget), **kwargs)
+
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_PropertyOperation[S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> T: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return self(instance)
+        else:
+            return self
+
+
+@defop.register(functools.singledispatchmethod)
+class _SingleDispatchMethodOperation(
+    Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]
+):
+    _default: Callable[Concatenate[S, P], T]
+
+    def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
+        if isinstance(default.func, classmethod):
+            raise NotImplementedError("Operations as classmethod are not yet supported")
+
+        @functools.wraps(default.func)
+        def _wrapper(obj: S, *args: P.args, **kwargs: P.kwargs) -> T:
+            return default.__get__(obj)(*args, **kwargs)
+
+        self._registry: functools.singledispatchmethod = default
+        super().__init__(_wrapper, **kwargs)
+
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_SingleDispatchMethodOperation[P, S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return functools.partial(self, instance)
+        else:
+            return self
+
+    @property
+    def register(self):
+        return self._registry.register
+
+    @property
+    def __isabstractmethod__(self):
+        return self._registry.__isabstractmethod__
+
+
+class _SingleDispatchOperation(Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]):
+    _default: "functools._SingleDispatchCallable[T]"
+
+    @property
+    def register(self):
+        return self._default.register
+
+    @property
+    def dispatch(self):
+        return self._default.dispatch
+
+
+if typing.TYPE_CHECKING:
+    defop.register(functools._SingleDispatchCallable)(_SingleDispatchOperation)
+else:
+
+    @typing.runtime_checkable
+    class _SingleDispatchCallable(typing.Protocol):
+        registry: types.MappingProxyType[object, Callable]
+
+        def dispatch(self, cls: type) -> Callable: ...
+        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
+        def _clear_cache(self) -> None: ...
+        def __call__(self, /, *args, **kwargs): ...
+
+    defop.register(_SingleDispatchCallable)(_SingleDispatchOperation)
 
 
 @defop
@@ -725,7 +853,7 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
     def __init__(
         self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
-        self._func = func
+        self.func = func
         self._registry = functools.singledispatch(func)
         functools.update_wrapper(self, func)
 
@@ -738,7 +866,24 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
         return self._registry.register
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        return self._func(self.dispatch, *args, **kwargs)
+        return self.func(self.dispatch, *args, **kwargs)
+
+
+@defop.register(_CustomSingleDispatchCallable)
+class _CustomSingleDispatchOperation(Generic[P, Q, S, T], _BaseOperation[P, T]):
+    _default: _CustomSingleDispatchCallable[P, Q, S, T]
+
+    def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
+        super().__init__(default, **kwargs)
+        self.__signature__ = inspect.signature(functools.partial(default.func, None))  # type: ignore
+
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
 
 
 @_CustomSingleDispatchCallable
@@ -749,22 +894,6 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     :type value: T
     :returns: A term.
     :rtype: Expr[T]
-
-    **Example usage**:
-
-    :func:`defterm` can be passed a function, and it will convert that function
-    to a term by calling it with appropriately typed free variables:
-
-    >>> def incr(x: int) -> int:
-    ...     return x + 1
-    >>> term = defterm(incr)
-
-    >>> print(str(term))
-    deffn(add(int(), 1), int)
-
-    >>> term(2)
-    3
-
     """
     if isinstance(value, Term):
         return value
@@ -924,8 +1053,25 @@ class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
         return call(self, *args, **kwargs)  # type: ignore
 
 
-@defterm.register(collections.abc.Callable)
-def _(value: Callable[P, T]) -> Expr[Callable[P, T]]:
+def trace(value: Callable[P, T]) -> Callable[P, T]:
+    """Convert a callable to a term by calling it with appropriately typed free variables.
+
+    **Example usage**:
+
+    :func:`trace` can be passed a function, and it will convert that function to
+    a term by calling it with appropriately typed free variables:
+
+    >>> def incr(x: int) -> int:
+    ...     return x + 1
+    >>> term = trace(incr)
+
+    >>> print(str(term))
+    deffn(add(int(), 1), int)
+
+    >>> term(2)
+    3
+
+    """
     from effectful.internals.runtime import interpreter
     from effectful.ops.semantics import apply, call
 
@@ -993,7 +1139,7 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
         return x == other
 
 
-class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
+class ObjectInterpretation(Generic[T, V], collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
 

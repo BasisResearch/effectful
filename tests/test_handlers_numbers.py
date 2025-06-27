@@ -6,7 +6,7 @@ import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import defop, defterm
+from effectful.ops.syntax import defop, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ def test_defun_1():
 
     with handler(eager_mixed):
 
-        @defterm
+        @trace
         def f1(x: int) -> int:
             return x + y() + 1
 
@@ -154,13 +154,13 @@ def test_defun_1():
 def test_defun_2():
     with handler(eager_mixed):
 
-        @defterm
+        @trace
         def f1(x: int, y: int) -> int:
             return x + y
 
-        @defterm
+        @trace
         def f2(x: int, y: int) -> int:
-            @defterm
+            @trace
             def f2_inner(y: int) -> int:
                 return x + y
 
@@ -172,11 +172,11 @@ def test_defun_2():
 def test_defun_3():
     with handler(eager_mixed):
 
-        @defterm
+        @trace
         def f2(x: int, y: int) -> int:
             return x + y
 
-        @defterm
+        @trace
         def app2(f: collections.abc.Callable, x: int, y: int) -> int:
             return f(x, y)
 
@@ -189,12 +189,12 @@ def test_defun_4():
 
     with handler(eager_mixed):
 
-        @defterm
+        @trace
         def compose(
             f: collections.abc.Callable[[int], int],
             g: collections.abc.Callable[[int], int],
         ) -> collections.abc.Callable[[int], int]:
-            @defterm
+            @trace
             def fg(x: int) -> int:
                 assert callable(f), f"f is not callable: {f}"
                 assert callable(g), f"g is not callable: {g}"
@@ -204,13 +204,13 @@ def test_defun_4():
 
         assert callable(compose), f"compose is not callable: {compose}"
 
-        @defterm
+        @trace
         def add1(x: int) -> int:
             return x + 1
 
         assert callable(add1), f"add1 is not callable: {add1}"
 
-        @defterm
+        @trace
         def add1_twice(x: int) -> int:
             return compose(add1, add1)(x)
 
@@ -222,16 +222,16 @@ def test_defun_4():
 
 def test_defun_5():
     with pytest.raises(ValueError, match="variadic"):
-        defterm(lambda *xs: None)
+        trace(lambda *xs: None)
 
     with pytest.raises(ValueError, match="variadic"):
-        defterm(lambda **ys: None)
+        trace(lambda **ys: None)
 
     with pytest.raises(ValueError, match="variadic"):
-        defterm(lambda y=1, **ys: None)
+        trace(lambda y=1, **ys: None)
 
     with pytest.raises(ValueError, match="variadic"):
-        defterm(lambda x, *xs, y=1, **ys: None)
+        trace(lambda x, *xs, y=1, **ys: None)
 
 
 def test_evaluate_2():

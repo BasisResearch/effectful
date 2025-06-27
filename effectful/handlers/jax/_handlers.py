@@ -186,21 +186,10 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     return x[tuple(key)]
 
 
-@_CustomSingleDispatchCallable
-def _bind_dims(
-    __dispatch: Callable[[type], Callable[..., T]],
-    value: T,
-    *names: Operation[[], jax.Array],
-) -> T:
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
-
-
 @defop
+@_CustomSingleDispatchCallable
 def bind_dims(
+    __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A]]:
@@ -223,29 +212,26 @@ def bind_dims(
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
-    return _bind_dims(value, *names)
-
-
-@_CustomSingleDispatchCallable
-def _unbind_dims(
-    __dispatch: Callable[[type], Callable[..., T]],
-    value: T,
-    *names: Operation[[], jax.Array],
-) -> T:
     if tree.is_nested(value):
-        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+        return tree.map_structure(lambda v: bind_dims(v, *names), value)
 
     semantic_type = typeof(value)
     return __dispatch(semantic_type)(value, *names)
 
 
 @defop
+@_CustomSingleDispatchCallable
 def unbind_dims(
+    __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
-    return _unbind_dims(value, *names)
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: unbind_dims(v, *names), value)
+
+    semantic_type = typeof(value)
+    return __dispatch(semantic_type)(value, *names)
 
 
 def jit(f, *args, **kwargs):

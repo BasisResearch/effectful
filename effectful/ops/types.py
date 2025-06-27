@@ -6,7 +6,15 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Generic, TypeAlias, TypeVar
+from typing import (
+    Any,
+    Generic,
+    TypeAlias,
+    TypeVar,
+    _ProtocolMeta,
+    overload,
+    runtime_checkable,
+)
 
 from typing_extensions import ParamSpec
 
@@ -134,6 +142,18 @@ class Term(abc.ABC, Generic[T]):
         def term_str(term):
             if isinstance(term, Operation):
                 return op_str(term)
+            elif isinstance(term, list):
+                return "[" + ", ".join(map(term_str, term)) + "]"
+            elif isinstance(term, tuple):
+                return "(" + ", ".join(map(term_str, term)) + ")"
+            elif isinstance(term, dict):
+                return (
+                    "{"
+                    + ", ".join(
+                        f"{term_str(k)}:{term_str(v)}" for (k, v) in term.items()
+                    )
+                    + "}"
+                )
             return str(term)
 
         def _apply(_, op, *args, **kwargs) -> str:
@@ -157,8 +177,52 @@ class Term(abc.ABC, Generic[T]):
 #: An expression is either a value or a term.
 Expr: TypeAlias = T | Term[T]
 
-#: An interpretation is a mapping from operations to their implementations.
-Interpretation = Mapping[Operation[..., T], Callable[..., V]]
+
+class _InterpretationMeta(_ProtocolMeta):
+    def __instancecheck__(cls, instance):
+        return isinstance(instance, collections.abc.Mapping) and all(
+            isinstance(k, Operation) and callable(v) for k, v in instance.items()
+        )
+
+
+@runtime_checkable
+class Interpretation(typing.Protocol[T, V], metaclass=_InterpretationMeta):
+    """An interpretation is a mapping from operations to their implementations."""
+
+    def keys(self):
+        raise NotImplementedError
+
+    def values(self):
+        raise NotImplementedError
+
+    def items(self):
+        raise NotImplementedError
+
+    @overload
+    def get(self, key: Operation[..., T], /) -> Callable[..., V] | None:
+        raise NotImplementedError
+
+    @overload
+    def get(
+        self, key: Operation[..., T], default: Callable[..., V], /
+    ) -> Callable[..., V]:
+        raise NotImplementedError
+
+    @overload
+    def get(self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
+        raise NotImplementedError
+
+    def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
+        raise NotImplementedError
+
+    def __contains__(self, key: Operation[..., T]) -> bool:
+        raise NotImplementedError
+
+    def __iter__(self):
+        raise NotImplementedError
+
+    def __len__(self) -> int:
+        raise NotImplementedError
 
 
 class Annotation(abc.ABC):
