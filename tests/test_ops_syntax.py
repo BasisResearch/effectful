@@ -13,6 +13,8 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     defterm,
+    iter_,
+    next_,
 )
 from effectful.ops.types import Operation, Term
 
@@ -487,8 +489,6 @@ def test_defop_singledispatchmethod():
 
 
 def test_defdata_iterable():
-    from effectful.ops.syntax import _IterableTerm, _IteratorTerm
-
     @defop
     def cons_iterable(*args: int) -> Iterable[int]:
         raise NotImplementedError
@@ -504,12 +504,12 @@ def test_defdata_iterable():
     assert isinstance(tm_iter, Term)
     assert isinstance(tm_iter, Iterator)
     assert issubclass(typeof(tm_iter), Iterator)
-    assert tm_iter.op is _IterableTerm.__iter__
+    assert tm_iter.op is iter_
 
     tm_iter_next = next(tm_iter)
     assert isinstance(tm_iter_next, Term)
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
-    assert tm_iter_next.op is _IteratorTerm.__next__
+    assert tm_iter_next.op is next_
 
     assert list(tm.args) == [1, 2, 3]

@@ -1122,6 +1122,10 @@ class _IteratorTerm(Generic[T], _IterableTerm[T]):
         raise NotImplementedError
 
 
+iter_ = _IterableTerm.__iter__
+next_ = _IteratorTerm.__next__
+
+
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
