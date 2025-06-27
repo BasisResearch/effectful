@@ -24,8 +24,6 @@ except ImportError:
 from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import (
-    _bind_dims,
-    _unbind_dims,
     bind_dims,
     sizesof,
     unbind_dims,
@@ -341,8 +339,8 @@ PyroDistribution = (
 )
 
 
-@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
-@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+@unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)  # type: ignore
+@unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)  # type: ignore
 def _unbind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],
@@ -401,8 +399,8 @@ def _unbind_dims_distribution(
     return new_d
 
 
-@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
-@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+@bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)  # type: ignore
+@bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)  # type: ignore
 def _bind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],
