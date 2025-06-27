@@ -1132,21 +1132,31 @@ def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
         filename=forexpr_name,
         mode="eval",
     )
-    return eval(forexpr_code, genexpr.gi_frame.f_globals, genexpr.gi_frame.f_locals)
+    return eval(
+        forexpr_code,
+        genexpr.gi_frame.f_globals | {"forexpr": forexpr},
+        genexpr.gi_frame.f_locals,  # TODO infer types and construct stream variables
+    )
 
 
 @defdata.register(collections.abc.Iterable)
 class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
-        raise NotImplementedError
+        if not isinstance(self, Term):
+            return iter(self)
+        else:
+            raise NotImplementedError
 
 
 @defdata.register(collections.abc.Iterator)
 class _IteratorTerm(Generic[T], _IterableTerm[T]):
     @defop
     def __next__(self: collections.abc.Iterator[T]) -> T:
-        raise NotImplementedError
+        if not isinstance(self, Term):
+            return next(self)
+        else:
+            raise NotImplementedError
 
 
 iter_ = _IterableTerm.__iter__

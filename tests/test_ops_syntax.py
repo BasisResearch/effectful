@@ -13,6 +13,7 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     defterm,
+    forexpr,
     iter_,
     next_,
 )
@@ -513,3 +514,11 @@ def test_defdata_iterable():
     assert tm_iter_next.op is next_
 
     assert list(tm.args) == [1, 2, 3]
+
+
+def test_defterm_genexpr():
+    xs = (x + 1 for x in range(5))
+
+    tm = defterm(xs)
+    assert isinstance(tm, Term)
+    assert tm.op is forexpr
