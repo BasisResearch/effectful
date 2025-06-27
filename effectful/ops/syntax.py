@@ -5,7 +5,7 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate, Generic, TypeVar
 
 import tree
@@ -1106,6 +1106,39 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
         )
 
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
+
+
+@defop
+def defstream(
+    body: Annotated[T, Scoped[A | B]],
+    streams: Annotated[Mapping[Operation[[], S], Iterable[S]], Scoped[B]],
+) -> Annotated[Iterable[T], Scoped[A]]:
+    """A higher-order operation that represents a for-expression."""
+    raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+    @defop
+    def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
+        if not isinstance(self, Term):
+            return iter(self)
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterator)
+class _IteratorTerm(Generic[T], _IterableTerm[T]):
+    @defop
+    def __next__(self: collections.abc.Iterator[T]) -> T:
+        if not isinstance(self, Term):
+            return next(self)
+        else:
+            raise NotImplementedError
+
+
+iter_ = _IterableTerm.__iter__
+next_ = _IteratorTerm.__next__
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:

@@ -1,18 +1,21 @@
 import functools
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Annotated, ClassVar, TypeVar
 
 import pytest
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import call, evaluate, fvsof, handler
+from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
     deffn,
     defop,
+    defstream,
     defterm,
+    iter_,
+    next_,
 )
 from effectful.ops.types import Operation, Term
 
@@ -484,3 +487,56 @@ def test_defop_singledispatchmethod():
     # Test that the method can be called with a handler
     with handler({MyClass.my_singledispatch: lambda self, x: x + 6}):
         assert instance.my_singledispatch(5) == 11
+
+
+def test_defdata_iterable():
+    @defop
+    def cons_iterable(*args: int) -> Iterable[int]:
+        raise NotImplementedError
+
+    tm = cons_iterable(1, 2, 3)
+    assert isinstance(tm, Term)
+    assert isinstance(tm, Iterable)
+    assert issubclass(typeof(tm), Iterable)
+    assert tm.op is cons_iterable
+    assert tm.args == (1, 2, 3)
+
+    tm_iter = iter(tm)
+    assert isinstance(tm_iter, Term)
+    assert isinstance(tm_iter, Iterator)
+    assert issubclass(typeof(tm_iter), Iterator)
+    assert tm_iter.op is iter_
+
+    tm_iter_next = next(tm_iter)
+    assert isinstance(tm_iter_next, Term)
+    # assert isinstance(tm_iter_next, numbers.Number)  # TODO
+    # assert issubclass(typeof(tm_iter_next), numbers.Number)
+    assert tm_iter_next.op is next_
+
+    assert list(tm.args) == [1, 2, 3]
+
+
+def test_defstream_1():
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    tm = defstream(x() + y(), {x: [1, 2, 3], y: [x() + 1, x() + 2, x() + 3]})
+
+    assert isinstance(tm, Term)
+    assert isinstance(tm, Iterable)
+    assert issubclass(typeof(tm), Iterable)
+    assert tm.op is defstream
+
+    assert x not in fvsof(tm)
+    assert y not in fvsof(tm)
+
+    tm_iter = iter(tm)
+    assert isinstance(tm_iter, Term)
+    assert isinstance(tm_iter, Iterator)
+    assert issubclass(typeof(tm_iter), Iterator)
+    assert tm_iter.op is iter_
+
+    tm_iter_next = next(tm_iter)
+    assert isinstance(tm_iter_next, Term)
+    # assert isinstance(tm_iter_next, numbers.Number)  # TODO
+    # assert issubclass(typeof(tm_iter_next), numbers.Number)
+    assert tm_iter_next.op is next_
