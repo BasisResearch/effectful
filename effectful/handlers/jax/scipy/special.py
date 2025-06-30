@@ -8,4 +8,4 @@ logsumexp = _register_jax_op(jax.scipy.special.logsumexp)
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
-    from jax.scipy.special import logsumexp  # noqa: F403
+    from jax.scipy.special import logsumexp  # noqa: F401
