@@ -46,8 +46,10 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     mul(add(1, 2), 3)
 
     """
+    from effectful.internals.runtime import interpreter
+
     if op in intp:
-        return intp[op](*args, **kwargs)
+        return interpreter(intp)(intp[op])(*args, **kwargs)
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:
@@ -193,7 +195,7 @@ def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     """
     if any(op in intp for op in intp2):  # alpha-rename
-        renaming = {op: defop(op) for op in intp2 if op in intp}
+        renaming: Interpretation = {op: defop(op) for op in intp2 if op in intp}
         intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
         return product(intp_fresh, intp2)
     else:
