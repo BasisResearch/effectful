@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import deffn, defop
+from effectful.ops.syntax import deffn, defop, defterm
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -73,7 +73,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         }
         with handler(subs):
             return evaluate(body)
-    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
+    elif not any(isinstance(a, Term) for a in (fn, *args, *kwargs.values())):
         return fn(*args, **kwargs)
     else:
         raise NotImplementedError
@@ -251,20 +251,27 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     6
 
     """
-    if intp is None:
-        from effectful.internals.runtime import get_interpretation
+    if intp is not None:
+        from effectful.internals.runtime import interpreter
+        return interpreter(intp)(evaluate)(expr)
 
-        intp = get_interpretation()
-
-    if isinstance(expr, Term):
-        (args, kwargs) = tree.map_structure(
-            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
-        )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)
-    elif tree.is_nested(expr):
-        return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
+    tm = defterm(expr)
+    if isinstance(tm, Term):
+        args = tuple(evaluate(arg) for arg in tm.args)
+        kwargs = {k: evaluate(v) for k, v in tm.kwargs.items()}
+        return tm.op(*args, **kwargs)
     else:
-        return expr
+        return tm
+
+    #if isinstance(expr, Term):
+    #    (args, kwargs) = tree.map_structure(
+    #        functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
+    #    )
+    #    return apply.__default_rule__(intp, expr.op, *args, **kwargs)
+    #elif tree.is_nested(expr):
+    #    return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
+    #else:
+    #    return expr
 
 
 def typeof(term: Expr[T]) -> type[T]:

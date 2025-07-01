@@ -540,3 +540,21 @@ def test_defstream_1():
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
     assert tm_iter_next.op is next_
+
+
+def test_defterm_sequence():
+    @defop
+    def my_sequence(xs: tuple[int, ...]) -> tuple[int, ...]:
+        raise NotImplementedError
+
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    tm = my_sequence((4, 5, x() + 1))
+
+    assert isinstance(tm, Term)
+    assert tm.op is my_sequence
+    assert tm.args == ((4, 5, x() + 1),)
+
+    # Test that the term can be evaluated
+    with handler({my_sequence: lambda xs: tuple(x * 2 for x in xs), x: lambda: 0}):
+        assert evaluate(tm) == (8, 10, 2)

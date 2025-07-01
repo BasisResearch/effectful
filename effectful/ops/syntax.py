@@ -689,7 +689,7 @@ def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
 def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+        if not any(isinstance(defterm(a), Term) for a in (*args, *kwargs.values())):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
@@ -1002,6 +1002,8 @@ def defdata(
     return typed_term
 
 
+@defterm.register(str)
+@defterm.register(bytes)
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
@@ -1118,7 +1120,7 @@ def defstream(
 
 
 @defdata.register(collections.abc.Iterable)
-class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
@@ -1128,7 +1130,7 @@ class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
 
 
 @defdata.register(collections.abc.Iterator)
-class _IteratorTerm(Generic[T], _IterableTerm[T]):
+class _IteratorTerm(Generic[T], _IterableTerm[T], collections.abc.Iterator[T]):
     @defop
     def __next__(self: collections.abc.Iterator[T]) -> T:
         if not isinstance(self, Term):
@@ -1139,6 +1141,46 @@ class _IteratorTerm(Generic[T], _IterableTerm[T]):
 
 iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
+
+
+@defdata.register(collections.abc.Collection)
+class _CollectionTerm(Generic[T], _IterableTerm[T]):
+    @defop
+    def __contains__(self: collections.abc.Collection[T], item: T) -> bool:
+        if not isinstance(self, Term):
+            return item in self
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __len__(self: collections.abc.Collection[T]) -> int:
+        if not isinstance(self, Term):
+            return len(self)
+        else:
+            raise NotImplementedError
+
+
+@defterm.register(collections.abc.Sequence)
+def _(value: collections.abc.Sequence[Expr[T]]) -> Expr[collections.abc.Sequence[T]]:
+    tp = type(value)
+    @defop
+    def _reconstructor(*items: Expr[T]) -> tp:  # type: ignore
+        if not any(isinstance(e, Term) for e in items):
+            return tree.sequence._sequence_like(value, items)
+        else:
+            raise NotImplementedError
+
+    return _reconstructor(*value)
+
+
+@defdata.register(collections.abc.Sequence)
+class _SequenceTerm(Generic[T], _CollectionTerm[T], collections.abc.Sequence[T]):
+    @defop
+    def __getitem__(self: collections.abc.Sequence[T], index: int) -> T:
+        if not isinstance(self, Term):
+            return self[index]
+        else:
+            raise NotImplementedError
 
 
 def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
