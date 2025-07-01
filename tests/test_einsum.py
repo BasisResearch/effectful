@@ -31,12 +31,9 @@ EINSUM_EXAMPLES = [
     "ai,abi,bci,cdi->i",
     "aij,abij,bcij->ij",
     "a,abi,bcij,cdij->ij",
+    "ab,bc,cd,de,ef,fg->ag",
 ]
 
-HARD_EINSUM_EXAMPLES = [
-    # tensor-train / HMM inference
-    "ab,bc,cd,de,ef,fg,gh,hi,ij,jk,kl->al",
-]
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",

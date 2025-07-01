@@ -1,4 +1,4 @@
-from functools import partial, reduce
+from functools import reduce
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
@@ -13,10 +13,6 @@ from weighted.ops.fold import fold
 from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
 
 
-def partition(l, p):
-    return reduce(lambda x, y: x[not p(y)].append(y) or x, l, ([], []))
-
-
 class FoldReorderReduction(ObjectInterpretation):
     """
     Performs smarter reduction/multiplication ordering.
@@ -27,34 +23,39 @@ class FoldReorderReduction(ObjectInterpretation):
     @implements(fold)
     def fold(self, semiring, streams, body):
         # Only succeeds if body is a D term of tensor multiplications.
-        indices, D_body = _parse_D_term(body)
-        mul_terms = _parse_mul_terms(D_body, semiring)
+        out_vars, D_body = _parse_D_term(body)
+        terms = _parse_mul_terms(D_body, semiring)
 
         # only proceed if the body multiplies multiple tensors
-        if len(mul_terms) < 2 or any(t.op != jax_getitem for t in mul_terms):
+        if len(terms) < 2 or any(t.op != jax_getitem for t in terms):
             return fwd()
 
         # todo: support dependent streams
-        ix_sizes = {k: len(v) for k, v in streams.items()}
-        var_order = _order_variables(ix_sizes, mul_terms, indices)
+        var_sizes = {str(k): len(v) for k, v in streams.items()}
+        in_vars = [fvsof(term.args[1]) for term in terms]
+        fold_path = _order_variables(var_sizes, in_vars, out_vars)
 
-        if len(var_order) == 0:
+        if len(fold_path) == 0:
             return fwd()  # no actual folding happening
 
-        prev_out_indices = set()
-        prev_fold = semiring.one
-        for var in var_order:
-            out_terms, mul_terms = partition(mul_terms, partial(_has_index, var))
-            out_indices = {v for term in out_terms for v in fvsof(term.args[1])}
-            out_indices = (out_indices | prev_out_indices) - {var}
-            prev_out_indices = out_indices
-            out_indices = tuple(sorted(ix() for ix in out_indices))
-            new_body = reduce(semiring.mul, out_terms + [prev_fold])
-            new_body = D((out_indices, new_body))
-            new_fold = fold(semiring, {var: streams[var]}, new_body)
-            prev_fold = new_fold
+        for fold_positions in fold_path:
+            fold_terms = [terms[i] for i in fold_positions]
+            terms = [term for i, term in enumerate(terms) if i not in fold_positions]
+            fold_out_vars, eliminated_vars = _find_contraction(
+                fold_positions, in_vars, out_vars
+            )
+            in_vars = [x for i, x in enumerate(in_vars) if i not in fold_positions]
+            in_vars.append(set(fold_out_vars))
 
-        return prev_fold
+            new_body = reduce(semiring.mul, fold_terms)
+            new_fold = D((fold_out_vars, new_body))
+            current_streams = {v: streams[v] for v in eliminated_vars}
+            if len(current_streams) > 0:
+                new_fold = fold(semiring, current_streams, new_fold)
+            terms.append(new_fold)
+
+        assert len(terms) == 1
+        return terms[0]
 
 
 def _parse_D_term(term):
@@ -67,13 +68,7 @@ def _parse_D_term(term):
         return fwd()
 
     indices, body = args[0]
-    return {ix.op for ix in indices}, body
-
-
-def _order_variables(ix_sizes, terms, indices):
-    # todo: informed variable ordering
-    var_order = set(ix_sizes.keys()) - indices
-    return tuple(var_order)
+    return fvsof(indices), body
 
 
 def _parse_mul_terms(value: Term, semiring):
@@ -83,8 +78,37 @@ def _parse_mul_terms(value: Term, semiring):
         return [value]
 
 
-def _has_index(ix, term):
-    return ix in fvsof(term)
+def _order_variables(var_sizes: dict, in_vars, out_vars, memory_limit=5000):
+    """
+    Greedy contraction ordering, using the numpy einsum implementation.
+    Note: although this is greedy, it still scales O(n^3) in the size of terms.
+    """
+    from numpy._core.einsumfunc import _greedy_path  # type: ignore
+
+    out_vars = set(map(str, out_vars))
+    in_vars = [set(map(str, x)) for x in in_vars]
+    path = _greedy_path(in_vars, out_vars, var_sizes, memory_limit)
+    return path
+
+
+def _find_contraction(positions, in_vars, out_vars):
+    """
+    Given a sequence of positions to contract, return
+    the variables of the newly created tensor, and what variables
+    have been eliminated.
+    """
+    idx_contract = set()
+    idx_remain = out_vars.copy()
+    for ind, value in enumerate(in_vars):
+        if ind in positions:
+            idx_contract |= value
+        else:
+            idx_remain |= value
+
+    new_result = idx_remain & idx_contract
+    idx_removed = idx_contract - new_result
+
+    return tuple(new_result), tuple(idx_removed)
 
 
 class FoldFusion(ObjectInterpretation):
