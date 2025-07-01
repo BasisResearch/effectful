@@ -84,9 +84,8 @@ class Operation(abc.ABC, Generic[Q, V]):
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import apply
-        from effectful.ops.syntax import defterm
 
-        return apply.__default_rule__(get_interpretation(), self, *(defterm(a) for a in args), **{k: defterm(v) for k, v in kwargs.items()})  # type: ignore
+        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

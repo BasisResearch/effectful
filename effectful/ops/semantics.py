@@ -1,3 +1,4 @@
+import collections.abc
 import contextlib
 import functools
 from collections.abc import Callable
@@ -255,23 +256,16 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
         from effectful.internals.runtime import interpreter
         return interpreter(intp)(evaluate)(expr)
 
-    tm = defterm(expr)
-    if isinstance(tm, Term):
-        args = tuple(evaluate(arg) for arg in tm.args)
-        kwargs = {k: evaluate(v) for k, v in tm.kwargs.items()}
-        return tm.op(*args, **kwargs)
+    if isinstance(expr, Term):
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        return expr.op(*args, **kwargs)
+    elif isinstance(expr, collections.abc.Mapping) and not isinstance(expr, Interpretation):
+        return type(expr)((evaluate(k), evaluate(v)) for k, v in expr.items())
+    elif isinstance(expr, collections.abc.Sequence) and not isinstance(expr, str):
+        return type(expr)(evaluate(e) for e in expr)
     else:
-        return tm
-
-    #if isinstance(expr, Term):
-    #    (args, kwargs) = tree.map_structure(
-    #        functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
-    #    )
-    #    return apply.__default_rule__(intp, expr.op, *args, **kwargs)
-    #elif tree.is_nested(expr):
-    #    return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
-    #else:
-    #    return expr
+        return expr
 
 
 def typeof(term: Expr[T]) -> type[T]:

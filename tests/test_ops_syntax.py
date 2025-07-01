@@ -1,3 +1,4 @@
+import collections.abc
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -552,8 +553,15 @@ def test_defterm_sequence():
     tm = my_sequence((4, 5, x() + 1))
 
     assert isinstance(tm, Term)
+    assert issubclass(typeof(tm), collections.abc.Sequence)
     assert tm.op is my_sequence
     assert tm.args == ((4, 5, x() + 1),)
+
+    tm_0 = tm[0]
+    assert isinstance(tm_0, Term)
+    assert isinstance(tm_0.op, Operation)
+    assert tm_0.op is type(tm).__getitem__
+    assert tm_0.args == (tm, 0)
 
     # Test that the term can be evaluated
     with handler({my_sequence: lambda xs: tuple(x * 2 for x in xs), x: lambda: 0}):

@@ -1147,7 +1147,7 @@ next_ = _IteratorTerm.__next__
 class _CollectionTerm(Generic[T], _IterableTerm[T]):
     @defop
     def __contains__(self: collections.abc.Collection[T], item: T) -> bool:
-        if not isinstance(self, Term):
+        if not isinstance(self, Term) and not isinstance(item, Term):
             return item in self
         else:
             raise NotImplementedError
@@ -1160,25 +1160,22 @@ class _CollectionTerm(Generic[T], _IterableTerm[T]):
             raise NotImplementedError
 
 
-@defterm.register(collections.abc.Sequence)
-def _(value: collections.abc.Sequence[Expr[T]]) -> Expr[collections.abc.Sequence[T]]:
-    tp = type(value)
-    @defop
-    def _reconstructor(*items: Expr[T]) -> tp:  # type: ignore
-        if not any(isinstance(e, Term) for e in items):
-            return tree.sequence._sequence_like(value, items)
-        else:
-            raise NotImplementedError
-
-    return _reconstructor(*value)
-
-
 @defdata.register(collections.abc.Sequence)
 class _SequenceTerm(Generic[T], _CollectionTerm[T], collections.abc.Sequence[T]):
     @defop
     def __getitem__(self: collections.abc.Sequence[T], index: int) -> T:
-        if not isinstance(self, Term):
+        if not isinstance(self, Term) and not isinstance(index, Term):
             return self[index]
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Mapping)
+class _MappingTerm(Generic[S, V], _CollectionTerm[S], collections.abc.Mapping[S, V]):
+    @defop
+    def __getitem__(self: collections.abc.Mapping[S, V], key: S) -> V:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self[key]
         else:
             raise NotImplementedError
 
