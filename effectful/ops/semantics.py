@@ -4,10 +4,9 @@ import functools
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-import tree
 from typing_extensions import ParamSpec
 
-from effectful.ops.syntax import deffn, defop, defterm
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 P = ParamSpec("P")

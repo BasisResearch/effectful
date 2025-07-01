@@ -553,6 +553,7 @@ def test_defterm_sequence():
     tm = my_sequence((4, 5, x() + 1))
 
     assert isinstance(tm, Term)
+    assert isinstance(tm, collections.abc.Sequence)
     assert issubclass(typeof(tm), collections.abc.Sequence)
     assert tm.op is my_sequence
     assert tm.args == ((4, 5, x() + 1),)
@@ -566,3 +567,29 @@ def test_defterm_sequence():
     # Test that the term can be evaluated
     with handler({my_sequence: lambda xs: tuple(x * 2 for x in xs), x: lambda: 0}):
         assert evaluate(tm) == (8, 10, 2)
+
+
+def test_defterm_mapping():
+    @defop
+    def my_mapping(k: int, v: int) -> Mapping[int, int]:
+        raise NotImplementedError
+
+    x = defop(int, name="x")
+    tm = my_mapping(3, x() + 1)
+
+    assert isinstance(tm, Term)
+    assert isinstance(tm, collections.abc.Mapping)
+    assert issubclass(typeof(tm), collections.abc.Mapping)
+    assert tm.op is my_mapping
+    assert tm.args == (3, x() + 1)
+    assert tm.kwargs == {}
+
+    tm_3 = tm[3]
+    assert isinstance(tm_3, Term)
+    assert isinstance(tm_3.op, Operation)
+    assert tm_3.op is type(tm).__getitem__
+    assert tm_3.args == (tm, 3)
+
+    # Test that the term can be evaluated
+    with handler({my_mapping: lambda k, v: {k: v}, x: lambda: 0}):
+        assert evaluate(tm) == {3: 1}
