@@ -10,6 +10,7 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
+    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
@@ -112,6 +113,13 @@ def test_operation_metadata():
     assert f_op != ff_op
 
 
+def test_map_structure_and_keys():
+    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
+    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
+    actual = _map_structure_and_keys(lambda x: x + 1, s)
+    assert actual == expected
+
+
 def test_scoped_collections():
     """Test that Scoped annotations work with tree-structured collections containing Operations."""
 
@@ -134,6 +142,11 @@ def test_scoped_collections():
     body = x() + y() + z()
     term = let_many(bindings, body)
     free_vars = fvsof(term)
+
+    new_x = list(term.args[0].keys())[0]
+    new_y = list(term.args[0].keys())[1]
+    assert new_x == term.args[1].args[0].args[0].op and new_x != x
+    assert new_y == term.args[1].args[0].args[1].op and new_y != y
 
     assert x not in free_vars
     assert y not in free_vars

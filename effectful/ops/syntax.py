@@ -901,6 +901,18 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
+def _map_structure_and_keys(func, structure):
+    def _map_value(value):
+        if isinstance(value, dict):
+            return {func(k): v for k, v in value.items()}
+        elif not tree.is_nested(value):
+            return func(value)
+        else:
+            return value
+
+    return tree.traverse(_map_value, structure, top_down=False)
+
+
 @_CustomSingleDispatchCallable
 def defdata(
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -977,7 +989,7 @@ def defdata(
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = tree.map_structure(
+            v = _map_structure_and_keys(
                 lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
             )
             res = evaluate(
