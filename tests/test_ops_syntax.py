@@ -571,7 +571,7 @@ def test_defterm_sequence():
 
 def test_defterm_mapping():
     @defop
-    def my_mapping(k: int, v: int) -> Mapping[int, int]:
+    def my_mapping(k: int, v: int) -> dict[int, int]:
         raise NotImplementedError
 
     x = defop(int, name="x")
