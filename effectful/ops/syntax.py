@@ -1,3 +1,4 @@
+import abc
 import collections.abc
 import dataclasses
 import functools
@@ -545,6 +546,10 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
 
+    @property
+    def __isabstractmethod__(self) -> bool:
+        return False
+
     def __eq__(self, other):
         if not isinstance(other, Operation):
             return NotImplemented
@@ -1045,6 +1050,33 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
+
+
+@functools.cache
+def termcls(interface: type[abc.ABC]) -> type[Term]:
+    """
+    Create a Term subclass that converts the abstract methods of the given ABC into Operations.
+    """
+    if issubclass(interface, Term) or not interface.__abstractmethods__:
+        raise TypeError(f"cls must be an abstract non-Term class with abstract methods, got {interface.__name__}")
+
+    if typing.get_origin(interface) not in (None, interface):
+        return termcls(typing.get_origin(interface))
+
+    @abc.update_abstractmethods
+    class _ProxyTerm(_BaseTerm, interface):
+        for _attr in interface.__abstractmethods__:
+            if _attr in interface.__dict__:
+                locals()[_attr] = defop(interface.__dict__[_attr])
+            else:
+                for _basecls in inspect.getmro(interface):
+                    if _attr in _basecls.__dict__ and isinstance(_basecls, abc.ABCMeta) and _basecls.__dict__[_attr].__isabstractmethod__:
+                        locals()[_attr] = termcls(_basecls).__dict__[_attr]
+                        break
+                del _basecls
+        del _attr
+
+    return _ProxyTerm
 
 
 @defdata.register(collections.abc.Callable)
