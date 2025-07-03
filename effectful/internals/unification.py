@@ -4,7 +4,7 @@ import types
 import typing
 
 
-def infer_return_type(bound_sig: inspect.BoundArguments) -> type | types.GenericAlias:
+def infer_return_type(bound_sig: inspect.BoundArguments) -> type | types.GenericAlias | types.UnionType:
     """
     Infer the return type of a function based on its signature and argument types.
     """
@@ -64,10 +64,14 @@ def infer_return_type(bound_sig: inspect.BoundArguments) -> type | types.Generic
 
 def unify(
     pattern: type
+    | typing.TypeVar
     | types.GenericAlias
+    | types.UnionType
     | collections.abc.Mapping
     | collections.abc.Sequence,
     concrete: type
+    | typing.TypeVar
+    | types.UnionType
     | types.GenericAlias
     | collections.abc.Mapping
     | collections.abc.Sequence,
@@ -82,7 +86,7 @@ def unify(
             raise TypeError(
                 f"Cannot unify {pattern} with {concrete} (already unified with {subs[pattern]})"
             )
-        return {**subs, pattern: concrete}
+        return {**subs, **{pattern: concrete}}
     elif typing.get_args(pattern) and typing.get_args(concrete):
         if typing.get_origin(pattern) != typing.get_origin(concrete):
             raise TypeError(f"Cannot unify {pattern} with {concrete}")
@@ -109,9 +113,55 @@ def unify(
         return subs
 
 
-def freetypevars(typ: type | types.GenericAlias) -> set[typing.TypeVar]:
+def freetypevars(typ: type | typing.TypeVar | types.GenericAlias | types.UnionType) -> set[typing.TypeVar]:
     """
-    Return a set of free type variables in the given type.
+    Return a set of free type variables in the given type expression.
+    
+    This function recursively traverses a type expression to find all TypeVar
+    instances that appear within it. It handles both simple types and generic
+    type aliases with nested type arguments. TypeVars are considered "free" 
+    when they are not bound to a specific concrete type.
+    
+    Args:
+        typ: The type expression to analyze. Can be a plain type (e.g., int),
+             a TypeVar, or a generic type alias (e.g., List[T], Dict[K, V]).
+    
+    Returns:
+        A set containing all TypeVar instances found in the type expression.
+        Returns an empty set if no TypeVars are present.
+    
+    Examples:
+        >>> T = typing.TypeVar('T')
+        >>> K = typing.TypeVar('K')
+        >>> V = typing.TypeVar('V')
+        
+        >>> # TypeVar returns itself
+        >>> freetypevars(T)
+        {~T}
+        
+        >>> # Generic type with one TypeVar
+        >>> freetypevars(list[T])
+        {~T}
+        
+        >>> # Generic type with multiple TypeVars
+        >>> sorted(freetypevars(dict[K, V]), key=lambda x: x.__name__)
+        [~K, ~V]
+        
+        >>> # Nested generic types
+        >>> sorted(freetypevars(list[dict[K, V]]), key=lambda x: x.__name__)
+        [~K, ~V]
+        
+        >>> # Concrete types have no free TypeVars
+        >>> freetypevars(int)
+        set()
+        
+        >>> # Generic types with concrete arguments have no free TypeVars
+        >>> freetypevars(list[int])
+        set()
+        
+        >>> # Mixed concrete and TypeVar arguments
+        >>> freetypevars(dict[str, T])
+        {~T}
     """
     if isinstance(typ, typing.TypeVar):
         return {typ}
@@ -122,8 +172,8 @@ def freetypevars(typ: type | types.GenericAlias) -> set[typing.TypeVar]:
 
 
 def substitute(
-    typ: type | types.GenericAlias, subs: collections.abc.Mapping[typing.TypeVar, type]
-) -> type | types.GenericAlias:
+    typ: type | types.GenericAlias | types.UnionType, subs: collections.abc.Mapping[typing.TypeVar, type]
+) -> type | types.GenericAlias | types.UnionType:
     """
     Substitute type variables in a type expression with concrete types.
 
@@ -153,12 +203,12 @@ def substitute(
         <class 'int'>
 
         >>> # Generic type substitution
-        >>> substitute(typing.List[T], {T: str})
-        typing.List[str]
+        >>> substitute(list[T], {T: str})
+        list[str]
 
         >>> # Nested generic substitution
-        >>> substitute(typing.Dict[K, typing.List[V]], {K: str, V: int})
-        typing.Dict[str, typing.List[int]]
+        >>> substitute(dict[K, list[V]], {K: str, V: int})
+        dict[str, list[int]]
 
         >>> # TypeVar not in mapping remains unchanged
         >>> substitute(T, {K: int})
@@ -174,6 +224,9 @@ def substitute(
         origin = typing.get_origin(typ)
         assert origin is not None, "Type must have an origin"
         new_args = tuple(substitute(arg, subs) for arg in typing.get_args(typ))
+        # Handle Union types specially
+        if origin is types.UnionType:
+            return typing.Union[new_args]
         return origin[new_args]
     else:
         return typ
