@@ -330,12 +330,9 @@ def substitute(
     """
     if isinstance(typ, typing.TypeVar):
         return subs.get(typ, typ)
-    elif isinstance(typ, list):
-        # Handle plain lists (e.g., in Callable's parameter list)
-        return [substitute(item, subs) for item in typ]
-    elif isinstance(typ, tuple):
-        # Handle plain tuples
-        return tuple(substitute(item, subs) for item in typ)
+    elif isinstance(typ, list | tuple):
+        # Handle plain lists/sequences (e.g., in Callable's parameter list)
+        return type(typ)(substitute(item, subs) for item in typ)
     elif typing.get_args(typ):
         origin = typing.get_origin(typ)
         assert origin is not None, "Type must have an origin"
