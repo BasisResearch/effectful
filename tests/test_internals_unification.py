@@ -2,41 +2,56 @@ import typing
 
 import pytest
 
-from effectful.internals.unification import infer_return_type, unify, substitute, freetypevars
+from effectful.internals.unification import (
+    freetypevars,
+    substitute,
+    unify,
+)
 
 
 @pytest.mark.parametrize(
-"typ,fvs", [
-    (typing.List[typing.TypeVar("T")], {typing.TypeVar("T")}),
-    (typing.Dict[str, typing.TypeVar("T")], {typing.TypeVar("T")}),
-    (int, set()),
-    (typing.List[int], set()),
-    (typing.Dict[str, int], set()),
-])
+    "typ,fvs",
+    [
+        (list[typing.TypeVar("T")], {typing.TypeVar("T")}),
+        (dict[str, typing.TypeVar("T")], {typing.TypeVar("T")}),
+        (int, set()),
+        (list[int], set()),
+        (dict[str, int], set()),
+    ],
+)
 def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
     assert freetypevars(typ) == fvs
 
 
 @pytest.mark.parametrize(
-    "typ,subs,expected", [
-        (typing.List[typing.TypeVar("T")], {typing.TypeVar("T"): int}, typing.List[int]),
-        (typing.Dict[str, typing.TypeVar("T")], {typing.TypeVar("T"): int}, typing.Dict[str, int]),
+    "typ,subs,expected",
+    [
+        (list[typing.TypeVar("T")], {typing.TypeVar("T"): int}, list[int]),
+        (dict[str, typing.TypeVar("T")], {typing.TypeVar("T"): int}, dict[str, int]),
         (int, {}, int),
-        (typing.List[int], {}, typing.List[int]),
-        (typing.Dict[str, int], {}, typing.Dict[str, int]),
-    ]
+        (list[int], {}, list[int]),
+        (dict[str, int], {}, dict[str, int]),
+    ],
 )
-def test_substitute(typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type):
+def test_substitute(
+    typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
+):
     assert substitute(typ, subs) == expected
 
 
 @pytest.mark.parametrize(
-    "pattern,concrete,subs,expected", [
+    "pattern,concrete,subs,expected",
+    [
         (typing.TypeVar("T"), int, {}, {typing.TypeVar("T"): int}),
-        (typing.List[typing.TypeVar("T")], typing.List[int], {typing.TypeVar("T"): int}),
-    ]
+        (list[typing.TypeVar("T")], list[int], {typing.TypeVar("T"): int}),
+    ],
 )
-def test_unify(pattern: type, concrete: type, subs: typing.Mapping[typing.TypeVar, type], expected: typing.Mapping[typing.TypeVar, type]):
+def test_unify(
+    pattern: type,
+    concrete: type,
+    subs: typing.Mapping[typing.TypeVar, type],
+    expected: typing.Mapping[typing.TypeVar, type],
+):
     assert unify(pattern, concrete, subs) == expected
 
 
