@@ -9,6 +9,74 @@ def infer_return_type(
 ) -> type | types.GenericAlias | types.UnionType:
     """
     Infer the return type of a function based on its signature and argument types.
+
+    This function takes a BoundArguments object (created by binding concrete argument
+    types to a function signature) and infers what the return type should be by:
+    1. Finding all TypeVars in the function's parameter and return annotations
+    2. Unifying the parameter type annotations with the concrete argument types
+    3. Applying the resulting TypeVar substitutions to the return type annotation
+
+    The function ensures that all type variables in the return type can be inferred
+    from the parameter types (no unbound type variables in the return).
+
+    Args:
+        bound_sig: A BoundArguments object obtained by calling
+                   inspect.signature(func).bind(*arg_types, **kwarg_types)
+                   where arg_types and kwarg_types are concrete types
+
+    Returns:
+        The inferred return type with all TypeVars substituted with concrete types
+
+    Raises:
+        TypeError: If the function lacks required type annotations, has unbound
+                   type variables in the return type, or if unification fails
+        NotImplementedError: If the function uses variadic parameters (*args, **kwargs),
+                             collection types as parameters, or parameters with
+                             free type variables
+
+    Examples:
+        >>> import inspect
+        >>> import typing
+        >>> T = typing.TypeVar('T')
+        >>> K = typing.TypeVar('K')
+        >>> V = typing.TypeVar('V')
+
+        >>> # Simple generic function
+        >>> def identity(x: T) -> T: ...
+        >>> sig = inspect.signature(identity)
+        >>> bound = sig.bind(int)
+        >>> infer_return_type(bound)
+        <class 'int'>
+
+        >>> # Function with multiple TypeVars
+        >>> def make_dict(key: K, value: V) -> dict[K, V]: ...
+        >>> sig = inspect.signature(make_dict)
+        >>> bound = sig.bind(str, int)
+        >>> infer_return_type(bound)
+        dict[str, int]
+
+        >>> # Function with nested generics
+        >>> def wrap_in_list(x: T) -> list[T]: ...
+        >>> sig = inspect.signature(wrap_in_list)
+        >>> bound = sig.bind(bool)
+        >>> infer_return_type(bound)
+        list[bool]
+
+        >>> # Function with no TypeVars
+        >>> def get_int() -> int: ...
+        >>> sig = inspect.signature(get_int)
+        >>> bound = sig.bind()
+        >>> infer_return_type(bound)
+        <class 'int'>
+
+        >>> # Error: unbound type variable in return
+        >>> def bad_func(x: T) -> tuple[T, K]: ...  # K not in parameters
+        >>> sig = inspect.signature(bad_func)
+        >>> bound = sig.bind(int)
+        >>> infer_return_type(bound)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        TypeError: unbound type variables in return type
     """
     bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
@@ -21,11 +89,15 @@ def infer_return_type(
         raise TypeError("All parameters must have type annotations")
 
     result_fvs: set[typing.TypeVar] = freetypevars(sig.return_annotation)
-    pattern_fvs: set[typing.TypeVar] = set.union(
-        *(freetypevars(p.annotation) for p in sig.parameters.values()),
+    pattern_fvs: set[typing.TypeVar] = (
+        set.union(*(freetypevars(p.annotation) for p in sig.parameters.values()))
+        if sig.parameters
+        else set()
     )
-    concrete_fvs: set[typing.TypeVar] = set.union(
-        *(freetypevars(arg) for arg in bound_sig.arguments.values()),
+    concrete_fvs: set[typing.TypeVar] = (
+        set.union(*(freetypevars(arg) for arg in bound_sig.arguments.values()))
+        if bound_sig.arguments
+        else set()
     )
     if (result_fvs | pattern_fvs) & concrete_fvs:
         raise TypeError(
@@ -161,7 +233,7 @@ def unify(
         TypeError: Cannot unify ~T with <class 'str'> (already unified with <class 'int'>)
 
         >>> # Callable type unification
-        >>> unify(typing.Callable[[T], V], typing.Callable[[int], str], {})
+        >>> unify(collections.abc.Callable[[T], V], collections.abc.Callable[[int], str], {})
         {~T: <class 'int'>, ~V: <class 'str'>}
 
         >>> # Sequence unification (tuples as sequences)
@@ -270,6 +342,8 @@ def freetypevars(
     """
     if isinstance(typ, typing.TypeVar):
         return {typ}
+    elif typing.get_origin(typ) is typing.Annotated:
+        return freetypevars(typing.get_args(typ)[0])
     elif isinstance(typ, list | tuple):
         # Handle plain lists and tuples (not generic aliases)
         return set.union(*(freetypevars(item) for item in typ)) if typ else set()
@@ -340,10 +414,6 @@ def substitute(
         # Handle Union types specially
         if origin is types.UnionType:
             return typing.Union[new_args]  # noqa
-        # Handle Callable types to preserve typing.Callable
-        elif origin is collections.abc.Callable:
-            # Use typing.Callable to get better repr
-            return typing.Callable[new_args[0], new_args[1]]
         return origin[new_args]
     else:
         return typ
