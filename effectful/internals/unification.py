@@ -4,7 +4,9 @@ import types
 import typing
 
 
-def infer_return_type(bound_sig: inspect.BoundArguments) -> type | types.GenericAlias | types.UnionType:
+def infer_return_type(
+    bound_sig: inspect.BoundArguments,
+) -> type | types.GenericAlias | types.UnionType:
     """
     Infer the return type of a function based on its signature and argument types.
     """
@@ -63,13 +65,13 @@ def infer_return_type(bound_sig: inspect.BoundArguments) -> type | types.Generic
 
 
 def unify(
-    pattern: type
+    typ: type
     | typing.TypeVar
     | types.GenericAlias
     | types.UnionType
     | collections.abc.Mapping
     | collections.abc.Sequence,
-    concrete: type
+    subtyp: type
     | typing.TypeVar
     | types.UnionType
     | types.GenericAlias
@@ -79,100 +81,180 @@ def unify(
 ) -> collections.abc.Mapping[typing.TypeVar, type]:
     """
     Unify a pattern type with a concrete type, returning a substitution map.
-    Raises TypeError if unification is not possible.
+
+    This function attempts to find a substitution of type variables that makes
+    the pattern type (typ) equal to the concrete type (subtyp). It updates
+    and returns the substitution mapping, or raises TypeError if unification
+    is not possible.
+
+    The function handles:
+    - TypeVar unification (binding type variables to concrete types)
+    - Generic type unification (matching origins and recursively unifying args)
+    - Structural unification of sequences and mappings
+    - Exact type matching for non-generic types
+
+    Args:
+        typ: The pattern type that may contain TypeVars to be unified
+        subtyp: The concrete type to unify with the pattern
+        subs: Existing substitution mappings to be extended (not modified)
+
+    Returns:
+        A new substitution mapping that includes all previous substitutions
+        plus any new TypeVar bindings discovered during unification.
+
+    Raises:
+        TypeError: If unification is not possible (incompatible types or
+                   conflicting TypeVar bindings)
+
+    Examples:
+        >>> import typing
+        >>> T = typing.TypeVar('T')
+        >>> K = typing.TypeVar('K')
+        >>> V = typing.TypeVar('V')
+
+        >>> # Simple TypeVar unification
+        >>> unify(T, int, {})
+        {~T: <class 'int'>}
+
+        >>> # Generic type unification
+        >>> unify(list[T], list[int], {})
+        {~T: <class 'int'>}
+
+        >>> # Multiple TypeVars
+        >>> unify(dict[K, V], dict[str, int], {})
+        {~K: <class 'str'>, ~V: <class 'int'>}
+
+        >>> # With existing substitutions
+        >>> unify(V, bool, {T: int})
+        {~T: <class 'int'>, ~V: <class 'bool'>}
+
+        >>> # Nested generic unification
+        >>> unify(list[dict[K, V]], list[dict[str, int]], {})
+        {~K: <class 'str'>, ~V: <class 'int'>}
+
+        >>> # Exact type matching
+        >>> unify(int, int, {})
+        {}
+
+        >>> # Failed unification - incompatible types
+        >>> unify(list[T], dict[str, int], {})  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        TypeError: Cannot unify list[~T] with dict[str, int]
+
+        >>> # Failed unification - conflicting TypeVar binding
+        >>> unify(T, str, {T: int})  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        TypeError: Cannot unify ~T with <class 'str'> (already unified with <class 'int'>)
+
+        >>> # Callable type unification
+        >>> unify(typing.Callable[[T], V], typing.Callable[[int], str], {})
+        {~T: <class 'int'>, ~V: <class 'str'>}
+
+        >>> # Sequence unification (tuples as sequences)
+        >>> unify((T, V), (int, str), {})
+        {~T: <class 'int'>, ~V: <class 'str'>}
     """
-    if isinstance(pattern, typing.TypeVar):
-        if pattern in subs and subs[pattern] != concrete:
+    if isinstance(typ, typing.TypeVar):
+        if typ in subs and subs[typ] != subtyp:
             raise TypeError(
-                f"Cannot unify {pattern} with {concrete} (already unified with {subs[pattern]})"
+                f"Cannot unify {typ} with {subtyp} (already unified with {subs[typ]})"
             )
-        return {**subs, **{pattern: concrete}}
-    elif typing.get_args(pattern) and typing.get_args(concrete):
-        if typing.get_origin(pattern) != typing.get_origin(concrete):
-            raise TypeError(f"Cannot unify {pattern} with {concrete}")
-        return unify(typing.get_args(pattern), typing.get_args(concrete), subs)
-    elif isinstance(pattern, collections.abc.Mapping) and isinstance(
-        concrete, collections.abc.Mapping
+        return {**subs, **{typ: subtyp}}
+    elif typing.get_args(typ) and typing.get_args(subtyp):
+        if typing.get_origin(typ) != typing.get_origin(subtyp):
+            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+        return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
+    elif isinstance(typ, collections.abc.Mapping) and isinstance(
+        subtyp, collections.abc.Mapping
     ):
-        if pattern.keys() != concrete.keys():
-            raise TypeError(f"Cannot unify {pattern} with {concrete}")
-        for key in pattern:
-            subs = unify(pattern[key], concrete[key], subs)
+        if typ.keys() != subtyp.keys():
+            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+        for key in typ:
+            subs = unify(typ[key], subtyp[key], subs)
         return subs
-    elif isinstance(pattern, collections.abc.Sequence) and isinstance(
-        concrete, collections.abc.Sequence
+    elif isinstance(typ, collections.abc.Sequence) and isinstance(
+        subtyp, collections.abc.Sequence
     ):
-        if len(pattern) != len(concrete):
-            raise TypeError(f"Cannot unify {pattern} with {concrete}")
-        for p_item, c_item in zip(pattern, concrete):
+        if len(typ) != len(subtyp):
+            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+        for p_item, c_item in zip(typ, subtyp):
             subs = unify(p_item, c_item, subs)
         return subs
     else:
-        if pattern != concrete:
-            raise TypeError(f"Cannot unify {pattern} with {concrete}")
+        if typ != subtyp:
+            raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return subs
 
 
-def freetypevars(typ: type | typing.TypeVar | types.GenericAlias | types.UnionType) -> set[typing.TypeVar]:
+def freetypevars(
+    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType,
+) -> set[typing.TypeVar]:
     """
     Return a set of free type variables in the given type expression.
-    
+
     This function recursively traverses a type expression to find all TypeVar
     instances that appear within it. It handles both simple types and generic
-    type aliases with nested type arguments. TypeVars are considered "free" 
+    type aliases with nested type arguments. TypeVars are considered "free"
     when they are not bound to a specific concrete type.
-    
+
     Args:
         typ: The type expression to analyze. Can be a plain type (e.g., int),
              a TypeVar, or a generic type alias (e.g., List[T], Dict[K, V]).
-    
+
     Returns:
         A set containing all TypeVar instances found in the type expression.
         Returns an empty set if no TypeVars are present.
-    
+
     Examples:
         >>> T = typing.TypeVar('T')
         >>> K = typing.TypeVar('K')
         >>> V = typing.TypeVar('V')
-        
+
         >>> # TypeVar returns itself
         >>> freetypevars(T)
         {~T}
-        
+
         >>> # Generic type with one TypeVar
         >>> freetypevars(list[T])
         {~T}
-        
+
         >>> # Generic type with multiple TypeVars
         >>> sorted(freetypevars(dict[K, V]), key=lambda x: x.__name__)
         [~K, ~V]
-        
+
         >>> # Nested generic types
         >>> sorted(freetypevars(list[dict[K, V]]), key=lambda x: x.__name__)
         [~K, ~V]
-        
+
         >>> # Concrete types have no free TypeVars
         >>> freetypevars(int)
         set()
-        
+
         >>> # Generic types with concrete arguments have no free TypeVars
         >>> freetypevars(list[int])
         set()
-        
+
         >>> # Mixed concrete and TypeVar arguments
         >>> freetypevars(dict[str, T])
         {~T}
     """
     if isinstance(typ, typing.TypeVar):
         return {typ}
+    elif isinstance(typ, list | tuple):
+        # Handle plain lists and tuples (not generic aliases)
+        return set.union(*(freetypevars(item) for item in typ)) if typ else set()
     elif typing.get_args(typ):
+        # Handle generic aliases
         return set.union(*(freetypevars(arg) for arg in typing.get_args(typ)))
     else:
         return set()
 
 
 def substitute(
-    typ: type | types.GenericAlias | types.UnionType, subs: collections.abc.Mapping[typing.TypeVar, type]
+    typ: type | types.GenericAlias | types.UnionType,
+    subs: collections.abc.Mapping[typing.TypeVar, type],
 ) -> type | types.GenericAlias | types.UnionType:
     """
     Substitute type variables in a type expression with concrete types.
@@ -220,13 +302,23 @@ def substitute(
     """
     if isinstance(typ, typing.TypeVar):
         return subs.get(typ, typ)
+    elif isinstance(typ, list):
+        # Handle plain lists (e.g., in Callable's parameter list)
+        return [substitute(item, subs) for item in typ]
+    elif isinstance(typ, tuple):
+        # Handle plain tuples
+        return tuple(substitute(item, subs) for item in typ)
     elif typing.get_args(typ):
         origin = typing.get_origin(typ)
         assert origin is not None, "Type must have an origin"
         new_args = tuple(substitute(arg, subs) for arg in typing.get_args(typ))
         # Handle Union types specially
         if origin is types.UnionType:
-            return typing.Union[new_args]
+            return typing.Union[new_args]  # noqa
+        # Handle Callable types to preserve typing.Callable
+        elif origin is collections.abc.Callable:
+            # Use typing.Callable to get better repr
+            return typing.Callable[new_args[0], new_args[1]]
         return origin[new_args]
     else:
         return typ

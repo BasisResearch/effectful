@@ -49,8 +49,22 @@ U = typing.TypeVar("U")
         # Union types (if supported)
         (list[T] | dict[K, V], {T, K, V}),
         (T | int, {T}),
+        # Callable types
+        (typing.Callable[[T], V], {T, V}),
+        (typing.Callable[[int, T], T], {T}),
+        (typing.Callable[[], T], {T}),
+        (typing.Callable[[T, U], V], {T, U, V}),
+        (typing.Callable[[int], int], set()),
+        (typing.Callable[[T], list[T]], {T}),
+        (typing.Callable[[dict[K, V]], tuple[K, V]], {K, V}),
+        # Nested Callable
+        (typing.Callable[[T], typing.Callable[[U], V]], {T, U, V}),
+        (list[typing.Callable[[T], V]], {T, V}),
+        (dict[K, typing.Callable[[T], V]], {K, T, V}),
+        # ParamSpec and TypeVarTuple (if needed later)
+        # (typing.Callable[typing.ParamSpec("P"), T], {T}),  # Would need to handle ParamSpec
     ],
-    ids=str
+    ids=str,
 )
 def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
     assert freetypevars(typ) == fvs
@@ -91,22 +105,73 @@ def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
         (list[tuple[int, T]], {T: str}, list[tuple[int, str]]),
         # Deeply nested substitution
         (list[dict[K, list[V]]], {K: str, V: int}, list[dict[str, list[int]]]),
-        (dict[tuple[K, V], list[T]], {K: int, V: str, T: float}, dict[tuple[int, str], list[float]]),
+        (
+            dict[tuple[K, V], list[T]],
+            {K: int, V: str, T: float},
+            dict[tuple[int, str], list[float]],
+        ),
         # Substituting with generic types
         (T, {T: list[int]}, list[int]),
         (list[T], {T: dict[str, int]}, list[dict[str, int]]),
-        (dict[K, V], {K: list[int], V: dict[str, float]}, dict[list[int], dict[str, float]]),
+        (
+            dict[K, V],
+            {K: list[int], V: dict[str, float]},
+            dict[list[int], dict[str, float]],
+        ),
         # Empty substitution
         (list[T], {}, list[T]),
         (dict[K, V], {}, dict[K, V]),
         # Union types (if supported)
         (T | int, {T: str}, str | int),
-        (list[T] | dict[K, V], {T: int, K: str, V: float}, list[int] | dict[str, float]),
+        (
+            list[T] | dict[K, V],
+            {T: int, K: str, V: float},
+            list[int] | dict[str, float],
+        ),
         # Irrelevant substitutions (TypeVars not in type)
         (list[T], {K: int, V: str}, list[T]),
         (int, {T: str, K: int}, int),
+        # Callable types
+        (typing.Callable[[T], V], {T: int, V: str}, typing.Callable[[int], str]),
+        (typing.Callable[[int, T], T], {T: str}, typing.Callable[[int, str], str]),
+        (typing.Callable[[], T], {T: float}, typing.Callable[[], float]),
+        (
+            typing.Callable[[T, U], V],
+            {T: int, U: str, V: bool},
+            typing.Callable[[int, str], bool],
+        ),
+        (typing.Callable[[int], int], {T: str}, typing.Callable[[int], int]),
+        (typing.Callable[[T], list[T]], {T: int}, typing.Callable[[int], list[int]]),
+        (
+            typing.Callable[[dict[K, V]], tuple[K, V]],
+            {K: str, V: int},
+            typing.Callable[[dict[str, int]], tuple[str, int]],
+        ),
+        # Nested Callable
+        (
+            typing.Callable[[T], typing.Callable[[U], V]],
+            {T: int, U: str, V: bool},
+            typing.Callable[[int], typing.Callable[[str], bool]],
+        ),
+        (
+            list[typing.Callable[[T], V]],
+            {T: int, V: str},
+            list[typing.Callable[[int], str]],
+        ),
+        (
+            dict[K, typing.Callable[[T], V]],
+            {K: str, T: int, V: float},
+            dict[str, typing.Callable[[int], float]],
+        ),
+        # Partial substitution with Callable
+        (typing.Callable[[T, U], V], {T: int}, typing.Callable[[int, U], V]),
+        (
+            typing.Callable[[T], dict[K, V]],
+            {T: int, K: str},
+            typing.Callable[[int], dict[str, V]],
+        ),
     ],
-    ids=str
+    ids=str,
 )
 def test_substitute(
     typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
@@ -115,19 +180,19 @@ def test_substitute(
 
 
 @pytest.mark.parametrize(
-    "pattern,concrete,expected_subs",
+    "typ,subtyp,expected_subs",
     [
         (T, int, {T: int}),
         (list[T], list[int], {T: int}),
     ],
-    ids=str
+    ids=str,
 )
 def test_unify(
-    pattern: type,
-    concrete: type,
+    typ: type,
+    subtyp: type,
     expected_subs: typing.Mapping[typing.TypeVar, type],
 ):
-    assert unify(pattern, concrete, {}) == expected_subs
+    assert unify(typ, subtyp, {}) == expected_subs
 
 
 def test_infer_return_type():
