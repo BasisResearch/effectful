@@ -8,12 +8,14 @@ from effectful.internals.unification import (
     unify,
 )
 
+T = typing.TypeVar("T")
+
 
 @pytest.mark.parametrize(
     "typ,fvs",
     [
-        (list[typing.TypeVar("T")], {typing.TypeVar("T")}),
-        (dict[str, typing.TypeVar("T")], {typing.TypeVar("T")}),
+        (list[T], {T}),
+        (dict[str, T], {T}),
         (int, set()),
         (list[int], set()),
         (dict[str, int], set()),
@@ -26,8 +28,8 @@ def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
 @pytest.mark.parametrize(
     "typ,subs,expected",
     [
-        (list[typing.TypeVar("T")], {typing.TypeVar("T"): int}, list[int]),
-        (dict[str, typing.TypeVar("T")], {typing.TypeVar("T"): int}, dict[str, int]),
+        (list[T], {T: int}, list[int]),
+        (dict[str, T], {T: int}, dict[str, int]),
         (int, {}, int),
         (list[int], {}, list[int]),
         (dict[str, int], {}, dict[str, int]),
@@ -40,19 +42,18 @@ def test_substitute(
 
 
 @pytest.mark.parametrize(
-    "pattern,concrete,subs,expected",
+    "pattern,concrete,expected_subs",
     [
-        (typing.TypeVar("T"), int, {}, {typing.TypeVar("T"): int}),
-        (list[typing.TypeVar("T")], list[int], {typing.TypeVar("T"): int}),
+        (T, int, {T: int}),
+        (list[T], list[int], {T: int}),
     ],
 )
 def test_unify(
     pattern: type,
     concrete: type,
-    subs: typing.Mapping[typing.TypeVar, type],
-    expected: typing.Mapping[typing.TypeVar, type],
+    expected_subs: typing.Mapping[typing.TypeVar, type],
 ):
-    assert unify(pattern, concrete, subs) == expected
+    assert unify(pattern, concrete, {}) == expected_subs
 
 
 def test_infer_return_type():
