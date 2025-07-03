@@ -694,7 +694,7 @@ def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
 def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(defterm(a), Term) for a in (*args, *kwargs.values())):
+        if not any(isinstance(a, Term) for a in (*args, *kwargs.values())):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
