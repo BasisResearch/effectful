@@ -53,10 +53,22 @@ def infer_return_type(
     # Build substitution map
     subs: collections.abc.Mapping[typing.TypeVar, type] = {}
     for name in sig.parameters:
-        subs = unify(sig.parameters[name].annotation, bound_sig.arguments[name], subs)
+        typ = sig.parameters[name].annotation
+        if typing.get_origin(typ) is typing.Annotated:
+            typ = typing.get_args(typ)[0]
+
+        subtyp = bound_sig.arguments[name]
+        if typing.get_origin(subtyp) is typing.Annotated:
+            subtyp = typing.get_args(subtyp)[0]
+
+        subs = unify(typ, subtyp, subs)
 
     # Apply substitutions to return type
-    result_type = substitute(sig.return_annotation, subs)
+    return_annotation = sig.return_annotation
+    if typing.get_origin(return_annotation) is typing.Annotated:
+        return_annotation = typing.get_args(return_annotation)[0]
+
+    result_type = substitute(return_annotation, subs)
     if freetypevars(result_type):
         raise TypeError(
             "Return type cannot have free type variables after substitution"
@@ -156,14 +168,30 @@ def unify(
         >>> unify((T, V), (int, str), {})
         {~T: <class 'int'>, ~V: <class 'str'>}
     """
-    if isinstance(typ, typing.TypeVar):
+    if typing.get_origin(typ) is typing.Annotated:
+        # Handle Annotated types by extracting the base type
+        return unify(typing.get_args(typ)[0], subtyp, subs)
+    elif typing.get_origin(subtyp) is typing.Annotated:
+        # Handle Annotated types by extracting the base type
+        return unify(typ, typing.get_args(subtyp)[0], subs)
+    elif isinstance(typ, typing.TypeVar):
         if typ in subs and subs[typ] != subtyp:
             raise TypeError(
                 f"Cannot unify {typ} with {subtyp} (already unified with {subs[typ]})"
             )
         return {**subs, **{typ: subtyp}}
     elif typing.get_args(typ) and typing.get_args(subtyp):
-        if typing.get_origin(typ) != typing.get_origin(subtyp):
+        typ_origin = typing.get_origin(typ)
+        subtyp_origin = typing.get_origin(subtyp)
+
+        # Handle Union types - both typing.Union and types.UnionType are compatible
+        if typ_origin in (typing.Union, types.UnionType) and subtyp_origin in (
+            typing.Union,
+            types.UnionType,
+        ):
+            return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
+
+        if typ_origin != subtyp_origin:
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
     elif isinstance(typ, collections.abc.Mapping) and isinstance(
@@ -183,7 +211,7 @@ def unify(
             subs = unify(p_item, c_item, subs)
         return subs
     else:
-        if typ != subtyp:
+        if not issubclass(typ, subtyp):
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return subs
 

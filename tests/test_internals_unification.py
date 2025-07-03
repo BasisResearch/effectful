@@ -180,19 +180,154 @@ def test_substitute(
 
 
 @pytest.mark.parametrize(
-    "typ,subtyp,expected_subs",
+    "typ,subtyp,initial_subs,expected_subs",
     [
-        (T, int, {T: int}),
-        (list[T], list[int], {T: int}),
+        # Basic TypeVar unification
+        (T, int, {}, {T: int}),
+        (T, str, {}, {T: str}),
+        (T, list[int], {}, {T: list[int]}),
+        # With existing substitutions
+        (V, bool, {T: int}, {T: int, V: bool}),
+        (K, str, {T: int, V: bool}, {T: int, V: bool, K: str}),
+        # Generic type unification
+        (list[T], list[int], {}, {T: int}),
+        (dict[K, V], dict[str, int], {}, {K: str, V: int}),
+        (tuple[T, U], tuple[int, str], {}, {T: int, U: str}),
+        (set[T], set[float], {}, {T: float}),
+        # Same TypeVar used multiple times
+        (dict[T, T], dict[int, int], {}, {T: int}),
+        (tuple[T, T, T], tuple[str, str, str], {}, {T: str}),
+        # Nested generic unification
+        (list[dict[K, V]], list[dict[str, int]], {}, {K: str, V: int}),
+        (dict[K, list[V]], dict[int, list[str]], {}, {K: int, V: str}),
+        (list[tuple[T, U]], list[tuple[bool, float]], {}, {T: bool, U: float}),
+        # Deeply nested
+        (list[dict[K, list[V]]], list[dict[str, list[int]]], {}, {K: str, V: int}),
+        (
+            dict[tuple[K, V], list[T]],
+            dict[tuple[int, str], list[bool]],
+            {},
+            {K: int, V: str, T: bool},
+        ),
+        # Mixed concrete and TypeVars
+        (dict[str, T], dict[str, int], {}, {T: int}),
+        (tuple[int, T, str], tuple[int, float, str], {}, {T: float}),
+        (list[tuple[int, T]], list[tuple[int, str]], {}, {T: str}),
+        # Exact type matching (no TypeVars)
+        (int, int, {}, {}),
+        (str, str, {}, {}),
+        (list[int], list[int], {}, {}),
+        (dict[str, int], dict[str, int], {}, {}),
+        # Callable type unification
+        (typing.Callable[[T], V], typing.Callable[[int], str], {}, {T: int, V: str}),
+        (
+            typing.Callable[[T, U], V],
+            typing.Callable[[int, str], bool],
+            {},
+            {T: int, U: str, V: bool},
+        ),
+        (typing.Callable[[], T], typing.Callable[[], float], {}, {T: float}),
+        (
+            typing.Callable[[T], list[T]],
+            typing.Callable[[int], list[int]],
+            {},
+            {T: int},
+        ),
+        # Nested Callable
+        (
+            typing.Callable[[T], typing.Callable[[U], V]],
+            typing.Callable[[int], typing.Callable[[str], bool]],
+            {},
+            {T: int, U: str, V: bool},
+        ),
+        # Union types - basic case where both sides are unions
+        # Note: Complex union unification like (T | int, str | int) -> {T: str}
+        # would require more sophisticated logic
+        # Sequence unification (tuples as sequences)
+        ((T, V), (int, str), {}, {T: int, V: str}),
+        ([T, V], [int, str], {}, {T: int, V: str}),
+        # Complex combinations
+        (
+            dict[K, typing.Callable[[T], V]],
+            dict[str, typing.Callable[[int], bool]],
+            {},
+            {K: str, T: int, V: bool},
+        ),
     ],
     ids=str,
 )
-def test_unify(
+def test_unify_success(
     typ: type,
     subtyp: type,
+    initial_subs: typing.Mapping[typing.TypeVar, type],
     expected_subs: typing.Mapping[typing.TypeVar, type],
 ):
-    assert unify(typ, subtyp, {}) == expected_subs
+    assert unify(typ, subtyp, initial_subs) == expected_subs
+
+
+@pytest.mark.parametrize(
+    "typ,subtyp,initial_subs,error_pattern",
+    [
+        # Incompatible types
+        (
+            list[T],
+            dict[str, int],
+            {},
+            "Cannot unify list\\[~T\\] with dict\\[str, int\\]",
+        ),
+        (int, str, {}, "Cannot unify <class 'int'> with <class 'str'>"),
+        (list[int], list[str], {}, "Cannot unify <class 'int'> with <class 'str'>"),
+        # Conflicting TypeVar bindings
+        (
+            T,
+            str,
+            {T: int},
+            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
+        ),
+        (
+            list[T],
+            list[str],
+            {T: int},
+            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
+        ),
+        # Mismatched generic types
+        (list[T], set[int], {}, "Cannot unify list\\[~T\\] with set\\[int\\]"),
+        (dict[K, V], list[int], {}, "Cannot unify dict\\[~K, ~V\\] with list\\[int\\]"),
+        # Same TypeVar with different values
+        (
+            dict[T, T],
+            dict[int, str],
+            {},
+            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
+        ),
+        (
+            tuple[T, T],
+            tuple[int, str],
+            {},
+            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
+        ),
+        # Mismatched arities
+        (tuple[T, U], tuple[int, str, bool], {}, "Cannot unify"),
+        (
+            typing.Callable[[T], V],
+            typing.Callable[[int, str], bool],
+            {},
+            "Cannot unify",
+        ),
+        # Sequence length mismatch
+        ((T, V), (int,), {}, "Cannot unify"),
+        ([T, V], [int, str, bool], {}, "Cannot unify"),
+    ],
+    ids=str,
+)
+def test_unify_failure(
+    typ: type,
+    subtyp: type,
+    initial_subs: typing.Mapping[typing.TypeVar, type],
+    error_pattern: str,
+):
+    with pytest.raises(TypeError, match=error_pattern):
+        unify(typ, subtyp, initial_subs)
 
 
 def test_infer_return_type():
