@@ -1,4 +1,3 @@
-import abc
 import collections.abc
 import dataclasses
 import functools
@@ -9,7 +8,6 @@ import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate, Generic, TypeVar
 
-import tree
 from typing_extensions import ParamSpec
 
 from effectful.ops.types import Annotation, Expr, Operation, Term
@@ -366,16 +364,17 @@ class Scoped(Annotation):
                     else:
                         param_bound_vars = {param_value}
                 elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use tree.flatten here because we want to be able
-                    # to see dict keys
+
                     def extract_operations(obj):
                         if isinstance(obj, Operation):
                             param_bound_vars.add(obj)
-                        elif isinstance(obj, dict):
+                        elif isinstance(obj, collections.abc.Mapping):
                             for k, v in obj.items():
                                 extract_operations(k)
                                 extract_operations(v)
-                        elif isinstance(obj, list | set | tuple):
+                        elif isinstance(
+                            obj, collections.abc.Sequence | collections.abc.Set
+                        ):
                             for v in obj:
                                 extract_operations(v)
 
@@ -675,6 +674,7 @@ def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(type)
+@defop.register(types.GenericAlias)
 def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
@@ -982,9 +982,6 @@ def defdata(
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = tree.map_structure(
-                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-            )
             res = evaluate(
                 v,
                 intp={
@@ -1050,33 +1047,6 @@ class _BaseTerm(Generic[T], Term[T]):
     @property
     def kwargs(self):
         return self._kwargs
-
-
-@functools.cache
-def termcls(interface: type[abc.ABC]) -> type[Term]:
-    """
-    Create a Term subclass that converts the abstract methods of the given ABC into Operations.
-    """
-    if issubclass(interface, Term) or not interface.__abstractmethods__:
-        raise TypeError(f"cls must be an abstract non-Term class with abstract methods, got {interface.__name__}")
-
-    if typing.get_origin(interface) not in (None, interface):
-        return termcls(typing.get_origin(interface))
-
-    @abc.update_abstractmethods
-    class _ProxyTerm(_BaseTerm, interface):
-        for _attr in interface.__abstractmethods__:
-            if _attr in interface.__dict__:
-                locals()[_attr] = defop(interface.__dict__[_attr])
-            else:
-                for _basecls in inspect.getmro(interface):
-                    if _attr in _basecls.__dict__ and isinstance(_basecls, abc.ABCMeta) and _basecls.__dict__[_attr].__isabstractmethod__:
-                        locals()[_attr] = termcls(_basecls).__dict__[_attr]
-                        break
-                del _basecls
-        del _attr
-
-    return _ProxyTerm
 
 
 @defdata.register(collections.abc.Callable)
@@ -1152,7 +1122,9 @@ def defstream(
 
 
 @defdata.register(collections.abc.Iterable)
-class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]):
+class _IterableTerm(
+    Generic[T], _BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]
+):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
@@ -1224,21 +1196,28 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
+        return (
+            op == op2
+            and len(args) == len(args2)
+            and set(kwargs) == set(kwargs2)
+            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
         )
     elif isinstance(x, Term) or isinstance(other, Term):
         return False
+    elif isinstance(x, collections.abc.Mapping) and isinstance(
+        other, collections.abc.Mapping
+    ):
+        return all(
+            k in x and k in other and syntactic_eq(x[k], other[k])
+            for k in set(x) | set(other)
+        )
+    elif isinstance(x, collections.abc.Sequence) and isinstance(
+        other, collections.abc.Sequence
+    ):
+        return len(x) == len(other) and all(
+            syntactic_eq(a, b) for a, b in zip(x, other)
+        )
     else:
         return x == other
 

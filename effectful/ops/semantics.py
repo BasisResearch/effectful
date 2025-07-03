@@ -251,18 +251,24 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     6
 
     """
+    from effectful.internals.runtime import get_interpretation, interpreter
+
     if intp is not None:
-        from effectful.internals.runtime import interpreter
         return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
         args = tuple(evaluate(arg) for arg in expr.args)
         kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
         return expr.op(*args, **kwargs)
-    elif isinstance(expr, collections.abc.Mapping) and not isinstance(expr, Interpretation):
+    elif isinstance(expr, collections.abc.Mapping):
         return type(expr)((evaluate(k), evaluate(v)) for k, v in expr.items())
     elif isinstance(expr, collections.abc.Sequence) and not isinstance(expr, str):
         return type(expr)(evaluate(e) for e in expr)
+    elif isinstance(expr, collections.abc.Set):
+        return type(expr)(evaluate(e) for e in expr)
+    elif isinstance(expr, Operation):
+        op_intp = get_interpretation().get(expr, expr)
+        return op_intp if isinstance(op_intp, Operation) else expr
     else:
         return expr
 

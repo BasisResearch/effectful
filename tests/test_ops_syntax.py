@@ -549,7 +549,6 @@ def test_defterm_sequence():
         raise NotImplementedError
 
     x = defop(int, name="x")
-    y = defop(int, name="y")
     tm = my_sequence((4, 5, x() + 1))
 
     assert isinstance(tm, Term)
