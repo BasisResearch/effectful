@@ -86,29 +86,14 @@ def infer_return_type(
         raise TypeError("Function must have a return type annotation")
 
     result_fvs: set[typing.TypeVar] = freetypevars(sig.return_annotation)
-    pattern_fvs: set[typing.TypeVar] = (
-        set.union(*(freetypevars(p.annotation) for p in sig.parameters.values()))
-        if sig.parameters
-        else set()
-    )
-    concrete_fvs: set[typing.TypeVar] = (
-        set.union(*(freetypevars(arg) for arg in bound_sig.arguments.values()))
-        if bound_sig.arguments
-        else set()
-    )
+    pattern_fvs: set[typing.TypeVar] = set().union(*(freetypevars(p.annotation) for p in sig.parameters.values()))
+    concrete_fvs: set[typing.TypeVar] = set().union(*(freetypevars(arg) for arg in bound_sig.arguments.values()))
     if (result_fvs | pattern_fvs) & concrete_fvs:
         raise TypeError(
             "Cannot unify free type variables in pattern and concrete types"
         )
     if not result_fvs <= pattern_fvs:
         raise TypeError("unbound type variables in return type")
-
-    # Check for type variables in concrete arguments - not implemented yet
-    for name, param in sig.parameters.items():
-        if freetypevars(bound_sig.arguments.get(name, None)):
-            raise TypeError(
-                f"Parameter '{name}' cannot have free type variables"
-            )
 
     # Build substitution map
     subs: collections.abc.Mapping[typing.TypeVar, type] = {}
@@ -150,13 +135,11 @@ def unify(
     | typing.TypeVar
     | types.GenericAlias
     | types.UnionType
-    | collections.abc.Mapping
     | collections.abc.Sequence,
     subtyp: type
     | typing.TypeVar
     | types.UnionType
     | types.GenericAlias
-    | collections.abc.Mapping
     | collections.abc.Sequence,
     subs: collections.abc.Mapping[typing.TypeVar, type],
 ) -> collections.abc.Mapping[typing.TypeVar, type]:
