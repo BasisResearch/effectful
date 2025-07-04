@@ -105,7 +105,7 @@ def infer_return_type(
 
     # Check for type variables in concrete arguments - not implemented yet
     for name, param in sig.parameters.items():
-        if freetypevars(bound_sig.arguments[name]):
+        if freetypevars(bound_sig.arguments.get(name, None)):
             raise TypeError(
                 f"Parameter '{name}' cannot have free type variables"
             )
@@ -244,23 +244,13 @@ def unify(
             )
 
         return {**subs, **{typ: subtyp}}
-    elif typing.get_args(typ) and typing.get_args(subtyp):
-        typ_origin = typing.get_origin(typ)
-        subtyp_origin = typing.get_origin(subtyp)
-
-        # Handle Union types - both typing.Union and types.UnionType are compatible
-        if typ_origin in (typing.Union, types.UnionType) and subtyp_origin in (
-            typing.Union,
-            types.UnionType,
-        ):
-            return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
-
-        if typ_origin != subtyp_origin:
-            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+    elif isinstance(typ, types.UnionType) or isinstance(subtyp, types.UnionType):
+        # TODO handle UnionType properly
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
-    elif isinstance(typ, collections.abc.Sequence) and isinstance(
-        subtyp, collections.abc.Sequence
-    ):
+    elif typing.get_args(typ) and typing.get_args(subtyp):
+        subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
+        return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
+    elif isinstance(typ, list | tuple) and isinstance(subtyp, list | tuple):
         if len(typ) != len(subtyp):
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         for p_item, c_item in zip(typ, subtyp):
@@ -630,7 +620,7 @@ def _(value: range) -> type:
 
 
 def freetypevars(
-    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType,
+    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType | types.NoneType,
 ) -> set[typing.TypeVar]:
     """
     Return a set of free type variables in the given type expression.
