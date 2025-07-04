@@ -125,22 +125,14 @@ def infer_return_type(
     # Build substitution map
     subs: collections.abc.Mapping[typing.TypeVar, type] = {}
     for name in sig.parameters:
-        typ = sig.parameters[name].annotation
-        if typing.get_origin(typ) is typing.Annotated:
-            typ = typing.get_args(typ)[0]
-
-        subtyp = bound_sig.arguments[name]
-        if typing.get_origin(subtyp) is typing.Annotated:
-            subtyp = typing.get_args(subtyp)[0]
-
-        subs = unify(typ, subtyp, subs)
+        subs = unify(
+            canonicalize(sig.parameters[name].annotation),
+            canonicalize(bound_sig.arguments[name]),
+            subs,
+        )
 
     # Apply substitutions to return type
-    return_annotation = sig.return_annotation
-    if typing.get_origin(return_annotation) is typing.Annotated:
-        return_annotation = typing.get_args(return_annotation)[0]
-
-    result_type = substitute(return_annotation, subs)
+    result_type = substitute(canonicalize(sig.return_annotation), subs)
     if freetypevars(result_type):
         raise TypeError(
             "Return type cannot have free type variables after substitution"
@@ -286,6 +278,60 @@ def unify(
         if not issubclass(typ, subtyp):
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return subs
+
+
+def canonicalize(
+    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType,
+) -> type:
+    """
+    Return a canonical form of the given type expression.
+
+    This function normalizes the type by removing Annotated wrappers and
+    ensuring that generic types are represented in their canonical form.
+    It does not modify TypeVars or Union types, but ensures that generic
+    aliases are returned in a consistent format.
+
+    Args:
+        typ: The type expression to canonicalize.
+
+    Returns:
+        A canonicalized version of the input type expression.
+
+    Examples:
+        >>> T = typing.TypeVar('T')
+        >>> canonicalize(typing.List[T])
+        list[~T]
+        >>> canonicalize(typing.Annotated[int, "example"])
+        <class 'int'>
+    """
+    if typing.get_origin(typ) is typing.Annotated:
+        return canonicalize(typing.get_args(typ)[0])
+    elif typing.get_origin(typ) in {typing.Union, types.UnionType}:
+        t = canonicalize(typing.get_args(typ)[0])
+        for arg in typing.get_args(typ)[1:]:
+            t = t | canonicalize(arg)
+        return t
+    elif isinstance(typ, typing._GenericAlias | types.GenericAlias):  # type: ignore
+        # Handle generic types
+        origin = canonicalize(typing.get_origin(typ))
+        assert origin is not None, "Type must have an origin"
+        return origin[tuple(canonicalize(a) for a in typing.get_args(typ))]
+    elif isinstance(typ, collections.abc.Sequence):
+        return tuple(canonicalize(item) for item in typ)
+    elif typ is typing.Callable:
+        return collections.abc.Callable
+    elif typ is typing.Any:
+        return object
+    elif typ is list:
+        return list
+    elif typ is dict:
+        return dict
+    elif typ is set:
+        return set
+    elif typ is tuple:
+        return tuple
+    else:
+        return typ
 
 
 def freetypevars(
