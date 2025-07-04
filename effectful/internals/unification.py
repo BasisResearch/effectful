@@ -244,7 +244,8 @@ def unify(
             )
 
         return {**subs, **{typ: subtyp}}
-    elif isinstance(typ, types.UnionType) or isinstance(subtyp, types.UnionType):
+    elif typing.get_origin(typ) in {typing.Union, types.UnionType} or \
+            typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
         # TODO handle UnionType properly
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
     elif typing.get_args(typ) and typing.get_args(subtyp):
