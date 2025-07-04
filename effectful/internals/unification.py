@@ -78,15 +78,11 @@ def infer_return_type(
             ...
         TypeError: unbound type variables in return type
     """
-    bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
 
     # validate that the function has a signature with well-formed type annotations
     if sig.return_annotation is inspect.Signature.empty:
         raise TypeError("Function must have a return type annotation")
-
-    if any(p.annotation is inspect.Signature.empty for p in sig.parameters.values()):
-        raise TypeError("All parameters must have type annotations")
 
     result_fvs: set[typing.TypeVar] = freetypevars(sig.return_annotation)
     pattern_fvs: set[typing.TypeVar] = (
@@ -133,7 +129,9 @@ def infer_return_type(
 
     # Apply substitutions to return type
     result_type = substitute(canonicalize(sig.return_annotation), subs)
-    if freetypevars(result_type):
+    if freetypevars(result_type) and not issubclass(
+        typing.get_origin(result_type), collections.abc.Callable
+    ):
         raise TypeError(
             "Return type cannot have free type variables after substitution"
         )
@@ -243,6 +241,7 @@ def unify(
             raise TypeError(
                 f"Cannot unify {typ} with {subtyp} (already unified with {subs[typ]})"
             )
+
         return {**subs, **{typ: subtyp}}
     elif typing.get_args(typ) and typing.get_args(subtyp):
         typ_origin = typing.get_origin(typ)
@@ -275,7 +274,9 @@ def unify(
             subs = unify(p_item, c_item, subs)
         return subs
     else:
-        if not issubclass(typ, subtyp):
+        subtyp = typing.get_origin(subtyp) or subtyp
+        typ = typing.get_origin(typ) or typ
+        if not issubclass(subtyp, typ):
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return subs
 
@@ -311,6 +312,9 @@ def canonicalize(
         for arg in typing.get_args(typ)[1:]:
             t = t | canonicalize(arg)
         return t
+    elif isinstance(typ, typing.TypeVar):
+        # TypeVars are already canonical
+        return typ
     elif isinstance(typ, typing._GenericAlias | types.GenericAlias):  # type: ignore
         # Handle generic types
         origin = canonicalize(typing.get_origin(typ))
@@ -318,6 +322,8 @@ def canonicalize(
         return origin[tuple(canonicalize(a) for a in typing.get_args(typ))]
     elif isinstance(typ, collections.abc.Sequence):
         return tuple(canonicalize(item) for item in typ)
+    elif typ is inspect.Parameter.empty:
+        return canonicalize(typing.Any)
     elif typ is typing.Callable:
         return collections.abc.Callable
     elif typ is typing.Any:
@@ -330,6 +336,8 @@ def canonicalize(
         return set
     elif typ is tuple:
         return tuple
+    elif not isinstance(typ, type) and typing.get_origin(typ) is None:
+        return type(typ)
     else:
         return typ
 
