@@ -453,6 +453,14 @@ def nested_generic(x: T) -> dict[str, list[T]]:
     return {"items": [x]}
 
 
+def variadic_args_func(*args: T) -> T:  # Variadic args not supported
+    return args[0]
+
+
+def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
+    return next(iter(kwargs.values()))
+
+
 @pytest.mark.parametrize(
     "func,args,kwargs,expected_return_type",
     [
@@ -525,6 +533,11 @@ def nested_generic(x: T) -> dict[str, list[T]]:
             {"a": bool, "b": list[bool], "c": dict[int, str]},
             tuple[bool, int, str],
         ),
+        # variadic args and kwargs
+        (variadic_args_func, (int,), {}, int),
+        (variadic_args_func, (int, int), {}, int),
+        (variadic_kwargs_func, (), {"x": int}, int),
+        (variadic_kwargs_func, (), {"x": int, "y": int}, int),
     ],
     ids=str,
 )
@@ -551,14 +564,6 @@ def no_return_annotation(x: T):  # No return annotation
 
 def no_param_annotation(x) -> T:  # No parameter annotation
     return x  # type: ignore
-
-
-def variadic_args_func(*args: T) -> T:  # Variadic args not supported
-    return args[0]
-
-
-def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
-    return next(iter(kwargs.values()))
 
 
 @pytest.mark.parametrize(
@@ -595,23 +600,6 @@ def test_infer_return_type_failure(
     bound = sig.bind(*args, **kwargs)
     with pytest.raises(TypeError):
         infer_return_type(bound)
-
-
-# Variadic functions - not implemented yet, marked as expected failures
-@pytest.mark.xfail(reason="Variadic args not implemented")
-def test_infer_return_type_variadic_args():
-    sig = inspect.signature(variadic_args_func)
-    bound = sig.bind(int)
-    result = infer_return_type(bound)
-    assert result == int
-
-
-@pytest.mark.xfail(reason="Variadic kwargs not implemented")
-def test_infer_return_type_variadic_kwargs():
-    sig = inspect.signature(variadic_kwargs_func)
-    bound = sig.bind(x=int)
-    result = infer_return_type(bound)
-    assert result == int
 
 
 @pytest.mark.parametrize(

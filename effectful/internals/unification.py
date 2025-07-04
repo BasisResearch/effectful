@@ -103,14 +103,8 @@ def infer_return_type(
     if not result_fvs <= pattern_fvs:
         raise TypeError("unbound type variables in return type")
 
-    # Check for variadic parameters and collections - not implemented yet
+    # Check for type variables in concrete arguments - not implemented yet
     for name, param in sig.parameters.items():
-        if param.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
-            raise TypeError(f"Parameter '{name}' cannot be variadic")
-
         if freetypevars(bound_sig.arguments[name]):
             raise TypeError(
                 f"Parameter '{name}' cannot have free type variables"
@@ -118,12 +112,27 @@ def infer_return_type(
 
     # Build substitution map
     subs: collections.abc.Mapping[typing.TypeVar, type] = {}
-    for name in sig.parameters:
-        subs = unify(
-            canonicalize(sig.parameters[name].annotation),
-            canonicalize(bound_sig.arguments[name]),
-            subs,
-        )
+    for name, param in sig.parameters.items():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            for arg in bound_sig.arguments[name]:
+                subs = unify(
+                    canonicalize(param.annotation),
+                    canonicalize(arg),
+                    subs,
+                )
+        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+            for arg in bound_sig.arguments[name].values():
+                subs = unify(
+                    canonicalize(param.annotation),
+                    canonicalize(arg),
+                    subs,
+                )
+        else:
+            subs = unify(
+                canonicalize(param.annotation),
+                canonicalize(bound_sig.arguments[name]),
+                subs,
+            )
 
     # Apply substitutions to return type
     result_type = substitute(canonicalize(sig.return_annotation), subs)
