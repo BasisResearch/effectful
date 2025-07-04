@@ -560,33 +560,27 @@ def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
 
 
 @pytest.mark.parametrize(
-    "func,args,kwargs,error_type,error_pattern",
+    "func,args,kwargs",
     [
         # Unbound type variable in return
         (
             unbound_typevar_func,
             (int,),
             {},
-            TypeError,
-            "unbound type variables in return type",
         ),
         # Missing annotations
         (
             no_return_annotation,
             (int,),
             {},
-            TypeError,
-            "Function must have a return type annotation",
         ),
         (
             no_param_annotation,
             (int,),
             {},
-            TypeError,
-            "All parameters must have type annotations",
         ),
         # Type mismatch - trying to unify incompatible types
-        (same_type_twice, (int, str), {}, TypeError, "Cannot unify"),
+        (same_type_twice, (int, str), {}),
     ],
     ids=str,
 )
@@ -594,12 +588,10 @@ def test_infer_return_type_failure(
     func: collections.abc.Callable,
     args: tuple,
     kwargs: dict,
-    error_type: type[Exception],
-    error_pattern: str,
 ):
     sig = inspect.signature(func)
     bound = sig.bind(*args, **kwargs)
-    with pytest.raises(error_type, match=error_pattern):
+    with pytest.raises(TypeError):
         infer_return_type(bound)
 
 

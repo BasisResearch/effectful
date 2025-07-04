@@ -108,13 +108,13 @@ def infer_return_type(
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         }:
-            raise NotImplementedError(f"Parameter '{name}' cannot be variadic")
+            raise TypeError(f"Parameter '{name}' cannot be variadic")
 
         if isinstance(bound_sig.arguments[name], collections.abc.Collection):
-            raise NotImplementedError(f"Parameter '{name}' cannot be a collection type")
+            raise TypeError(f"Parameter '{name}' cannot be a collection type")
 
         if freetypevars(bound_sig.arguments[name]):
-            raise NotImplementedError(
+            raise TypeError(
                 f"Parameter '{name}' cannot have free type variables"
             )
 
