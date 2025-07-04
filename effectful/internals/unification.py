@@ -338,7 +338,11 @@ def canonicalize(
 
 @functools.singledispatch
 def _nested_type(value) -> type:
-    if not isinstance(value, type) and typing.get_origin(value) is None:
+    from effectful.ops.types import Term
+
+    if isinstance(value, Term):
+        raise TypeError(f"Terms should not appear in _nested_type, but got {value}")
+    elif not isinstance(value, type) and typing.get_origin(value) is None:
         return type(value)
     else:
         return value
