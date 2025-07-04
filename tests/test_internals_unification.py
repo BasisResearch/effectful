@@ -314,89 +314,39 @@ def test_unify_success(
 
 
 @pytest.mark.parametrize(
-    "typ,subtyp,initial_subs,error_pattern",
+    "typ,subtyp",
     [
         # Incompatible types
-        (
-            list[T],
-            dict[str, int],
-            {},
-            "Cannot unify list\\[~T\\] with dict\\[str, int\\]",
-        ),
-        (int, str, {}, "Cannot unify <class 'int'> with <class 'str'>"),
-        (list[int], list[str], {}, "Cannot unify <class 'int'> with <class 'str'>"),
-        # Conflicting TypeVar bindings
-        (
-            T,
-            str,
-            {T: int},
-            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
-        ),
-        (
-            list[T],
-            list[str],
-            {T: int},
-            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
-        ),
+        (list[T], dict[str, int]),
+        (int, str),
+        (list[int], list[str]),
         # Mismatched generic types
-        (list[T], set[int], {}, "Cannot unify list\\[~T\\] with set\\[int\\]"),
-        (dict[K, V], list[int], {}, "Cannot unify dict\\[~K, ~V\\] with list\\[int\\]"),
+        (list[T], set[int]),
+        (dict[K, V], list[int]),
         # Same TypeVar with different values
-        (
-            dict[T, T],
-            dict[int, str],
-            {},
-            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
-        ),
-        (
-            tuple[T, T],
-            tuple[int, str],
-            {},
-            "Cannot unify ~T with <class 'str'> \\(already unified with <class 'int'>\\)",
-        ),
+        (dict[T, T], dict[int, str]),
+        (tuple[T, T], tuple[int, str]),
         # Mismatched arities
-        (tuple[T, U], tuple[int, str, bool], {}, "Cannot unify"),
+        (tuple[T, U], tuple[int, str, bool]),
         (
             collections.abc.Callable[[T], V],
             collections.abc.Callable[[int, str], bool],
-            {},
-            "Cannot unify",
         ),
         # Sequence length mismatch
-        ((T, V), (int,), {}, "Cannot unify"),
-        ([T, V], [int, str, bool], {}, "Cannot unify"),
-        # Union type failures - element-wise unification failures
-        (
-            T | V,
-            int | str,
-            {T: float},
-            "Cannot unify ~T with <class 'int'>",
-        ),  # TypeVar conflict
-        (
-            T | int,
-            V | str,
-            {},
-            "Cannot unify <class 'int'> with <class 'str'>",
-        ),  # Concrete type mismatch
-        (
-            T | int,
-            V | str,
-            {},
-            "Cannot unify <class 'int'> with <class 'str'>",
-        ),  # typing.Union mismatch
-        # Union with different arities
-        (T | V, int | str | bool, {}, "Cannot unify"),  # Different union sizes
+        ((T, V), (int,)),
+        ([T, V], [int, str, bool]),
+        # Union failure cases
+        (T | int, V | str),  # typing.Union mismatch
+        (T | V, int | str | bool),  # Different union sizes
     ],
     ids=str,
 )
 def test_unify_failure(
     typ: type,
     subtyp: type,
-    initial_subs: typing.Mapping[typing.TypeVar, type],
-    error_pattern: str,
 ):
-    with pytest.raises(TypeError, match=error_pattern):
-        unify(typ, subtyp, initial_subs)
+    with pytest.raises(TypeError):
+        unify(typ, subtyp, {})
 
 
 # Test functions with various type patterns

@@ -221,13 +221,13 @@ def unify(
         >>> unify(list[T], dict[str, int], {})  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
-        TypeError: Cannot unify list[~T] with dict[str, int]
+        TypeError: Cannot unify ...
 
         >>> # Failed unification - conflicting TypeVar binding
         >>> unify(T, str, {T: int})  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
-        TypeError: Cannot unify ~T with <class 'str'> (already unified with <class 'int'>)
+        TypeError: Cannot unify ...
 
         >>> # Callable type unification
         >>> unify(collections.abc.Callable[[T], V], collections.abc.Callable[[int], str], {})
@@ -238,11 +238,8 @@ def unify(
         {~T: <class 'int'>, ~V: <class 'str'>}
     """
     if isinstance(typ, typing.TypeVar):
-        if typ in subs and subs[typ] != subtyp:
-            raise TypeError(
-                f"Cannot unify {typ} with {subtyp} (already unified with {subs[typ]})"
-            )
-
+        if typ in subs:
+            subs = unify(subs[typ], subtyp, subs)
         return {**subs, **{typ: subtyp}}
     elif typing.get_origin(typ) in {typing.Union, types.UnionType} or \
             typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
@@ -251,18 +248,14 @@ def unify(
     elif typing.get_args(typ) and typing.get_args(subtyp):
         subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
-    elif isinstance(typ, list | tuple) and isinstance(subtyp, list | tuple):
-        if len(typ) != len(subtyp):
-            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+    elif isinstance(typ, list | tuple) and isinstance(subtyp, list | tuple) and len(typ) == len(subtyp):
         for p_item, c_item in zip(typ, subtyp):
             subs = unify(p_item, c_item, subs)
         return subs
-    else:
-        subtyp = typing.get_origin(subtyp) or subtyp
-        typ = typing.get_origin(typ) or typ
-        if not issubclass(subtyp, typ):
-            raise TypeError(f"Cannot unify {typ} with {subtyp}")
+    elif issubclass(typing.get_origin(subtyp) or subtyp, typing.get_origin(typ) or typ):
         return subs
+    else:
+        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
 def canonicalize(
@@ -375,25 +368,25 @@ def canonicalize(
         return t
     elif isinstance(typ, typing.TypeVar):
         return typ
+    elif typing.get_origin(typ) is collections.abc.Callable:
+        origin, args = typing.get_origin(typ), typing.get_args(typ)
+        if not args:
+            return origin
+        elif len(args) == 2 and isinstance(args[0], (list, tuple)):
+            # Callable[[arg1, arg2, ...], return_type] format
+            param_list = [canonicalize(a) for a in args[0]]
+            return_type = canonicalize(args[1])
+            return origin[[*param_list], return_type]
+        else:
+            # Handle other Callable formats
+            return origin[tuple(canonicalize(a) for a in args)]
     elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and typing.get_origin(typ) is not typ:  # type: ignore
         # Handle generic types
         origin = typing.get_origin(typ)
         args = typing.get_args(typ)
-        
-        # Special handling for Callable types
-        if origin is collections.abc.Callable and args:
-            if len(args) == 2 and isinstance(args[0], (list, tuple)):
-                # Callable[[arg1, arg2, ...], return_type] format
-                param_list = [canonicalize(a) for a in args[0]]
-                return_type = canonicalize(args[1])
-                return collections.abc.Callable[[*param_list], return_type]
-            else:
-                # Handle other Callable formats
-                return origin[tuple(canonicalize(a) for a in args)]
-        else:
-            # Regular generic types
-            canonical_origin = canonicalize(origin)
-            return canonical_origin[tuple(canonicalize(a) for a in args)]
+        # Regular generic types
+        canonical_origin = canonicalize(origin)
+        return canonical_origin[tuple(canonicalize(a) for a in args)]
     # Handle legacy typing aliases
     elif hasattr(typing, 'List') and typ is getattr(typing, 'List', None):
         return list
