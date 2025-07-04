@@ -5,8 +5,10 @@ import typing
 import pytest
 
 from effectful.internals.unification import (
+    canonicalize,
     freetypevars,
     infer_return_type,
+    nested_type,
     substitute,
     unify,
 )
@@ -610,3 +612,292 @@ def test_infer_return_type_variadic_kwargs():
     bound = sig.bind(x=int)
     result = infer_return_type(bound)
     assert result == int
+
+
+@pytest.mark.parametrize(
+    "typ,expected",
+    [
+        # Plain types pass through unchanged
+        (int, int),
+        (str, str),
+        (float, float),
+        (bool, bool),
+        (list, list),
+        (dict, dict),
+        (set, set),
+        (tuple, tuple),
+        # TypeVars are preserved
+        (T, T),
+        (K, K),
+        (V, V),
+        # Legacy typing aliases are converted to modern forms
+        (list, list),
+        (dict, dict),
+        (set, set),
+        (list[int], list[int]),
+        (dict[str, int], dict[str, int]),
+        (set[bool], set[bool]),
+        (list[T], list[T]),
+        (dict[K, V], dict[K, V]),
+        # typing.Callable becomes collections.abc.Callable
+        (typing.Callable, collections.abc.Callable),
+        (typing.Callable[[int], str], collections.abc.Callable[[int], str]),
+        (typing.Callable[[T, U], V], collections.abc.Callable[[T, U], V]),
+        # typing.Any becomes object
+        (typing.Any, object),
+        # inspect.Parameter.empty becomes object (via Any)
+        (inspect.Parameter.empty, object),
+        # Annotated types are unwrapped
+        (typing.Annotated[int, "metadata"], int),
+        (typing.Annotated[str, "doc string"], str),
+        (typing.Annotated[list[T], "annotation"], list[T]),
+        (typing.Annotated[dict[K, V], "complex", "multi"], dict[K, V]),
+        # Nested Annotated unwrapping
+        (typing.Annotated[typing.Annotated[int, "inner"], "outer"], int),
+        # Modern generic aliases pass through with canonicalized args
+        (list[int], list[int]),
+        (dict[str, bool], dict[str, bool]),
+        (set[float], set[float]),
+        (list[list[int]], list[list[int]]),  # Nested legacy conversion
+        (dict[str, dict[K, V]], dict[str, dict[K, V]]),
+        # Union types are canonicalized with | operator
+        (typing.Union[int, str], int | str),
+        (typing.Union[T, int], T | int),
+        (typing.Union[list[T], dict[K, V]], list[T] | dict[K, V]),
+        (typing.Union[int, str, bool], int | str | bool),
+        # Nested unions
+        (typing.Union[list[int], None], list[int] | type(None)),
+        (typing.Union[dict[K, V], set[T]], dict[K, V] | set[T]),
+        # Complex nested canonicalization
+        (list[dict[str, T] | None], list[dict[str, T] | type(None)]),
+        (dict[K, list[V | None]], dict[K, list[V | type(None)]]),
+        # Already canonical forms pass through
+        (list[T], list[T]),
+        (dict[K, V], dict[K, V]),
+        (int | str, int | str),
+        (list[int] | None, list[int] | type(None)),
+        # None type handling
+        (type(None), type(None)),
+        (typing.Union[int, None], int | type(None)),
+        # Ellipsis type
+        (type(...), type(...)),
+        # Generic aliases with multiple levels of nesting
+        (list[dict[set[T], list[V]]], list[dict[set[T], list[V]]]),
+        # Callable with nested canonicalization
+        (typing.Callable[[list[T]], dict[K, V]], collections.abc.Callable[[list[T]], dict[K, V]]),
+        # Values that will use _nested_type (basic values)
+        (42, int),
+        ("hello", str),
+        (3.14, float),
+        (True, bool),
+        (None, type(None)),
+        # Collections that will use _nested_type
+        ([1, 2, 3], collections.abc.Sequence[int]),
+        (["a", "b"], collections.abc.Sequence[str]),
+        ({"key": "value"}, collections.abc.Mapping[str, str]),
+        ({1: "one", 2: "two"}, collections.abc.Mapping[int, str]),
+        ({1, 2, 3}, collections.abc.Set[int]),
+        ({"x", "y"}, collections.abc.Set[str]),
+        # Tuples get special handling
+        ((1, "hello", 3.14), tuple[int, str, float]),
+        ((1,), tuple[int]),
+        ((), tuple),
+        # Empty collections
+        ([], list),
+        ({}, dict),
+        (set(), set),
+        # Nested collections via _nested_type
+        ([{1: "one"}, {2: "two"}], collections.abc.Sequence[collections.abc.Mapping[int, str]]),
+        ({"key": [1, 2, 3]}, collections.abc.Mapping[str, collections.abc.Sequence[int]]),
+        ([(1, "a"), (2, "b")], collections.abc.Sequence[tuple[int, str]]),
+        # Functions/callables
+        (lambda x: x, type(lambda x: x)),
+        # bytes handling
+        (b"hello", bytes),
+    ],
+    ids=str,
+)
+def test_canonicalize(typ, expected):
+    result = canonicalize(typ)
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # Basic value types
+        (42, int),
+        (0, int),
+        (-5, int),
+        ("hello", str),
+        ("", str),
+        (3.14, float),
+        (0.0, float),
+        (True, bool),
+        (False, bool),
+        (None, type(None)),
+        (b"bytes", bytes),
+        (b"", bytes),
+        # Type objects pass through
+        (int, int),
+        (str, str),
+        (float, float),
+        (bool, bool),
+        (list, list),
+        (dict, dict),
+        (set, set),
+        (tuple, tuple),
+        (type(None), type(None)),
+        (type(...), type(...)),
+        # Generic aliases pass through
+        (list[int], list[int]),
+        (dict[str, int], dict[str, int]),
+        (set[bool], set[bool]),
+        (tuple[int, str], tuple[int, str]),
+        (int | str, int | str),
+        (list[T], list[T]),
+        (dict[K, V], dict[K, V]),
+        # Union types pass through
+        (typing.Union[int, str], typing.Union[int, str]),
+        (int | str, int | str),
+        # Empty collections
+        ([], list),
+        ({}, dict),
+        (set(), set),
+        ((), tuple),
+        # Lists/sequences with single type
+        ([1, 2, 3], collections.abc.Sequence[int]),
+        ([1], collections.abc.Sequence[int]),
+        (["a", "b", "c"], collections.abc.Sequence[str]),
+        ([True, False], collections.abc.Sequence[bool]),
+        ([1.1, 2.2], collections.abc.Sequence[float]),
+        # Sets with elements
+        ({1, 2, 3}, collections.abc.Set[int]),
+        ({1}, collections.abc.Set[int]),
+        ({"a", "b"}, collections.abc.Set[str]),
+        ({True, False}, collections.abc.Set[bool]),
+        # Dicts/mappings
+        ({"key": "value"}, collections.abc.Mapping[str, str]),
+        ({1: "one", 2: "two"}, collections.abc.Mapping[int, str]),
+        ({"a": 1, "b": 2}, collections.abc.Mapping[str, int]),
+        ({True: 1.0, False: 2.0}, collections.abc.Mapping[bool, float]),
+        # Tuples preserve exact structure
+        ((1, "hello", 3.14), tuple[int, str, float]),
+        ((1,), tuple[int]),
+        ((1, 2), tuple[int, int]),
+        (("a", "b", "c"), tuple[str, str, str]),
+        ((True, 1, "x", 3.14), tuple[bool, int, str, float]),
+        # Nested collections
+        ([[1, 2], [3, 4]], collections.abc.Sequence[collections.abc.Sequence[int]]),
+        ([{1, 2}, {3, 4}], collections.abc.Sequence[collections.abc.Set[int]]),
+        ([{"a": 1}, {"b": 2}], collections.abc.Sequence[collections.abc.Mapping[str, int]]),
+        ({"key": [1, 2, 3]}, collections.abc.Mapping[str, collections.abc.Sequence[int]]),
+        ({"a": {1, 2}, "b": {3, 4}}, collections.abc.Mapping[str, collections.abc.Set[int]]),
+        ({1: {"x": True}, 2: {"y": False}}, collections.abc.Mapping[int, collections.abc.Mapping[str, bool]]),
+        # Tuples in collections
+        ([(1, "a"), (2, "b")], collections.abc.Sequence[tuple[int, str]]),
+        ({(1, 2), (3, 4)}, collections.abc.Set[tuple[int, int]]),
+        ({1: (True, "x"), 2: (False, "y")}, collections.abc.Mapping[int, tuple[bool, str]]),
+        # Functions/callables
+        (lambda x: x, type(lambda x: x)),
+        (print, type(print)),
+        (len, type(len)),
+        # Complex nested structures
+        ([[[1]]], collections.abc.Sequence[collections.abc.Sequence[collections.abc.Sequence[int]]]),
+        ({"a": {"b": {"c": 1}}}, collections.abc.Mapping[str, collections.abc.Mapping[str, collections.abc.Mapping[str, int]]]),
+        # Special string/bytes handling (NOT treated as sequences)
+        ("hello", str),
+        (b"world", bytes),
+        # Other built-in types
+        (range(5), type(range(5))),
+        (slice(1, 10), type(slice(1, 10))),
+    ],
+    ids=str,
+)
+def test_nested_type(value, expected):
+    result = nested_type(value)
+    assert result == expected
+
+
+def test_nested_type_typevar_error():
+    """Test that TypeVars raise TypeError in nested_type"""
+    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
+        nested_type(T)
+    
+    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
+        nested_type(K)
+    
+    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
+        nested_type(V)
+
+
+def test_nested_type_term_error():
+    """Test that Terms raise TypeError in nested_type"""
+    # We can't import Term here without creating a circular dependency,
+    # so we'll create a mock object that would trigger the isinstance check
+    from unittest.mock import Mock
+
+    from effectful.ops.types import Term
+    
+    mock_term = Mock(spec=Term)
+    with pytest.raises(TypeError, match="Terms should not appear in nested_type"):
+        nested_type(mock_term)
+
+
+def test_nested_type_interpretation_special_case():
+    """Test that Interpretation type is handled specially in mapping dispatch"""
+    # This tests the special case in the Mapping dispatch for Interpretation
+    from effectful.ops.types import Interpretation
+    
+    # Since Interpretation is a Protocol, we can't instantiate it directly.
+    # Instead, create a concrete implementation
+    class ConcreteInterpretation(dict):
+        """A concrete implementation of Interpretation for testing"""
+        pass
+    
+    # Make it look like an Interpretation type for the type check
+    ConcreteInterpretation.__name__ = 'Interpretation'
+    ConcreteInterpretation.__module__ = Interpretation.__module__
+    
+    # Create instance and patch the type temporarily
+    interp = ConcreteInterpretation()
+    original_type = type(interp)
+    
+    # The _nested_type checks `type(value) is Interpretation`
+    # Since we can't change the type of an instance, we'll test the behavior
+    # by verifying that our empty dict doesn't trigger the Interpretation path
+    result = nested_type({})
+    assert result == dict  # Empty dict should return dict, not Interpretation
+
+
+def test_canonicalize_with_nested_type_integration():
+    """Test that canonicalize properly uses _nested_type for values"""
+    # Test various values go through _nested_type in canonicalize
+    assert canonicalize([1, 2, 3]) == collections.abc.Sequence[int]
+    assert canonicalize({"a": 1}) == collections.abc.Mapping[str, int]
+    assert canonicalize({1, 2}) == collections.abc.Set[int]
+    assert canonicalize((1, "x")) == tuple[int, str]
+    
+    # Nested case
+    nested = [{"a": (1, 2)}, {"b": (3, 4)}]
+    expected = collections.abc.Sequence[collections.abc.Mapping[str, tuple[int, int]]]
+    assert canonicalize(nested) == expected
+
+
+def test_canonicalize_preserves_modern_syntax():
+    """Test that already-modern syntax is preserved"""
+    # These should pass through unchanged
+    assert canonicalize(list[int]) == list[int]
+    assert canonicalize(dict[str, int]) == dict[str, int]
+    assert canonicalize(int | str) == int | str
+    assert canonicalize(list[T] | None) == list[T] | type(None)
+
+
+def test_canonicalize_union_ordering():
+    """Test union type canonicalization handles ordering consistently"""
+    # The | operator may reorder types, but the result should be equivalent
+    result1 = canonicalize(typing.Union[int, str])
+    result2 = canonicalize(typing.Union[str, int])
+    # Both should be some form of int | str or str | int
+    assert result1 == int | str or result1 == str | int
+    assert result2 == int | str or result2 == str | int

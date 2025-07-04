@@ -38,6 +38,7 @@ def infer_return_type(
     Examples:
         >>> import inspect
         >>> import typing
+        >>> from effectful.internals.unification import infer_return_type
         >>> T = typing.TypeVar('T')
         >>> K = typing.TypeVar('K')
         >>> V = typing.TypeVar('V')
@@ -285,28 +286,103 @@ def canonicalize(
     """
     Return a canonical form of the given type expression.
 
-    This function normalizes the type by removing Annotated wrappers and
-    ensuring that generic types are represented in their canonical form.
-    It does not modify TypeVars or Union types, but ensures that generic
-    aliases are returned in a consistent format.
+    This function normalizes type expressions by:
+    - Removing Annotated wrappers to get the base type
+    - Converting legacy typing module aliases (e.g., typing.List) to modern forms (e.g., list)
+    - Preserving TypeVars unchanged
+    - Recursively canonicalizing type arguments in generic types
+    - Converting typing.Any to object
+    - Converting inspect.Parameter.empty to typing.Any (then to object)
+    - Handling Union types by creating canonical unions with | operator
+    - Converting non-type values to their types using _nested_type
 
     Args:
-        typ: The type expression to canonicalize.
+        typ: The type expression to canonicalize. Can be a plain type, TypeVar,
+             generic alias, union type, or even a value that needs type inference.
 
     Returns:
-        A canonicalized version of the input type expression.
+        A canonicalized version of the input type expression with consistent
+        representation and modern syntax.
 
     Examples:
+        >>> import typing
+        >>> import inspect
+        >>> import collections.abc
+        >>> from effectful.internals.unification import canonicalize
         >>> T = typing.TypeVar('T')
-        >>> canonicalize(typing.List[T])
+        >>> K = typing.TypeVar('K')
+        >>> V = typing.TypeVar('V')
+
+        # Legacy typing aliases are converted to modern forms
+        >>> canonicalize(typing.List[int])
+        list[int]
+        >>> canonicalize(typing.Dict[str, int])
+        dict[str, int]
+        >>> canonicalize(typing.Set[bool])
+        set[bool]
+        >>> canonicalize(typing.Callable[[int], str])
+        collections.abc.Callable[[int], str]
+
+        # TypeVars are preserved unchanged
+        >>> canonicalize(T)
+        ~T
+        >>> canonicalize(list[T])
         list[~T]
-        >>> canonicalize(typing.Annotated[int, "example"])
+
+        # Annotated types are unwrapped
+        >>> canonicalize(typing.Annotated[int, "metadata"])
         <class 'int'>
+        >>> canonicalize(typing.Annotated[list[str], "doc string"])
+        list[str]
+
+        # Nested generic types are recursively canonicalized
+        >>> canonicalize(typing.List[typing.Dict[K, V]])
+        list[dict[~K, ~V]]
+        >>> canonicalize(typing.Dict[str, typing.List[T]])
+        dict[str, list[~T]]
+
+        # Union types are canonicalized with | operator
+        >>> result = canonicalize(typing.Union[int, str])
+        >>> result == int | str
+        True
+        >>> result = canonicalize(typing.Union[list[T], dict[K, V]])
+        >>> result == list[T] | dict[K, V]
+        True
+
+        # typing.Any becomes object
+        >>> canonicalize(typing.Any)
+        <class 'object'>
+
+        # inspect.Parameter.empty becomes object (via Any)
+        >>> canonicalize(inspect.Parameter.empty)
+        <class 'object'>
+
+        # Plain types pass through unchanged
+        >>> canonicalize(int)
+        <class 'int'>
+        >>> canonicalize(str)
+        <class 'str'>
+        >>> canonicalize(list)
+        <class 'list'>
+
+        # Values are converted to their types via nested_type
+        >>> canonicalize([1, 2, 3])
+        collections.abc.Sequence[int]
+        >>> canonicalize({"key": "value"})
+        collections.abc.Mapping[str, str]
+        >>> canonicalize((1, "hello", 3.14))
+        tuple[int, str, float]
+
+        # Complex nested canonicalization
+        >>> canonicalize(typing.List[typing.Union[typing.Dict[str, T], None]])
+        list[dict[str, ~T] | None]
     """
     if typing.get_origin(typ) is typing.Annotated:
         return canonicalize(typing.get_args(typ)[0])
     elif typ is inspect.Parameter.empty:
         return canonicalize(typing.Any)
+    elif typ is None:
+        return type(None)
     elif typing.get_origin(typ) in {typing.Union, types.UnionType}:
         t = canonicalize(typing.get_args(typ)[0])
         for arg in typing.get_args(typ)[1:]:
@@ -316,88 +392,246 @@ def canonicalize(
         return typ
     elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and typing.get_origin(typ) is not typ:  # type: ignore
         # Handle generic types
-        origin = canonicalize(typing.get_origin(typ))
-        assert origin is not None, "Type must have an origin"
-        return origin[tuple(canonicalize(a) for a in typing.get_args(typ))]
-    # Handle legacy typing aliases like typing.Callable
+        origin = typing.get_origin(typ)
+        args = typing.get_args(typ)
+        
+        # Special handling for Callable types
+        if origin is collections.abc.Callable and args:
+            if len(args) == 2 and isinstance(args[0], (list, tuple)):
+                # Callable[[arg1, arg2, ...], return_type] format
+                param_list = [canonicalize(a) for a in args[0]]
+                return_type = canonicalize(args[1])
+                return collections.abc.Callable[[*param_list], return_type]
+            else:
+                # Handle other Callable formats
+                return origin[tuple(canonicalize(a) for a in args)]
+        else:
+            # Regular generic types
+            canonical_origin = canonicalize(origin)
+            return canonical_origin[tuple(canonicalize(a) for a in args)]
+    # Handle legacy typing aliases
+    elif hasattr(typing, 'List') and typ is getattr(typing, 'List', None):
+        return list
+    elif hasattr(typing, 'Dict') and typ is getattr(typing, 'Dict', None):
+        return dict
+    elif hasattr(typing, 'Set') and typ is getattr(typing, 'Set', None):
+        return set
     elif typ is typing.Callable:
-        return canonicalize(collections.abc.Callable)
+        return collections.abc.Callable
     elif typ is typing.Any:
-        return canonicalize(object)
-    elif typ is typing.List:
-        return canonicalize(list)
-    elif typ is typing.Dict:
-        return canonicalize(dict)
-    elif typ is typing.Set:
-        return canonicalize(set)
+        return object
     elif not isinstance(typ, type) and typing.get_origin(typ) is None:
-        return canonicalize(_nested_type(typ))
+        return canonicalize(nested_type(typ))
     else:
         return typ
 
 
 @functools.singledispatch
-def _nested_type(value) -> type:
+def nested_type(value) -> type:
+    """
+    Infer the type of a value, handling nested collections with generic parameters.
+
+    This function is a singledispatch generic function that determines the type
+    of a given value. For collections (mappings, sequences, sets), it recursively
+    infers the types of contained elements to produce a properly parameterized
+    generic type. For example, a list [1, 2, 3] becomes Sequence[int].
+
+    The function handles:
+    - Basic types and type annotations (passed through unchanged)
+    - Collections with recursive type inference for elements
+    - Special cases like str/bytes (treated as types, not sequences)
+    - Tuples (preserving exact element types)
+    - Empty collections (returning the collection's type without parameters)
+
+    This is primarily used by canonicalize() to handle cases where values
+    are provided instead of type annotations.
+
+    Args:
+        value: Any value whose type needs to be inferred. Can be a type,
+               a value instance, or a collection containing other values.
+
+    Returns:
+        The inferred type, potentially with generic parameters for collections.
+
+    Raises:
+        TypeError: If the value is a TypeVar (TypeVars shouldn't appear in values)
+                   or if the value is a Term from effectful.ops.types.
+
+    Examples:
+        >>> import collections.abc
+        >>> import typing
+        >>> from effectful.internals.unification import nested_type
+
+        # Basic types are returned as their type
+        >>> nested_type(42)
+        <class 'int'>
+        >>> nested_type("hello")
+        <class 'str'>
+        >>> nested_type(3.14)
+        <class 'float'>
+        >>> nested_type(True)
+        <class 'bool'>
+
+        # Type objects pass through unchanged
+        >>> nested_type(int)
+        <class 'int'>
+        >>> nested_type(str)
+        <class 'str'>
+        >>> nested_type(list)
+        <class 'list'>
+
+        # Empty collections return their base type
+        >>> nested_type([])
+        <class 'list'>
+        >>> nested_type({})
+        <class 'dict'>
+        >>> nested_type(set())
+        <class 'set'>
+
+        # Sequences become Sequence[element_type]
+        >>> nested_type([1, 2, 3])
+        collections.abc.Sequence[int]
+        >>> nested_type(["a", "b", "c"])
+        collections.abc.Sequence[str]
+
+        # Tuples preserve exact structure
+        >>> nested_type((1, "hello", 3.14))
+        tuple[int, str, float]
+        >>> nested_type(())
+        <class 'tuple'>
+        >>> nested_type((1,))
+        tuple[int]
+
+        # Sets become Set[element_type]
+        >>> nested_type({1, 2, 3})
+        collections.abc.Set[int]
+        >>> nested_type({"a", "b"})
+        collections.abc.Set[str]
+
+        # Mappings become Mapping[key_type, value_type]
+        >>> nested_type({"key": "value"})
+        collections.abc.Mapping[str, str]
+        >>> nested_type({1: "one", 2: "two"})
+        collections.abc.Mapping[int, str]
+
+        # Nested collections work recursively
+        >>> nested_type([{1: "one"}, {2: "two"}])
+        collections.abc.Sequence[collections.abc.Mapping[int, str]]
+        >>> nested_type({"key": [1, 2, 3]})
+        collections.abc.Mapping[str, collections.abc.Sequence[int]]
+
+        # Strings and bytes are NOT treated as sequences
+        >>> nested_type("hello")
+        <class 'str'>
+        >>> nested_type(b"bytes")
+        <class 'bytes'>
+
+        # Functions/callables return their type
+        >>> def f(): pass
+        >>> nested_type(f)
+        <class 'function'>
+        >>> nested_type(lambda x: x)
+        <class 'function'>
+
+        # TypeVars raise an error
+        >>> T = typing.TypeVar('T')
+        >>> nested_type(T)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        TypeError: TypeVars should not appear in values, but got ~T
+
+        # None has its own type
+        >>> nested_type(None)
+        <class 'NoneType'>
+
+        # Generic aliases and union types pass through
+        >>> nested_type(list[int])
+        list[int]
+        >>> nested_type(int | str)
+        int | str
+    """
     from effectful.ops.types import Term
 
     if isinstance(value, Term):
-        raise TypeError(f"Terms should not appear in _nested_type, but got {value}")
+        raise TypeError(f"Terms should not appear in nested_type, but got {value}")
+    elif value is None:
+        return type(None)
     elif not isinstance(value, type) and typing.get_origin(value) is None:
         return type(value)
     else:
         return value
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: type | types.UnionType | types.GenericAlias | types.EllipsisType | types.NoneType) -> type:
     return value
 
 
-@_nested_type.register
+@nested_type.register
+def _(value: typing._GenericAlias) -> type:  # type: ignore
+    # Handle typing module generic aliases
+    return value
+
+
+@nested_type.register
+def _(value: types.NoneType) -> type:
+    # Handle None specially
+    return type(None)
+
+
+@nested_type.register
 def _(value: typing.TypeVar) -> type:
     raise TypeError(f"TypeVars should not appear in values, but got {value}")
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: collections.abc.Callable) -> type:
     return type(value)
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: collections.abc.Mapping) -> type:
     from effectful.ops.types import Interpretation
 
-    if isinstance(value, Interpretation):  # type: ignore
+    if type(value) is Interpretation:  # More specific check
         return Interpretation
     elif len(value) == 0:
         return type(value)
     else:
         k, v = next(iter(value.items()))
-        return collections.abc.Mapping[_nested_type(k), _nested_type(v)]
+        return collections.abc.Mapping[nested_type(k), nested_type(v)]
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: collections.abc.Set) -> type:
     if len(value) == 0:
         return type(value)
-    return collections.abc.Set[_nested_type(next(iter(value)))]
+    return collections.abc.Set[nested_type(next(iter(value)))]
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: collections.abc.Sequence) -> type:
     if len(value) == 0:
         return type(value)
-    return collections.abc.Sequence[_nested_type(next(iter(value)))]
+    return collections.abc.Sequence[nested_type(next(iter(value)))]
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: tuple) -> type:
-    return tuple[tuple(_nested_type(item) for item in value)]
+    if len(value) == 0:
+        return tuple
+    return tuple[tuple(nested_type(item) for item in value)]
 
 
-@_nested_type.register
+@nested_type.register
 def _(value: str | bytes) -> type:
     # Handle str and bytes as their own types, not collections.abc.Sequence
+    return type(value)
+
+
+@nested_type.register(range)
+def _(value: range) -> type:
+    # Handle range as its own type, not as a sequence
     return type(value)
 
 
