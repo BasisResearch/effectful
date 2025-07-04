@@ -30,10 +30,9 @@ def infer_return_type(
 
     Raises:
         TypeError: If the function lacks required type annotations, has unbound
-                   type variables in the return type, or if unification fails
-        NotImplementedError: If the function uses variadic parameters (*args, **kwargs),
-                             collection types as parameters, or parameters with
-                             free type variables
+                   type variables in the return type, if unification fails,
+                   if the function uses variadic parameters (*args, **kwargs),
+                   or if parameters have free type variables.
 
     Examples:
         >>> import inspect
