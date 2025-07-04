@@ -1,4 +1,5 @@
 import collections.abc
+import functools
 import inspect
 import types
 import typing
@@ -335,28 +336,65 @@ def canonicalize(
         return typ
 
 
+@functools.singledispatch
 def _nested_type(value) -> type:
-    from effectful.ops.types import Interpretation, Operation
-
-    if isinstance(value, Interpretation):
-        return Interpretation
-    elif isinstance(value, Operation):
-        return Operation
-    elif isinstance(value, tuple):
-        return tuple[tuple(_nested_type(item) for item in value)]
-    elif isinstance(value, collections.abc.Mapping):
-        k, v = next(iter(value.items()))
-        return collections.abc.Mapping[_nested_type(k), _nested_type(v)]
-    elif isinstance(value, collections.abc.Sequence) and len(value) > 0 and not isinstance(value, str | bytes):
-        return collections.abc.Sequence[_nested_type(next(iter(value)))]
-    elif isinstance(value, collections.abc.Set):
-        return collections.abc.Set[_nested_type(next(iter(value)))]
-    elif isinstance(value, collections.abc.Callable):
-        return type(value)
-    elif not isinstance(value, type) and typing.get_origin(value) is None:
+    if not isinstance(value, type) and typing.get_origin(value) is None:
         return type(value)
     else:
         return value
+
+
+@_nested_type.register
+def _(value: type | types.UnionType | types.GenericAlias | types.EllipsisType | types.NoneType) -> type:
+    return value
+
+
+@_nested_type.register
+def _(value: typing.TypeVar) -> type:
+    raise TypeError(f"TypeVars should not appear in values, but got {value}")
+
+
+@_nested_type.register
+def _(value: collections.abc.Callable) -> type:
+    return type(value)
+
+
+@_nested_type.register
+def _(value: collections.abc.Mapping) -> type:
+    from effectful.ops.types import Interpretation
+
+    if isinstance(value, Interpretation):  # type: ignore
+        return Interpretation
+    elif len(value) == 0:
+        return type(value)
+    else:
+        k, v = next(iter(value.items()))
+        return collections.abc.Mapping[_nested_type(k), _nested_type(v)]
+
+
+@_nested_type.register
+def _(value: collections.abc.Set) -> type:
+    if len(value) == 0:
+        return type(value)
+    return collections.abc.Set[_nested_type(next(iter(value)))]
+
+
+@_nested_type.register
+def _(value: collections.abc.Sequence) -> type:
+    if len(value) == 0:
+        return type(value)
+    return collections.abc.Sequence[_nested_type(next(iter(value)))]
+
+
+@_nested_type.register
+def _(value: tuple) -> type:
+    return tuple[tuple(_nested_type(item) for item in value)]
+
+
+@_nested_type.register
+def _(value: str | bytes) -> type:
+    # Handle str and bytes as their own types, not collections.abc.Sequence
+    return type(value)
 
 
 def freetypevars(
