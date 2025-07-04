@@ -237,13 +237,7 @@ def unify(
         >>> unify((T, V), (int, str), {})
         {~T: <class 'int'>, ~V: <class 'str'>}
     """
-    if typing.get_origin(typ) is typing.Annotated:
-        # Handle Annotated types by extracting the base type
-        return unify(typing.get_args(typ)[0], subtyp, subs)
-    elif typing.get_origin(subtyp) is typing.Annotated:
-        # Handle Annotated types by extracting the base type
-        return unify(typ, typing.get_args(subtyp)[0], subs)
-    elif isinstance(typ, typing.TypeVar):
+    if isinstance(typ, typing.TypeVar):
         if typ in subs and subs[typ] != subtyp:
             raise TypeError(
                 f"Cannot unify {typ} with {subtyp} (already unified with {subs[typ]})"
@@ -264,14 +258,6 @@ def unify(
         if typ_origin != subtyp_origin:
             raise TypeError(f"Cannot unify {typ} with {subtyp}")
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
-    elif isinstance(typ, collections.abc.Mapping) and isinstance(
-        subtyp, collections.abc.Mapping
-    ):
-        if typ.keys() != subtyp.keys():
-            raise TypeError(f"Cannot unify {typ} with {subtyp}")
-        for key in typ:
-            subs = unify(typ[key], subtyp[key], subs)
-        return subs
     elif isinstance(typ, collections.abc.Sequence) and isinstance(
         subtyp, collections.abc.Sequence
     ):
