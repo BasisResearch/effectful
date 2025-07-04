@@ -305,31 +305,31 @@ def canonicalize(
     """
     if typing.get_origin(typ) is typing.Annotated:
         return canonicalize(typing.get_args(typ)[0])
+    elif typ is inspect.Parameter.empty:
+        return canonicalize(typing.Any)
     elif typing.get_origin(typ) in {typing.Union, types.UnionType}:
         t = canonicalize(typing.get_args(typ)[0])
         for arg in typing.get_args(typ)[1:]:
             t = t | canonicalize(arg)
         return t
     elif isinstance(typ, typing.TypeVar):
-        # TypeVars are already canonical
         return typ
-    elif isinstance(typ, typing._GenericAlias | types.GenericAlias):  # type: ignore
+    elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and typing.get_origin(typ) is not typ:  # type: ignore
         # Handle generic types
         origin = canonicalize(typing.get_origin(typ))
         assert origin is not None, "Type must have an origin"
         return origin[tuple(canonicalize(a) for a in typing.get_args(typ))]
-    elif typ is inspect.Parameter.empty:
-        return canonicalize(typing.Any)
+    # Handle legacy typing aliases like typing.Callable
     elif typ is typing.Callable:
-        return collections.abc.Callable
+        return canonicalize(collections.abc.Callable)
     elif typ is typing.Any:
-        return object
-    elif typ is list:
-        return collections.abc.Sequence
-    elif typ is dict:
-        return collections.abc.Mapping
-    elif typ is set:
-        return collections.abc.Set
+        return canonicalize(object)
+    elif typ is typing.List:
+        return canonicalize(list)
+    elif typ is typing.Dict:
+        return canonicalize(dict)
+    elif typ is typing.Set:
+        return canonicalize(set)
     elif not isinstance(typ, type) and typing.get_origin(typ) is None:
         return canonicalize(_nested_type(typ))
     else:
