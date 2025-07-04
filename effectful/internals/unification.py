@@ -110,9 +110,6 @@ def infer_return_type(
         }:
             raise TypeError(f"Parameter '{name}' cannot be variadic")
 
-        if isinstance(bound_sig.arguments[name], collections.abc.Collection):
-            raise TypeError(f"Parameter '{name}' cannot be a collection type")
-
         if freetypevars(bound_sig.arguments[name]):
             raise TypeError(
                 f"Parameter '{name}' cannot have free type variables"
@@ -320,8 +317,6 @@ def canonicalize(
         origin = canonicalize(typing.get_origin(typ))
         assert origin is not None, "Type must have an origin"
         return origin[tuple(canonicalize(a) for a in typing.get_args(typ))]
-    elif isinstance(typ, collections.abc.Sequence):
-        return tuple(canonicalize(item) for item in typ)
     elif typ is inspect.Parameter.empty:
         return canonicalize(typing.Any)
     elif typ is typing.Callable:
@@ -329,17 +324,39 @@ def canonicalize(
     elif typ is typing.Any:
         return object
     elif typ is list:
-        return list
+        return collections.abc.Sequence
     elif typ is dict:
-        return dict
+        return collections.abc.Mapping
     elif typ is set:
-        return set
-    elif typ is tuple:
-        return tuple
+        return collections.abc.Set
     elif not isinstance(typ, type) and typing.get_origin(typ) is None:
-        return type(typ)
+        return canonicalize(_nested_type(typ))
     else:
         return typ
+
+
+def _nested_type(value) -> type:
+    from effectful.ops.types import Interpretation, Operation
+
+    if isinstance(value, Interpretation):
+        return Interpretation
+    elif isinstance(value, Operation):
+        return Operation
+    elif isinstance(value, tuple):
+        return tuple[tuple(_nested_type(item) for item in value)]
+    elif isinstance(value, collections.abc.Mapping):
+        k, v = next(iter(value.items()))
+        return collections.abc.Mapping[_nested_type(k), _nested_type(v)]
+    elif isinstance(value, collections.abc.Sequence) and len(value) > 0 and not isinstance(value, str | bytes):
+        return collections.abc.Sequence[_nested_type(next(iter(value)))]
+    elif isinstance(value, collections.abc.Set):
+        return collections.abc.Set[_nested_type(next(iter(value)))]
+    elif isinstance(value, collections.abc.Callable):
+        return type(value)
+    elif not isinstance(value, type) and typing.get_origin(value) is None:
+        return type(value)
+    else:
+        return value
 
 
 def freetypevars(
