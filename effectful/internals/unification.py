@@ -79,6 +79,7 @@ def infer_return_type(
             ...
         TypeError: unbound type variables in return type
     """
+    bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
 
     # validate that the function has a signature with well-formed type annotations
@@ -102,25 +103,30 @@ def infer_return_type(
             for arg in bound_sig.arguments[name]:
                 subs = unify(
                     canonicalize(param.annotation),
-                    canonicalize(arg),
+                    canonicalize(nested_type(arg)),
                     subs,
                 )
         elif param.kind is inspect.Parameter.VAR_KEYWORD:
             for arg in bound_sig.arguments[name].values():
                 subs = unify(
                     canonicalize(param.annotation),
-                    canonicalize(arg),
+                    canonicalize(nested_type(arg)),
                     subs,
                 )
         else:
             subs = unify(
                 canonicalize(param.annotation),
-                canonicalize(bound_sig.arguments[name]),
+                canonicalize(nested_type(bound_sig.arguments[name])),
                 subs,
             )
 
     # Apply substitutions to return type
-    result_type = substitute(canonicalize(sig.return_annotation), subs)
+    result_type = sig.return_annotation
+    if typing.get_origin(result_type) is typing.Annotated:
+        result_type = typing.get_args(result_type)[0]
+    if result_type is None:
+        result_type = type(None)
+    result_type = substitute(result_type, subs)
     if freetypevars(result_type) and not issubclass(
         typing.get_origin(result_type), collections.abc.Callable
     ):
@@ -326,14 +332,6 @@ def canonicalize(
         >>> canonicalize(list)
         <class 'list'>
 
-        # Values are converted to their types via nested_type
-        >>> canonicalize([1, 2, 3])
-        collections.abc.Sequence[int]
-        >>> canonicalize({"key": "value"})
-        collections.abc.Mapping[str, str]
-        >>> canonicalize((1, "hello", 3.14))
-        tuple[int, str, float]
-
         # Complex nested canonicalization
         >>> canonicalize(typing.List[typing.Union[typing.Dict[str, T], None]])
         list[dict[str, ~T] | None]
@@ -344,6 +342,8 @@ def canonicalize(
         return canonicalize(typing.Any)
     elif typ is None:
         return type(None)
+    elif typ is Ellipsis:
+        return types.EllipsisType
     elif typing.get_origin(typ) in {typing.Union, types.UnionType}:
         t = canonicalize(typing.get_args(typ)[0])
         for arg in typing.get_args(typ)[1:]:
@@ -368,21 +368,25 @@ def canonicalize(
         origin = typing.get_origin(typ)
         args = typing.get_args(typ)
         # Regular generic types
-        canonical_origin = canonicalize(origin)
-        return canonical_origin[tuple(canonicalize(a) for a in args)]
+        return canonicalize(origin)[tuple(canonicalize(a) for a in args)]
+    # normalize built-in containers to abstract collections
+    elif typ is list:
+        return collections.abc.Sequence
+    elif typ is dict:
+        return collections.abc.Mapping
+    elif typ is set:
+        return collections.abc.Set
     # Handle legacy typing aliases
     elif hasattr(typing, 'List') and typ is getattr(typing, 'List', None):
-        return list
+        return canonicalize(list)
     elif hasattr(typing, 'Dict') and typ is getattr(typing, 'Dict', None):
-        return dict
+        return canonicalize(dict)
     elif hasattr(typing, 'Set') and typ is getattr(typing, 'Set', None):
-        return set
+        return canonicalize(set)
     elif typ is typing.Callable:
         return collections.abc.Callable
     elif typ is typing.Any:
         return object
-    elif not isinstance(typ, type) and typing.get_origin(typ) is None:
-        return canonicalize(nested_type(typ))
     else:
         return typ
 
