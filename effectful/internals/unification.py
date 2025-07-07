@@ -524,7 +524,7 @@ def nested_type(value) -> type:
 
 
 @nested_type.register
-def _(value: type | types.UnionType | types.GenericAlias | types.EllipsisType | types.NoneType) -> type:
+def _(value: type | types.UnionType | types.GenericAlias | types.EllipsisType) -> type:
     return value
 
 
