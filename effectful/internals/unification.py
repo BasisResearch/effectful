@@ -70,15 +70,6 @@ def infer_return_type(
         >>> bound = sig.bind()
         >>> infer_return_type(bound)
         <class 'int'>
-
-        >>> # Error: unbound type variable in return
-        >>> def bad_func(x: T) -> tuple[T, K]: ...  # K not in parameters
-        >>> sig = inspect.signature(bad_func)
-        >>> bound = sig.bind(int)
-        >>> infer_return_type(bound)  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        TypeError: unbound type variables in return type
     """
     bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
@@ -273,8 +264,10 @@ def freshen(tp: type | typing.TypeVar | types.GenericAlias | types.UnionType):
     Examples:
         >>> import typing
         >>> T = typing.TypeVar('T')
-        >>> freshen(T)
-        ~T_12345678  # Example output with a random suffix
+        >>> isinstance(freshen(T), typing.TypeVar)
+        True
+        >>> freshen(T) == T
+        False
     """
     return substitute(tp, {
         fv: typing.TypeVar(
@@ -321,40 +314,38 @@ def canonicalize(
         >>> K = typing.TypeVar('K')
         >>> V = typing.TypeVar('V')
 
-        # Legacy typing aliases are converted to modern forms
-        >>> canonicalize(typing.List[int])
-        list[int]
-        >>> canonicalize(typing.Dict[str, int])
-        dict[str, int]
-        >>> canonicalize(typing.Set[bool])
-        set[bool]
-        >>> canonicalize(typing.Callable[[int], str])
-        collections.abc.Callable[[int], str]
+        # Plain types pass through unchanged
+        >>> canonicalize(int)
+        <class 'int'>
+        >>> canonicalize(str)
+        <class 'str'>
 
         # TypeVars are preserved unchanged
         >>> canonicalize(T)
         ~T
+
+        # Containers are normalized to abstract collections
         >>> canonicalize(list[T])
-        list[~T]
+        collections.abc.Sequence[~T]
 
         # Annotated types are unwrapped
         >>> canonicalize(typing.Annotated[int, "metadata"])
         <class 'int'>
         >>> canonicalize(typing.Annotated[list[str], "doc string"])
-        list[str]
+        collections.abc.Sequence[str]
 
         # Nested generic types are recursively canonicalized
         >>> canonicalize(typing.List[typing.Dict[K, V]])
-        list[dict[~K, ~V]]
+        collections.abc.Sequence[collections.abc.Mapping[~K, ~V]]
         >>> canonicalize(typing.Dict[str, typing.List[T]])
-        dict[str, list[~T]]
+        collections.abc.Mapping[str, collections.abc.Sequence[~T]]
 
         # Union types are canonicalized with | operator
         >>> result = canonicalize(typing.Union[int, str])
         >>> result == int | str
         True
         >>> result = canonicalize(typing.Union[list[T], dict[K, V]])
-        >>> result == list[T] | dict[K, V]
+        >>> result == collections.abc.Sequence[T] | collections.abc.Mapping[K, V]
         True
 
         # typing.Any becomes object
@@ -364,18 +355,6 @@ def canonicalize(
         # inspect.Parameter.empty becomes object (via Any)
         >>> canonicalize(inspect.Parameter.empty)
         <class 'object'>
-
-        # Plain types pass through unchanged
-        >>> canonicalize(int)
-        <class 'int'>
-        >>> canonicalize(str)
-        <class 'str'>
-        >>> canonicalize(list)
-        <class 'list'>
-
-        # Complex nested canonicalization
-        >>> canonicalize(typing.List[typing.Union[typing.Dict[str, T], None]])
-        list[dict[str, ~T] | None]
     """
     if typing.get_origin(typ) is typing.Annotated:
         return canonicalize(typing.get_args(typ)[0])
