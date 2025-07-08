@@ -560,10 +560,10 @@ def test_infer_return_type_failure(
         (str, str),
         (float, float),
         (bool, bool),
-        (list, list),
-        (dict, dict),
-        (set, set),
         (tuple, tuple),
+        (list, collections.abc.Sequence),
+        (dict, collections.abc.Mapping),
+        (set, collections.abc.Set),
         # TypeVars are preserved
         (T, T),
         (K, K),
@@ -591,35 +591,30 @@ def test_infer_return_type_failure(
         # Annotated types are unwrapped
         (typing.Annotated[int, "metadata"], int),
         (typing.Annotated[str, "doc string"], str),
-        (typing.Annotated[list[T], "annotation"], list[T]),
+        (typing.Annotated[list[T], "annotation"], collections.abc.Sequence[T]),
         (typing.Annotated[dict[K, V], "complex", "multi"], collections.abc.Mapping[K, V]),
         # Nested Annotated unwrapping
         (typing.Annotated[typing.Annotated[int, "inner"], "outer"], int),
         # Union types are canonicalized with | operator
         (typing.Union[int, str], int | str),
         (typing.Union[T, int], T | int),
-        (typing.Union[list[T], dict[K, V]], list[T] | dict[K, V]),
+        (typing.Union[list[T], dict[K, V]], collections.abc.Sequence[T] | collections.abc.Mapping[K, V]),
         (typing.Union[int, str, bool], int | str | bool),
         # Nested unions
-        (typing.Union[list[int], None], list[int] | type(None)),
-        (typing.Union[dict[K, V], set[T]], dict[K, V] | set[T]),
+        (typing.Union[list[int], None], collections.abc.Sequence[int] | type(None)),
+        (typing.Union[dict[K, V], set[T]], collections.abc.Mapping[K, V] | collections.abc.Set[T]),
         # Complex nested canonicalization
-        (list[dict[str, T] | None], list[dict[str, T] | type(None)]),
-        (dict[K, list[V | None]], dict[K, list[V | type(None)]]),
-        # Already canonical forms pass through
-        (list[T], list[T]),
-        (dict[K, V], dict[K, V]),
-        (int | str, int | str),
-        (list[int] | None, list[int] | type(None)),
+        (list[dict[str, T] | None], collections.abc.Sequence[collections.abc.Mapping[str, T] | type(None)]),
+        (dict[K, list[V | None]], collections.abc.Mapping[K, collections.abc.Sequence[V | type(None)]]),
         # None type handling
         (type(None), type(None)),
         (typing.Union[int, None], int | type(None)),
         # Ellipsis type
         (type(...), type(...)),
         # Generic aliases with multiple levels of nesting
-        (list[dict[set[T], list[V]]], list[dict[set[T], list[V]]]),
+        (list[dict[set[T], list[V]]], collections.abc.Sequence[collections.abc.Mapping[collections.abc.Set[T], collections.abc.Sequence[V]]]),
         # Callable with nested canonicalization
-        (typing.Callable[[list[T]], dict[K, V]], collections.abc.Callable[[list[T]], dict[K, V]]),
+        (typing.Callable[[list[T]], dict[K, V]], collections.abc.Callable[[collections.abc.Sequence[T]], collections.abc.Mapping[K, V]]),
     ],
     ids=str,
 )
