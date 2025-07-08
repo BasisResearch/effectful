@@ -97,28 +97,24 @@ def infer_return_type(
         raise TypeError("unbound type variables in return type")
 
     # Build substitution map
-    subs: collections.abc.Mapping[typing.TypeVar, type] = {}
+    arg_annos = []
+    arg_types = []
     for name, param in sig.parameters.items():
         if param.kind is inspect.Parameter.VAR_POSITIONAL:
             for arg in bound_sig.arguments[name]:
-                subs = unify(
-                    canonicalize(param.annotation),
-                    canonicalize(nested_type(arg)),
-                    subs,
-                )
+                arg_annos += [param.annotation]
+                arg_types += [arg]
         elif param.kind is inspect.Parameter.VAR_KEYWORD:
             for arg in bound_sig.arguments[name].values():
-                subs = unify(
-                    canonicalize(param.annotation),
-                    canonicalize(nested_type(arg)),
-                    subs,
-                )
+                arg_annos += [param.annotation]
+                arg_types += [arg]
         else:
-            subs = unify(
-                canonicalize(param.annotation),
-                canonicalize(nested_type(bound_sig.arguments[name])),
-                subs,
-            )
+            arg_annos += [param.annotation]
+            arg_types += [bound_sig.arguments[name]]
+
+    arg_annos = [canonicalize(a) for a in arg_annos]
+    arg_types = [canonicalize(nested_type(a)) for a in arg_types]
+    subs = unify(arg_annos, arg_types, {})
 
     # Apply substitutions to return type
     result_type = sig.return_annotation
