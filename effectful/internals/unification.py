@@ -122,7 +122,7 @@ def infer_return_type(
     return return_anno
 
 
-def freshen(tp):
+def freshen(tp: type | typing.TypeVar | types.GenericAlias | types.UnionType):
     """
     Return a freshened version of the given type expression.
 
@@ -143,7 +143,16 @@ def freshen(tp):
         >>> freshen(T)
         ~T_12345678  # Example output with a random suffix
     """
-    return substitute(tp, {fv: typing.TypeVar(name=f"{fv.__name__}_{random.randint(0, 1 << 32)}") for fv in freetypevars(tp)})
+    return substitute(tp, {
+        fv: typing.TypeVar(
+            name=f"{fv.__name__}_{random.randint(0, 1 << 32)}",
+            bound=fv.__bound__,
+            default=fv.__default__,
+            covariant=fv.__covariant__,
+            contravariant=fv.__contravariant__,
+        )
+        for fv in freetypevars(tp)
+    })
 
 
 def unify(
@@ -240,6 +249,10 @@ def unify(
         if typ in subs:
             subs = unify(subs[typ], subtyp, subs)
         return {**subs, **{typ: subtyp}}
+    elif isinstance(subtyp, typing.TypeVar):
+        if subtyp in subs:
+            subs = unify(typ, subs[subtyp], subs)
+        return {**subs, **{subtyp: typ}}
     elif isinstance(typ, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs) or \
             isinstance(subtyp, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs):
         raise TypeError("ParamSpec handling is not implemented")
@@ -703,7 +716,7 @@ def freetypevars(
 
 def substitute(
     typ: type | types.GenericAlias | types.UnionType,
-    subs: collections.abc.Mapping[typing.TypeVar, type],
+    subs: collections.abc.Mapping[typing.TypeVar, type | typing.TypeVar],
 ) -> type | types.GenericAlias | types.UnionType:
     """
     Substitute type variables in a type expression with concrete types.
