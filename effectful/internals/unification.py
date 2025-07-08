@@ -117,19 +117,19 @@ def infer_return_type(
 
     # Apply substitutions to return type
     return_anno = substitute(return_anno, subs)
-    if isinstance(return_anno, typing.TypeVar):
-        raise TypeError(f"Unbound type variable {return_anno} in return type")
     return return_anno
 
 
 def unify(
     typ: type
     | typing.TypeVar
+    | typing.ParamSpec
     | types.GenericAlias
     | types.UnionType
     | collections.abc.Sequence,
     subtyp: type
     | typing.TypeVar
+    | typing.ParamSpec
     | types.UnionType
     | types.GenericAlias
     | collections.abc.Sequence,
@@ -649,8 +649,8 @@ def _(value: range) -> type:
 
 
 def freetypevars(
-    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType | types.NoneType,
-) -> set[typing.TypeVar]:
+    typ: type | typing.TypeVar | types.GenericAlias | types.UnionType | types.NoneType | typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs,
+) -> set[typing.TypeVar | typing.ParamSpec]:
     """
     Return a set of free type variables in the given type expression.
 
@@ -700,8 +700,10 @@ def freetypevars(
         >>> freetypevars(dict[str, T])
         {~T}
     """
-    if isinstance(typ, typing.TypeVar):
+    if isinstance(typ, typing.TypeVar | typing.ParamSpec):
         return {typ}
+    elif isinstance(typ, typing.ParamSpecArgs | typing.ParamSpecKwargs):
+        return freetypevars(typing.get_origin(typ))
     elif typing.get_origin(typ) is typing.Annotated:
         return freetypevars(typing.get_args(typ)[0])
     elif isinstance(typ, list | tuple):
