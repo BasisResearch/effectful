@@ -598,48 +598,13 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        def unwrap_annotation(typ):
-            """Unwrap Annotated types."""
-            return (
-                typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
-            )
+        from effectful.internals.unification import infer_return_type
 
-        def drop_params(typ):
-            """Strip parameters from polymorphic types."""
-            origin = typing.get_origin(typ)
-            return typ if origin is None else origin
-
-        sig = self.__signature__
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-        anno = unwrap_annotation(anno)
-
-        if anno is None:
-            return typing.cast(type[V], type(None))
-
-        if anno is inspect.Signature.empty:
+        if self.__signature__.return_annotation is inspect.Parameter.empty:
             return typing.cast(type[V], object)
 
-        if isinstance(anno, typing.TypeVar):
-            # rudimentary but sound special-case type inference sufficient for syntax ops:
-            # if the return type annotation is a TypeVar,
-            # look for a parameter with the same annotation and return its type,
-            # otherwise give up and return Any/object
-            for name, param in bound_sig.signature.parameters.items():
-                param_typ = unwrap_annotation(param.annotation)
-                if param_typ is anno and param.kind not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    arg = bound_sig.arguments[name]
-                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
-
-            return typing.cast(type[V], object)
-
-        return drop_params(anno)
+        bound_sig = self.__signature__.bind(*args, **kwargs)
+        return infer_return_type(bound_sig)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -670,6 +635,9 @@ def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(type)
+@defop.register(types.GenericAlias)
+@defop.register(typing._GenericAlias)  # type: ignore
+@defop.register(types.UnionType)  # type: ignore
 def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
@@ -1006,9 +974,7 @@ def defdata(
 
     base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
     tp = typeof(base_term)
-    if tp is typing.Union:
-        raise ValueError("Terms that return Union types are not supported.")
-    assert isinstance(tp, type)
+    tp = typing.get_origin(tp) or tp
 
     typed_term = __dispatch(tp)(op, *args_, **kwargs_)
     return typed_term

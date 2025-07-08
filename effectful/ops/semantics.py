@@ -1,5 +1,6 @@
 import contextlib
 import functools
+import typing
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -294,7 +295,12 @@ def typeof(term: Expr[T]) -> type[T]:
     from effectful.internals.runtime import interpreter
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
+        if isinstance(term, Term):
+            # If term is a Term, we evaluate it to get its type
+            tp = evaluate(term)
+            return typing.get_origin(tp) or tp  # type: ignore
+        else:
+            return type(term)
 
 
 def fvsof(term: Expr[S]) -> set[Operation]:
