@@ -105,7 +105,7 @@ def infer_return_type(
             arg_types += [bound_sig.arguments[name]]
 
     arg_annos = [canonicalize(a) for a in arg_annos]
-    arg_types = [freshen(canonicalize(nested_type(a))) for a in arg_types]
+    arg_types = [freshen(canonicalize(a)) for a in arg_types]
     subs = unify(arg_annos, arg_types)
 
     # Apply substitutions to return type
