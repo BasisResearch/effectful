@@ -122,39 +122,6 @@ def infer_return_type(
     return return_anno
 
 
-def freshen(tp: type | typing.TypeVar | types.GenericAlias | types.UnionType):
-    """
-    Return a freshened version of the given type expression.
-
-    This function replaces all TypeVars in the type expression with new TypeVars
-    that have unique names, ensuring that the resulting type has no free TypeVars.
-    It is useful for creating fresh type variables in generic programming contexts.
-
-    Args:
-        tp: The type expression to freshen. Can be a plain type, TypeVar,
-            generic alias, or union type.
-
-    Returns:
-        A new type expression with all TypeVars replaced by fresh TypeVars.
-
-    Examples:
-        >>> import typing
-        >>> T = typing.TypeVar('T')
-        >>> freshen(T)
-        ~T_12345678  # Example output with a random suffix
-    """
-    return substitute(tp, {
-        fv: typing.TypeVar(
-            name=f"{fv.__name__}_{random.randint(0, 1 << 32)}",
-            bound=fv.__bound__,
-            default=fv.__default__,
-            covariant=fv.__covariant__,
-            contravariant=fv.__contravariant__,
-        )
-        for fv in freetypevars(tp)
-    })
-
-
 def unify(
     typ: type
     | typing.TypeVar
@@ -284,6 +251,39 @@ def unify(
         return subs
     else:
         raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+
+
+def freshen(tp: type | typing.TypeVar | types.GenericAlias | types.UnionType):
+    """
+    Return a freshened version of the given type expression.
+
+    This function replaces all TypeVars in the type expression with new TypeVars
+    that have unique names, ensuring that the resulting type has no free TypeVars.
+    It is useful for creating fresh type variables in generic programming contexts.
+
+    Args:
+        tp: The type expression to freshen. Can be a plain type, TypeVar,
+            generic alias, or union type.
+
+    Returns:
+        A new type expression with all TypeVars replaced by fresh TypeVars.
+
+    Examples:
+        >>> import typing
+        >>> T = typing.TypeVar('T')
+        >>> freshen(T)
+        ~T_12345678  # Example output with a random suffix
+    """
+    return substitute(tp, {
+        fv: typing.TypeVar(
+            name=f"{fv.__name__}_{random.randint(0, 1 << 32)}",
+            bound=fv.__bound__,
+            default=fv.__default__,
+            covariant=fv.__covariant__,
+            contravariant=fv.__contravariant__,
+        )
+        for fv in freetypevars(tp)
+    })
 
 
 def canonicalize(
