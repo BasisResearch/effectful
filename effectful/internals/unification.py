@@ -71,7 +71,6 @@ def infer_return_type(
         >>> infer_return_type(bound)
         <class 'int'>
     """
-    bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
 
     return_anno = sig.return_annotation
@@ -92,7 +91,9 @@ def infer_return_type(
     arg_annos = []
     arg_types = []
     for name, param in sig.parameters.items():
-        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+        if name not in bound_sig.arguments:
+            continue
+        elif param.kind is inspect.Parameter.VAR_POSITIONAL:
             for arg in bound_sig.arguments[name]:
                 arg_annos += [param.annotation]
                 arg_types += [arg]
@@ -405,7 +406,7 @@ def canonicalize(
         return collections.abc.Mapping
     elif typ is set:
         return collections.abc.Set
-    elif issubclass(typ, range):
+    elif isinstance(typ, type) and issubclass(typ, range):
         return collections.abc.Sequence[int]
     # Handle legacy typing aliases
     elif typ is typing.Tuple:
