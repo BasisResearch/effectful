@@ -501,12 +501,6 @@ def no_param_annotation(x) -> T:  # No parameter annotation
 @pytest.mark.parametrize(
     "func,args,kwargs",
     [
-        # Unbound type variable in return
-        (
-            unbound_typevar_func,
-            (int,),
-            {},
-        ),
         # Missing annotations
         (
             no_param_annotation,

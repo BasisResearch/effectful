@@ -94,6 +94,8 @@ def infer_return_type(
         return type(None)
     elif not freetypevars(return_anno):
         return return_anno
+    elif any(p.annotation is inspect.Signature.empty for p in sig.parameters.values()):
+        raise TypeError("Function has parameters without type annotations, cannot infer return type")
 
     # Build substitution map
     arg_annos = []
@@ -424,6 +426,8 @@ def canonicalize(
         return collections.abc.Mapping
     elif typ is set:
         return collections.abc.Set
+    elif issubclass(typ, range):
+        return collections.abc.Sequence[int]
     # Handle legacy typing aliases
     elif typ is typing.Tuple:
         return canonicalize(tuple)
