@@ -763,7 +763,7 @@ def substitute(
         <class 'int'>
     """
     if isinstance(typ, typing.TypeVar):
-        return subs.get(typ, typ)
+        return substitute(subs[typ], subs) if typ in subs else typ
     elif isinstance(typ, list | tuple):
         # Handle plain lists/sequences (e.g., in Callable's parameter list)
         return type(typ)(substitute(item, subs) for item in typ)
