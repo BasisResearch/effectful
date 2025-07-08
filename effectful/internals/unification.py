@@ -519,8 +519,6 @@ def nested_type(value) -> type:
 
     if isinstance(value, Term):
         raise TypeError(f"Terms should not appear in nested_type, but got {value}")
-    elif value is None:
-        return type(None)
     elif not isinstance(value, type) and typing.get_origin(value) is None:
         return type(value)
     else:
