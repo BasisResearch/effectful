@@ -235,7 +235,8 @@ def unify(
             typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
         # TODO handle UnionType properly
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
-    elif typing.get_args(typ) and typing.get_args(subtyp):
+    elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and \
+            isinstance(subtyp, typing._GenericAlias | types.GenericAlias):
         subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
     elif isinstance(typ, list | tuple) and isinstance(subtyp, list | tuple) and len(typ) == len(subtyp):
@@ -364,6 +365,13 @@ def canonicalize(
         else:
             # Handle other Callable formats
             return origin[tuple(canonicalize(a) for a in args)]
+    elif typing.get_origin(typ) is typing.Literal:
+        t = type(typing.get_args(typ)[0])
+        for arg in typing.get_args(typ)[1:]:
+            t = t | type(arg)
+        return canonicalize(t)
+    elif typing.get_origin(typ) is typing.Optional:
+        return canonicalize(None | typing.get_args(typ)[0])
     elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and typing.get_origin(typ) is not typ:  # type: ignore
         # Handle generic types
         origin = typing.get_origin(typ)
