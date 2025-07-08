@@ -598,12 +598,25 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        from effectful.internals.unification import infer_return_type
+        from effectful.internals.unification import infer_return_type, nested_type
 
         if self.__signature__.return_annotation is inspect.Parameter.empty:
             return typing.cast(type[V], object)
 
-        bound_sig = self.__signature__.bind(*args, **kwargs)
+        type_args = [nested_type(a) for a in args]
+        type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
+        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
+        for name, param in self.__signature__.parameters.items():
+            if name in bound_sig.arguments:
+                continue
+            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
+                bound_sig.arguments[name] = tuple()
+            elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                bound_sig.arguments[name] = {}
+            elif param.default is not inspect.Parameter.empty:
+                bound_sig.arguments[name] = nested_type(param.default)
+            else:
+                raise TypeError("missing required argument: " + name)
         return infer_return_type(bound_sig)
 
     def __repr__(self):
