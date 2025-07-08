@@ -388,11 +388,13 @@ def canonicalize(
     elif typ is set:
         return collections.abc.Set
     # Handle legacy typing aliases
-    elif hasattr(typing, 'List') and typ is getattr(typing, 'List', None):
+    elif typ is typing.Tuple:
+        return canonicalize(tuple)
+    elif typ is typing.List:
         return canonicalize(list)
-    elif hasattr(typing, 'Dict') and typ is getattr(typing, 'Dict', None):
+    elif typ is typing.Dict:
         return canonicalize(dict)
-    elif hasattr(typing, 'Set') and typ is getattr(typing, 'Set', None):
+    elif typ is typing.Set:
         return canonicalize(set)
     elif typ is typing.Callable:
         return collections.abc.Callable
