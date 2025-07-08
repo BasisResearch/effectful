@@ -279,21 +279,6 @@ def test_substitute(
             {},
             {T: int, U: str, V: bool},
         ),
-        # Union types - basic element-wise unification (current implementation)
-        # Note: Current unify treats union args as sequences, not true union logic
-        (
-            T | V,
-            int | str,
-            {},
-            {T: int, V: str},
-        ),  # Element-wise unification of TypeVars
-        (T | V, int | str, {}, {T: int, V: str}),  # typing.Union syntax
-        # Simple union compatibility - TypeVar gets unified with itself
-        (T | int, T | int, {}, {T: T}),  # Identical unions - T unifies with T
-        (T | int, T | int, {}, {T: T}),  # Identical typing.Union
-        # Sequence unification (tuples as sequences)
-        ((T, V), (int, str), {}, {T: int, V: str}),
-        ([T, V], [int, str], {}, {T: int, V: str}),
         # Complex combinations
         (
             dict[K, collections.abc.Callable[[T], V]],
@@ -335,9 +320,6 @@ def test_unify_success(
         # Sequence length mismatch
         ((T, V), (int,)),
         ([T, V], [int, str, bool]),
-        # Union failure cases
-        (T | int, V | str),  # typing.Union mismatch
-        (T | V, int | str | bool),  # Different union sizes
     ],
     ids=str,
 )

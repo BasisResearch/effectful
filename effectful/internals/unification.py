@@ -231,10 +231,22 @@ def unify(
     elif isinstance(typ, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs) or \
             isinstance(subtyp, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs):
         raise TypeError("ParamSpec handling is not implemented")
-    elif typing.get_origin(typ) in {typing.Union, types.UnionType} or \
-            typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
-        # TODO handle UnionType properly
-        return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
+    elif typing.get_origin(typ) in {typing.Union, types.UnionType}:
+        any_succeeded = False
+        for arg in typing.get_args(typ):
+            try:
+                subs = unify(arg, subtyp, subs)
+                any_succeeded = True
+            except TypeError:
+                continue
+        if any_succeeded:
+            return subs
+        else:
+            raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+    elif typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
+        for arg in typing.get_args(subtyp):
+            subs = unify(typ, arg, subs)
+        return subs
     elif isinstance(typ, typing._GenericAlias | types.GenericAlias) and \
             isinstance(subtyp, typing._GenericAlias | types.GenericAlias):
         subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
