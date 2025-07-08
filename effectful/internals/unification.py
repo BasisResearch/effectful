@@ -1,6 +1,7 @@
 import collections.abc
 import functools
 import inspect
+import random
 import types
 import typing
 
@@ -94,17 +95,6 @@ def infer_return_type(
     elif not freetypevars(return_anno):
         return return_anno
 
-    # validate that the function has a signature with well-formed type annotations
-    result_fvs: set[typing.TypeVar] = freetypevars(sig.return_annotation)
-    pattern_fvs: set[typing.TypeVar] = set().union(*(freetypevars(p.annotation) for p in sig.parameters.values()))
-    concrete_fvs: set[typing.TypeVar] = set().union(*(freetypevars(arg) for arg in bound_sig.arguments.values()))
-    if (result_fvs | pattern_fvs) & concrete_fvs:
-        raise TypeError(
-            "Cannot unify free type variables in pattern and concrete types"
-        )
-    if not result_fvs <= pattern_fvs:
-        raise TypeError("unbound type variables in return type")
-
     # Build substitution map
     arg_annos = []
     arg_types = []
@@ -122,16 +112,38 @@ def infer_return_type(
             arg_types += [bound_sig.arguments[name]]
 
     arg_annos = [canonicalize(a) for a in arg_annos]
-    arg_types = [canonicalize(nested_type(a)) for a in arg_types]
+    arg_types = [freshen(canonicalize(nested_type(a))) for a in arg_types]
     subs = unify(arg_annos, arg_types)
 
     # Apply substitutions to return type
     return_anno = substitute(return_anno, subs)
-    if freetypevars(return_anno) and typing.get_origin(return_anno) is not collections.abc.Callable:
-        raise TypeError(
-            "Return type cannot have free type variables after substitution"
-        )
+    if isinstance(return_anno, typing.TypeVar):
+        raise TypeError(f"Unbound type variable {return_anno} in return type")
     return return_anno
+
+
+def freshen(tp):
+    """
+    Return a freshened version of the given type expression.
+
+    This function replaces all TypeVars in the type expression with new TypeVars
+    that have unique names, ensuring that the resulting type has no free TypeVars.
+    It is useful for creating fresh type variables in generic programming contexts.
+
+    Args:
+        tp: The type expression to freshen. Can be a plain type, TypeVar,
+            generic alias, or union type.
+
+    Returns:
+        A new type expression with all TypeVars replaced by fresh TypeVars.
+
+    Examples:
+        >>> import typing
+        >>> T = typing.TypeVar('T')
+        >>> freshen(T)
+        ~T_12345678  # Example output with a random suffix
+    """
+    return substitute(tp, {fv: typing.TypeVar(name=f"{fv.__name__}_{random.randint(0, 1 << 32)}") for fv in freetypevars(tp)})
 
 
 def unify(
