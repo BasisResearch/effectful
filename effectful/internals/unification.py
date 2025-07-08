@@ -135,8 +135,8 @@ def unify(
     | types.UnionType
     | types.GenericAlias
     | collections.abc.Sequence,
-    subs: collections.abc.Mapping[typing.TypeVar, type] = {},
-) -> collections.abc.Mapping[typing.TypeVar, type]:
+    subs: collections.abc.Mapping[typing.TypeVar, type | typing.TypeVar | typing.ParamSpec] = {},
+) -> collections.abc.Mapping[typing.TypeVar, type | typing.TypeVar | typing.ParamSpec]:
     """
     Unify a pattern type with a concrete type, returning a substitution map.
 
@@ -722,7 +722,7 @@ def freetypevars(
 
 def substitute(
     typ: type | types.GenericAlias | types.UnionType,
-    subs: collections.abc.Mapping[typing.TypeVar, type | typing.TypeVar],
+    subs: collections.abc.Mapping[typing.TypeVar, type | typing.ParamSpec | typing.TypeVar],
 ) -> type | types.GenericAlias | types.UnionType:
     """
     Substitute type variables in a type expression with concrete types.
