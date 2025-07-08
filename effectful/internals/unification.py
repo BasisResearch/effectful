@@ -353,6 +353,8 @@ def canonicalize(
         return t
     elif isinstance(typ, typing.TypeVar):
         return typ
+    elif isinstance(typ, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs):
+        return typ
     elif typing.get_origin(typ) is collections.abc.Callable:
         origin, args = typing.get_origin(typ), typing.get_args(typ)
         if not args:
