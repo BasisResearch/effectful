@@ -127,9 +127,7 @@ def infer_return_type(
     if result_type is None:
         result_type = type(None)
     result_type = substitute(result_type, subs)
-    if freetypevars(result_type) and not issubclass(
-        typing.get_origin(result_type), collections.abc.Callable
-    ):
+    if freetypevars(result_type) and typing.get_origin(result_type) is not collections.abc.Callable:
         raise TypeError(
             "Return type cannot have free type variables after substitution"
         )
@@ -230,6 +228,9 @@ def unify(
         if typ in subs:
             subs = unify(subs[typ], subtyp, subs)
         return {**subs, **{typ: subtyp}}
+    elif isinstance(typ, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs) or \
+            isinstance(subtyp, typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs):
+        raise TypeError("ParamSpec handling is not implemented")
     elif typing.get_origin(typ) in {typing.Union, types.UnionType} or \
             typing.get_origin(subtyp) in {typing.Union, types.UnionType}:
         # TODO handle UnionType properly
