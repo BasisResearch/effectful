@@ -603,20 +603,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         if self.__signature__.return_annotation is inspect.Parameter.empty:
             return typing.cast(type[V], object)
 
-        type_args = [nested_type(a) for a in args]
+        type_args = tuple(nested_type(a) for a in args)
         type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
         bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
         for name, param in self.__signature__.parameters.items():
-            if name in bound_sig.arguments:
-                continue
-            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
-                bound_sig.arguments[name] = tuple()
-            elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                bound_sig.arguments[name] = {}
-            elif param.default is not inspect.Parameter.empty:
+            if name not in bound_sig.arguments and \
+                    param.default is not inspect.Parameter.empty and \
+                    param.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
                 bound_sig.arguments[name] = nested_type(param.default)
-            else:
-                raise TypeError("missing required argument: " + name)
         return infer_return_type(bound_sig)
 
     def __repr__(self):
