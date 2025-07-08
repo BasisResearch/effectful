@@ -527,11 +527,6 @@ def no_param_annotation(x) -> T:  # No parameter annotation
         ),
         # Missing annotations
         (
-            no_return_annotation,
-            (int,),
-            {},
-        ),
-        (
             no_param_annotation,
             (int,),
             {},

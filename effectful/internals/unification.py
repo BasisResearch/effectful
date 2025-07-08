@@ -82,10 +82,19 @@ def infer_return_type(
     bound_sig.apply_defaults()
     sig: inspect.Signature = bound_sig.signature
 
-    # validate that the function has a signature with well-formed type annotations
-    if sig.return_annotation is inspect.Signature.empty:
-        raise TypeError("Function must have a return type annotation")
+    return_anno = sig.return_annotation
+    if typing.get_origin(return_anno) is typing.Annotated:
+        return_anno = typing.get_args(return_anno)[0]
 
+    # fast path for simple cases
+    if return_anno is inspect.Signature.empty:
+        return object
+    elif return_anno is None:
+        return type(None)
+    elif not freetypevars(return_anno):
+        return return_anno
+
+    # validate that the function has a signature with well-formed type annotations
     result_fvs: set[typing.TypeVar] = freetypevars(sig.return_annotation)
     pattern_fvs: set[typing.TypeVar] = set().union(*(freetypevars(p.annotation) for p in sig.parameters.values()))
     concrete_fvs: set[typing.TypeVar] = set().union(*(freetypevars(arg) for arg in bound_sig.arguments.values()))
@@ -114,20 +123,15 @@ def infer_return_type(
 
     arg_annos = [canonicalize(a) for a in arg_annos]
     arg_types = [canonicalize(nested_type(a)) for a in arg_types]
-    subs = unify(arg_annos, arg_types, {})
+    subs = unify(arg_annos, arg_types)
 
     # Apply substitutions to return type
-    result_type = sig.return_annotation
-    if typing.get_origin(result_type) is typing.Annotated:
-        result_type = typing.get_args(result_type)[0]
-    if result_type is None:
-        result_type = type(None)
-    result_type = substitute(result_type, subs)
-    if freetypevars(result_type) and typing.get_origin(result_type) is not collections.abc.Callable:
+    return_anno = substitute(return_anno, subs)
+    if freetypevars(return_anno) and typing.get_origin(return_anno) is not collections.abc.Callable:
         raise TypeError(
             "Return type cannot have free type variables after substitution"
         )
-    return result_type
+    return return_anno
 
 
 def unify(
@@ -141,7 +145,7 @@ def unify(
     | types.UnionType
     | types.GenericAlias
     | collections.abc.Sequence,
-    subs: collections.abc.Mapping[typing.TypeVar, type],
+    subs: collections.abc.Mapping[typing.TypeVar, type] = {},
 ) -> collections.abc.Mapping[typing.TypeVar, type]:
     """
     Unify a pattern type with a concrete type, returning a substitution map.
