@@ -7,6 +7,7 @@ from effectful.handlers.jax import jax_getitem
 from effectful.ops.semantics import coproduct, fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
+from scipy.cluster.hierarchy import DisjointSet
 
 from weighted.handlers.jax import D
 from weighted.ops.fold import fold
@@ -218,66 +219,58 @@ def _mul_op(semiring):
 
 
 class FoldFactorization(ObjectInterpretation):
-    """Implements the identity: fold(R, S, A * B), free(A) ∩ S = {} => A * fold(R, S, B)
+    """
+    Implements factorization of independent terms.
+    For example, when having two independent distributions,
+    we can rewrite their marginalization as:
+        ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
 
-    This optimization factors out terms that don't depend on the fold variables,
-    which can significantly reduce computation by avoiding redundant calculations.
+    More specifically, in terms of folds we are performing:
+        fold(R, (S₁ × ... × Sₖ ) , A₁ * ... * Aₖ)
+        => fold(R, S₁, A₁) * ... * fold(R, Sₖ, Aₖ)
+        where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
+          and free(Aᵢ) ∩ Sᵢ ≠ ∅
+
+    (The implementation is a little more general than this, as each
+    independent component can have an arbitrary number of streams.)
     """
 
     @staticmethod
-    def _separate_factors(factors, stream_vars):
-        indep_factors = []
-        dep_factors = []
-        for f in factors:
-            if len(fvsof(f) & stream_vars) == 0:
-                indep_factors.append(f)
-            else:
-                dep_factors.append(f)
-
-        return indep_factors, dep_factors
+    def _separate_factors(factors, xs) -> list[set[str]]:
+        var_sets = DisjointSet(xs)
+        for factor in factors:
+            factor_vars = tuple(fvsof(factor) & xs)
+            for v in factor_vars[1:]:
+                var_sets.merge(factor_vars[0], v)
+        return var_sets.subsets()
 
     @implements(fold)
     def fold(self, semiring, streams, body):
         if not isinstance(body, Term):
             return fwd()
 
-        # Check if the body is a D term
-        if body.op is D:
-            # We only handle single-term bodies for now
-            if len(body.args) != 1:
-                return fwd()
-
-            indices, value = body.args[0]
-
-            # Check if value is a multiplication operation
-            if not (isinstance(value, Term) and value.op is self._mul_op(semiring)):
-                return fwd()
-
-            indep_factors, dep_factors = FoldFactorization._separate_factors(
-                value.args, set(tree.flatten(streams.keys()))
-            )
-
-            if indep_factors == []:
-                return fwd()
-
-            indep_prod = reduce(semiring.mul, indep_factors, semiring.one)
-            dep_prod = reduce(semiring.mul, dep_factors, semiring.one)
-            dep_result = fold(semiring, streams, D((indices, dep_prod)))
-            return semiring.mul(indep_prod, dep_result)
-
-        elif body.op is semiring.mul:
-            indep_factors, dep_factors = FoldFactorization._separate_factors(
-                body.args, set(tree.flatten(streams.keys()))
-            )
-
-            if indep_factors == []:
-                return fwd()
-
-            indep_prod = reduce(semiring.mul, indep_factors, semiring.one)
-            dep_prod = reduce(semiring.mul, dep_factors, semiring.one)
-            return semiring.mul(indep_prod, fold(semiring, streams, dep_prod))
-        else:
+        terms = _parse_mul_terms(body, semiring)
+        if len(terms) < 2:
             return fwd()
+
+        stream_vars = set(tree.flatten(streams.keys()))
+        partitions = self._separate_factors(terms, stream_vars)
+
+        if len(partitions) < 2:
+            return fwd()  # nothing to factorize :(
+
+        # We assume all streams are used
+        if not all(k in set.union(*partitions) for k in stream_vars):
+            return fwd()
+
+        new_folds = []
+        for partition in partitions:
+            partition_streams = {k: v for k, v in streams.items() if k in partition}
+            partition_terms = [t for t in terms if len(fvsof(t) & partition) > 0]
+            partition_term = reduce(semiring.mul, partition_terms, semiring.one)
+            new_folds.append(fold(semiring, partition_streams, partition_term))
+
+        return reduce(semiring.mul, new_folds)
 
 
 class FlipOptimizationFold(ObjectInterpretation):

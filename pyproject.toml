@@ -27,7 +27,8 @@ dependencies = [
     "effectful[jax,numpyro]@git+https://github.com/BasisResearch/effectful@jf-staging",
     "jax",
     "optax",
-    "flax"
+    "flax",
+    "scipy"
 ]
 
 [dependency-groups]
