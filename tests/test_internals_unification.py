@@ -333,6 +333,32 @@ def test_unify_failure(
         unify(typ, subtyp, {})
 
 
+def test_unify_union_1():
+    assert unify(int | str, int | str) == {}
+    assert unify(int | str, str) == {}
+    assert unify(int | str, int) == {}
+
+    assert unify(T, int | str) == {T: int | str}
+    assert unify(T | V, int | str) == {T: int | str, V: int | str}
+
+
+def test_unify_tuple_variadic():
+    assert unify(tuple[T, ...], tuple[int, ...]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int, int]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int, str]) == {T: int | str}
+    assert unify(collections.abc.Sequence[T], tuple[int, ...]) == {T: int}
+
+
+def test_unify_tuple_non_variadic():
+    assert unify(tuple[T], tuple[int | str]) == {T: int | str}
+    assert unify(tuple[T, V], tuple[int, str]) == {T: int, V: str}
+    assert unify(tuple[T, T], tuple[int, int]) == {T: int}
+    assert unify(tuple[T, T, T], tuple[str, str, str]) == {T: str}
+    assert unify(collections.abc.Sequence[T], tuple[int, str]) == {T: int | str}
+    assert unify(collections.abc.Sequence[T], tuple[int, int]) == {T: int}
+
+
 # Test functions with various type patterns
 def identity(x: T) -> T:
     return x

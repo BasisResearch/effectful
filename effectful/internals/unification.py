@@ -258,7 +258,34 @@ def _(
     subtyp: type | types.GenericAlias | typing.TypeVar | types.UnionType,
     subs: Substitutions = {},
 ) -> Substitutions:
-    if isinstance(subtyp, GenericAlias):
+    if (
+        issubclass(typing.get_origin(typ), tuple)
+        and len(typing.get_args(typ)) == 2
+        and typing.get_args(typ)[-1] is Ellipsis
+    ):
+        # Logic for normalizing variadic tuples in typ
+        subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
+        return unify(collections.abc.Sequence[typing.get_args(typ)[0]], subtyp, subs)  # type: ignore
+    elif (
+        isinstance(subtyp, GenericAlias)
+        and issubclass(typing.get_origin(subtyp), tuple)
+        and typing.get_args(subtyp)[-1] is Ellipsis
+    ):
+        # Logic for normalizing variadic tuples in subtyp
+        subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
+        return unify(typ, collections.abc.Sequence[typing.get_args(subtyp)[0]], subs)  # type: ignore
+    elif (
+        isinstance(subtyp, GenericAlias)
+        and issubclass(typing.get_origin(subtyp), tuple)
+        and not issubclass(typing.get_origin(typ), tuple)
+    ):
+        # non-tuple, non-variadic tuple
+        subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
+        subtyp_ = typing.get_args(subtyp)[0]
+        for st in typing.get_args(subtyp)[1:]:
+            subtyp_ = subtyp_ | st
+        return unify(typing.get_args(typ)[0], subtyp_, subs)
+    elif isinstance(subtyp, GenericAlias):
         subs = unify(typing.get_origin(typ), typing.get_origin(subtyp), subs)
         return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
     else:
