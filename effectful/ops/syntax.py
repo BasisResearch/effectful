@@ -614,11 +614,6 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         type_args = tuple(nested_type(a) for a in args)
         type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
         bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
-        for name, param in self.__signature__.parameters.items():
-            if name not in bound_sig.arguments and \
-                    param.default is not inspect.Parameter.empty and \
-                    param.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
-                bound_sig.arguments[name] = nested_type(param.default)
         return substitute(return_anno, unify(self.__signature__, bound_sig))
 
     def __repr__(self):
