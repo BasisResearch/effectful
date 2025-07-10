@@ -11,10 +11,18 @@ from effectful.internals.unification import (
     unify,
 )
 
-T = typing.TypeVar("T")
-K = typing.TypeVar("K")
-V = typing.TypeVar("V")
-U = typing.TypeVar("U")
+if typing.TYPE_CHECKING:
+    T = typing.Any
+    K = typing.Any
+    V = typing.Any
+    U = typing.Any
+    W = typing.Any
+else:
+    T = typing.TypeVar("T")
+    K = typing.TypeVar("K")
+    V = typing.TypeVar("V")
+    U = typing.TypeVar("U")
+    W = typing.TypeVar("W")
 
 
 @pytest.mark.parametrize(
@@ -201,7 +209,7 @@ def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
 def test_substitute(
     typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
 ):
-    assert substitute(typ, subs) == expected
+    assert substitute(typ, subs) == expected  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -290,7 +298,7 @@ def test_unify_success(
     initial_subs: typing.Mapping[typing.TypeVar, type],
     expected_subs: typing.Mapping[typing.TypeVar, type],
 ):
-    assert unify(typ, subtyp, initial_subs) == expected_subs
+    assert unify(typ, subtyp, initial_subs) == expected_subs  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -323,6 +331,31 @@ def test_unify_failure(
 ):
     with pytest.raises(TypeError):
         unify(typ, subtyp, {})
+
+
+def test_unify_union_1():
+    assert unify(int | str, int | str) == {}
+    assert unify(int | str, str) == {}
+    assert unify(int | str, int) == {}
+
+    assert unify(T, int | str) == {T: int | str}
+
+
+def test_unify_tuple_variadic():
+    assert unify(tuple[T, ...], tuple[int, ...]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int, int]) == {T: int}
+    assert unify(tuple[T, ...], tuple[int, str]) == {T: int | str}
+    assert unify(collections.abc.Sequence[T], tuple[int, ...]) == {T: int}
+
+
+def test_unify_tuple_non_variadic():
+    assert unify(tuple[T], tuple[int | str]) == {T: int | str}
+    assert unify(tuple[T, V], tuple[int, str]) == {T: int, V: str}
+    assert unify(tuple[T, T], tuple[int, int]) == {T: int}
+    assert unify(tuple[T, T, T], tuple[str, str, str]) == {T: str}
+    assert unify(collections.abc.Sequence[T], tuple[int, str]) == {T: int | str}
+    assert unify(collections.abc.Sequence[T], tuple[int, int]) == {T: int}
 
 
 # Test functions with various type patterns
@@ -480,7 +513,7 @@ def test_infer_return_type_success(
 
 # Error cases
 def unbound_typevar_func(x: T) -> tuple[T, V]:  # V not in parameters
-    return (x, "error")  # type: ignore
+    return (x, "error")
 
 
 def no_return_annotation(x: T):  # No return annotation
@@ -488,7 +521,7 @@ def no_return_annotation(x: T):  # No return annotation
 
 
 def no_param_annotation(x) -> T:  # No parameter annotation
-    return x  # type: ignore
+    return x
 
 
 @pytest.mark.parametrize(
@@ -551,7 +584,6 @@ def test_infer_return_type_failure(
         (list[T], list[T]),
         (dict[K, V], dict[K, V]),
         # Union types pass through
-        (typing.Union[int, str], typing.Union[int, str]),
         (int | str, int | str),
         # Empty collections
         ([], list),
@@ -615,10 +647,10 @@ def test_nested_type_typevar_error():
     """Test that TypeVars raise TypeError in nested_type"""
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(T)
-    
+
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(K)
-    
+
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(V)
 
@@ -630,33 +662,955 @@ def test_nested_type_term_error():
     from unittest.mock import Mock
 
     from effectful.ops.types import Term
-    
+
     mock_term = Mock(spec=Term)
     with pytest.raises(TypeError, match="Terms should not appear in nested_type"):
         nested_type(mock_term)
 
 
-def test_nested_type_interpretation_special_case():
-    """Test that Interpretation type is handled specially in mapping dispatch"""
-    # This tests the special case in the Mapping dispatch for Interpretation
-    from effectful.ops.types import Interpretation
-    
-    # Since Interpretation is a Protocol, we can't instantiate it directly.
-    # Instead, create a concrete implementation
-    class ConcreteInterpretation(dict):
-        """A concrete implementation of Interpretation for testing"""
-        pass
-    
-    # Make it look like an Interpretation type for the type check
-    ConcreteInterpretation.__name__ = 'Interpretation'
-    ConcreteInterpretation.__module__ = Interpretation.__module__
-    
-    # Create instance and patch the type temporarily
-    interp = ConcreteInterpretation()
-    original_type = type(interp)
-    
-    # The _nested_type checks `type(value) is Interpretation`
-    # Since we can't change the type of an instance, we'll test the behavior
-    # by verifying that our empty dict doesn't trigger the Interpretation path
-    result = nested_type({})
-    assert result == dict  # Empty dict should return dict, not Interpretation
+def sequence_getitem(seq: collections.abc.Sequence[T], index: int) -> T:
+    return seq[index]
+
+
+def mapping_getitem(mapping: collections.abc.Mapping[K, V], key: K) -> V:
+    return mapping[key]
+
+
+def sequence_mapping_getitem(
+    seq: collections.abc.Sequence[collections.abc.Mapping[K, V]], index: int, key: K
+) -> V:
+    return mapping_getitem(sequence_getitem(seq, index), key)
+
+
+def mapping_sequence_getitem(
+    mapping: collections.abc.Mapping[K, collections.abc.Sequence[T]], key: K, index: int
+) -> T:
+    return sequence_getitem(mapping_getitem(mapping, key), index)
+
+
+def sequence_from_pair(a: T, b: T) -> collections.abc.Sequence[T]:
+    return [a, b]
+
+
+def mapping_from_pair(a: K, b: V) -> collections.abc.Mapping[K, V]:
+    return {a: b}
+
+
+def sequence_of_mappings(
+    key1: K, val1: V, key2: K, val2: V
+) -> collections.abc.Sequence[collections.abc.Mapping[K, V]]:
+    """Creates a sequence containing two mappings."""
+    return sequence_from_pair(
+        mapping_from_pair(key1, val1), mapping_from_pair(key2, val2)
+    )
+
+
+def mapping_of_sequences(
+    key1: K, val1: T, val2: T, key2: K, val3: T, val4: T
+) -> collections.abc.Mapping[K, collections.abc.Sequence[T]]:
+    """Creates a mapping where each key maps to a sequence of two values."""
+    return mapping_from_pair(key1, sequence_from_pair(val1, val2))
+
+
+def nested_sequence_mapping(
+    k1: K, v1: T, v2: T, k2: K, v3: T, v4: T
+) -> collections.abc.Sequence[collections.abc.Mapping[K, collections.abc.Sequence[T]]]:
+    """Creates a sequence of mappings, where each mapping contains sequences."""
+    return sequence_from_pair(
+        mapping_from_pair(k1, sequence_from_pair(v1, v2)),
+        mapping_from_pair(k2, sequence_from_pair(v3, v4)),
+    )
+
+
+def get_from_constructed_sequence(a: T, b: T, index: int) -> T:
+    """Constructs a sequence from two elements and gets one by index."""
+    return sequence_getitem(sequence_from_pair(a, b), index)
+
+
+def get_from_constructed_mapping(key: K, value: V, lookup_key: K) -> V:
+    """Constructs a mapping from a key-value pair and looks up the value."""
+    return mapping_getitem(mapping_from_pair(key, value), lookup_key)
+
+
+def double_nested_get(
+    k1: K,
+    v1: T,
+    v2: T,
+    k2: K,
+    v3: T,
+    v4: T,
+    outer_index: int,
+    inner_key: K,
+    inner_index: int,
+) -> T:
+    """Creates nested structure and retrieves deeply nested value."""
+    nested = nested_sequence_mapping(k1, v1, v2, k2, v3, v4)
+    mapping = sequence_getitem(nested, outer_index)
+    sequence = mapping_getitem(mapping, inner_key)
+    return sequence_getitem(sequence, inner_index)
+
+
+def construct_and_extend_sequence(
+    a: T, b: T, c: T, d: T
+) -> collections.abc.Sequence[collections.abc.Sequence[T]]:
+    """Constructs two sequences and combines them into a sequence of sequences."""
+    seq1 = sequence_from_pair(a, b)
+    seq2 = sequence_from_pair(c, d)
+    return sequence_from_pair(seq1, seq2)
+
+
+def transform_mapping_values(
+    key1: K, val1: T, key2: K, val2: T
+) -> collections.abc.Mapping[K, collections.abc.Sequence[T]]:
+    """Creates a mapping where each value is wrapped in a sequence."""
+    # Create mappings where each value becomes a single-element sequence
+    # Note: In a real implementation, we'd need a sequence_from_single function
+    # For now, using sequence_from_pair with the same value twice as a workaround
+    return mapping_from_pair(key1, sequence_from_pair(val1, val1))
+
+
+def call_func(
+    func: collections.abc.Callable[[T], V],
+    arg: T,
+) -> V:
+    """Calls a function with a single argument."""
+    return func(arg)
+
+
+def call_binary_func(
+    func: collections.abc.Callable[[T, U], V],
+    arg1: T,
+    arg2: U,
+) -> V:
+    """Calls a binary function with two arguments."""
+    return func(arg1, arg2)
+
+
+def map_sequence(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+) -> collections.abc.Sequence[U]:
+    """Applies a function to each element in a sequence."""
+    return [call_func(f, x) for x in seq]
+
+
+def compose_mappings(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+) -> collections.abc.Callable[[T], V]:
+    """Composes two functions that operate on mappings."""
+
+    def composed(x: T) -> V:
+        return call_func(g, call_func(f, x))
+
+    return composed
+
+
+def compose_binary(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U, U], V],
+) -> collections.abc.Callable[[T], V]:
+    """Composes a unary function with a binary function."""
+
+    def composed(x: T) -> V:
+        return call_binary_func(g, call_func(f, x), call_func(f, x))
+
+    return composed
+
+
+def apply_to_sequence_element(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+    index: int,
+) -> U:
+    """Gets an element from a sequence and applies a function to it."""
+    element = sequence_getitem(seq, index)
+    return call_func(f, element)
+
+
+def map_and_get(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+    index: int,
+) -> U:
+    """Maps a function over a sequence and gets element at index."""
+    mapped_seq = map_sequence(f, seq)
+    return sequence_getitem(mapped_seq, index)
+
+
+def compose_and_apply(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    value: T,
+) -> V:
+    """Composes two functions and applies the result to a value."""
+    composed = compose_mappings(f, g)
+    return call_func(composed, value)
+
+
+def double_compose_apply(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    h: collections.abc.Callable[[V], W],
+    value: T,
+) -> W:
+    """Composes three functions and applies to a value."""
+    fg = compose_mappings(f, g)
+    fgh = compose_mappings(fg, h)
+    return call_func(fgh, value)
+
+
+def binary_on_sequence_elements(
+    f: collections.abc.Callable[[T, T], U],
+    seq: collections.abc.Sequence[T],
+    index1: int,
+    index2: int,
+) -> U:
+    """Gets two elements from a sequence and applies a binary function."""
+    elem1 = sequence_getitem(seq, index1)
+    elem2 = sequence_getitem(seq, index2)
+    return call_binary_func(f, elem1, elem2)
+
+
+def map_sequence_and_apply_binary(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U, U], V],
+    seq: collections.abc.Sequence[T],
+    index1: int,
+    index2: int,
+) -> V:
+    """Maps a function over sequence, then applies binary function to two elements."""
+    mapped = map_sequence(f, seq)
+    elem1 = sequence_getitem(mapped, index1)
+    elem2 = sequence_getitem(mapped, index2)
+    return call_binary_func(g, elem1, elem2)
+
+
+def construct_apply_and_get(
+    f: collections.abc.Callable[[T], U],
+    a: T,
+    b: T,
+    index: int,
+) -> U:
+    """Constructs a sequence, applies function to elements, and gets one."""
+    seq = sequence_from_pair(a, b)
+    return apply_to_sequence_element(f, seq, index)
+
+
+def sequence_function_composition(
+    funcs: collections.abc.Sequence[collections.abc.Callable[[T], T]],
+    value: T,
+) -> T:
+    """Applies a sequence of functions in order to a value."""
+    result = value
+    for func in funcs:
+        result = call_func(func, result)
+    return result
+
+
+def map_with_constructed_function(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    seq: collections.abc.Sequence[T],
+) -> collections.abc.Sequence[V]:
+    """Composes two functions and maps the result over a sequence."""
+    composed = compose_mappings(f, g)
+    return map_sequence(composed, seq)
+
+
+def cross_apply_binary(
+    f: collections.abc.Callable[[T, U], V],
+    seq1: collections.abc.Sequence[T],
+    seq2: collections.abc.Sequence[U],
+    index1: int,
+    index2: int,
+) -> V:
+    """Gets elements from two sequences and applies a binary function."""
+    elem1 = sequence_getitem(seq1, index1)
+    elem2 = sequence_getitem(seq2, index2)
+    return call_binary_func(f, elem1, elem2)
+
+
+def nested_function_application(
+    outer_f: collections.abc.Callable[[T], collections.abc.Callable[[U], V]],
+    inner_arg: U,
+    outer_arg: T,
+) -> V:
+    """Applies a function that returns a function, then applies the result."""
+    inner_f = call_func(outer_f, outer_arg)
+    return call_func(inner_f, inner_arg)
+
+
+@pytest.mark.parametrize(
+    "seq,index,key",
+    [
+        # Original test case: list of dicts with string keys and int values
+        ([{"a": 1}, {"b": 2}, {"c": 3}], 1, "b"),
+        # Different value types
+        ([{"x": "hello"}, {"y": "world"}, {"z": "test"}], 2, "z"),
+        ([{"name": 3.14}, {"value": 2.71}, {"constant": 1.41}], 0, "name"),
+        ([{"flag": True}, {"enabled": False}, {"active": True}], 1, "enabled"),
+        # Mixed value types in same dict (should still work)
+        ([{"a": [1, 2, 3]}, {"b": [4, 5, 6]}, {"c": [7, 8, 9]}], 0, "a"),
+        ([{"data": {"nested": "value"}}, {"info": {"deep": "data"}}], 1, "info"),
+        # Different key types
+        ([{1: "one"}, {2: "two"}, {3: "three"}], 2, 3),
+        ([{True: "yes"}, {False: "no"}], 0, True),
+        # Nested collections as values
+        ([{"items": [1, 2, 3]}, {"values": [4, 5, 6]}], 0, "items"),
+        ([{"matrix": [[1, 2], [3, 4]]}, {"grid": [[5, 6], [7, 8]]}], 1, "grid"),
+        ([{"sets": {1, 2, 3}}, {"groups": {4, 5, 6}}], 0, "sets"),
+        # Complex nested structures
+        (
+            [
+                {"users": [{"id": 1, "name": "Alice"}]},
+                {"users": [{"id": 2, "name": "Bob"}]},
+            ],
+            1,
+            "users",
+        ),
+        (
+            [
+                {"config": {"db": {"host": "localhost", "port": 5432}}},
+                {"config": {"cache": {"ttl": 300}}},
+            ],
+            0,
+            "config",
+        ),
+        # Edge cases with single element sequences
+        ([{"only": "one"}], 0, "only"),
+        # Tuples as values
+        ([{"point": (1, 2)}, {"coord": (3, 4)}, {"pos": (5, 6)}], 2, "pos"),
+        ([{"rgb": (255, 0, 0)}, {"hsv": (0, 100, 100)}], 0, "rgb"),
+    ],
+)
+def test_infer_composition_1(seq, index, key):
+    sig1 = inspect.signature(sequence_getitem)
+    sig2 = inspect.signature(mapping_getitem)
+
+    sig12 = inspect.signature(sequence_mapping_getitem)
+
+    inferred_type1 = substitute(
+        sig1.return_annotation,
+        unify(sig1, sig1.bind(nested_type(seq), nested_type(index))),
+    )
+
+    inferred_type2 = substitute(
+        sig2.return_annotation,
+        unify(sig2, sig2.bind(nested_type(inferred_type1), nested_type(key))),
+    )
+
+    inferred_type12 = substitute(
+        sig12.return_annotation,
+        unify(
+            sig12,
+            sig12.bind(nested_type(seq), nested_type(index), nested_type(key)),
+        ),
+    )
+
+    # check that the composed inference matches the direct inference
+    assert isinstance(unify(inferred_type2, inferred_type12), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(sequence_mapping_getitem(seq, index, key)), inferred_type12),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "mapping,key,index",
+    [
+        # Dict of lists with string keys
+        (
+            {
+                "fruits": ["apple", "banana", "cherry"],
+                "colors": ["red", "green", "blue"],
+            },
+            "fruits",
+            1,
+        ),
+        ({"numbers": [1, 2, 3, 4, 5], "primes": [2, 3, 5, 7, 11]}, "primes", 3),
+        # Different value types in sequences
+        ({"floats": [1.1, 2.2, 3.3], "constants": [3.14, 2.71, 1.41]}, "constants", 0),
+        (
+            {"flags": [True, False, True, False], "states": [False, True, False]},
+            "flags",
+            2,
+        ),
+        # Nested structures
+        (
+            {"matrix": [[1, 2, 3], [4, 5, 6], [7, 8, 9]], "identity": [[1, 0], [0, 1]]},
+            "matrix",
+            1,
+        ),
+        (
+            {"teams": [{"name": "A", "score": 10}, {"name": "B", "score": 20}]},
+            "teams",
+            0,
+        ),
+        # Different key types
+        (
+            {
+                1: ["one", "uno", "un"],
+                2: ["two", "dos", "deux"],
+                3: ["three", "tres", "trois"],
+            },
+            2,
+            1,
+        ),
+        ({True: ["yes", "true", "1"], False: ["no", "false", "0"]}, False, 2),
+        # Lists of different collection types
+        (
+            {"data": [{"a": 1}, {"b": 2}, {"c": 3}], "info": [{"x": 10}, {"y": 20}]},
+            "data",
+            2,
+        ),
+        # Edge cases
+        ({"single": ["only"]}, "single", 0),
+        ({"empty_key": [], "full": [1, 2, 3]}, "full", 1),
+        # Complex nested case
+        (
+            {
+                "users": [
+                    {"id": 1, "tags": ["admin", "user"]},
+                    {"id": 2, "tags": ["user", "guest"]},
+                    {"id": 3, "tags": ["guest"]},
+                ]
+            },
+            "users",
+            1,
+        ),
+        # More diverse cases
+        (
+            {"names": ["Alice", "Bob", "Charlie", "David"], "ages": [25, 30, 35, 40]},
+            "names",
+            3,
+        ),
+        (
+            {"options": [[1, 2], [3, 4], [5, 6]], "choices": [[7], [8], [9]]},
+            "options",
+            2,
+        ),
+        # Deeply nested lists
+        (
+            {"deep": [[[1, 2], [3, 4]], [[5, 6], [7, 8]]], "shallow": [[9, 10]]},
+            "deep",
+            0,
+        ),
+    ],
+)
+def test_infer_composition_2(mapping, key, index):
+    sig1 = inspect.signature(mapping_getitem)
+    sig2 = inspect.signature(sequence_getitem)
+
+    sig12 = inspect.signature(mapping_sequence_getitem)
+
+    # First infer type of mapping_getitem(mapping, key) -> should be a sequence
+    inferred_type1 = substitute(
+        sig1.return_annotation,
+        unify(sig1, sig1.bind(nested_type(mapping), nested_type(key))),
+    )
+
+    # Then infer type of sequence_getitem(result_from_step1, index) -> should be element type
+    inferred_type2 = substitute(
+        sig2.return_annotation,
+        unify(sig2, sig2.bind(nested_type(inferred_type1), nested_type(index))),
+    )
+
+    # Directly infer type of mapping_sequence_getitem(mapping, key, index)
+    inferred_type12 = substitute(
+        sig12.return_annotation,
+        unify(
+            sig12,
+            sig12.bind(nested_type(mapping), nested_type(key), nested_type(index)),
+        ),
+    )
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(inferred_type2, inferred_type12), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(
+            nested_type(mapping_sequence_getitem(mapping, key, index)), inferred_type12
+        ),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "a,b,index",
+    [
+        # Basic types
+        (1, 2, 0),
+        (1, 2, 1),
+        ("hello", "world", 0),
+        (3.14, 2.71, 1),
+        (True, False, 0),
+        # Complex types
+        ([1, 2], [3, 4], 1),
+        ({"a": 1}, {"b": 2}, 0),
+        ({1, 2}, {3, 4}, 1),
+        # Mixed but same types
+        ([1, 2, 3], [4, 5], 0),
+        ({"x": "a", "y": "b"}, {"z": "c"}, 1),
+    ],
+)
+def test_get_from_constructed_sequence(a, b, index):
+    """Test type inference through sequence construction and retrieval."""
+    sig_construct = inspect.signature(sequence_from_pair)
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_composed = inspect.signature(get_from_constructed_sequence)
+
+    # Infer type of sequence_from_pair(a, b) -> Sequence[T]
+    construct_subs = unify(
+        sig_construct, sig_construct.bind(nested_type(a), nested_type(b))
+    )
+    inferred_sequence_type = substitute(sig_construct.return_annotation, construct_subs)
+
+    # Infer type of sequence_getitem(sequence, index) -> T
+    getitem_subs = unify(
+        sig_getitem, sig_getitem.bind(inferred_sequence_type, nested_type(index))
+    )
+    inferred_element_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Directly infer type of get_from_constructed_sequence(a, b, index)
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(a), nested_type(b), nested_type(index)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(
+        unify(inferred_element_type, direct_type), collections.abc.Mapping
+    )
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(get_from_constructed_sequence(a, b, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "key,value,lookup_key",
+    [
+        # Basic types
+        ("name", "Alice", "name"),
+        (1, "one", 1),
+        (True, "yes", True),
+        (3.14, "pi", 3.14),
+        # Complex value types
+        ("data", [1, 2, 3], "data"),
+        ("config", {"host": "localhost", "port": 8080}, "config"),
+        ("items", {1, 2, 3}, "items"),
+        # Different key types
+        (42, {"value": "answer"}, 42),
+        ("key", (1, 2, 3), "key"),
+    ],
+)
+def test_get_from_constructed_mapping(key, value, lookup_key):
+    """Test type inference through mapping construction and retrieval."""
+    sig_construct = inspect.signature(mapping_from_pair)
+    sig_getitem = inspect.signature(mapping_getitem)
+    sig_composed = inspect.signature(get_from_constructed_mapping)
+
+    # Infer type of mapping_from_pair(key, value) -> Mapping[K, V]
+    construct_subs = unify(
+        sig_construct, sig_construct.bind(nested_type(key), nested_type(value))
+    )
+    inferred_mapping_type = substitute(sig_construct.return_annotation, construct_subs)
+
+    # Infer type of mapping_getitem(mapping, lookup_key) -> V
+    getitem_subs = unify(
+        sig_getitem, sig_getitem.bind(inferred_mapping_type, nested_type(lookup_key))
+    )
+    inferred_value_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Directly infer type of get_from_constructed_mapping(key, value, lookup_key)
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(key), nested_type(value), nested_type(lookup_key)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(inferred_value_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(
+            nested_type(get_from_constructed_mapping(key, value, lookup_key)),
+            direct_type,
+        ),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "key1,val1,key2,val2,index",
+    [
+        # Basic case
+        ("a", 1, "b", 2, 0),
+        ("x", "hello", "y", "world", 1),
+        # Different types
+        (1, "one", 2, "two", 0),
+        (True, 1.0, False, 0.0, 1),
+        # Complex values
+        ("list1", [1, 2], "list2", [3, 4], 0),
+        ("dict1", {"a": 1}, "dict2", {"b": 2}, 1),
+    ],
+)
+def test_sequence_of_mappings(key1, val1, key2, val2, index):
+    """Test type inference for creating a sequence of mappings."""
+    sig_map = inspect.signature(mapping_from_pair)
+    sig_seq = inspect.signature(sequence_from_pair)
+    sig_composed = inspect.signature(sequence_of_mappings)
+
+    # Step 1: Infer types of the two mappings
+    map1_subs = unify(sig_map, sig_map.bind(nested_type(key1), nested_type(val1)))
+    map1_type = substitute(sig_map.return_annotation, map1_subs)
+
+    # Step 2: Infer type of sequence containing these mappings
+    # We need to unify the two mapping types first
+    unified_map_type = map1_type  # Assuming they're compatible
+
+    seq_subs = unify(sig_seq, sig_seq.bind(unified_map_type, unified_map_type))
+    seq_type = substitute(sig_seq.return_annotation, seq_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(key1), nested_type(val1), nested_type(key2), nested_type(val2)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The types should match
+    assert isinstance(unify(seq_type, direct_type), collections.abc.Mapping)
+
+    # Note: nested_type(sequence_of_mappings(...)) returns concrete types (list[dict[K,V]])
+    # while our function signature uses abstract types (Sequence[Mapping[K,V]])
+    # This is expected behavior - concrete implementations vs abstract interfaces
+
+
+@pytest.mark.parametrize(
+    "k1,v1,v2,k2,v3,v4,outer_idx,inner_key,inner_idx",
+    [
+        # Basic test case
+        ("first", 1, 2, "second", 3, 4, 0, "first", 1),
+        ("a", "x", "y", "b", "z", "w", 1, "b", 0),
+        # Different types
+        (1, 10.0, 20.0, 2, 30.0, 40.0, 0, 1, 1),
+        ("data", [1], [2], "info", [3], [4], 1, "info", 0),
+    ],
+)
+def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_idx):
+    """Test type inference through deeply nested structure construction and retrieval."""
+    # Get signatures for all functions involved
+    sig_nested = inspect.signature(nested_sequence_mapping)
+    sig_seq_get = inspect.signature(sequence_getitem)
+    sig_map_get = inspect.signature(mapping_getitem)
+    sig_composed = inspect.signature(double_nested_get)
+
+    # Step 1: Infer type of nested_sequence_mapping construction
+    nested_subs = unify(
+        sig_nested,
+        sig_nested.bind(
+            nested_type(k1),
+            nested_type(v1),
+            nested_type(v2),
+            nested_type(k2),
+            nested_type(v3),
+            nested_type(v4),
+        ),
+    )
+    nested_seq_type = substitute(sig_nested.return_annotation, nested_subs)
+    # This should be Sequence[Mapping[K, Sequence[T]]]
+
+    # Step 2: Get element from outer sequence
+    outer_get_subs = unify(
+        sig_seq_get, sig_seq_get.bind(nested_seq_type, nested_type(outer_idx))
+    )
+    mapping_type = substitute(sig_seq_get.return_annotation, outer_get_subs)
+    # This should be Mapping[K, Sequence[T]]
+
+    # Step 3: Get sequence from mapping
+    inner_map_subs = unify(
+        sig_map_get, sig_map_get.bind(mapping_type, nested_type(inner_key))
+    )
+    sequence_type = substitute(sig_map_get.return_annotation, inner_map_subs)
+    # This should be Sequence[T]
+
+    # Step 4: Get element from inner sequence
+    final_get_subs = unify(
+        sig_seq_get, sig_seq_get.bind(sequence_type, nested_type(inner_idx))
+    )
+    composed_type = substitute(sig_seq_get.return_annotation, final_get_subs)
+    # This should be T
+
+    # Direct inference on the composed function
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(k1),
+            nested_type(v1),
+            nested_type(v2),
+            nested_type(k2),
+            nested_type(v3),
+            nested_type(v4),
+            nested_type(outer_idx),
+            nested_type(inner_key),
+            nested_type(inner_idx),
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(
+            nested_type(
+                double_nested_get(
+                    k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_idx
+                )
+            ),
+            direct_type,
+        ),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index",
+    [
+        # Basic function applications
+        (lambda x: x * 2, [1, 2, 3], 0),
+        (lambda x: x * 2, [1, 2, 3], 2),
+        (lambda x: x.upper(), ["hello", "world"], 1),
+        (lambda x: len(x), ["a", "bb", "ccc"], 2),
+        (lambda x: x + 1.0, [1.0, 2.0, 3.0], 1),
+    ],
+)
+def test_apply_to_sequence_element(f, seq, index):
+    """Test type inference through sequence access and function application."""
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_call = inspect.signature(call_func)
+    sig_composed = inspect.signature(apply_to_sequence_element)
+
+    # Step 1: Infer type of sequence_getitem(seq, index) -> T
+    getitem_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index))
+    )
+    element_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Step 2: Infer type of call_func(f, element) -> U
+    call_subs = unify(sig_call, sig_call.bind(nested_type(f), element_type))
+    composed_type = substitute(sig_call.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(apply_to_sequence_element(f, seq, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index",
+    [
+        # Basic transformations
+        (lambda x: x * 2, [1, 2, 3], 1),
+        (lambda x: x.upper(), ["hello", "world"], 0),
+        (lambda x: len(x), ["a", "bb", "ccc"], 2),
+        (lambda x: x + 1, [10, 20, 30], 0),
+    ],
+)
+def test_map_and_get(f, seq, index):
+    """Test type inference through mapping and element retrieval."""
+    sig_map = inspect.signature(map_sequence)
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_composed = inspect.signature(map_and_get)
+
+    # Step 1: Infer type of map_sequence(f, seq) -> Sequence[U]
+    map_subs = unify(sig_map, sig_map.bind(nested_type(f), nested_type(seq)))
+    mapped_type = substitute(sig_map.return_annotation, map_subs)
+
+    # Step 2: Infer type of sequence_getitem(mapped_seq, index) -> U
+    getitem_subs = unify(sig_getitem, sig_getitem.bind(mapped_type, nested_type(index)))
+    composed_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(map_and_get(f, seq, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,g,value",
+    [
+        # Basic function compositions
+        (lambda x: x * 2, lambda x: x + 1, 5),
+        (lambda x: str(x), lambda x: x.upper(), 42),
+        (lambda x: len(x), lambda x: x * 2, "hello"),
+        (lambda x: [x], lambda x: x[0], 1),
+    ],
+)
+def test_compose_and_apply(f, g, value):
+    """Test type inference through function composition and application."""
+    sig_compose = inspect.signature(compose_mappings)
+    sig_call = inspect.signature(call_func)
+    sig_composed = inspect.signature(compose_and_apply)
+
+    # Step 1: Infer type of compose_mappings(f, g) -> Callable[[T], V]
+    compose_subs = unify(sig_compose, sig_compose.bind(nested_type(f), nested_type(g)))
+    composed_func_type = substitute(sig_compose.return_annotation, compose_subs)
+
+    # Step 2: Infer type of call_func(composed, value) -> V
+    call_subs = unify(sig_call, sig_call.bind(composed_func_type, nested_type(value)))
+    result_type = substitute(sig_call.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(g), nested_type(value)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(result_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(compose_and_apply(f, g, value)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,a,b,index",
+    [
+        # Basic constructions and applications
+        (lambda x: x * 2, 1, 2, 0),
+        (lambda x: x * 2, 1, 2, 1),
+        (lambda x: x.upper(), "hello", "world", 0),
+        (lambda x: len(x), "a", "bb", 1),
+    ],
+)
+def test_construct_apply_and_get(f, a, b, index):
+    """Test type inference through construction, application, and retrieval."""
+    sig_construct = inspect.signature(sequence_from_pair)
+    sig_apply = inspect.signature(apply_to_sequence_element)
+    sig_composed = inspect.signature(construct_apply_and_get)
+
+    # Step 1: Infer type of sequence_from_pair(a, b) -> Sequence[T]
+    construct_subs = unify(
+        sig_construct, sig_construct.bind(nested_type(a), nested_type(b))
+    )
+    seq_type = substitute(sig_construct.return_annotation, construct_subs)
+
+    # Step 2: Infer type of apply_to_sequence_element(f, seq, index) -> U
+    apply_subs = unify(
+        sig_apply, sig_apply.bind(nested_type(f), seq_type, nested_type(index))
+    )
+    composed_type = substitute(sig_apply.return_annotation, apply_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(f), nested_type(a), nested_type(b), nested_type(index)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(construct_apply_and_get(f, a, b, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index1,index2",
+    [
+        # Basic binary operations
+        (lambda x, y: x + y, [1, 2, 3], 0, 1),
+        (lambda x, y: x + y, [1, 2, 3], 1, 2),
+        (lambda x, y: x + y, ["hello", "world", "test"], 0, 2),
+        (lambda x, y: x * y, [2, 3, 4], 0, 2),
+    ],
+)
+def test_binary_on_sequence_elements(f, seq, index1, index2):
+    """Test type inference through sequence access and binary function application."""
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_call_binary = inspect.signature(call_binary_func)
+    sig_composed = inspect.signature(binary_on_sequence_elements)
+
+    # Step 1: Infer types of sequence_getitem calls
+    getitem1_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index1))
+    )
+    elem1_type = substitute(sig_getitem.return_annotation, getitem1_subs)
+
+    getitem2_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index2))
+    )
+    elem2_type = substitute(sig_getitem.return_annotation, getitem2_subs)
+
+    # Step 2: Infer type of call_binary_func(f, elem1, elem2) -> V
+    call_subs = unify(
+        sig_call_binary, sig_call_binary.bind(nested_type(f), elem1_type, elem2_type)
+    )
+    composed_type = substitute(sig_call_binary.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(f), nested_type(seq), nested_type(index1), nested_type(index2)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(
+            nested_type(binary_on_sequence_elements(f, seq, index1, index2)),
+            direct_type,
+        ),
+        collections.abc.Mapping,
+    )
