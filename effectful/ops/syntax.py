@@ -598,7 +598,12 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        from effectful.internals.unification import freetypevars, nested_type, substitute, unify
+        from effectful.internals.unification import (
+            freetypevars,
+            nested_type,
+            substitute,
+            unify,
+        )
 
         return_anno = self.__signature__.return_annotation
         if typing.get_origin(return_anno) is typing.Annotated:

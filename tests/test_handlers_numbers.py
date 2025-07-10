@@ -45,7 +45,11 @@ def test_lambda_calculus_2():
 
 
 def test_lambda_calculus_3():
-    x, y, f = defop(int), defop(int), defop(collections.abc.Callable[[int], collections.abc.Callable[[int], int]])
+    x, y, f = (
+        defop(int),
+        defop(int),
+        defop(collections.abc.Callable[[int], collections.abc.Callable[[int], int]]),
+    )
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
