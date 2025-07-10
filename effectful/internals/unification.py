@@ -120,18 +120,18 @@ def _(
     elif typ.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
         subtyp, collections.abc.Sequence
     ):
-        return unify(tuple(typ.annotation for _ in subtyp), freshen(subtyp), subs)
+        return unify(tuple(typ.annotation for _ in subtyp), _freshen(subtyp), subs)
     elif typ.kind is inspect.Parameter.VAR_KEYWORD and isinstance(
         subtyp, collections.abc.Mapping
     ):
         return unify(
-            tuple(typ.annotation for _ in subtyp), freshen(tuple(subtyp.values())), subs
+            tuple(typ.annotation for _ in subtyp), _freshen(tuple(subtyp.values())), subs
         )
     elif typ.kind not in {
         inspect.Parameter.VAR_KEYWORD,
         inspect.Parameter.VAR_POSITIONAL,
     } or isinstance(subtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
-        return unify(typ.annotation, freshen(subtyp), subs)
+        return unify(typ.annotation, _freshen(subtyp), subs)
     else:
         raise TypeError(f"Cannot unify parameter {typ} with {subtyp} given {subs}. ")
 
@@ -278,7 +278,7 @@ def _(
     return subs
 
 
-def freshen(tp: typing.Any):
+def _freshen(tp: typing.Any):
     """
     Return a freshened version of the given type expression.
 
