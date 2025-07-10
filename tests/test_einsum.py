@@ -1,6 +1,6 @@
-import functools
 import itertools
 import operator
+from functools import reduce
 
 import effectful.handlers.jax.numpy as jnp
 import jax
@@ -9,9 +9,13 @@ from effectful.handlers.jax import jax_getitem
 from effectful.ops.semantics import Operation, coproduct, handler
 from effectful.ops.syntax import deffn, defop
 
-from weighted.handlers.jax import D
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.handlers.optimization import FoldReorderReduction
+from weighted.handlers.jax import D, DenseTensorFold
+from weighted.handlers.optimization import (
+    FoldEliminateDterm,
+    FoldIndexDistributivity,
+    FoldReorderReduction,
+)
+from weighted.ops.fold import BaselineFold
 from weighted.ops.sugar import Sum
 
 # taken from https://github.com/pyro-ppl/funsor/blob/master/test/test_einsum.py
@@ -31,15 +35,28 @@ EINSUM_EXAMPLES = [
     "ai,abi,bci,cdi->i",
     "aij,abij,bcij->ij",
     "a,abi,bcij,cdij->ij",
-    "ab,bc,cd,de,ef,fg->ag",
+    # "ab,bc,cd,de,ef,fg->ag", (too slow for the baseline fold)
 ]
 
+baseline_intp = reduce(
+    coproduct,  # type: ignore
+    [BaselineFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
+)
+
+jax_intp = reduce(
+    coproduct,  # type: ignore
+    [DenseTensorFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
+)
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
     [
+        pytest.param(baseline_intp, id="baseline"),
+        pytest.param(
+            coproduct(baseline_intp, FoldReorderReduction()), id="reordered-baseline"
+        ),
         pytest.param(jax_intp, id="jax"),
-        pytest.param(coproduct(jax_intp, FoldReorderReduction()), id="reorder-folds"),
+        pytest.param(coproduct(jax_intp, FoldReorderReduction()), id="reordered-jax"),
     ],
 )
 
@@ -83,7 +100,7 @@ def einsum_weighted(
         jax_getitem(operand_ops[f"m{i}"](), tuple(symbol_ops[name]() for name in inputs))
         for i, inputs in enumerate(inputs)
     )
-    input_term = functools.reduce(operator.mul, input_terms)
+    input_term = reduce(operator.mul, input_terms)
 
     operand_intp = {
         operand_ops[f"m{i}"]: deffn(tensor) for i, tensor in enumerate(operands)

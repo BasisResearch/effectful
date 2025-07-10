@@ -3,9 +3,9 @@ from functools import reduce
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
 import tree
-from effectful.handlers.jax import jax_getitem
+from effectful.handlers.jax import bind_dims, jax_getitem
 from effectful.ops.semantics import coproduct, fvsof, fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
 from scipy.cluster.hierarchy import DisjointSet
 
@@ -23,14 +23,15 @@ class FoldReorderReduction(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body):
-        # Only succeeds if body is a D term of tensor multiplications.
-        out_vars, D_body = _parse_D_term(body)
-        terms = _parse_mul_terms(D_body, semiring)
+        # Only succeeds if body is a term of tensor multiplications.
+        terms = _parse_mul_terms(body, semiring)
 
         # only proceed if the body multiplies multiple tensors
         if len(terms) < 2 or any(t.op != jax_getitem for t in terms):
             return fwd()
 
+        term_vars = set.union(*[fvsof(t.args[1]) for t in terms])
+        out_vars = term_vars - set(streams.keys())
         # todo: support dependent streams
         var_sizes = {str(k): len(v) for k, v in streams.items()}
         in_vars = [fvsof(term.args[1]) for term in terms]
@@ -48,8 +49,7 @@ class FoldReorderReduction(ObjectInterpretation):
             in_vars = [x for i, x in enumerate(in_vars) if i not in fold_positions]
             in_vars.append(set(fold_out_vars))
 
-            new_body = reduce(semiring.mul, fold_terms)
-            new_fold = D((fold_out_vars, new_body))
+            new_fold = reduce(semiring.mul, fold_terms)
             current_streams = {v: streams[v] for v in eliminated_vars}
             if len(current_streams) > 0:
                 new_fold = fold(semiring, current_streams, new_fold)
@@ -88,6 +88,7 @@ def _order_variables(var_sizes: dict, in_vars, out_vars, memory_limit=5000):
 
     out_vars = set(map(str, out_vars))
     in_vars = [set(map(str, x)) for x in in_vars]
+    var_sizes |= dict.fromkeys(out_vars, 1)  # todo: fix
     path = _greedy_path(in_vars, out_vars, var_sizes, memory_limit)
     return path
 
@@ -160,6 +161,30 @@ class FoldIndexDistributivity(ObjectInterpretation):
 
         # Combine results using semiring addition
         return reduce(lambda a, b: semiring.add(a, b), results, semiring.zero)
+
+
+class FoldEliminateDterm(ObjectInterpretation):
+    """Eliminates D-terms from a fold."""
+
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        # Check if the body is a D term with one argument
+        if not (isinstance(body, Term) and body.op is D and len(body.args) == 1):
+            return fwd()
+
+        indices, body = body.args[0]
+        indices = [ix.op for ix in indices]
+        if not all(ix in streams for ix in indices):
+            return fwd()
+
+        fresh_indices = [defop(ix, name=f"fresh_{ix}") for ix in indices]
+
+        fresh_streams = {
+            ix: jnp.expand_dims(jax_getitem(streams[ix], (fresh_ix(),)), -1)
+            for ix, fresh_ix in zip(indices, fresh_indices, strict=False)
+        }
+        new_fold = fold(semiring, streams | fresh_streams, body)
+        return bind_dims(new_fold, *fresh_indices)
 
 
 class FoldAddDistributivity(ObjectInterpretation):

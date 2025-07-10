@@ -201,7 +201,7 @@ class DenseTensorFold(ObjectInterpretation):
             return fwd()
         indices = [i.op for i in indices]
 
-        old_to_fresh = {k: defop(k) for k in streams}
+        old_to_fresh = {k: defop(k, name=f"fresh_{k}") for k in streams}
         fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
         indexed_streams = {
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()

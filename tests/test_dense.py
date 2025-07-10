@@ -1,3 +1,4 @@
+from functools import reduce
 from graphlib import TopologicalSorter
 
 import chex
@@ -13,22 +14,33 @@ from jax import random as random
 
 from weighted.handlers.jax import (
     D,
+    DenseTensorFold,
     GradientOptimizationFold,
     PytreeMapFold,
     ScanFold,
     reals,
 )
-from weighted.handlers.jax import interpretation as jax_intp
+from weighted.handlers.optimization import FoldEliminateDterm, FoldIndexDistributivity
 from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.sugar import ArgMin, Max, Min, Sum
 
-baseline_intp = coproduct(
-    BaselineFold(),
-    {D: lambda *a, **k: pytest.xfail("D operator not implemented for baseline fold")},
+baseline_intp = reduce(
+    coproduct,  # type: ignore
+    [BaselineFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
+)
+
+jax_intp = reduce(
+    coproduct,  # type: ignore
+    [DenseTensorFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
 )
 
 parameterize_intp = pytest.mark.parametrize(
-    "intp", [pytest.param(jax_intp, id="jax"), pytest.param(baseline_intp, id="baseline")]
+    "intp",
+    [
+        pytest.param(jax_intp, id="jax_no_d_term"),
+        pytest.param(DenseTensorFold(), id="jax_vanilla"),
+        pytest.param(baseline_intp, id="baseline_no_d_term"),
+    ],
 )
 parameterize_ops = pytest.mark.parametrize(
     "weighted_op,python_op",
@@ -55,7 +67,8 @@ def sparse_to_tensor(sparse):
     return tensor
 
 
-def test_batched_matmul():
+@parameterize_intp
+def test_batched_matmul(intp):
     key = jax.random.PRNGKey(0)
     # Define dimensions
     B, I, J, K = 2, 3, 4, 5
@@ -72,13 +85,14 @@ def test_batched_matmul():
         defop(jax.Array, name="k"),
     )
 
-    with handler(jax_intp):
+    with handler(intp):
         actual = Sum(
             {b: jnp.arange(B), i: jnp.arange(I), j: jnp.arange(J), k: jnp.arange(K)},
             D(((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k))),
         )
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
+    assert isinstance(actual, jax.Array)
     assert jnp.allclose(actual, expected)
 
 
@@ -350,6 +364,53 @@ def test_dependent_folds_unused():
 
         assert isinstance(actual, jax.Array)
         assert actual[()] == expected
+
+
+@parameterize_intp
+def test_dependent_partial_folds(intp):
+    """Test folds of parts of the indices that depend on other indices within the same fold."""
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    I, J = 3, 4
+
+    with handler(intp):
+        j_array = jnp.arange(I * J).reshape((I, J))
+        j_dependent = jax_getitem(j_array, (i(),))
+        i_array = jnp.flip(jnp.arange(I))
+
+        # only reduce the j dimension, returning an array of shape (I,)
+        expected = jnp.array([38, 22, 6])
+        result = Sum({i: i_array, j: j_dependent}, D(((i(),), j())))
+        assert jnp.allclose(result, expected)
+
+        # only reduce the i dimension, returning an array of shape (J,)
+        expected = jnp.array([12, 15, 18, 21])
+        result = Sum({i: i_array, j: j_dependent}, D(((j(),), j())))
+        assert jnp.allclose(result, expected)
+
+
+@parameterize_intp
+def test_doubly_dependent_partial_folds(intp):
+    i, j, k = (
+        defop(jax.Array, name="i"),
+        defop(jax.Array, name="j"),
+        defop(jax.Array, name="k"),
+    )
+    I, J, K = 2, 3, 4
+
+    with handler(intp):
+        k_array = jnp.flip(jnp.arange(K * J)).reshape((K, J))
+        k_dependent = jax_getitem(k_array, (j(),))
+        j_array = jnp.arange(I * J).reshape((I, J))
+        j_dependent = jax_getitem(j_array, (i(),))
+        i_array = jnp.flip(jnp.arange(I))
+
+        result = Sum({i: i_array, j: j_dependent, k: k_dependent}, D(((i(),), k())))
+        assert isinstance(result, jax.Array)
+        assert jnp.allclose(result, jnp.array([9, 63]))
+
+        result = Sum({i: i_array, j: j_dependent, k: k_dependent}, D(((j(),), k())))
+        assert isinstance(result, jax.Array)
+        assert jnp.allclose(result, jnp.array([33, 24, 15]))
 
 
 def longest_dependency_chain(adj):
