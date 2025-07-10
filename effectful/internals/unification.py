@@ -638,6 +638,7 @@ def substitute(
     elif isinstance(typ, list | tuple):
         return type(typ)(substitute(item, subs) for item in typ)
     elif isinstance(typ, collections.abc.Mapping):
+        assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
         return {k: substitute(v, subs) for k, v in typ.items()}
     elif isinstance(typ, GenericAlias) and typing.get_args(typ):
         return substitute(typing.get_origin(typ), subs)[substitute(typing.get_args(typ), subs)]  # type: ignore
