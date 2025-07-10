@@ -236,20 +236,26 @@ def _(
 @unify.register
 def _(
     typ: types.UnionType,
-    subtyp: type,
+    subtyp: type | types.UnionType,
     subs: Substitutions = {},
 ) -> Substitutions:
-    any_succeeded = False
-    for arg in typing.get_args(typ):
-        try:
-            subs = unify(arg, subtyp, subs)
-            any_succeeded = True
-        except TypeError:  # noqa
-            continue
-    if any_succeeded:
+    if isinstance(subtyp, types.UnionType):
+        # If subtyp is a union, try to unify with each argument
+        for arg in typing.get_args(subtyp):
+            subs = unify(typ, arg, subs)
         return subs
     else:
-        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+        any_succeeded = False
+        for arg in typing.get_args(typ):
+            try:
+                subs = unify(arg, subtyp, subs)
+                any_succeeded = True
+            except TypeError:  # noqa
+                continue
+        if any_succeeded:
+            return subs
+        else:
+            raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
 @unify.register

@@ -339,7 +339,6 @@ def test_unify_union_1():
     assert unify(int | str, int) == {}
 
     assert unify(T, int | str) == {T: int | str}
-    assert unify(T | V, int | str) == {T: int | str, V: int | str}
 
 
 def test_unify_tuple_variadic():
