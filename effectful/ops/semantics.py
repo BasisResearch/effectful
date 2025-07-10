@@ -306,7 +306,7 @@ def typeof(term: Expr[T]) -> type[T]:
                     else tp.__constraints__[0]
                     if tp.__constraints__
                     else object
-                )  # type: ignore
+                )
             if isinstance(tp, types.UnionType):
                 raise TypeError(
                     f"Cannot determine type of {term} because it is a union type: {tp}"

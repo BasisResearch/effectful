@@ -612,14 +612,14 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         if return_anno is inspect.Parameter.empty:
             return typing.cast(type[V], object)
         elif return_anno is None:
-            return type(None)
+            return type(None)  # type: ignore
         elif not freetypevars(return_anno):
             return return_anno
 
         type_args = tuple(nested_type(a) for a in args)
         type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
         bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
-        return substitute(return_anno, unify(self.__signature__, bound_sig))
+        return substitute(return_anno, unify(self.__signature__, bound_sig))  # type: ignore
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -650,9 +650,9 @@ def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(type)
-@defop.register(types.GenericAlias)
-@defop.register(typing._GenericAlias)  # type: ignore
-@defop.register(types.UnionType)  # type: ignore
+@defop.register(typing.cast(type, types.GenericAlias))
+@defop.register(typing.cast(type, typing._GenericAlias))  # type: ignore
+@defop.register(typing.cast(type, types.UnionType))
 def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
