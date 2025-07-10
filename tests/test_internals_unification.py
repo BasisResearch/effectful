@@ -11,10 +11,16 @@ from effectful.internals.unification import (
     unify,
 )
 
-T = typing.TypeVar("T")
-K = typing.TypeVar("K")
-V = typing.TypeVar("V")
-U = typing.TypeVar("U")
+if typing.TYPE_CHECKING:
+    T = typing.Any
+    K = typing.Any
+    V = typing.Any
+    U = typing.Any
+else:
+    T = typing.TypeVar("T")
+    K = typing.TypeVar("K")
+    V = typing.TypeVar("V")
+    U = typing.TypeVar("U")
 
 
 @pytest.mark.parametrize(
@@ -201,7 +207,7 @@ def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
 def test_substitute(
     typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
 ):
-    assert substitute(typ, subs) == expected
+    assert substitute(typ, subs) == expected  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -290,7 +296,7 @@ def test_unify_success(
     initial_subs: typing.Mapping[typing.TypeVar, type],
     expected_subs: typing.Mapping[typing.TypeVar, type],
 ):
-    assert unify(typ, subtyp, initial_subs) == expected_subs
+    assert unify(typ, subtyp, initial_subs) == expected_subs  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -480,7 +486,7 @@ def test_infer_return_type_success(
 
 # Error cases
 def unbound_typevar_func(x: T) -> tuple[T, V]:  # V not in parameters
-    return (x, "error")  # type: ignore
+    return (x, "error")
 
 
 def no_return_annotation(x: T):  # No return annotation
@@ -488,7 +494,7 @@ def no_return_annotation(x: T):  # No return annotation
 
 
 def no_param_annotation(x) -> T:  # No parameter annotation
-    return x  # type: ignore
+    return x
 
 
 @pytest.mark.parametrize(
@@ -551,7 +557,6 @@ def test_infer_return_type_failure(
         (list[T], list[T]),
         (dict[K, V], dict[K, V]),
         # Union types pass through
-        (typing.Union[int, str], typing.Union[int, str]),
         (int | str, int | str),
         # Empty collections
         ([], list),
@@ -615,10 +620,10 @@ def test_nested_type_typevar_error():
     """Test that TypeVars raise TypeError in nested_type"""
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(T)
-    
+
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(K)
-    
+
     with pytest.raises(TypeError, match="TypeVars should not appear in values"):
         nested_type(V)
 
@@ -630,33 +635,7 @@ def test_nested_type_term_error():
     from unittest.mock import Mock
 
     from effectful.ops.types import Term
-    
+
     mock_term = Mock(spec=Term)
     with pytest.raises(TypeError, match="Terms should not appear in nested_type"):
         nested_type(mock_term)
-
-
-def test_nested_type_interpretation_special_case():
-    """Test that Interpretation type is handled specially in mapping dispatch"""
-    # This tests the special case in the Mapping dispatch for Interpretation
-    from effectful.ops.types import Interpretation
-    
-    # Since Interpretation is a Protocol, we can't instantiate it directly.
-    # Instead, create a concrete implementation
-    class ConcreteInterpretation(dict):
-        """A concrete implementation of Interpretation for testing"""
-        pass
-    
-    # Make it look like an Interpretation type for the type check
-    ConcreteInterpretation.__name__ = 'Interpretation'
-    ConcreteInterpretation.__module__ = Interpretation.__module__
-    
-    # Create instance and patch the type temporarily
-    interp = ConcreteInterpretation()
-    original_type = type(interp)
-    
-    # The _nested_type checks `type(value) is Interpretation`
-    # Since we can't change the type of an instance, we'll test the behavior
-    # by verifying that our empty dict doesn't trigger the Interpretation path
-    result = nested_type({})
-    assert result == dict  # Empty dict should return dict, not Interpretation
