@@ -16,11 +16,13 @@ if typing.TYPE_CHECKING:
     K = typing.Any
     V = typing.Any
     U = typing.Any
+    W = typing.Any
 else:
     T = typing.TypeVar("T")
     K = typing.TypeVar("K")
     V = typing.TypeVar("V")
     U = typing.TypeVar("U")
+    W = typing.TypeVar("W")
 
 
 @pytest.mark.parametrize(
@@ -742,6 +744,178 @@ def transform_mapping_values(
     return mapping_from_pair(key1, sequence_from_pair(val1, val1))
 
 
+def call_func(
+    func: collections.abc.Callable[[T], V],
+    arg: T,
+) -> V:
+    """Calls a function with a single argument."""
+    return func(arg)
+
+
+def call_binary_func(
+    func: collections.abc.Callable[[T, U], V],
+    arg1: T,
+    arg2: U,
+) -> V:
+    """Calls a binary function with two arguments."""
+    return func(arg1, arg2)
+
+
+def map_sequence(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+) -> collections.abc.Sequence[U]:
+    """Applies a function to each element in a sequence."""
+    return [call_func(f, x) for x in seq]
+
+
+def compose_mappings(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+) -> collections.abc.Callable[[T], V]:
+    """Composes two functions that operate on mappings."""
+
+    def composed(x: T) -> V:
+        return call_func(g, call_func(f, x))
+
+    return composed
+
+
+def compose_binary(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U, U], V],
+) -> collections.abc.Callable[[T], V]:
+    """Composes a unary function with a binary function."""
+
+    def composed(x: T) -> V:
+        return call_binary_func(g, call_func(f, x), call_func(f, x))
+
+    return composed
+
+
+def apply_to_sequence_element(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+    index: int,
+) -> U:
+    """Gets an element from a sequence and applies a function to it."""
+    element = sequence_getitem(seq, index)
+    return call_func(f, element)
+
+
+def map_and_get(
+    f: collections.abc.Callable[[T], U],
+    seq: collections.abc.Sequence[T],
+    index: int,
+) -> U:
+    """Maps a function over a sequence and gets element at index."""
+    mapped_seq = map_sequence(f, seq)
+    return sequence_getitem(mapped_seq, index)
+
+
+def compose_and_apply(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    value: T,
+) -> V:
+    """Composes two functions and applies the result to a value."""
+    composed = compose_mappings(f, g)
+    return call_func(composed, value)
+
+
+def double_compose_apply(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    h: collections.abc.Callable[[V], W],
+    value: T,
+) -> W:
+    """Composes three functions and applies to a value."""
+    fg = compose_mappings(f, g)
+    fgh = compose_mappings(fg, h)
+    return call_func(fgh, value)
+
+
+def binary_on_sequence_elements(
+    f: collections.abc.Callable[[T, T], U],
+    seq: collections.abc.Sequence[T],
+    index1: int,
+    index2: int,
+) -> U:
+    """Gets two elements from a sequence and applies a binary function."""
+    elem1 = sequence_getitem(seq, index1)
+    elem2 = sequence_getitem(seq, index2)
+    return call_binary_func(f, elem1, elem2)
+
+
+def map_sequence_and_apply_binary(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U, U], V],
+    seq: collections.abc.Sequence[T],
+    index1: int,
+    index2: int,
+) -> V:
+    """Maps a function over sequence, then applies binary function to two elements."""
+    mapped = map_sequence(f, seq)
+    elem1 = sequence_getitem(mapped, index1)
+    elem2 = sequence_getitem(mapped, index2)
+    return call_binary_func(g, elem1, elem2)
+
+
+def construct_apply_and_get(
+    f: collections.abc.Callable[[T], U],
+    a: T,
+    b: T,
+    index: int,
+) -> U:
+    """Constructs a sequence, applies function to elements, and gets one."""
+    seq = sequence_from_pair(a, b)
+    return apply_to_sequence_element(f, seq, index)
+
+
+def sequence_function_composition(
+    funcs: collections.abc.Sequence[collections.abc.Callable[[T], T]],
+    value: T,
+) -> T:
+    """Applies a sequence of functions in order to a value."""
+    result = value
+    for func in funcs:
+        result = call_func(func, result)
+    return result
+
+
+def map_with_constructed_function(
+    f: collections.abc.Callable[[T], U],
+    g: collections.abc.Callable[[U], V],
+    seq: collections.abc.Sequence[T],
+) -> collections.abc.Sequence[V]:
+    """Composes two functions and maps the result over a sequence."""
+    composed = compose_mappings(f, g)
+    return map_sequence(composed, seq)
+
+
+def cross_apply_binary(
+    f: collections.abc.Callable[[T, U], V],
+    seq1: collections.abc.Sequence[T],
+    seq2: collections.abc.Sequence[U],
+    index1: int,
+    index2: int,
+) -> V:
+    """Gets elements from two sequences and applies a binary function."""
+    elem1 = sequence_getitem(seq1, index1)
+    elem2 = sequence_getitem(seq2, index2)
+    return call_binary_func(f, elem1, elem2)
+
+
+def nested_function_application(
+    outer_f: collections.abc.Callable[[T], collections.abc.Callable[[U], V]],
+    inner_arg: U,
+    outer_arg: T,
+) -> V:
+    """Applies a function that returns a function, then applies the result."""
+    inner_f = call_func(outer_f, outer_arg)
+    return call_func(inner_f, inner_arg)
+
+
 @pytest.mark.parametrize(
     "seq,index,key",
     [
@@ -1183,6 +1357,234 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
                     k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_idx
                 )
             ),
+            direct_type,
+        ),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index",
+    [
+        # Basic function applications
+        (lambda x: x * 2, [1, 2, 3], 0),
+        (lambda x: x * 2, [1, 2, 3], 2),
+        (lambda x: x.upper(), ["hello", "world"], 1),
+        (lambda x: len(x), ["a", "bb", "ccc"], 2),
+        (lambda x: x + 1.0, [1.0, 2.0, 3.0], 1),
+    ],
+)
+def test_apply_to_sequence_element(f, seq, index):
+    """Test type inference through sequence access and function application."""
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_call = inspect.signature(call_func)
+    sig_composed = inspect.signature(apply_to_sequence_element)
+
+    # Step 1: Infer type of sequence_getitem(seq, index) -> T
+    getitem_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index))
+    )
+    element_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Step 2: Infer type of call_func(f, element) -> U
+    call_subs = unify(sig_call, sig_call.bind(nested_type(f), element_type))
+    composed_type = substitute(sig_call.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(apply_to_sequence_element(f, seq, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index",
+    [
+        # Basic transformations
+        (lambda x: x * 2, [1, 2, 3], 1),
+        (lambda x: x.upper(), ["hello", "world"], 0),
+        (lambda x: len(x), ["a", "bb", "ccc"], 2),
+        (lambda x: x + 1, [10, 20, 30], 0),
+    ],
+)
+def test_map_and_get(f, seq, index):
+    """Test type inference through mapping and element retrieval."""
+    sig_map = inspect.signature(map_sequence)
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_composed = inspect.signature(map_and_get)
+
+    # Step 1: Infer type of map_sequence(f, seq) -> Sequence[U]
+    map_subs = unify(sig_map, sig_map.bind(nested_type(f), nested_type(seq)))
+    mapped_type = substitute(sig_map.return_annotation, map_subs)
+
+    # Step 2: Infer type of sequence_getitem(mapped_seq, index) -> U
+    getitem_subs = unify(sig_getitem, sig_getitem.bind(mapped_type, nested_type(index)))
+    composed_type = substitute(sig_getitem.return_annotation, getitem_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(map_and_get(f, seq, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,g,value",
+    [
+        # Basic function compositions
+        (lambda x: x * 2, lambda x: x + 1, 5),
+        (lambda x: str(x), lambda x: x.upper(), 42),
+        (lambda x: len(x), lambda x: x * 2, "hello"),
+        (lambda x: [x], lambda x: x[0], 1),
+    ],
+)
+def test_compose_and_apply(f, g, value):
+    """Test type inference through function composition and application."""
+    sig_compose = inspect.signature(compose_mappings)
+    sig_call = inspect.signature(call_func)
+    sig_composed = inspect.signature(compose_and_apply)
+
+    # Step 1: Infer type of compose_mappings(f, g) -> Callable[[T], V]
+    compose_subs = unify(sig_compose, sig_compose.bind(nested_type(f), nested_type(g)))
+    composed_func_type = substitute(sig_compose.return_annotation, compose_subs)
+
+    # Step 2: Infer type of call_func(composed, value) -> V
+    call_subs = unify(sig_call, sig_call.bind(composed_func_type, nested_type(value)))
+    result_type = substitute(sig_call.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(nested_type(f), nested_type(g), nested_type(value)),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(result_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(compose_and_apply(f, g, value)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,a,b,index",
+    [
+        # Basic constructions and applications
+        (lambda x: x * 2, 1, 2, 0),
+        (lambda x: x * 2, 1, 2, 1),
+        (lambda x: x.upper(), "hello", "world", 0),
+        (lambda x: len(x), "a", "bb", 1),
+    ],
+)
+def test_construct_apply_and_get(f, a, b, index):
+    """Test type inference through construction, application, and retrieval."""
+    sig_construct = inspect.signature(sequence_from_pair)
+    sig_apply = inspect.signature(apply_to_sequence_element)
+    sig_composed = inspect.signature(construct_apply_and_get)
+
+    # Step 1: Infer type of sequence_from_pair(a, b) -> Sequence[T]
+    construct_subs = unify(
+        sig_construct, sig_construct.bind(nested_type(a), nested_type(b))
+    )
+    seq_type = substitute(sig_construct.return_annotation, construct_subs)
+
+    # Step 2: Infer type of apply_to_sequence_element(f, seq, index) -> U
+    apply_subs = unify(
+        sig_apply, sig_apply.bind(nested_type(f), seq_type, nested_type(index))
+    )
+    composed_type = substitute(sig_apply.return_annotation, apply_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(f), nested_type(a), nested_type(b), nested_type(index)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(nested_type(construct_apply_and_get(f, a, b, index)), direct_type),
+        collections.abc.Mapping,
+    )
+
+
+@pytest.mark.parametrize(
+    "f,seq,index1,index2",
+    [
+        # Basic binary operations
+        (lambda x, y: x + y, [1, 2, 3], 0, 1),
+        (lambda x, y: x + y, [1, 2, 3], 1, 2),
+        (lambda x, y: x + y, ["hello", "world", "test"], 0, 2),
+        (lambda x, y: x * y, [2, 3, 4], 0, 2),
+    ],
+)
+def test_binary_on_sequence_elements(f, seq, index1, index2):
+    """Test type inference through sequence access and binary function application."""
+    sig_getitem = inspect.signature(sequence_getitem)
+    sig_call_binary = inspect.signature(call_binary_func)
+    sig_composed = inspect.signature(binary_on_sequence_elements)
+
+    # Step 1: Infer types of sequence_getitem calls
+    getitem1_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index1))
+    )
+    elem1_type = substitute(sig_getitem.return_annotation, getitem1_subs)
+
+    getitem2_subs = unify(
+        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index2))
+    )
+    elem2_type = substitute(sig_getitem.return_annotation, getitem2_subs)
+
+    # Step 2: Infer type of call_binary_func(f, elem1, elem2) -> V
+    call_subs = unify(
+        sig_call_binary, sig_call_binary.bind(nested_type(f), elem1_type, elem2_type)
+    )
+    composed_type = substitute(sig_call_binary.return_annotation, call_subs)
+
+    # Direct inference
+    direct_subs = unify(
+        sig_composed,
+        sig_composed.bind(
+            nested_type(f), nested_type(seq), nested_type(index1), nested_type(index2)
+        ),
+    )
+    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
+
+    # check that the result of nested_type on the value of the composition unifies with the inferred type
+    assert isinstance(
+        unify(
+            nested_type(binary_on_sequence_elements(f, seq, index1, index2)),
             direct_type,
         ),
         collections.abc.Mapping,
