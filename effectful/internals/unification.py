@@ -365,13 +365,15 @@ def _freshen(tp: typing.Any):
         tp,
         {
             fv: typing.TypeVar(
-                name=f"{fv.__name__}_{random.randint(0, 1 << 32)}",
+                name=f"{fv.__name__[:100]}_{random.randint(0, 1 << 32)}",
                 bound=fv.__bound__,
                 covariant=fv.__covariant__,
                 contravariant=fv.__contravariant__,
             )
             if isinstance(fv, typing.TypeVar)
-            else typing.ParamSpec(name=f"{fv.__name__}_{random.randint(0, 1 << 32)}")
+            else typing.ParamSpec(
+                name=f"{fv.__name__[:100]}_{random.randint(0, 1 << 32)}"
+            )
             for fv in freetypevars(tp)
             if isinstance(fv, typing.TypeVar | typing.ParamSpec)
         },
