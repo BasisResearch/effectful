@@ -356,9 +356,9 @@ def _freshen(tp: typing.Any):
     Examples:
         >>> import typing
         >>> T = typing.TypeVar('T')
-        >>> isinstance(freshen(T), typing.TypeVar)
+        >>> isinstance(_freshen(T), typing.TypeVar)
         True
-        >>> freshen(T) == T
+        >>> _freshen(T) == T
         False
     """
     return substitute(
