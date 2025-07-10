@@ -598,10 +598,18 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        from effectful.internals.unification import infer_return_type, nested_type
+        from effectful.internals.unification import freetypevars, nested_type, substitute, unify
 
-        if self.__signature__.return_annotation is inspect.Parameter.empty:
+        return_anno = self.__signature__.return_annotation
+        if typing.get_origin(return_anno) is typing.Annotated:
+            return_anno = typing.get_args(return_anno)[0]
+
+        if return_anno is inspect.Parameter.empty:
             return typing.cast(type[V], object)
+        elif return_anno is None:
+            return type(None)
+        elif not freetypevars(return_anno):
+            return return_anno
 
         type_args = tuple(nested_type(a) for a in args)
         type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
@@ -611,7 +619,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
                     param.default is not inspect.Parameter.empty and \
                     param.kind not in {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}:
                 bound_sig.arguments[name] = nested_type(param.default)
-        return infer_return_type(bound_sig)
+        return substitute(return_anno, unify(self.__signature__, bound_sig))
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
