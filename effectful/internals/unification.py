@@ -323,10 +323,14 @@ def _(
 @unify.register
 def _(
     typ: typing.ParamSpec,
-    subtyp: typing.ParamSpec | collections.abc.Sequence,
+    subtyp: typing.ParamSpec | collections.abc.Sequence | types.EllipsisType,
     subs: Substitutions = {},
 ) -> Substitutions:
-    return subs if typ is subtyp else {typ: subtyp, **subs}
+    return (
+        subs
+        if typ is subtyp or isinstance(subtyp, types.EllipsisType)
+        else {typ: subtyp, **subs}
+    )
 
 
 @unify.register
@@ -335,7 +339,10 @@ def _(
     subtyp: types.EllipsisType | collections.abc.Sequence,
     subs: Substitutions = {},
 ) -> Substitutions:
-    return subs
+    if isinstance(subtyp, types.EllipsisType | collections.abc.Sequence):
+        return subs
+    else:
+        raise TypeError(f"Cannot unify type {typ} with {subtyp} given {subs}. ")
 
 
 def _freshen(tp: typing.Any):
