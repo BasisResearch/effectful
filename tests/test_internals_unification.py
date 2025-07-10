@@ -67,7 +67,6 @@ U = typing.TypeVar("U")
         # ParamSpec and TypeVarTuple (if needed later)
         # (collections.abc.Callable[typing.ParamSpec("P"), T], {T}),  # Would need to handle ParamSpec
     ],
-    ids=str,
 )
 def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
     assert freetypevars(typ) == fvs
@@ -198,7 +197,6 @@ def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
             collections.abc.Callable[[int], dict[str, V]],
         ),
     ],
-    ids=str,
 )
 def test_substitute(
     typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
@@ -285,7 +283,6 @@ def test_substitute(
             {K: str, T: int, V: bool},
         ),
     ],
-    ids=str,
 )
 def test_unify_success(
     typ: type,
@@ -319,7 +316,6 @@ def test_unify_success(
         ((T, V), (int,)),
         ([T, V], [int, str, bool]),
     ],
-    ids=str,
 )
 def test_unify_failure(
     typ: type,
@@ -469,7 +465,6 @@ def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
         (variadic_kwargs_func, (), {"x": int}, int),
         (variadic_kwargs_func, (), {"x": int, "y": int}, int),
     ],
-    ids=str,
 )
 def test_infer_return_type_success(
     func: collections.abc.Callable,
@@ -508,7 +503,6 @@ def no_param_annotation(x) -> T:  # No parameter annotation
         # Type mismatch - trying to unify incompatible types
         (same_type_twice, (int, str), {}),
     ],
-    ids=str,
 )
 def test_infer_return_type_failure(
     func: collections.abc.Callable,
@@ -611,7 +605,6 @@ def test_infer_return_type_failure(
         (range(5), type(range(5))),
         (slice(1, 10), type(slice(1, 10))),
     ],
-    ids=str,
 )
 def test_nested_type(value, expected):
     result = nested_type(value)
