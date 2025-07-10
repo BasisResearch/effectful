@@ -1,3 +1,61 @@
+"""Type unification and inference utilities for Python's generic type system.
+
+This module implements a unification algorithm for type inference over a subset of
+Python's generic types. Unification is a fundamental operation in type systems that
+finds substitutions for type variables to make two types equivalent.
+
+The module provides four main operations:
+
+1. **unify(typ, subtyp, subs={})**: The core unification algorithm that attempts to
+   find a substitution mapping for type variables that makes a pattern type equal to
+   a concrete type. It handles TypeVars, generic types (List[T], Dict[K,V]), unions,
+   callables, and function signatures with inspect.Signature/BoundArguments.
+
+2. **substitute(typ, subs)**: Applies a substitution mapping to a type expression,
+   replacing all TypeVars with their mapped concrete types. This is used to
+   instantiate generic types after unification.
+
+3. **freetypevars(typ)**: Extracts all free (unbound) type variables from a type
+   expression. Useful for analyzing generic types and ensuring all TypeVars are
+   properly bound.
+
+4. **nested_type(value)**: Infers the type of a runtime value, handling nested
+   collections by recursively determining element types. For example, [1, 2, 3]
+   becomes list[int], and {"key": [1, 2]} becomes dict[str, list[int]].
+
+The unification algorithm uses a single-dispatch pattern to handle different type
+combinations:
+- TypeVar unification binds variables to concrete types
+- Generic type unification matches origins and recursively unifies type arguments
+- Structural unification handles sequences and mappings by element
+- Union types attempt unification with any matching branch
+- Function signatures unify parameter types with bound arguments
+
+Example usage:
+    >>> from effectful.internals.unification import unify, substitute, freetypevars
+    >>> import typing
+    >>> T = typing.TypeVar('T')
+    >>> K = typing.TypeVar('K')
+    >>> V = typing.TypeVar('V')
+
+    >>> # Find substitution that makes list[T] equal to list[int]
+    >>> subs = unify(list[T], list[int])
+    >>> subs
+    {~T: <class 'int'>}
+
+    >>> # Apply substitution to instantiate a generic type
+    >>> substitute(dict[K, list[V]], {K: str, V: int})
+    dict[str, list[int]]
+
+    >>> # Find all type variables in a type expression
+    >>> freetypevars(dict[K, list[V]])
+    {~K, ~V}
+
+This module is primarily used internally by effectful for type inference in its
+effect system, allowing it to track and propagate type information through
+effect handlers and operations.
+"""
+
 import collections.abc
 import functools
 import inspect
@@ -125,7 +183,9 @@ def _(
         subtyp, collections.abc.Mapping
     ):
         return unify(
-            tuple(typ.annotation for _ in subtyp), _freshen(tuple(subtyp.values())), subs
+            tuple(typ.annotation for _ in subtyp),
+            _freshen(tuple(subtyp.values())),
+            subs,
         )
     elif typ.kind not in {
         inspect.Parameter.VAR_KEYWORD,
@@ -541,17 +601,7 @@ def _(value: range):
 
 
 @functools.singledispatch
-def freetypevars(
-    typ: type
-    | typing.TypeVar
-    | types.GenericAlias
-    | types.UnionType
-    | None
-    | typing.ParamSpec
-    | typing.ParamSpecArgs
-    | typing.ParamSpecKwargs
-    | collections.abc.Sequence,
-) -> collections.abc.Set[typing.TypeVar | typing.ParamSpec]:
+def freetypevars(typ) -> collections.abc.Set[typing.TypeVar | typing.ParamSpec]:
     """
     Return a set of free type variables in the given type expression.
 
@@ -601,36 +651,64 @@ def freetypevars(
         >>> freetypevars(dict[str, T])
         {~T}
     """
-    if isinstance(typ, typing.TypeVar | typing.ParamSpec):
-        return {typ}
-    elif isinstance(typ, typing.ParamSpecArgs | typing.ParamSpecKwargs):
-        return freetypevars(typing.get_origin(typ))
-    elif isinstance(typ, typing._AnnotatedAlias):  # type: ignore
-        return freetypevars(typing.get_args(typ)[0])
-    elif isinstance(typ, collections.abc.Sequence):
-        return set().union(*(freetypevars(item) for item in typ))
-    elif isinstance(typ, collections.abc.Mapping):
-        assert all(isinstance(k, str) for k in typ.keys()), (
-            "Mapping keys must be strings"
-        )
-        return freetypevars(typ.values())
-    elif isinstance(typ, GenericAlias | types.UnionType):
-        return freetypevars(typing.get_args(typ))
-    else:
-        return freetypevars(typing.get_args(typ))
+    # Default case for plain types
+    return freetypevars(typing.get_args(typ))
+
+
+@freetypevars.register
+def _(typ: typing.TypeVar):
+    return {typ}
+
+
+@freetypevars.register
+def _(typ: typing.ParamSpec):
+    return {typ}
+
+
+@freetypevars.register
+def _(typ: typing.ParamSpecArgs):
+    return freetypevars(typing.get_origin(typ))
+
+
+@freetypevars.register
+def _(typ: typing.ParamSpecKwargs):
+    return freetypevars(typing.get_origin(typ))
+
+
+@freetypevars.register
+def _(typ: typing._AnnotatedAlias):  # type: ignore
+    return freetypevars(typing.get_args(typ)[0])
+
+
+@freetypevars.register
+def _(typ: collections.abc.Sequence):
+    return set().union(*(freetypevars(item) for item in typ))
+
+
+@freetypevars.register
+def _(typ: str | bytes):
+    return set()
+
+
+@freetypevars.register
+def _(typ: collections.abc.Mapping):
+    assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
+    return freetypevars(typ.values())
+
+
+@freetypevars.register
+def _(typ: GenericAlias):
+    return freetypevars(typing.get_args(typ))
+
+
+@freetypevars.register
+def _(typ: types.UnionType):
+    return freetypevars(typing.get_args(typ))
 
 
 @functools.singledispatch
 def substitute(
-    typ: type
-    | types.GenericAlias
-    | types.UnionType
-    | None
-    | typing.TypeVar
-    | typing.ParamSpec
-    | collections.abc.Sequence
-    | collections.abc.Mapping,
-    subs: Substitutions,
+    typ, subs: Substitutions
 ) -> (
     type
     | types.GenericAlias
@@ -685,28 +763,62 @@ def substitute(
         >>> substitute(int, {T: str})
         <class 'int'>
     """
-    if isinstance(typ, typing.TypeVar | typing.ParamSpec):
-        return substitute(subs[typ], subs) if typ in subs else typ
-    elif isinstance(typ, typing.ParamSpecArgs):
-        return substitute(typing.get_origin(typ), subs).args
-    elif isinstance(typ, typing.ParamSpecKwargs):
-        return substitute(typing.get_origin(typ), subs).kwargs
-    elif isinstance(typ, list | tuple):
-        return type(typ)(substitute(item, subs) for item in typ)
-    elif isinstance(typ, collections.abc.Mapping):
-        assert all(isinstance(k, str) for k in typ.keys()), (
-            "Mapping keys must be strings"
-        )
-        return {k: substitute(v, subs) for k, v in typ.items()}
-    elif isinstance(typ, GenericAlias) and typing.get_args(typ):
+    # Default case for plain types
+    return typ
+
+
+@substitute.register
+def _(typ: typing.TypeVar, subs: Substitutions):
+    return substitute(subs[typ], subs) if typ in subs else typ
+
+
+@substitute.register
+def _(typ: typing.ParamSpec, subs: Substitutions):
+    return substitute(subs[typ], subs) if typ in subs else typ
+
+
+@substitute.register
+def _(typ: typing.ParamSpecArgs, subs: Substitutions):
+    res = substitute(typing.get_origin(typ), subs)
+    return res.args if isinstance(res, typing.ParamSpec) else res
+
+
+@substitute.register
+def _(typ: typing.ParamSpecKwargs, subs: Substitutions):
+    res = substitute(typing.get_origin(typ), subs)
+    return res.kwargs if isinstance(res, typing.ParamSpec) else res
+
+
+@substitute.register
+def _(typ: list, subs: Substitutions):
+    return list(substitute(item, subs) for item in typ)
+
+
+@substitute.register
+def _(typ: tuple, subs: Substitutions):
+    return tuple(substitute(item, subs) for item in typ)
+
+
+@substitute.register
+def _(typ: collections.abc.Mapping, subs: Substitutions):
+    assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
+    return {k: substitute(v, subs) for k, v in typ.items()}
+
+
+@substitute.register
+def _(typ: GenericAlias, subs: Substitutions):
+    if typing.get_args(typ):
         return substitute(typing.get_origin(typ), subs)[
             substitute(typing.get_args(typ), subs)
         ]  # type: ignore
-    elif isinstance(typ, types.UnionType):
-        ts: tuple = substitute(typing.get_args(typ), subs)  # type: ignore
-        tp, ts = ts[0], ts[1:]
-        for arg in ts:
-            tp = tp | arg
-        return tp
     else:
         return typ
+
+
+@substitute.register
+def _(typ: types.UnionType, subs: Substitutions):
+    ts: tuple = substitute(typing.get_args(typ), subs)  # type: ignore
+    tp, ts = ts[0], ts[1:]
+    for arg in ts:
+        tp = tp | arg
+    return tp
