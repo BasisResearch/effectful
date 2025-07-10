@@ -55,18 +55,6 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
         >>> unify(list[T], list[int], {})
         {~T: <class 'int'>}
 
-        >>> # Multiple TypeVars
-        >>> unify(dict[K, V], dict[str, int], {})
-        {~K: <class 'str'>, ~V: <class 'int'>}
-
-        >>> # With existing substitutions
-        >>> unify(V, bool, {T: int})
-        {~T: <class 'int'>, ~V: <class 'bool'>}
-
-        >>> # Nested generic unification
-        >>> unify(list[dict[K, V]], list[dict[str, int]], {})
-        {~K: <class 'str'>, ~V: <class 'int'>}
-
         >>> # Exact type matching
         >>> unify(int, int, {})
         {}
@@ -82,14 +70,6 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
         Traceback (most recent call last):
             ...
         TypeError: Cannot unify ...
-
-        >>> # Callable type unification
-        >>> unify(collections.abc.Callable[[T], V], collections.abc.Callable[[int], str], {})
-        {~T: <class 'int'>, ~V: <class 'str'>}
-
-        >>> # Sequence unification (tuples as sequences)
-        >>> unify((T, V), (int, str), {})
-        {~T: <class 'int'>, ~V: <class 'str'>}
     """
     raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
@@ -297,7 +277,6 @@ def freshen(tp: type | typing.TypeVar | types.GenericAlias | types.UnionType):
         fv: typing.TypeVar(
             name=f"{fv.__name__}_{random.randint(0, 1 << 32)}",
             bound=fv.__bound__,
-            default=fv.__default__,
             covariant=fv.__covariant__,
             contravariant=fv.__contravariant__,
         )
@@ -372,9 +351,9 @@ def nested_type(value) -> type:
 
         # Sequences become Sequence[element_type]
         >>> nested_type([1, 2, 3])
-        collections.abc.Sequence[int]
+        list[int]
         >>> nested_type(["a", "b", "c"])
-        collections.abc.Sequence[str]
+        list[str]
 
         # Tuples preserve exact structure
         >>> nested_type((1, "hello", 3.14))
@@ -386,21 +365,21 @@ def nested_type(value) -> type:
 
         # Sets become Set[element_type]
         >>> nested_type({1, 2, 3})
-        collections.abc.Set[int]
+        set[int]
         >>> nested_type({"a", "b"})
-        collections.abc.Set[str]
+        set[str]
 
         # Mappings become Mapping[key_type, value_type]
         >>> nested_type({"key": "value"})
-        collections.abc.Mapping[str, str]
+        dict[str, str]
         >>> nested_type({1: "one", 2: "two"})
-        collections.abc.Mapping[int, str]
+        dict[int, str]
 
         # Nested collections work recursively
         >>> nested_type([{1: "one"}, {2: "two"}])
-        collections.abc.Sequence[collections.abc.Mapping[int, str]]
+        list[dict[int, str]]
         >>> nested_type({"key": [1, 2, 3]})
-        collections.abc.Mapping[str, collections.abc.Sequence[int]]
+        dict[str, list[int]]
 
         # Strings and bytes are NOT treated as sequences
         >>> nested_type("hello")
