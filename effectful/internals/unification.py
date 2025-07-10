@@ -48,8 +48,8 @@ Example usage:
     dict[str, list[int]]
 
     >>> # Find all type variables in a type expression
-    >>> freetypevars(dict[K, list[V]])
-    {~K, ~V}
+    >>> freetypevars(dict[str, list[V]])
+    {~V}
 
 This module is primarily used internally by effectful for type inference in its
 effect system, allowing it to track and propagate type information through
