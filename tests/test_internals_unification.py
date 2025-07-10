@@ -5,9 +5,7 @@ import typing
 import pytest
 
 from effectful.internals.unification import (
-    canonicalize,
     freetypevars,
-    infer_return_type,
     nested_type,
     substitute,
     unify,
@@ -399,13 +397,13 @@ def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
         # Simple generic functions
         (identity, (int,), {}, int),
         (identity, (str,), {}, str),
-        (identity, (list[int],), {}, collections.abc.Sequence[int]),
+        (identity, (list[int],), {}, list[int]),
         # Multiple TypeVars
         (make_pair, (int, str), {}, tuple[int, str]),
-        (make_pair, (bool, list[float]), {}, tuple[bool, collections.abc.Sequence[float]]),
+        (make_pair, (bool, list[float]), {}, tuple[bool, list[float]]),
         # Generic collections
         (wrap_in_list, (int,), {}, list[int]),
-        (wrap_in_list, (dict[str, bool],), {}, list[collections.abc.Mapping[str, bool]]),
+        (wrap_in_list, (dict[str, bool],), {}, list[dict[str, bool]]),
         (get_first, (list[str],), {}, str),
         (get_first, (list[tuple[int, float]],), {}, tuple[int, float]),
         (getitem_mapping, (collections.abc.Mapping[str, int], str), {}, int),
@@ -413,11 +411,11 @@ def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
             getitem_mapping,
             (collections.abc.Mapping[bool, list[str]], bool),
             {},
-            collections.abc.Sequence[str],
+            list[str],
         ),
         # Dict operations
         (dict_values, (dict[str, int],), {}, list[int]),
-        (dict_values, (dict[bool, list[str]],), {}, list[collections.abc.Sequence[str]]),
+        (dict_values, (dict[bool, list[str]],), {}, list[list[str]]),
         # Callable types
         (process_callable, (collections.abc.Callable[[int], str], int), {}, str),
         (
@@ -444,7 +442,7 @@ def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
             multi_generic,
             (float, list[float], dict[bool, list[str]]),
             {},
-            tuple[float, bool, collections.abc.Sequence[str]],
+            tuple[float, bool, list[str]],
         ),
         # Same TypeVar used multiple times
         (same_type_twice, (int, int), {}, int),
@@ -481,7 +479,7 @@ def test_infer_return_type_success(
 ):
     sig = inspect.signature(func)
     bound = sig.bind(*args, **kwargs)
-    result = infer_return_type(bound)
+    result = substitute(sig.return_annotation, unify(sig, bound))
     assert result == expected_return_type
 
 
@@ -520,78 +518,7 @@ def test_infer_return_type_failure(
     sig = inspect.signature(func)
     bound = sig.bind(*args, **kwargs)
     with pytest.raises(TypeError):
-        infer_return_type(bound)
-
-
-@pytest.mark.parametrize(
-    "typ,expected",
-    [
-        # Plain types pass through unchanged
-        (int, int),
-        (str, str),
-        (float, float),
-        (bool, bool),
-        (tuple, tuple),
-        (list, collections.abc.Sequence),
-        (dict, collections.abc.Mapping),
-        (set, collections.abc.Set),
-        # TypeVars are preserved
-        (T, T),
-        (K, K),
-        (V, V),
-        # Legacy typing aliases are converted to modern forms
-        (list, collections.abc.Sequence),
-        (dict, collections.abc.Mapping),
-        (set, collections.abc.Set),
-        (list[int], collections.abc.Sequence[int]),
-        (dict[str, int], collections.abc.Mapping[str, int]),
-        (set[bool], collections.abc.Set[bool]),
-        (list[T], collections.abc.Sequence[T]),
-        (dict[K, V], collections.abc.Mapping[K, V]),
-        # Modern generic aliases pass through with canonicalized args
-        (list[list[int]], collections.abc.Sequence[collections.abc.Sequence[int]]),  # Nested legacy conversion
-        (dict[str, dict[K, V]], collections.abc.Mapping[str, collections.abc.Mapping[K, V]]),
-        # typing.Callable becomes collections.abc.Callable
-        (typing.Callable, collections.abc.Callable),
-        (typing.Callable[[int], str], collections.abc.Callable[[int], str]),
-        (typing.Callable[[T, U], V], collections.abc.Callable[[T, U], V]),
-        # typing.Any becomes object
-        (typing.Any, object),
-        # inspect.Parameter.empty becomes object (via Any)
-        (inspect.Parameter.empty, object),
-        # Annotated types are unwrapped
-        (typing.Annotated[int, "metadata"], int),
-        (typing.Annotated[str, "doc string"], str),
-        (typing.Annotated[list[T], "annotation"], collections.abc.Sequence[T]),
-        (typing.Annotated[dict[K, V], "complex", "multi"], collections.abc.Mapping[K, V]),
-        # Nested Annotated unwrapping
-        (typing.Annotated[typing.Annotated[int, "inner"], "outer"], int),
-        # Union types are canonicalized with | operator
-        (typing.Union[int, str], int | str),
-        (typing.Union[T, int], T | int),
-        (typing.Union[list[T], dict[K, V]], collections.abc.Sequence[T] | collections.abc.Mapping[K, V]),
-        (typing.Union[int, str, bool], int | str | bool),
-        # Nested unions
-        (typing.Union[list[int], None], collections.abc.Sequence[int] | type(None)),
-        (typing.Union[dict[K, V], set[T]], collections.abc.Mapping[K, V] | collections.abc.Set[T]),
-        # Complex nested canonicalization
-        (list[dict[str, T] | None], collections.abc.Sequence[collections.abc.Mapping[str, T] | type(None)]),
-        (dict[K, list[V | None]], collections.abc.Mapping[K, collections.abc.Sequence[V | type(None)]]),
-        # None type handling
-        (type(None), type(None)),
-        (typing.Union[int, None], int | type(None)),
-        # Ellipsis type
-        (type(...), type(...)),
-        # Generic aliases with multiple levels of nesting
-        (list[dict[set[T], list[V]]], collections.abc.Sequence[collections.abc.Mapping[collections.abc.Set[T], collections.abc.Sequence[V]]]),
-        # Callable with nested canonicalization
-        (typing.Callable[[list[T]], dict[K, V]], collections.abc.Callable[[collections.abc.Sequence[T]], collections.abc.Mapping[K, V]]),
-    ],
-    ids=str,
-)
-def test_canonicalize(typ, expected):
-    result = canonicalize(typ)
-    assert result == expected
+        unify(sig, bound)
 
 
 @pytest.mark.parametrize(
@@ -638,21 +565,21 @@ def test_canonicalize(typ, expected):
         (set(), set),
         ((), tuple),
         # Lists/sequences with single type
-        ([1, 2, 3], collections.abc.Sequence[int]),
-        ([1], collections.abc.Sequence[int]),
-        (["a", "b", "c"], collections.abc.Sequence[str]),
-        ([True, False], collections.abc.Sequence[bool]),
-        ([1.1, 2.2], collections.abc.Sequence[float]),
+        ([1, 2, 3], list[int]),
+        ([1], list[int]),
+        (["a", "b", "c"], list[str]),
+        ([True, False], list[bool]),
+        ([1.1, 2.2], list[float]),
         # Sets with elements
-        ({1, 2, 3}, collections.abc.Set[int]),
-        ({1}, collections.abc.Set[int]),
-        ({"a", "b"}, collections.abc.Set[str]),
-        ({True, False}, collections.abc.Set[bool]),
+        ({1, 2, 3}, set[int]),
+        ({1}, set[int]),
+        ({"a", "b"}, set[str]),
+        ({True, False}, set[bool]),
         # Dicts/mappings
-        ({"key": "value"}, collections.abc.Mapping[str, str]),
-        ({1: "one", 2: "two"}, collections.abc.Mapping[int, str]),
-        ({"a": 1, "b": 2}, collections.abc.Mapping[str, int]),
-        ({True: 1.0, False: 2.0}, collections.abc.Mapping[bool, float]),
+        ({"key": "value"}, dict[str, str]),
+        ({1: "one", 2: "two"}, dict[int, str]),
+        ({"a": 1, "b": 2}, dict[str, int]),
+        ({True: 1.0, False: 2.0}, dict[bool, float]),
         # Tuples preserve exact structure
         ((1, "hello", 3.14), tuple[int, str, float]),
         ((1,), tuple[int]),
@@ -660,23 +587,23 @@ def test_canonicalize(typ, expected):
         (("a", "b", "c"), tuple[str, str, str]),
         ((True, 1, "x", 3.14), tuple[bool, int, str, float]),
         # Nested collections
-        ([[1, 2], [3, 4]], collections.abc.Sequence[collections.abc.Sequence[int]]),
-        ([{1, 2}, {3, 4}], collections.abc.Sequence[collections.abc.Set[int]]),
-        ([{"a": 1}, {"b": 2}], collections.abc.Sequence[collections.abc.Mapping[str, int]]),
-        ({"key": [1, 2, 3]}, collections.abc.Mapping[str, collections.abc.Sequence[int]]),
-        ({"a": {1, 2}, "b": {3, 4}}, collections.abc.Mapping[str, collections.abc.Set[int]]),
-        ({1: {"x": True}, 2: {"y": False}}, collections.abc.Mapping[int, collections.abc.Mapping[str, bool]]),
+        ([[1, 2], [3, 4]], list[list[int]]),
+        ([{1, 2}, {3, 4}], list[set[int]]),
+        ([{"a": 1}, {"b": 2}], list[dict[str, int]]),
+        ({"key": [1, 2, 3]}, dict[str, list[int]]),
+        ({"a": {1, 2}, "b": {3, 4}}, dict[str, set[int]]),
+        ({1: {"x": True}, 2: {"y": False}}, dict[int, dict[str, bool]]),
         # Tuples in collections
-        ([(1, "a"), (2, "b")], collections.abc.Sequence[tuple[int, str]]),
-        ({(1, 2), (3, 4)}, collections.abc.Set[tuple[int, int]]),
-        ({1: (True, "x"), 2: (False, "y")}, collections.abc.Mapping[int, tuple[bool, str]]),
+        ([(1, "a"), (2, "b")], list[tuple[int, str]]),
+        ({(1, 2), (3, 4)}, set[tuple[int, int]]),
+        ({1: (True, "x"), 2: (False, "y")}, dict[int, tuple[bool, str]]),
         # Functions/callables
         (lambda x: x, type(lambda x: x)),
         (print, type(print)),
         (len, type(len)),
         # Complex nested structures
-        ([[[1]]], collections.abc.Sequence[collections.abc.Sequence[collections.abc.Sequence[int]]]),
-        ({"a": {"b": {"c": 1}}}, collections.abc.Mapping[str, collections.abc.Mapping[str, collections.abc.Mapping[str, int]]]),
+        ([[[1]]], list[list[list[int]]]),
+        ({"a": {"b": {"c": 1}}}, dict[str, dict[str, dict[str, int]]]),
         # Special string/bytes handling (NOT treated as sequences)
         ("hello", str),
         (b"world", bytes),
@@ -740,13 +667,3 @@ def test_nested_type_interpretation_special_case():
     # by verifying that our empty dict doesn't trigger the Interpretation path
     result = nested_type({})
     assert result == dict  # Empty dict should return dict, not Interpretation
-
-
-def test_canonicalize_union_ordering():
-    """Test union type canonicalization handles ordering consistently"""
-    # The | operator may reorder types, but the result should be equivalent
-    result1 = canonicalize(typing.Union[int, str])
-    result2 = canonicalize(typing.Union[str, int])
-    # Both should be some form of int | str or str | int
-    assert result1 == int | str or result1 == str | int
-    assert result2 == int | str or result2 == str | int
