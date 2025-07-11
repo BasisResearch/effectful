@@ -1,7 +1,7 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, ParamSpec, Tuple, TypeVar, Union, cast, overload
+from typing import Annotated, ParamSpec, TypeVar, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
@@ -70,17 +70,17 @@ def Let(
 
 
 @defop
-def Record(**kwargs: T) -> dict[str, T]:
+def Record(**kwargs: T) -> collections.abc.Mapping[str, T]:
     raise NotImplementedError
 
 
 @defop
-def Field(record: dict[str, T], key: str) -> T:
+def Field(record: collections.abc.Mapping[str, T], key: str) -> T:
     raise NotImplementedError
 
 
 @defop
-def Dict(*contents: Union[K, V]) -> SemiRingDict[K, V]:
+def Dict(*contents: tuple[K, V]) -> SemiRingDict[K, V]:
     raise NotImplementedError
 
 
@@ -100,20 +100,14 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def eager_dict(*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
-    if not any(isinstance(v, Term) for v in contents):
-        if len(contents) % 2 != 0:
-            raise ValueError("Dict requires an even number of arguments")
-
-        kv = []
-        for i in range(0, len(contents), 2):
-            kv.append((contents[i], contents[i + 1]))
-        return SemiRingDict(kv)
+def eager_dict(*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+    if not any(isinstance(v, Term) for kv in contents for v in kv):
+        return SemiRingDict(list(contents))
     else:
         return fwd()
 
 
-def eager_record(**kwargs: T) -> dict[str, T]:
+def eager_record(**kwargs: T) -> collections.abc.Mapping[str, T]:
     if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
@@ -223,7 +217,7 @@ if __name__ == "__main__":
     )
 
     term: SemiRingDict[int, int] = Let(
-        Sum(x(), k, v, Dict(k(), v() + 1)), y, Sum(y(), k, v, Dict(k(), v() + 1))
+        Sum(x(), k, v, Dict((k(), v() + 1))), y, Sum(y(), k, v, Dict((k(), v() + 1)))
     )
 
     print("Without optimization:", term)
