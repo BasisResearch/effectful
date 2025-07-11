@@ -1,7 +1,7 @@
 import functools
 import typing
 from collections.abc import Collection, Mapping
-from typing import Any, TypeVar
+from typing import Any
 
 import pyro.poutine.subsample_messenger
 
@@ -21,8 +21,6 @@ try:
 except ImportError:
     raise ImportError("PyTorch is required to use effectful.handlers.pyro.")
 
-from typing_extensions import ParamSpec
-
 from effectful.handlers.torch import (
     bind_dims,
     sizesof,
@@ -32,10 +30,6 @@ from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
-
-P = ParamSpec("P")
-A = TypeVar("A")
-B = TypeVar("B")
 
 
 @defop

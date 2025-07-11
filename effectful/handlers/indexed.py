@@ -1,16 +1,13 @@
 import functools
 import operator
 from collections.abc import Iterable
-from typing import Any, TypeVar
+from typing import Any
 
 import torch
 
 from effectful.handlers.torch import sizesof
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation
-
-K = TypeVar("K")
-T = TypeVar("T")
 
 
 class IndexSet(dict[str, set[int]]):

@@ -8,25 +8,14 @@ import typing
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
-    Generic,
-    TypeAlias,
-    TypeVar,
     _ProtocolMeta,
     overload,
     runtime_checkable,
 )
 
-from typing_extensions import ParamSpec
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-
 
 @functools.total_ordering
-class Operation(abc.ABC, Generic[Q, V]):
+class Operation[**Q, V](abc.ABC):
     """An abstract class representing an effect that can be implemented by an effect handler.
 
     .. note::
@@ -91,7 +80,7 @@ class Operation(abc.ABC, Generic[Q, V]):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
 
 
-class Term(abc.ABC, Generic[T]):
+class Term[T](abc.ABC):
     """A term in an effectful computation is a is a tree of :class:`Operation`
     applied to values.
 
@@ -175,7 +164,7 @@ class Term(abc.ABC, Generic[T]):
 
 
 #: An expression is either a value or a term.
-Expr: TypeAlias = T | Term[T]
+type Expr[T] = T | Term[T]
 
 
 class _InterpretationMeta(_ProtocolMeta):
@@ -186,7 +175,7 @@ class _InterpretationMeta(_ProtocolMeta):
 
 
 @runtime_checkable
-class Interpretation(typing.Protocol[T, V], metaclass=_InterpretationMeta):
+class Interpretation[T, V](typing.Protocol, metaclass=_InterpretationMeta):
     """An interpretation is a mapping from operations to their implementations."""
 
     def keys(self):
@@ -209,7 +198,7 @@ class Interpretation(typing.Protocol[T, V], metaclass=_InterpretationMeta):
         raise NotImplementedError
 
     @overload
-    def get(self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
+    def get[S](self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
         raise NotImplementedError
 
     def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
