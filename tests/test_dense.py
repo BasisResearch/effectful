@@ -22,7 +22,7 @@ from weighted.handlers.jax import (
 )
 from weighted.handlers.optimization import FoldEliminateDterm, FoldIndexDistributivity
 from weighted.ops.fold import BaselineFold, fold
-from weighted.ops.sugar import ArgMin, Max, Min, Sum
+from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
 
 baseline_intp = reduce(
     coproduct,  # type: ignore
@@ -92,6 +92,35 @@ def test_batched_matmul(intp):
         )
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
+    assert isinstance(actual, jax.Array)
+    assert jnp.allclose(actual, expected)
+
+
+@parameterize_intp
+def test_log_matmul(intp):
+    key = jax.random.PRNGKey(0)
+    I, J, K = 2, 3, 4
+
+    X = random.uniform(key, (I, J))
+    Y = random.uniform(key, (J, K))
+
+    i, j, k = (
+        defop(jax.Array, name="i"),
+        defop(jax.Array, name="j"),
+        defop(jax.Array, name="k"),
+    )
+
+    x = unbind_dims(jnp.log(X), i, j)
+    y = unbind_dims(jnp.log(Y), j, k)
+
+    with handler(intp):
+        actual = LogSum(
+            {i: jnp.arange(I), j: jnp.arange(J), k: jnp.arange(K)},
+            D(((i(), k()), x + y)),
+        )
+    actual = jnp.exp(actual)
+
+    expected = jnp.einsum("ij,jk->ik", X, Y)
     assert isinstance(actual, jax.Array)
     assert jnp.allclose(actual, expected)
 

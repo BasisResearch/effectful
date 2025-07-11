@@ -30,7 +30,15 @@ from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
 from weighted.ops.fold import fold
-from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg, mul
+from weighted.ops.semiring import (
+    ArgMaxAlg,
+    ArgMinAlg,
+    LinAlg,
+    LogAlg,
+    MaxAlg,
+    MinAlg,
+    mul,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +167,11 @@ class DenseTensorFold(ObjectInterpretation):
         max_indices = jnp.unravel_index(flat_indices, reduction_shape)
         return maxs, max_indices
 
+    def _logaddexp_reductor(self, tensor, dims):
+        for _ in range(dims):
+            tensor = logsumexp(tensor, axis=0)
+        return tensor
+
     def _get_reductor(self, semi_ring):
         if semi_ring == LinAlg:
             return self._sum_reductor
@@ -170,6 +183,8 @@ class DenseTensorFold(ObjectInterpretation):
             return self._argmin_reductor
         elif semi_ring == ArgMaxAlg:
             return self._argmax_reductor
+        elif semi_ring == LogAlg:
+            return self._logaddexp_reductor
         else:
             return None
 

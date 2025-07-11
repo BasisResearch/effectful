@@ -1,7 +1,7 @@
 from effectful.ops.types import Term
 
 from weighted.ops.fold import fold
-from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
+from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, LogAlg, MaxAlg, MinAlg
 
 
 def Exp(streams, body):
@@ -31,3 +31,7 @@ def Max(streams, body):
 
 def Sum(streams, body):
     return fold(LinAlg, streams, body)
+
+
+def LogSum(streams, body):
+    return fold(LogAlg, streams, body)

@@ -11,7 +11,7 @@ from scipy.cluster.hierarchy import DisjointSet
 
 from weighted.handlers.jax import D
 from weighted.ops.fold import fold
-from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, MaxAlg, MinAlg
+from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, LinAlg, LogAlg, MaxAlg, MinAlg
 
 
 class FoldReorderReduction(ObjectInterpretation):
@@ -239,6 +239,8 @@ def _mul_op(semiring):
         return jnp.min
     elif semiring is MaxAlg:
         return jnp.max
+    elif semiring is LogAlg:
+        return jnp.add
     else:
         return None
 

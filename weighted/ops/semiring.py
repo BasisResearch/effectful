@@ -5,6 +5,7 @@ import numbers
 from collections.abc import Callable
 from typing import Any, Generic, ParamSpec, TypeVar
 
+import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
 import tree
 from effectful.handlers.jax._handlers import is_eager_array
@@ -136,7 +137,18 @@ def arg_max(a, b):
     return a if a[0] > b[0] else b
 
 
+@defop
+def logaddexp(a, b):
+    if isinstance(a, numbers.Number) and a == float("-inf"):
+        return b
+    if isinstance(b, numbers.Number) and b == float("-inf"):
+        return a
+    return jnp.logaddexp(a, b)
+
+
 LinAlg: Semiring[float] = Semiring(add, mul, 0.0, 1.0, "LinAlg")
+
+LogAlg: Semiring[float] = Semiring(logaddexp, add, float("-inf"), 0.0, "LogAlg")
 
 MinAlg: Semiring[float] = Semiring(min, mul, float("inf"), 1.0, "MinAlg")
 
