@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 try:
     import jax
@@ -11,7 +11,6 @@ except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
 import tree
-from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import fvsof, typeof
@@ -24,15 +23,6 @@ from effectful.ops.syntax import (
     defterm,
 )
 from effectful.ops.types import Expr, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
-
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
@@ -138,7 +128,7 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
 
 
 @functools.cache
-def _register_jax_op(jax_fn: Callable[P, T]):
+def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
@@ -184,7 +174,7 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
 
 @defop
 @_CustomSingleDispatchCallable
-def bind_dims(
+def bind_dims[T, A, B](
     __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
@@ -217,7 +207,7 @@ def bind_dims(
 
 @defop
 @_CustomSingleDispatchCallable
-def unbind_dims(
+def unbind_dims[T, A, B](
     __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
@@ -236,7 +226,7 @@ def jit(f, *args, **kwargs):
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
 
 
-def _indexed_func_wrapper(
+def _indexed_func_wrapper[**P, S, T](
     func: Callable[P, T], getitem, sizesof
 ) -> tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function

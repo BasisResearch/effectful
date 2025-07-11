@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any
 
 try:
     import torch
@@ -10,7 +10,6 @@ except ImportError:
     raise ImportError("PyTorch is required to use effectful.handlers.torch")
 
 import tree
-from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
@@ -18,15 +17,6 @@ from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import Scoped, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
-
 
 # + An element of a tensor index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
@@ -142,17 +132,15 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
     return result
 
 
-HasDims = TypeVar(
-    "HasDims",
-    bound=torch.Tensor
-    | torch.distributions.Distribution
-    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
-)
-
-
 @defop
 @functools.singledispatch
-def bind_dims(
+def bind_dims[
+    A,
+    B,
+    HasDims: torch.Tensor
+    | torch.distributions.Distribution
+    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+](
     value: Annotated[HasDims, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[HasDims, Scoped[A]]:
@@ -229,7 +217,13 @@ def _bind_dims_tensor(
 
 @defop
 @functools.singledispatch
-def unbind_dims(
+def unbind_dims[
+    A,
+    B,
+    HasDims: torch.Tensor
+    | torch.distributions.Distribution
+    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+](
     value: Annotated[HasDims, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[HasDims, Scoped[A | B]]:
@@ -239,7 +233,7 @@ def unbind_dims(
 
 
 @unbind_dims.register  # type: ignore
-def _unbind_dims_tensor(
+def _unbind_dims_tensor[A, B](
     value: torch.Tensor,
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[torch.Tensor, Scoped[A | B]]:
@@ -247,7 +241,7 @@ def _unbind_dims_tensor(
 
 
 @functools.cache
-def _register_torch_op(torch_fn: Callable[P, T]):
+def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
     if torch_fn is torch._C.TensorBase.__getitem__:
         return torch_getitem
 
@@ -382,7 +376,7 @@ class _TensorTerm(Term[torch.Tensor]):
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
     @classmethod
-    def __torch_function__(
+    def __torch_function__[T](
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
@@ -528,7 +522,7 @@ class _EagerTensorTerm(torch.Tensor):
         return str(self)
 
     @classmethod
-    def __torch_function__(
+    def __torch_function__[T](
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
@@ -593,7 +587,7 @@ class _EagerTensorTerm(torch.Tensor):
         return self.args[0].grad_fn
 
 
-def _indexed_func_wrapper(
+def _indexed_func_wrapper[**P, S, T](
     func: Callable[P, T],
 ) -> tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function
