@@ -989,7 +989,6 @@ def defdata(
 
     base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
     tp = typeof(base_term)
-    tp = typing.get_origin(tp) or tp
 
     typed_term = __dispatch(tp)(op, *args_, **kwargs_)
     return typed_term
