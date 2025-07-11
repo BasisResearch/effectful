@@ -1,6 +1,8 @@
 import collections
+import collections.abc
 import logging
 import os
+import typing
 
 import pytest
 
@@ -10,6 +12,9 @@ from effectful.ops.syntax import defop, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
+
+T = typing.TypeVar("T")
+S = typing.TypeVar("S")
 
 
 def test_lambda_calculus_1():
@@ -40,7 +45,11 @@ def test_lambda_calculus_2():
 
 
 def test_lambda_calculus_3():
-    x, y, f = defop(int), defop(int), defop(collections.abc.Callable)
+    x, y, f = (
+        defop(int),
+        defop(int),
+        defop(collections.abc.Callable[[int], collections.abc.Callable[[int], int]]),
+    )
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
@@ -51,8 +60,8 @@ def test_lambda_calculus_3():
 def test_lambda_calculus_4():
     x, f, g = (
         defop(int),
-        defop(collections.abc.Callable),
-        defop(collections.abc.Callable),
+        defop(collections.abc.Callable[[T], T]),
+        defop(collections.abc.Callable[[T], T]),
     )
 
     with handler(eager_mixed):
@@ -177,7 +186,7 @@ def test_defun_3():
             return x + y
 
         @trace
-        def app2(f: collections.abc.Callable, x: int, y: int) -> int:
+        def app2(f: collections.abc.Callable[[int, int], int], x: int, y: int) -> int:
             return f(x, y)
 
         assert app2(f2, 1, 2) == 3
