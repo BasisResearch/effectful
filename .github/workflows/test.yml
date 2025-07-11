@@ -26,4 +26,5 @@ jobs:
       - name: Run tests
         env:
           MKL_NUM_THREADS: 1
+          XLA_PYTHON_CLIENT_PREALLOCATE: false
         run: uv run ./scripts/test.sh
