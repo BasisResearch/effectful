@@ -580,9 +580,11 @@ def _(value: collections.abc.Callable):
 
 @nested_type.register
 def _(value: collections.abc.Mapping):
-    from effectful.ops.types import Interpretation
+    from effectful.ops.types import Interpretation, Term
 
-    if type(value) is Interpretation:  # More specific check
+    if isinstance(value, Term):
+        raise TypeError(f"Terms should not appear in nested_type, but got {value}")
+    elif isinstance(value, Interpretation):  # More specific check
         return Interpretation
     elif len(value) == 0:
         return type(value)
@@ -735,7 +737,7 @@ def _(typ: str | bytes):
 
 
 @freetypevars.register
-def _(typ: collections.abc.Mapping):
+def _(typ: dict):
     assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
     return freetypevars(typ.values())
 
@@ -844,7 +846,7 @@ def _(typ: tuple, subs: Substitutions):
 
 
 @substitute.register
-def _(typ: collections.abc.Mapping, subs: Substitutions):
+def _(typ: dict, subs: Substitutions):
     assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
     return {k: substitute(v, subs) for k, v in typ.items()}
 
