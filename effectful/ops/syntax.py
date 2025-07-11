@@ -1174,6 +1174,10 @@ class _MappingTerm[S, V](_CollectionTerm[S], collections.abc.Mapping[S, V]):
 
 iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
+len_ = _CollectionTerm.__len__
+contains = _CollectionTerm.__contains__
+sequence_getitem = _SequenceTerm.__getitem__
+mapping_getitem = _MappingTerm.__getitem__
 
 
 def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
