@@ -1,17 +1,10 @@
-from typing import TypeVar
-
 import jax
-from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Term
-
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
 
 
 def test_bind_dims():

@@ -2,20 +2,13 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Generic, TypeVar
-
-from typing_extensions import ParamSpec
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
 
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
-
 
 @dataclasses.dataclass
-class Runtime(Generic[S, T]):
+class Runtime[S, T]:
     interpretation: "Interpretation[S, T]"
 
 
@@ -44,7 +37,7 @@ def _get_args() -> tuple[tuple, Mapping]:
     return ((), {})
 
 
-def _restore_args(fn: Callable[P, T]) -> Callable[P, T]:
+def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()  # type: ignore
@@ -53,7 +46,7 @@ def _restore_args(fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-def _save_args(fn: Callable[P, T]) -> Callable[P, T]:
+def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
@@ -64,7 +57,7 @@ def _save_args(fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-def _set_prompt(
+def _set_prompt[**P, T](
     prompt: Operation[P, T], cont: Callable[P, T], body: Callable[P, T]
 ) -> Callable[P, T]:
     from effectful.ops.semantics import handler

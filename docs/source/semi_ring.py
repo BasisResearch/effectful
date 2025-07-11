@@ -1,24 +1,16 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, ParamSpec, TypeVar, cast, overload
+from typing import Annotated, Tuple, Union, cast, overload
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
 from effectful.ops.syntax import Scoped, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
-K = TypeVar("K")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
-
 
 # https://stackoverflow.com/questions/2703599/what-would-a-frozen-dict-be
-class SemiRingDict(collections.abc.Mapping[K, V]):
+class SemiRingDict[K, V](collections.abc.Mapping[K, V]):
     def __init__(self, *args, **kwargs):
         self._d = dict(*args, **kwargs)
         self._hash = None
@@ -51,7 +43,7 @@ class SemiRingDict(collections.abc.Mapping[K, V]):
 
 
 @defop
-def Sum(
+def Sum[K, V, S, T, A, B](
     e1: SemiRingDict[K, V],
     k: Annotated[Operation[[], K], Scoped[A]],
     v: Annotated[Operation[[], V], Scoped[A]],
@@ -61,7 +53,7 @@ def Sum(
 
 
 @defop
-def Let(
+def Let[S, T, A, B](
     e1: Annotated[T, Scoped[A]],
     x: Annotated[Operation[[], T], Scoped[B]],
     e2: Annotated[S, Scoped[B]],
@@ -70,22 +62,22 @@ def Let(
 
 
 @defop
-def Record(**kwargs: T) -> collections.abc.Mapping[str, T]:
+def Record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
     raise NotImplementedError
 
 
 @defop
-def Field(record: collections.abc.Mapping[str, T], key: str) -> T:
+def Field[T](record: collections.abc.Mapping[str, T], key: str) -> T:
     raise NotImplementedError
 
 
 @defop
-def Dict(*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+def Dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
     raise NotImplementedError
 
 
 @defop
-def add(x: T, y: T) -> T:
+def add[T](x: T, y: T) -> T:
     if not any(isinstance(a, Term) for a in (x, y)):
         return operator.add(x, y)
     else:
@@ -100,14 +92,14 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def eager_dict(*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+def eager_dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
     if not any(isinstance(v, Term) for kv in contents for v in kv):
         return SemiRingDict(list(contents))
     else:
         return fwd()
 
 
-def eager_record(**kwargs: T) -> collections.abc.Mapping[str, T]:
+def eager_record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
     if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
@@ -119,7 +111,7 @@ def eager_add(x: int, y: int) -> int: ...
 
 
 @overload
-def eager_add(x: SemiRingDict[K, V], y: SemiRingDict[K, V]) -> SemiRingDict[K, V]: ...
+def eager_add[K, V](x: SemiRingDict[K, V], y: SemiRingDict[K, V]) -> SemiRingDict[K, V]: ...
 
 
 def eager_add(x, y):
@@ -137,7 +129,7 @@ def eager_add(x, y):
         return fwd()
 
 
-def eager_field(r: dict[str, T], k: str) -> T:
+def eager_field[T](r: dict[str, T], k: str) -> T:
     match r, k:
         case dict(), str():
             return r[k]
@@ -147,7 +139,7 @@ def eager_field(r: dict[str, T], k: str) -> T:
             return fwd()
 
 
-def eager_sum(
+def eager_sum[K, V, S, T](
     e1: SemiRingDict[K, V],
     k: Operation[[], K],
     v: Operation[[], V],
@@ -168,11 +160,11 @@ def eager_sum(
             return fwd()
 
 
-def eager_let(e1: T, x: Operation[[], T], e2: S) -> S:
+def eager_let[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
     return cast(S, handler({x: lambda: e1})(evaluate)(e2))
 
 
-def vertical_fusion(e1: T, x: Operation[[], T], e2: S) -> S:
+def vertical_fusion[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
     match e1, e2:
         case (
             Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
