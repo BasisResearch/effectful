@@ -1,17 +1,10 @@
-from typing import TypeVar
-
 import jax
-from typing_extensions import ParamSpec
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Term
-
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
 
 
 def test_bind_dims():
@@ -305,3 +298,52 @@ def test_jax_len():
 
     for row in t_i:
         assert len(row) == 4
+
+
+def test_jax_dimension_addition():
+    """Test jax_getitem with dimension addition via None indexing."""
+    i = defop(jax.Array, name="i")
+    i2 = defop(i)
+
+    # Basic case: indexing with slice and defop
+    x = jax_getitem(jnp.eye(3), (i(), slice(None)))
+    assert x.shape == (3,)
+    assert fvsof(x) >= {i}
+
+    # Multiple defops with None - this should work fine
+    x2 = jax_getitem(jnp.eye(3), (i(), i2(), None))
+    assert x2.shape == (1,)
+    assert fvsof(x2) >= {i, i2}
+
+    # The problematic case: indexing a Term with defop and None
+    # This should work but may currently fail
+    x3 = jax_getitem(x, (i2(), None))
+    assert x3.shape == (1,)
+    assert fvsof(x3) >= {i, i2}
+
+    # Additional test cases for dimension addition
+    # Test with multiple None dimensions
+    x4 = jax_getitem(x, (i2(), None, None))
+    assert x4.shape == (1, 1)
+    assert fvsof(x4) >= {i, i2}
+
+    # Test with slice and None
+    x5 = jax_getitem(x, (slice(None), None))
+    assert x5.shape == (3, 1)
+    assert fvsof(x5) >= {i}
+
+    # Test with Ellipsis and None
+    x6 = jax_getitem(x, (..., None))
+    assert x6.shape == (3, 1)
+    assert fvsof(x6) >= {i}
+
+    # Test nested indexing with dimension addition
+    base = jnp.ones((2, 3, 4))
+    y = jax_getitem(base, (i(), slice(None), slice(None)))
+    assert y.shape == (3, 4)
+    assert fvsof(y) >= {i}
+
+    # Index the result with another defop and add dimension
+    y2 = jax_getitem(y, (i2(), slice(None), None))
+    assert y2.shape == (4, 1)
+    assert fvsof(y2) >= {i, i2}

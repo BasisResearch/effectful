@@ -1,7 +1,7 @@
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Annotated, ClassVar, TypeVar
+from typing import Annotated, ClassVar
 
 import pytest
 
@@ -10,6 +10,7 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
+    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
@@ -74,11 +75,9 @@ def test_gensym_operation_2():
 
 def test_gensym_annotations():
     """Test that gensym respects annotations."""
-    S, T = TypeVar("S"), TypeVar("T")
-    A = TypeVar("A")
 
     @defop
-    def Lam(
+    def Lam[S, T, A](
         var: Annotated[Operation[[], S], Scoped[A]],
         body: Annotated[T, Scoped[A]],
     ) -> Callable[[S], T]:
@@ -112,14 +111,19 @@ def test_operation_metadata():
     assert f_op != ff_op
 
 
+def test_map_structure_and_keys():
+    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
+    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
+    actual = _map_structure_and_keys(lambda x: x + 1, s)
+    assert actual == expected
+
+
 def test_scoped_collections():
     """Test that Scoped annotations work with tree-structured collections containing Operations."""
 
-    A, B, S, T = TypeVar("A"), TypeVar("B"), TypeVar("S"), TypeVar("T")
-
     # Test let_many operation with Mapping[Operation, T]
     @defop
-    def let_many(
+    def let_many[S, T, A, B](
         bindings: Annotated[Mapping[Operation[[], T], T], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
@@ -135,13 +139,18 @@ def test_scoped_collections():
     term = let_many(bindings, body)
     free_vars = fvsof(term)
 
+    new_x = list(term.args[0].keys())[0]
+    new_y = list(term.args[0].keys())[1]
+    assert new_x == term.args[1].args[0].args[0].op and new_x != x
+    assert new_y == term.args[1].args[0].args[1].op and new_y != y
+
     assert x not in free_vars
     assert y not in free_vars
     assert z in free_vars
 
     # Test with nested collections
     @defop
-    def let_nested(
+    def let_nested[S, T, A, B](
         bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:

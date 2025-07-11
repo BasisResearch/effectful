@@ -6,4 +6,3 @@ nbsphinx
 pyro-ppl
 torch
 dm-tree
-typing_extensions
