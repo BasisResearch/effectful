@@ -11,7 +11,6 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
-    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
@@ -110,13 +109,6 @@ def test_operation_metadata():
     assert f.__name__ == f_op.__name__
     assert hash(f) == hash(f_op)
     assert f_op != ff_op
-
-
-def test_map_structure_and_keys():
-    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
-    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
-    actual = _map_structure_and_keys(lambda x: x + 1, s)
-    assert actual == expected
 
 
 def test_scoped_collections():

@@ -893,18 +893,6 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
-def _map_structure_and_keys(func, structure):
-    def _map_value(value):
-        if isinstance(value, dict):
-            return {func(k): v for k, v in value.items()}
-        elif not tree.is_nested(value):
-            return func(value)
-        else:
-            return value
-
-    return tree.traverse(_map_value, structure, top_down=False)
-
-
 @_CustomSingleDispatchCallable
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -1121,7 +1109,9 @@ def defstream[S, T, A, B](
 
 
 @defdata.register(collections.abc.Iterable)
-class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]):
+class _IterableTerm[T](
+    _BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]
+):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
@@ -1140,12 +1130,8 @@ class _IteratorTerm[T](_IterableTerm[T], collections.abc.Iterator[T]):
             raise NotImplementedError
 
 
-iter_ = _IterableTerm.__iter__
-next_ = _IteratorTerm.__next__
-
-
 @defdata.register(collections.abc.Collection)
-class _CollectionTerm[T](_IterableTerm[T]):
+class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
     @defop
     def __contains__(self: collections.abc.Collection[T], item: T) -> bool:
         if not isinstance(self, Term) and not isinstance(item, Term):
@@ -1161,10 +1147,15 @@ class _CollectionTerm[T](_IterableTerm[T]):
             raise NotImplementedError
 
 
+@defdata.register(collections.abc.Set)
+class _SetTerm[T](_CollectionTerm[T], collections.abc.Set[T]):
+    pass
+
+
 @defdata.register(collections.abc.Sequence)
 class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
     @defop
-    def __getitem__(self: collections.abc.Sequence[T], index: int) -> T:
+    def __getitem__(self: collections.abc.Sequence[T], index: int | slice) -> T:
         if not isinstance(self, Term) and not isinstance(index, Term):
             return self[index]
         else:
@@ -1179,6 +1170,10 @@ class _MappingTerm[S, V](_CollectionTerm[S], collections.abc.Mapping[S, V]):
             return self[key]
         else:
             raise NotImplementedError
+
+
+iter_ = _IterableTerm.__iter__
+next_ = _IteratorTerm.__next__
 
 
 def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
