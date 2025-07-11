@@ -2,7 +2,6 @@ import functools
 import logging
 import operator
 from collections.abc import Iterable
-from typing import TypeVar
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
@@ -41,8 +40,6 @@ from weighted.ops.semiring import (
 )
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 
 def timed(f=None, name=None):
@@ -501,7 +498,7 @@ def scan(f, init, *args, **kwargs):
     return carry, result
 
 
-def syntactic_eq_jax(x: Expr[T], other: Expr[T]) -> bool:
+def syntactic_eq_jax[T](x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.

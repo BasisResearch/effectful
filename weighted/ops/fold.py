@@ -2,7 +2,7 @@ import collections.abc
 import functools
 import itertools
 from collections.abc import Callable, Generator, Mapping
-from typing import Annotated, Any, TypeAlias, TypeVar
+from typing import Annotated, Any
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import evaluate, handler
@@ -11,16 +11,11 @@ from effectful.ops.types import Operation
 
 from .semiring import Semiring
 
-S = TypeVar("S")
-T = TypeVar("T")
-A = TypeVar("A")
-B = TypeVar("B")
-
-Runner: TypeAlias = Mapping[Operation[..., T], collections.abc.Iterable[T]]
+type Runner[T] = Mapping[Operation[..., T], collections.abc.Iterable[T]]
 
 
 @defop
-def fold(
+def fold[A, B, S](
     semiring: Semiring[S],
     streams: Annotated[Runner, Scoped[A]],
     body: Annotated[S, Scoped[A | B]],
@@ -28,7 +23,7 @@ def fold(
     raise NotImplementedError
 
 
-Body: TypeAlias = Generator[T] | Callable[..., T] | T | Mapping[Any, "Body"]
+type Body[T] = Generator[T] | Callable[..., T] | T | Mapping[Any, Body[T]]
 
 
 def _promote_add(add, a, b):
@@ -56,7 +51,7 @@ def _promote_add(add, a, b):
 
 class BaselineFold(ObjectInterpretation):
     @implements(fold)
-    def fold(self, semiring: Semiring[T], streams: Runner, body: Body[T]) -> Body[T]:
+    def fold[T](self, semiring: Semiring[T], streams: Runner, body: Body[T]) -> Body[T]:
         def generator():
             stream_values = list(streams.values())
             all_vals = itertools.product(*stream_values)

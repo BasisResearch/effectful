@@ -2,7 +2,6 @@ import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeAlias
 
 import chex
 import effectful.handlers.jax.numpy as jnp
@@ -97,7 +96,7 @@ class State:
         )
 
 
-Action: TypeAlias = int
+Action = int
 
 
 def dynamics_and_reward(
@@ -189,7 +188,7 @@ def tuple_getitem(x, i):
 def policy_of_value(
     value: Callable[[jax.Array], float], state: jax.Array, discount_factor: float
 ) -> Action:
-    a = defop(Action, name="a")
+    a: Operation[[], Action] = defop(Action, name="a")
 
     next_state = dynamics(state, a())
     next_value = value(next_state)
