@@ -359,35 +359,35 @@ def test_unify_tuple_non_variadic():
 
 
 # Test functions with various type patterns
-def identity(x: T) -> T:
+def identity[T](x: T) -> T:
     return x
 
 
-def make_pair(x: T, y: V) -> tuple[T, V]:
+def make_pair[T, V](x: T, y: V) -> tuple[T, V]:
     return (x, y)
 
 
-def wrap_in_list(x: T) -> list[T]:
+def wrap_in_list[T](x: T) -> list[T]:
     return [x]
 
 
-def get_first(items: list[T]) -> T:
+def get_first[T](items: list[T]) -> T:
     return items[0]
 
 
-def getitem_mapping(mapping: collections.abc.Mapping[K, V], key: K) -> V:
+def getitem_mapping[K, V](mapping: collections.abc.Mapping[K, V], key: K) -> V:
     return mapping[key]
 
 
-def dict_values(d: dict[K, V]) -> list[V]:
+def dict_values[K, V](d: dict[K, V]) -> list[V]:
     return list(d.values())
 
 
-def process_callable(func: collections.abc.Callable[[T], V], arg: T) -> V:
+def process_callable[T, V](func: collections.abc.Callable[[T], V], arg: T) -> V:
     return func(arg)
 
 
-def chain_callables(
+def chain_callables[T, U, V](
     f: collections.abc.Callable[[T], U], g: collections.abc.Callable[[U], V]
 ) -> collections.abc.Callable[[T], V]:
     def result(x: T) -> V:
@@ -400,23 +400,23 @@ def constant_func() -> int:
     return 42
 
 
-def multi_generic(a: T, b: list[T], c: dict[K, V]) -> tuple[T, K, V]:
+def multi_generic[T, K, V](a: T, b: list[T], c: dict[K, V]) -> tuple[T, K, V]:
     return (a, next(iter(c.keys())), next(iter(c.values())))
 
 
-def same_type_twice(x: T, y: T) -> T:
+def same_type_twice[T](x: T, y: T) -> T:
     return x if len(str(x)) > len(str(y)) else y
 
 
-def nested_generic(x: T) -> dict[str, list[T]]:
+def nested_generic[T](x: T) -> dict[str, list[T]]:
     return {"items": [x]}
 
 
-def variadic_args_func(*args: T) -> T:  # Variadic args not supported
+def variadic_args_func[T](*args: T) -> T:  # Variadic args not supported
     return args[0]
 
 
-def variadic_kwargs_func(**kwargs: T) -> T:  # Variadic kwargs not supported
+def variadic_kwargs_func[T](**kwargs: T) -> T:  # Variadic kwargs not supported
     return next(iter(kwargs.values()))
 
 
@@ -512,15 +512,15 @@ def test_infer_return_type_success(
 
 
 # Error cases
-def unbound_typevar_func(x: T) -> tuple[T, V]:  # V not in parameters
+def unbound_typevar_func[T](x: T) -> tuple[T, V]:  # V not in parameters
     return (x, "error")
 
 
-def no_return_annotation(x: T):  # No return annotation
+def no_return_annotation[T](x: T):  # No return annotation
     return x
 
 
-def no_param_annotation(x) -> T:  # No parameter annotation
+def no_param_annotation[T](x) -> T:  # type: ignore
     return x
 
 
@@ -668,35 +668,35 @@ def test_nested_type_term_error():
         nested_type(mock_term)
 
 
-def sequence_getitem(seq: collections.abc.Sequence[T], index: int) -> T:
+def sequence_getitem[T](seq: collections.abc.Sequence[T], index: int) -> T:
     return seq[index]
 
 
-def mapping_getitem(mapping: collections.abc.Mapping[K, V], key: K) -> V:
+def mapping_getitem[K, V](mapping: collections.abc.Mapping[K, V], key: K) -> V:
     return mapping[key]
 
 
-def sequence_mapping_getitem(
+def sequence_mapping_getitem[K, V](
     seq: collections.abc.Sequence[collections.abc.Mapping[K, V]], index: int, key: K
 ) -> V:
     return mapping_getitem(sequence_getitem(seq, index), key)
 
 
-def mapping_sequence_getitem(
+def mapping_sequence_getitem[K, T](
     mapping: collections.abc.Mapping[K, collections.abc.Sequence[T]], key: K, index: int
 ) -> T:
     return sequence_getitem(mapping_getitem(mapping, key), index)
 
 
-def sequence_from_pair(a: T, b: T) -> collections.abc.Sequence[T]:
+def sequence_from_pair[T](a: T, b: T) -> collections.abc.Sequence[T]:
     return [a, b]
 
 
-def mapping_from_pair(a: K, b: V) -> collections.abc.Mapping[K, V]:
+def mapping_from_pair[K, V](a: K, b: V) -> collections.abc.Mapping[K, V]:
     return {a: b}
 
 
-def sequence_of_mappings(
+def sequence_of_mappings[K, V](
     key1: K, val1: V, key2: K, val2: V
 ) -> collections.abc.Sequence[collections.abc.Mapping[K, V]]:
     """Creates a sequence containing two mappings."""
@@ -705,14 +705,14 @@ def sequence_of_mappings(
     )
 
 
-def mapping_of_sequences(
+def mapping_of_sequences[K, T](
     key1: K, val1: T, val2: T, key2: K, val3: T, val4: T
 ) -> collections.abc.Mapping[K, collections.abc.Sequence[T]]:
     """Creates a mapping where each key maps to a sequence of two values."""
     return mapping_from_pair(key1, sequence_from_pair(val1, val2))
 
 
-def nested_sequence_mapping(
+def nested_sequence_mapping[K, T](
     k1: K, v1: T, v2: T, k2: K, v3: T, v4: T
 ) -> collections.abc.Sequence[collections.abc.Mapping[K, collections.abc.Sequence[T]]]:
     """Creates a sequence of mappings, where each mapping contains sequences."""
@@ -722,17 +722,17 @@ def nested_sequence_mapping(
     )
 
 
-def get_from_constructed_sequence(a: T, b: T, index: int) -> T:
+def get_from_constructed_sequence[T](a: T, b: T, index: int) -> T:
     """Constructs a sequence from two elements and gets one by index."""
     return sequence_getitem(sequence_from_pair(a, b), index)
 
 
-def get_from_constructed_mapping(key: K, value: V, lookup_key: K) -> V:
+def get_from_constructed_mapping[K, V](key: K, value: V, lookup_key: K) -> V:
     """Constructs a mapping from a key-value pair and looks up the value."""
     return mapping_getitem(mapping_from_pair(key, value), lookup_key)
 
 
-def double_nested_get(
+def double_nested_get[K, T](
     k1: K,
     v1: T,
     v2: T,
@@ -750,7 +750,7 @@ def double_nested_get(
     return sequence_getitem(sequence, inner_index)
 
 
-def construct_and_extend_sequence(
+def construct_and_extend_sequence[T](
     a: T, b: T, c: T, d: T
 ) -> collections.abc.Sequence[collections.abc.Sequence[T]]:
     """Constructs two sequences and combines them into a sequence of sequences."""
@@ -759,7 +759,7 @@ def construct_and_extend_sequence(
     return sequence_from_pair(seq1, seq2)
 
 
-def transform_mapping_values(
+def transform_mapping_values[K, T](
     key1: K, val1: T, key2: K, val2: T
 ) -> collections.abc.Mapping[K, collections.abc.Sequence[T]]:
     """Creates a mapping where each value is wrapped in a sequence."""
@@ -769,7 +769,7 @@ def transform_mapping_values(
     return mapping_from_pair(key1, sequence_from_pair(val1, val1))
 
 
-def call_func(
+def call_func[T, V](
     func: collections.abc.Callable[[T], V],
     arg: T,
 ) -> V:
@@ -777,7 +777,7 @@ def call_func(
     return func(arg)
 
 
-def call_binary_func(
+def call_binary_func[T, U, V](
     func: collections.abc.Callable[[T, U], V],
     arg1: T,
     arg2: U,
@@ -786,7 +786,7 @@ def call_binary_func(
     return func(arg1, arg2)
 
 
-def map_sequence(
+def map_sequence[T, U](
     f: collections.abc.Callable[[T], U],
     seq: collections.abc.Sequence[T],
 ) -> collections.abc.Sequence[U]:
@@ -794,7 +794,7 @@ def map_sequence(
     return [call_func(f, x) for x in seq]
 
 
-def compose_mappings(
+def compose_mappings[T, U, V](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U], V],
 ) -> collections.abc.Callable[[T], V]:
@@ -806,7 +806,7 @@ def compose_mappings(
     return composed
 
 
-def compose_binary(
+def compose_binary[T, U, V](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U, U], V],
 ) -> collections.abc.Callable[[T], V]:
@@ -818,7 +818,7 @@ def compose_binary(
     return composed
 
 
-def apply_to_sequence_element(
+def apply_to_sequence_element[T, U](
     f: collections.abc.Callable[[T], U],
     seq: collections.abc.Sequence[T],
     index: int,
@@ -828,7 +828,7 @@ def apply_to_sequence_element(
     return call_func(f, element)
 
 
-def map_and_get(
+def map_and_get[T, U](
     f: collections.abc.Callable[[T], U],
     seq: collections.abc.Sequence[T],
     index: int,
@@ -838,7 +838,7 @@ def map_and_get(
     return sequence_getitem(mapped_seq, index)
 
 
-def compose_and_apply(
+def compose_and_apply[T, U, V](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U], V],
     value: T,
@@ -848,7 +848,7 @@ def compose_and_apply(
     return call_func(composed, value)
 
 
-def double_compose_apply(
+def double_compose_apply[T, U, V, W](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U], V],
     h: collections.abc.Callable[[V], W],
@@ -860,7 +860,7 @@ def double_compose_apply(
     return call_func(fgh, value)
 
 
-def binary_on_sequence_elements(
+def binary_on_sequence_elements[T, U](
     f: collections.abc.Callable[[T, T], U],
     seq: collections.abc.Sequence[T],
     index1: int,
@@ -872,7 +872,7 @@ def binary_on_sequence_elements(
     return call_binary_func(f, elem1, elem2)
 
 
-def map_sequence_and_apply_binary(
+def map_sequence_and_apply_binary[T, U, V](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U, U], V],
     seq: collections.abc.Sequence[T],
@@ -886,7 +886,7 @@ def map_sequence_and_apply_binary(
     return call_binary_func(g, elem1, elem2)
 
 
-def construct_apply_and_get(
+def construct_apply_and_get[T, U](
     f: collections.abc.Callable[[T], U],
     a: T,
     b: T,
@@ -897,7 +897,7 @@ def construct_apply_and_get(
     return apply_to_sequence_element(f, seq, index)
 
 
-def sequence_function_composition(
+def sequence_function_composition[T](
     funcs: collections.abc.Sequence[collections.abc.Callable[[T], T]],
     value: T,
 ) -> T:
@@ -908,7 +908,7 @@ def sequence_function_composition(
     return result
 
 
-def map_with_constructed_function(
+def map_with_constructed_function[T, U, V](
     f: collections.abc.Callable[[T], U],
     g: collections.abc.Callable[[U], V],
     seq: collections.abc.Sequence[T],
@@ -918,7 +918,7 @@ def map_with_constructed_function(
     return map_sequence(composed, seq)
 
 
-def cross_apply_binary(
+def cross_apply_binary[T, U, V](
     f: collections.abc.Callable[[T, U], V],
     seq1: collections.abc.Sequence[T],
     seq2: collections.abc.Sequence[U],
@@ -931,7 +931,7 @@ def cross_apply_binary(
     return call_binary_func(f, elem1, elem2)
 
 
-def nested_function_application(
+def nested_function_application[T, U, V](
     outer_f: collections.abc.Callable[[T], collections.abc.Callable[[U], V]],
     inner_arg: U,
     outer_arg: T,
