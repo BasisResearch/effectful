@@ -77,10 +77,6 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
 
     def _getitem_sizeof(x: jax.Array, key: tuple[Expr[IndexElement], ...]):
         if is_eager_array(x):
-            if len(key) > x.ndim:
-                raise IndexError(
-                    f"Indexing with too many dimensions: expected {x.ndim} got {len(key)}"
-                )
             for i, k in enumerate(key):
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
