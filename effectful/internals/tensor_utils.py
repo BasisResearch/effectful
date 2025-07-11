@@ -1,12 +1,3 @@
-from typing import TypeVar
-
-from typing_extensions import ParamSpec
-
-P = ParamSpec("P")
-T = TypeVar("T")
-S = TypeVar("S")
-
-
 def _desugar_tensor_index(shape, key):
     new_shape = []
     new_key = []

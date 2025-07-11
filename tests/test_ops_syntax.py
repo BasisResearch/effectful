@@ -1,7 +1,7 @@
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Annotated, ClassVar, TypeVar
+from typing import Annotated, ClassVar
 
 import pytest
 
@@ -75,11 +75,9 @@ def test_gensym_operation_2():
 
 def test_gensym_annotations():
     """Test that gensym respects annotations."""
-    S, T = TypeVar("S"), TypeVar("T")
-    A = TypeVar("A")
 
     @defop
-    def Lam(
+    def Lam[S, T, A](
         var: Annotated[Operation[[], S], Scoped[A]],
         body: Annotated[T, Scoped[A]],
     ) -> Callable[[S], T]:
@@ -123,11 +121,9 @@ def test_map_structure_and_keys():
 def test_scoped_collections():
     """Test that Scoped annotations work with tree-structured collections containing Operations."""
 
-    A, B, S, T = TypeVar("A"), TypeVar("B"), TypeVar("S"), TypeVar("T")
-
     # Test let_many operation with Mapping[Operation, T]
     @defop
-    def let_many(
+    def let_many[S, T, A, B](
         bindings: Annotated[Mapping[Operation[[], T], T], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
@@ -154,7 +150,7 @@ def test_scoped_collections():
 
     # Test with nested collections
     @defop
-    def let_nested(
+    def let_nested[S, T, A, B](
         bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
