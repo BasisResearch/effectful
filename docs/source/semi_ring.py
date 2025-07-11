@@ -62,17 +62,17 @@ def Let[S, T, A, B](
 
 
 @defop
-def Record[T](**kwargs: T) -> dict[str, T]:
+def Record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
     raise NotImplementedError
 
 
 @defop
-def Field[T](record: dict[str, T], key: str) -> T:
+def Field[T](record: collections.abc.Mapping[str, T], key: str) -> T:
     raise NotImplementedError
 
 
 @defop
-def Dict[K, V](*contents: Union[K, V]) -> SemiRingDict[K, V]:
+def Dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
     raise NotImplementedError
 
 
@@ -92,20 +92,14 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def eager_dict[K, V](*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
-    if not any(isinstance(v, Term) for v in contents):
-        if len(contents) % 2 != 0:
-            raise ValueError("Dict requires an even number of arguments")
-
-        kv = []
-        for i in range(0, len(contents), 2):
-            kv.append((contents[i], contents[i + 1]))
-        return SemiRingDict(kv)
+def eager_dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+    if not any(isinstance(v, Term) for kv in contents for v in kv):
+        return SemiRingDict(list(contents))
     else:
         return fwd()
 
 
-def eager_record[T](**kwargs: T) -> dict[str, T]:
+def eager_record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
     if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
@@ -215,7 +209,7 @@ if __name__ == "__main__":
     )
 
     term: SemiRingDict[int, int] = Let(
-        Sum(x(), k, v, Dict(k(), v() + 1)), y, Sum(y(), k, v, Dict(k(), v() + 1))
+        Sum(x(), k, v, Dict((k(), v() + 1))), y, Sum(y(), k, v, Dict((k(), v() + 1)))
     )
 
     print("Without optimization:", term)
