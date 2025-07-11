@@ -7,20 +7,11 @@ import random
 import types
 import typing
 from collections.abc import Callable, Iterable, Mapping
-from typing import Annotated, Concatenate, Generic, TypeVar
+from typing import Annotated, Concatenate
 
 import tree
-from typing_extensions import ParamSpec
 
 from effectful.ops.types import Annotation, Expr, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
 
 
 @dataclasses.dataclass
@@ -58,11 +49,10 @@ class Scoped(Annotation):
     We illustrate the use of :class:`Scoped` with a few case studies of classical
     syntactic variable binding constructs expressed as :class:`Operation` s.
 
-    >>> from typing import Annotated, TypeVar
+    >>> from typing import Annotated
     >>> from effectful.ops.syntax import Scoped, defop
     >>> from effectful.ops.semantics import fvsof
     >>> from effectful.handlers.numbers import add
-    >>> A, B, S, T = TypeVar('A'), TypeVar('B'), TypeVar('S'), TypeVar('T')
     >>> x, y = defop(int, name='x'), defop(int, name='y')
 
     * For example, we can define a higher-order operation :func:`Lambda`
@@ -71,7 +61,7 @@ class Scoped(Annotation):
       and returns a :class:`Term` representing a lambda function:
 
       >>> @defop
-      ... def Lambda(
+      ... def Lambda[S, T, A, B](
       ...     var: Annotated[Operation[[], S], Scoped[A]],
       ...     body: Annotated[T, Scoped[A | B]]
       ... ) -> Annotated[Callable[[S], T], Scoped[B]]:
@@ -92,7 +82,7 @@ class Scoped(Annotation):
       number of arguments and keyword arguments:
 
       >>> @defop
-      ... def LambdaN(
+      ... def LambdaN[S, T, A, B](
       ...     body: Annotated[T, Scoped[A | B]],
       ...     *args: Annotated[Operation[[], S], Scoped[A]],
       ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
@@ -108,7 +98,7 @@ class Scoped(Annotation):
       a :class:`Term` ``body`` to a ``value`` that may be another possibly open :class:`Term` :
 
       >>> @defop
-      ... def Let(
+      ... def Let[S, T, A, B](
       ...     var: Annotated[Operation[[], S], Scoped[A]],
       ...     val: Annotated[S, Scoped[B]],
       ...     body: Annotated[T, Scoped[A | B]]
@@ -130,7 +120,7 @@ class Scoped(Annotation):
 
     ordinal: collections.abc.Set
 
-    def __class_getitem__(cls, item: TypeVar | typing._SpecialForm):
+    def __class_getitem__(cls, item: typing.TypeVar | typing._SpecialForm):
         assert not isinstance(item, tuple), "can only be in one scope"
         if isinstance(item, typing.TypeVar):
             return cls(ordinal=frozenset({item}))
@@ -189,7 +179,7 @@ class Scoped(Annotation):
 
     @classmethod
     def _get_fresh_ordinal(cls, *, name: str = "RootScope") -> collections.abc.Set:
-        return {TypeVar(name)}
+        return {typing.TypeVar(name)}
 
     @classmethod
     def _check_has_single_scope(cls, sig: inspect.Signature) -> bool:
@@ -217,8 +207,8 @@ class Scoped(Annotation):
 
         def _get_free_type_vars(
             tp: type | typing._SpecialForm | inspect.Parameter | tuple | list,
-        ) -> collections.abc.Set[TypeVar]:
-            if isinstance(tp, TypeVar):
+        ) -> collections.abc.Set[typing.TypeVar]:
+            if isinstance(tp, typing.TypeVar):
                 return {tp}
             elif isinstance(tp, tuple | list):
                 return set().union(*map(_get_free_type_vars, tp))
@@ -390,7 +380,7 @@ class Scoped(Annotation):
 
 
 @functools.singledispatch
-def defop(
+def defop[**P, T](
     t: Callable[P, T], *, name: str | None = None, freshening=list[int] | None
 ) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
@@ -527,7 +517,7 @@ def defop(
 
 
 @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
-class _BaseOperation(Generic[Q, V], Operation[Q, V]):
+class _BaseOperation[**Q, V](Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
 
@@ -658,7 +648,7 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
 
 
 @defop.register(Operation)
-def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
@@ -671,7 +661,7 @@ def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(type)
-def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
+def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
@@ -687,7 +677,7 @@ def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
 
 
 @defop.register(types.BuiltinFunctionType)
-def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
@@ -699,14 +689,14 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(classmethod)
-def _(  # type: ignore
+def _[**P, S, T](  # type: ignore
     t: classmethod, *, name: str | None = None
 ) -> Operation[Concatenate[type[S], P], T]:
     raise NotImplementedError("classmethod operations are not yet supported")
 
 
 @defop.register(staticmethod)
-class _StaticMethodOperation(Generic[P, S, T], _BaseOperation[P, T]):
+class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
     def __init__(self, default: staticmethod, **kwargs):
         super().__init__(default=default.__func__, **kwargs)
 
@@ -715,7 +705,7 @@ class _StaticMethodOperation(Generic[P, S, T], _BaseOperation[P, T]):
 
 
 @defop.register(property)
-class _PropertyOperation(Generic[S, T], _BaseOperation[[S], T]):
+class _PropertyOperation[S, T](_BaseOperation[[S], T]):
     def __init__(self, default: property, **kwargs):  # type: ignore
         assert not default.fset, "property with setter is not supported"
         assert not default.fdel, "property with deleter is not supported"
@@ -737,9 +727,7 @@ class _PropertyOperation(Generic[S, T], _BaseOperation[[S], T]):
 
 
 @defop.register(functools.singledispatchmethod)
-class _SingleDispatchMethodOperation(
-    Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]
-):
+class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
     _default: Callable[Concatenate[S, P], T]
 
     def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
@@ -776,7 +764,7 @@ class _SingleDispatchMethodOperation(
         return self._registry.__isabstractmethod__
 
 
-class _SingleDispatchOperation(Generic[P, S, T], _BaseOperation[Concatenate[S, P], T]):
+class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
     _default: "functools._SingleDispatchCallable[T]"
 
     @property
@@ -805,7 +793,7 @@ else:
 
 
 @defop
-def deffn(
+def deffn[T, A, B](
     body: Annotated[T, Scoped[A | B]],
     *args: Annotated[Operation, Scoped[A]],
     **kwargs: Annotated[Operation, Scoped[A]],
@@ -850,7 +838,7 @@ def deffn(
     raise NotImplementedError
 
 
-class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
+class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     def __init__(
         self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
@@ -871,7 +859,7 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
 
 
 @defop.register(_CustomSingleDispatchCallable)
-class _CustomSingleDispatchOperation(Generic[P, Q, S, T], _BaseOperation[P, T]):
+class _CustomSingleDispatchOperation[**P, **Q, S, T](_BaseOperation[P, T]):
     _default: _CustomSingleDispatchCallable[P, Q, S, T]
 
     def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
@@ -888,7 +876,7 @@ class _CustomSingleDispatchOperation(Generic[P, Q, S, T], _BaseOperation[P, T]):
 
 
 @_CustomSingleDispatchCallable
-def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
+def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
@@ -902,8 +890,20 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
+def _map_structure_and_keys(func, structure):
+    def _map_value(value):
+        if isinstance(value, dict):
+            return {func(k): v for k, v in value.items()}
+        elif not tree.is_nested(value):
+            return func(value)
+        else:
+            return value
+
+    return tree.traverse(_map_value, structure, top_down=False)
+
+
 @_CustomSingleDispatchCallable
-def defdata(
+def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
     op: Operation[..., T],
     *args,
@@ -928,7 +928,7 @@ def defdata(
 
     .. code-block:: python
 
-      class _CallableTerm(Generic[P, T], Term[collections.abc.Callable[P, T]]):
+      class _CallableTerm[**P, T](Term[collections.abc.Callable[P, T]]):
           def __init__(
               self,
               op: Operation[..., T],
@@ -978,7 +978,7 @@ def defdata(
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = tree.map_structure(
+            v = _map_structure_and_keys(
                 lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
             )
             res = evaluate(
@@ -1008,12 +1008,12 @@ def defdata(
 @defterm.register(Term)
 @defterm.register(type)
 @defterm.register(types.BuiltinFunctionType)
-def _(value: T) -> T:
+def _[T](value: T) -> T:
     return value
 
 
 @defdata.register(object)
-class _BaseTerm(Generic[T], Term[T]):
+class _BaseTerm[T](Term[T]):
     _op: Operation[..., T]
     _args: collections.abc.Sequence[Expr]
     _kwargs: collections.abc.Mapping[str, Expr]
@@ -1047,14 +1047,14 @@ class _BaseTerm(Generic[T], Term[T]):
 
 
 @defdata.register(collections.abc.Callable)
-class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
     def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
         from effectful.ops.semantics import call
 
         return call(self, *args, **kwargs)  # type: ignore
 
 
-def trace(value: Callable[P, T]) -> Callable[P, T]:
+def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
     """Convert a callable to a term by calling it with appropriately typed free variables.
 
     **Example usage**:
@@ -1110,7 +1110,7 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
 
 
 @defop
-def defstream(
+def defstream[S, T, A, B](
     body: Annotated[T, Scoped[A | B]],
     streams: Annotated[Mapping[Operation[[], S], Iterable[S]], Scoped[B]],
 ) -> Annotated[Iterable[T], Scoped[A]]:
@@ -1119,7 +1119,7 @@ def defstream(
 
 
 @defdata.register(collections.abc.Iterable)
-class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
+class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
@@ -1129,7 +1129,7 @@ class _IterableTerm(Generic[T], _BaseTerm[collections.abc.Iterable[T]]):
 
 
 @defdata.register(collections.abc.Iterator)
-class _IteratorTerm(Generic[T], _IterableTerm[T]):
+class _IteratorTerm[T](_IterableTerm[T]):
     @defop
     def __next__(self: collections.abc.Iterator[T]) -> T:
         if not isinstance(self, Term):
@@ -1143,7 +1143,7 @@ next_ = _IteratorTerm.__next__
 
 
 @defterm.register(types.GeneratorType)
-def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
+def _[T](genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
     from effectful.internals.disassembler import GeneratorExpToDefstream, reconstruct
 
     genexpr_ast = reconstruct(genexpr)
@@ -1161,7 +1161,7 @@ def _(genexpr: types.GeneratorType[T, None, None]) -> Expr[Iterable[T]]:
     )
 
 
-def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
+def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.
@@ -1192,7 +1192,7 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
         return x == other
 
 
-class ObjectInterpretation(Generic[T, V], collections.abc.Mapping):
+class ObjectInterpretation[T, V](collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
 
@@ -1269,7 +1269,7 @@ class ObjectInterpretation(Generic[T, V], collections.abc.Mapping):
         return self.implementations[item].__get__(self, type(self))
 
 
-class _ImplementedOperation(Generic[P, Q, T, V]):
+class _ImplementedOperation[**P, **Q, T, V]:
     impl: Callable[Q, V] | None
     op: Operation[P, T]
 
@@ -1294,7 +1294,7 @@ class _ImplementedOperation(Generic[P, Q, T, V]):
         owner._temporary_implementations[self.op] = self.impl
 
 
-def implements(op: Operation[P, V]):
+def implements[**P, V](op: Operation[P, V]):
     """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
     particular abstract :class:`Operation`.
 

@@ -17,7 +17,7 @@ import random
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, NamedTuple, Optional, OrderedDict, TypeVar, Union
+from typing import Callable, Concatenate, NamedTuple, Optional, OrderedDict, Union
 from weakref import ref
 
 import numpy as np
@@ -35,14 +35,11 @@ from torch import (
 )
 from torch.distributions import Distribution
 from torch.distributions.constraints import Constraint
-from typing_extensions import Concatenate, ParamSpec
 
 from effectful.ops.semantics import coproduct, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
-P = ParamSpec("P")
-T = TypeVar("T")
 
 # Poutine has a notion of 'messages', which are dictionaries
 # that are passed between handlers (or 'Messengers') in order
@@ -356,7 +353,7 @@ def plate(name: str, size: int, dim: Optional[int] = None):
 default_runner = coproduct(NativeSeed(), NativeParam())
 
 
-def block(
+def block[**P](
     hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
 ):
     """

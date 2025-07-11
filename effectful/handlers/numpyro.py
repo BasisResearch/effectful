@@ -6,7 +6,7 @@ except ImportError:
 
 import functools
 from collections.abc import Collection, Hashable, Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 import jax
 import tree
@@ -17,9 +17,6 @@ from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
-
-A = TypeVar("A")
-B = TypeVar("B")
 
 
 class Naming(dict[Operation[[], jax.Array], int]):

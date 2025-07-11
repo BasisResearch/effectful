@@ -4,20 +4,10 @@ This module provides a term representation for numbers and operations on them.
 
 import numbers
 import operator
-from typing import Any, TypeVar
-
-from typing_extensions import ParamSpec
+from typing import Any
 
 from effectful.ops.syntax import defdata, defop, syntactic_eq
 from effectful.ops.types import Expr, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-
-T_Number = TypeVar("T_Number", bound=numbers.Number)
 
 
 @defdata.register(numbers.Number)
@@ -48,7 +38,7 @@ class _NumberTerm(Term[numbers.Number]):
 
 # Complex specific methods
 @defop
-def eq(x: T_Number, y: T_Number) -> bool:
+def eq[T_Number: numbers.Number](x: T_Number, y: T_Number) -> bool:
     if not any(isinstance(a, Term) for a in (x, y)):
         return operator.eq(x, y)
     else:
@@ -56,7 +46,7 @@ def eq(x: T_Number, y: T_Number) -> bool:
 
 
 def _wrap_cmp(op):
-    def _wrapped_op(x: T_Number, y: T_Number) -> bool:
+    def _wrapped_op[T_Number: numbers.Number](x: T_Number, y: T_Number) -> bool:
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
@@ -67,7 +57,7 @@ def _wrap_cmp(op):
 
 
 def _wrap_binop(op):
-    def _wrapped_op(x: T_Number, y: T_Number) -> T_Number:
+    def _wrapped_op[T_Number: numbers.Number](x: T_Number, y: T_Number) -> T_Number:
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
@@ -78,7 +68,7 @@ def _wrap_binop(op):
 
 
 def _wrap_unop(op):
-    def _wrapped_op(x: T_Number) -> T_Number:
+    def _wrapped_op[T_Number: numbers.Number](x: T_Number) -> T_Number:
         if not isinstance(x, Term):
             return op(x)
         else:
