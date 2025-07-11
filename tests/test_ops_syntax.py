@@ -549,3 +549,11 @@ def test_defstream_1():
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
     assert tm_iter_next.op is next_
+
+
+def test_defterm_genexpr():
+    xs = (x + 1 for x in range(5))
+
+    tm = defterm(xs)
+    assert isinstance(tm, Term)
+    assert tm.op is defstream
