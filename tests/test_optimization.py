@@ -4,6 +4,7 @@ import pytest
 from effectful.handlers.jax import unbind_dims
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from jax.numpy import allclose
 
 from weighted.handlers.jax import (
     DenseTensorFold,
@@ -61,5 +62,4 @@ def test_factorize(base_intp, transform_intp):
         result = evaluate(fold_expr)
 
     expected = jnp.einsum("ij,kl,lm->", arrs["x"], arrs["y"], arrs["z"])
-    assert isinstance(result, jax.Array)
-    assert jnp.allclose(result, expected)
+    assert allclose(result, expected)

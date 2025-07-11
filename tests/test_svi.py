@@ -4,6 +4,7 @@ import jax
 from effectful.handlers.jax import sizesof
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from jax.numpy import isclose
 
 from weighted.handlers.jax import (
     GradientOptimizationFold,
@@ -76,4 +77,4 @@ def test_svi():
     data = sample(key, dist.BernoulliProbs(true_prob), (n_samples,))
     inferred_prob = run_svi(data)
     true_posterior_mean = jnp.array(16 / 30)
-    assert jnp.isclose(inferred_prob, true_posterior_mean, atol=1e-2)
+    assert isclose(inferred_prob, true_posterior_mean, atol=1e-2)

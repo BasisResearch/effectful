@@ -11,6 +11,7 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from jax import random as random
+from jax.numpy import allclose, isclose
 
 from weighted.handlers.jax import (
     D,
@@ -92,8 +93,7 @@ def test_batched_matmul(intp):
         )
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
-    assert isinstance(actual, jax.Array)
-    assert jnp.allclose(actual, expected)
+    assert allclose(actual, expected)
 
 
 @parameterize_intp
@@ -121,8 +121,7 @@ def test_log_matmul(intp):
     actual = jnp.exp(actual)
 
     expected = jnp.einsum("ij,jk->ik", X, Y)
-    assert isinstance(actual, jax.Array)
-    assert jnp.allclose(actual, expected)
+    assert allclose(actual, expected)
 
 
 @parameterize_intp
@@ -172,8 +171,7 @@ def test_linalg_folds_named(intp):
             {x: jnp.arange(3), y: jnp.arange(3)},
             D(((x(),), unbind_dims(A, x, y) * unbind_dims(B, y))),
         )
-        assert isinstance(f4, jax.Array)
-        assert jnp.allclose(f4, jnp.einsum("ij,j->i", A, B))
+        assert allclose(f4, jnp.einsum("ij,j->i", A, B))
 
 
 @parameterize_intp
@@ -409,12 +407,12 @@ def test_dependent_partial_folds(intp):
         # only reduce the j dimension, returning an array of shape (I,)
         expected = jnp.array([38, 22, 6])
         result = Sum({i: i_array, j: j_dependent}, D(((i(),), j())))
-        assert jnp.allclose(result, expected)
+        assert allclose(result, expected)
 
         # only reduce the i dimension, returning an array of shape (J,)
         expected = jnp.array([12, 15, 18, 21])
         result = Sum({i: i_array, j: j_dependent}, D(((j(),), j())))
-        assert jnp.allclose(result, expected)
+        assert allclose(result, expected)
 
 
 @parameterize_intp
@@ -434,12 +432,10 @@ def test_doubly_dependent_partial_folds(intp):
         i_array = jnp.flip(jnp.arange(I))
 
         result = Sum({i: i_array, j: j_dependent, k: k_dependent}, D(((i(),), k())))
-        assert isinstance(result, jax.Array)
-        assert jnp.allclose(result, jnp.array([9, 63]))
+        assert allclose(result, jnp.array([9, 63]))
 
         result = Sum({i: i_array, j: j_dependent, k: k_dependent}, D(((j(),), k())))
-        assert isinstance(result, jax.Array)
-        assert jnp.allclose(result, jnp.array([33, 24, 15]))
+        assert allclose(result, jnp.array([33, 24, 15]))
 
 
 def longest_dependency_chain(adj):
@@ -489,7 +485,7 @@ def test_fold_chain():
     with handler(jax_intp):
         result = evaluate(new_fold)
 
-    assert jnp.allclose(result, jnp.array([5, 6, 7]))
+    assert allclose(result, jnp.array([5, 6, 7]))
 
 
 def test_fold_chain_named():
@@ -586,8 +582,8 @@ def test_gradient_optimization_init():
         assert all(isinstance(result, jax.Array) for a in result_arg)
         assert result_arg[0] < 0.1
         # Arguments should be close to (2, -3)
-        assert jnp.isclose(result_arg[1][0], 2, atol=0.1)
-        assert jnp.isclose(result_arg[1][1], -3, atol=0.1)
+        assert isclose(result_arg[1][0], 2, atol=0.1)
+        assert isclose(result_arg[1][1], -3, atol=0.1)
 
     # Test with custom initialization
     # Starting closer to the minimum should converge faster

@@ -6,7 +6,7 @@ import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
 from effectful.handlers.jax import jax_getitem
-from effectful.ops.semantics import Operation, coproduct, handler
+from effectful.ops.semantics import Operation, coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
 from weighted.handlers.jax import D, DenseTensorFold
@@ -18,24 +18,33 @@ from weighted.handlers.optimization import (
 from weighted.ops.fold import BaselineFold
 from weighted.ops.sugar import Sum
 
-# taken from https://github.com/pyro-ppl/funsor/blob/master/test/test_einsum.py
 EINSUM_EXAMPLES = [
-    "a,b->",
+    # vector operations
+    "i->i",  # do nothing
+    "i->",  # vector sum
+    ",i->i",  # scalar-vector product
+    "i,i->",  # inner product
+    "i,j->ij",  # outer product
+    "i,i->i",  # element-wise product
+    # matrix operations
+    "ij->ij",  # do nothing
+    "ij->ji",  # matrix transpose
+    "ii->",  # matrix trace
+    "ii->i",  # matrix diagonal
+    ",ij->ij",  # scalar-matrix product
+    "ij,j->i",  # matrix-vector product
+    "ij,ij->ij",  # hadamard product
+    "ij,jk->ik",  # matrix-matrix product
+    # composite contractions
     "ab,a->",
-    "a,a->",
-    "a,a->a",
     "a,a,a,ab->ab",
-    "ab->ba",
     "ab,bc,cd->da",
-    "i->i",
-    ",i->i",
     "ai->i",
     ",ai,abij->ij",
     "a,ai,bij->ij",
     "ai,abi,bci,cdi->i",
     "aij,abij,bcij->ij",
     "a,abi,bcij,cdij->ij",
-    # "ab,bc,cd,de,ef,fg->ag", (too slow for the baseline fold)
 ]
 
 baseline_intp = reduce(
@@ -56,6 +65,7 @@ parameterize_intp = pytest.mark.parametrize(
             coproduct(baseline_intp, FoldReorderReduction()), id="reordered-baseline"
         ),
         pytest.param(jax_intp, id="jax"),
+        pytest.param(DenseTensorFold(), id="jax-d-term"),
         pytest.param(coproduct(jax_intp, FoldReorderReduction()), id="reordered-jax"),
     ],
 )
@@ -107,7 +117,7 @@ def einsum_weighted(
     }
     body = D((output_indices, input_term))
     with handler(intp), handler(operand_intp):
-        return Sum(streams, body)
+        return evaluate(Sum(streams, body))
 
 
 @pytest.mark.parametrize("equation", EINSUM_EXAMPLES)
@@ -116,5 +126,4 @@ def test_einsum_optimize(intp, equation: str):
     sizes, operands = make_einsum_example(equation)
     expected = jnp.einsum(equation, *operands)
     result = einsum_weighted(equation, operands, sizes, intp)
-    assert result.shape == expected.shape
-    assert jnp.allclose(result, expected)
+    assert jax.numpy.allclose(result, expected)

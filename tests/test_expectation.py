@@ -3,6 +3,7 @@ import effectful.handlers.numpyro as dist
 import jax
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from jax.numpy import isclose
 
 from weighted.handlers.jax import (
     GradientOptimizationFold,
@@ -103,11 +104,11 @@ def run_expectation():
 def test_integration(benchmark):
     intg = run_expectation()
     assert isinstance(intg, jax.Array)
-    assert jnp.isclose(intg, jnp.array(0.5), atol=1e-1)
+    assert isclose(intg, jnp.array(0.5), atol=1e-1)
 
     intg = jax.jit(run_expectation)()
     assert isinstance(intg, jax.Array)
-    assert jnp.isclose(intg, jnp.array(0.5), atol=1e-1)
+    assert isclose(intg, jnp.array(0.5), atol=1e-1)
 
 
 def test_integration_benchmark(benchmark):
