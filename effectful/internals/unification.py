@@ -65,8 +65,10 @@ import typing
 
 if typing.TYPE_CHECKING:
     GenericAlias = types.GenericAlias
+    UnionType = types.UnionType
 else:
     GenericAlias = types.GenericAlias | typing._GenericAlias
+    UnionType = types.UnionType | typing._UnionGenericAlias
 
 
 Substitutions = collections.abc.Mapping[
@@ -235,11 +237,11 @@ def _(
 
 @unify.register
 def _(
-    typ: types.UnionType,
-    subtyp: type | types.UnionType,
+    typ: UnionType,
+    subtyp: type | UnionType,
     subs: Substitutions = {},
 ) -> Substitutions:
-    if isinstance(subtyp, types.UnionType):
+    if isinstance(subtyp, UnionType):
         # If subtyp is a union, try to unify with each argument
         for arg in typing.get_args(subtyp):
             subs = unify(typ, arg, subs)
@@ -261,7 +263,7 @@ def _(
 @unify.register
 def _(
     typ: GenericAlias,
-    subtyp: type | types.GenericAlias | typing.TypeVar | types.UnionType,
+    subtyp: type | types.GenericAlias | typing.TypeVar | UnionType,
     subs: Substitutions = {},
 ) -> Substitutions:
     if (
@@ -301,12 +303,12 @@ def _(
 @unify.register
 def _(
     typ: type,
-    subtyp: type | typing.TypeVar | types.UnionType | GenericAlias,
+    subtyp: type | typing.TypeVar | UnionType | GenericAlias,
     subs: Substitutions = {},
 ) -> Substitutions:
     if isinstance(subtyp, typing.TypeVar):
         return unify(subtyp, subs.get(subtyp, typ), {subtyp: typ, **subs})
-    elif isinstance(subtyp, types.UnionType):
+    elif isinstance(subtyp, UnionType):
         for arg in typing.get_args(subtyp):
             subs = unify(typ, arg, subs)
         return subs
@@ -325,7 +327,7 @@ def _(
 @unify.register
 def _(
     typ: typing.TypeVar,
-    subtyp: type | typing.TypeVar | types.UnionType | types.GenericAlias,
+    subtyp: type | typing.TypeVar | UnionType | types.GenericAlias,
     subs: Substitutions = {},
 ) -> Substitutions:
     return (
@@ -423,7 +425,7 @@ def _freshen(tp: typing.Any):
 @functools.singledispatch
 def nested_type(
     value,
-) -> type | GenericAlias | types.UnionType | types.EllipsisType | None:
+) -> type | GenericAlias | UnionType | types.EllipsisType | None:
     """
     Infer the type of a value, handling nested collections with generic parameters.
 
@@ -557,7 +559,7 @@ def nested_type(
 
 
 @nested_type.register
-def _(value: type | types.UnionType | GenericAlias | types.EllipsisType):
+def _(value: type | UnionType | GenericAlias | types.EllipsisType):
     return value
 
 
@@ -744,7 +746,7 @@ def _(typ: GenericAlias):
 
 
 @freetypevars.register
-def _(typ: types.UnionType):
+def _(typ: UnionType):
     return freetypevars(typing.get_args(typ))
 
 
@@ -754,7 +756,7 @@ def substitute(
 ) -> (
     type
     | types.GenericAlias
-    | types.UnionType
+    | UnionType
     | None
     | typing.TypeVar
     | typing.ParamSpec
@@ -858,7 +860,7 @@ def _(typ: GenericAlias, subs: Substitutions):
 
 
 @substitute.register
-def _(typ: types.UnionType, subs: Substitutions):
+def _(typ: UnionType, subs: Substitutions):
     ts: tuple = substitute(typing.get_args(typ), subs)  # type: ignore
     tp, ts = ts[0], ts[1:]
     for arg in ts:
