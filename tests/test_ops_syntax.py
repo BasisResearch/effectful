@@ -15,8 +15,6 @@ from effectful.ops.syntax import (
     defop,
     defstream,
     defterm,
-    iter_,
-    next_,
 )
 from effectful.ops.types import Operation, Term
 
@@ -198,11 +196,11 @@ def test_term_str():
 
     assert str(x1) == str(x2) == str(x3) == "x"
     assert repr(x1) != repr(x2) != repr(x3)
-    assert str(x1() + x2()) == "add(x(), x!1())"
-    assert str(x1() + x1()) == "add(x(), x())"
-    assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
-    assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
-    assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
+    assert str(x1() + x2()) == "__add__(x(), x!1())"
+    assert str(x1() + x1()) == "__add__(x(), x())"
+    assert str(deffn(x1() + x1(), x1)) == "deffn(__add__(x(), x()), x)"
+    assert str(deffn(x1() + x1(), x2)) == "deffn(__add__(x(), x()), x!1)"
+    assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
 def test_defop_singledispatch():
@@ -507,13 +505,13 @@ def test_defdata_iterable():
     assert isinstance(tm_iter, Term)
     assert isinstance(tm_iter, Iterator)
     assert issubclass(typeof(tm_iter), Iterator)
-    assert tm_iter.op is iter_
+    assert tm_iter.op is type(tm).__iter__
 
     tm_iter_next = next(tm_iter)
     assert isinstance(tm_iter_next, Term)
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
-    assert tm_iter_next.op is next_
+    assert tm_iter_next.op is type(tm_iter).__next__
 
     assert list(tm.args) == [1, 2, 3]
 
@@ -535,13 +533,13 @@ def test_defstream_1():
     assert isinstance(tm_iter, Term)
     assert isinstance(tm_iter, Iterator)
     assert issubclass(typeof(tm_iter), Iterator)
-    assert tm_iter.op is iter_
+    assert tm_iter.op is type(tm).__iter__
 
     tm_iter_next = next(tm_iter)
     assert isinstance(tm_iter_next, Term)
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
-    assert tm_iter_next.op is next_
+    assert tm_iter_next.op is type(tm_iter).__next__
 
 
 def test_defterm_sequence():
