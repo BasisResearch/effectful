@@ -1,3 +1,4 @@
+import collections.abc
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -10,13 +11,10 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
-    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
     defterm,
-    iter_,
-    next_,
 )
 from effectful.ops.types import Operation, Term
 
@@ -111,13 +109,6 @@ def test_operation_metadata():
     assert f_op != ff_op
 
 
-def test_map_structure_and_keys():
-    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
-    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
-    actual = _map_structure_and_keys(lambda x: x + 1, s)
-    assert actual == expected
-
-
 def test_scoped_collections():
     """Test that Scoped annotations work with tree-structured collections containing Operations."""
 
@@ -205,11 +196,11 @@ def test_term_str():
 
     assert str(x1) == str(x2) == str(x3) == "x"
     assert repr(x1) != repr(x2) != repr(x3)
-    assert str(x1() + x2()) == "add(x(), x!1())"
-    assert str(x1() + x1()) == "add(x(), x())"
-    assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
-    assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
-    assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
+    assert str(x1() + x2()) == "__add__(x(), x!1())"
+    assert str(x1() + x1()) == "__add__(x(), x())"
+    assert str(deffn(x1() + x1(), x1)) == "deffn(__add__(x(), x()), x)"
+    assert str(deffn(x1() + x1(), x2)) == "deffn(__add__(x(), x()), x!1)"
+    assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
 def test_defop_singledispatch():
@@ -514,13 +505,13 @@ def test_defdata_iterable():
     assert isinstance(tm_iter, Term)
     assert isinstance(tm_iter, Iterator)
     assert issubclass(typeof(tm_iter), Iterator)
-    assert tm_iter.op is iter_
+    assert tm_iter.op is type(tm).__iter__
 
     tm_iter_next = next(tm_iter)
     assert isinstance(tm_iter_next, Term)
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
-    assert tm_iter_next.op is next_
+    assert tm_iter_next.op is type(tm_iter).__next__
 
     assert list(tm.args) == [1, 2, 3]
 
@@ -542,10 +533,61 @@ def test_defstream_1():
     assert isinstance(tm_iter, Term)
     assert isinstance(tm_iter, Iterator)
     assert issubclass(typeof(tm_iter), Iterator)
-    assert tm_iter.op is iter_
+    assert tm_iter.op is type(tm).__iter__
 
     tm_iter_next = next(tm_iter)
     assert isinstance(tm_iter_next, Term)
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
-    assert tm_iter_next.op is next_
+    assert tm_iter_next.op is type(tm_iter).__next__
+
+
+def test_defterm_sequence():
+    @defop
+    def my_sequence(xs: tuple[int, ...]) -> tuple[int, ...]:
+        raise NotImplementedError
+
+    x = defop(int, name="x")
+    tm = my_sequence((4, 5, x() + 1))
+
+    assert isinstance(tm, Term)
+    assert isinstance(tm, collections.abc.Sequence)
+    assert issubclass(typeof(tm), collections.abc.Sequence)
+    assert tm.op is my_sequence
+    assert tm.args == ((4, 5, x() + 1),)
+
+    tm_0 = tm[0]
+    assert isinstance(tm_0, Term)
+    assert isinstance(tm_0.op, Operation)
+    assert tm_0.op is type(tm).__getitem__
+    assert tm_0.args == (tm, 0)
+
+    # Test that the term can be evaluated
+    with handler({my_sequence: lambda xs: tuple(x * 2 for x in xs), x: lambda: 0}):
+        assert evaluate(tm) == (8, 10, 2)
+
+
+def test_defterm_mapping():
+    @defop
+    def my_mapping(k: int, v: int) -> dict[int, int]:
+        raise NotImplementedError
+
+    x = defop(int, name="x")
+    tm = my_mapping(3, x() + 1)
+
+    assert isinstance(tm, Term)
+    assert isinstance(tm, collections.abc.Mapping)
+    assert issubclass(typeof(tm), collections.abc.Mapping)
+    assert tm.op is my_mapping
+    assert tm.args == (3, x() + 1)
+    assert tm.kwargs == {}
+
+    tm_3 = tm[3]
+    assert isinstance(tm_3, Term)
+    assert isinstance(tm_3.op, Operation)
+    assert tm_3.op is type(tm).__getitem__
+    assert tm_3.args == (tm, 3)
+
+    # Test that the term can be evaluated
+    with handler({my_mapping: lambda k, v: {k: v}, x: lambda: 0}):
+        assert evaluate(tm) == {3: 1}

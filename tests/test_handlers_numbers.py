@@ -248,7 +248,6 @@ def test_evaluate_2():
     y = defop(int, name="y")
     t = x() + y()
     assert isinstance(t, Term)
-    assert t.op.__name__ == "add"
     with handler({x: lambda: 1, y: lambda: 3}):
         assert evaluate(t) == 4
 

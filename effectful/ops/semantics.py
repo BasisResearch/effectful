@@ -1,11 +1,10 @@
+import collections.abc
 import contextlib
 import functools
 import types
 import typing
 from collections.abc import Callable
 from typing import Any
-
-import tree
 
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
@@ -68,7 +67,7 @@ def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         }
         with handler(subs):
             return evaluate(body)
-    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
+    elif not any(isinstance(a, Term) for a in (fn, *args, *kwargs.values())):
         return fn(*args, **kwargs)
     else:
         raise NotImplementedError
@@ -246,18 +245,24 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
-    if intp is None:
-        from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation, interpreter
 
-        intp = get_interpretation()
+    if intp is not None:
+        return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        (args, kwargs) = tree.map_structure(
-            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
-        )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)
-    elif tree.is_nested(expr):
-        return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        return expr.op(*args, **kwargs)
+    elif isinstance(expr, collections.abc.Mapping):
+        return type(expr)((evaluate(k), evaluate(v)) for k, v in expr.items())
+    elif isinstance(expr, collections.abc.Sequence) and not isinstance(expr, str):
+        return type(expr)(evaluate(e) for e in expr)
+    elif isinstance(expr, collections.abc.Set):
+        return type(expr)(evaluate(e) for e in expr)
+    elif isinstance(expr, Operation):
+        op_intp = get_interpretation().get(expr, expr)
+        return op_intp if isinstance(op_intp, Operation) else expr
     else:
         return expr
 
