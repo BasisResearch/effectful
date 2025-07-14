@@ -3,7 +3,7 @@ import dataclasses
 import itertools
 import numbers
 from collections.abc import Callable
-from typing import Any, Generic, ParamSpec, TypeVar
+from typing import Any
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
@@ -12,17 +12,9 @@ from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
-K = TypeVar("K")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
-
 
 @dataclasses.dataclass
-class Semiring(Generic[T]):
+class Semiring[T]:
     add: Callable[[T, T], T]
     mul: Callable[[T, T], T]
     zero: T
@@ -60,7 +52,7 @@ StreamAlg: Semiring[collections.abc.Generator] = Semiring(
 
 
 @defop
-def add(a: T, b: T) -> T:
+def add[T](a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == 0:
         return b
     if isinstance(b, numbers.Number) and b == 0:
@@ -71,7 +63,7 @@ def add(a: T, b: T) -> T:
 
 
 @defop
-def mul(a: T, b: T) -> T:
+def mul[T](a: T, b: T) -> T:
     if (isinstance(a, numbers.Number) and a == 0) or (
         isinstance(b, numbers.Number) and b == 0
     ):
@@ -86,7 +78,7 @@ def mul(a: T, b: T) -> T:
 
 
 @defop
-def min(a: T, b: T) -> T:
+def min[T](a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == float("inf"):
         return b
     if isinstance(b, numbers.Number) and b == float("inf"):
@@ -97,7 +89,7 @@ def min(a: T, b: T) -> T:
 
 
 @defop
-def max(a: T, b: T) -> T:
+def max[T](a: T, b: T) -> T:
     if isinstance(a, numbers.Number) and a == float("-inf"):
         return b
     if isinstance(b, numbers.Number) and b == float("-inf"):

@@ -7,7 +7,7 @@ name = "weighted"
 version = "0.0.1"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "Apache 2.0"}
 authors = [
     {name = "Basis"}
@@ -79,6 +79,7 @@ exclude = ["build"]
 
 [tool.ruff]
 line-length = 90
+target-version = "py312"
 
 [tool.ruff.format]
 quote-style = "double"
