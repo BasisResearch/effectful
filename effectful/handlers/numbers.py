@@ -6,7 +6,7 @@ import numbers
 import operator
 from typing import Any
 
-from effectful.ops.syntax import defdata, defop, syntactic_eq
+from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Expr, Operation, Term
 
 
