@@ -198,7 +198,6 @@ def test_defun_4():
         ) -> collections.abc.Callable[[int], int]:
             @trace
             def fg(x: int) -> int:
-                breakpoint()
                 assert callable(f), f"f is not callable: {f}"
                 assert callable(g), f"g is not callable: {g}"
                 return f(g(x))
