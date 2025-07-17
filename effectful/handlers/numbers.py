@@ -37,14 +37,6 @@ class _NumberTerm(Term[numbers.Number]):
 
 
 # Complex specific methods
-@defop
-def eq[T_Number: numbers.Number](x: T_Number, y: T_Number) -> bool:
-    if not any(isinstance(a, Term) for a in (x, y)):
-        return operator.eq(x, y)
-    else:
-        return syntactic_eq(x, y)
-
-
 def _wrap_cmp(op):
     def _wrapped_op[T_Number: numbers.Number](x: T_Number, y: T_Number) -> bool:
         if not any(isinstance(a, Term) for a in (x, y)):
@@ -86,6 +78,7 @@ mul = defop(_wrap_binop(operator.mul))
 truediv = defop(_wrap_binop(operator.truediv))
 pow = defop(_wrap_binop(operator.pow))
 abs = defop(_wrap_unop(operator.abs))
+eq = defop(_wrap_cmp(operator.eq))
 
 
 @defdata.register(numbers.Complex)
