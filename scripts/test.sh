@@ -1,4 +1,4 @@
 #!/bin/bash
 set -euxo pipefail
 
-pytest effectful/ tests/ -v
+pytest effectful/ tests/ -n auto
