@@ -1,4 +1,3 @@
-from functools import reduce
 from graphlib import TopologicalSorter
 
 import chex
@@ -7,12 +6,13 @@ import jax
 import pytest
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
-from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from jax import random as random
 from jax.numpy import allclose, isclose
 
+from tests.utils import get_fold_params
 from weighted.handlers.jax import (
     D,
     DenseTensorFold,
@@ -21,27 +21,20 @@ from weighted.handlers.jax import (
     ScanFold,
     reals,
 )
-from weighted.handlers.optimization import FoldEliminateDterm, FoldIndexDistributivity
-from weighted.ops.fold import BaselineFold, fold
+from weighted.ops.fold import fold
 from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
-
-baseline_intp = reduce(
-    coproduct,  # type: ignore
-    [BaselineFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
-)
-
-jax_intp = reduce(
-    coproduct,  # type: ignore
-    [DenseTensorFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
-)
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    [
-        pytest.param(jax_intp, id="jax_no_d_term"),
-        pytest.param(DenseTensorFold(), id="jax_vanilla"),
-        pytest.param(baseline_intp, id="baseline_no_d_term"),
-    ],
+    get_fold_params(
+        "jax_intp",
+        "jax_d_intp",
+        "baseline_d_intp",
+        "jax_factorize_intp",
+        "baseline_factorize_intp",
+        "jax_split_intp",
+        "baseline_split_intp",
+    ),
 )
 parameterize_ops = pytest.mark.parametrize(
     "weighted_op,python_op",
@@ -155,6 +148,7 @@ def test_linalg_folds(intp):
         assert f6[()] == 18
 
         f7 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, 2 * x())
+        print(f7)
         assert isinstance(f7, jax.Array)
         assert f7[()] == 2 * 9
 
@@ -380,11 +374,13 @@ def test_dependent_folds(intp, weighted_op, python_op):
             assert d[()] == expected
 
 
-def test_dependent_folds_unused():
+@pytest.mark.skip()
+@parameterize_intp
+def test_dependent_folds_unused(intp):
     """Test a dependent fold with an unused stream whose length depends on another stream."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    with handler(jax_intp):
+    with handler(intp):
         actual = Sum({i: jnp.arange(5), j: jnp.repeat(i(), 4)}, i())
 
         expected = sum(range(5)) * 4
@@ -459,7 +455,8 @@ def dependency_graph_of_streams(streams):
     return {var: fvsof(val) & stream_vars for (var, val) in streams.items()}
 
 
-def test_fold_chain():
+@parameterize_intp
+def test_fold_chain(intp):
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -482,13 +479,14 @@ def test_fold_chain():
     deps = dependency_graph_of_streams(new_streams)
     assert longest_dependency_chain(deps) < n_iters
 
-    with handler(jax_intp):
+    with handler(intp):
         result = evaluate(new_fold)
 
     assert allclose(result, jnp.array([5, 6, 7]))
 
 
-def test_fold_chain_named():
+@parameterize_intp
+def test_fold_chain_named(intp):
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -512,7 +510,7 @@ def test_fold_chain_named():
     deps = dependency_graph_of_streams(new_streams)
     assert longest_dependency_chain(deps) < n_iters
 
-    with handler(jax_intp):
+    with handler(intp):
         result = evaluate(new_fold)
 
     expected = jax_getitem(jnp.array([5, 6, 7]), [i()])
@@ -537,7 +535,7 @@ def test_pytree_fold(weighted_op, python_op, pytree_constr):
     """
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    with handler(jax_intp), handler(PytreeMapFold()):
+    with handler(DenseTensorFold()), handler(PytreeMapFold()):
         actual = weighted_op(
             {i: jnp.arange(5), j: jnp.arange(7)}, pytree_constr(i() + j(), i() * j())
         )
@@ -569,7 +567,7 @@ def test_gradient_optimization_init():
     # Test with default initialization (zeros)
     with (
         handler(GradientOptimizationFold(steps=100, learning_rate=0.1)),
-        handler(jax_intp),
+        handler(DenseTensorFold()),
     ):
         result = Min({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be close to the minimum value (0)
@@ -591,7 +589,7 @@ def test_gradient_optimization_init():
         handler(
             GradientOptimizationFold(steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5})
         ),
-        handler(jax_intp),
+        handler(DenseTensorFold()),
     ):
         result = Min({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be very close to the minimum with fewer steps

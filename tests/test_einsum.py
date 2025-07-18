@@ -6,16 +6,11 @@ import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
 from effectful.handlers.jax import jax_getitem
-from effectful.ops.semantics import Operation, coproduct, evaluate, handler
+from effectful.ops.semantics import Operation, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
-from weighted.handlers.jax import D, DenseTensorFold
-from weighted.handlers.optimization import (
-    FoldEliminateDterm,
-    FoldIndexDistributivity,
-    FoldReorderReduction,
-)
-from weighted.ops.fold import BaselineFold
+from tests.utils import get_fold_params
+from weighted.handlers.jax import D
 from weighted.ops.sugar import Sum
 
 EINSUM_EXAMPLES = [
@@ -47,27 +42,16 @@ EINSUM_EXAMPLES = [
     "a,abi,bcij,cdij->ij",
 ]
 
-baseline_intp = reduce(
-    coproduct,  # type: ignore
-    [BaselineFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
-)
-
-jax_intp = reduce(
-    coproduct,  # type: ignore
-    [DenseTensorFold(), FoldEliminateDterm(), FoldIndexDistributivity()],
-)
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    [
-        pytest.param(baseline_intp, id="baseline"),
-        pytest.param(
-            coproduct(baseline_intp, FoldReorderReduction()), id="reordered-baseline"
-        ),
-        pytest.param(jax_intp, id="jax"),
-        pytest.param(DenseTensorFold(), id="jax-d-term"),
-        pytest.param(coproduct(jax_intp, FoldReorderReduction()), id="reordered-jax"),
-    ],
+    get_fold_params(
+        "baseline_d_intp",
+        "baseline_reorder_intp",
+        "jax_intp",
+        "jax_d_intp",
+        "jax_reorder_intp",
+    ),
 )
 
 
