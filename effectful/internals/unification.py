@@ -403,23 +403,23 @@ def _freshen(tp: typing.Any):
         >>> _freshen(T) == T
         False
     """
-    return substitute(
-        tp,
-        {
-            fv: typing.TypeVar(
+    fvs = freetypevars(tp)
+    subs: dict[
+        typing.TypeVar | typing.ParamSpec, typing.TypeVar | typing.ParamSpec
+    ] = {}
+    for fv in fvs:
+        if isinstance(fv, typing.TypeVar):
+            subs[fv] = typing.TypeVar(
                 name=f"{fv.__name__[:60]}_{random.randint(0, int(1e7))}",
                 bound=fv.__bound__,
-                covariant=fv.__covariant__,
-                contravariant=fv.__contravariant__,
             )
-            if isinstance(fv, typing.TypeVar)
-            else typing.ParamSpec(
+        elif isinstance(fv, typing.ParamSpec):
+            subs[fv] = typing.ParamSpec(
                 name=f"{fv.__name__[:60]}_{random.randint(0, int(1e7))}",
             )
-            for fv in freetypevars(tp)
-            if isinstance(fv, typing.TypeVar | typing.ParamSpec)
-        },
-    )
+        else:
+            continue
+    return substitute(tp, subs) if subs else tp
 
 
 @functools.singledispatch
