@@ -3,7 +3,7 @@ from typing import Annotated, Callable
 
 from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
-from effectful.ops.syntax import Scoped, defop
+from effectful.ops.syntax import Scoped, defop, syntactic_eq
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 
@@ -84,13 +84,12 @@ def assoc_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
 
 
 def unit_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
-    match x, y:
-        case _, 0:
-            return x
-        case 0, _:
-            return y
-        case _:
-            return fwd()
+    if syntactic_eq(y, 0):
+        return x
+    elif syntactic_eq(x, 0):
+        return y
+    else:
+        return fwd()
 
 
 def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
