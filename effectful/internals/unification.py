@@ -409,14 +409,16 @@ def _freshen(tp: typing.Any):
     ] = {}
     for fv in fvs:
         if isinstance(fv, typing.TypeVar):
-            subs[fv] = typing.TypeVar(
-                name=f"{fv.__name__[:60]}_{random.randint(0, int(1e7))}",
-                bound=fv.__bound__,
-            )
+            prefix = fv.__name__[:60]
+            freshening = random.randint(0, int(1e7))
+            name = f"{prefix}_{freshening}"
+            bound = fv.__bound__
+            subs[fv] = typing.TypeVar(name, bound=bound)
         elif isinstance(fv, typing.ParamSpec):
-            subs[fv] = typing.ParamSpec(
-                name=f"{fv.__name__[:60]}_{random.randint(0, int(1e7))}",
-            )
+            prefix = fv.__name__[:60]
+            freshening = random.randint(0, int(1e7))
+            name = f"{prefix}_{freshening}"
+            subs[fv] = typing.ParamSpec(name)
         else:
             continue
     return substitute(tp, subs) if subs else tp
