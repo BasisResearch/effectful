@@ -1,21 +1,26 @@
 import effectful.handlers.jax.numpy as jnp
 import jax
-import pytest
 from effectful.handlers.jax import jax_getitem, unbind_dims
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from jax import random
 from jax.numpy import allclose
+from pytest import mark, param
 
-from tests.utils import get_fold_params
-from weighted.ops.sugar import Sum
+from tests.utils import FOLD_TRANSFORMS
+from weighted.handlers.jax import DenseTensorFold
+from weighted.handlers.optimization import FoldPropagateUnusedStreams
+from weighted.ops.fold import BaselineFold, fold
+from weighted.ops.semiring import mul
+from weighted.ops.sugar import Max, Sum
 
-parameterize_base_intp = pytest.mark.parametrize(
-    "base_intp", get_fold_params("jax_intp", "baseline_intp")
+parameterize_base_intp = mark.parametrize(
+    "base_intp",
+    [param(BaselineFold(), id="baseline"), param(DenseTensorFold(), id="jax")],
 )
 
-parameterize_transform_intp = pytest.mark.parametrize(
-    "transform_intp", get_fold_params("factorize_fold", "split_fold", "fuse_fold")
+parameterize_transform_intp = mark.parametrize(
+    "transform_intp", [param(x, id=type(x).__name__) for x in FOLD_TRANSFORMS]
 )
 
 
@@ -82,3 +87,23 @@ def test_fuse_split(base_intp, transform_intp):
 
     assert allclose(result1, expected)
     assert allclose(result2, expected)
+
+
+def test_unused_streams_optim():
+    i, j = defop(jax.Array), defop(jax.Array)
+    intp = FoldPropagateUnusedStreams()
+
+    with handler(intp):
+        expr = Sum({i: jnp.arange(3), j: jnp.arange(3)}, i())
+
+    assert expr.op is mul
+    fold_expr, const = expr.args
+    assert fold_expr.op is fold
+    assert len(fold_expr.args[1]) == 1
+    assert const == 3
+
+    with handler(intp):
+        expr = Max({i: jnp.arange(3), j: jnp.arange(3)}, i())
+
+    assert expr.op is fold
+    assert len(expr.args[1]) == 1

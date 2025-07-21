@@ -36,7 +36,6 @@ from weighted.ops.semiring import (
     LogAlg,
     MaxAlg,
     MinAlg,
-    mul,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,42 +226,21 @@ class DenseTensorFold(ObjectInterpretation):
 
         fvars = fvsof(result_1)
 
-        unused_streams = {
-            k: v for k, v in indexed_streams.items() if old_to_fresh[k] not in fvars
-        }
-
-        # TODO: there might be other semirings that matter here
-        if unused_streams and semiring is LinAlg:
-            with handler(indexed_streams):
-                factors = []
-                for v in unused_streams.values():
-                    dep_dims = fvsof(v) & set(fresh_to_old.keys())
-                    shape = bind_dims(v(), *dep_dims).shape
-                    f = functools.reduce(mul, shape[: len(dep_dims)], 1)
-                    factors.append(f)
-
-            factor = functools.reduce(mul, factors, 1)
-        else:
-            factor = 1
-
-        reduction_indices = [
-            old_to_fresh[i]
-            for i in streams
-            if old_to_fresh.get(i) in fvars and i not in indices
-        ]
+        unused_streams = tuple(
+            v() for k, v in indexed_streams.items() if old_to_fresh[k] not in fvars
+        )
+        result_1 = jax_getitem(result_1[*[None] * len(unused_streams)], unused_streams)
+        reduction_indices = [old_to_fresh[i] for i in streams if i not in indices]
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
         result_2 = bind_dims(result_1, *reduction_indices)
-
         result_3 = reductor(result_2, len(reduction_indices))
-
-        result_4 = mul(factor, result_3)
 
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
 
         if semiring in (ArgMinAlg, ArgMaxAlg):
-            result_4, min_indices = result_4
+            result_3, min_indices = result_3
 
             with handler(
                 {
@@ -272,14 +250,14 @@ class DenseTensorFold(ObjectInterpretation):
             ):
                 args = evaluate(arg)
 
-            result_5 = (
-                bind_dims(result_4, *fresh_indices),
+            result_4 = (
+                bind_dims(result_3, *fresh_indices),
                 bind_dims(args, *fresh_indices),
             )
         else:
-            result_5 = bind_dims(result_4, *fresh_indices)
+            result_4 = bind_dims(result_3, *fresh_indices)
 
-        return result_5
+        return result_4
 
 
 class GradientOptimizationFold(ObjectInterpretation):

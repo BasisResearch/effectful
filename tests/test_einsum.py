@@ -9,7 +9,9 @@ from effectful.handlers.jax import jax_getitem
 from effectful.ops.semantics import Operation, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
-from tests.utils import get_fold_params
+from tests.utils import (
+    DEFAULT_TEST_FOLD_INTP,
+)
 from weighted.handlers.jax import D
 from weighted.ops.sugar import Sum
 
@@ -45,13 +47,7 @@ EINSUM_EXAMPLES = [
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    get_fold_params(
-        "baseline_d_intp",
-        "baseline_reorder_intp",
-        "jax_intp",
-        "jax_d_intp",
-        "jax_reorder_intp",
-    ),
+    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_FOLD_INTP.items()],
 )
 
 

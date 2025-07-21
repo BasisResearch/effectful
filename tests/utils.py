@@ -1,53 +1,60 @@
-import pytest
+from functools import reduce
+
 from effectful.ops.semantics import coproduct
-from effectful.ops.syntax import ObjectInterpretation
 
 from weighted.handlers.jax import DenseTensorFold
 from weighted.handlers.optimization import (
     FoldEliminateDterm,
     FoldFactorization,
     FoldFusion,
+    FoldPropagateUnusedStreams,
     FoldReorderReduction,
     FoldSplit,
 )
 from weighted.ops.fold import BaselineFold
 
-FOLD_INTP: dict[str, ObjectInterpretation] = {
-    "baseline_intp": BaselineFold(),
-    "jax_intp": DenseTensorFold(),
-    "reorder_fold": FoldReorderReduction(),
-    "d_elim_fold": FoldEliminateDterm(),
-    "factorize_fold": FoldFactorization(),
-    "fuse_fold": FoldFusion(),
-    "split_fold": FoldSplit(),
+JAX_INTP = DenseTensorFold()
+BASELINE_INTP = BaselineFold()
+
+REORDER_TRANS = FoldReorderReduction()
+SPLIT_TRANS = FoldSplit()
+PROPAGATE_TRANS = FoldPropagateUnusedStreams()
+FACTORIZE_TRANS = FoldFactorization()
+FUSE_TRANS = FoldFusion()
+D_ELIMINATE_TRANS = FoldEliminateDterm()
+
+FOLD_TRANSFORMS = (
+    REORDER_TRANS,
+    SPLIT_TRANS,
+    PROPAGATE_TRANS,
+    FACTORIZE_TRANS,
+    FUSE_TRANS,
+    D_ELIMINATE_TRANS,
+)
+
+DEFAULT_TRANS = reduce(
+    coproduct,  # type: ignore
+    [
+        REORDER_TRANS,
+        FACTORIZE_TRANS,
+        FUSE_TRANS,
+        SPLIT_TRANS,
+        PROPAGATE_TRANS,
+        D_ELIMINATE_TRANS,
+    ],
+)
+
+
+JAX_NO_D_INTP = coproduct(JAX_INTP, D_ELIMINATE_TRANS)
+BASELINE_NO_D_INTP = coproduct(BASELINE_INTP, D_ELIMINATE_TRANS)
+
+JAX_DEFAULT_INTP = coproduct(JAX_INTP, DEFAULT_TRANS)
+BASELINE_DEFAULT_INTP = coproduct(BASELINE_INTP, DEFAULT_TRANS)
+
+DEFAULT_TEST_FOLD_INTP = {
+    "jax": JAX_INTP,
+    "jax_no_d": JAX_NO_D_INTP,
+    "baseline_no_d": BASELINE_NO_D_INTP,
+    "baseline_default": BASELINE_DEFAULT_INTP,
+    "jax_default": JAX_DEFAULT_INTP,
 }
-
-FOLD_INTP["baseline_d_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["baseline_intp"], FOLD_INTP["d_elim_fold"]
-)
-FOLD_INTP["jax_d_intp"] = coproduct(FOLD_INTP["jax_intp"], FOLD_INTP["d_elim_fold"])  # type: ignore
-
-FOLD_INTP["baseline_reorder_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["baseline_d_intp"], FOLD_INTP["reorder_fold"]
-)
-FOLD_INTP["jax_reorder_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["jax_d_intp"], FOLD_INTP["reorder_fold"]
-)
-
-FOLD_INTP["jax_factorize_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["jax_reorder_intp"], FOLD_INTP["factorize_fold"]
-)
-FOLD_INTP["baseline_factorize_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["baseline_reorder_intp"], FOLD_INTP["factorize_fold"]
-)
-
-FOLD_INTP["jax_split_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["jax_factorize_intp"], FOLD_INTP["split_fold"]
-)
-FOLD_INTP["baseline_split_intp"] = coproduct(  # type: ignore
-    FOLD_INTP["baseline_factorize_intp"], FOLD_INTP["split_fold"]
-)
-
-
-def get_fold_params(*names: str):
-    return [pytest.param(FOLD_INTP[name], id=name) for name in names]

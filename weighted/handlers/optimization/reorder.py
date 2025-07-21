@@ -1,16 +1,25 @@
+from collections.abc import Sized
 from functools import reduce
 
 import effectful.handlers.numbers  # noqa: F401
 import tree
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.numbers import mul
 from effectful.ops.semantics import fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation, Term
 from scipy.cluster.hierarchy import DisjointSet
 
 from weighted.ops.fold import fold
-from weighted.ops.semiring import LinAlg, LogAlg, MaxAlg, MinAlg
+from weighted.ops.semiring import (
+    LinAlg,
+    LogAlg,
+    MaxAlg,
+    MinAlg,
+    is_idempotent,
+    scalar_mul,
+)
 
 
 def _mul_op(semiring):
@@ -78,6 +87,46 @@ class FoldSplit(ObjectInterpretation):
 
         # Apply fold to the new body.
         return reduce(semiring.add, new_terms, semiring.zero)
+
+
+class FoldPropagateUnusedStreams(ObjectInterpretation):
+    """
+    Implements the identity
+        fold(R, S × S', body) = |S'| ⋅ fold(R, S, body)
+            where fvsof(body) ∩ S' = ∅
+            and `⋅` is the scalar product of the semiring addition
+
+    To be safe, streams that are open or used by dependent
+    streams are never eliminated.
+    """
+
+    @implements(fold)
+    def fold(self, semiring, streams, body):
+        # A stream is redundant if it doesn't appear in the body or in another stream.
+        stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
+        fvs = fvsof(body) | stream_fvs
+        redundant_streams = {k: v for k, v in streams.items() if k not in fvs}
+
+        # Only proceed if there are redundant streams
+        if len(redundant_streams) == 0:
+            return fwd()
+
+        if not is_idempotent(semiring.add):
+            # make sure we can calculate the length of each stream
+            has_size = lambda x: is_eager_array(x) or isinstance(x, Sized)
+            redundant_streams = {
+                k: v for k, v in redundant_streams.items() if has_size(v)
+            }
+            if len(redundant_streams) == 0:
+                return fwd()
+
+            constant = reduce(mul, map(len, redundant_streams.values()))
+        else:
+            constant = 1
+
+        used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
+        new_fold = fold(semiring, used_streams, body)
+        return scalar_mul(semiring.add)(new_fold, constant)
 
 
 class FoldReorderReduction(ObjectInterpretation):

@@ -12,7 +12,7 @@ from effectful.ops.types import Term
 from jax import random as random
 from jax.numpy import allclose, isclose
 
-from tests.utils import get_fold_params
+from tests.utils import DEFAULT_TEST_FOLD_INTP
 from weighted.handlers.jax import (
     D,
     DenseTensorFold,
@@ -26,15 +26,7 @@ from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    get_fold_params(
-        "jax_intp",
-        "jax_d_intp",
-        "baseline_d_intp",
-        "jax_factorize_intp",
-        "baseline_factorize_intp",
-        "jax_split_intp",
-        "baseline_split_intp",
-    ),
+    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_FOLD_INTP.items()],
 )
 parameterize_ops = pytest.mark.parametrize(
     "weighted_op,python_op",

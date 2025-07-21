@@ -3,6 +3,7 @@ from .grad import FlipOptimizationFold  # noqa: F401
 from .reorder import (  # noqa: F401
     FoldFactorization,
     FoldFusion,
+    FoldPropagateUnusedStreams,
     FoldReorderReduction,
     FoldSplit,
 )

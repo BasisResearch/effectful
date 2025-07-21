@@ -138,6 +138,39 @@ def logaddexp(a, b):
     return jnp.logaddexp(a, b)
 
 
+def is_idempotent(monoid) -> bool:
+    """
+    Check whether a monoid is idempotent.
+
+    A monoid (A, ⊕, e) is idempotent if
+        ∀x ∈ A: x ⊕ x = x
+    """
+    return monoid in (min, max, arg_min, arg_max)
+
+
+def scalar_mul(monoid):
+    """
+    Returns the scalar multiplication w.r.t. a monoid.
+
+    The scalar multiplication of a monoid (A, ⊕, e) is
+    a function (⋅): A × ℕ → A, inductively defined as
+        a⋅0 = e
+        a⋅n = a⋅(n-1) + a
+
+    Warning: scalar multiplication is not commutative,
+        the scalar is always the second argument.
+    """
+    if is_idempotent(monoid):
+        return lambda x, _: x
+    if monoid is add:
+        return mul
+    if monoid is logaddexp:
+        return add
+    if monoid is mul:
+        return pow
+    raise ValueError(f"Unknown monoid {monoid}")
+
+
 LinAlg: Semiring[float] = Semiring(add, mul, 0.0, 1.0, "LinAlg")
 
 LogAlg: Semiring[float] = Semiring(logaddexp, add, float("-inf"), 0.0, "LogAlg")
