@@ -75,9 +75,10 @@ def test_fuse_split(base_intp, transform_intp):
     expected = (x_arr.sum() + y_arr.sum()) * dim_size
 
     with handler(fold_intp), handler(arr_intp):
-        result = Sum(x_stream, Sum(y_stream, x + y))
-    assert allclose(result, expected)
+        x = jax_getitem(x_op(), (x_ix(),))
+        y = jax_getitem(y_op(), (y_ix(),))
+        result1 = Sum(x_stream, Sum(y_stream, x + y))
+        result2 = Sum(x_stream | y_stream, x + y)
 
-    with handler(fold_intp), handler(arr_intp):
-        result = Sum(x_stream | y_stream, x + y)
-    assert allclose(result, expected)
+    assert allclose(result1, expected)
+    assert allclose(result2, expected)

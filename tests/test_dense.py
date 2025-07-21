@@ -126,13 +126,13 @@ def test_linalg_folds(intp):
     )
 
     with handler(intp):
-        # f1 = Sum({x: jnp.arange(3)}, x())
-        # assert isinstance(f1, jax.Array)
-        # assert f1[()] == 3
+        f1 = Sum({x: jnp.arange(3)}, x())
+        assert isinstance(f1, jax.Array)
+        assert f1[()] == 3
 
-        # f2 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, x() + y())
-        # assert isinstance(f2, jax.Array)
-        # assert f2[()] == 18
+        f2 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, x() + y())
+        assert isinstance(f2, jax.Array)
+        assert f2[()] == 18
 
         f3 = Sum({x: jnp.arange(3), y: jnp.arange(3)}, x())
         assert isinstance(f3, jax.Array)
