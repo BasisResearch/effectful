@@ -622,3 +622,11 @@ def test_longtensor_index_variables():
 
     z = x[i()] + y[j()]
     assert isinstance(z, torch.Tensor)
+
+
+def test_tensor_iter():
+    i = defop(torch.Tensor)
+    with pytest.raises(TypeError):
+        len(i())
+    with pytest.raises(TypeError):
+        tuple(i())
