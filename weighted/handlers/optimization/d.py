@@ -1,6 +1,5 @@
 from functools import reduce
 
-import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
 from effectful.handlers.jax import bind_dims, jax_getitem
 from effectful.ops.semantics import fwd
@@ -16,7 +15,7 @@ def eliminate_d(semiring, streams, indices, body):
     fresh_indices = [defop(ix, name=f"fresh_{ix}") for ix in indices]
 
     fresh_streams = {
-        ix: jnp.expand_dims(jax_getitem(streams[ix], (fresh_ix(),)), -1)
+        ix: jax_getitem(streams[ix], (fresh_ix(), None))
         for ix, fresh_ix in zip(indices, fresh_indices, strict=False)
     }
     new_fold = fold(semiring, streams | fresh_streams, body)

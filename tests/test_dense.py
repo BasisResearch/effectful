@@ -366,7 +366,6 @@ def test_dependent_folds(intp, weighted_op, python_op):
             assert d[()] == expected
 
 
-@pytest.mark.skip()
 @parameterize_intp
 def test_dependent_folds_unused(intp):
     """Test a dependent fold with an unused stream whose length depends on another stream."""
@@ -379,6 +378,17 @@ def test_dependent_folds_unused(intp):
 
         assert isinstance(actual, jax.Array)
         assert actual[()] == expected
+
+
+@parameterize_intp
+def test_cyclic_dependent_folds(intp):
+    """Test a dependent fold where two streams depend on each other."""
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+
+    with handler(intp):
+        streams = {i: jnp.repeat(j(), 4), j: jnp.repeat(i(), 4)}
+        with pytest.raises(Exception):  # noqa: B017
+            Sum(streams, i())
 
 
 @parameterize_intp

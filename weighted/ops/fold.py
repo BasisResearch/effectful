@@ -73,21 +73,23 @@ def _body_value(body: Body, intp: Interpretation) -> Body:
         return evaluate(body, intp=intp)
 
 
+def order_streams[T](streams: Streams[T]) -> list[Operation[[], T]]:
+    """Determine an order to evaluate the streams based on their dependencies"""
+    stream_vars = set(streams.keys())
+    topo = TopologicalSorter({k: fvsof(v) & stream_vars for k, v in streams.items()})
+    loop_order = list(topo.static_order())
+    return loop_order
+
+
 class BaselineFold(ObjectInterpretation):
     @implements(fold)
     def fold[T](
         self, semiring: Semiring[T], streams: Streams[T], body: Body[T]
     ) -> Body[T]:
-        # Determine an order to evaluate the streams based on their dependencies
-        topo = TopologicalSorter(
-            {k: set(fvsof(v)) & set(streams) for k, v in streams.items()}
-        )
-        loop_order = list(topo.static_order())
-
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]
-                stream_values = streams[stream_key]
+                stream_values = evaluate(streams[stream_key])
                 for val in stream_values:
                     intp = {stream_key: deffn(val)}
                     with handler(intp):
@@ -96,6 +98,7 @@ class BaselineFold(ObjectInterpretation):
             else:
                 yield {}
 
+        loop_order = order_streams(streams)
         values = (_body_value(body, intp) for intp in generator(loop_order))
         result = functools.reduce(functools.partial(_promote_add, semiring.add), values)
         return result

@@ -28,7 +28,7 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
-from weighted.ops.fold import fold
+from weighted.ops.fold import fold, order_streams
 from weighted.ops.semiring import (
     ArgMaxAlg,
     ArgMinAlg,
@@ -193,6 +193,9 @@ class DenseTensorFold(ObjectInterpretation):
         ):
             return fwd()
 
+        # raises an exception if there are cyclic dependencies
+        order_streams(streams)
+
         body_indices = _parse_body(body)
 
         if len(body_indices) > 1:
@@ -218,21 +221,19 @@ class DenseTensorFold(ObjectInterpretation):
             k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
         }
 
+        # add indices for streams that don't appear in body
+        fvars = set(streams.keys()) - fvsof(value)
+        unused_streams = tuple(v() for k, v in indexed_streams.items() if k in fvars)
+        value = jax_getitem(value[*[None] * len(unused_streams)], unused_streams)
+
         with handler(indexed_streams):
             result_1 = evaluate(value)
 
         if not is_eager_array(result_1):
             return fwd()
 
-        fvars = fvsof(result_1)
-
-        unused_streams = tuple(
-            v() for k, v in indexed_streams.items() if old_to_fresh[k] not in fvars
-        )
-        result_1 = jax_getitem(result_1[*[None] * len(unused_streams)], unused_streams)
-        reduction_indices = [old_to_fresh[i] for i in streams if i not in indices]
-
         # bind and reduce indices from the streams that do not appear in the result indexing expression
+        reduction_indices = [old_to_fresh[i] for i in streams if i not in indices]
         result_2 = bind_dims(result_1, *reduction_indices)
         result_3 = reductor(result_2, len(reduction_indices))
 
