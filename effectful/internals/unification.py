@@ -332,20 +332,11 @@ def _unify_signature(
 
     subtyp_arguments = dict(subtyp.arguments)
     for name, param in typ.parameters.items():
-        if name not in subtyp_arguments:
-            if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                subtyp_arguments[name] = ()
-            elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                subtyp_arguments[name] = {}
-            elif param.default is not inspect.Parameter.empty:
-                subtyp_arguments[name] = nested_type(param.default)
-            else:
-                subtyp_arguments[name] = inspect.Parameter.empty
+        if param.annotation is inspect.Parameter.empty or name not in subtyp_arguments:
+            continue
 
         ptyp, psubtyp = param.annotation, subtyp_arguments[name]
-        if ptyp is inspect.Parameter.empty or psubtyp is inspect.Parameter.empty:
-            continue
-        elif param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
+        if param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
             psubtyp, collections.abc.Sequence
         ):
             for psubtyp_item in _freshen(psubtyp):
