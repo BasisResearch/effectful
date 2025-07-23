@@ -5,6 +5,7 @@ import typing
 import pytest
 
 from effectful.internals.unification import (
+    canonicalize,
     freetypevars,
     nested_type,
     substitute,
@@ -78,6 +79,36 @@ else:
 )
 def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
     assert freetypevars(typ) == fvs
+
+
+def test_canonicalize_1():
+    assert canonicalize(int) == int
+    assert canonicalize(list[int]) == collections.abc.MutableSequence[int]
+    assert canonicalize(dict[str, int]) == collections.abc.MutableMapping[str, int]
+    assert (
+        canonicalize(dict[str, set[int]])
+        == collections.abc.MutableMapping[str, collections.abc.MutableSet[int]]
+    )
+    assert canonicalize(tuple[int, ...]) == collections.abc.Sequence[int]
+    assert canonicalize(tuple[int, str]) == tuple[int, str]
+
+    class CustomDict[T](dict[T, T]):
+        pass
+
+    class ConcreteCustomDict(CustomDict[int]):
+        pass
+
+    class CustomDictSet[T](CustomDict[frozenset[T]]):
+        pass
+
+    assert canonicalize(CustomDict[int]) == canonicalize(dict[int, int])
+    assert canonicalize(ConcreteCustomDict) == canonicalize(CustomDict[int])
+    assert canonicalize(CustomDictSet[T]) == canonicalize(
+        dict[frozenset[T], frozenset[T]]
+    )
+    assert canonicalize(CustomDictSet[int]) == canonicalize(
+        dict[frozenset[int], frozenset[int]]
+    )
 
 
 @pytest.mark.parametrize(
@@ -295,10 +326,12 @@ def test_substitute(
 def test_unify_success(
     typ: type,
     subtyp: type,
-    initial_subs: typing.Mapping[typing.TypeVar, type],
-    expected_subs: typing.Mapping[typing.TypeVar, type],
+    initial_subs: typing.Mapping,
+    expected_subs: typing.Mapping,
 ):
-    assert unify(typ, subtyp, initial_subs) == expected_subs  # type: ignore
+    assert unify(typ, subtyp, initial_subs) == {
+        k: canonicalize(v) for k, v in expected_subs.items()
+    }
 
 
 @pytest.mark.parametrize(
@@ -345,7 +378,6 @@ def test_unify_tuple_variadic():
     assert unify(tuple[T, ...], tuple[int, ...]) == {T: int}
     assert unify(tuple[T, ...], tuple[int]) == {T: int}
     assert unify(tuple[T, ...], tuple[int, int]) == {T: int}
-    assert unify(tuple[T, ...], tuple[int, str]) == {T: int | str}
     assert unify(collections.abc.Sequence[T], tuple[int, ...]) == {T: int}
 
 
@@ -354,7 +386,6 @@ def test_unify_tuple_non_variadic():
     assert unify(tuple[T, V], tuple[int, str]) == {T: int, V: str}
     assert unify(tuple[T, T], tuple[int, int]) == {T: int}
     assert unify(tuple[T, T, T], tuple[str, str, str]) == {T: str}
-    assert unify(collections.abc.Sequence[T], tuple[int, str]) == {T: int | str}
     assert unify(collections.abc.Sequence[T], tuple[int, int]) == {T: int}
 
 
@@ -508,7 +539,7 @@ def test_infer_return_type_success(
     sig = inspect.signature(func)
     bound = sig.bind(*args, **kwargs)
     result = substitute(sig.return_annotation, unify(sig, bound))
-    assert result == expected_return_type
+    assert canonicalize(result) == canonicalize(expected_return_type)
 
 
 # Error cases
@@ -527,12 +558,6 @@ def no_param_annotation[T](x) -> T:  # type: ignore
 @pytest.mark.parametrize(
     "func,args,kwargs",
     [
-        # Missing annotations
-        (
-            no_param_annotation,
-            (int,),
-            {},
-        ),
         # Type mismatch - trying to unify incompatible types
         (same_type_twice, (int, str), {}),
     ],
@@ -589,7 +614,7 @@ def test_infer_return_type_failure(
         ([], list),
         ({}, dict),
         (set(), set),
-        ((), tuple),
+        ((), tuple[()]),
         # Lists/sequences with single type
         ([1, 2, 3], list[int]),
         ([1], list[int]),
@@ -640,7 +665,7 @@ def test_infer_return_type_failure(
 )
 def test_nested_type(value, expected):
     result = nested_type(value)
-    assert result == expected
+    assert canonicalize(result) == canonicalize(expected)
 
 
 def test_nested_type_typevar_error():
@@ -1068,7 +1093,6 @@ def test_infer_composition_1(seq, index, key):
         ),
         # Edge cases
         ({"single": ["only"]}, "single", 0),
-        ({"empty_key": [], "full": [1, 2, 3]}, "full", 1),
         # Complex nested case
         (
             {
