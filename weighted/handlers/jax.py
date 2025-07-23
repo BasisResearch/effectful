@@ -102,7 +102,7 @@ def rsample(key, d: Distribution, sample_shape: tuple[int]) -> jax.Array:
 
 @defop
 def log_prob(d: Distribution, value: jax.Array) -> jax.Array:  # todo
-    if not isinstance(d, Distribution):
+    if not isinstance(d, Distribution) or not is_eager_array(value):
         raise NotImplementedError
     return _register_jax_op(d.log_prob)(value)
 

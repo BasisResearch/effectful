@@ -1,6 +1,8 @@
 import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numbers  # noqa: F401
 import jax
 from effectful.handlers.jax import jax_getitem, unbind_dims
+from effectful.handlers.numpyro import dist
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from jax import random
@@ -8,8 +10,9 @@ from jax.numpy import allclose
 from pytest import mark, param
 
 from tests.utils import FOLD_TRANSFORMS
-from weighted.handlers.jax import DenseTensorFold
+from weighted.handlers.jax import DenseTensorFold, log_prob, reals
 from weighted.handlers.optimization import FoldPropagateUnusedStreams
+from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
 from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.semiring import mul
 from weighted.ops.sugar import Max, Sum
@@ -107,3 +110,46 @@ def test_unused_streams_optim():
 
     assert expr.op is fold
     assert len(expr.args[1]) == 1
+
+
+@parameterize_base_intp
+def test_quadrature(base_intp):
+    x = defop(jax.Array, name="x")
+    polynomial = 2 * x() + x() ** 2
+    mu, sigma = 2.5, 5.0
+    d = dist.Normal(mu, sigma)
+
+    body = jnp.exp(log_prob(d, x())) * polynomial
+    expr = Sum({x: reals()}, body)
+    # 3 points are sufficient as polynomial is quadratic
+    with handler(GaussHermiteQuadrature(3)):
+        expr = evaluate(expr)
+
+    with handler(base_intp):
+        expr = evaluate(expr)
+    expected = 2 * mu + mu**2 + sigma**2
+    assert allclose(expr, expected)
+
+
+@parameterize_base_intp
+def test_bivariate_quadrature(base_intp):
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+    mu_x, sigma_x = 5.0, 3.0
+    mu_y, sigma_y = 1.0, 2.0
+    d_x = dist.Normal(mu_x, sigma_x)
+    d_y = dist.Normal(mu_y, sigma_y)
+    prob_x = jnp.exp(log_prob(d_x, x()))
+    prob_y = jnp.exp(log_prob(d_y, y()))
+
+    polynomial = 2 * x() + y() ** 2
+    body = prob_x * prob_y * polynomial
+    expr = Sum({x: reals(), y: reals()}, body)
+    # 3 points are sufficient as polynomial is quadratic
+    with handler(GaussHermiteQuadrature(3)):
+        expr = evaluate(expr)
+
+    with handler(base_intp):
+        expr = evaluate(expr)
+    expected = 2 * mu_x + mu_y**2 + sigma_y**2
+    assert allclose(expr, expected)

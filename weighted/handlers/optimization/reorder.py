@@ -3,43 +3,19 @@ from functools import reduce
 
 import effectful.handlers.numbers  # noqa: F401
 import tree
-from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.numbers import mul
 from effectful.ops.semantics import fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Term
 from scipy.cluster.hierarchy import DisjointSet
 
+from weighted.handlers.optimization.utils import mul_op, parse_terms
 from weighted.ops.fold import fold
 from weighted.ops.semiring import (
-    LinAlg,
-    LogAlg,
-    MaxAlg,
-    MinAlg,
     is_idempotent,
     scalar_mul,
 )
-
-
-def _mul_op(semiring):
-    if semiring is LinAlg:
-        return jnp.multiply
-    elif semiring is MinAlg:
-        return jnp.min
-    elif semiring is MaxAlg:
-        return jnp.max
-    elif semiring is LogAlg:
-        return jnp.add
-    else:
-        return None
-
-
-def _parse_terms(value: Term, op: Operation) -> list[Term]:
-    if isinstance(value, Term) and value.op is op:
-        return sum((_parse_terms(arg, op) for arg in value.args), [])
-    else:
-        return [value]
 
 
 class FoldFusion(ObjectInterpretation):
@@ -82,7 +58,7 @@ class FoldSplit(ObjectInterpretation):
             return fwd()
 
         # Create separate D terms for each addend.
-        add_terms = _parse_terms(body, semiring.add)
+        add_terms = parse_terms(body, semiring.add)
         new_terms = (fold(semiring, streams, t) for t in add_terms)
 
         # Apply fold to the new body.
@@ -138,11 +114,11 @@ class FoldReorderReduction(ObjectInterpretation):
 
     @implements(fold)
     def fold(self, semiring, streams, body):
-        mul_op = _mul_op(semiring)
-        if not (isinstance(body, Term) and body.op is mul_op):
+        semiring_mul = mul_op(semiring)
+        if not (isinstance(body, Term) and body.op is semiring_mul):
             return fwd()
 
-        terms = _parse_terms(body, mul_op)
+        terms = parse_terms(body, semiring_mul)
 
         # only proceed if the body multiplies multiple tensors
         if len(terms) < 2 or not all(is_eager_array(t) for t in terms):
@@ -246,7 +222,7 @@ class FoldFactorization(ObjectInterpretation):
         if len(set(streams.keys()) - fvsof(body)) > 0:
             return fwd()
 
-        terms = _parse_terms(body, _mul_op(semiring))
+        terms = parse_terms(body, mul_op(semiring))
         if len(terms) < 2:
             return fwd()
 
