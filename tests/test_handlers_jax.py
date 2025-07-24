@@ -1,4 +1,5 @@
 import jax
+import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
@@ -292,6 +293,9 @@ def test_jax_at_updates():
 
 def test_jax_len():
     i = defop(jax.Array, name="i")
+    with pytest.raises(TypeError):
+        len(i())
+
     t = jnp.ones((2, 3, 4))
     t_i = jax_getitem(t, [i()])
     assert len(t_i) == 3
@@ -347,3 +351,9 @@ def test_jax_dimension_addition():
     y2 = jax_getitem(y, (i2(), slice(None), None))
     assert y2.shape == (4, 1)
     assert fvsof(y2) >= {i, i2}
+
+
+def test_jax_iter():
+    i = defop(jax.Array, name="i")
+    with pytest.raises(TypeError):
+        tuple(i())
