@@ -44,7 +44,7 @@ def add_case(raw_dist, raw_params, batch_shape, xfail=None):
 for batch_shape in [(5,), (2, 3, 4), ()]:
     # BernoulliProbs
     add_case(
-        "dist.BernoulliProbs(probs=case.probs)",
+        "dist.BernoulliProbs(case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
@@ -718,9 +718,9 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
     sample = expanded.sample(key, sample_shape_full)
 
     # Index into the sample
-    indexed_sample = sample[
-        tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
-    ]
+    indexed_sample = jax_getitem(
+        sample, tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
+    )
 
     # Check shapes
     expected_shape = (
@@ -841,9 +841,7 @@ def test_distribution_terms():
     y = defop(jax.Array, name="y")
 
     d1 = dist.Normal(x(), y())
-    assert isinstance(d1, Term) and not isinstance(
-        d1, numpyro.distributions.Distribution
-    )
+    assert isinstance(d1, Term) and isinstance(d1, numpyro.distributions.Distribution)
 
     a = jax_getitem(jnp.array([0.0]), [x()])
     b = jax_getitem(jnp.array([1.0]), [y()])
@@ -851,9 +849,7 @@ def test_distribution_terms():
     assert isinstance(d2, Term) and isinstance(d2, numpyro.distributions.Distribution)
 
     d3 = dist.Normal(jnp.array(0.0), jnp.array(1.0))
-    assert not isinstance(d3, Term) and isinstance(
-        d3, numpyro.distributions.Distribution
-    )
+    assert isinstance(d3, Term) and isinstance(d3, numpyro.distributions.Distribution)
 
 
 @pytest.mark.parametrize(
