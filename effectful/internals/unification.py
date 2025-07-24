@@ -63,43 +63,29 @@ import collections.abc
 import functools
 import inspect
 import numbers
-import random
+import operator
 import types
 import typing
 
 import effectful.ops.types
 
 if typing.TYPE_CHECKING:
+    TypeConstant = type | abc.ABCMeta | types.EllipsisType | None
     GenericAlias = types.GenericAlias
     UnionType = types.UnionType
 else:
+    TypeConstant = (
+        type | abc.ABCMeta | types.EllipsisType | type(None) | type(typing.Any)
+    )
     GenericAlias = types.GenericAlias | typing._GenericAlias
     UnionType = types.UnionType | typing._UnionGenericAlias
 
-
-TypeVariable = (
-    typing.TypeVar
-    | typing.TypeVarTuple
-    | typing.ParamSpec
-    | typing.ParamSpecArgs
-    | typing.ParamSpecKwargs
-)
-
-TypeConstant = type | abc.ABCMeta | types.EllipsisType | None
-
+TypeVariable = typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec
 TypeApplication = GenericAlias | UnionType
-
 TypeExpression = TypeVariable | TypeConstant | TypeApplication
-
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
-
-
-class TypeInferenceError(TypeError):
-    """Custom error for type inference issues."""
-
-    pass
 
 
 @typing.overload
@@ -197,9 +183,7 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     elif typ in (typing.Any, ...) or subtyp in (typing.Any, ...):
         return subs
     else:
-        raise TypeInferenceError(
-            f"Cannot unify type {typ} with {subtyp} given {subs}. "
-        )
+        raise TypeError(f"Cannot unify type {typ} with {subtyp} given {subs}. ")
 
 
 @typing.overload
@@ -239,9 +223,7 @@ def _unify_sequence(typ, subtyp, subs: Substitutions) -> Substitutions:
     if isinstance(typ, types.EllipsisType) or isinstance(subtyp, types.EllipsisType):
         return subs
     if len(typ) != len(subtyp):
-        raise TypeInferenceError(
-            f"Cannot unify sequence {typ} with {subtyp} given {subs}. "
-        )
+        raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
     for p_item, c_item in zip(typ, subtyp):
         subs = unify(p_item, c_item, subs)
     return subs
@@ -275,7 +257,7 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
                 continue
         if any_succeeded:
             return subs
-    raise TypeInferenceError(f"Cannot unify {typ} with {subtyp} given {subs}")
+    raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
 @typing.overload
@@ -331,23 +313,20 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
         and issubclass(subtyp, typing.get_origin(typ))
     ):
         return subs  # implicit expansion to subtyp[Any]
-    raise TypeInferenceError(
-        f"Cannot unify generic type {typ} with {subtyp} given {subs}."
-    )
+    raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
 
 
 def _unify_signature(
     typ: inspect.Signature, subtyp: inspect.BoundArguments, subs: Substitutions
 ) -> Substitutions:
     if typ != subtyp.signature:
-        raise TypeInferenceError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
+        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
 
-    subtyp_arguments = dict(subtyp.arguments)
     for name, param in typ.parameters.items():
-        if param.annotation is inspect.Parameter.empty or name not in subtyp_arguments:
+        if param.annotation is inspect.Parameter.empty or name not in subtyp.arguments:
             continue
 
-        ptyp, psubtyp = param.annotation, subtyp_arguments[name]
+        ptyp, psubtyp = param.annotation, subtyp.arguments[name]
         if param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
             psubtyp, collections.abc.Sequence
         ):
@@ -364,9 +343,7 @@ def _unify_signature(
         } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
             subs = unify(ptyp, _freshen(psubtyp), subs)
         else:
-            raise TypeInferenceError(
-                f"Cannot unify {param} with {psubtyp} given {subs}"
-            )
+            raise TypeError(f"Cannot unify {param} with {psubtyp} given {subs}")
     return subs
 
 
@@ -393,23 +370,14 @@ def _freshen(tp: typing.Any):
         >>> _freshen(T) == T
         False
     """
-    fvs = freetypevars(tp)
-    subs: dict[TypeVariable, TypeExpressions] = {}
-    for fv in fvs:
-        if isinstance(fv, typing.TypeVar):
-            prefix = fv.__name__[:60]
-            freshening = random.randint(0, int(1e7))
-            name = f"{prefix}_{freshening}"
-            bound = fv.__bound__
-            subs[fv] = typing.TypeVar(name, bound=bound)
-        elif isinstance(fv, typing.ParamSpec):
-            prefix = fv.__name__[:60]
-            freshening = random.randint(0, int(1e7))
-            name = f"{prefix}_{freshening}"
-            subs[fv] = typing.ParamSpec(name)
-        else:
-            continue
-    return substitute(tp, subs) if subs else tp
+    subs: Substitutions = {
+        fv: typing.TypeVar(fv.__name__, bound=fv.__bound__)
+        if isinstance(fv, typing.TypeVar)
+        else typing.ParamSpec(fv.__name__)
+        for fv in freetypevars(tp)
+        if isinstance(fv, typing.TypeVar | typing.ParamSpec)
+    }
+    return substitute(tp, subs)
 
 
 @functools.singledispatch
@@ -417,7 +385,7 @@ def canonicalize(typ) -> TypeExpressions:
     """
     Normalize generic types
     """
-    raise TypeInferenceError(f"Cannot canonicalize type {typ}.")
+    raise TypeError(f"Cannot canonicalize type {typ}.")
 
 
 @canonicalize.register
@@ -426,8 +394,6 @@ def _(typ: type | abc.ABCMeta):
         return effectful.ops.types.Term
     elif issubclass(typ, effectful.ops.types.Operation):
         return effectful.ops.types.Operation
-    elif typ is effectful.ops.types.Interpretation:
-        return effectful.ops.types.Interpretation
     elif typ is dict:
         return collections.abc.MutableMapping
     elif typ is list:
@@ -436,12 +402,12 @@ def _(typ: type | abc.ABCMeta):
         return collections.abc.MutableSet
     elif typ is frozenset:
         return collections.abc.Set
+    elif typ is range:
+        return collections.abc.Sequence[int]
     elif typ is types.GeneratorType:
         return collections.abc.Generator
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:
         return collections.abc.Callable[..., typing.Any]
-    elif typ is typing.Any:
-        return typing.Any
     elif isinstance(typ, abc.ABCMeta) and (
         typ in collections.abc.__dict__.values() or typ in numbers.__dict__.values()
     ):
@@ -451,9 +417,13 @@ def _(typ: type | abc.ABCMeta):
     ):
         return typ
     elif types.get_original_bases(typ):
-        return canonicalize(types.get_original_bases(typ)[0])
+        for base in types.get_original_bases(typ):
+            cbase = canonicalize(base)
+            if cbase != object:
+                return cbase
+        return typ
     else:
-        raise TypeInferenceError(f"Cannot canonicalize type {typ}.")
+        raise TypeError(f"Cannot canonicalize type {typ}.")
 
 
 @canonicalize.register
@@ -464,11 +434,6 @@ def _(typ: types.EllipsisType | None):
 @canonicalize.register
 def _(typ: typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec):
     return typ
-
-
-@canonicalize.register
-def _(typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):
-    return typing.Any
 
 
 @canonicalize.register
@@ -484,6 +449,11 @@ def _(typ: GenericAlias):
     origin, args = typing.get_origin(typ), typing.get_args(typ)
     if origin is tuple and len(args) == 2 and args[-1] is Ellipsis:  # Variadic tuple
         return collections.abc.Sequence[canonicalize(args[0])]  # type: ignore
+    elif isinstance(origin, typing._SpecialForm):
+        if len(args) == 1:
+            return canonicalize(args[0])
+        else:
+            raise TypeError(f"Cannot canonicalize type {typ}")
     else:
         return canonicalize(origin)[tuple(canonicalize(a) for a in args)]  # type: ignore
 
@@ -494,12 +464,68 @@ def _(typ: list | tuple):
 
 
 @canonicalize.register
+def _(typ: effectful.ops.types._InterpretationMeta):
+    return typ
+
+
+@canonicalize.register
 def _(typ: typing._AnnotatedAlias):  # type: ignore
     return canonicalize(typing.get_args(typ)[0])
 
 
+@canonicalize.register
+def _(typ: typing._SpecialGenericAlias):  # type: ignore
+    assert not typing.get_args(typ), "Should not have type arguments"
+    return canonicalize(typing.get_origin(typ))
+
+
+@canonicalize.register
+def _(typ: typing._LiteralGenericAlias):  # type: ignore
+    return canonicalize(nested_type(typing.get_args(typ)[0]))
+
+
+@canonicalize.register
+def _(typ: typing.NewType):
+    return canonicalize(typ.__supertype__)
+
+
+@canonicalize.register
+def _(typ: typing.TypeAliasType):
+    return canonicalize(typ.__value__)
+
+
+@canonicalize.register
+def _(typ: typing._ConcatenateGenericAlias):  # type: ignore
+    return Ellipsis
+
+
+@canonicalize.register
+def _(typ: typing._AnyMeta):  # type: ignore
+    return typing.Any
+
+
+@canonicalize.register
+def _(typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):
+    return typing.Any
+
+
+@canonicalize.register
+def _(typ: typing._SpecialForm):
+    return typing.Any
+
+
+@canonicalize.register
+def _(typ: typing._ProtocolMeta):
+    return typing.Any
+
+
+@canonicalize.register
+def _(typ: typing._UnpackGenericAlias):  # type: ignore
+    raise TypeError(f"Cannot canonicalize type {typ}")
+
+
 @functools.singledispatch
-def nested_type(value) -> TypeConstant | TypeApplication:
+def nested_type(value) -> TypeExpression:
     """
     Infer the type of a value, handling nested collections with generic parameters.
 
@@ -562,9 +588,9 @@ def nested_type(value) -> TypeConstant | TypeApplication:
 
         # Sequences become Sequence[element_type]
         >>> nested_type([1, 2, 3])
-        list[int]
+        collections.abc.MutableSequence[int]
         >>> nested_type(["a", "b", "c"])
-        list[str]
+        collections.abc.MutableSequence[str]
 
         # Tuples preserve exact structure
         >>> nested_type((1, "hello", 3.14))
@@ -576,21 +602,15 @@ def nested_type(value) -> TypeConstant | TypeApplication:
 
         # Sets become Set[element_type]
         >>> nested_type({1, 2, 3})
-        set[int]
+        collections.abc.MutableSet[int]
         >>> nested_type({"a", "b"})
-        set[str]
+        collections.abc.MutableSet[str]
 
         # Mappings become Mapping[key_type, value_type]
         >>> nested_type({"key": "value"})
-        dict[str, str]
+        collections.abc.MutableMapping[str, str]
         >>> nested_type({1: "one", 2: "two"})
-        dict[int, str]
-
-        # Nested collections work recursively
-        >>> nested_type([{1: "one"}, {2: "two"}])
-        list[dict[int, str]]
-        >>> nested_type({"key": [1, 2, 3]})
-        dict[str, list[int]]
+        collections.abc.MutableMapping[int, str]
 
         # Strings and bytes are NOT treated as sequences
         >>> nested_type("hello")
@@ -598,23 +618,18 @@ def nested_type(value) -> TypeConstant | TypeApplication:
         >>> nested_type(b"bytes")
         <class 'bytes'>
 
-        # Functions/callables return their type
+        # Annotated functions return types derived from their annotations
+        >>> def annotated_func(x: int) -> str:
+        ...     return str(x)
+        >>> nested_type(annotated_func)
+        collections.abc.Callable[[int], str]
+
+        # Unannotated functions/callables return their type
         >>> def f(): pass
         >>> nested_type(f)
         <class 'function'>
         >>> nested_type(lambda x: x)
         <class 'function'>
-
-        # TypeVars raise an error
-        >>> T = typing.TypeVar('T')
-        >>> nested_type(T)  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        TypeError: TypeVars should not appear in values, but got ~T
-
-        # None has its own type
-        >>> nested_type(None)
-        <class 'NoneType'>
 
         # Generic aliases and union types pass through
         >>> nested_type(list[int])
@@ -622,51 +637,31 @@ def nested_type(value) -> TypeConstant | TypeApplication:
         >>> nested_type(int | str)
         int | str
     """
-    if not isinstance(value, type) and typing.get_origin(value) is None:
-        return type(value)
-    else:
-        return value
+    return type(value)
 
 
 @nested_type.register
-def _(value: effectful.ops.types.Operation):
-    sig: inspect.Signature = value.__signature__
-    if sig.return_annotation is inspect.Signature.empty:
-        return effectful.ops.types.Operation[..., typing.Any]
-    elif any(
-        p.annotation is inspect.Parameter.empty
-        or p.kind is not inspect.Parameter.POSITIONAL_ONLY
-        for p in sig.parameters.values()
-    ):
-        return effectful.ops.types.Operation[..., sig.return_annotation]  # type: ignore
-    else:
-        return effectful.ops.types.Operation[  # type: ignore
-            [p.annotation for p in sig.parameters.values()], sig.return_annotation
-        ]
+def _(value: TypeExpression):
+    return value
 
 
 @nested_type.register
 def _(value: effectful.ops.types.Term):
-    raise TypeInferenceError(f"Terms should not appear in nested_type, but got {value}")
+    raise TypeError(f"Terms should not appear in nested_type, but got {value}")
 
 
 @nested_type.register
-def _(value: TypeVariable):
-    raise TypeInferenceError(f"TypeVars should not appear in values, but got {value}")
-
-
-@nested_type.register
-def _(value: TypeConstant | TypeApplication):
-    return value
-
-
-@nested_type.register(type(None))
-def _(value: None):
-    return type(None)
+def _(value: effectful.ops.types.Operation):
+    typ = nested_type.dispatch(collections.abc.Callable)(value)
+    (arg_types, return_type) = typing.get_args(typ)
+    return effectful.ops.types.Operation[arg_types, return_type]  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Callable):
+    if typing.get_overloads(value):
+        return type(value)
+
     try:
         sig = inspect.signature(value)
     except ValueError:
@@ -676,7 +671,12 @@ def _(value: collections.abc.Callable):
         return type(value)
     elif any(
         p.annotation is inspect.Parameter.empty
-        or p.kind is not inspect.Parameter.POSITIONAL_ONLY
+        or p.kind
+        in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
         for p in sig.parameters.values()
     ):
         return collections.abc.Callable[..., sig.return_annotation]
@@ -693,57 +693,48 @@ def _(value: collections.abc.Mapping):
 
     if len(value) == 0:
         return type(value)
+    elif len(value) == 1:
+        ktyp = nested_type(next(iter(value.keys())))
+        vtyp = nested_type(next(iter(value.values())))
+        return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
     else:
-        k, v = next(iter(value.items()))
-        return collections.abc.Mapping[nested_type(k), nested_type(v)]  # type: ignore
+        ktyp = functools.reduce(operator.or_, map(nested_type, value.keys()))
+        vtyp = functools.reduce(operator.or_, map(nested_type, value.values()))
+        if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
+            return type(value)
+        else:
+            return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
 
 
 @nested_type.register
-def _(value: collections.abc.MutableMapping):
-    if value and isinstance(value, effectful.ops.types.Interpretation):
-        return effectful.ops.types.Interpretation
-
-    args = typing.get_args(nested_type.dispatch(collections.abc.Mapping)(value))
-    return type(value) if not args else collections.abc.MutableMapping[args]  # type: ignore
-
-
-@nested_type.register
-def _(value: collections.abc.Set):
+def _(value: collections.abc.Collection):
     if len(value) == 0:
         return type(value)
-    return collections.abc.Set[nested_type(next(iter(value)))]  # type: ignore
-
-
-@nested_type.register
-def _(value: collections.abc.MutableSet):
-    args = typing.get_args(nested_type.dispatch(collections.abc.Set)(value))
-    return type(value) if not args else collections.abc.MutableSet[args]  # type: ignore
-
-
-@nested_type.register
-def _(value: collections.abc.Sequence):
-    if len(value) == 0:
-        return type(value)
-    return collections.abc.Sequence[nested_type(next(iter(value)))]  # type: ignore
-
-
-@nested_type.register
-def _(value: collections.abc.MutableSequence):
-    args = typing.get_args(nested_type.dispatch(collections.abc.Sequence)(value))
-    return type(value) if not args else collections.abc.MutableSequence[args]  # type: ignore
+    elif len(value) == 1:
+        vtyp = nested_type(next(iter(value)))
+        return canonicalize(type(value))[vtyp]  # type: ignore
+    else:
+        valtyp = functools.reduce(operator.or_, map(nested_type, value))
+        if isinstance(valtyp, UnionType):
+            return type(value)
+        else:
+            return canonicalize(type(value))[valtyp]  # type: ignore
 
 
 @nested_type.register
 def _(value: tuple):
-    return tuple[tuple(nested_type(item) for item in value)]  # type: ignore
+    return (
+        nested_type.dispatch(collections.abc.Sequence)(value)
+        if type(value) != tuple or len(value) == 0
+        else tuple[tuple(nested_type(item) for item in value)]  # type: ignore
+    )
 
 
 @nested_type.register
-def _(value: str | bytes | range | numbers.Number):
+def _(value: str | bytes | range | None):
     return type(value)
 
 
-@functools.singledispatch
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
@@ -794,45 +785,9 @@ def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
         >>> freetypevars(dict[str, T])
         {~T}
     """
-    # Default case for plain types
-    return freetypevars(typing.get_args(typ))
+    return set(typing._collect_type_parameters((typ,)))  # type: ignore
 
 
-@freetypevars.register
-def _(typ: TypeVariable):
-    if isinstance(typ, typing.ParamSpecArgs | typing.ParamSpecKwargs):
-        return {typing.get_origin(typ)}
-    else:
-        return {typ}
-
-
-@freetypevars.register
-def _(typ: TypeApplication):
-    return freetypevars(typing.get_args(typ))
-
-
-@freetypevars.register
-def _(typ: typing._AnnotatedAlias):  # type: ignore
-    return freetypevars(typing.get_args(typ)[0])
-
-
-@freetypevars.register
-def _(typ: collections.abc.Sequence):
-    return set().union(*(freetypevars(item) for item in typ))
-
-
-@freetypevars.register
-def _(typ: str | bytes):
-    return set()
-
-
-@freetypevars.register
-def _(typ: dict):
-    assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
-    return freetypevars(typ.values())
-
-
-@functools.singledispatch
 def substitute(typ, subs: Substitutions) -> TypeExpressions:
     """
     Substitute type variables in a type expression with concrete types.
@@ -879,45 +834,12 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         <class 'int'>
     """
     # Default case for plain types
-    return typ
-
-
-@substitute.register
-def _(typ: typing.TypeVar | typing.ParamSpec, subs: Substitutions):
-    return substitute(subs[typ], subs) if typ in subs else typ
-
-
-@substitute.register
-def _(typ: typing.ParamSpecArgs | typing.ParamSpecKwargs, subs: Substitutions):
-    res = substitute(typing.get_origin(typ), subs)
-    return res.args if isinstance(res, typing.ParamSpec) else res
-
-
-@substitute.register
-def _(typ: GenericAlias, subs: Substitutions):
-    if typing.get_args(typ):
-        return substitute(typing.get_origin(typ), subs)[
-            substitute(typing.get_args(typ), subs)
-        ]  # type: ignore
+    if isinstance(typ, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
+        return substitute(subs[typ], subs) if typ in subs else typ
+    elif isinstance(typ, list | tuple):
+        return type(typ)(substitute(item, subs) for item in typ)
+    elif freetypevars(typ) & subs.keys():
+        fvs = typing._collect_type_parameters((typ,))  # type: ignore
+        return substitute(typ[tuple(subs.get(fv, fv) for fv in fvs)], subs)
     else:
         return typ
-
-
-@substitute.register
-def _(typ: UnionType, subs: Substitutions):
-    ts: tuple = substitute(typing.get_args(typ), subs)  # type: ignore
-    tp, ts = ts[0], ts[1:]
-    for arg in ts:
-        tp = tp | arg
-    return tp
-
-
-@substitute.register
-def _(typ: list | tuple, subs: Substitutions):
-    return type(typ)(substitute(item, subs) for item in typ)
-
-
-@substitute.register
-def _(typ: dict, subs: Substitutions):
-    assert all(isinstance(k, str) for k in typ.keys()), "Mapping keys must be strings"
-    return {k: substitute(v, subs) for k, v in typ.items()}

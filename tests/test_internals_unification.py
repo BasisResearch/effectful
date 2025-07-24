@@ -614,7 +614,7 @@ def test_infer_return_type_failure(
         ([], list),
         ({}, dict),
         (set(), set),
-        ((), tuple[()]),
+        ((), tuple),
         # Lists/sequences with single type
         ([1, 2, 3], list[int]),
         ([1], list[int]),
@@ -666,18 +666,6 @@ def test_infer_return_type_failure(
 def test_nested_type(value, expected):
     result = nested_type(value)
     assert canonicalize(result) == canonicalize(expected)
-
-
-def test_nested_type_typevar_error():
-    """Test that TypeVars raise TypeError in nested_type"""
-    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
-        nested_type(T)
-
-    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
-        nested_type(K)
-
-    with pytest.raises(TypeError, match="TypeVars should not appear in values"):
-        nested_type(V)
 
 
 def test_nested_type_term_error():
