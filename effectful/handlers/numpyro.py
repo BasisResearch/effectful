@@ -84,20 +84,15 @@ def _unbind_distribution(
         else:
             return a
 
-    # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(typ, dist.Distribution):
-            return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+    d = defterm(d)
 
-    with runner({apply: _apply}):
-        d = defterm(d)
-
-    if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
+    # FIXME: This assumes that the only operations that return distributions are
+    # distribution constructors.
+    if not (isinstance(d, Term) and issubclass(typeof(d), dist.Distribution)):
         raise NotImplementedError
 
-    # TODO: this is a hack to avoid mangling arguments that are array-valued, but not batched
+    # TODO: this is a hack to avoid mangling arguments that are array-valued,
+    # but not batched
     aux_kwargs = set(["total_count"])
 
     new_d = d.op(
@@ -126,23 +121,18 @@ def _bind_dims_distribution(
             )
             return bind_dims(a_indexed, *indices)
         elif issubclass(typ, dist.Distribution):
-            # We are really assuming that only one distriution appears in our arguments. This is sufficient for cases
-            # like Independent and TransformedDistribution
+            # We assume that only one distriution appears in our arguments. This
+            # is sufficient for cases like Independent and
+            # TransformedDistribution
             return bind_dims(a, *indices)
         else:
             return a
 
-    # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(typ, dist.Distribution):
-            return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+    d = defterm(d)
 
-    with runner({apply: _apply}):
-        d = defterm(d)
-
-    if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
+    # FIXME: This assumes that the only operations that return distributions are
+    # distribution constructors.
+    if not (isinstance(d, Term) and issubclass(typeof(d), dist.Distribution)):
         raise NotImplementedError
 
     sizes = sizesof(d)
@@ -167,27 +157,12 @@ class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
 
         @functools.wraps(default)
         def wrapper(*args, **kwargs) -> T:
-            if any(
-                isinstance(a, Term) for a in (*args, *kwargs.keys(), *kwargs.values())
-            ):
-                raise NotImplementedError
-            return default(*args, **kwargs)
+            raise NotImplementedError
 
         super().__init__(wrapper, **kwargs)
 
     def __type_rule__(self, *args, **kwargs) -> T:
         return self._constr
-
-
-@defdata.register(dist.Distribution)
-def _(op, *args, **kwargs):
-    if all(
-        not isinstance(a, Term) or is_eager_array(a) or isinstance(a, dist.Distribution)
-        for a in tree.flatten((args, kwargs))
-    ):
-        return _DistributionTerm(op, *args, **kwargs)
-    else:
-        return defdata.dispatch(object)(op, *args, **kwargs)
 
 
 def _broadcast_to_named(t, sizes):
@@ -233,6 +208,17 @@ def expand_to_batch_shape(tensor, batch_ndims, expanded_batch_shape):
     return expanded_tensor
 
 
+def is_eager_distribution(d: Expr[dist.Distribution]) -> bool:
+    return isinstance(d, dist.Distribution) and (
+        not isinstance(d, Term)
+        or all(
+            (not isinstance(x, Term) or is_eager_array(x))
+            for x in (*d.args, *d.kwargs.values())
+        )
+    )
+
+
+@defdata.register(dist.Distribution)
 class _DistributionTerm(dist.Distribution):
     """A distribution wrapper that satisfies the Term interface.
 
@@ -265,7 +251,10 @@ class _DistributionTerm(dist.Distribution):
     @property
     def _pos_base_dist(self):
         if self.__pos_base_dist is None:
-            self.__pos_base_dist = bind_dims(self, *self._indices)
+            pos_dist = bind_dims(self, *self._indices)
+            self.__pos_base_dist = pos_dist.op._constr(
+                *pos_dist.args, **pos_dist.kwargs
+            )
         return self.__pos_base_dist
 
     @property
@@ -280,34 +269,55 @@ class _DistributionTerm(dist.Distribution):
     def kwargs(self):
         return self._kwargs
 
+    @defop  # type: ignore
     @property
     def batch_shape(self):
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.batch_shape[len(self._indices) :]
 
+    @defop  # type: ignore
     @property
     def has_rsample(self) -> bool:
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.has_rsample
 
+    @defop  # type: ignore
     @property
     def event_shape(self):
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.event_shape
-
-    def rsample(self, key, sample_shape=()):
-        return self._reindex_sample(
-            self._pos_base_dist.rsample(key, sample_shape), sample_shape
-        )
-
-    def sample(self, key, sample_shape=()):
-        return self._reindex_sample(
-            self._pos_base_dist.sample(key, sample_shape), sample_shape
-        )
 
     def _reindex_sample(self, value, sample_shape):
         index = (slice(None),) * len(sample_shape) + tuple(i() for i in self._indices)
         ret = jax_getitem(value, index)
         return ret
 
+    @defop
+    def rsample(self, key, sample_shape=()):
+        if not (is_eager_distribution(self) and is_eager_array(key)):
+            raise NotImplementedError
+
+        return self._reindex_sample(
+            self._pos_base_dist.rsample(key, sample_shape), sample_shape
+        )
+
+    @defop
+    def sample(self, key, sample_shape=()):
+        if not (is_eager_distribution(self) and is_eager_array(key)):
+            raise NotImplementedError
+
+        return self._reindex_sample(
+            self._pos_base_dist.sample(key, sample_shape), sample_shape
+        )
+
+    @defop
     def log_prob(self, value):
+        if not (is_eager_distribution(self) and is_eager_array(value)):
+            raise NotImplementedError
+
         # value has shape named_batch_shape + sample_shape + batch_shape + event_shape
         n_batch_event = len(self.batch_shape) + len(self.event_shape)
         sample_shape = (
@@ -329,24 +339,41 @@ class _DistributionTerm(dist.Distribution):
         ind_log_prob = self._reindex_sample(pos_log_prob, sample_shape)
         return ind_log_prob
 
+    @defop  # type: ignore
     @property
     def mean(self):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._reindex_sample(self._pos_base_dist.mean, ())
 
+    @defop  # type: ignore
     @property
     def variance(self):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._reindex_sample(self._pos_base_dist.variance, ())
 
+    @defop
     def enumerate_support(self, expand=True):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._reindex_sample(self._pos_base_dist.enumerate_support(expand), ())
 
+    @defop
     def entropy(self):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._pos_base_dist.entropy()
 
+    @defop
     def to_event(self, reinterpreted_batch_ndims=None):
         raise NotImplementedError
 
+    @defop
     def expand(self, batch_shape):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
+
         def expand_arg(a, batch_shape):
             if is_eager_array(a):
                 return expand_to_batch_shape(a, len(self.batch_shape), batch_shape)
@@ -366,6 +393,20 @@ class _DistributionTerm(dist.Distribution):
 
     def __str__(self):
         return Term.__str__(self)
+
+
+batch_shape = _DistributionTerm.batch_shape
+event_shape = _DistributionTerm.event_shape
+has_rsample = _DistributionTerm.has_rsample
+rsample = _DistributionTerm.rsample
+sample = _DistributionTerm.sample
+log_prob = _DistributionTerm.log_prob
+mean = _DistributionTerm.mean
+variance = _DistributionTerm.variance
+enumerate_support = _DistributionTerm.enumerate_support
+entropy = _DistributionTerm.entropy
+to_event = _DistributionTerm.to_event
+expand = _DistributionTerm.expand
 
 
 Term.register(_DistributionTerm)

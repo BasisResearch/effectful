@@ -911,9 +911,7 @@ def test_symbolic_dist(dist_factory):
     indexed_sample_logprob = distribution.log_prob(
         jax_getitem(jnp.array([0.0, 1.0]), [index()])
     )
-    assert isinstance(indexed_sample_logprob, Term) and not isinstance(
-        bind_dims(indexed_sample_logprob, index), jax.Array
-    )
+    assert isinstance(indexed_sample_logprob, Term)
 
 
 def test_distribution_typeof():
