@@ -78,7 +78,7 @@ else:
     ],
 )
 def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
-    assert freetypevars(typ) == fvs
+    assert set(freetypevars(typ)) == fvs
 
 
 def test_canonicalize_1():

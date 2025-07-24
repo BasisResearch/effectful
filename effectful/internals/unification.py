@@ -49,7 +49,7 @@ Example usage:
 
     >>> # Find all type variables in a type expression
     >>> freetypevars(dict[str, list[V]])
-    {~V}
+    (~V,)
 
 This module is primarily used internally by effectful for type inference in its
 effect system, allowing it to track and propagate type information through
@@ -735,7 +735,7 @@ def _(value: str | bytes | range | None):
     return type(value)
 
 
-def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
+def freetypevars(typ) -> tuple[TypeVariable, ...]:
     """
     Return a set of free type variables in the given type expression.
 
@@ -759,33 +759,37 @@ def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
 
         >>> # TypeVar returns itself
         >>> freetypevars(T)
-        {~T}
+        (~T,)
 
         >>> # Generic type with one TypeVar
         >>> freetypevars(list[T])
-        {~T}
+        (~T,)
 
         >>> # Generic type with multiple TypeVars
-        >>> sorted(freetypevars(dict[K, V]), key=lambda x: x.__name__)
-        [~K, ~V]
+        >>> freetypevars(dict[K, V])
+        (~K, ~V)
 
         >>> # Nested generic types
-        >>> sorted(freetypevars(list[dict[K, V]]), key=lambda x: x.__name__)
-        [~K, ~V]
+        >>> freetypevars(list[dict[K, V]])
+        (~K, ~V)
 
         >>> # Concrete types have no free TypeVars
         >>> freetypevars(int)
-        set()
+        ()
 
         >>> # Generic types with concrete arguments have no free TypeVars
         >>> freetypevars(list[int])
-        set()
+        ()
 
         >>> # Mixed concrete and TypeVar arguments
         >>> freetypevars(dict[str, T])
-        {~T}
+        (~T,)
     """
-    return set(typing._collect_type_parameters((typ,)))  # type: ignore
+    try:
+        from typing import _collect_type_parameters as _freetypevars  # type: ignore
+    except ImportError:
+        from typing import _collect_parameters as _freetypevars  # type: ignore
+    return tuple(_freetypevars((typ,)))
 
 
 def substitute(typ, subs: Substitutions) -> TypeExpressions:
@@ -838,8 +842,8 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         return substitute(subs[typ], subs) if typ in subs else typ
     elif isinstance(typ, list | tuple):
         return type(typ)(substitute(item, subs) for item in typ)
-    elif freetypevars(typ) & subs.keys():
-        fvs = typing._collect_type_parameters((typ,))  # type: ignore
-        return substitute(typ[tuple(subs.get(fv, fv) for fv in fvs)], subs)
+    elif any(fv in subs for fv in freetypevars(typ)):
+        args = tuple(subs.get(fv, fv) for fv in freetypevars(typ))
+        return substitute(typ[args], subs)
     else:
         return typ
