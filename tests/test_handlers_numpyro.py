@@ -813,8 +813,9 @@ def test_dist_stats(case_, statistic):
 
     try:
         expected = getattr(dist, statistic)
-    except NotImplementedError:
-        pytest.xfail(f"Statistic {statistic} not implemented for {case_.raw_dist}")
+    except RuntimeError as e:
+        if "not implemented" in repr(e):
+            pytest.xfail(f"Statistic {statistic} not implemented for {case_.raw_dist}")
 
     actual = getattr(indexed_dist, statistic)
 

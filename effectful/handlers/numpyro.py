@@ -347,14 +347,20 @@ class _DistributionTerm(dist.Distribution):
     def mean(self):
         if not is_eager_distribution(self):
             raise NotImplementedError
-        return self._reindex_sample(self._pos_base_dist.mean, ())
+        try:
+            return self._reindex_sample(self._pos_base_dist.mean, ())
+        except NotImplementedError:
+            raise RuntimeError(f"mean is not implemented for {type(self).__name__}")
 
     @defop  # type: ignore
     @property
     def variance(self):
         if not is_eager_distribution(self):
             raise NotImplementedError
-        return self._reindex_sample(self._pos_base_dist.variance, ())
+        try:
+            return self._reindex_sample(self._pos_base_dist.variance, ())
+        except NotImplementedError:
+            raise RuntimeError(f"variance is not implemented for {type(self).__name__}")
 
     @defop
     def enumerate_support(self, expand=True):
