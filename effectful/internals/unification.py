@@ -67,6 +67,11 @@ import operator
 import types
 import typing
 
+try:
+    from typing import _collect_type_parameters as _freetypevars  # type: ignore
+except ImportError:
+    from typing import _collect_parameters as _freetypevars  # type: ignore
+
 import effectful.ops.types
 
 if typing.TYPE_CHECKING:
@@ -735,7 +740,7 @@ def _(value: str | bytes | range | None):
     return type(value)
 
 
-def freetypevars(typ) -> tuple[TypeVariable, ...]:
+def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
 
@@ -759,37 +764,33 @@ def freetypevars(typ) -> tuple[TypeVariable, ...]:
 
         >>> # TypeVar returns itself
         >>> freetypevars(T)
-        (~T,)
+        {~T}
 
         >>> # Generic type with one TypeVar
         >>> freetypevars(list[T])
-        (~T,)
+        {~T}
 
         >>> # Generic type with multiple TypeVars
-        >>> freetypevars(dict[K, V])
-        (~K, ~V)
+        >>> freetypevars(dict[K, V]) == {K, V}
+        True
 
         >>> # Nested generic types
-        >>> freetypevars(list[dict[K, V]])
-        (~K, ~V)
+        >>> freetypevars(list[dict[K, V]]) == {K, V}
+        True
 
         >>> # Concrete types have no free TypeVars
         >>> freetypevars(int)
-        ()
+        set()
 
         >>> # Generic types with concrete arguments have no free TypeVars
         >>> freetypevars(list[int])
-        ()
+        set()
 
         >>> # Mixed concrete and TypeVar arguments
         >>> freetypevars(dict[str, T])
-        (~T,)
+        {~T}
     """
-    try:
-        from typing import _collect_type_parameters as _freetypevars  # type: ignore
-    except ImportError:
-        from typing import _collect_parameters as _freetypevars  # type: ignore
-    return tuple(_freetypevars((typ,)))
+    return set(_freetypevars((typ,)))
 
 
 def substitute(typ, subs: Substitutions) -> TypeExpressions:
@@ -837,13 +838,12 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         >>> substitute(int, {T: str})
         <class 'int'>
     """
-    # Default case for plain types
     if isinstance(typ, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
         return substitute(subs[typ], subs) if typ in subs else typ
     elif isinstance(typ, list | tuple):
         return type(typ)(substitute(item, subs) for item in typ)
     elif any(fv in subs for fv in freetypevars(typ)):
-        args = tuple(subs.get(fv, fv) for fv in freetypevars(typ))
+        args = tuple(subs.get(fv, fv) for fv in _freetypevars((typ,)))
         return substitute(typ[args], subs)
     else:
         return typ
