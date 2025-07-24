@@ -15,8 +15,8 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import apply, runner, typeof
-from effectful.ops.syntax import defdata, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.syntax import _BaseOperation, defdata, defop, defterm
+from effectful.ops.types import Expr, Operation, Term
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -157,7 +157,14 @@ def _bind_dims_distribution(
 
 @defop.register(dist.distribution.DistributionMeta)
 class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
+    """Operator type for distribution constructors. This class provides wrapping
+    of the constructor to enable term construction and a correct type rule.
+
+    """
+
     def __init__(self, default: dist.Distribution, **kwargs):
+        self._constr = default
+
         @functools.wraps(default)
         def wrapper(*args, **kwargs) -> T:
             if any(
@@ -167,6 +174,9 @@ class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
             return default(*args, **kwargs)
 
         super().__init__(wrapper, **kwargs)
+
+    def __type_rule__(self, *args, **kwargs) -> T:
+        return self._constr
 
 
 @defdata.register(dist.Distribution)
@@ -358,7 +368,7 @@ class _DistributionTerm(dist.Distribution):
         return Term.__str__(self)
 
 
-Term.register(_EagerDistributionTerm)
+Term.register(_DistributionTerm)
 
 _DISTRIBUTIONS = [
     dist.BernoulliLogits,

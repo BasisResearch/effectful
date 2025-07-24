@@ -11,6 +11,7 @@ import pytest
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.ops.semantics import typeof
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation, Term
 
@@ -852,4 +853,19 @@ def test_distribution_terms():
     d3 = dist.Normal(jnp.array(0.0), jnp.array(1.0))
     assert not isinstance(d3, Term) and isinstance(
         d3, numpyro.distributions.Distribution
+    )
+
+
+def test_distribution_typeof():
+    """Check that typeof() behaves correctly on distribution-valued terms."""
+    assert (
+        typeof(dist.Normal(defop(jax.Array)()))
+        is numpyro.distributions.continuous.Normal
+    )
+
+    assert typeof(dist.Normal()) is numpyro.distributions.continuous.Normal
+
+    assert (
+        typeof(dist.Normal(jax_getitem(jnp.array([0, 1, 2]), [defop(jax.Array)()])))
+        is numpyro.distributions.continuous.Normal
     )
