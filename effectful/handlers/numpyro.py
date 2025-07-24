@@ -5,16 +5,15 @@ except ImportError:
 
 
 import functools
-from collections.abc import Collection, Hashable, Mapping
-from typing import Any, cast
+from collections.abc import Collection, Mapping
+from typing import Any
 
 import jax
-import tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import apply, runner, typeof
+from effectful.ops.semantics import typeof
 from effectful.ops.syntax import _BaseOperation, defdata, defop, defterm
 from effectful.ops.types import Expr, Operation, Term
 
@@ -221,6 +220,7 @@ def is_eager_distribution(d: Expr[dist.Distribution]) -> bool:
     )
 
 
+@Term.register
 @defdata.register(dist.Distribution)
 class _DistributionTerm(dist.Distribution):
     """A distribution wrapper that satisfies the Term interface.
@@ -412,54 +412,47 @@ to_event = _DistributionTerm.to_event
 expand = _DistributionTerm.expand
 
 
-Term.register(_DistributionTerm)
-
-_DISTRIBUTIONS = [
-    dist.BernoulliLogits,
-    dist.BernoulliProbs,
-    dist.Beta,
-    dist.BinomialProbs,
-    dist.BinomialLogits,
-    dist.CategoricalLogits,
-    dist.CategoricalProbs,
-    dist.Cauchy,
-    dist.Chi2,
-    dist.Delta,
-    dist.Dirichlet,
-    dist.DirichletMultinomial,
-    dist.Distribution,
-    dist.Exponential,
-    dist.Gamma,
-    dist.GeometricLogits,
-    dist.GeometricProbs,
-    dist.Gumbel,
-    dist.HalfCauchy,
-    dist.HalfNormal,
-    dist.Independent,
-    dist.Kumaraswamy,
-    dist.LKJCholesky,
-    dist.Laplace,
-    dist.LogNormal,
-    dist.Logistic,
-    dist.LowRankMultivariateNormal,
-    dist.MultinomialProbs,
-    dist.MultinomialLogits,
-    dist.MultivariateNormal,
-    dist.NegativeBinomialProbs,
-    dist.NegativeBinomialLogits,
-    dist.Normal,
-    dist.Pareto,
-    dist.Poisson,
-    dist.RelaxedBernoulliLogits,
-    dist.StudentT,
-    dist.Uniform,
-    dist.VonMises,
-    dist.Weibull,
-    dist.Wishart,
-]
-
-for d in _DISTRIBUTIONS:
-    globals()[d.__name__] = defop(d)
+BernoulliLogits = defop(dist.BernoulliLogits)
+BernoulliProbs = defop(dist.BernoulliProbs)
+Beta = defop(dist.Beta)
+BinomialProbs = defop(dist.BinomialProbs)
+BinomialLogits = defop(dist.BinomialLogits)
+CategoricalLogits = defop(dist.CategoricalLogits)
+CategoricalProbs = defop(dist.CategoricalProbs)
+Cauchy = defop(dist.Cauchy)
+Chi2 = defop(dist.Chi2)
+Delta = defop(dist.Delta)
+Dirichlet = defop(dist.Dirichlet)
+DirichletMultinomial = defop(dist.DirichletMultinomial)
+Distribution = defop(dist.Distribution)
+Exponential = defop(dist.Exponential)
+Gamma = defop(dist.Gamma)
+GeometricLogits = defop(dist.GeometricLogits)
+GeometricProbs = defop(dist.GeometricProbs)
+Gumbel = defop(dist.Gumbel)
+HalfCauchy = defop(dist.HalfCauchy)
+HalfNormal = defop(dist.HalfNormal)
+Independent = defop(dist.Independent)
+Kumaraswamy = defop(dist.Kumaraswamy)
+LKJCholesky = defop(dist.LKJCholesky)
+Laplace = defop(dist.Laplace)
+LogNormal = defop(dist.LogNormal)
+Logistic = defop(dist.Logistic)
+LowRankMultivariateNormal = defop(dist.LowRankMultivariateNormal)
+MultinomialProbs = defop(dist.MultinomialProbs)
+MultinomialLogits = defop(dist.MultinomialLogits)
+MultivariateNormal = defop(dist.MultivariateNormal)
+NegativeBinomialProbs = defop(dist.NegativeBinomialProbs)
+NegativeBinomialLogits = defop(dist.NegativeBinomialLogits)
+Normal = defop(dist.Normal)
+Pareto = defop(dist.Pareto)
+Poisson = defop(dist.Poisson)
+RelaxedBernoulliLogits = defop(dist.RelaxedBernoulliLogits)
+StudentT = defop(dist.StudentT)
+Uniform = defop(dist.Uniform)
+VonMises = defop(dist.VonMises)
+Weibull = defop(dist.Weibull)
+Wishart = defop(dist.Wishart)
 
 
 @defterm.register(dist.Distribution)
