@@ -153,6 +153,9 @@ class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
     """
 
     def __init__(self, default: dist.Distribution, **kwargs):
+        # FIXME: This ensures that calling a distribution operation always
+        # results in a term, while still being able to access the original
+        # distribution constructor.
         self._constr = default
 
         @functools.wraps(default)
