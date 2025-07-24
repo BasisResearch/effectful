@@ -96,6 +96,12 @@ TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
 
 
+class TypeInferenceError(TypeError):
+    """Custom error for type inference issues."""
+
+    pass
+
+
 @typing.overload
 def unify(
     typ: inspect.Signature,
@@ -191,7 +197,9 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     elif typ in (typing.Any, ...) or subtyp in (typing.Any, ...):
         return subs
     else:
-        raise TypeError(f"Cannot unify type {typ} with {subtyp} given {subs}. ")
+        raise TypeInferenceError(
+            f"Cannot unify type {typ} with {subtyp} given {subs}. "
+        )
 
 
 @typing.overload
@@ -231,7 +239,9 @@ def _unify_sequence(typ, subtyp, subs: Substitutions) -> Substitutions:
     if isinstance(typ, types.EllipsisType) or isinstance(subtyp, types.EllipsisType):
         return subs
     if len(typ) != len(subtyp):
-        raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
+        raise TypeInferenceError(
+            f"Cannot unify sequence {typ} with {subtyp} given {subs}. "
+        )
     for p_item, c_item in zip(typ, subtyp):
         subs = unify(p_item, c_item, subs)
     return subs
@@ -265,7 +275,7 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
                 continue
         if any_succeeded:
             return subs
-    raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+    raise TypeInferenceError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
 @typing.overload
@@ -321,14 +331,16 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
         and issubclass(subtyp, typing.get_origin(typ))
     ):
         return subs  # implicit expansion to subtyp[Any]
-    raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
+    raise TypeInferenceError(
+        f"Cannot unify generic type {typ} with {subtyp} given {subs}."
+    )
 
 
 def _unify_signature(
     typ: inspect.Signature, subtyp: inspect.BoundArguments, subs: Substitutions
 ) -> Substitutions:
     if typ != subtyp.signature:
-        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
+        raise TypeInferenceError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
 
     subtyp_arguments = dict(subtyp.arguments)
     for name, param in typ.parameters.items():
@@ -352,7 +364,9 @@ def _unify_signature(
         } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
             subs = unify(ptyp, _freshen(psubtyp), subs)
         else:
-            raise TypeError(f"Cannot unify {param} with {psubtyp} given {subs}")
+            raise TypeInferenceError(
+                f"Cannot unify {param} with {psubtyp} given {subs}"
+            )
     return subs
 
 
@@ -403,7 +417,7 @@ def canonicalize(typ) -> TypeExpressions:
     """
     Normalize generic types
     """
-    raise TypeError(f"Cannot canonicalize type {typ}.")
+    raise TypeInferenceError(f"Cannot canonicalize type {typ}.")
 
 
 @canonicalize.register
@@ -439,7 +453,7 @@ def _(typ: type | abc.ABCMeta):
     elif types.get_original_bases(typ):
         return canonicalize(types.get_original_bases(typ)[0])
     else:
-        raise TypeError(f"Cannot canonicalize type {typ}.")
+        raise TypeInferenceError(f"Cannot canonicalize type {typ}.")
 
 
 @canonicalize.register
@@ -633,12 +647,12 @@ def _(value: effectful.ops.types.Operation):
 
 @nested_type.register
 def _(value: effectful.ops.types.Term):
-    raise TypeError(f"Terms should not appear in nested_type, but got {value}")
+    raise TypeInferenceError(f"Terms should not appear in nested_type, but got {value}")
 
 
 @nested_type.register
 def _(value: TypeVariable):
-    raise TypeError(f"TypeVars should not appear in values, but got {value}")
+    raise TypeInferenceError(f"TypeVars should not appear in values, but got {value}")
 
 
 @nested_type.register
