@@ -155,17 +155,18 @@ def _bind_dims_distribution(
     return new_d
 
 
-@functools.cache
-def _register_distribution_op(
-    dist_constr: type[dist.Distribution],
-) -> Operation[Any, dist.Distribution]:
-    # introduce a wrapper so that we can control type annotations
-    def wrapper(*args, **kwargs) -> dist.Distribution:
-        if any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
-            raise NotImplementedError
-        return dist_constr(*args, **kwargs)
+@defop.register(dist.distribution.DistributionMeta)
+class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
+    def __init__(self, default: dist.Distribution, **kwargs):
+        @functools.wraps(default)
+        def wrapper(*args, **kwargs) -> T:
+            if any(
+                isinstance(a, Term) for a in (*args, *kwargs.keys(), *kwargs.values())
+            ):
+                raise NotImplementedError
+            return default(*args, **kwargs)
 
-    return defop(wrapper, name=dist_constr.__name__)
+        super().__init__(wrapper, **kwargs)
 
 
 @defdata.register(dist.Distribution)
@@ -357,7 +358,54 @@ class _DistributionTerm(dist.Distribution):
         return Term.__str__(self)
 
 
-Term.register(_DistributionTerm)
+Term.register(_EagerDistributionTerm)
+
+_DISTRIBUTIONS = [
+    dist.BernoulliLogits,
+    dist.BernoulliProbs,
+    dist.Beta,
+    dist.BinomialProbs,
+    dist.BinomialLogits,
+    dist.CategoricalLogits,
+    dist.CategoricalProbs,
+    dist.Cauchy,
+    dist.Chi2,
+    dist.Delta,
+    dist.Dirichlet,
+    dist.DirichletMultinomial,
+    dist.Distribution,
+    dist.Exponential,
+    dist.Gamma,
+    dist.GeometricLogits,
+    dist.GeometricProbs,
+    dist.Gumbel,
+    dist.HalfCauchy,
+    dist.HalfNormal,
+    dist.Independent,
+    dist.Kumaraswamy,
+    dist.LKJCholesky,
+    dist.Laplace,
+    dist.LogNormal,
+    dist.Logistic,
+    dist.LowRankMultivariateNormal,
+    dist.MultinomialProbs,
+    dist.MultinomialLogits,
+    dist.MultivariateNormal,
+    dist.NegativeBinomialProbs,
+    dist.NegativeBinomialLogits,
+    dist.Normal,
+    dist.Pareto,
+    dist.Poisson,
+    dist.RelaxedBernoulliLogits,
+    dist.StudentT,
+    dist.Uniform,
+    dist.VonMises,
+    dist.Weibull,
+    dist.Wishart,
+]
+
+for d in _DISTRIBUTIONS:
+    globals()[d.__name__] = defop(d)
 
 
 @defterm.register(dist.Distribution)
@@ -375,188 +423,131 @@ def _embed_distribution(dist: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
 def _embed_loc_scale(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.scale)
+    return globals()[d.__name__](d.loc, d.scale)
 
 
 @defterm.register(dist.BernoulliProbs)
 @defterm.register(dist.CategoricalProbs)
 @defterm.register(dist.GeometricProbs)
 def _embed_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.probs)
+    return globals()[d.__name__](d.probs)
 
 
 @defterm.register(dist.BernoulliLogits)
 @defterm.register(dist.CategoricalLogits)
 @defterm.register(dist.GeometricLogits)
 def _embed_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.logits)
+    return globals()[d.__name__](d.logits)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.concentration1, d.concentration0
-    )
+    return globals()[d.__name__](d.concentration1, d.concentration0)
 
 
 @defterm.register(dist.BinomialProbs)
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
 def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.probs, d.total_count)
+    return globals()[d.__name__](d.probs, d.total_count)
 
 
 @defterm.register(dist.BinomialLogits)
 @defterm.register(dist.NegativeBinomialLogits)
 @defterm.register(dist.MultinomialLogits)
 def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.logits, d.total_count)
+    return globals()[d.__name__](d.logits, d.total_count)
 
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.df)
+    return globals()[d.__name__](d.df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration)
+    return globals()[d.__name__](d.concentration)
 
 
 @defterm.register
 def _embed_dirichlet_multinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.concentration, total_count=d.total_count
-    )
+    return globals()[d.__name__](d.concentration, total_count=d.total_count)
 
 
 @defterm.register(dist.Exponential)
 @defterm.register(dist.Poisson)
 def _embed_exponential(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.rate)
+    return globals()[d.__name__](d.rate)
 
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration, d.rate)
+    return globals()[d.__name__](d.concentration, d.rate)
 
 
 @defterm.register(dist.HalfCauchy)
 @defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.scale)
+    return globals()[d.__name__](d.scale)
 
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.dim, concentration=d.concentration
-    )
+    return globals()[d.__name__](d.dim, concentration=d.concentration)
 
 
 @defterm.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.loc, scale_tril=d.scale_tril
-    )
+    return globals()[d.__name__](d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.scale, d.alpha)
+    return globals()[d.__name__](d.scale, d.alpha)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.low, d.high)
+    return globals()[d.__name__](d.low, d.high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.concentration)
+    return globals()[d.__name__](d.loc, d.concentration)
 
 
 @defterm.register
 def _embed_weibull(d: dist.Weibull) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Weibull)(d.scale, d.concentration)
+    return globals()[d.__name__](d.scale, d.concentration)
 
 
 @defterm.register
 def _embed_wishart(d: dist.Wishart) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Wishart)(d.df, d.scale_tril)
+    return globals()[d.__name__](d.df, d.scale_tril)
 
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.v, log_density=d.log_density, event_dim=d.event_dim
-    )
+    return globals()[d.__name__](d.v, log_density=d.log_density, event_dim=d.event_dim)
 
 
 @defterm.register
 def _embed_low_rank_multivariate_normal(
     d: dist.LowRankMultivariateNormal,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.loc, d.cov_factor, d.cov_diag
-    )
+    return globals()[d.__name__](d.loc, d.cov_factor, d.cov_diag)
 
 
 @defterm.register
 def _embed_relaxed_bernoulli_logits(
     d: dist.RelaxedBernoulliLogits,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.temperature, d.logits)
+    return globals()[d.__name__](d.temperature, d.logits)
 
 
 @defterm.register
 def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.base_dist, d.reinterpreted_batch_ndims
-    )
-
-
-BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)
-BernoulliProbs = _register_distribution_op(dist.BernoulliProbs)
-Beta = _register_distribution_op(dist.Beta)
-BinomialProbs = _register_distribution_op(dist.BinomialProbs)
-BinomialLogits = _register_distribution_op(dist.BinomialLogits)
-CategoricalLogits = _register_distribution_op(dist.CategoricalLogits)
-CategoricalProbs = _register_distribution_op(dist.CategoricalProbs)
-Cauchy = _register_distribution_op(dist.Cauchy)
-Chi2 = _register_distribution_op(dist.Chi2)
-Delta = _register_distribution_op(dist.Delta)
-Dirichlet = _register_distribution_op(dist.Dirichlet)
-DirichletMultinomial = _register_distribution_op(dist.DirichletMultinomial)
-Distribution = _register_distribution_op(dist.Distribution)
-Exponential = _register_distribution_op(dist.Exponential)
-Gamma = _register_distribution_op(dist.Gamma)
-GeometricLogits = _register_distribution_op(dist.GeometricLogits)
-GeometricProbs = _register_distribution_op(dist.GeometricProbs)
-Gumbel = _register_distribution_op(dist.Gumbel)
-HalfCauchy = _register_distribution_op(dist.HalfCauchy)
-HalfNormal = _register_distribution_op(dist.HalfNormal)
-Independent = _register_distribution_op(dist.Independent)
-Kumaraswamy = _register_distribution_op(dist.Kumaraswamy)
-LKJCholesky = _register_distribution_op(dist.LKJCholesky)
-Laplace = _register_distribution_op(dist.Laplace)
-LogNormal = _register_distribution_op(dist.LogNormal)
-Logistic = _register_distribution_op(dist.Logistic)
-LowRankMultivariateNormal = _register_distribution_op(dist.LowRankMultivariateNormal)
-MultinomialProbs = _register_distribution_op(dist.MultinomialProbs)
-MultinomialLogits = _register_distribution_op(dist.MultinomialLogits)
-MultivariateNormal = _register_distribution_op(dist.MultivariateNormal)
-NegativeBinomialProbs = _register_distribution_op(dist.NegativeBinomialProbs)
-NegativeBinomialLogits = _register_distribution_op(dist.NegativeBinomialLogits)
-Normal = _register_distribution_op(dist.Normal)
-Pareto = _register_distribution_op(dist.Pareto)
-Poisson = _register_distribution_op(dist.Poisson)
-RelaxedBernoulliLogits = _register_distribution_op(dist.RelaxedBernoulliLogits)
-StudentT = _register_distribution_op(dist.StudentT)
-Uniform = _register_distribution_op(dist.Uniform)
-VonMises = _register_distribution_op(dist.VonMises)
-Weibull = _register_distribution_op(dist.Weibull)
-Wishart = _register_distribution_op(dist.Wishart)
+    return globals()[d.__name__](d.base_dist, d.reinterpreted_batch_ndims)
