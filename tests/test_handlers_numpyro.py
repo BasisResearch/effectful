@@ -856,6 +856,66 @@ def test_distribution_terms():
     )
 
 
+@pytest.mark.parametrize(
+    "dist_factory,dist_args",
+    [(dist.Normal, []), (dist.BernoulliProbs, [jnp.array(0.5)])],
+)
+def test_concrete_dist(dist_factory, dist_args):
+    """Test concrete distribution with indexed argument."""
+    index = defop(jax.Array, name="index")
+    sample = defop(jax.Array, name="sample")()
+
+    distribution = dist_factory(*dist_args)
+    sample_array = jnp.array([0.0, 1.0, 2.0])
+    indexed_sample_array = jax_getitem(sample_array, [index()])
+
+    assert isinstance(distribution.log_prob(sample_array), jax.Array)
+
+    assert isinstance(distribution.log_prob(sample), Term)
+
+    indexed_sample_logprob = distribution.log_prob(indexed_sample_array)
+    assert isinstance(indexed_sample_logprob, Term) and isinstance(
+        bind_dims(indexed_sample_logprob, index), jax.Array
+    )
+
+
+@pytest.mark.parametrize(
+    "dist_factory,param_array",
+    [
+        (dist.Normal, jnp.array([0.0, 1.0, 2.0])),
+        (dist.BernoulliProbs, jnp.array([0.5, 0.25])),
+    ],
+)
+def test_indexed_dist_symbolic_argument(dist_factory, param_array):
+    """Test indexed distribution with symbolic argument."""
+    sample = defop(jax.Array, name="sample")()
+    index = defop(jax.Array, name="index")
+    indexed_dist = dist_factory(jax_getitem(param_array, [index()]))
+    assert isinstance(indexed_dist.log_prob(sample), Term)
+
+
+@pytest.mark.parametrize("dist_factory", [dist.Normal, dist.BernoulliProbs])
+def test_symbolic_dist(dist_factory):
+    """Test symbolic distribution with concrete argument."""
+    param_sym = defop(jax.Array, name="param")()
+    sample_sym = defop(jax.Array, name="sample")()
+    index = defop(jax.Array, name="index")
+    distribution = dist_factory(param_sym)
+
+    result = distribution.log_prob(jnp.array(0.0))
+    assert isinstance(result, Term)
+
+    result = distribution.log_prob(sample_sym)
+    assert isinstance(result, Term)
+
+    indexed_sample_logprob = distribution.log_prob(
+        jax_getitem(jnp.array([0.0, 1.0]), [index()])
+    )
+    assert isinstance(indexed_sample_logprob, Term) and not isinstance(
+        bind_dims(indexed_sample_logprob, index), jax.Array
+    )
+
+
 def test_distribution_typeof():
     """Check that typeof() behaves correctly on distribution-valued terms."""
     assert (
