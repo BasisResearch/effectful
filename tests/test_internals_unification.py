@@ -389,6 +389,24 @@ def test_unify_tuple_non_variadic():
     assert unify(collections.abc.Sequence[T], tuple[int, int]) == {T: int}
 
 
+def test_unify_both_abstract():
+    assert unify(tuple[T, ...], tuple[V, V]) == {T: V}
+    assert unify(tuple[T, V], tuple[int, U]) == {T: int, V: U}
+    assert unify(list[T], list[tuple[V, V]]) == {T: tuple[V, V]}
+    assert unify(
+        collections.abc.Callable[[T], T],
+        collections.abc.Callable[[tuple[int, V]], tuple[int, V]],
+    ) == {T: tuple[int, V]}
+    assert unify(
+        (tuple[T, int], tuple[int, int]),
+        (tuple[int, V], tuple[U, V]),
+    ) == {T: int, U: int, V: int}
+    assert unify(
+        (list[T], T),
+        (list[list[V]], list[V]),
+    ) == {T: canonicalize(list[V])}
+
+
 # Test functions with various type patterns
 def identity[T](x: T) -> T:
     return x

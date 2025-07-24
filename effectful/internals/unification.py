@@ -173,7 +173,9 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
 
-    if isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
+    if typ is subtyp or typ == subtyp:
+        return subs
+    elif isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
         return _unify_typevar(typ, subtyp, subs)
     elif isinstance(typ, collections.abc.Sequence) or isinstance(
         subtyp, collections.abc.Sequence
@@ -247,7 +249,9 @@ def _unify_union(
 
 
 def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
-    if isinstance(subtyp, UnionType):
+    if typ == subtyp:
+        return subs
+    elif isinstance(subtyp, UnionType):
         # If subtyp is a union, try to unify with each argument
         for arg in typing.get_args(subtyp):
             subs = unify(typ, arg, subs)
