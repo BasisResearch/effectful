@@ -76,7 +76,11 @@ def _unbind_distribution(
 
     def _to_named(a):
         nonlocal batch_shape
-        if isinstance(a, jax.Array):
+        # FIXME: Some distributions take scalar arguments that are never
+        # batched. Ignore these. We should be able to raise an error in some
+        # cases that we see a scalar tensor, and a smarter version of this code
+        # would do so.
+        if isinstance(a, jax.Array) and a.shape != ():
             _validate_batch_shape(a)
             return unbind_dims(a, *names)
         elif isinstance(a, dist.Distribution):
@@ -91,13 +95,9 @@ def _unbind_distribution(
     if not (isinstance(d, Term) and issubclass(typeof(d), dist.Distribution)):
         raise NotImplementedError
 
-    # TODO: this is a hack to avoid mangling arguments that are array-valued,
-    # but not batched
-    aux_kwargs = set(["total_count"])
-
     new_d = d.op(
         *[_to_named(a) for a in d.args],
-        **{k: v if k in aux_kwargs else _to_named(v) for (k, v) in d.kwargs.items()},
+        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
     )
     return new_d
 
