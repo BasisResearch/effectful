@@ -1,17 +1,31 @@
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
+import effectful.handlers.numpyro as dist
 import jax
 from effectful.handlers.jax import jax_getitem, unbind_dims
-from effectful.handlers.numpyro import dist
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import deffn, defop
+from effectful.ops.syntax import deffn, defop, syntactic_eq
 from jax import random
 from jax.numpy import allclose
 from pytest import mark, param
 
 from tests.utils import FOLD_TRANSFORMS
-from weighted.handlers.jax import DenseTensorFold, log_prob, reals
+from weighted.handlers.jax import (
+    DenseTensorFold,
+    log_prob,
+    reals,
+    sample,
+    syntactic_eq_jax,
+)
 from weighted.handlers.optimization import FoldPropagateUnusedStreams
+from weighted.handlers.optimization.distribution import (
+    NormalVerticalFusion,
+    SampleAddNormalFusion,
+    SampleMulConstantFusion,
+)
+from weighted.handlers.optimization.distribution import (
+    interpretation as simplify_normals_intp,
+)
 from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
 from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.semiring import mul
@@ -71,9 +85,6 @@ def test_fuse_split(base_intp, transform_intp):
     k1, k2 = random.split(key, 2)
     x_arr = random.normal(k1, (dim_size,))
     y_arr = random.normal(k2, (dim_size,))
-
-    x = jax_getitem(x_op(), (x_ix(),))
-    y = jax_getitem(y_op(), (y_ix(),))
 
     x_stream = {x_ix: jnp.arange(dim_size)}
     y_stream = {y_ix: jnp.arange(dim_size)}
@@ -153,3 +164,80 @@ def test_bivariate_quadrature(base_intp):
         expr = evaluate(expr)
     expected = 2 * mu_x + mu_y**2 + sigma_y**2
     assert allclose(expr, expected)
+
+
+def test_normal_vertical_fusion():
+    key = random.PRNGKey(42)
+    mu = defop(jax.Array, name="mu")
+    sigma1 = defop(jax.Array, name="s1")
+    sigma2 = defop(jax.Array, name="s2")
+
+    d1 = dist.Normal(mu(), sigma1())
+    d1_samples = sample(key, d1, (1,))
+    with handler(NormalVerticalFusion()):
+        d2_opt = dist.Normal(d1_samples, sigma2())
+
+    expected = dist.Normal(mu(), jnp.sqrt(sigma2() ** 2 + sigma1() ** 2))
+    assert syntactic_eq(d2_opt, expected)
+
+
+def test_normal_constant_mul():
+    key = random.PRNGKey(42)
+    mu = defop(jax.Array, name="mu1")
+    sigma = defop(jax.Array, name="s1")
+    d1 = dist.Normal(mu(), sigma())
+
+    with handler(SampleMulConstantFusion()):
+        expr = 2.0 * sample(key, d1, (1,))
+
+    expected = sample(key, dist.Normal(2.0 * mu(), jnp.abs(2.0) * sigma()), (1,))
+    assert syntactic_eq_jax(expr, expected)
+
+
+def test_add_normal_distributions():
+    key = random.PRNGKey(42)
+    mu1 = defop(jax.Array, name="mu1")
+    sigma1 = defop(jax.Array, name="s1")
+    mu2 = defop(jax.Array, name="mu2")
+    sigma2 = defop(jax.Array, name="s2")
+    d1 = dist.Normal(mu1(), sigma1())
+    d2 = dist.Normal(mu2(), sigma2())
+
+    with handler(SampleAddNormalFusion()):
+        expr = sample(key, d1, (1,)) + sample(key, d2, (1,))
+
+    d3 = dist.Normal(mu1() + mu2(), jnp.sqrt(sigma1() ** 2 + sigma2() ** 2))
+    expected = sample(key, d3, (1,))
+    assert syntactic_eq_jax(expr, expected)
+
+
+def test_distributional_equivalence_normal_transforms():
+    nb_samples = 10000
+    keys = random.split(random.PRNGKey(1), 6)
+    mu1 = defop(jax.Array, name="mu1")
+    sigma1 = defop(jax.Array, name="s1")
+    mu2 = defop(jax.Array, name="mu2")
+    sigma2 = defop(jax.Array, name="s2")
+    sigma3 = defop(jax.Array, name="sigma3")
+    d1 = dist.Normal(mu1(), sigma1())
+    d2 = dist.Normal(mu2(), sigma2())
+
+    samples_d1 = sample(keys[0], d1, (nb_samples,))
+    samples_d2 = sample(keys[1], d2, (nb_samples,))
+    c = random.uniform(keys[2]) * 10
+    expected_d = dist.Normal(c * samples_d1 + samples_d2, sigma3())
+    with handler(simplify_normals_intp):
+        actual_d = evaluate(expected_d)
+
+    params = (mu1, sigma1, mu2, sigma2, sigma3)
+    intp = {
+        k: deffn(random.uniform(key) * 10) for k, key in zip(params, keys, strict=False)
+    }
+    with handler(intp):
+        expected_d = evaluate(expected_d)
+        actual_d = evaluate(actual_d)
+    expected_samples = sample(keys[4], expected_d, (nb_samples,))
+    actual_samples = sample(keys[5], actual_d, (nb_samples,))
+
+    assert allclose(jnp.std(expected_samples), jnp.std(actual_samples), atol=1)
+    assert allclose(jnp.mean(expected_samples), jnp.mean(actual_samples), atol=1)

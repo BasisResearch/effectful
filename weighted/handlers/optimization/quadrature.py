@@ -3,10 +3,10 @@ from functools import reduce
 import jax
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
-from effectful.handlers.numpyro import dist
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
+from numpyro import distributions as dist
 from scipy.special import roots_hermite
 
 from weighted.handlers.jax import log_prob, reals
