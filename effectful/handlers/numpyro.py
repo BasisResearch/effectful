@@ -5,18 +5,17 @@ except ImportError:
 
 
 import functools
-from collections.abc import Collection, Hashable, Mapping
-from typing import Any, cast
+from collections.abc import Collection, Mapping
+from typing import Any
 
 import jax
-import tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import apply, runner, typeof
-from effectful.ops.syntax import defdata, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.semantics import typeof
+from effectful.ops.syntax import _BaseOperation, defdata, defop, defterm
+from effectful.ops.types import Expr, Operation, Term
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -76,7 +75,11 @@ def _unbind_distribution(
 
     def _to_named(a):
         nonlocal batch_shape
-        if isinstance(a, jax.Array):
+        # FIXME: Some distributions take scalar arguments that are never
+        # batched. Ignore these. We should be able to raise an error in some
+        # cases that we see a scalar tensor, and a smarter version of this code
+        # would do so.
+        if isinstance(a, jax.Array) and a.shape != ():
             _validate_batch_shape(a)
             return unbind_dims(a, *names)
         elif isinstance(a, dist.Distribution):
@@ -84,25 +87,16 @@ def _unbind_distribution(
         else:
             return a
 
-    # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(typ, dist.Distribution):
-            return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+    d = defterm(d)
 
-    with runner({apply: _apply}):
-        d = defterm(d)
-
-    if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
+    # FIXME: This assumes that the only operations that return distributions are
+    # distribution constructors.
+    if not (isinstance(d, Term) and issubclass(typeof(d), dist.Distribution)):
         raise NotImplementedError
-
-    # TODO: this is a hack to avoid mangling arguments that are array-valued, but not batched
-    aux_kwargs = set(["total_count"])
 
     new_d = d.op(
         *[_to_named(a) for a in d.args],
-        **{k: v if k in aux_kwargs else _to_named(v) for (k, v) in d.kwargs.items()},
+        **{k: _to_named(v) for (k, v) in d.kwargs.items()},
     )
     return new_d
 
@@ -126,23 +120,18 @@ def _bind_dims_distribution(
             )
             return bind_dims(a_indexed, *indices)
         elif issubclass(typ, dist.Distribution):
-            # We are really assuming that only one distriution appears in our arguments. This is sufficient for cases
-            # like Independent and TransformedDistribution
+            # We assume that only one distriution appears in our arguments. This
+            # is sufficient for cases like Independent and
+            # TransformedDistribution
             return bind_dims(a, *indices)
         else:
             return a
 
-    # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(typ, dist.Distribution):
-            return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+    d = defterm(d)
 
-    with runner({apply: _apply}):
-        d = defterm(d)
-
-    if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
+    # FIXME: This assumes that the only operations that return distributions are
+    # distribution constructors.
+    if not (isinstance(d, Term) and issubclass(typeof(d), dist.Distribution)):
         raise NotImplementedError
 
     sizes = sizesof(d)
@@ -155,28 +144,27 @@ def _bind_dims_distribution(
     return new_d
 
 
-@functools.cache
-def _register_distribution_op(
-    dist_constr: type[dist.Distribution],
-) -> Operation[Any, dist.Distribution]:
-    # introduce a wrapper so that we can control type annotations
-    def wrapper(*args, **kwargs) -> dist.Distribution:
-        if any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+@defop.register(dist.distribution.DistributionMeta)
+class _DistributionOperation[T: dist.Distribution](_BaseOperation[Any, T]):
+    """Operator type for distribution constructors. This class provides wrapping
+    of the constructor to enable term construction and a correct type rule.
+
+    """
+
+    def __init__(self, default: dist.Distribution, **kwargs):
+        # FIXME: This ensures that calling a distribution operation always
+        # results in a term, while still being able to access the original
+        # distribution constructor.
+        self._constr = default
+
+        @functools.wraps(default)
+        def wrapper(*args, **kwargs) -> T:
             raise NotImplementedError
-        return dist_constr(*args, **kwargs)
 
-    return defop(wrapper, name=dist_constr.__name__)
+        super().__init__(wrapper, **kwargs)
 
-
-@defdata.register(dist.Distribution)
-def _(op, *args, **kwargs):
-    if all(
-        not isinstance(a, Term) or is_eager_array(a) or isinstance(a, dist.Distribution)
-        for a in tree.flatten((args, kwargs))
-    ):
-        return _DistributionTerm(op, *args, **kwargs)
-    else:
-        return defdata.dispatch(object)(op, *args, **kwargs)
+    def __type_rule__(self, *args, **kwargs) -> T:
+        return self._constr
 
 
 def _broadcast_to_named(t, sizes):
@@ -222,6 +210,18 @@ def expand_to_batch_shape(tensor, batch_ndims, expanded_batch_shape):
     return expanded_tensor
 
 
+def is_eager_distribution(d: Expr[dist.Distribution]) -> bool:
+    return isinstance(d, dist.Distribution) and (
+        not isinstance(d, Term)
+        or all(
+            (not isinstance(x, Term) or is_eager_array(x))
+            for x in (*d.args, *d.kwargs.values())
+        )
+    )
+
+
+@Term.register
+@defdata.register(dist.Distribution)
 class _DistributionTerm(dist.Distribution):
     """A distribution wrapper that satisfies the Term interface.
 
@@ -254,7 +254,10 @@ class _DistributionTerm(dist.Distribution):
     @property
     def _pos_base_dist(self):
         if self.__pos_base_dist is None:
-            self.__pos_base_dist = bind_dims(self, *self._indices)
+            pos_dist = bind_dims(self, *self._indices)
+            self.__pos_base_dist = pos_dist.op._constr(
+                *pos_dist.args, **pos_dist.kwargs
+            )
         return self.__pos_base_dist
 
     @property
@@ -269,34 +272,55 @@ class _DistributionTerm(dist.Distribution):
     def kwargs(self):
         return self._kwargs
 
+    @defop  # type: ignore
     @property
     def batch_shape(self):
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.batch_shape[len(self._indices) :]
 
+    @defop  # type: ignore
     @property
     def has_rsample(self) -> bool:
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.has_rsample
 
+    @defop  # type: ignore
     @property
     def event_shape(self):
+        if not (is_eager_distribution(self)):
+            raise NotImplementedError
         return self._pos_base_dist.event_shape
-
-    def rsample(self, key, sample_shape=()):
-        return self._reindex_sample(
-            self._pos_base_dist.rsample(key, sample_shape), sample_shape
-        )
-
-    def sample(self, key, sample_shape=()):
-        return self._reindex_sample(
-            self._pos_base_dist.sample(key, sample_shape), sample_shape
-        )
 
     def _reindex_sample(self, value, sample_shape):
         index = (slice(None),) * len(sample_shape) + tuple(i() for i in self._indices)
         ret = jax_getitem(value, index)
         return ret
 
+    @defop
+    def rsample(self, key, sample_shape=()):
+        if not (is_eager_distribution(self) and is_eager_array(key)):
+            raise NotImplementedError
+
+        return self._reindex_sample(
+            self._pos_base_dist.rsample(key, sample_shape), sample_shape
+        )
+
+    @defop
+    def sample(self, key, sample_shape=()):
+        if not (is_eager_distribution(self) and is_eager_array(key)):
+            raise NotImplementedError
+
+        return self._reindex_sample(
+            self._pos_base_dist.sample(key, sample_shape), sample_shape
+        )
+
+    @defop
     def log_prob(self, value):
+        if not (is_eager_distribution(self) and is_eager_array(value)):
+            raise NotImplementedError
+
         # value has shape named_batch_shape + sample_shape + batch_shape + event_shape
         n_batch_event = len(self.batch_shape) + len(self.event_shape)
         sample_shape = (
@@ -318,24 +342,47 @@ class _DistributionTerm(dist.Distribution):
         ind_log_prob = self._reindex_sample(pos_log_prob, sample_shape)
         return ind_log_prob
 
+    @defop  # type: ignore
     @property
     def mean(self):
-        return self._reindex_sample(self._pos_base_dist.mean, ())
+        if not is_eager_distribution(self):
+            raise NotImplementedError
+        try:
+            return self._reindex_sample(self._pos_base_dist.mean, ())
+        except NotImplementedError:
+            raise RuntimeError(f"mean is not implemented for {type(self).__name__}")
 
+    @defop  # type: ignore
     @property
     def variance(self):
-        return self._reindex_sample(self._pos_base_dist.variance, ())
+        if not is_eager_distribution(self):
+            raise NotImplementedError
+        try:
+            return self._reindex_sample(self._pos_base_dist.variance, ())
+        except NotImplementedError:
+            raise RuntimeError(f"variance is not implemented for {type(self).__name__}")
 
+    @defop
     def enumerate_support(self, expand=True):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._reindex_sample(self._pos_base_dist.enumerate_support(expand), ())
 
+    @defop
     def entropy(self):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
         return self._pos_base_dist.entropy()
 
+    @defop
     def to_event(self, reinterpreted_batch_ndims=None):
         raise NotImplementedError
 
+    @defop
     def expand(self, batch_shape):
+        if not is_eager_distribution(self):
+            raise NotImplementedError
+
         def expand_arg(a, batch_shape):
             if is_eager_array(a):
                 return expand_to_batch_shape(a, len(self.batch_shape), batch_shape)
@@ -357,7 +404,67 @@ class _DistributionTerm(dist.Distribution):
         return Term.__str__(self)
 
 
-Term.register(_DistributionTerm)
+batch_shape = _DistributionTerm.batch_shape
+event_shape = _DistributionTerm.event_shape
+has_rsample = _DistributionTerm.has_rsample
+rsample = _DistributionTerm.rsample
+sample = _DistributionTerm.sample
+log_prob = _DistributionTerm.log_prob
+mean = _DistributionTerm.mean
+variance = _DistributionTerm.variance
+enumerate_support = _DistributionTerm.enumerate_support
+entropy = _DistributionTerm.entropy
+to_event = _DistributionTerm.to_event
+expand = _DistributionTerm.expand
+
+
+BernoulliLogits = defop(dist.BernoulliLogits)
+BernoulliProbs = defop(dist.BernoulliProbs)
+Beta = defop(dist.Beta)
+BinomialProbs = defop(dist.BinomialProbs)
+BinomialLogits = defop(dist.BinomialLogits)
+CategoricalLogits = defop(dist.CategoricalLogits)
+CategoricalProbs = defop(dist.CategoricalProbs)
+Cauchy = defop(dist.Cauchy)
+Chi2 = defop(dist.Chi2)
+Delta = defop(dist.Delta)
+Dirichlet = defop(dist.Dirichlet)
+DirichletMultinomial = defop(dist.DirichletMultinomial)
+Distribution = defop(dist.Distribution)
+Exponential = defop(dist.Exponential)
+Gamma = defop(dist.Gamma)
+GeometricLogits = defop(dist.GeometricLogits)
+GeometricProbs = defop(dist.GeometricProbs)
+Gumbel = defop(dist.Gumbel)
+HalfCauchy = defop(dist.HalfCauchy)
+HalfNormal = defop(dist.HalfNormal)
+Independent = defop(dist.Independent)
+Kumaraswamy = defop(dist.Kumaraswamy)
+LKJCholesky = defop(dist.LKJCholesky)
+Laplace = defop(dist.Laplace)
+LogNormal = defop(dist.LogNormal)
+Logistic = defop(dist.Logistic)
+LowRankMultivariateNormal = defop(dist.LowRankMultivariateNormal)
+MultinomialProbs = defop(dist.MultinomialProbs)
+MultinomialLogits = defop(dist.MultinomialLogits)
+MultivariateNormal = defop(dist.MultivariateNormal)
+NegativeBinomialProbs = defop(dist.NegativeBinomialProbs)
+NegativeBinomialLogits = defop(dist.NegativeBinomialLogits)
+Normal = defop(dist.Normal)
+Pareto = defop(dist.Pareto)
+Poisson = defop(dist.Poisson)
+RelaxedBernoulliLogits = defop(dist.RelaxedBernoulliLogits)
+StudentT = defop(dist.StudentT)
+Uniform = defop(dist.Uniform)
+VonMises = defop(dist.VonMises)
+Weibull = defop(dist.Weibull)
+Wishart = defop(dist.Wishart)
+
+
+def _dist_op(d: dist.Distribution):
+    op = globals().get(d.__name__)
+    assert op is not None, f"Missing operation for {d.__name__}"
+    return op
 
 
 @defterm.register(dist.Distribution)
@@ -375,188 +482,131 @@ def _embed_distribution(dist: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
 def _embed_loc_scale(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.scale)
+    return _dist_op(d)(d.loc, d.scale)
 
 
 @defterm.register(dist.BernoulliProbs)
 @defterm.register(dist.CategoricalProbs)
 @defterm.register(dist.GeometricProbs)
 def _embed_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.probs)
+    return _dist_op(d)(d.probs)
 
 
 @defterm.register(dist.BernoulliLogits)
 @defterm.register(dist.CategoricalLogits)
 @defterm.register(dist.GeometricLogits)
 def _embed_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.logits)
+    return _dist_op(d)(d.logits)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.concentration1, d.concentration0
-    )
+    return _dist_op(d)(d.concentration1, d.concentration0)
 
 
 @defterm.register(dist.BinomialProbs)
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
 def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.probs, d.total_count)
+    return _dist_op(d)(d.probs, d.total_count)
 
 
 @defterm.register(dist.BinomialLogits)
 @defterm.register(dist.NegativeBinomialLogits)
 @defterm.register(dist.MultinomialLogits)
 def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.logits, d.total_count)
+    return _dist_op(d)(d.logits, d.total_count)
 
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.df)
+    return _dist_op(d)(d.df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration)
+    return _dist_op(d)(d.concentration)
 
 
 @defterm.register
 def _embed_dirichlet_multinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.concentration, total_count=d.total_count
-    )
+    return _dist_op(d)(d.concentration, total_count=d.total_count)
 
 
 @defterm.register(dist.Exponential)
 @defterm.register(dist.Poisson)
 def _embed_exponential(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.rate)
+    return _dist_op(d)(d.rate)
 
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.concentration, d.rate)
+    return _dist_op(d)(d.concentration, d.rate)
 
 
 @defterm.register(dist.HalfCauchy)
 @defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d: dist.Distribution) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.scale)
+    return _dist_op(d)(d.scale)
 
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.dim, concentration=d.concentration
-    )
+    return _dist_op(d)(d.dim, concentration=d.concentration)
 
 
 @defterm.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.loc, scale_tril=d.scale_tril
-    )
+    return _dist_op(d)(d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.scale, d.alpha)
+    return _dist_op(d)(d.scale, d.alpha)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.low, d.high)
+    return _dist_op(d)(d.low, d.high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.loc, d.concentration)
+    return _dist_op(d)(d.loc, d.concentration)
 
 
 @defterm.register
 def _embed_weibull(d: dist.Weibull) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Weibull)(d.scale, d.concentration)
+    return _dist_op(d)(d.scale, d.concentration)
 
 
 @defterm.register
 def _embed_wishart(d: dist.Wishart) -> Term[dist.Distribution]:
-    return _register_distribution_op(dist.Wishart)(d.df, d.scale_tril)
+    return _dist_op(d)(d.df, d.scale_tril)
 
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.v, log_density=d.log_density, event_dim=d.event_dim
-    )
+    return _dist_op(d)(d.v, log_density=d.log_density, event_dim=d.event_dim)
 
 
 @defterm.register
 def _embed_low_rank_multivariate_normal(
     d: dist.LowRankMultivariateNormal,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.loc, d.cov_factor, d.cov_diag
-    )
+    return _dist_op(d)(d.loc, d.cov_factor, d.cov_diag)
 
 
 @defterm.register
 def _embed_relaxed_bernoulli_logits(
     d: dist.RelaxedBernoulliLogits,
 ) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(d.temperature, d.logits)
+    return _dist_op(d)(d.temperature, d.logits)
 
 
 @defterm.register
 def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
-    return _register_distribution_op(cast(Hashable, type(d)))(
-        d.base_dist, d.reinterpreted_batch_ndims
-    )
-
-
-BernoulliLogits = _register_distribution_op(dist.BernoulliLogits)
-BernoulliProbs = _register_distribution_op(dist.BernoulliProbs)
-Beta = _register_distribution_op(dist.Beta)
-BinomialProbs = _register_distribution_op(dist.BinomialProbs)
-BinomialLogits = _register_distribution_op(dist.BinomialLogits)
-CategoricalLogits = _register_distribution_op(dist.CategoricalLogits)
-CategoricalProbs = _register_distribution_op(dist.CategoricalProbs)
-Cauchy = _register_distribution_op(dist.Cauchy)
-Chi2 = _register_distribution_op(dist.Chi2)
-Delta = _register_distribution_op(dist.Delta)
-Dirichlet = _register_distribution_op(dist.Dirichlet)
-DirichletMultinomial = _register_distribution_op(dist.DirichletMultinomial)
-Distribution = _register_distribution_op(dist.Distribution)
-Exponential = _register_distribution_op(dist.Exponential)
-Gamma = _register_distribution_op(dist.Gamma)
-GeometricLogits = _register_distribution_op(dist.GeometricLogits)
-GeometricProbs = _register_distribution_op(dist.GeometricProbs)
-Gumbel = _register_distribution_op(dist.Gumbel)
-HalfCauchy = _register_distribution_op(dist.HalfCauchy)
-HalfNormal = _register_distribution_op(dist.HalfNormal)
-Independent = _register_distribution_op(dist.Independent)
-Kumaraswamy = _register_distribution_op(dist.Kumaraswamy)
-LKJCholesky = _register_distribution_op(dist.LKJCholesky)
-Laplace = _register_distribution_op(dist.Laplace)
-LogNormal = _register_distribution_op(dist.LogNormal)
-Logistic = _register_distribution_op(dist.Logistic)
-LowRankMultivariateNormal = _register_distribution_op(dist.LowRankMultivariateNormal)
-MultinomialProbs = _register_distribution_op(dist.MultinomialProbs)
-MultinomialLogits = _register_distribution_op(dist.MultinomialLogits)
-MultivariateNormal = _register_distribution_op(dist.MultivariateNormal)
-NegativeBinomialProbs = _register_distribution_op(dist.NegativeBinomialProbs)
-NegativeBinomialLogits = _register_distribution_op(dist.NegativeBinomialLogits)
-Normal = _register_distribution_op(dist.Normal)
-Pareto = _register_distribution_op(dist.Pareto)
-Poisson = _register_distribution_op(dist.Poisson)
-RelaxedBernoulliLogits = _register_distribution_op(dist.RelaxedBernoulliLogits)
-StudentT = _register_distribution_op(dist.StudentT)
-Uniform = _register_distribution_op(dist.Uniform)
-VonMises = _register_distribution_op(dist.VonMises)
-Weibull = _register_distribution_op(dist.Weibull)
-Wishart = _register_distribution_op(dist.Wishart)
+    return _dist_op(d)(d.base_dist, d.reinterpreted_batch_ndims)
