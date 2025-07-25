@@ -461,6 +461,12 @@ Weibull = defop(dist.Weibull)
 Wishart = defop(dist.Wishart)
 
 
+def _dist_op(d: dist.Distribution):
+    op = globals().get(d.__name__)
+    assert op is not None, f"Missing operation for {d.__name__}"
+    return op
+
+
 @defterm.register(dist.Distribution)
 def _embed_distribution(dist: dist.Distribution) -> Term[dist.Distribution]:
     raise ValueError(
@@ -476,131 +482,131 @@ def _embed_distribution(dist: dist.Distribution) -> Term[dist.Distribution]:
 @defterm.register(dist.Normal)
 @defterm.register(dist.StudentT)
 def _embed_loc_scale(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.loc, d.scale)
+    return _dist_op(d)(d.loc, d.scale)
 
 
 @defterm.register(dist.BernoulliProbs)
 @defterm.register(dist.CategoricalProbs)
 @defterm.register(dist.GeometricProbs)
 def _embed_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.probs)
+    return _dist_op(d)(d.probs)
 
 
 @defterm.register(dist.BernoulliLogits)
 @defterm.register(dist.CategoricalLogits)
 @defterm.register(dist.GeometricLogits)
 def _embed_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.logits)
+    return _dist_op(d)(d.logits)
 
 
 @defterm.register(dist.Beta)
 @defterm.register(dist.Kumaraswamy)
 def _embed_beta(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.concentration1, d.concentration0)
+    return _dist_op(d)(d.concentration1, d.concentration0)
 
 
 @defterm.register(dist.BinomialProbs)
 @defterm.register(dist.NegativeBinomialProbs)
 @defterm.register(dist.MultinomialProbs)
 def _embed_binomial_probs(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.probs, d.total_count)
+    return _dist_op(d)(d.probs, d.total_count)
 
 
 @defterm.register(dist.BinomialLogits)
 @defterm.register(dist.NegativeBinomialLogits)
 @defterm.register(dist.MultinomialLogits)
 def _embed_binomial_logits(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.logits, d.total_count)
+    return _dist_op(d)(d.logits, d.total_count)
 
 
 @defterm.register
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.df)
+    return _dist_op(d)(d.df)
 
 
 @defterm.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.concentration)
+    return _dist_op(d)(d.concentration)
 
 
 @defterm.register
 def _embed_dirichlet_multinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.concentration, total_count=d.total_count)
+    return _dist_op(d)(d.concentration, total_count=d.total_count)
 
 
 @defterm.register(dist.Exponential)
 @defterm.register(dist.Poisson)
 def _embed_exponential(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.rate)
+    return _dist_op(d)(d.rate)
 
 
 @defterm.register
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.concentration, d.rate)
+    return _dist_op(d)(d.concentration, d.rate)
 
 
 @defterm.register(dist.HalfCauchy)
 @defterm.register(dist.HalfNormal)
 def _embed_half_cauchy(d: dist.Distribution) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.scale)
+    return _dist_op(d)(d.scale)
 
 
 @defterm.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.dim, concentration=d.concentration)
+    return _dist_op(d)(d.dim, concentration=d.concentration)
 
 
 @defterm.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.loc, scale_tril=d.scale_tril)
+    return _dist_op(d)(d.loc, scale_tril=d.scale_tril)
 
 
 @defterm.register
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.scale, d.alpha)
+    return _dist_op(d)(d.scale, d.alpha)
 
 
 @defterm.register
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.low, d.high)
+    return _dist_op(d)(d.low, d.high)
 
 
 @defterm.register
 def _embed_von_mises(d: dist.VonMises) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.loc, d.concentration)
+    return _dist_op(d)(d.loc, d.concentration)
 
 
 @defterm.register
 def _embed_weibull(d: dist.Weibull) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.scale, d.concentration)
+    return _dist_op(d)(d.scale, d.concentration)
 
 
 @defterm.register
 def _embed_wishart(d: dist.Wishart) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.df, d.scale_tril)
+    return _dist_op(d)(d.df, d.scale_tril)
 
 
 @defterm.register
 def _embed_delta(d: dist.Delta) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.v, log_density=d.log_density, event_dim=d.event_dim)
+    return _dist_op(d)(d.v, log_density=d.log_density, event_dim=d.event_dim)
 
 
 @defterm.register
 def _embed_low_rank_multivariate_normal(
     d: dist.LowRankMultivariateNormal,
 ) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.loc, d.cov_factor, d.cov_diag)
+    return _dist_op(d)(d.loc, d.cov_factor, d.cov_diag)
 
 
 @defterm.register
 def _embed_relaxed_bernoulli_logits(
     d: dist.RelaxedBernoulliLogits,
 ) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.temperature, d.logits)
+    return _dist_op(d)(d.temperature, d.logits)
 
 
 @defterm.register
 def _embed_independent(d: dist.Independent) -> Term[dist.Distribution]:
-    return globals()[d.__name__](d.base_dist, d.reinterpreted_batch_ndims)
+    return _dist_op(d)(d.base_dist, d.reinterpreted_batch_ndims)
