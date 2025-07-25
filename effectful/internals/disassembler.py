@@ -14,6 +14,35 @@ Example:
     >>> ast_node = reconstruct(g)
     >>> # ast_node is now an ast.Expression representing the original expression
 """
+# Summary of Python 3.12 Bytecode Differences, by Claude Opus
+#
+# Based on my analysis of the disassembler module and Python documentation, here are the key bytecode differences in Python 3.12 relative to 3.10 and 3.13:
+#
+# Operations Missing in Current 3.12 Implementation:
+#
+# 1. BINARY_OP - In Python 3.12, individual binary operations (BINARY_ADD, BINARY_SUBTRACT, etc.) were replaced by a single BINARY_OP instruction with different argument values. The module currently only handles this for 3.13.
+# 2. Jump instruction changes - Python 3.12 still uses some older jump instructions but with different offset calculations compared to 3.10.
+# 3. Stack manipulation - Python 3.12 is in a transitional state:
+#   - Still has ROT_TWO, ROT_THREE, ROT_FOUR (like 3.10)
+#   - Doesn't have SWAP/COPY yet (introduced in 3.13)
+# 4. CALL changes - Python 3.12 has different CALL behavior than both 3.10 (CALL_FUNCTION) and 3.13 (unified CALL).
+# 5. Other missing operations for 3.12:
+#   - END_FOR (introduced in 3.12, currently only handled for 3.13)
+#   - CALL_INTRINSIC_1/CALL_INTRINSIC_2 (new in 3.12)
+#   - TO_BOOL (introduced in 3.12, currently only handled for 3.13)
+#   - Different MAKE_FUNCTION behavior
+#
+# Key Operations to Add for Python 3.12 Support:
+#
+# 1. Binary operations - Need BINARY_OP handler for 3.12
+# 2. Jump instructions - May need adjustments for 3.12-specific behavior
+# 3. Stack operations - Keep using ROT_* operations for 3.12
+# 4. Call operations - Need 3.12-specific CALL handling
+# 5. Intrinsic operations - Add CALL_INTRINSIC_1 for 3.12
+# 6. Boolean conversion - Add TO_BOOL for 3.12
+# 7. Loop control - Add END_FOR for 3.12
+#
+# The module is well-structured with version-specific handlers, so adding 3.12 support involves registering appropriate handlers with version=PythonVersion.PY_312 for operations that differ between versions.
 
 import ast
 import copy
@@ -118,6 +147,7 @@ class ReconstructionState:
 # Python version enum for version-specific handling
 class PythonVersion(enum.Enum):
     PY_310 = 10
+    PY_312 = 12
     PY_313 = 13
 
 
@@ -129,7 +159,7 @@ OP_HANDLERS: dict[str, OpHandler] = {}
 
 @typing.overload
 def register_handler(
-    opname: str, *, version: PythonVersion = PythonVersion(sys.version_info.minor)
+    opname: str, *, version: PythonVersion
 ) -> Callable[[OpHandler], OpHandler]: ...
 
 
@@ -138,7 +168,7 @@ def register_handler(
     opname: str,
     handler: OpHandler,
     *,
-    version: PythonVersion = PythonVersion(sys.version_info.minor),
+    version: PythonVersion,
 ) -> OpHandler: ...
 
 
@@ -146,7 +176,7 @@ def register_handler(
     opname: str,
     handler=None,
     *,
-    version: PythonVersion = PythonVersion(sys.version_info.minor),
+    version: PythonVersion,
 ):
     """Register a handler for a specific operation name and optional version"""
     if handler is None:
@@ -223,7 +253,9 @@ def handle_return_generator(
     return replace(state, result=new_result, stack=new_stack)
 
 
-@register_handler("YIELD_VALUE")
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_310)
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_312)
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
 def handle_yield_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -249,7 +281,9 @@ def handle_yield_value(
 # ============================================================================
 
 
-@register_handler("BUILD_LIST")
+@register_handler("BUILD_LIST", version=PythonVersion.PY_310)
+@register_handler("BUILD_LIST", version=PythonVersion.PY_312)
+@register_handler("BUILD_LIST", version=PythonVersion.PY_313)
 def handle_build_list(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -271,7 +305,9 @@ def handle_build_list(
         return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_APPEND")
+@register_handler("LIST_APPEND", version=PythonVersion.PY_310)
+@register_handler("LIST_APPEND", version=PythonVersion.PY_312)
+@register_handler("LIST_APPEND", version=PythonVersion.PY_313)
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -295,7 +331,9 @@ def handle_list_append(
 # ============================================================================
 
 
-@register_handler("BUILD_SET")
+@register_handler("BUILD_SET", version=PythonVersion.PY_310)
+@register_handler("BUILD_SET", version=PythonVersion.PY_312)
+@register_handler("BUILD_SET", version=PythonVersion.PY_313)
 def handle_build_set(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -314,7 +352,9 @@ def handle_build_set(
         return replace(state, stack=new_stack)
 
 
-@register_handler("SET_ADD")
+@register_handler("SET_ADD", version=PythonVersion.PY_310)
+@register_handler("SET_ADD", version=PythonVersion.PY_312)
+@register_handler("SET_ADD", version=PythonVersion.PY_313)
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -338,7 +378,9 @@ def handle_set_add(
 # ============================================================================
 
 
-@register_handler("BUILD_MAP")
+@register_handler("BUILD_MAP", version=PythonVersion.PY_310)
+@register_handler("BUILD_MAP", version=PythonVersion.PY_312)
+@register_handler("BUILD_MAP", version=PythonVersion.PY_313)
 def handle_build_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -363,7 +405,9 @@ def handle_build_map(
         return replace(state, stack=new_stack)
 
 
-@register_handler("MAP_ADD")
+@register_handler("MAP_ADD", version=PythonVersion.PY_310)
+@register_handler("MAP_ADD", version=PythonVersion.PY_312)
+@register_handler("MAP_ADD", version=PythonVersion.PY_313)
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -389,7 +433,9 @@ def handle_map_add(
 # ============================================================================
 
 
-@register_handler("RETURN_VALUE")
+@register_handler("RETURN_VALUE", version=PythonVersion.PY_310)
+@register_handler("RETURN_VALUE", version=PythonVersion.PY_312)
+@register_handler("RETURN_VALUE", version=PythonVersion.PY_313)
 def handle_return_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -405,7 +451,9 @@ def handle_return_value(
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
 
 
-@register_handler("FOR_ITER")
+@register_handler("FOR_ITER", version=PythonVersion.PY_310)
+@register_handler("FOR_ITER", version=PythonVersion.PY_312)
+@register_handler("FOR_ITER", version=PythonVersion.PY_313)
 def handle_for_iter(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -438,7 +486,9 @@ def handle_for_iter(
     return replace(state, stack=new_stack, result=new_ret)
 
 
-@register_handler("GET_ITER")
+@register_handler("GET_ITER", version=PythonVersion.PY_310)
+@register_handler("GET_ITER", version=PythonVersion.PY_312)
+@register_handler("GET_ITER", version=PythonVersion.PY_313)
 def handle_get_iter(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -448,7 +498,9 @@ def handle_get_iter(
     return state
 
 
-@register_handler("JUMP_FORWARD")
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_310)
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
 def handle_jump_forward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -519,7 +571,9 @@ def handle_reraise(
 # ============================================================================
 
 
-@register_handler("LOAD_FAST")
+@register_handler("LOAD_FAST", version=PythonVersion.PY_310)
+@register_handler("LOAD_FAST", version=PythonVersion.PY_312)
+@register_handler("LOAD_FAST", version=PythonVersion.PY_313)
 def handle_load_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -535,7 +589,9 @@ def handle_load_fast(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_DEREF")
+@register_handler("LOAD_DEREF", version=PythonVersion.PY_310)
+@register_handler("LOAD_DEREF", version=PythonVersion.PY_312)
+@register_handler("LOAD_DEREF", version=PythonVersion.PY_313)
 def handle_load_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -545,7 +601,9 @@ def handle_load_deref(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_CLOSURE")
+@register_handler("LOAD_CLOSURE", version=PythonVersion.PY_310)
+@register_handler("LOAD_CLOSURE", version=PythonVersion.PY_312)
+@register_handler("LOAD_CLOSURE", version=PythonVersion.PY_313)
 def handle_load_closure(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -555,7 +613,9 @@ def handle_load_closure(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_CONST")
+@register_handler("LOAD_CONST", version=PythonVersion.PY_310)
+@register_handler("LOAD_CONST", version=PythonVersion.PY_312)
+@register_handler("LOAD_CONST", version=PythonVersion.PY_313)
 def handle_load_const(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -564,7 +624,9 @@ def handle_load_const(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_GLOBAL")
+@register_handler("LOAD_GLOBAL", version=PythonVersion.PY_310)
+@register_handler("LOAD_GLOBAL", version=PythonVersion.PY_312)
+@register_handler("LOAD_GLOBAL", version=PythonVersion.PY_313)
 def handle_load_global(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -577,7 +639,9 @@ def handle_load_global(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_NAME")
+@register_handler("LOAD_NAME", version=PythonVersion.PY_310)
+@register_handler("LOAD_NAME", version=PythonVersion.PY_312)
+@register_handler("LOAD_NAME", version=PythonVersion.PY_313)
 def handle_load_name(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -587,7 +651,9 @@ def handle_load_name(
     return replace(state, stack=new_stack)
 
 
-@register_handler("STORE_FAST")
+@register_handler("STORE_FAST", version=PythonVersion.PY_310)
+@register_handler("STORE_FAST", version=PythonVersion.PY_312)
+@register_handler("STORE_FAST", version=PythonVersion.PY_313)
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -609,7 +675,9 @@ def handle_store_fast(
     return replace(state, stack=new_stack, result=new_result)
 
 
-@register_handler("STORE_DEREF")
+@register_handler("STORE_DEREF", version=PythonVersion.PY_310)
+@register_handler("STORE_DEREF", version=PythonVersion.PY_312)
+@register_handler("STORE_DEREF", version=PythonVersion.PY_313)
 def handle_store_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -730,7 +798,9 @@ def handle_copy_free_vars(
 # ============================================================================
 
 
-@register_handler("POP_TOP")
+@register_handler("POP_TOP", version=PythonVersion.PY_310)
+@register_handler("POP_TOP", version=PythonVersion.PY_312)
+@register_handler("POP_TOP", version=PythonVersion.PY_313)
 def handle_pop_top(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -974,7 +1044,16 @@ def handle_unary_op(
 
 
 handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub())
+    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_310
+)
+handle_unary_negative = register_handler(
+    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_312
+)
+handle_unary_negative = register_handler(
+    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_313
 )
 handle_unary_positive = register_handler(
     "UNARY_POSITIVE",
@@ -982,10 +1061,28 @@ handle_unary_positive = register_handler(
     version=PythonVersion.PY_310,
 )
 handle_unary_invert = register_handler(
-    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert())
+    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_310
+)
+handle_unary_invert = register_handler(
+    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_312
+)
+handle_unary_invert = register_handler(
+    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_313
 )
 handle_unary_not = register_handler(
-    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not())
+    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_310
+)
+handle_unary_not = register_handler(
+    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_312
+)
+handle_unary_not = register_handler(
+    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_313
 )
 
 
@@ -1051,7 +1148,9 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 }
 
 
-@register_handler("COMPARE_OP")
+@register_handler("COMPARE_OP", version=PythonVersion.PY_310)
+@register_handler("COMPARE_OP", version=PythonVersion.PY_312)
+@register_handler("COMPARE_OP", version=PythonVersion.PY_313)
 def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1069,7 +1168,9 @@ def handle_compare_op(
     return replace(state, stack=new_stack)
 
 
-@register_handler("CONTAINS_OP")
+@register_handler("CONTAINS_OP", version=PythonVersion.PY_310)
+@register_handler("CONTAINS_OP", version=PythonVersion.PY_312)
+@register_handler("CONTAINS_OP", version=PythonVersion.PY_313)
 def handle_contains_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1084,7 +1185,9 @@ def handle_contains_op(
     return replace(state, stack=new_stack)
 
 
-@register_handler("IS_OP")
+@register_handler("IS_OP", version=PythonVersion.PY_310)
+@register_handler("IS_OP", version=PythonVersion.PY_312)
+@register_handler("IS_OP", version=PythonVersion.PY_313)
 def handle_is_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1294,7 +1397,9 @@ def handle_load_attr(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BINARY_SUBSCR")
+@register_handler("BINARY_SUBSCR", version=PythonVersion.PY_310)
+@register_handler("BINARY_SUBSCR", version=PythonVersion.PY_312)
+@register_handler("BINARY_SUBSCR", version=PythonVersion.PY_313)
 def handle_binary_subscr(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1314,7 +1419,9 @@ def handle_binary_subscr(
 # ============================================================================
 
 
-@register_handler("UNPACK_SEQUENCE")
+@register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_310)
+@register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_312)
+@register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_313)
 def handle_unpack_sequence(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1335,7 +1442,9 @@ def handle_unpack_sequence(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BUILD_TUPLE")
+@register_handler("BUILD_TUPLE", version=PythonVersion.PY_310)
+@register_handler("BUILD_TUPLE", version=PythonVersion.PY_312)
+@register_handler("BUILD_TUPLE", version=PythonVersion.PY_313)
 def handle_build_tuple(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1355,7 +1464,9 @@ def handle_build_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BUILD_CONST_KEY_MAP")
+@register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_310)
+@register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_312)
+@register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_313)
 def handle_build_const_key_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1376,7 +1487,9 @@ def handle_build_const_key_map(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_EXTEND")
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_310)
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_312)
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
 def handle_list_extend(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1399,7 +1512,9 @@ def handle_list_extend(
     return replace(state, stack=new_stack, result=prev_result)
 
 
-@register_handler("SET_UPDATE")
+@register_handler("SET_UPDATE", version=PythonVersion.PY_310)
+@register_handler("SET_UPDATE", version=PythonVersion.PY_312)
+@register_handler("SET_UPDATE", version=PythonVersion.PY_313)
 def handle_set_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1417,7 +1532,9 @@ def handle_set_update(
     return replace(state, stack=new_stack, result=prev_result)
 
 
-@register_handler("DICT_UPDATE")
+@register_handler("DICT_UPDATE", version=PythonVersion.PY_310)
+@register_handler("DICT_UPDATE", version=PythonVersion.PY_312)
+@register_handler("DICT_UPDATE", version=PythonVersion.PY_313)
 def handle_dict_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
