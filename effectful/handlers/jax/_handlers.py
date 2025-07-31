@@ -163,6 +163,25 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     return _jax_op
 
 
+@functools.cache
+def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
+    # FIXME: Presumably not all jax ops return arrays. In other cases, we won't
+    # get the right kind of term.
+    @defop
+    def _jax_op(*args, **kwargs) -> jax.Array:
+        if not any(
+            tree.flatten(
+                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
+            )
+        ):
+            return typing.cast(jax.Array, jax_fn(*args, **kwargs))
+        else:
+            raise NotImplementedError
+
+    functools.update_wrapper(_jax_op, jax_fn)
+    return _jax_op
+
+
 @_register_jax_op
 def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     """Operation for indexing an array. Unlike the standard __getitem__ method,
