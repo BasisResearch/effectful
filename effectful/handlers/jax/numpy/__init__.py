@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import jax.numpy
 
-from ._handlers import _register_jax_op, _register_jax_op_no_partial_eval
+from .._handlers import _register_jax_op, _register_jax_op_no_partial_eval
 
 _no_overload = ["array", "asarray"]
 
