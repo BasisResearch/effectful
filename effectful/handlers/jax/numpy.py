@@ -2,8 +2,6 @@ from typing import TYPE_CHECKING
 
 import jax.numpy
 
-from effectful.ops.syntax import defop
-
 from ._handlers import _register_jax_op, _register_jax_op_no_partial_eval
 
 _no_overload = ["array", "asarray"]
