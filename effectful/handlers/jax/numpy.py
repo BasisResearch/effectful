@@ -2,16 +2,21 @@ from typing import TYPE_CHECKING
 
 import jax.numpy
 
-from ._handlers import _register_jax_op
+from ._handlers import _register_jax_op, _register_jax_op_no_partial_eval
 
 _no_overload = ["array", "asarray"]
 
 for name, op in jax.numpy.__dict__.items():
-    if callable(op):
-        globals()[name] = _register_jax_op(op)
+    if not callable(op):
+        continue
 
-for name in _no_overload:
-    globals()[name] = jax.numpy.__dict__[name]
+    jax_op = (
+        _register_jax_op_no_partial_eval(op)
+        if name in _no_overload
+        else _register_jax_op(op)
+    )
+    globals()[name] = jax_op
+
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:

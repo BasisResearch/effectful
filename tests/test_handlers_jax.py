@@ -357,3 +357,13 @@ def test_jax_iter():
     i = defop(jax.Array, name="i")
     with pytest.raises(TypeError):
         tuple(i())
+
+
+def test_jax_array():
+    x, y = defop(jax.Array), defop(jax.Array)
+
+    t1 = jnp.array([x()])
+    assert isinstance(t1, Term)
+
+    t2 = jnp.array([jax_getitem(jnp.array([1, 2, 3]), [y()])])
+    assert isinstance(t2, Term)
