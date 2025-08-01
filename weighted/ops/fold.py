@@ -8,7 +8,7 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
-from .semiring import Semiring
+from .monoid import Monoid
 
 type Streams[T] = Mapping[Operation[[], T], Iterable[T]]
 
@@ -23,7 +23,7 @@ type Body[T] = (
 
 @defop
 def fold[A, B, S, T, U: Body](
-    semiring: Semiring[S],
+    monoid: Monoid[S],
     streams: Annotated[Streams[T], Scoped[A]],
     body: Annotated[U, Scoped[A | B]],
 ) -> Annotated[U, Scoped[B]]:
@@ -83,9 +83,7 @@ def order_streams[T](streams: Streams[T]) -> list[Operation[[], T]]:
 
 class BaselineFold(ObjectInterpretation):
     @implements(fold)
-    def fold[T](
-        self, semiring: Semiring[T], streams: Streams[T], body: Body[T]
-    ) -> Body[T]:
+    def fold[T](self, monoid: Monoid[T], streams: Streams[T], body: Body[T]) -> Body[T]:
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]
@@ -100,5 +98,5 @@ class BaselineFold(ObjectInterpretation):
 
         loop_order = order_streams(streams)
         values = (_body_value(body, intp) for intp in generator(loop_order))
-        result = functools.reduce(functools.partial(_promote_add, semiring.add), values)
+        result = functools.reduce(functools.partial(_promote_add, monoid), values)
         return result

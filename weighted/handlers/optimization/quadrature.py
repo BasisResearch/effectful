@@ -10,9 +10,9 @@ from numpyro import distributions as dist
 from scipy.special import roots_hermite
 
 from weighted.handlers.jax import log_prob, reals
-from weighted.handlers.optimization.utils import mul_op, parse_terms
+from weighted.handlers.optimization.utils import parse_terms
 from weighted.ops.fold import fold
-from weighted.ops.semiring import LinAlg
+from weighted.ops.monoid import SumMonoid
 
 
 def _parse_gaussian_prob(term: Term):
@@ -56,14 +56,13 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         self.weights = jnp.array(weights) / jnp.sqrt(jax.numpy.pi)
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
-        if semiring is not LinAlg:
+    def fold(self, monoid, streams, body):
+        if monoid is not SumMonoid:
             return fwd()
 
         # Try to parse the body into a gaussian distribution
         # multiplied with some remaining term
-        mul = mul_op(semiring)
-        terms = parse_terms(body, mul)
+        mul, terms = parse_terms(body, monoid)
         for i, term in enumerate(terms):
             gaussian = _parse_gaussian_prob(term)
             if gaussian is not None:
@@ -85,4 +84,4 @@ class GaussHermiteQuadrature(ObjectInterpretation):
             x: jax_getitem(points, (fresh_index(),)),
         }
         new_body = jax_getitem(self.weights, (fresh_index(),)) * remaining_body
-        return fold(semiring, streams | new_streams, new_body)
+        return fold(monoid, streams | new_streams, new_body)

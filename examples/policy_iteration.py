@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from weighted.handlers.jax import D, ScanFold, key
 from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.semiring import add, mul
+from weighted.ops.monoid import add, mul
 from weighted.ops.sugar import ArgMax, Sum
 
 

@@ -14,9 +14,7 @@ from weighted.handlers.jax import (
     sample,
 )
 from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.fold import fold
-from weighted.ops.semiring import LinAlg
-from weighted.ops.sugar import ArgMin
+from weighted.ops.sugar import ArgMin, Sum
 
 
 def run_svi(data):
@@ -46,8 +44,7 @@ def run_svi(data):
         handler(LikelihoodWeightingFold(samples=100)),
         handler(jax_intp),
     ):
-        elbo = fold(
-            LinAlg,
+        elbo = Sum(
             {(latent_fairness, latent_fairness_w): dist.Beta(alpha_q(), beta_q())},
             -(
                 jnp.exp(latent_fairness_w())

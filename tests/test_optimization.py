@@ -28,7 +28,7 @@ from weighted.handlers.optimization.distribution import (
 )
 from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
 from weighted.ops.fold import BaselineFold, fold
-from weighted.ops.semiring import mul
+from weighted.ops.monoid import mul
 from weighted.ops.sugar import Max, Sum
 
 parameterize_base_intp = mark.parametrize(

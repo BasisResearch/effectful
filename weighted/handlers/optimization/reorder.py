@@ -10,37 +10,33 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 from scipy.cluster.hierarchy import DisjointSet
 
-from weighted.handlers.optimization.utils import mul_op, parse_terms
+from weighted.handlers.optimization.utils import parse_terms, parse_with_op
 from weighted.ops.fold import fold
-from weighted.ops.semiring import (
-    is_idempotent,
-    scalar_mul,
-)
 
 
 class FoldFusion(ObjectInterpretation):
     """Implements the identity
         fold(R, S1, fold(R, S2, body)) = fold(R, S1 ∪ S2, body)
 
-    This optimization fuses nested folds with the same semiring into a single fold
+    This optimization fuses nested folds with the same monoid into a single fold
     over the product of their streams, which can be more efficient.
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         # Only proceed if body is a fold operation.
         if not (isinstance(body, Term) and body.op is fold):
             return fwd()
 
         # Extract the inner fold's parameters.
-        inner_semiring, inner_streams, inner_body = body.args
+        inner_monoid, inner_streams, inner_body = body.args
 
-        # Only fuse if both folds use the same semiring.
-        if semiring != inner_semiring:
+        # Only fuse if both folds use the same monoid.
+        if monoid != inner_monoid:
             return fwd()
 
         # Return the fused fold.
-        return fold(semiring, streams | inner_streams, inner_body)
+        return fold(monoid, streams | inner_streams, inner_body)
 
 
 class FoldSplit(ObjectInterpretation):
@@ -52,17 +48,17 @@ class FoldSplit(ObjectInterpretation):
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
-        # Only proceed if body is a semiring addition.
-        if not (isinstance(body, Term) and body.op is semiring.add):
+    def fold(self, monoid, streams, body):
+        # Only proceed if body is a monoid addition.
+        if not (isinstance(body, Term) and body.op is monoid.add):
             return fwd()
 
         # Create separate D terms for each addend.
-        add_terms = parse_terms(body, semiring.add)
-        new_terms = (fold(semiring, streams, t) for t in add_terms)
+        add_terms = parse_with_op(body, monoid.add)
+        new_terms = (fold(monoid, streams, t) for t in add_terms)
 
         # Apply fold to the new body.
-        return reduce(semiring.add, new_terms, semiring.zero)
+        return reduce(monoid, new_terms, monoid.zero)
 
 
 class FoldPropagateUnusedStreams(ObjectInterpretation):
@@ -70,14 +66,14 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
     Implements the identity
         fold(R, S × S', body) = |S'| ⋅ fold(R, S, body)
             where fvsof(body) ∩ S' = ∅
-            and `⋅` is the scalar product of the semiring addition
+            and `⋅` is the scalar product of the monoid addition
 
     To be safe, streams that are open or used by dependent
     streams are never eliminated.
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         # A stream is redundant if it doesn't appear in the body or in another stream.
         stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
         fvs = fvsof(body) | stream_fvs
@@ -87,7 +83,7 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
         if len(redundant_streams) == 0:
             return fwd()
 
-        if not is_idempotent(semiring.add):
+        if not monoid.is_idempotent():
             # make sure we can calculate the length of each stream
             has_size = lambda x: is_eager_array(x) or isinstance(x, Sized)
             redundant_streams = {
@@ -101,8 +97,8 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
             constant = 1
 
         used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
-        new_fold = fold(semiring, used_streams, body)
-        return scalar_mul(semiring.add)(new_fold, constant)
+        new_fold = fold(monoid, used_streams, body)
+        return monoid.scalar_mul()(new_fold, constant)
 
 
 class FoldReorderReduction(ObjectInterpretation):
@@ -113,12 +109,8 @@ class FoldReorderReduction(ObjectInterpretation):
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
-        semiring_mul = mul_op(semiring)
-        if not (isinstance(body, Term) and body.op is semiring_mul):
-            return fwd()
-
-        terms = parse_terms(body, semiring_mul)
+    def fold(self, monoid, streams, body):
+        mul, terms = parse_terms(body, monoid)
 
         # only proceed if the body multiplies multiple tensors
         if len(terms) < 2 or not all(is_eager_array(t) for t in terms):
@@ -143,10 +135,10 @@ class FoldReorderReduction(ObjectInterpretation):
             in_vars = [x for i, x in enumerate(in_vars) if i not in fold_positions]
             in_vars.append(set(fold_out_vars))
 
-            new_fold = reduce(semiring.mul, fold_terms)
+            new_fold = reduce(mul, fold_terms)
             current_streams = {v: streams[v] for v in eliminated_vars}
             if len(current_streams) > 0:
-                new_fold = fold(semiring, current_streams, new_fold)
+                new_fold = fold(monoid, current_streams, new_fold)
             terms.append(new_fold)
 
         assert len(terms) == 1
@@ -214,7 +206,7 @@ class FoldFactorization(ObjectInterpretation):
         return var_sets.subsets()
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         if not isinstance(body, Term):
             return fwd()
 
@@ -222,7 +214,7 @@ class FoldFactorization(ObjectInterpretation):
         if len(set(streams.keys()) - fvsof(body)) > 0:
             return fwd()
 
-        terms = parse_terms(body, mul_op(semiring))
+        mul, terms = parse_terms(body, monoid)
         if len(terms) < 2:
             return fwd()
 
@@ -236,7 +228,7 @@ class FoldFactorization(ObjectInterpretation):
         for partition in partitions:
             partition_streams = {k: v for k, v in streams.items() if k in partition}
             partition_terms = [t for t in terms if len(fvsof(t) & partition) > 0]
-            partition_term = reduce(semiring.mul, partition_terms, semiring.one)
-            new_folds.append(fold(semiring, partition_streams, partition_term))
+            partition_term = reduce(mul, partition_terms)
+            new_folds.append(fold(monoid, partition_streams, partition_term))
 
-        return reduce(semiring.mul, new_folds)
+        return reduce(mul, new_folds)

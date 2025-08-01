@@ -1,29 +1,22 @@
-from effectful.handlers.jax import numpy as jnp
-from effectful.ops.types import Operation, Term
+from typing import Any
 
-from weighted.ops.semiring import (
-    LinAlg,
-    LogAlg,
-    MaxAlg,
-    MinAlg,
-)
+from effectful.ops.types import Term
+
+from weighted.ops.monoid import Monoid
 
 
-def mul_op(semiring):
-    if semiring is LinAlg:
-        return jnp.multiply
-    elif semiring is MinAlg:
-        return jnp.min
-    elif semiring is MaxAlg:
-        return jnp.max
-    elif semiring is LogAlg:
-        return jnp.add
-    else:
-        return None
+def parse_terms(value: Term, monoid: Monoid) -> tuple[Any, list[Term]]:
+    if not isinstance(value, Term):
+        return None, [value]
+    mul = value.op
+    if not monoid.distributes_with(mul):
+        return None, [value]
+
+    return mul, parse_with_op(value, mul)
 
 
-def parse_terms(value: Term, op: Operation) -> list[Term]:
+def parse_with_op(value: Term, op) -> list[Term]:
     if isinstance(value, Term) and value.op is op:
-        return sum((parse_terms(arg, op) for arg in value.args), [])
+        return sum((parse_with_op(arg, op) for arg in value.args), [])
     else:
         return [value]

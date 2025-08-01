@@ -5,7 +5,7 @@ from effectful.ops.types import Term
 
 from weighted.handlers.jax import D
 from weighted.ops.fold import fold
-from weighted.ops.semiring import ArgMaxAlg, ArgMinAlg, MaxAlg, MinAlg
+from weighted.ops.monoid import ArgMaxMonoid, ArgMinMonoid, MaxMonoid, MinMonoid
 
 
 class FlipOptimizationFold(ObjectInterpretation):
@@ -16,18 +16,18 @@ class FlipOptimizationFold(ObjectInterpretation):
     """
 
     @implements(fold)
-    def fold(self, semiring, streams, body, **kwargs):
-        # Only handle MaxAlg and ArgMaxAlg
-        if semiring not in (MaxAlg, ArgMaxAlg):
+    def fold(self, monoid, streams, body, **kwargs):
+        # Only handle MaxMonoid and ArgMaxMonoid
+        if monoid not in (MaxMonoid, ArgMaxMonoid):
             return fwd()
 
-        # Determine the target semiring (Min for Max, ArgMin for ArgMax)
-        target_semiring = MinAlg if semiring is MaxAlg else ArgMinAlg
+        # Determine the target monoid (Min for Max, ArgMin for ArgMax)
+        target_monoid = MinMonoid if monoid is MaxMonoid else ArgMinMonoid
 
         # Normalize the body to use D if it's not already
         if not (isinstance(body, Term) and body.op is D):
-            # For ArgMaxAlg, body should be a tuple of (value, arg)
-            if semiring is ArgMaxAlg:
+            # For ArgMaxMonoid, body should be a tuple of (value, arg)
+            if monoid is ArgMaxMonoid:
                 if not isinstance(body, tuple) or len(body) != 2:
                     return fwd()
                 body = D(((), body))
@@ -37,14 +37,14 @@ class FlipOptimizationFold(ObjectInterpretation):
         # For each key-value pair in the body
         new_args = []
         for indices, value in body.args:
-            if semiring is MaxAlg:
-                # For MaxAlg, just negate the value
+            if monoid is MaxMonoid:
+                # For MaxMonoid, just negate the value
                 new_value = -value
-            else:  # ArgMaxAlg
-                # For ArgMaxAlg, negate the first element of the tuple (the value)
+            else:  # ArgMaxMonoid
+                # For ArgMaxMonoid, negate the first element of the tuple (the value)
                 # but keep the second element (the arg) unchanged
                 if not (isinstance(value, tuple) and len(value) == 2):
-                    raise ValueError("Expected a tuple of (value, arg) for ArgMaxAlg")
+                    raise ValueError("Expected a tuple of (value, arg) for ArgMaxMonoid")
                 val, arg = value
                 new_value = (-val, arg)
 
@@ -54,16 +54,16 @@ class FlipOptimizationFold(ObjectInterpretation):
         new_body = D(*new_args)
 
         # Solve as a minimization problem
-        result = fold(target_semiring, streams, new_body, **kwargs)
+        result = fold(target_monoid, streams, new_body, **kwargs)
 
-        # For MaxAlg, negate the result back
-        if semiring is MaxAlg:
+        # For MaxMonoid, negate the result back
+        if monoid is MaxMonoid:
             if isinstance(result, dict):
                 return {k: -v for k, v in result.items()}
             else:
                 return -result
-        else:  # ArgMaxAlg
-            # For ArgMaxAlg, negate the first element of the result tuple back
+        else:  # ArgMaxMonoid
+            # For ArgMaxMonoid, negate the first element of the result tuple back
             if isinstance(result, dict):
                 return {k: (-v[0], v[1]) for k, v in result.items()}
             elif isinstance(result, tuple):

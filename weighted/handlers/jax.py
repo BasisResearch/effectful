@@ -29,13 +29,14 @@ from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
 from weighted.ops.fold import fold, order_streams
-from weighted.ops.semiring import (
-    ArgMaxAlg,
-    ArgMinAlg,
-    LinAlg,
-    LogAlg,
-    MaxAlg,
-    MinAlg,
+from weighted.ops.monoid import (
+    ArgMaxMonoid,
+    ArgMinMonoid,
+    LogSumMonoid,
+    MaxMonoid,
+    MinMonoid,
+    ProdMonoid,
+    SumMonoid,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,11 @@ class DenseTensorFold(ObjectInterpretation):
             tensor = jnp.sum(tensor, axis=0)
         return tensor
 
+    def _prod_reductor(self, tensor, dims):
+        for _ in range(dims):
+            tensor = jnp.prod(tensor, axis=0)
+        return tensor
+
     def _min_reductor(self, tensor, dims):
         for _ in range(dims):
             tensor = jnp.min(tensor, axis=0)
@@ -169,25 +175,27 @@ class DenseTensorFold(ObjectInterpretation):
         return tensor
 
     def _get_reductor(self, semi_ring):
-        if semi_ring == LinAlg:
+        if semi_ring == SumMonoid:
             return self._sum_reductor
-        elif semi_ring == MinAlg:
+        if semi_ring == ProdMonoid:
+            return self._prod_reductor
+        elif semi_ring == MinMonoid:
             return self._min_reductor
-        elif semi_ring == MaxAlg:
+        elif semi_ring == MaxMonoid:
             return self._max_reductor
-        elif semi_ring == ArgMinAlg:
+        elif semi_ring == ArgMinMonoid:
             return self._argmin_reductor
-        elif semi_ring == ArgMaxAlg:
+        elif semi_ring == ArgMaxMonoid:
             return self._argmax_reductor
-        elif semi_ring == LogAlg:
+        elif semi_ring == LogSumMonoid:
             return self._logaddexp_reductor
         else:
             return None
 
     @implements(fold)
     @timed(name="DenseTensorFold")
-    def fold(self, semiring, streams, body):
-        reductor = self._get_reductor(semiring)
+    def fold(self, monoid, streams, body):
+        reductor = self._get_reductor(monoid)
         if not (
             reductor and all(issubclass(typeof(s), jax.Array) for s in streams.values())
         ):
@@ -204,7 +212,7 @@ class DenseTensorFold(ObjectInterpretation):
 
         indices, value = body_indices[0]
 
-        if semiring in (ArgMinAlg, ArgMaxAlg):
+        if monoid in (ArgMinMonoid, ArgMaxMonoid):
             if not isinstance(value, tuple) and len(value) == 2:
                 raise ValueError("Expected a tuple of (value, arg) for argmin/argmax")
             value, arg = value
@@ -240,7 +248,7 @@ class DenseTensorFold(ObjectInterpretation):
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
 
-        if semiring in (ArgMinAlg, ArgMaxAlg):
+        if monoid in (ArgMinMonoid, ArgMaxMonoid):
             result_3, min_indices = result_3
 
             with handler(
@@ -267,7 +275,7 @@ class GradientOptimizationFold(ObjectInterpretation):
     Notes:
     - A single empty output index is expected. Nontrivial output indexes would in
     principle allow us to represent partial optimization problems like the following:
-    fold(MinAlg, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
+    fold(MinMonoid, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
 
     """
 
@@ -283,10 +291,10 @@ class GradientOptimizationFold(ObjectInterpretation):
         self.progress = progress
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         # TODO: handle mixed discrete/continuous optimization
         if not (
-            semiring in (MinAlg, ArgMinAlg)
+            monoid in (MinMonoid, ArgMinMonoid)
             and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
@@ -304,9 +312,9 @@ class GradientOptimizationFold(ObjectInterpretation):
             # TODO: handle indexed outputs
             return fwd()
 
-        if semiring is ArgMinAlg:
+        if monoid is ArgMinMonoid:
             if not isinstance(value, tuple) or len(value) != 2:
-                raise ValueError("Expected a tuple of (value, arg) for ArgMinAlg")
+                raise ValueError("Expected a tuple of (value, arg) for ArgMinMonoid")
             value, arg = value
 
         # Initialize parameters using provided init values or zeros
@@ -362,7 +370,7 @@ class GradientOptimizationFold(ObjectInterpretation):
 
         final_loss = loss(key, *param_values)
 
-        if semiring is MinAlg:
+        if monoid is MinMonoid:
             return final_loss
 
         with handler(
@@ -380,14 +388,14 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         self.samples = samples
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         if not (
-            semiring is LinAlg
+            monoid is SumMonoid
             and all(issubclass(typeof(v), Distribution) for v in streams.values())
         ):
-            reason = "semiring" if semiring is not LinAlg else "streams"
+            reason = "monoid" if monoid is not SumMonoid else "streams"
             logger.debug(
-                f"Skipping likelihood weighting (reason {reason}): fold({semiring}, {streams}, {body}"
+                f"Skipping likelihood weighting (reason {reason}): fold({monoid}, {streams}, {body}"
             )
             return fwd()
 
@@ -421,15 +429,15 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         with handler(sample_streams):
             body = evaluate(body)
 
-        return fold(LinAlg, index_streams, body)
+        return fold(SumMonoid, index_streams, body)
 
 
 class PytreeMapFold(ObjectInterpretation):
     """Map a fold over a pytree body."""
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
-        if not (semiring in (MinAlg, MaxAlg, LinAlg)):
+    def fold(self, monoid, streams, body):
+        if not (monoid in (MinMonoid, MaxMonoid, SumMonoid)):
             return fwd()
 
         body_indices = _parse_body(body)
@@ -452,7 +460,7 @@ class PytreeMapFold(ObjectInterpretation):
 
         flat_body = [
             fold(
-                semiring,
+                monoid,
                 streams,
                 D(*[(k, v) for (k, _), v in zip(body_indices, vs, strict=True)]),
             )
@@ -515,7 +523,7 @@ class ScanFold(ObjectInterpretation):
         self.min_length = min_length
 
     @implements(fold)
-    def fold(self, semiring, streams, body):
+    def fold(self, monoid, streams, body):
         # FIXME: This handler does not deal with the case where some but not all
         # stream variables form a chain
 
@@ -578,7 +586,7 @@ class ScanFold(ObjectInterpretation):
         for i, (var, _) in enumerate(chain[1:]):
             new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
 
-        return fold(semiring, new_streams, body)
+        return fold(monoid, new_streams, body)
 
 
 interpretation = functools.reduce(
