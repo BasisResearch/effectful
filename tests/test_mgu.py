@@ -2,7 +2,6 @@ from effectful.internals.mgu import mgu
 from effectful.ops.syntax import defop, syntactic_eq
 
 
-
 def test_mgu():
     x = defop(int, name="x")
     y = defop(int, name="y")
