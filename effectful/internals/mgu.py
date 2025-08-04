@@ -1,15 +1,19 @@
+import contextlib
 from typing import Any
 
+from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.syntax import deffn, syntactic_eq
 from effectful.ops.types import Term
 
 
-def mgu(*pairs, intp=None) -> dict | None:
-    if intp is None:
-        intp = {}
-    for t1, t2 in pairs:
-        intp = _mgu(t1, t2, intp)
-    return intp
+@contextlib.contextmanager
+def unify(term1: Any, term2: Any):
+    intp = dict(get_interpretation())
+
+    if _mgu(term1, term2, intp) is None:
+        raise NotImplementedError
+    with interpreter(intp):
+        yield intp
 
 
 def _mgu(term1: Any, term2: Any, intp: dict) -> dict | None:
