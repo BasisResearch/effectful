@@ -14,14 +14,14 @@ from jax.numpy import allclose, isclose
 
 from tests.utils import DEFAULT_TEST_FOLD_INTP
 from weighted.handlers.jax import (
-    D,
     DenseTensorFold,
     GradientOptimizationFold,
     PytreeMapFold,
     ScanFold,
-    reals,
 )
+from weighted.ops.distribution import D
 from weighted.ops.fold import fold
+from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
 
 parameterize_intp = pytest.mark.parametrize(

@@ -12,9 +12,6 @@ from pytest import mark, param
 from tests.utils import FOLD_TRANSFORMS
 from weighted.handlers.jax import (
     DenseTensorFold,
-    log_prob,
-    reals,
-    sample,
     syntactic_eq_jax,
 )
 from weighted.handlers.optimization import FoldPropagateUnusedStreams
@@ -27,7 +24,9 @@ from weighted.handlers.optimization.distribution import (
     interpretation as simplify_normals_intp,
 )
 from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
+from weighted.ops.distribution import log_prob, sample
 from weighted.ops.fold import BaselineFold, fold
+from weighted.ops.jax import reals
 from weighted.ops.monoid import mul
 from weighted.ops.sugar import Max, Sum
 

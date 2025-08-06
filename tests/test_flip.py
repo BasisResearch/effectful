@@ -3,9 +3,10 @@ import jax
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from weighted.handlers.jax import GradientOptimizationFold, reals
+from weighted.handlers.jax import GradientOptimizationFold
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.handlers.optimization import FlipOptimizationFold
+from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMax, Max
 
 

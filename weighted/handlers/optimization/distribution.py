@@ -6,7 +6,8 @@ from effectful.ops.semantics import coproduct, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 
-import weighted.handlers.jax as handler
+import weighted.ops.distribution as ops
+from weighted.handlers.jax import syntactic_eq_jax
 
 """
 Elementary transforms and simplification on Normal
@@ -28,7 +29,7 @@ class NormalVerticalFusion(ObjectInterpretation):
     @implements(dist.Normal)
     def Normal(self, loc, scale):
         match loc:
-            case Term(handler.sample, (_, Term(dist.Normal, (loc2, scale2)), _)):
+            case Term(ops.sample, (_, Term(dist.Normal, (loc2, scale2)), _)):
                 return dist.Normal(loc2, jnp.sqrt(scale**2 + scale2**2))
         return fwd()
 
@@ -43,9 +44,9 @@ class SampleMulConstantFusion(ObjectInterpretation):
     @implements(jnp.multiply)  # type: ignore
     def multiply(self, c, body):
         match body:
-            case Term(handler.sample, (key, Term(dist.Normal, (loc, scale)), shape)):
+            case Term(ops.sample, (key, Term(dist.Normal, (loc, scale)), shape)):
                 new_d = dist.Normal(c * loc, jnp.abs(c) * scale)
-                return handler.sample(key, new_d, shape)
+                return ops.sample(key, new_d, shape)
         return fwd()
 
 
@@ -60,13 +61,11 @@ class SampleAddNormalFusion(ObjectInterpretation):
     def add(self, a, b):
         match (a, b):
             case (
-                Term(handler.sample, (key1, Term(dist.Normal, (loc1, scale1)), shape1)),
-                Term(handler.sample, (key2, Term(dist.Normal, (loc2, scale2)), shape2)),
-            ) if handler.syntactic_eq_jax(shape1, shape2) and handler.syntactic_eq_jax(
-                key1, key2
-            ):
+                Term(ops.sample, (key1, Term(dist.Normal, (loc1, scale1)), shape1)),
+                Term(ops.sample, (key2, Term(dist.Normal, (loc2, scale2)), shape2)),
+            ) if syntactic_eq_jax(shape1, shape2) and syntactic_eq_jax(key1, key2):
                 new_d = dist.Normal(loc1 + loc2, jnp.sqrt(scale1**2 + scale2**2))
-                return handler.sample(key1, new_d, shape1)
+                return ops.sample(key1, new_d, shape1)
         return fwd()
 
 

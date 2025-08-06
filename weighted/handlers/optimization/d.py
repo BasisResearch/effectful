@@ -6,7 +6,7 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
 
-from weighted.handlers.jax import D
+from weighted.ops.distribution import D
 from weighted.ops.fold import fold
 
 

@@ -9,12 +9,11 @@ from jax.numpy import isclose
 from weighted.handlers.jax import (
     GradientOptimizationFold,
     LikelihoodWeightingFold,
-    log_prob,
-    reals,
-    sample,
 )
 from weighted.handlers.jax import interpretation as jax_intp
+from weighted.ops.distribution import log_prob, sample
 from weighted.ops.fold import BaselineFold
+from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMin, Sum
 
 # Expectation(

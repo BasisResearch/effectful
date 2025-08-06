@@ -1,7 +1,6 @@
 import functools
 import logging
 import operator
-from collections.abc import Iterable
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
@@ -9,7 +8,7 @@ import jax
 import optax
 import tree
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
+from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.semantics import (
     coproduct,
@@ -28,7 +27,9 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
+from weighted.ops.distribution import D, log_prob, sample
 from weighted.ops.fold import fold, order_streams
+from weighted.ops.jax import key, reals
 from weighted.ops.monoid import (
     ArgMaxMonoid,
     ArgMinMonoid,
@@ -65,47 +66,6 @@ def timed(f=None, name=None):
         return decorator
     # This handles the case when called without arguments: @timed
     return decorator(f)
-
-
-@defop
-def D(*args: tuple[tuple[int, ...], jax.Array]) -> jax.Array:
-    if not all(isinstance(kv, tuple) and len(kv) == 2 for kv in args):
-        raise ValueError("Expected a sequence of key-value pairs")
-    raise NotImplementedError
-
-
-@defop
-def key() -> jax.Array:
-    return jax.random.key(0)
-
-
-@defop
-def reals(*, shape: tuple[int, ...] = ()) -> Iterable[jax.Array]:
-    raise NotImplementedError
-
-
-@defop
-def sample(key: jax.Array, d: Distribution, sample_shape: tuple[int]) -> jax.Array:
-    if not (
-        isinstance(d, Distribution)
-        and (not isinstance(d, Term) or all(isinstance(a, jax.Array) for a in d.args))
-    ):
-        raise NotImplementedError
-    return d.sample(key, sample_shape=sample_shape)
-
-
-@defop
-def rsample(key, d: Distribution, sample_shape: tuple[int]) -> jax.Array:
-    if not (isinstance(d, Distribution) and isinstance(sample_shape, tuple)):
-        raise NotImplementedError
-    return d.rsample(key, sample_shape=sample_shape)
-
-
-@defop
-def log_prob(d: Distribution, value: jax.Array) -> jax.Array:  # todo
-    if not isinstance(d, Distribution) or not is_eager_array(value):
-        raise NotImplementedError
-    return _register_jax_op(d.log_prob)(value)
 
 
 def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:

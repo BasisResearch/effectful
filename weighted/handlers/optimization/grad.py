@@ -3,7 +3,7 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 
-from weighted.handlers.jax import D
+from weighted.ops.distribution import D
 from weighted.ops.fold import fold
 from weighted.ops.monoid import ArgMaxMonoid, ArgMinMonoid, MaxMonoid, MinMonoid
 

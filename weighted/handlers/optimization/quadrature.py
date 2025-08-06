@@ -9,8 +9,8 @@ from effectful.ops.types import Term
 from numpyro import distributions as dist
 from scipy.special import roots_hermite
 
-from weighted.handlers.jax import log_prob, reals
 from weighted.handlers.optimization.utils import parse_terms
+from weighted.ops.distribution import log_prob, reals
 from weighted.ops.fold import fold
 from weighted.ops.monoid import SumMonoid
 
