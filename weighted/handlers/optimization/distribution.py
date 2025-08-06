@@ -3,10 +3,10 @@ from functools import reduce
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import coproduct, fwd
-from effectful.ops.syntax import ObjectInterpretation, implements, syntactic_eq
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 
-from weighted.handlers.jax import sample
+import weighted.handlers.jax as handler
 
 """
 Elementary transforms and simplification on Normal
@@ -18,14 +18,6 @@ Note: these transforms preserve the distribution,
 """
 
 
-def _is_sample_term(x):
-    return isinstance(x, Term) and x.op is sample
-
-
-def _is_normal_term(x):
-    return isinstance(x, Term) and x.op is dist.Normal
-
-
 class NormalVerticalFusion(ObjectInterpretation):
     """
     Implements the identity
@@ -35,14 +27,10 @@ class NormalVerticalFusion(ObjectInterpretation):
 
     @implements(dist.Normal)
     def Normal(self, loc, scale):
-        if not _is_sample_term(loc):
-            return fwd()
-
-        body = loc.args[1]
-        if not _is_normal_term(body):
-            return fwd()
-        loc2, scale2 = body.args
-        return dist.Normal(loc2, jnp.sqrt(scale**2 + scale2**2))
+        match loc:
+            case Term(handler.sample, (_, Term(dist.Normal, (loc2, scale2)), _)):
+                return dist.Normal(loc2, jnp.sqrt(scale**2 + scale2**2))
+        return fwd()
 
 
 class SampleMulConstantFusion(ObjectInterpretation):
@@ -53,20 +41,12 @@ class SampleMulConstantFusion(ObjectInterpretation):
     """
 
     @implements(jnp.multiply)  # type: ignore
-    def multiply(self, a, b):
-        if _is_sample_term(a):
-            a, b = b, a
-
-        if not _is_sample_term(b) or isinstance(a, Term):
-            return fwd()
-
-        key, d, sample_shape = b.args
-        if not _is_normal_term(d):
-            return fwd()
-
-        mu, sigma = d.args
-        new_d = dist.Normal(a * mu, jnp.abs(a) * sigma)
-        return sample(key, new_d, sample_shape)
+    def multiply(self, c, body):
+        match body:
+            case Term(handler.sample, (key, Term(dist.Normal, (loc, scale)), shape)):
+                new_d = dist.Normal(c * loc, jnp.abs(c) * scale)
+                return handler.sample(key, new_d, shape)
+        return fwd()
 
 
 class SampleAddNormalFusion(ObjectInterpretation):
@@ -78,21 +58,16 @@ class SampleAddNormalFusion(ObjectInterpretation):
 
     @implements(jnp.add)  # type: ignore
     def add(self, a, b):
-        if not (_is_sample_term(a) and _is_sample_term(b)):
-            return fwd()
-
-        k1, d1, shape1 = a.args
-        k2, d2, shape2 = b.args
-
-        if not syntactic_eq(shape1, shape2):
-            return fwd()
-        if not (_is_normal_term(d1) and _is_normal_term(d2)):
-            return fwd()
-
-        mu1, sigma1 = d1.args
-        mu2, sigma2 = d2.args
-        new_d = dist.Normal(mu1 + mu2, jnp.sqrt(sigma1**2 + sigma2**2))
-        return sample(k1, new_d, shape1)
+        match (a, b):
+            case (
+                Term(handler.sample, (key1, Term(dist.Normal, (loc1, scale1)), shape1)),
+                Term(handler.sample, (key2, Term(dist.Normal, (loc2, scale2)), shape2)),
+            ) if handler.syntactic_eq_jax(shape1, shape2) and handler.syntactic_eq_jax(
+                key1, key2
+            ):
+                new_d = dist.Normal(loc1 + loc2, jnp.sqrt(scale1**2 + scale2**2))
+                return handler.sample(key1, new_d, shape1)
+        return fwd()
 
 
 interpretation = reduce(

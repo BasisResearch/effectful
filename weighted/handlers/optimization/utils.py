@@ -4,6 +4,10 @@ from effectful.ops.types import Term
 
 from weighted.ops.monoid import Monoid
 
+"""
+Parsing utilities for the program transforms.
+"""
+
 
 def parse_terms(value: Term, monoid: Monoid) -> tuple[Any, list[Term]]:
     if not isinstance(value, Term):
