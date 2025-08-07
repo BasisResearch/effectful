@@ -1,16 +1,18 @@
 import collections.abc
 import dataclasses
+import functools
 import itertools
 import numbers
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Mapping
 from typing import Any
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
 import tree
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-from effectful.ops.types import Term
+from effectful.ops.types import Interpretation, Term
 
 
 @dataclasses.dataclass
@@ -157,6 +159,40 @@ def arg_max(a, b):
 @defop
 def logaddexp(a, b):
     return jnp.logaddexp(a, b)
+
+
+def _promote_add(add, a, b):
+    if isinstance(a, Generator):
+        assert isinstance(b, Generator)
+        return (v for v in (*a, *b))
+    elif isinstance(a, Mapping):
+        assert isinstance(b, Mapping)
+        result = {
+            k: a[k]
+            if k not in b
+            else b[k]
+            if k not in a
+            else _promote_add(add, a[k], b[k])
+            for k in set(a) | set(b)
+        }
+        return result
+    elif callable(a):
+        assert callable(b)
+        return lambda *args, **kwargs: _promote_add(
+            add, a(*args, **kwargs), b(*args, **kwargs)
+        )
+    elif isinstance(a, Interpretation):
+        assert isinstance(b, Interpretation)
+        assert a.keys() == b.keys()
+        result = {k: _promote_add(add, handler(a)(a[k]), handler(b)(b[k])) for k in a}
+        return result
+    else:
+        return add(a, b)
+
+
+def promote(self):
+    add = functools.partial(_promote_add, self.add)
+    return Monoid(add, self.zero, "Promoted" + self.name)
 
 
 SumMonoid: Monoid[float] = Monoid(add, 0.0, "Sum")

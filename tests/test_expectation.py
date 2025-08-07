@@ -1,3 +1,5 @@
+import functools
+
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 import jax
@@ -12,8 +14,9 @@ from weighted.handlers.jax import (
 )
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.distribution import log_prob, sample
-from weighted.ops.fold import BaselineFold
+from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.jax import reals
+from weighted.ops.monoid import StreamChainMonoid, SumMonoid, promote
 from weighted.ops.sugar import ArgMin, Sum
 
 # Expectation(
@@ -56,6 +59,16 @@ def test_sampling():
     with handler({loc: deffn(0.0), scale: deffn(1.0)}):
         s3 = evaluate(s3_term)
     assert isinstance(s3, jax.Array)
+
+
+def test_stream_chain_fold():
+    x = defop(tuple, name="x")
+    y = defop(tuple, name="y")
+    streams = {x: (1, 2, 3), y: (4, 5)}
+    with handler(BaselineFold()):
+        expr = fold(StreamChainMonoid, streams, [(x(), y())])
+    expected = [(x, y) for x in (1, 2, 3) for y in (4, 5)]
+    assert list(expr) == expected
 
 
 def test_maximum_marginal_likelihood_smoke():
@@ -104,6 +117,7 @@ def run_expectation():
 
 def test_interpretation_body():
     with handler(BaselineFold()):
+        Sum2 = functools.partial(fold, promote(SumMonoid))
         w, x, y, z = (
             defop(int, name="w"),
             defop(int, name="x"),
@@ -111,13 +125,13 @@ def test_interpretation_body():
             defop(int, name="z"),
         )
 
-        intp = Sum(
+        intp = Sum2(
             {x: [1, 2, 3], y: (x() + 1,)}, {z: deffn(x() + y()), w: deffn(x() * y())}
         )
         assert evaluate(z(), intp=intp) == sum(x + y for x in [1, 2, 3] for y in [x + 1])
         assert evaluate(w(), intp=intp) == sum(x * y for x in [1, 2, 3] for y in [x + 1])
 
-        intp = Sum(
+        intp = Sum2(
             {x: [1, 2, 3], y: (x() + 1,)}, {z: lambda: x() + y(), w: lambda: z() + 2}
         )
         assert evaluate(w(), intp=intp) == sum(x + (x + 1) + 2 for x in [1, 2, 3])
@@ -131,7 +145,7 @@ def test_interpretation_body():
             defop(int, name="e"),
             defop(int, name="f"),
         )
-        intp_stream_deps = Sum(
+        intp_stream_deps = Sum2(
             {
                 a: [1, 2],  # a independent
                 b: [10, 20],  # b independent

@@ -30,35 +30,6 @@ def fold[A, B, S, T, U: Body](
     raise NotImplementedError
 
 
-def _promote_add(add, a: Body, b: Body) -> Body:
-    if isinstance(a, Generator):
-        assert isinstance(b, Generator)
-        return (v for v in (*a, *b))
-    elif isinstance(a, Mapping):
-        assert isinstance(b, Mapping)
-        result = {
-            k: a[k]
-            if k not in b
-            else b[k]
-            if k not in a
-            else _promote_add(add, a[k], b[k])
-            for k in set(a) | set(b)
-        }
-        return result
-    elif callable(a):
-        assert callable(b)
-        return lambda *args, **kwargs: _promote_add(
-            add, a(*args, **kwargs), b(*args, **kwargs)
-        )
-    elif isinstance(a, Interpretation):
-        assert isinstance(b, Interpretation)
-        assert a.keys() == b.keys()
-        result = {k: _promote_add(add, handler(a)(a[k]), handler(b)(b[k])) for k in a}
-        return result
-    else:
-        return add(a, b)
-
-
 def _body_value(body: Body, intp: Interpretation) -> Body:
     if isinstance(body, Interpretation):
         # TODO: This should be a product, but the implementation of product isn't quite correct.
@@ -98,5 +69,5 @@ class BaselineFold(ObjectInterpretation):
 
         loop_order = order_streams(streams)
         values = (_body_value(body, intp) for intp in generator(loop_order))
-        result = functools.reduce(functools.partial(_promote_add, monoid), values)
+        result = functools.reduce(monoid.add, values)  # type: ignore
         return result
