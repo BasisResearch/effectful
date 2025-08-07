@@ -8,6 +8,7 @@ from effectful.ops.types import Term
 
 import weighted.ops.distribution as ops
 from weighted.handlers.jax import syntactic_eq_jax
+from weighted.ops.distribution import kl_divergence
 
 """
 Elementary transforms and simplification on Normal
@@ -69,9 +70,29 @@ class SampleAddNormalFusion(ObjectInterpretation):
         return fwd()
 
 
+class NormalDivergence(ObjectInterpretation):
+    """
+    Exact computation of KL divergence on normal distributions.
+    """
+
+    def __init__(self, eps: float = 1e-8):
+        self.eps = eps
+
+    @implements(kl_divergence)
+    def kl_divergence(self, p, q):
+        match (p, q):
+            case (Term(dist.Normal, (mu1, s1)), Term(dist.Normal, (mu2, s2))):
+                mu_norm = (mu1 - mu2) ** 2
+                log_s2 = jnp.log(s2 + self.eps)
+                log_s1 = jnp.log(s1 + self.eps)
+                return log_s2 - log_s1 + (s1**2 + mu_norm) / (2 * s2**2) - 0.5
+        return fwd()
+
+
 interpretation = reduce(
     coproduct,  # type: ignore
     [
+        NormalDivergence(),
         NormalVerticalFusion(),
         SampleAddNormalFusion(),
         SampleMulConstantFusion(),

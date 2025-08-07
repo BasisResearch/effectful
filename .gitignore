@@ -89,3 +89,6 @@ out
 *.matrix.gz
 /docs/source/.ipynb_checkpoints/
 .aider*
+
+# datasets used by examples
+examples/data
