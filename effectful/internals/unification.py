@@ -483,7 +483,7 @@ def _(typ: typing.ParamSpec):
 
 @canonicalize.register
 def _(typ: typing.TypeVarTuple):
-    if typ.__default__ is not typing.NoDefault:
+    if getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None):
         raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
     return typ
 
