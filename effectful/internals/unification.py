@@ -207,11 +207,21 @@ def _unify_typevar(
 
 def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
     if isinstance(typ, TypeVariable) and isinstance(subtyp, TypeVariable):
-        return subs if typ == subtyp or subtyp is Ellipsis else {typ: subtyp, **subs}
+        if isinstance(typ, typing.TypeVar) and isinstance(subtyp, typing.TypeVar):
+            unify(typ.__bound__, subtyp.__bound__, subs)
+        return subs if typ == subtyp else {typ: subtyp, **subs}
     elif isinstance(typ, TypeVariable) and not isinstance(subtyp, TypeVariable):
+        if isinstance(typ, typing.TypeVar) and typ.__bound__ is not None:
+            unify(typ.__bound__, subtyp, subs)
         return unify(subs.get(typ, subtyp), subtyp, {typ: subtyp, **subs})
-    else:
+    elif (
+        not isinstance(typ, TypeVariable)
+        and isinstance(subtyp, TypeVariable)
+        and subtyp.__bound__ is None  # type: ignore
+    ):
         return unify(typ, subs.get(subtyp, typ), {subtyp: typ, **subs})
+    else:
+        raise TypeError(f"Cannot unify type variable {typ} with {subtyp} given {subs}.")
 
 
 @typing.overload
@@ -387,7 +397,7 @@ def _freshen(tp: typing.Any):
     """
     assert all(canonicalize(fv) is fv for fv in freetypevars(tp))
     subs: Substitutions = {
-        fv: typing.TypeVar(fv.__name__)
+        fv: typing.TypeVar(fv.__name__, bound=fv.__bound__)
         if isinstance(fv, typing.TypeVar)
         else typing.ParamSpec(fv.__name__)
         for fv in freetypevars(tp)
@@ -451,7 +461,6 @@ def _(typ: types.EllipsisType | None):
 def _(typ: typing.TypeVar):
     if (
         typ.__constraints__
-        or typ.__bound__
         or typ.__covariant__
         or typ.__contravariant__
         or getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None)
