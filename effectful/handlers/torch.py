@@ -489,6 +489,9 @@ class _TensorTerm(Term[torch.Tensor]):
     def __rmatmul__(self, other: torch.Tensor) -> torch.Tensor:
         return torch.matmul(other, typing.cast(torch.Tensor, self))
 
+    def __iter__(self):
+        raise TypeError("A free tensor is not iterable.")
+
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):

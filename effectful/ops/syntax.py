@@ -1265,7 +1265,9 @@ class _IteratorTerm[T](_IterableTerm[T], collections.abc.Iterator[T]):
 # @defdata.register(collections.abc.Reversible)
 class _ReversibleTerm[T](_IterableTerm[T], collections.abc.Reversible[T]):
     @defop
-    def __reversed__(self: collections.abc.Reversible[T]) -> collections.abc.Iterator[T]:
+    def __reversed__(
+        self: collections.abc.Reversible[T],
+    ) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
             return self.__reversed__()
         else:
@@ -1290,7 +1292,9 @@ class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
 
 
 @defdata.register(collections.abc.Sequence)
-class _SequenceTerm[T](_CollectionTerm[T], _ReversibleTerm[T], collections.abc.Sequence[T]):
+class _SequenceTerm[T](
+    _CollectionTerm[T], _ReversibleTerm[T], collections.abc.Sequence[T]
+):
     @defop
     def __getitem__(self: collections.abc.Sequence[T], index: int | slice) -> T:
         if not isinstance(self, Term) and not isinstance(index, Term):
@@ -1300,7 +1304,10 @@ class _SequenceTerm[T](_CollectionTerm[T], _ReversibleTerm[T], collections.abc.S
 
     @defop
     def index(
-        self: collections.abc.Sequence[T], value: T, start: int = 0, stop: int | None = None
+        self: collections.abc.Sequence[T],
+        value: T,
+        start: int = 0,
+        stop: int | None = None,
     ) -> int:
         if not isinstance(self, Term) and not isinstance(value, Term):
             return self.index(value, start, stop)
@@ -1333,43 +1340,57 @@ class _SetTerm[T](_CollectionTerm[T], collections.abc.Set[T]):
             raise NotImplementedError
 
     @defop
-    def __and__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T | V]:
+    def __and__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__and__(other)
         else:
             raise NotImplementedError
 
     @defop
-    def __or__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T | V]:
+    def __or__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__or__(other)
         else:
             raise NotImplementedError
 
     @defop
-    def __xor__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T | V]:
+    def __xor__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__xor__(other)
         else:
             raise NotImplementedError
 
-    def __rxor__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T | V]:
+    def __rxor__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
         """Right-hand side XOR operator for sets."""
         return type(self).__xor__(other, self)
 
     @defop
-    def __sub__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T]:
+    def __sub__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T]:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__sub__(other)
         else:
             raise NotImplementedError
 
-    def __rsub__[V](self: collections.abc.Set[T], other: collections.abc.Set[V]) -> collections.abc.Set[T]:
+    def __rsub__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T]:
         """Right-hand side subtraction operator for sets."""
         return type(self).__sub__(other, self)
 
     @defop
-    def isdisjoint[V](self: collections.abc.Set[T], other: collections.abc.Iterable[V]) -> bool:
+    def isdisjoint[V](
+        self: collections.abc.Set[T], other: collections.abc.Iterable[V]
+    ) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.isdisjoint(other)
         else:
@@ -1386,7 +1407,9 @@ class _MappingTerm[S, V](_CollectionTerm[S], collections.abc.Mapping[S, V]):
             raise NotImplementedError
 
     @defop
-    def __eq__(self: collections.abc.Mapping[S, V], other: collections.abc.Mapping[S, V]) -> bool:
+    def __eq__(
+        self: collections.abc.Mapping[S, V], other: collections.abc.Mapping[S, V]
+    ) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
         else:
@@ -1492,7 +1515,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return self.__pos__()
         else:
             raise NotImplementedError
-        
+
     @defop
     def __trunc__(self: numbers.Real) -> int:
         if not isinstance(self, Term):
@@ -1555,7 +1578,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return operator.__add__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __radd__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__add__(self)
@@ -1570,7 +1593,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return operator.__sub__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rsub__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__sub__(self)
@@ -1578,14 +1601,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__sub__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __mul__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__mul__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rmul__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__mul__(self)
@@ -1593,14 +1616,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__mul__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __truediv__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__truediv__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rtruediv__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__truediv__(self)
@@ -1608,14 +1631,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__truediv__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __floordiv__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__floordiv__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rfloordiv__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__floordiv__(self)
@@ -1623,14 +1646,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__floordiv__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __mod__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__mod__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rmod__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__mod__(self)
@@ -1638,7 +1661,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__mod__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __pow__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
@@ -1653,14 +1676,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__pow__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __lshift__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__lshift__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rlshift__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__lshift__(self)
@@ -1668,14 +1691,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__lshift__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __rshift__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__rshift__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rrshift__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__rshift__(self)
@@ -1683,14 +1706,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__rshift__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __and__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__and__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rand__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__and__(self)
@@ -1698,14 +1721,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__and__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __xor__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__xor__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __rxor__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__xor__(self)
@@ -1713,14 +1736,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return type(self).__xor__(other, self)
         else:
             return NotImplemented
-        
+
     @defop
     def __or__(self: T, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__or__(self, other)
         else:
             raise NotImplementedError
-        
+
     def __ror__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
             return other.__or__(self)

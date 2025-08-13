@@ -100,6 +100,9 @@ class _ArrayTerm(Term[jax.Array]):
     def size(self) -> Expr[int]:
         return jnp.size(cast(jax.Array, self))
 
+    def __len__(self):
+        return self.shape[0]
+
     @property
     def ndim(self) -> Expr[int]:
         return jnp.ndim(cast(jax.Array, self))
@@ -217,14 +220,14 @@ class _ArrayTerm(Term[jax.Array]):
         """Return an IndexUpdateHelper for array updates."""
         return _IndexUpdateHelper(self)
 
+    def __iter__(self):
+        raise TypeError("A free array is not iterable.")
+
 
 class _EagerArrayTerm(_ArrayTerm):
     def __init__(self, op, tensor, key):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
         super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
-
-    def __len__(self):
-        return self.shape[0]
 
     def __iter__(self):
         for i in range(len(self)):

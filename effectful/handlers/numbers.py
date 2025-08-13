@@ -6,7 +6,6 @@ import numbers
 
 from effectful.ops.syntax import defdata
 
-
 add = defdata.dispatch(numbers.Number).__add__
 neg = defdata.dispatch(numbers.Number).__neg__
 pos = defdata.dispatch(numbers.Number).__pos__
@@ -21,7 +20,7 @@ eq = defdata.dispatch(numbers.Number).__eq__
 lt = defdata.dispatch(numbers.Number).__lt__
 le = defdata.dispatch(numbers.Number).__le__
 gt = defdata.dispatch(numbers.Number).__gt__
-ge = defdata.dispatch(numbers.Number).__ge__  
+ge = defdata.dispatch(numbers.Number).__ge__
 index = defdata.dispatch(numbers.Number).__index__
 lshift = defdata.dispatch(numbers.Number).__lshift__
 rshift = defdata.dispatch(numbers.Number).__rshift__
