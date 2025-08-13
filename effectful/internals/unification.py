@@ -207,12 +207,8 @@ def _unify_typevar(
 
 def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
     if isinstance(typ, TypeVariable) and isinstance(subtyp, TypeVariable):
-        if isinstance(typ, typing.TypeVar) and isinstance(subtyp, typing.TypeVar):
-            unify(typ.__bound__, subtyp.__bound__, subs)
         return subs if typ == subtyp else {typ: subtyp, **subs}
     elif isinstance(typ, TypeVariable) and not isinstance(subtyp, TypeVariable):
-        if isinstance(typ, typing.TypeVar) and typ.__bound__ is not None:
-            unify(typ.__bound__, subtyp, subs)
         return unify(subs.get(typ, subtyp), subtyp, {typ: subtyp, **subs})
     elif (
         not isinstance(typ, TypeVariable)
@@ -574,6 +570,14 @@ def _(typ: typing._ProtocolMeta):
 @canonicalize.register
 def _(typ: typing._UnpackGenericAlias):  # type: ignore
     raise TypeError(f"Cannot canonicalize type {typ}")
+
+
+@canonicalize.register
+def _(typ: typing.ForwardRef):
+    if typ.__forward_value__ is not None:
+        return canonicalize(typ.__forward_value__)
+    else:
+        raise TypeError(f"Cannot canonicalize lazy ForwardRef {typ}.")
 
 
 @functools.singledispatch
