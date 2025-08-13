@@ -256,16 +256,15 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
         for arg in typing.get_args(subtyp):
             subs = unify(typ, arg, subs)
         return subs
-    elif isinstance(typ, UnionType) and not freetypevars(subtyp):
-        any_succeeded = False
+    elif isinstance(typ, UnionType):
+        unifiers: list[Substitutions] = []
         for arg in typing.get_args(typ):
             try:
-                subs = unify(arg, subtyp, subs)
-                any_succeeded = True
+                unifiers.append(unify(arg, subtyp, subs))
             except TypeError:  # noqa
                 continue
-        if any_succeeded:
-            return subs
+        if len(unifiers) > 0 and all(u == unifiers[0] for u in unifiers):
+            return unifiers[0]
     raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
@@ -332,7 +331,14 @@ def _unify_signature(
         raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
 
     for name, param in typ.parameters.items():
-        if param.annotation is inspect.Parameter.empty or name not in subtyp.arguments:
+        if param.annotation is inspect.Parameter.empty:
+            continue
+
+        if name not in subtyp.arguments:
+            assert param.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }
             continue
 
         ptyp, psubtyp = param.annotation, subtyp.arguments[name]
