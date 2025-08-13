@@ -14,7 +14,6 @@ from effectful.ops.types import Term
 logger = logging.getLogger(__name__)
 
 T = typing.TypeVar("T")
-S = typing.TypeVar("S")
 
 
 def test_lambda_calculus_1():
