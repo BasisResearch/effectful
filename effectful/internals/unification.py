@@ -379,8 +379,9 @@ def _freshen(tp: typing.Any):
         >>> _freshen(T) == T
         False
     """
+    assert all(canonicalize(fv) is fv for fv in freetypevars(tp))
     subs: Substitutions = {
-        fv: typing.TypeVar(fv.__name__, bound=fv.__bound__)
+        fv: typing.TypeVar(fv.__name__)
         if isinstance(fv, typing.TypeVar)
         else typing.ParamSpec(fv.__name__)
         for fv in freetypevars(tp)
@@ -441,7 +442,34 @@ def _(typ: types.EllipsisType | None):
 
 
 @canonicalize.register
-def _(typ: typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec):
+def _(typ: typing.TypeVar):
+    if (
+        typ.__constraints__
+        or typ.__bound__
+        or typ.__covariant__
+        or typ.__contravariant__
+        or typ.__default__ is not typing.NoDefault
+    ):
+        raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
+    return typ
+
+
+@canonicalize.register
+def _(typ: typing.ParamSpec):
+    if (
+        typ.__bound__
+        or typ.__covariant__
+        or typ.__contravariant__
+        or typ.__default__ is not typing.NoDefault
+    ):
+        raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
+    return typ
+
+
+@canonicalize.register
+def _(typ: typing.TypeVarTuple):
+    if typ.__default__ is not typing.NoDefault:
+        raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
     return typ
 
 
