@@ -256,7 +256,7 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
         for arg in typing.get_args(subtyp):
             subs = unify(typ, arg, subs)
         return subs
-    elif isinstance(typ, UnionType):
+    elif isinstance(typ, UnionType) and not freetypevars(subtyp):
         any_succeeded = False
         for arg in typing.get_args(typ):
             try:
