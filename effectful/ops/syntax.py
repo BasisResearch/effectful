@@ -2,13 +2,13 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import numbers
+import operator
 import random
 import types
 import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate
-
-import tree
 
 from effectful.ops.types import Annotation, Expr, Operation, Term
 
@@ -355,16 +355,17 @@ class Scoped(Annotation):
                     else:
                         param_bound_vars = {param_value}
                 elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use tree.flatten here because we want to be able
-                    # to see dict keys
+
                     def extract_operations(obj):
                         if isinstance(obj, Operation):
                             param_bound_vars.add(obj)
-                        elif isinstance(obj, dict):
+                        elif isinstance(obj, collections.abc.Mapping):
                             for k, v in obj.items():
                                 extract_operations(k)
                                 extract_operations(v)
-                        elif isinstance(obj, list | set | tuple):
+                        elif isinstance(
+                            obj, collections.abc.Sequence | collections.abc.Set
+                        ):
                             for v in obj:
                                 extract_operations(v)
 
@@ -535,6 +536,10 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
 
+    @property
+    def __isabstractmethod__(self) -> bool:
+        return False
+
     def __eq__(self, other):
         if not isinstance(other, Operation):
             return NotImplemented
@@ -662,7 +667,7 @@ def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
 def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+        if not any(isinstance(a, Term) for a in (*args, *kwargs.values())):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
@@ -872,18 +877,6 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
-def _map_structure_and_keys(func, structure):
-    def _map_value(value):
-        if isinstance(value, dict):
-            return {func(k): v for k, v in value.items()}
-        elif not tree.is_nested(value):
-            return func(value)
-        else:
-            return value
-
-    return tree.traverse(_map_value, structure, top_down=False)
-
-
 @_CustomSingleDispatchCallable
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -960,9 +953,6 @@ def defdata[T](
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = _map_structure_and_keys(
-                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-            )
             res = evaluate(
                 v,
                 intp={
@@ -982,6 +972,8 @@ def defdata[T](
     return typed_term
 
 
+@defterm.register(str)
+@defterm.register(bytes)
 @defterm.register(object)
 @defterm.register(Operation)
 @defterm.register(Term)
@@ -989,48 +981,6 @@ def defdata[T](
 @defterm.register(types.BuiltinFunctionType)
 def _[T](value: T) -> T:
     return value
-
-
-@defdata.register(object)
-class _BaseTerm[T](Term[T]):
-    _op: Operation[..., T]
-    _args: collections.abc.Sequence[Expr]
-    _kwargs: collections.abc.Mapping[str, Expr]
-
-    def __init__(
-        self,
-        op: Operation[..., T],
-        *args: Expr,
-        **kwargs: Expr,
-    ):
-        self._op = op
-        self._args = args
-        self._kwargs = kwargs
-
-    def __eq__(self, other) -> bool:
-        from effectful.ops.syntax import syntactic_eq
-
-        return syntactic_eq(self, other)
-
-    @property
-    def op(self):
-        return self._op
-
-    @property
-    def args(self):
-        return self._args
-
-    @property
-    def kwargs(self):
-        return self._kwargs
-
-
-@defdata.register(collections.abc.Callable)
-class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
-    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.semantics import call
-
-        return call(self, *args, **kwargs)  # type: ignore
 
 
 def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
@@ -1097,30 +1047,6 @@ def defstream[S, T, A, B](
     raise NotImplementedError
 
 
-@defdata.register(collections.abc.Iterable)
-class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
-    @defop
-    def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
-        if not isinstance(self, Term):
-            return iter(self)
-        else:
-            raise NotImplementedError
-
-
-@defdata.register(collections.abc.Iterator)
-class _IteratorTerm[T](_IterableTerm[T]):
-    @defop
-    def __next__(self: collections.abc.Iterator[T]) -> T:
-        if not isinstance(self, Term):
-            return next(self)
-        else:
-            raise NotImplementedError
-
-
-iter_ = _IterableTerm.__iter__
-next_ = _IteratorTerm.__next__
-
-
 def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
@@ -1133,21 +1059,28 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
+        return (
+            op == op2
+            and len(args) == len(args2)
+            and set(kwargs) == set(kwargs2)
+            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
         )
     elif isinstance(x, Term) or isinstance(other, Term):
         return False
+    elif isinstance(x, collections.abc.Mapping) and isinstance(
+        other, collections.abc.Mapping
+    ):
+        return all(
+            k in x and k in other and syntactic_eq(x[k], other[k])
+            for k in set(x) | set(other)
+        )
+    elif isinstance(x, collections.abc.Sequence) and isinstance(
+        other, collections.abc.Sequence
+    ):
+        return len(x) == len(other) and all(
+            syntactic_eq(a, b) for a, b in zip(x, other)
+        )
     else:
         return x == other
 
@@ -1263,3 +1196,606 @@ def implements[**P, V](op: Operation[P, V]):
 
     """
     return _ImplementedOperation(op)
+
+
+@defdata.register(object)
+class _BaseTerm[T](Term[T]):
+    _op: Operation[..., T]
+    _args: collections.abc.Sequence[Expr]
+    _kwargs: collections.abc.Mapping[str, Expr]
+
+    def __init__(
+        self,
+        op: Operation[..., T],
+        *args: Expr,
+        **kwargs: Expr,
+    ):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    def __eq__(self, other) -> bool:
+        from effectful.ops.syntax import syntactic_eq
+
+        return syntactic_eq(self, other)
+
+    @property
+    def op(self):
+        return self._op
+
+    @property
+    def args(self):
+        return self._args
+
+    @property
+    def kwargs(self):
+        return self._kwargs
+
+
+@defdata.register(collections.abc.Callable)
+class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
+    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
+        from effectful.ops.semantics import call
+
+        return call(self, *args, **kwargs)  # type: ignore
+
+
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm[T](
+    _BaseTerm[collections.abc.Iterable[T]], collections.abc.Iterable[T]
+):
+    @defop
+    def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
+        if not isinstance(self, Term):
+            return self.__iter__()
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterator)
+class _IteratorTerm[T](_IterableTerm[T], collections.abc.Iterator[T]):
+    @defop
+    def __next__(self: collections.abc.Iterator[T]) -> T:
+        if not isinstance(self, Term):
+            return self.__next__()
+        else:
+            raise NotImplementedError
+
+
+# @defdata.register(collections.abc.Reversible)
+class _ReversibleTerm[T](_IterableTerm[T], collections.abc.Reversible[T]):
+    @defop
+    def __reversed__(
+        self: collections.abc.Reversible[T],
+    ) -> collections.abc.Iterator[T]:
+        if not isinstance(self, Term):
+            return self.__reversed__()
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Collection)
+class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
+    @defop
+    def __len__(self: collections.abc.Sized) -> int:
+        if not isinstance(self, Term):
+            return self.__len__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __contains__(self: collections.abc.Container[T], item: T) -> bool:
+        if not isinstance(self, Term) and not isinstance(item, Term):
+            return self.__contains__(item)
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Sequence)
+class _SequenceTerm[T](
+    _CollectionTerm[T], _ReversibleTerm[T], collections.abc.Sequence[T]
+):
+    @defop
+    def __getitem__(self: collections.abc.Sequence[T], index: int | slice) -> T:
+        if not isinstance(self, Term) and not isinstance(index, Term):
+            return self.__getitem__(index)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def index(
+        self: collections.abc.Sequence[T],
+        value: T,
+        start: int = 0,
+        stop: int | None = None,
+    ) -> int:
+        if not isinstance(self, Term) and not isinstance(value, Term):
+            return self.index(value, start, stop)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def count(self: collections.abc.Sequence[T], value: T) -> int:
+        if not isinstance(self, Term) and not isinstance(value, Term):
+            return self.count(value)
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Set)
+@functools.total_ordering
+class _SetTerm[T](_CollectionTerm[T], collections.abc.Set[T]):
+    @defop
+    def __eq__(self: collections.abc.Set[T], other: collections.abc.Set[T]) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__eq__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __lt__(self: collections.abc.Set[T], other: collections.abc.Set[T]) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__lt__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __and__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__and__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __or__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__or__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __xor__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__xor__(other)
+        else:
+            raise NotImplementedError
+
+    def __rxor__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T | V]:
+        """Right-hand side XOR operator for sets."""
+        return type(self).__xor__(other, self)
+
+    @defop
+    def __sub__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T]:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__sub__(other)
+        else:
+            raise NotImplementedError
+
+    def __rsub__[V](
+        self: collections.abc.Set[T], other: collections.abc.Set[V]
+    ) -> collections.abc.Set[T]:
+        """Right-hand side subtraction operator for sets."""
+        return type(self).__sub__(other, self)
+
+    @defop
+    def isdisjoint[V](
+        self: collections.abc.Set[T], other: collections.abc.Iterable[V]
+    ) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.isdisjoint(other)
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Mapping)
+class _MappingTerm[S, V](_CollectionTerm[S], collections.abc.Mapping[S, V]):
+    @defop
+    def __getitem__(self: collections.abc.Mapping[S, V], key: S) -> V:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self.__getitem__(key)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __eq__(
+        self: collections.abc.Mapping[S, V], other: collections.abc.Mapping[S, V]
+    ) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__eq__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def keys(self: collections.abc.Mapping[S, V]) -> collections.abc.Set[S]:
+        if not isinstance(self, Term):
+            return self.keys()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def values(self: collections.abc.Mapping[S, V]) -> collections.abc.Collection[V]:
+        if not isinstance(self, Term):
+            return self.values()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def items(self: collections.abc.Mapping[S, V]) -> collections.abc.Set[tuple[S, V]]:
+        if not isinstance(self, Term):
+            return self.items()
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(numbers.Number)
+@functools.total_ordering
+class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
+    def __hash__(self):
+        return id(self)
+
+    def __complex__(self) -> complex:
+        raise ValueError("Cannot convert term to complex number")
+
+    def __float__(self) -> float:
+        raise ValueError("Cannot convert term to float")
+
+    def __int__(self) -> int:
+        raise ValueError("Cannot convert term to int")
+
+    def __bool__(self) -> bool:
+        raise ValueError("Cannot convert term to bool")
+
+    @defop
+    @property
+    def real(self: numbers.Complex) -> float:
+        if not isinstance(self, Term):
+            return self.real
+        else:
+            raise NotImplementedError
+
+    @defop
+    @property
+    def imag(self: numbers.Complex) -> float:
+        if not isinstance(self, Term):
+            return self.imag
+        else:
+            raise NotImplementedError
+
+    @defop
+    def conjugate(self: T) -> T:
+        if not isinstance(self, Term):
+            return self.conjugate()
+        else:
+            raise NotImplementedError
+
+    @defop
+    @property
+    def numerator(self: numbers.Rational) -> int:
+        if not isinstance(self, Term):
+            return self.numerator
+        else:
+            raise NotImplementedError
+
+    @defop
+    @property
+    def denominator(self: numbers.Rational) -> int:
+        if not isinstance(self, Term):
+            return self.denominator
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __abs__(self: numbers.Complex) -> float:
+        """Return the absolute value of the term."""
+        if not isinstance(self, Term):
+            return self.__abs__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __neg__(self: T) -> T:
+        if not isinstance(self, Term):
+            return self.__neg__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __pos__(self: T) -> T:
+        if not isinstance(self, Term):
+            return self.__pos__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __trunc__(self: numbers.Real) -> int:
+        if not isinstance(self, Term):
+            return self.__trunc__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __floor__(self: numbers.Real) -> int:
+        if not isinstance(self, Term):
+            return self.__floor__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __ceil__(self: numbers.Real) -> int:
+        if not isinstance(self, Term):
+            return self.__ceil__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __round__(self: numbers.Real, ndigits: int | None = None) -> int | float:
+        if not isinstance(self, Term) and not isinstance(ndigits, Term):
+            return self.__round__(ndigits)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __invert__(self: numbers.Integral) -> int:
+        if not isinstance(self, Term):
+            return self.__invert__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __index__(self: numbers.Integral) -> int:
+        if not isinstance(self, Term):
+            return self.__index__()
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __eq__(self: numbers.Complex, other: numbers.Complex) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__eq__(other)
+        else:
+            return syntactic_eq(self, other)
+
+    @defop
+    def __lt__(self: numbers.Real, other: numbers.Real) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__lt__(other)
+        else:
+            raise NotImplementedError
+
+    @defop
+    def __add__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__add__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __radd__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__add__(self)
+        elif not isinstance(other, Term):
+            return type(self).__add__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __sub__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__sub__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rsub__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__sub__(self)
+        elif not isinstance(other, Term):
+            return type(self).__sub__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __mul__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__mul__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rmul__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__mul__(self)
+        elif not isinstance(other, Term):
+            return type(self).__mul__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __truediv__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__truediv__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rtruediv__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__truediv__(self)
+        elif not isinstance(other, Term):
+            return type(self).__truediv__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __floordiv__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__floordiv__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rfloordiv__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__floordiv__(self)
+        elif not isinstance(other, Term):
+            return type(self).__floordiv__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __mod__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__mod__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rmod__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__mod__(self)
+        elif not isinstance(other, Term):
+            return type(self).__mod__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __pow__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__pow__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rpow__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__pow__(self)
+        elif not isinstance(other, Term):
+            return type(self).__pow__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __lshift__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__lshift__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rlshift__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__lshift__(self)
+        elif not isinstance(other, Term):
+            return type(self).__lshift__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __rshift__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__rshift__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rrshift__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__rshift__(self)
+        elif not isinstance(other, Term):
+            return type(self).__rshift__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __and__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__and__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rand__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__and__(self)
+        elif not isinstance(other, Term):
+            return type(self).__and__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __xor__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__xor__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __rxor__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__xor__(self)
+        elif not isinstance(other, Term):
+            return type(self).__xor__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __or__(self: T, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__or__(self, other)
+        else:
+            raise NotImplementedError
+
+    def __ror__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__or__(self)
+        elif not isinstance(other, Term):
+            return type(self).__or__(other, self)
+        else:
+            return NotImplemented
+
+
+# # numbers.Complex polymorphic binary methods
+# __add__, __radd__ = _wrapper_generator(operator.__add__)
+# __sub__, __rsub__ = _wrapper_generator(operator.__sub__)
+# __mul__, __rmul__ = _wrapper_generator(operator.__mul__)
+# __truediv__, __rtruediv__ = _wrapper_generator(operator.__truediv__)
+# __pow__, __rpow__ = _wrapper_generator(operator.__pow__)
+
+# # numbers.Real polymorphic binary methods
+# __floordiv__, __rfloordiv__ = _wrapper_generator(operator.__floordiv__)
+# __mod__, __rmod__ = _wrapper_generator(operator.__mod__)
+
+# # numbers.Integral polymorphic binary methods
+# __lshift__, __rlshift__ = _wrapper_generator(operator.__lshift__)
+# __rshift__, __rrshift__ = _wrapper_generator(operator.__rshift__)
+# __and__, __rand__ = _wrapper_generator(operator.__and__)
+# __xor__, __rxor__ = _wrapper_generator(operator.__xor__)
+# __or__, __ror__ = _wrapper_generator(operator.__or__)
+
+
+@defdata.register(numbers.Complex)
+@numbers.Complex.register
+class _ComplexTerm[T: numbers.Complex](_NumberTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Real)
+@numbers.Real.register
+class _RealTerm[T: numbers.Real](_ComplexTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Rational)
+@numbers.Rational.register
+class _RationalTerm[T: numbers.Rational](_RealTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Integral)
+@numbers.Integral.register
+class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
+    pass
+
+
+@defdata.register(bool)
+class _BoolTerm[T: bool](_IntegralTerm[T]):
+    pass
