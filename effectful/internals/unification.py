@@ -448,7 +448,7 @@ def _(typ: typing.TypeVar):
         or typ.__bound__
         or typ.__covariant__
         or typ.__contravariant__
-        or typ.__default__ is not typing.NoDefault
+        or getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None)
     ):
         raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
     return typ
@@ -460,7 +460,7 @@ def _(typ: typing.ParamSpec):
         typ.__bound__
         or typ.__covariant__
         or typ.__contravariant__
-        or typ.__default__ is not typing.NoDefault
+        or getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None)
     ):
         raise TypeError(f"Cannot canonicalize typevar {typ} with nonempty attributes")
     return typ
