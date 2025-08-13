@@ -217,7 +217,7 @@ def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
     elif (
         not isinstance(typ, TypeVariable)
         and isinstance(subtyp, TypeVariable)
-        and subtyp.__bound__ is None  # type: ignore
+        and getattr(subtyp, "__bound__", None) is None
     ):
         return unify(typ, subs.get(subtyp, typ), {subtyp: typ, **subs})
     else:
