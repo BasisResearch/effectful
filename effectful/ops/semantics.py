@@ -266,7 +266,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
     elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
-            return expr  # type: ignore
+            return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.Set):
