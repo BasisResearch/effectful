@@ -278,13 +278,16 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     elif isinstance(expr, collections.abc.ValuesView):
         return [evaluate(item) for item in expr]  # type: ignore
     elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-        return dataclasses.replace(
-            expr,
-            **{
-                field.name: evaluate(getattr(expr, field.name))
-                for field in dataclasses.fields(expr)
-            },
-        )  # type: ignore
+        return typing.cast(
+            T,
+            dataclasses.replace(
+                expr,
+                **{
+                    field.name: evaluate(getattr(expr, field.name))
+                    for field in dataclasses.fields(expr)
+                },
+            ),
+        )
     else:
         return typing.cast(T, expr)
 
