@@ -10,7 +10,6 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
-    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
@@ -111,13 +110,6 @@ def test_operation_metadata():
     assert f_op != ff_op
 
 
-def test_map_structure_and_keys():
-    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
-    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
-    actual = _map_structure_and_keys(lambda x: x + 1, s)
-    assert actual == expected
-
-
 def test_scoped_collections():
     """Test that Scoped annotations work with tree-structured collections containing Operations."""
 
@@ -151,13 +143,13 @@ def test_scoped_collections():
     # Test with nested collections
     @defop
     def let_nested[S, T, A, B](
-        bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
+        bindings: Annotated[tuple[tuple[Operation[[], T], T], ...], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
         raise NotImplementedError
 
     w = defop(int, name="w")
-    nested_bindings = [(x, 1), (y, 2)]
+    nested_bindings = ((x, 1), (y, 2))
     term2 = let_nested(nested_bindings, x() + y() + w())
     free_vars2 = fvsof(term2)
 
