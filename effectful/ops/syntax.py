@@ -533,10 +533,6 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
 
-    @property
-    def __isabstractmethod__(self) -> bool:
-        return False
-
     def __eq__(self, other):
         if not isinstance(other, Operation):
             return NotImplemented
