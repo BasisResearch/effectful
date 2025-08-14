@@ -265,17 +265,22 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
         else:
             return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
-    elif isinstance(expr, collections.abc.Sequence | collections.abc.Set):
+    elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
-            return expr  # type: ignore
-        elif isinstance(expr, collections.abc.MappingView):
-            return [evaluate(item) for item in expr]  # type: ignore
+            return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.Set):
+        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
+            return {evaluate(item) for item in expr}  # type: ignore
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.ValuesView):
+        return [evaluate(item) for item in expr]  # type: ignore
     elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return dataclasses.replace(expr, **evaluate(dataclasses.asdict(expr)))  # type: ignore
     else:
-        return expr  # type: ignore
+        return expr
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
