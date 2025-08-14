@@ -1,5 +1,6 @@
 import collections.abc
 import contextlib
+import dataclasses
 import functools
 import types
 import typing
@@ -271,6 +272,8 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             return [evaluate(item) for item in expr]  # type: ignore
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return dataclasses.replace(expr, **evaluate(dataclasses.asdict(expr)))  # type: ignore
     else:
         return expr  # type: ignore
 

@@ -1144,6 +1144,15 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
         return len(x) == len(other) and all(
             syntactic_eq(a, b) for a, b in zip(x, other)
         )
+    elif (
+        dataclasses.is_dataclass(x)
+        and not isinstance(x, type)
+        and dataclasses.is_dataclass(other)
+        and not isinstance(other, type)
+    ):
+        return type(x) == type(other) and syntactic_eq(
+            dataclasses.asdict(x), dataclasses.asdict(other)
+        )
     else:
         return x == other
 
