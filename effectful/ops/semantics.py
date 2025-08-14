@@ -1,5 +1,6 @@
 import collections.abc
 import contextlib
+import dataclasses
 import functools
 import types
 import typing
@@ -276,8 +277,19 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.ValuesView):
         return [evaluate(item) for item in expr]  # type: ignore
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return typing.cast(
+            T,
+            dataclasses.replace(
+                expr,
+                **{
+                    field.name: evaluate(getattr(expr, field.name))
+                    for field in dataclasses.fields(expr)
+                },
+            ),
+        )
     else:
-        return expr
+        return typing.cast(T, expr)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
