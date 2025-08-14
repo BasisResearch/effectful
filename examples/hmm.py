@@ -1,107 +1,90 @@
 import argparse
-from functools import reduce
-from operator import mul
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax, jax_getitem
-from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import defop
+from effectful.handlers.jax import jax
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import deffn, defop
 from jax import random
+from jax.numpy.linalg import norm
 
-from weighted.handlers.jax import D, DenseTensorFold
-from weighted.handlers.optimization import FoldEliminateDterm, FoldReorderReduction
+from weighted.handlers.jax import DenseTensorFold
+from weighted.handlers.optimization import FoldReorderReduction
+from weighted.handlers.optimization.plates import PlateUnrolling, plated
 from weighted.ops.sugar import Sum
 
 
-class HMM:
-    def __init__(self, emission_size: int, hidden_size: int):
-        self.emission_size = emission_size
-        self.hidden_size = hidden_size
-        self.transitions = defop(jax.Array, name="transition_matrix")
-        self.emissions = defop(jax.Array, name="emission_matrix")
-        self.initial_state = defop(jax.Array, name="initial_state")
+def construct_hmm():
+    """
+    Returns an open term for a simple HMM model.
+    where the observed variables (x) only depend on the latent
+    variables (z), and the latents are conditionally independent
+    given direct ancestor.
 
-    def as_d(self, observed_emissions: jax.Array):
-        time_steps = observed_emissions.size + 1
-        hidden_vars = {t: defop(jax.Array, name=f"h{t}") for t in range(time_steps)}
-        emission_vars = {t: defop(jax.Array, name=f"e{t}") for t in range(time_steps)}
-        emission_streams = {
-            op: jnp.arange(self.emission_size) for op in emission_vars.values()
-        }
-        hidden_streams = {op: jnp.arange(self.hidden_size) for op in hidden_vars.values()}
-        streams = emission_streams | hidden_streams
-        hidden_vars = {k: v() for k, v in hidden_vars.items()}  # type: ignore
-        emission_vars = {k: v() for k, v in emission_vars.items()}  # type: ignore
+     z[t-1] --> z[t] --> z[t+1]
+        |        |         |
+        V        V         V
+     x[t-1]     x[t]     x[t+1]
+    """
+    t = defop(jax.Array, name="t")()  # time index
+    z = defop(jax.Array, name="z")()  # latent state index
+    x = defop(jax.Array, name="x")()  # emission index
 
-        factors = [jax_getitem(self.initial_state(), (hidden_vars[0],))]  # type: ignore
-        for t in range(time_steps):
-            factor = jax_getitem(self.emissions(), (hidden_vars[t], emission_vars[t]))  # type: ignore
-            factors.append(factor)
-            if t > 0:
-                factor = jax_getitem(
-                    self.transitions(),  # type: ignore
-                    (hidden_vars[t - 1], hidden_vars[t]),
-                )
-                factors.append(factor)
+    t_stream = {t.op: jnp.arange(args.nb_time_steps)}
+    z_stream = {z.op: jnp.arange(args.latent_size)}
+    x_stream = {x.op: jnp.arange(args.emission_size)}
 
-        for t, observation in enumerate(observed_emissions):
-            v = jax.nn.one_hot(observation, self.emission_size)
-            factors.append(jax_getitem(v, (emission_vars[t],)))
+    transition_factor = defop(jax.Array, name="transition")()
+    emission_factor = defop(jax.Array, name="emission")()
+    initial_state = defop(jax.Array, name="initial")()
+    observation = defop(jax.Array, name="observation")()
 
-        body = reduce(mul, factors)
-        d_indices = (emission_vars[time_steps - 1],)
-        return Sum(streams, D((d_indices, body)))  # type: ignore
+    hmm_factor = (
+        initial_state[z[0]]
+        * emission_factor[z[t], x[t]]
+        * transition_factor[z[t], z[t + 1]]
+        * observation[t, x[t]]
+    )
+    hmm = plated(t_stream, Sum(z_stream | x_stream, hmm_factor))
 
-    def get_interpretation(self, t_matrix, e_matrix, i_matrix):
-        # make sure everything is nice and normalized
-        t_matrix /= t_matrix.sum(axis=-1, keepdims=True)
-        e_matrix /= e_matrix.sum(axis=-1, keepdims=True)
-        i_matrix /= i_matrix.sum(axis=-1, keepdims=True)
+    param_ops = (transition_factor, emission_factor, initial_state, observation)
+    param_ops = (x.op for x in param_ops)
+    return hmm, param_ops
 
-        return {
-            self.transitions: lambda: t_matrix,
-            self.emissions: lambda: e_matrix,
-            self.initial_state: lambda: i_matrix,
-        }
+
+def create_hmm_params(transition_op, emission_op, initial_state_op, observation_op):
+    key = random.PRNGKey(0)
+    key1, key2, key3, key4 = random.split(key, 4)
+
+    params = {
+        transition_op: random.uniform(key1, (args.latent_size, args.latent_size)),
+        emission_op: random.uniform(key2, (args.latent_size, args.emission_size)),
+        initial_state_op: random.uniform(key3, (args.latent_size,)),
+        observation_op: random.randint(
+            key4, (args.nb_time_steps,), 0, args.emission_size
+        ),
+    }
+    for op in (transition_op, emission_op, initial_state_op):
+        params[op] /= norm(params[op], axis=-1, keepdims=True)
+    params[observation_op] = jax.nn.one_hot(params[observation_op], args.emission_size)
+
+    return {k: deffn(v) for k, v in params.items()}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hidden_size", type=int, default=4)
+    parser.add_argument("--latent_size", type=int, default=4)
     parser.add_argument("--emission_size", type=int, default=3)
     parser.add_argument("--nb_time_steps", type=int, default=2)
     args = parser.parse_args()
 
-    # first, let's create some tensors to parameterize the HMM
-    key = random.PRNGKey(42)
-    key1, key2, key3, key4 = random.split(key, 4)
-    matrices = [
-        random.uniform(key1, (args.hidden_size, args.hidden_size)),
-        random.uniform(key2, (args.hidden_size, args.emission_size)),
-        random.uniform(key3, (args.hidden_size,)),
-    ]
+    # first, we construct an abstract HMM
+    with handler(PlateUnrolling()):
+        model, param_ops = construct_hmm()
 
-    # the dummy observation we want to do inference on
-    evidence = random.randint(key4, (args.nb_time_steps,), 0, args.emission_size)
+    # next, we create arrays for the open HMM params
+    param_intp = create_hmm_params(*param_ops)
 
-    # second, we construct an abstract HMM
-    model = HMM(args.emission_size, args.hidden_size)
-    hmm_term = model.as_d(evidence)
-
-    # now we do inference by interpreting the hmm parameters and folding
-    hmm_interpretation = model.get_interpretation(*matrices)
-
-    fold_interpretation = [
-        DenseTensorFold(),
-        FoldReorderReduction(),
-        FoldEliminateDterm(),
-    ]
-    fold_interpretation = reduce(coproduct, fold_interpretation)  # type: ignore
-
-    # note: do not evaluate the parameters of the HMM before folding,
-    # or jax will try to construct the full joint distribution like a mad man
-
-    with handler(fold_interpretation), handler(hmm_interpretation):  # type: ignore
-        result: jax.Array = evaluate(hmm_term)  # type: ignore
-
-    print("Next token prediction conditional on", evidence, "is", jnp.argmax(result))
+    # finally, we do inference :)
+    with handler(param_intp), handler(DenseTensorFold()), handler(FoldReorderReduction()):
+        result = evaluate(model)
+    print(result)
