@@ -564,13 +564,17 @@ def test_eval_dataclass():
     p1 = Point(x(), y())
     p2 = Point(x() + 1, y() + 1)
     line = Line(p1, p2)
-    lines = Lines(Point(0, 0), [line])
+    lines = Lines(p1, [line])
 
     assert {x, y} <= fvsof(lines)
+
+    assert p1 == lines.origin
 
     with handler({x: lambda: 3, y: lambda: 4}):
         evaluated_lines = evaluate(lines)
 
     assert isinstance(evaluated_lines, Lines)
-    assert evaluated_lines.origin == Point(3, 4)
-    assert len(evaluated_lines.lines) == 1
+    assert evaluated_lines == Lines(
+        origin=Point(3, 4),
+        lines=[Line(Point(3, 4), Point(4, 5))],
+    )

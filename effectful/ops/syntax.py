@@ -1147,7 +1147,11 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
         and not isinstance(other, type)
     ):
         return type(x) == type(other) and syntactic_eq(
-            dataclasses.asdict(x), dataclasses.asdict(other)
+            {field.name: getattr(x, field.name) for field in dataclasses.fields(x)},
+            {
+                field.name: getattr(other, field.name)
+                for field in dataclasses.fields(other)
+            },
         )
     else:
         return x == other
