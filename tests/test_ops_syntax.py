@@ -143,13 +143,13 @@ def test_scoped_collections():
     # Test with nested collections
     @defop
     def let_nested[S, T, A, B](
-        bindings: Annotated[tuple[tuple[Operation[[], T], T], ...], Scoped[A]],
+        bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
         raise NotImplementedError
 
     w = defop(int, name="w")
-    nested_bindings = ((x, 1), (y, 2))
+    nested_bindings = [(x, 1), (y, 2)]
     term2 = let_nested(nested_bindings, x() + y() + w())
     free_vars2 = fvsof(term2)
 

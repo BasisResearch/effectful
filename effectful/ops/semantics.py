@@ -272,7 +272,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     else:
-        return expr  # type: ignore
+        return expr
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
