@@ -280,7 +280,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return dataclasses.replace(expr, **evaluate(dataclasses.asdict(expr)))  # type: ignore
     else:
-        return expr
+        return typing.cast(T, expr)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:

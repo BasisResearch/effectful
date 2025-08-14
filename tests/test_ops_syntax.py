@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -541,3 +542,35 @@ def test_defstream_1():
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
     assert tm_iter_next.op is next_
+
+
+def test_eval_dataclass():
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: int
+
+    @dataclasses.dataclass
+    class Line:
+        start: Point
+        end: Point
+
+    @dataclasses.dataclass
+    class Lines:
+        origin: Point
+        lines: list[Line]
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    p1 = Point(x(), y())
+    p2 = Point(x() + 1, y() + 1)
+    line = Line(p1, p2)
+    lines = Lines(Point(0, 0), [line])
+
+    assert {x, y} <= fvsof(lines)
+
+    with handler({x: lambda: 3, y: lambda: 4}):
+        evaluated_lines = evaluate(lines)
+
+    assert isinstance(evaluated_lines, Lines)
+    assert evaluated_lines.origin == Point(3, 4)
+    assert len(evaluated_lines.lines) == 1
