@@ -264,13 +264,18 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
         else:
             return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
-    elif isinstance(expr, collections.abc.Sequence | collections.abc.Set):
+    elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
             return expr  # type: ignore
-        elif isinstance(expr, collections.abc.MappingView):
-            return [evaluate(item) for item in expr]  # type: ignore
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.Set):
+        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
+            return {evaluate(item) for item in expr}  # type: ignore
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.ValuesView):
+        return [evaluate(item) for item in expr]  # type: ignore
     else:
         return expr
 
