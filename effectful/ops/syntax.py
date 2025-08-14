@@ -8,8 +8,6 @@ import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate
 
-import tree
-
 from effectful.ops.types import Annotation, Expr, Operation, Term
 
 
@@ -355,7 +353,7 @@ class Scoped(Annotation):
                     else:
                         param_bound_vars = {param_value}
                 elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use tree.flatten here because we want to be able
+                    # We can't use flatten here because we want to be able
                     # to see dict keys
                     def extract_operations(obj):
                         if isinstance(obj, Operation):
@@ -662,7 +660,9 @@ def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
 def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+        from effectful.ops.semantics import fvsof
+
+        if not fvsof((args, kwargs)):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
@@ -872,18 +872,6 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
-def _map_structure_and_keys(func, structure):
-    def _map_value(value):
-        if isinstance(value, dict):
-            return {func(k): v for k, v in value.items()}
-        elif not tree.is_nested(value):
-            return func(value)
-        else:
-            return value
-
-    return tree.traverse(_map_value, structure, top_down=False)
-
-
 @_CustomSingleDispatchCallable
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -960,9 +948,6 @@ def defdata[T](
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = _map_structure_and_keys(
-                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-            )
             res = evaluate(
                 v,
                 intp={
@@ -1133,21 +1118,28 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
+        return (
+            op == op2
+            and len(args) == len(args2)
+            and set(kwargs) == set(kwargs2)
+            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
         )
     elif isinstance(x, Term) or isinstance(other, Term):
         return False
+    elif isinstance(x, collections.abc.Mapping) and isinstance(
+        other, collections.abc.Mapping
+    ):
+        return all(
+            k in x and k in other and syntactic_eq(x[k], other[k])
+            for k in set(x) | set(other)
+        )
+    elif isinstance(x, collections.abc.Sequence) and isinstance(
+        other, collections.abc.Sequence
+    ):
+        return len(x) == len(other) and all(
+            syntactic_eq(a, b) for a, b in zip(x, other)
+        )
     else:
         return x == other
 
