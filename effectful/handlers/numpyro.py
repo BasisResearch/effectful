@@ -220,9 +220,18 @@ def is_eager_distribution(d: Expr[dist.Distribution]) -> bool:
     )
 
 
-@Term.register
-@defdata.register(dist.Distribution)
-class _DistributionTerm(dist.Distribution):
+class DistributionTermMeta(DistributionMeta):
+    _op: Operation[..., Distribution]
+
+    def __init__(cls, *args, **kwargs):
+        super(DistributionTermMeta, cls).__init__(*args, **kwargs)
+        cls._op = defop(cls)
+
+    def __call__(cls, *args, **kwargs):
+        return cls.__cons__(*args, **kwargs)
+
+
+class DistributionTerm(dist.Distribution, metaclass=DistributionMeta):
     """A distribution wrapper that satisfies the Term interface.
 
     Represented as a term of the form D(*args, **kwargs) where D is the
@@ -234,12 +243,10 @@ class _DistributionTerm(dist.Distribution):
 
     """
 
-    _op: Operation[Any, dist.Distribution]
     _args: tuple
     _kwargs: dict
 
-    def __init__(self, op: Operation[Any, dist.Distribution], *args, **kwargs):
-        self._op = op
+    def __init__(self, *args, **kwargs):
         self._args = args
         self._kwargs = kwargs
         self.__indices = None
@@ -255,9 +262,7 @@ class _DistributionTerm(dist.Distribution):
     def _pos_base_dist(self):
         if self.__pos_base_dist is None:
             pos_dist = bind_dims(self, *self._indices)
-            self.__pos_base_dist = pos_dist.op._constr(
-                *pos_dist.args, **pos_dist.kwargs
-            )
+            self.__pos_base_dist = pos_dist.op(*pos_dist.args, **pos_dist.kwargs)
         return self.__pos_base_dist
 
     @property
@@ -416,6 +421,11 @@ enumerate_support = _DistributionTerm.enumerate_support
 entropy = _DistributionTerm.entropy
 to_event = _DistributionTerm.to_event
 expand = _DistributionTerm.expand
+
+
+@defdata.register(dist.Beta)
+class BetaTerm(dist.Beta, DistributionTerm):
+    __cons__: Operation[..., dist.Beta]
 
 
 BernoulliLogits = defop(dist.BernoulliLogits)
