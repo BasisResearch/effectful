@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import cache, reduce
 from itertools import product
 
@@ -45,11 +46,11 @@ class LiftPlated(ObjectInterpretation):
 
 
 @cache
-def _substitute_fresh_plate_vars(ix, plate_vars):
+def _get_fresh_plate_op(ix, plate_vars):
     return defop(jax.Array, name=f"{ix}[{plate_vars}]")
 
 
-def _unroll_vars(arr_ixs, plate_streams, fold_streams):
+def _unroll_vars(arr_ixs, plate_streams, fold_streams, plate_func):
     new_fold_streams = {}
     new_arr_intp = {}
     for arr_ix in arr_ixs:
@@ -58,15 +59,26 @@ def _unroll_vars(arr_ixs, plate_streams, fold_streams):
                 if var_ix in fold_streams:
                     new_fold_streams[var_ix] = fold_streams[var_ix]
 
-            case Term(handler.jax_getitem, (Term(var_ix, ()), plates)):
-                streams = (np.array(plate_streams[plate.op]) for plate in plates)
+            case Term(handler.jax_getitem, (Term(var_ix, ()), _)):
+                streams = (np.array(plate_streams[p]) for p in plate_func[var_ix])
                 streams = reduce(np.outer, streams)
                 new_vars = np.zeros_like(streams, dtype=object)
                 for ix, _ in np.ndenumerate(streams):
-                    new_vars[ix] = _substitute_fresh_plate_vars(var_ix, ix)()
+                    new_vars[ix] = _get_fresh_plate_op(var_ix, ix)()
                     new_fold_streams[new_vars[ix].op] = fold_streams[var_ix]
                 new_arr_intp[var_ix] = deffn(new_vars)
     return new_arr_intp, new_fold_streams
+
+
+def _get_plate_func(term, keys, plates):
+    def _jax_plate_handler(arr, ixs):
+        if arr.op in keys:
+            plate_func[arr.op].update(fvsof(ixs) & plates)
+        raise NotImplementedError
+
+    plate_func = defaultdict(set)
+    evaluate(term, intp={handler.jax_getitem: _jax_plate_handler})
+    return dict(plate_func)
 
 
 class PlateUnrolling(ObjectInterpretation):
@@ -78,9 +90,17 @@ class PlateUnrolling(ObjectInterpretation):
     @implements(plated)
     def plated(self, plate_streams, body):
         plate_vars = set(plate_streams.keys())
+
+        # plate streams need to be concrete
+        if not all(isinstance(stream, jax.Array) for stream in plate_streams.values()):
+            return fwd()
+
         match body:
             case Term(ops.fold, (monoid, fold_streams, fold_body)):
                 mul, terms = parse_terms(fold_body, monoid)
+                plate_func = _get_plate_func(
+                    body, set(fold_streams.keys()), set(plate_streams.keys())
+                )
                 unrolled_terms = []
                 unrolled_streams = {}
 
@@ -89,7 +109,7 @@ class PlateUnrolling(ObjectInterpretation):
                         case Term(handler.jax_getitem, (_, arr_ixs)):
                             plates = tuple(fvsof(arr_ixs) & plate_vars)
                             vars_intp, new_streams = _unroll_vars(
-                                arr_ixs, plate_streams, fold_streams
+                                arr_ixs, plate_streams, fold_streams, plate_func
                             )
                             # create a new term for each grounding
                             plate_vals_iter = product(*(plate_streams[v] for v in plates))
@@ -97,7 +117,10 @@ class PlateUnrolling(ObjectInterpretation):
                                 plate_intp = dict(zip(plates, plate_vals, strict=False))
                                 plate_intp = {k: deffn(v) for k, v in plate_intp.items()}
                                 intp = coproduct(plate_intp, vars_intp)
-                                unrolled_terms.append(evaluate(term, intp=intp))
+                                try:
+                                    unrolled_terms.append(evaluate(term, intp=intp))
+                                except IndexError:
+                                    continue
                                 unrolled_streams |= new_streams
                         case _:
                             return fwd()

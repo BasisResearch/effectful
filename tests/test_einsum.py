@@ -1,12 +1,12 @@
 import itertools
-import operator
 from functools import reduce
+from operator import mul
 
 import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
 from effectful.handlers.jax import jax_getitem
-from effectful.ops.semantics import Operation, evaluate, handler
+from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
 from tests.utils import (
@@ -51,6 +51,11 @@ parameterize_intp = pytest.mark.parametrize(
 )
 
 
+def get_op(name: str) -> tuple:
+    name = str(name)
+    return name, defop(jax.Array, name=name)()  # type: ignore
+
+
 def parse_equation(equation: str):
     symbols = tuple(sorted(set(equation) - set(" ,->")))
     inputs, outputs = equation.split("->")
@@ -75,28 +80,24 @@ def einsum_weighted(
     equation: str,
     operands: list[jax.Array],
     sizes: dict[str, tuple[int, ...]],
-    intp,
+    fold_intp,
 ):
     symbols, inputs, outputs = parse_equation(equation)
-    symbol_ops: dict[str, Operation] = {
-        symbol: defop(jax.Array, name=symbol) for symbol in symbols
-    }
-    operand_ops: dict[str, Operation] = {
-        f"m{i}": defop(jax.Array, name=f"m{i}") for i, _ in enumerate(operands)
-    }
-    streams = {op: jnp.arange(sizes[name]) for name, op in symbol_ops.items()}
-    output_indices = tuple(symbol_ops[name]() for name in outputs)
-    input_terms = (
-        jax_getitem(operand_ops[f"m{i}"](), tuple(symbol_ops[name]() for name in inputs))
-        for i, inputs in enumerate(inputs)
-    )
-    input_term = reduce(operator.mul, input_terms)
+    operands_map = {f"m{i}": tensor for i, tensor in enumerate(operands)}
+    symbol_ops = dict(map(get_op, symbols))
+    operand_ops = dict(map(get_op, operands_map))
 
-    operand_intp = {
-        operand_ops[f"m{i}"]: deffn(tensor) for i, tensor in enumerate(operands)
-    }
+    streams = {s.op: jnp.arange(sizes[name]) for name, s in symbol_ops.items()}
+    output_indices = tuple(symbol_ops[name] for name in outputs)
+    input_terms = (
+        jax_getitem(operand_op, tuple(symbol_ops[s] for s in inp))
+        for operand_op, inp in zip(operands_map.values(), inputs, strict=False)
+    )
+    input_term = reduce(mul, input_terms)
+
+    operand_intp = {operand_ops[name].op: deffn(o) for name, o in operands_map.items()}
     body = D((output_indices, input_term))
-    with handler(intp), handler(operand_intp):
+    with handler(fold_intp), handler(operand_intp):
         return evaluate(Sum(streams, body))
 
 

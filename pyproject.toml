@@ -48,6 +48,7 @@ dev = [
     "nbval",
     "nbqa",
     "matplotlib",
+    "pyro-ppl",
 ]
 
 
