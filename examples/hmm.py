@@ -9,8 +9,8 @@ from jax.numpy.linalg import norm
 
 from weighted.handlers.jax import DenseTensorFold
 from weighted.handlers.optimization import FoldReorderReduction
-from weighted.handlers.optimization.plates import PlateUnrolling, plated
-from weighted.ops.sugar import Sum
+from weighted.ops.fold import BaselineFold
+from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 
 def construct_hmm():
@@ -30,8 +30,9 @@ def construct_hmm():
     x = defop(jax.Array, name="x")()  # emission index
 
     t_stream = {t.op: jnp.arange(args.nb_time_steps)}
-    z_stream = {z.op: jnp.arange(args.latent_size)}
-    x_stream = {x.op: jnp.arange(args.emission_size)}
+    tm1_stream = {t.op: jnp.arange(args.nb_time_steps - 1)}
+    z_stream = {z.op: CartesianProd(t_stream, jnp.arange(args.latent_size))}
+    x_stream = {x.op: CartesianProd(t_stream, jnp.arange(args.emission_size))}
 
     transition_factor = defop(jax.Array, name="transition")()
     emission_factor = defop(jax.Array, name="emission")()
@@ -40,11 +41,11 @@ def construct_hmm():
 
     hmm_factor = (
         initial_state[z[0]]
-        * emission_factor[z[t], x[t]]
-        * transition_factor[z[t], z[t + 1]]
-        * observation[t, x[t]]
+        * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
+        * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
     )
-    hmm = plated(t_stream, Sum(z_stream | x_stream, hmm_factor))
+
+    hmm = Sum(z_stream | x_stream, hmm_factor)
 
     param_ops = (transition_factor, emission_factor, initial_state, observation)
     param_ops = (x.op for x in param_ops)
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # first, we construct an abstract HMM
-    with handler(PlateUnrolling()):
+    with handler(BaselineFold()):
         model, param_ops = construct_hmm()
 
     # next, we create arrays for the open HMM params

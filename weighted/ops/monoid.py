@@ -8,6 +8,7 @@ from typing import Any
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numbers  # noqa: F401
+import jax
 import tree
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import handler
@@ -161,6 +162,12 @@ def logaddexp(a, b):
     return jnp.logaddexp(a, b)
 
 
+@defop
+def tensor_cartesian_prod(xs, ys):
+    x, y = jnp.meshgrid(xs, ys, indexing="ij")
+    return jnp.stack([x.ravel(), y.ravel()]).T
+
+
 def _promote_add(add, a, b):
     if isinstance(a, Generator):
         assert isinstance(b, Generator)
@@ -208,6 +215,10 @@ MaxMonoid: Monoid[float] = Monoid(max, float("-inf"), "Max")
 ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(arg_min, (float("inf"), None), "ArgMin")
 
 ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(arg_max, (float("-inf"), None), "ArgMax")
+
+TensorCartesianProdMonoid: Monoid[jax.Array] = Monoid(
+    tensor_cartesian_prod, jnp.array([]), "TensorCartesionProd"
+)
 
 StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
     lambda a, b: (v for v in itertools.chain(a, b)), (), name="StreamChain"

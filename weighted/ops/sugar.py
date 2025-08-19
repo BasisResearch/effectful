@@ -9,6 +9,7 @@ from weighted.ops.monoid import (
     MinMonoid,
     ProdMonoid,
     SumMonoid,
+    TensorCartesianProdMonoid,
 )
 
 
@@ -47,3 +48,7 @@ def Prod(streams, body):
 
 def LogSum(streams, body):
     return fold(LogSumMonoid, streams, body)
+
+
+def CartesianProd(streams, body):
+    return fold(TensorCartesianProdMonoid, streams, body)
