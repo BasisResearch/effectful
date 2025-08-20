@@ -512,6 +512,13 @@ def test_variable_lookup(genexpr, globals_dict):
         ((x.real for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
         ((x.imag for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
         ((x.conjugate() for x in [1 + 2j, 3 + 4j, 5 + 6j]), {}),
+        # slicing and indexing
+        ((s[:2] for s in ["hello", "world"]), {}),
+        ((s[1:3] for s in ["hello", "world"]), {}),
+        ((s[-1] for s in ["hello", "world"]), {}),
+        ((s[0:3] for s in ["hello", "world"]), {}),
+        ((s[::-1] for s in ["hello", "world"]), {}),
+        ((s[1:2:] for s in ["hello", "world"]), {}),
         # Method calls
         ((s.upper() for s in ["hello", "world"]), {}),
         ((s.lower() for s in ["HELLO", "WORLD"]), {}),
