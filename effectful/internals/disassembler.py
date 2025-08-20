@@ -1195,6 +1195,24 @@ def handle_binary_subscr(
     return replace(state, stack=new_stack)
 
 
+@register_handler("BINARY_SLICE", version=PythonVersion.PY_312)
+@register_handler("BINARY_SLICE", version=PythonVersion.PY_313)
+def handle_binary_slice(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # BINARY_SLICE implements obj[start:end] - pops start, end, and obj from stack
+    end = ensure_ast(state.stack[-1])
+    start = ensure_ast(state.stack[-2])
+    container = ensure_ast(state.stack[-3])  # Object is below start and end
+    sliced = ast.Subscript(
+        value=container,
+        slice=ast.Slice(lower=start, upper=end, step=None),
+        ctx=ast.Load(),
+    )
+    new_stack = state.stack[:-3] + [sliced]
+    return replace(state, stack=new_stack)
+
+
 # ============================================================================
 # OTHER CONTAINER BUILDING HANDLERS
 # ============================================================================
@@ -1240,6 +1258,37 @@ def handle_build_tuple(
     # Create tuple AST
     tuple_node = ast.Tuple(elts=elements, ctx=ast.Load())
     new_stack = new_stack + [tuple_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("BUILD_SLICE", version=PythonVersion.PY_312)
+@register_handler("BUILD_SLICE", version=PythonVersion.PY_313)
+def handle_build_slice(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # BUILD_SLICE creates a slice object from the top of the stack
+    # The number of elements to pop is determined by the instruction argument
+    assert instr.arg is not None
+    slice_size: int = instr.arg
+
+    if slice_size == 2:
+        # Slice with start and end: [start, end]
+        end = ensure_ast(state.stack[-1])
+        start = ensure_ast(state.stack[-2])
+        new_stack = state.stack[:-2]
+        slice_node = ast.Slice(lower=start, upper=end, step=None)
+    elif slice_size == 3:
+        # Slice with start, end, and step: [start, end, step]
+        step = ensure_ast(state.stack[-1])
+        end = ensure_ast(state.stack[-2])
+        start = ensure_ast(state.stack[-3])
+        new_stack = state.stack[:-3]
+        slice_node = ast.Slice(lower=start, upper=end, step=step)
+    else:
+        raise ValueError(f"Unsupported slice size: {slice_size}")
+
+    # Create slice AST
+    new_stack = new_stack + [slice_node]
     return replace(state, stack=new_stack)
 
 
