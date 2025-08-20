@@ -845,17 +845,17 @@ def handle_binop(
     return replace(state, stack=new_stack)
 
 
-# Python 3.13 BINARY_OP handler
+# Python 3.12+ BINARY_OP handler
 @register_handler("BINARY_OP", version=PythonVersion.PY_312)
 @register_handler("BINARY_OP", version=PythonVersion.PY_313)
 def handle_binary_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # BINARY_OP in Python 3.13 consolidates all binary operations
+    # BINARY_OP in Python 3.12+ consolidates all binary operations
     # The operation type is determined by the instruction argument
     assert instr.arg is not None
 
-    # Map argument values to AST operators based on Python 3.13 implementation
+    # Map argument values to AST operators based on Python 3.12+ implementation
     op_map = {
         0: ast.Add(),  # +
         1: ast.BitAnd(),  # &
