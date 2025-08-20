@@ -1359,7 +1359,6 @@ def _handle_pop_jump_if(
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
-# Python 3.12+ version
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_true(
@@ -1370,7 +1369,6 @@ def handle_pop_jump_if_true(
     return _handle_pop_jump_if(lambda c: c, state, instr)
 
 
-# Python 3.12+ version
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_false(
