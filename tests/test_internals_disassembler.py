@@ -1,6 +1,5 @@
 import ast
-import contextlib
-import sys
+import dis
 from types import GeneratorType
 from typing import Any
 
@@ -416,27 +415,22 @@ def test_nested_comprehensions(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
+@pytest.mark.xfail(reason="bug in builtin module dis breaks this test in Python 3.12")
 def test_nested_comprehensions_multiline_fail():
     """Illustrate bug in dis for multiline comprehensions"""
+    # this part works - dis.dis correctly reconstructs the generator expression
     xs1 = (x for x in range(5) if x > 1)
+    assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs1))
+    assert_ast_equivalent(xs1, reconstruct(xs1))
+
+    # this part fails - dis.dis incorrectly negates the filter expression x > 1
     xs2 = (
         x
-        for x in range(5)  # comment to avoid linter warning
+        for x in range(5)  # comment to avoid reformatting
         if x > 1
     )
-
-    ast_node_1 = reconstruct(xs1)
-    assert_ast_equivalent(xs1, ast_node_1)
-
-    with (
-        contextlib.nullcontext()
-        if sys.version_info[:2] > (3, 12)
-        else pytest.xfail(
-            reason="Multiline comprehensions are not handled correctly by disassembler"
-        )
-    ):
-        ast_node_2 = reconstruct(xs2)
-        assert_ast_equivalent(xs2, ast_node_2)
+    assert_ast_equivalent(xs2, reconstruct(xs2))
+    assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs2))
 
 
 # ============================================================================
