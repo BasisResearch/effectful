@@ -117,7 +117,6 @@ class ReconstructionState:
 
 # Python version enum for version-specific handling
 class PythonVersion(enum.Enum):
-    PY_310 = 10
     PY_312 = 12
     PY_313 = 13
 
@@ -198,18 +197,6 @@ def register_handler(
 # ============================================================================
 
 
-@register_handler("GEN_START", version=PythonVersion.PY_310)
-def handle_gen_start(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # GEN_START is the first instruction in generator expressions in Python 3.10
-    # It initializes the generator
-    assert isinstance(state.result, Placeholder), (
-        "GEN_START must be the first instruction"
-    )
-    return replace(state, result=ast.GeneratorExp(elt=Placeholder(), generators=[]))
-
-
 @register_handler("RETURN_GENERATOR", version=PythonVersion.PY_312)
 def handle_return_generator_312(
     state: ReconstructionState, instr: dis.Instruction
@@ -237,7 +224,6 @@ def handle_return_generator(
     return replace(state, result=new_result, stack=new_stack)
 
 
-@register_handler("YIELD_VALUE", version=PythonVersion.PY_310)
 @register_handler("YIELD_VALUE", version=PythonVersion.PY_312)
 @register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
 def handle_yield_value(
@@ -265,7 +251,6 @@ def handle_yield_value(
 # ============================================================================
 
 
-@register_handler("BUILD_LIST", version=PythonVersion.PY_310)
 @register_handler("BUILD_LIST", version=PythonVersion.PY_312)
 @register_handler("BUILD_LIST", version=PythonVersion.PY_313)
 def handle_build_list(
@@ -289,7 +274,6 @@ def handle_build_list(
         return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_APPEND", version=PythonVersion.PY_310)
 @register_handler("LIST_APPEND", version=PythonVersion.PY_312)
 @register_handler("LIST_APPEND", version=PythonVersion.PY_313)
 def handle_list_append(
@@ -315,7 +299,6 @@ def handle_list_append(
 # ============================================================================
 
 
-@register_handler("BUILD_SET", version=PythonVersion.PY_310)
 @register_handler("BUILD_SET", version=PythonVersion.PY_312)
 @register_handler("BUILD_SET", version=PythonVersion.PY_313)
 def handle_build_set(
@@ -336,7 +319,6 @@ def handle_build_set(
         return replace(state, stack=new_stack)
 
 
-@register_handler("SET_ADD", version=PythonVersion.PY_310)
 @register_handler("SET_ADD", version=PythonVersion.PY_312)
 @register_handler("SET_ADD", version=PythonVersion.PY_313)
 def handle_set_add(
@@ -362,7 +344,6 @@ def handle_set_add(
 # ============================================================================
 
 
-@register_handler("BUILD_MAP", version=PythonVersion.PY_310)
 @register_handler("BUILD_MAP", version=PythonVersion.PY_312)
 @register_handler("BUILD_MAP", version=PythonVersion.PY_313)
 def handle_build_map(
@@ -389,7 +370,6 @@ def handle_build_map(
         return replace(state, stack=new_stack)
 
 
-@register_handler("MAP_ADD", version=PythonVersion.PY_310)
 @register_handler("MAP_ADD", version=PythonVersion.PY_312)
 @register_handler("MAP_ADD", version=PythonVersion.PY_313)
 def handle_map_add(
@@ -417,7 +397,6 @@ def handle_map_add(
 # ============================================================================
 
 
-@register_handler("RETURN_VALUE", version=PythonVersion.PY_310)
 @register_handler("RETURN_VALUE", version=PythonVersion.PY_312)
 @register_handler("RETURN_VALUE", version=PythonVersion.PY_313)
 def handle_return_value(
@@ -435,7 +414,6 @@ def handle_return_value(
         raise TypeError("Unexpected RETURN_VALUE in reconstruction")
 
 
-@register_handler("FOR_ITER", version=PythonVersion.PY_310)
 @register_handler("FOR_ITER", version=PythonVersion.PY_312)
 @register_handler("FOR_ITER", version=PythonVersion.PY_313)
 def handle_for_iter(
@@ -470,7 +448,6 @@ def handle_for_iter(
     return replace(state, stack=new_stack, result=new_ret)
 
 
-@register_handler("GET_ITER", version=PythonVersion.PY_310)
 @register_handler("GET_ITER", version=PythonVersion.PY_312)
 @register_handler("GET_ITER", version=PythonVersion.PY_313)
 def handle_get_iter(
@@ -482,7 +459,6 @@ def handle_get_iter(
     return state
 
 
-@register_handler("JUMP_FORWARD", version=PythonVersion.PY_310)
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
 def handle_jump_forward(
@@ -490,15 +466,6 @@ def handle_jump_forward(
 ) -> ReconstructionState:
     # JUMP_FORWARD is used to jump forward in the code
     # In generator expressions, this is often used to skip code in conditional logic
-    return state
-
-
-@register_handler("JUMP_ABSOLUTE", version=PythonVersion.PY_310)
-def handle_jump_absolute(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # JUMP_ABSOLUTE is used to jump back to the beginning of a loop
-    # In generator expressions, this typically indicates the end of the loop body
     return state
 
 
@@ -568,7 +535,6 @@ def handle_reraise(
 # ============================================================================
 
 
-@register_handler("LOAD_FAST", version=PythonVersion.PY_310)
 @register_handler("LOAD_FAST", version=PythonVersion.PY_312)
 @register_handler("LOAD_FAST", version=PythonVersion.PY_313)
 def handle_load_fast(
@@ -586,7 +552,6 @@ def handle_load_fast(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_DEREF", version=PythonVersion.PY_310)
 @register_handler("LOAD_DEREF", version=PythonVersion.PY_312)
 @register_handler("LOAD_DEREF", version=PythonVersion.PY_313)
 def handle_load_deref(
@@ -598,7 +563,6 @@ def handle_load_deref(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_CLOSURE", version=PythonVersion.PY_310)
 @register_handler("LOAD_CLOSURE", version=PythonVersion.PY_312)
 @register_handler("LOAD_CLOSURE", version=PythonVersion.PY_313)
 def handle_load_closure(
@@ -610,7 +574,6 @@ def handle_load_closure(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_CONST", version=PythonVersion.PY_310)
 @register_handler("LOAD_CONST", version=PythonVersion.PY_312)
 @register_handler("LOAD_CONST", version=PythonVersion.PY_313)
 def handle_load_const(
@@ -621,7 +584,6 @@ def handle_load_const(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_GLOBAL", version=PythonVersion.PY_310)
 @register_handler("LOAD_GLOBAL", version=PythonVersion.PY_312)
 @register_handler("LOAD_GLOBAL", version=PythonVersion.PY_313)
 def handle_load_global(
@@ -638,7 +600,6 @@ def handle_load_global(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LOAD_NAME", version=PythonVersion.PY_310)
 @register_handler("LOAD_NAME", version=PythonVersion.PY_312)
 @register_handler("LOAD_NAME", version=PythonVersion.PY_313)
 def handle_load_name(
@@ -650,7 +611,6 @@ def handle_load_name(
     return replace(state, stack=new_stack)
 
 
-@register_handler("STORE_FAST", version=PythonVersion.PY_310)
 @register_handler("STORE_FAST", version=PythonVersion.PY_312)
 @register_handler("STORE_FAST", version=PythonVersion.PY_313)
 def handle_store_fast(
@@ -674,7 +634,6 @@ def handle_store_fast(
     return replace(state, stack=new_stack, result=new_result)
 
 
-@register_handler("STORE_DEREF", version=PythonVersion.PY_310)
 @register_handler("STORE_DEREF", version=PythonVersion.PY_312)
 @register_handler("STORE_DEREF", version=PythonVersion.PY_313)
 def handle_store_deref(
@@ -800,7 +759,6 @@ def handle_copy_free_vars(
 # ============================================================================
 
 
-@register_handler("POP_TOP", version=PythonVersion.PY_310)
 @register_handler("POP_TOP", version=PythonVersion.PY_312)
 @register_handler("POP_TOP", version=PythonVersion.PY_313)
 def handle_pop_top(
@@ -810,56 +768,6 @@ def handle_pop_top(
     # In generators, often used after YIELD_VALUE
     # Also used to clean up the duplicated middle value in failed chained comparisons
     new_stack = state.stack[:-1]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("DUP_TOP", version=PythonVersion.PY_310)
-def handle_dup_top(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # DUP_TOP duplicates the top stack item
-    top_item = state.stack[-1]
-    new_stack = state.stack + [top_item]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("ROT_TWO", version=PythonVersion.PY_310)
-def handle_rot_two(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # ROT_TWO swaps the top two stack items
-    new_stack = state.stack[:-2] + [state.stack[-1], state.stack[-2]]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("ROT_THREE", version=PythonVersion.PY_310)
-def handle_rot_three(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # ROT_THREE rotates the top three stack items
-    # TOS -> TOS1, TOS1 -> TOS2, TOS2 -> TOS
-    new_stack = state.stack[:-3] + [state.stack[-2], state.stack[-1], state.stack[-3]]
-
-    # Check if the top two items are the same (from DUP_TOP)
-    # This heuristic indicates we're setting up for a chained comparison
-    if len(state.stack) >= 3 and state.stack[-1] == state.stack[-2]:
-        raise NotImplementedError("Chained comparison not implemented yet")
-
-    return replace(state, stack=new_stack)
-
-
-@register_handler("ROT_FOUR", version=PythonVersion.PY_310)
-def handle_rot_four(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # ROT_FOUR rotates the top four stack items
-    # TOS -> TOS1, TOS1 -> TOS2, TOS2 -> TOS3, TOS3 -> TOS
-    new_stack = state.stack[:-4] + [
-        state.stack[-2],
-        state.stack[-1],
-        state.stack[-4],
-        state.stack[-3],
-    ]
     return replace(state, stack=new_stack)
 
 
@@ -973,69 +881,6 @@ def handle_binary_op(
     return handle_binop(op, state, instr)
 
 
-# Legacy binary operation handlers (for Python 3.10 compatibility)
-handler_binop_add = register_handler(
-    "BINARY_ADD",
-    functools.partial(handle_binop, ast.Add()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_subtract = register_handler(
-    "BINARY_SUBTRACT",
-    functools.partial(handle_binop, ast.Sub()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_multiply = register_handler(
-    "BINARY_MULTIPLY",
-    functools.partial(handle_binop, ast.Mult()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_true_divide = register_handler(
-    "BINARY_TRUE_DIVIDE",
-    functools.partial(handle_binop, ast.Div()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_floor_divide = register_handler(
-    "BINARY_FLOOR_DIVIDE",
-    functools.partial(handle_binop, ast.FloorDiv()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_modulo = register_handler(
-    "BINARY_MODULO",
-    functools.partial(handle_binop, ast.Mod()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_power = register_handler(
-    "BINARY_POWER",
-    functools.partial(handle_binop, ast.Pow()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_lshift = register_handler(
-    "BINARY_LSHIFT",
-    functools.partial(handle_binop, ast.LShift()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_rshift = register_handler(
-    "BINARY_RSHIFT",
-    functools.partial(handle_binop, ast.RShift()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_or = register_handler(
-    "BINARY_OR",
-    functools.partial(handle_binop, ast.BitOr()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_xor = register_handler(
-    "BINARY_XOR",
-    functools.partial(handle_binop, ast.BitXor()),
-    version=PythonVersion.PY_310,
-)
-handler_binop_and = register_handler(
-    "BINARY_AND",
-    functools.partial(handle_binop, ast.BitAnd()),
-    version=PythonVersion.PY_310,
-)
-
-
 # ============================================================================
 # UNARY OPERATION HANDLERS
 # ============================================================================
@@ -1052,11 +897,6 @@ def handle_unary_op(
 handle_unary_negative = register_handler(
     "UNARY_NEGATIVE",
     functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_310,
-)
-handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE",
-    functools.partial(handle_unary_op, ast.USub()),
     version=PythonVersion.PY_312,
 )
 handle_unary_negative = register_handler(
@@ -1064,16 +904,6 @@ handle_unary_negative = register_handler(
     functools.partial(handle_unary_op, ast.USub()),
     version=PythonVersion.PY_313,
 )
-handle_unary_positive = register_handler(
-    "UNARY_POSITIVE",
-    functools.partial(handle_unary_op, ast.UAdd()),
-    version=PythonVersion.PY_310,
-)
-handle_unary_invert = register_handler(
-    "UNARY_INVERT",
-    functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_310,
-)
 handle_unary_invert = register_handler(
     "UNARY_INVERT",
     functools.partial(handle_unary_op, ast.Invert()),
@@ -1087,11 +917,6 @@ handle_unary_invert = register_handler(
 handle_unary_not = register_handler(
     "UNARY_NOT",
     functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_310,
-)
-handle_unary_not = register_handler(
-    "UNARY_NOT",
-    functools.partial(handle_unary_op, ast.Not()),
     version=PythonVersion.PY_312,
 )
 handle_unary_not = register_handler(
@@ -1099,20 +924,6 @@ handle_unary_not = register_handler(
     functools.partial(handle_unary_op, ast.Not()),
     version=PythonVersion.PY_313,
 )
-
-
-@register_handler("LIST_TO_TUPLE", version=PythonVersion.PY_310)
-def handle_list_to_tuple(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LIST_TO_TUPLE converts a list on the stack to a tuple
-    list_obj = ensure_ast(state.stack[-1])
-    assert isinstance(list_obj, ast.List), "Expected a list for LIST_TO_TUPLE"
-
-    # Create tuple AST from the list's elements
-    tuple_node = ast.Tuple(elts=list_obj.elts, ctx=ast.Load())
-    new_stack = state.stack[:-1] + [tuple_node]
-    return replace(state, stack=new_stack)
 
 
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_312)
@@ -1164,7 +975,6 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 }
 
 
-@register_handler("COMPARE_OP", version=PythonVersion.PY_310)
 @register_handler("COMPARE_OP", version=PythonVersion.PY_312)
 @register_handler("COMPARE_OP", version=PythonVersion.PY_313)
 def handle_compare_op(
@@ -1184,7 +994,6 @@ def handle_compare_op(
     return replace(state, stack=new_stack)
 
 
-@register_handler("CONTAINS_OP", version=PythonVersion.PY_310)
 @register_handler("CONTAINS_OP", version=PythonVersion.PY_312)
 @register_handler("CONTAINS_OP", version=PythonVersion.PY_313)
 def handle_contains_op(
@@ -1201,7 +1010,6 @@ def handle_contains_op(
     return replace(state, stack=new_stack)
 
 
-@register_handler("IS_OP", version=PythonVersion.PY_310)
 @register_handler("IS_OP", version=PythonVersion.PY_312)
 @register_handler("IS_OP", version=PythonVersion.PY_313)
 def handle_is_op(
@@ -1292,82 +1100,6 @@ def handle_call(
         return replace(state, stack=new_stack)
 
 
-@register_handler("CALL_FUNCTION", version=PythonVersion.PY_310)
-def handle_call_function(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # CALL_FUNCTION pops function and arguments from stack
-    assert instr.arg is not None
-    arg_count: int = instr.arg
-    # Pop arguments and function
-    args = (
-        [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
-    )
-    func = ensure_ast(state.stack[-arg_count - 1])
-    new_stack = state.stack[: -arg_count - 1]
-
-    if isinstance(func, CompLambda):
-        assert len(args) == 1
-        return replace(state, stack=new_stack + [func.inline(args[0])])
-    else:
-        # Create function call AST
-        call_node = ast.Call(func=func, args=args, keywords=[])
-        new_stack = new_stack + [call_node]
-        return replace(state, stack=new_stack)
-
-
-@register_handler("CALL_METHOD", version=PythonVersion.PY_310)
-def handle_call_method(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # CALL_METHOD calls a method - similar to CALL_FUNCTION but for methods
-    assert instr.arg is not None
-    arg_count: int = instr.arg
-    # Pop arguments and method
-    args = (
-        [ensure_ast(arg) for arg in state.stack[-arg_count:]] if arg_count > 0 else []
-    )
-    method = ensure_ast(state.stack[-arg_count - 2])
-    new_stack = state.stack[: -arg_count - 2]
-
-    # Create method call AST
-    call_node = ast.Call(func=method, args=args, keywords=[])
-    new_stack = new_stack + [call_node]
-    return replace(state, stack=new_stack)
-
-
-# Python 3.10 version
-@register_handler("MAKE_FUNCTION", version=PythonVersion.PY_310)
-def handle_make_function_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # MAKE_FUNCTION creates a function from code object and name on stack
-    assert isinstance(state.stack[-2], ast.Lambda | CompLambda)
-    assert isinstance(state.stack[-1], ast.Constant) and isinstance(
-        state.stack[-1].value, str
-    ), "Function name must be a constant string."
-    if instr.argrepr == "closure":
-        # This is a closure, remove the environment tuple from the stack for AST purposes
-        new_stack = state.stack[:-3]
-    elif instr.argrepr == "":
-        new_stack = state.stack[:-2]
-    else:
-        raise NotImplementedError(
-            "MAKE_FUNCTION with defaults or annotations not implemented."
-        )
-
-    # Pop the function object and name from the stack
-    # Conversion from CodeType to ast.Lambda should have happened already
-    func: ast.Lambda | CompLambda = state.stack[-2]
-    name: str = state.stack[-1].value
-
-    assert any(
-        name.endswith(suffix)
-        for suffix in ("<genexpr>", "<lambda>", "<dictcomp>", "<listcomp>", "<setcomp>")
-    ), f"Expected a comprehension or lambda function, got '{name}'"
-    return replace(state, stack=new_stack + [func])
-
-
 @register_handler("MAKE_FUNCTION", version=PythonVersion.PY_312)
 def handle_make_function_312(
     state: ReconstructionState, instr: dis.Instruction
@@ -1430,39 +1162,6 @@ def handle_set_function_attribute(
 # ============================================================================
 
 
-@register_handler("LOAD_METHOD", version=PythonVersion.PY_310)
-def handle_load_method(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_METHOD loads a method from an object
-    # It pushes the bound method and the object (for the method call)
-    obj = ensure_ast(state.stack[-1])
-    method_name = instr.argval
-    new_stack = state.stack[:-1]
-
-    # Create method access as an attribute
-    method_attr = ast.Attribute(value=obj, attr=method_name, ctx=ast.Load())
-
-    # For LOAD_METHOD, we push both the method and the object
-    # But for AST purposes, we just need the method attribute
-    new_stack = new_stack + [method_attr, obj]
-    return replace(state, stack=new_stack)
-
-
-@register_handler("LOAD_ATTR", version=PythonVersion.PY_310)
-def handle_load_attr_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # LOAD_ATTR loads an attribute from the object on top of stack
-    obj = ensure_ast(state.stack[-1])
-    attr_name = instr.argval
-
-    # Create attribute access AST
-    attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
-    new_stack = state.stack[:-1] + [attr_node]
-    return replace(state, stack=new_stack)
-
-
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_312)
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
 def handle_load_attr(
@@ -1483,7 +1182,6 @@ def handle_load_attr(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BINARY_SUBSCR", version=PythonVersion.PY_310)
 @register_handler("BINARY_SUBSCR", version=PythonVersion.PY_312)
 @register_handler("BINARY_SUBSCR", version=PythonVersion.PY_313)
 def handle_binary_subscr(
@@ -1505,7 +1203,6 @@ def handle_binary_subscr(
 # ============================================================================
 
 
-@register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_310)
 @register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_312)
 @register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_313)
 def handle_unpack_sequence(
@@ -1528,7 +1225,6 @@ def handle_unpack_sequence(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BUILD_TUPLE", version=PythonVersion.PY_310)
 @register_handler("BUILD_TUPLE", version=PythonVersion.PY_312)
 @register_handler("BUILD_TUPLE", version=PythonVersion.PY_313)
 def handle_build_tuple(
@@ -1550,7 +1246,6 @@ def handle_build_tuple(
     return replace(state, stack=new_stack)
 
 
-@register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_310)
 @register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_312)
 @register_handler("BUILD_CONST_KEY_MAP", version=PythonVersion.PY_313)
 def handle_build_const_key_map(
@@ -1573,7 +1268,6 @@ def handle_build_const_key_map(
     return replace(state, stack=new_stack)
 
 
-@register_handler("LIST_EXTEND", version=PythonVersion.PY_310)
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_312)
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
 def handle_list_extend(
@@ -1598,7 +1292,6 @@ def handle_list_extend(
     return replace(state, stack=new_stack, result=prev_result)
 
 
-@register_handler("SET_UPDATE", version=PythonVersion.PY_310)
 @register_handler("SET_UPDATE", version=PythonVersion.PY_312)
 @register_handler("SET_UPDATE", version=PythonVersion.PY_313)
 def handle_set_update(
@@ -1618,7 +1311,6 @@ def handle_set_update(
     return replace(state, stack=new_stack, result=prev_result)
 
 
-@register_handler("DICT_UPDATE", version=PythonVersion.PY_310)
 @register_handler("DICT_UPDATE", version=PythonVersion.PY_312)
 @register_handler("DICT_UPDATE", version=PythonVersion.PY_313)
 def handle_dict_update(
@@ -1646,27 +1338,6 @@ def handle_dict_update(
 # ============================================================================
 
 
-# Python 3.10 version
-@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_310)
-def handle_pop_jump_if_false_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
-    # In comprehensions, this is used for filter conditions
-    condition = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-
-    if instr.argval < instr.offset:
-        # Jumping backward to loop start - this is a condition
-        # When POP_JUMP_IF_FALSE jumps back, it means "if false, skip this item"
-        assert isinstance(state.result, CompExp) and state.result.generators
-        new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(condition)
-        return replace(state, stack=new_stack, result=new_result)
-    else:
-        raise NotImplementedError("Lazy and+or behavior not implemented yet")
-
-
 # Python 3.12+ version
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
@@ -1688,31 +1359,6 @@ def handle_pop_jump_if_false(
         return replace(state, stack=new_stack, result=new_result)
     else:
         # Not in a comprehension context - might be boolean logic
-        raise NotImplementedError("Lazy and+or behavior not implemented yet")
-
-
-# Python 3.10 version
-@register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_310)
-def handle_pop_jump_if_true_310(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # POP_JUMP_IF_TRUE pops a value from the stack and jumps if it's true
-    # This can be:
-    # 1. Part of an OR expression (jump to YIELD_VALUE)
-    # 2. A negated condition like "not x % 2" (jump back to loop start)
-    condition = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-
-    if instr.argval < instr.offset:
-        # Jumping backward to loop start - this is a negated condition
-        # When POP_JUMP_IF_TRUE jumps back, it means "if false, skip this item"
-        # So we need to negate the condition to get the filter condition
-        assert isinstance(state.result, CompExp) and state.result.generators
-        negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
-        new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(negated_condition)
-        return replace(state, stack=new_stack, result=new_result)
-    else:
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
