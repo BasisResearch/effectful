@@ -101,6 +101,9 @@ class ReconstructionState:
     that represent those operations.
 
     Attributes:
+        code: The compiled code object from which the bytecode is being processed.
+              This is typically obtained from a generator function or comprehension.
+
         result: The current comprehension expression being built. Initially
                 a placeholder, it gets updated as the bytecode is processed.
                 It can be a GeneratorExp, ListComp, SetComp, DictComp, or
