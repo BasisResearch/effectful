@@ -14,35 +14,6 @@ Example:
     >>> ast_node = reconstruct(g)
     >>> # ast_node is now an ast.Expression representing the original expression
 """
-# Summary of Python 3.12 Bytecode Differences, by Claude Opus
-#
-# Based on my analysis of the disassembler module and Python documentation, here are the key bytecode differences in Python 3.12 relative to 3.10 and 3.13:
-#
-# Operations Missing in Current 3.12 Implementation:
-#
-# 1. BINARY_OP - In Python 3.12, individual binary operations (BINARY_ADD, BINARY_SUBTRACT, etc.) were replaced by a single BINARY_OP instruction with different argument values. The module currently only handles this for 3.13.
-# 2. Jump instruction changes - Python 3.12 still uses some older jump instructions but with different offset calculations compared to 3.10.
-# 3. Stack manipulation - Python 3.12 is in a transitional state:
-#   - Still has ROT_TWO, ROT_THREE, ROT_FOUR (like 3.10)
-#   - Doesn't have SWAP/COPY yet (introduced in 3.13)
-# 4. CALL changes - Python 3.12 has different CALL behavior than both 3.10 (CALL_FUNCTION) and 3.13 (unified CALL).
-# 5. Other missing operations for 3.12:
-#   - END_FOR (introduced in 3.12, currently only handled for 3.13)
-#   - CALL_INTRINSIC_1/CALL_INTRINSIC_2 (new in 3.12)
-#   - TO_BOOL (introduced in 3.12, currently only handled for 3.13)
-#   - Different MAKE_FUNCTION behavior
-#
-# Key Operations to Add for Python 3.12 Support:
-#
-# 1. Binary operations - Need BINARY_OP handler for 3.12
-# 2. Jump instructions - May need adjustments for 3.12-specific behavior
-# 3. Stack operations - Keep using ROT_* operations for 3.12
-# 4. Call operations - Need 3.12-specific CALL handling
-# 5. Intrinsic operations - Add CALL_INTRINSIC_1 for 3.12
-# 6. Boolean conversion - Add TO_BOOL for 3.12
-# 7. Loop control - Add END_FOR for 3.12
-#
-# The module is well-structured with version-specific handlers, so adding 3.12 support involves registering appropriate handlers with version=PythonVersion.PY_312 for operations that differ between versions.
 
 import ast
 import copy
@@ -237,6 +208,19 @@ def handle_gen_start(
         "GEN_START must be the first instruction"
     )
     return replace(state, result=ast.GeneratorExp(elt=Placeholder(), generators=[]))
+
+
+@register_handler("RETURN_GENERATOR", version=PythonVersion.PY_312)
+def handle_return_generator_312(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
+    # It initializes the generator
+    assert isinstance(state.result, Placeholder), (
+        "RETURN_GENERATOR must be the first instruction"
+    )
+    new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
+    return replace(state, result=new_result)
 
 
 @register_handler("RETURN_GENERATOR", version=PythonVersion.PY_313)
@@ -518,6 +502,7 @@ def handle_jump_absolute(
     return state
 
 
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
 def handle_jump_backward(
     state: ReconstructionState, instr: dis.Instruction
@@ -527,6 +512,7 @@ def handle_jump_backward(
     return state
 
 
+@register_handler("RESUME", version=PythonVersion.PY_312)
 @register_handler("RESUME", version=PythonVersion.PY_313)
 def handle_resume(
     state: ReconstructionState, instr: dis.Instruction
@@ -535,15 +521,25 @@ def handle_resume(
     return state
 
 
+@register_handler("END_FOR", version=PythonVersion.PY_312)
+def handle_end_for_312(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # END_FOR marks the end of a for loop, followed by POP_TOP (in 3.12)
+    new_stack = state.stack[:-1]
+    return replace(state, stack=new_stack)
+
+
 @register_handler("END_FOR", version=PythonVersion.PY_313)
 def handle_end_for(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # END_FOR marks the end of a for loop - no action needed for AST reconstruction
-    new_stack = state.stack  # [:-1]
+    new_stack = state.stack
     return replace(state, stack=new_stack)
 
 
+@register_handler("RETURN_CONST", version=PythonVersion.PY_312)
 @register_handler("RETURN_CONST", version=PythonVersion.PY_313)
 def handle_return_const(
     state: ReconstructionState, instr: dis.Instruction
@@ -557,6 +553,7 @@ def handle_return_const(
         raise TypeError("Unexpected RETURN_CONST in reconstruction")
 
 
+@register_handler("RERAISE", version=PythonVersion.PY_312)
 @register_handler("RERAISE", version=PythonVersion.PY_313)
 def handle_reraise(
     state: ReconstructionState, instr: dis.Instruction
@@ -634,6 +631,8 @@ def handle_load_global(
 
     if instr.argrepr.endswith(" + NULL"):
         new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load()), Null()]
+    elif instr.argrepr.startswith("NULL + "):
+        new_stack = state.stack + [Null(), ast.Name(id=global_name, ctx=ast.Load())]
     else:
         new_stack = state.stack + [ast.Name(id=global_name, ctx=ast.Load())]
     return replace(state, stack=new_stack)
@@ -724,6 +723,7 @@ def handle_store_fast_load_fast(
     return replace(state, stack=new_stack, result=new_result)
 
 
+@register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_312)
 @register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_313)
 def handle_load_fast_and_clear(
     state: ReconstructionState, instr: dis.Instruction
@@ -771,6 +771,7 @@ def handle_load_fast_load_fast(
     return replace(state, stack=new_stack)
 
 
+@register_handler("MAKE_CELL", version=PythonVersion.PY_312)
 @register_handler("MAKE_CELL", version=PythonVersion.PY_313)
 def handle_make_cell(
     state: ReconstructionState, instr: dis.Instruction
@@ -782,6 +783,7 @@ def handle_make_cell(
     return state
 
 
+@register_handler("COPY_FREE_VARS", version=PythonVersion.PY_312)
 @register_handler("COPY_FREE_VARS", version=PythonVersion.PY_313)
 def handle_copy_free_vars(
     state: ReconstructionState, instr: dis.Instruction
@@ -862,6 +864,7 @@ def handle_rot_four(
 
 
 # Python 3.13 replacement for stack manipulation
+@register_handler("SWAP", version=PythonVersion.PY_312)
 @register_handler("SWAP", version=PythonVersion.PY_313)
 def handle_swap(
     state: ReconstructionState, instr: dis.Instruction
@@ -891,6 +894,7 @@ def handle_swap(
         return state
 
 
+@register_handler("COPY", version=PythonVersion.PY_312)
 @register_handler("COPY", version=PythonVersion.PY_313)
 def handle_copy(
     state: ReconstructionState, instr: dis.Instruction
@@ -914,6 +918,7 @@ def handle_copy(
         return replace(state, stack=new_stack)
 
 
+@register_handler("PUSH_NULL", version=PythonVersion.PY_312)
 @register_handler("PUSH_NULL", version=PythonVersion.PY_313)
 def handle_push_null(
     state: ReconstructionState, instr: dis.Instruction
@@ -936,6 +941,7 @@ def handle_binop(
 
 
 # Python 3.13 BINARY_OP handler
+@register_handler("BINARY_OP", version=PythonVersion.PY_312)
 @register_handler("BINARY_OP", version=PythonVersion.PY_313)
 def handle_binary_op(
     state: ReconstructionState, instr: dis.Instruction
@@ -1044,16 +1050,19 @@ def handle_unary_op(
 
 
 handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_310
+    "UNARY_NEGATIVE",
+    functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_310,
 )
 handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_312
+    "UNARY_NEGATIVE",
+    functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_312,
 )
 handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE", functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_313
+    "UNARY_NEGATIVE",
+    functools.partial(handle_unary_op, ast.USub()),
+    version=PythonVersion.PY_313,
 )
 handle_unary_positive = register_handler(
     "UNARY_POSITIVE",
@@ -1061,28 +1070,34 @@ handle_unary_positive = register_handler(
     version=PythonVersion.PY_310,
 )
 handle_unary_invert = register_handler(
-    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_310
+    "UNARY_INVERT",
+    functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_310,
 )
 handle_unary_invert = register_handler(
-    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_312
+    "UNARY_INVERT",
+    functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_312,
 )
 handle_unary_invert = register_handler(
-    "UNARY_INVERT", functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_313
+    "UNARY_INVERT",
+    functools.partial(handle_unary_op, ast.Invert()),
+    version=PythonVersion.PY_313,
 )
 handle_unary_not = register_handler(
-    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_310
+    "UNARY_NOT",
+    functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_310,
 )
 handle_unary_not = register_handler(
-    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_312
+    "UNARY_NOT",
+    functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_312,
 )
 handle_unary_not = register_handler(
-    "UNARY_NOT", functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_313
+    "UNARY_NOT",
+    functools.partial(handle_unary_op, ast.Not()),
+    version=PythonVersion.PY_313,
 )
 
 
@@ -1100,14 +1115,13 @@ def handle_list_to_tuple(
     return replace(state, stack=new_stack)
 
 
+@register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_312)
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
 def handle_call_intrinsic_1(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # CALL_INTRINSIC_1 calls an intrinsic function with one argument
-    if instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
-        return state
-    elif instr.argrepr == "INTRINSIC_LIST_TO_TUPLE":
+    if instr.argrepr == "INTRINSIC_LIST_TO_TUPLE":
         assert isinstance(state.stack[-1], ast.List), (
             "Expected a list for LIST_TO_TUPLE"
         )
@@ -1117,6 +1131,8 @@ def handle_call_intrinsic_1(
         assert len(state.stack) > 0
         new_val = ast.UnaryOp(op=ast.UAdd(), operand=state.stack[-1])
         return replace(state, stack=state.stack[:-1] + [new_val])
+    elif instr.argrepr == "INTRINSIC_STOPITERATION_ERROR":
+        return state
     else:
         raise TypeError(f"Unsupported generator intrinsic operation: {instr.argrepr}")
 
@@ -1205,6 +1221,47 @@ def handle_is_op(
 # ============================================================================
 # FUNCTION CALL HANDLERS
 # ============================================================================
+
+
+@register_handler("CALL", version=PythonVersion.PY_312)
+def handle_call_312(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CALL in Python 3.12 handles both function and method calls
+    # Stack layout: [..., callable or self, callable or NULL]
+    assert instr.arg is not None
+    arg_count: int = instr.arg
+
+    # Check if this is a method call (no NULL on top)
+    if isinstance(state.stack[-arg_count - 2], Null):
+        # Regular function call: [..., NULL, callable, *args]
+        func = ensure_ast(state.stack[-arg_count - 1])
+        args = (
+            [ensure_ast(arg) for arg in state.stack[-arg_count:]]
+            if arg_count > 0
+            else []
+        )
+        new_stack = state.stack[: -arg_count - 2]
+    else:
+        # Method call: [..., callable, self, *args]
+        func = ensure_ast(state.stack[-arg_count - 2])
+        self_arg = ensure_ast(state.stack[-arg_count - 1])
+        remaining_args = (
+            [ensure_ast(arg) for arg in state.stack[-arg_count:]]
+            if arg_count > 0
+            else []
+        )
+        args = [self_arg] + remaining_args
+        new_stack = state.stack[: -arg_count - 2]
+
+    if isinstance(func, CompLambda):
+        assert len(args) == 1
+        return replace(state, stack=new_stack + [func.inline(args[0])])
+    else:
+        # Create function call AST
+        call_node = ast.Call(func=func, args=args, keywords=[])
+        new_stack = new_stack + [call_node]
+        return replace(state, stack=new_stack)
 
 
 @register_handler("CALL", version=PythonVersion.PY_313)
@@ -1311,6 +1368,32 @@ def handle_make_function_310(
     return replace(state, stack=new_stack + [func])
 
 
+@register_handler("MAKE_FUNCTION", version=PythonVersion.PY_312)
+def handle_make_function_312(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # MAKE_FUNCTION in Python 3.12 uses flags to determine stack consumption
+    # Unlike 3.10, no qualified name on stack
+    # Unlike 3.13, uses flags instead of SET_FUNCTION_ATTRIBUTE
+    assert instr.arg is not None
+    assert isinstance(state.stack[-1], ast.Lambda | CompLambda), (
+        "Expected a function object (Lambda or CompLambda) on the stack."
+    )
+    if instr.argrepr == "closure":
+        # This is a closure, remove the environment tuple from the stack for AST purposes
+        new_stack = state.stack[:-2]
+    elif instr.argrepr == "":
+        new_stack = state.stack[:-1]
+    else:
+        raise NotImplementedError(
+            "MAKE_FUNCTION with defaults or annotations not implemented."
+        )
+
+    # For comprehensions, we only care about the function object
+    func = state.stack[-1]
+    return replace(state, stack=new_stack + [func])
+
+
 # Python 3.13 version
 @register_handler("MAKE_FUNCTION", version=PythonVersion.PY_313)
 def handle_make_function(
@@ -1380,6 +1463,7 @@ def handle_load_attr_310(
     return replace(state, stack=new_stack)
 
 
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_312)
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
 def handle_load_attr(
     state: ReconstructionState, instr: dis.Instruction
@@ -1392,6 +1476,8 @@ def handle_load_attr(
     attr_node = ast.Attribute(value=obj, attr=attr_name, ctx=ast.Load())
     if instr.argrepr.endswith(" + NULL|self"):
         new_stack = state.stack[:-1] + [attr_node, Null()]
+    elif instr.argrepr.startswith("NULL|self + "):
+        new_stack = state.stack[:-1] + [Null(), attr_node]
     else:
         new_stack = state.stack[:-1] + [attr_node]
     return replace(state, stack=new_stack)
@@ -1581,7 +1667,8 @@ def handle_pop_jump_if_false_310(
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
-# Python 3.13 version
+# Python 3.12+ version
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_false(
     state: ReconstructionState, instr: dis.Instruction
@@ -1629,7 +1716,8 @@ def handle_pop_jump_if_true_310(
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
-# Python 3.13 version
+# Python 3.12+ version
+@register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_true(
     state: ReconstructionState, instr: dis.Instruction
@@ -1651,6 +1739,7 @@ def handle_pop_jump_if_true(
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
+@register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_none(
     state: ReconstructionState, instr: dis.Instruction
@@ -1671,6 +1760,7 @@ def handle_pop_jump_if_none(
         raise NotImplementedError("Lazy and+or behavior not implemented yet")
 
 
+@register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_not_none(
     state: ReconstructionState, instr: dis.Instruction
