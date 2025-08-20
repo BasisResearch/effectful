@@ -808,23 +808,16 @@ def handle_swap(
 def handle_copy(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # COPY duplicates the item at the specified depth (replaces DUP_TOP in many cases)
+    # COPY duplicates the item at the specified depth
     assert instr.arg is not None
     depth = instr.arg
-    if depth == 1:
-        # Equivalent to DUP_TOP
-        top_item = state.stack[-1]
-        new_stack = state.stack + [top_item]
-        return replace(state, stack=new_stack)
-    else:
-        # Copy the item at specified depth to top of stack
-        stack_size = len(state.stack)
-        if depth > stack_size:
-            raise ValueError(f"COPY depth {depth} exceeds stack size {stack_size}")
-        idx = stack_size - depth
-        copied_item = state.stack[idx]
-        new_stack = state.stack + [copied_item]
-        return replace(state, stack=new_stack)
+    stack_size = len(state.stack)
+    if depth > stack_size:
+        raise ValueError(f"COPY depth {depth} exceeds stack size {stack_size}")
+    idx = stack_size - depth
+    copied_item = state.stack[idx]
+    new_stack = state.stack + [copied_item]
+    return replace(state, stack=new_stack)
 
 
 @register_handler("PUSH_NULL", version=PythonVersion.PY_312)
