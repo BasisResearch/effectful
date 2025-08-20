@@ -1379,6 +1379,86 @@ def handle_dict_update(
     return replace(state, stack=new_stack, result=prev_result)
 
 
+@register_handler("BUILD_STRING", version=PythonVersion.PY_312)
+@register_handler("BUILD_STRING", version=PythonVersion.PY_313)
+def handle_build_string(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # BUILD_STRING creates a string from the top of the stack
+    # The number of elements to pop is determined by the instruction argument
+    assert instr.arg is not None
+    string_size: int = instr.arg
+
+    if string_size == 0:
+        # Empty string case
+        new_stack = state.stack + [ast.Constant(value="")]
+    else:
+        # Pop elements for the string
+        elements = (
+            [ensure_ast(elem) for elem in state.stack[-string_size:]]
+            if string_size > 0
+            else []
+        )
+        new_stack = state.stack[:-string_size]
+
+        # Create concatenated string AST
+        concat_node = ast.JoinedStr(values=elements)
+        new_stack = new_stack + [concat_node]
+
+    return replace(state, stack=new_stack)
+
+
+@register_handler("FORMAT_VALUE", version=PythonVersion.PY_312)
+def handle_format_value(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # FORMAT_VALUE formats a string with a value
+    # Pops the value and the format string from the stack
+    assert len(state.stack) >= 1, "Not enough items on stack for FORMAT_VALUE"
+    value = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    # Create formatted string AST
+    formatted_node = ast.FormattedValue(value=value, conversion=-1, format_spec=None)
+    new_stack = new_stack + [formatted_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("FORMAT_SIMPLE", version=PythonVersion.PY_313)
+def handle_format_simple(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # FORMAT_SIMPLE formats a string with a single value
+    # Pops the value and the format string from the stack
+    assert len(state.stack) >= 1, "Not enough items on stack for FORMAT_SIMPLE"
+    value = ensure_ast(state.stack[-1])
+    new_stack = state.stack[:-1]
+
+    # Create formatted string AST
+    formatted_node = ast.FormattedValue(value=value, conversion=-1, format_spec=None)
+    new_stack = new_stack + [formatted_node]
+    return replace(state, stack=new_stack)
+
+
+@register_handler("FORMAT_WITH_SPEC", version=PythonVersion.PY_313)
+def handle_format_with_spec(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # FORMAT_WITH_SPEC formats a string with a value and a format specifier
+    # Pops the value, format string, and format specifier from the stack
+    assert len(state.stack) >= 2, "Not enough items on stack for FORMAT_WITH_SPEC"
+    value = ensure_ast(state.stack[-1])
+    format_string = ensure_ast(state.stack[-2])
+    new_stack = state.stack[:-2]
+
+    # Create formatted string AST with specifier
+    formatted_node = ast.FormattedValue(
+        value=value, conversion=-1, format_spec=format_string
+    )
+    new_stack = new_stack + [formatted_node]
+    return replace(state, stack=new_stack)
+
+
 # ============================================================================
 # CONDITIONAL JUMP HANDLERS
 # ============================================================================

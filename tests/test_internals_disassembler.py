@@ -519,6 +519,10 @@ def test_variable_lookup(genexpr, globals_dict):
         ((s[0:3] for s in ["hello", "world"]), {}),
         ((s[::-1] for s in ["hello", "world"]), {}),
         ((s[1:2:] for s in ["hello", "world"]), {}),
+        # fstrings and formatted strings
+        ((f"{x} is {x**2}" for x in range(5)), {}),
+        ((f"{x:02d}" for x in range(10)), {}),
+        ((f"{x:.2f}" for x in [1.2345, 2.3456, 3.4567]), {}),
         # Method calls
         ((s.upper() for s in ["hello", "world"]), {}),
         ((s.lower() for s in ["HELLO", "WORLD"]), {}),
