@@ -9,22 +9,11 @@ from effectful.ops.types import Term
 from numpyro import distributions as dist
 from scipy.special import roots_hermite
 
+import weighted.ops.distribution as dist_op
 from weighted.handlers.optimization.utils import parse_terms
-from weighted.ops.distribution import log_prob, reals
 from weighted.ops.fold import fold
+from weighted.ops.jax import reals
 from weighted.ops.monoid import SumMonoid
-
-
-def _parse_gaussian_prob(term: Term):
-    if not (isinstance(term, Term) and term.op is jnp.exp and len(term.args) == 1):
-        return None
-    term = term.args[0]
-    if not (isinstance(term, Term) and term.op is log_prob and len(term.args) == 2):
-        return None
-    d, x = term.args
-    if not isinstance(d, dist.Normal):
-        return None
-    return d.loc, d.scale, x.op
 
 
 class GaussHermiteQuadrature(ObjectInterpretation):
@@ -64,17 +53,17 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         # multiplied with some remaining term
         mul, terms = parse_terms(body, monoid)
         for i, term in enumerate(terms):
-            gaussian = _parse_gaussian_prob(term)
-            if gaussian is not None:
-                mu, sigma, x = gaussian
-                remaining_terms = (t for j, t in enumerate(terms) if i != j)
-                remaining_body = reduce(mul, remaining_terms)
-                break
+            match term:
+                case Term(jnp.exp, (Term(dist_op.log_prob, (d, x)),)):
+                    if isinstance(d, dist.Normal):
+                        mu, sigma, x = d.loc, d.scale, x.op
+                        remaining_terms = (t for j, t in enumerate(terms) if i != j)
+                        break
         else:
             return fwd()
 
         # Only integration over ℝ supported for now
-        if streams[x].op is not reals:
+        if streams[x].op != reals:
             return fwd()
 
         fresh_index = defop(jax.Array, name="fresh_i")
@@ -83,5 +72,6 @@ class GaussHermiteQuadrature(ObjectInterpretation):
             fresh_index: jnp.arange(self.nb_points),
             x: jax_getitem(points, (fresh_index(),)),
         }
+        remaining_body = reduce(mul, remaining_terms)
         new_body = jax_getitem(self.weights, (fresh_index(),)) * remaining_body
         return fold(monoid, streams | new_streams, new_body)
