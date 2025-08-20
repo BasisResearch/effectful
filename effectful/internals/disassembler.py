@@ -16,6 +16,7 @@ Example:
 """
 
 import ast
+import collections
 import copy
 import dis
 import enum
@@ -111,8 +112,16 @@ class ReconstructionState:
                BINARY_ADD pop operands and push results.
     """
 
+    code: types.CodeType
     result: ast.expr = field(default_factory=Placeholder)
     stack: list[ast.expr] = field(default_factory=list)
+
+    @property
+    def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
+        """Get the bytecode instructions for the current code object."""
+        return collections.OrderedDict(
+            (instr.offset, instr) for instr in dis.get_instructions(self.code)
+        )
 
 
 # Python version enum for version-specific handling
@@ -526,7 +535,6 @@ def handle_reraise(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RERAISE re-raises an exception - generally ignore for AST reconstruction
-    assert not state.stack  # in generator expressions, we shouldn't have a stack here
     return state
 
 
@@ -787,19 +795,12 @@ def handle_swap(
         # For AST reconstruction, we can often ignore certain stack manipulations
         return state
 
-    if depth == 2 and stack_size >= 2:
-        # Equivalent to ROT_TWO
-        new_stack = state.stack[:-2] + [state.stack[-1], state.stack[-2]]
-        return replace(state, stack=new_stack)
-    elif depth <= stack_size:
-        # For other depths, swap TOS with the item at specified depth
-        idx = stack_size - depth
-        new_stack = state.stack.copy()
-        new_stack[-1], new_stack[idx] = new_stack[idx], new_stack[-1]
-        return replace(state, stack=new_stack)
-    else:
-        # Edge case - not enough items, just return unchanged
-        return state
+    # For other depths, swap TOS with the item at specified depth
+    assert depth <= stack_size, f"SWAP depth {depth} exceeds stack size {stack_size}"
+    idx = stack_size - depth
+    new_stack = state.stack.copy()
+    new_stack[-1], new_stack[idx] = new_stack[idx], new_stack[-1]
+    return replace(state, stack=new_stack)
 
 
 @register_handler("COPY", version=PythonVersion.PY_312)
@@ -1541,8 +1542,8 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         raise TypeError(f"Unsupported code object type: {value.co_name}")
 
     # Symbolic execution to reconstruct the AST
-    state = ReconstructionState()
-    for instr in dis.get_instructions(value):
+    state = ReconstructionState(code=value)
+    for instr in state.instructions.values():
         state = OP_HANDLERS[instr.opname](state, instr)
     result: ast.expr = state.result
 
