@@ -1339,24 +1339,20 @@ def handle_dict_update(
 # ============================================================================
 
 
-# Python 3.12+ version
-@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
-@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
-def handle_pop_jump_if_false(
-    state: ReconstructionState, instr: dis.Instruction
+def _handle_pop_jump_if(
+    f_condition: Callable[[ast.expr], ast.expr],
+    state: ReconstructionState,
+    instr: dis.Instruction,
 ) -> ReconstructionState:
-    # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
-    # In comprehensions, this is used for filter conditions
-    condition = ensure_ast(state.stack[-1])
+    # Generic handler for POP_JUMP_IF_* instructions
+    # Pops a value from the stack and jumps if the condition is met
+    condition = f_condition(ensure_ast(state.stack[-1]))
     new_stack = state.stack[:-1]
 
     if isinstance(state.result, CompExp) and state.result.generators:
-        # In Python 3.13, when POP_JUMP_IF_FALSE jumps forward to the yield,
-        # it means "if condition is False, then yield the item"
-        # So we need to negate the condition: we want items where NOT condition
-        negated_condition = ast.UnaryOp(op=ast.Not(), operand=condition)
+        # In comprehensions, we add the condition to the last generator's ifs
         new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(negated_condition)
+        new_result.generators[-1].ifs.append(condition)
         return replace(state, stack=new_stack, result=new_result)
     else:
         # Not in a comprehension context - might be boolean logic
@@ -1371,19 +1367,20 @@ def handle_pop_jump_if_true(
 ) -> ReconstructionState:
     # POP_JUMP_IF_TRUE pops a value from the stack and jumps if it's true
     # In Python 3.13, this is used for filter conditions where True means continue
-    condition = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
+    return _handle_pop_jump_if(lambda c: c, state, instr)
 
-    # In Python 3.13, if we have a comprehension and generators, this is likely a filter
-    if isinstance(state.result, CompExp) and state.result.generators:
-        # For POP_JUMP_IF_TRUE in filters, we want the condition to be true to continue
-        # So we add the condition directly (no negation needed)
-        new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(condition)
-        return replace(state, stack=new_stack, result=new_result)
-    else:
-        # Not in a comprehension context - might be boolean logic
-        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+
+# Python 3.12+ version
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
+def handle_pop_jump_if_false(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
+    # In comprehensions, this is used for filter conditions
+    return _handle_pop_jump_if(
+        lambda c: ast.UnaryOp(op=ast.Not(), operand=c), state, instr
+    )
 
 
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_312)
@@ -1392,19 +1389,13 @@ def handle_pop_jump_if_none(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_NONE pops a value and jumps if it's None
-    condition = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-
-    if isinstance(state.result, CompExp) and state.result.generators:
-        # Create "x is None" condition
-        none_condition = ast.Compare(
-            left=condition, ops=[ast.Is()], comparators=[ast.Constant(value=None)]
-        )
-        new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(none_condition)
-        return replace(state, stack=new_stack, result=new_result)
-    else:
-        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+    return _handle_pop_jump_if(
+        lambda c: ast.Compare(
+            left=c, ops=[ast.Is()], comparators=[ast.Constant(value=None)]
+        ),
+        state,
+        instr,
+    )
 
 
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_312)
@@ -1413,19 +1404,13 @@ def handle_pop_jump_if_not_none(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_NOT_NONE pops a value and jumps if it's not None
-    condition = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
-
-    if isinstance(state.result, CompExp) and state.result.generators:
-        # Create "x is not None" condition
-        not_none_condition = ast.Compare(
-            left=condition, ops=[ast.IsNot()], comparators=[ast.Constant(value=None)]
-        )
-        new_result = copy.deepcopy(state.result)
-        new_result.generators[-1].ifs.append(not_none_condition)
-        return replace(state, stack=new_stack, result=new_result)
-    else:
-        raise NotImplementedError("Lazy and+or behavior not implemented yet")
+    return _handle_pop_jump_if(
+        lambda c: ast.Compare(
+            left=c, ops=[ast.IsNot()], comparators=[ast.Constant(value=None)]
+        ),
+        state,
+        instr,
+    )
 
 
 # ============================================================================
