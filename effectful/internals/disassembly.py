@@ -5,7 +5,7 @@ This module provides functionality to reconstruct AST representations from compi
 generator expressions by analyzing their bytecode. The primary use case is to recover
 the original structure of generator comprehensions from their compiled form.
 
-The only public-facing interface is the `reconstruct` function, which takes a
+The only public-facing interface is the `disassemble()` function, which takes a
 generator object and returns an AST node representing the original comprehension.
 All other functions and classes in this module are internal implementation details.
 
