@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from effectful.internals.disassembly import reconstruct
+from effectful.internals.disassembly import disassemble
 
 
 def compile_and_eval(
@@ -106,7 +106,7 @@ def assert_ast_equivalent(
 )
 def test_simple_generators(genexpr):
     """Test reconstruction of simple generator expressions."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -160,7 +160,7 @@ def test_simple_generators(genexpr):
 )
 def test_arithmetic_expressions(genexpr):
     """Test reconstruction of generators with arithmetic expressions."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -232,7 +232,7 @@ def test_arithmetic_expressions(genexpr):
 )
 def test_comparison_operators(genexpr):
     """Test reconstruction of all comparison operators."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -252,7 +252,7 @@ def test_comparison_operators(genexpr):
 )
 def test_chained_comparison_operators(genexpr):
     """Test reconstruction of chained (ternary) comparison operators."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -321,7 +321,7 @@ def test_chained_comparison_operators(genexpr):
 )
 def test_filtered_generators(genexpr):
     """Test reconstruction of generators with if conditions."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -382,7 +382,7 @@ def test_filtered_generators(genexpr):
 )
 def test_nested_loops(genexpr):
     """Test reconstruction of generators with nested loops."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -417,7 +417,7 @@ def test_nested_loops(genexpr):
 )
 def test_nested_comprehensions(genexpr):
     """Test reconstruction of nested comprehensions."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -427,7 +427,7 @@ def test_nested_comprehensions_multiline_fail():
     # this part works - dis.dis correctly reconstructs the generator expression
     xs1 = (x for x in range(5) if x > 1)
     assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs1))
-    assert_ast_equivalent(xs1, reconstruct(xs1))
+    assert_ast_equivalent(xs1, disassemble(xs1))
 
     # this part fails - dis.dis incorrectly negates the filter expression x > 1
     xs2 = (
@@ -435,7 +435,7 @@ def test_nested_comprehensions_multiline_fail():
         for x in range(5)  # comment to avoid reformatting
         if x > 1
     )
-    assert_ast_equivalent(xs2, reconstruct(xs2))
+    assert_ast_equivalent(xs2, disassemble(xs2))
     assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs2))
 
 
@@ -468,7 +468,7 @@ def test_nested_comprehensions_multiline_fail():
 )
 def test_different_comprehension_types(genexpr):
     """Test reconstruction of different comprehension types."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
@@ -493,7 +493,7 @@ def test_different_comprehension_types(genexpr):
 )
 def test_variable_lookup(genexpr, globals_dict):
     """Test reconstruction of expressions with globals."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
 
     # Need to provide the same globals for evaluation
     assert_ast_equivalent(genexpr, ast_node, globals_dict)
@@ -564,7 +564,7 @@ def test_variable_lookup(genexpr, globals_dict):
 )
 def test_complex_scenarios(genexpr, globals_dict):
     """Test reconstruction of complex generator expressions."""
-    ast_node = reconstruct(genexpr)
+    ast_node = disassemble(genexpr)
 
     # Need to provide the same globals for evaluation
     assert_ast_equivalent(genexpr, ast_node, globals_dict)
@@ -681,13 +681,13 @@ def test_error_handling():
     """Test that appropriate errors are raised for unsupported cases."""
     # Test with non-generator input
     with pytest.raises(AssertionError):
-        reconstruct([1, 2, 3])  # Not a generator
+        disassemble([1, 2, 3])  # Not a generator
 
     # Test with consumed generator
     gen = (x for x in range(5))
     list(gen)  # Consume it
     with pytest.raises(AssertionError):
-        reconstruct(gen)
+        disassemble(gen)
 
 
 def test_comp_lambda_copy():
