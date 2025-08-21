@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -10,7 +11,6 @@ from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
-    _map_structure_and_keys,
     deffn,
     defop,
     defstream,
@@ -109,13 +109,6 @@ def test_operation_metadata():
     assert f.__name__ == f_op.__name__
     assert hash(f) == hash(f_op)
     assert f_op != ff_op
-
-
-def test_map_structure_and_keys():
-    s = {1: 2, 3: [4, 5, (6, {7: 8})]}
-    expected = {2: 3, 4: [5, 6, (7, {8: 9})]}
-    actual = _map_structure_and_keys(lambda x: x + 1, s)
-    assert actual == expected
 
 
 def test_scoped_collections():
@@ -549,3 +542,39 @@ def test_defstream_1():
     # assert isinstance(tm_iter_next, numbers.Number)  # TODO
     # assert issubclass(typeof(tm_iter_next), numbers.Number)
     assert tm_iter_next.op is next_
+
+
+def test_eval_dataclass():
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: int
+
+    @dataclasses.dataclass
+    class Line:
+        start: Point
+        end: Point
+
+    @dataclasses.dataclass
+    class Lines:
+        origin: Point
+        lines: list[Line]
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    p1 = Point(x(), y())
+    p2 = Point(x() + 1, y() + 1)
+    line = Line(p1, p2)
+    lines = Lines(p1, [line])
+
+    assert {x, y} <= fvsof(lines)
+
+    assert p1 == lines.origin
+
+    with handler({x: lambda: 3, y: lambda: 4}):
+        evaluated_lines = evaluate(lines)
+
+    assert isinstance(evaluated_lines, Lines)
+    assert evaluated_lines == Lines(
+        origin=Point(3, 4),
+        lines=[Line(Point(3, 4), Point(4, 5))],
+    )

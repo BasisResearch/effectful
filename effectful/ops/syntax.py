@@ -8,8 +8,6 @@ import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate
 
-import tree
-
 from effectful.ops.types import Annotation, Expr, Operation, Term
 
 
@@ -355,7 +353,7 @@ class Scoped(Annotation):
                     else:
                         param_bound_vars = {param_value}
                 elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use tree.flatten here because we want to be able
+                    # We can't use flatten here because we want to be able
                     # to see dict keys
                     def extract_operations(obj):
                         if isinstance(obj, Operation):
@@ -588,48 +586,28 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        def unwrap_annotation(typ):
-            """Unwrap Annotated types."""
-            return (
-                typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
-            )
+        from effectful.internals.unification import (
+            freetypevars,
+            nested_type,
+            substitute,
+            unify,
+        )
 
-        def drop_params(typ):
-            """Strip parameters from polymorphic types."""
-            origin = typing.get_origin(typ)
-            return typ if origin is None else origin
+        return_anno = self.__signature__.return_annotation
+        if typing.get_origin(return_anno) is typing.Annotated:
+            return_anno = typing.get_args(return_anno)[0]
 
-        sig = self.__signature__
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-        anno = unwrap_annotation(anno)
-
-        if anno is None:
-            return typing.cast(type[V], type(None))
-
-        if anno is inspect.Signature.empty:
+        if return_anno is inspect.Parameter.empty:
             return typing.cast(type[V], object)
+        elif return_anno is None:
+            return type(None)  # type: ignore
+        elif not freetypevars(return_anno):
+            return return_anno
 
-        if isinstance(anno, typing.TypeVar):
-            # rudimentary but sound special-case type inference sufficient for syntax ops:
-            # if the return type annotation is a TypeVar,
-            # look for a parameter with the same annotation and return its type,
-            # otherwise give up and return Any/object
-            for name, param in bound_sig.signature.parameters.items():
-                param_typ = unwrap_annotation(param.annotation)
-                if param_typ is anno and param.kind not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    arg = bound_sig.arguments[name]
-                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return drop_params(tp)
-
-            return typing.cast(type[V], object)
-
-        return drop_params(anno)
+        type_args = tuple(nested_type(a) for a in args)
+        type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
+        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
+        return substitute(return_anno, unify(self.__signature__, bound_sig))  # type: ignore
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -660,6 +638,9 @@ def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]
 
 
 @defop.register(type)
+@defop.register(typing.cast(type, types.GenericAlias))
+@defop.register(typing.cast(type, typing._GenericAlias))  # type: ignore
+@defop.register(typing.cast(type, types.UnionType))
 def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
@@ -679,7 +660,9 @@ def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
 def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+        from effectful.ops.semantics import fvsof
+
+        if not fvsof((args, kwargs)):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
@@ -889,18 +872,6 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
         return __dispatch(type(value))(value)
 
 
-def _map_structure_and_keys(func, structure):
-    def _map_value(value):
-        if isinstance(value, dict):
-            return {func(k): v for k, v in value.items()}
-        elif not tree.is_nested(value):
-            return func(value)
-        else:
-            return value
-
-    return tree.traverse(_map_value, structure, top_down=False)
-
-
 @_CustomSingleDispatchCallable
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -977,9 +948,6 @@ def defdata[T](
         *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
     ):
         if c:
-            v = _map_structure_and_keys(
-                lambda a: renaming.get(a, a) if isinstance(a, Operation) else a, v
-            )
             res = evaluate(
                 v,
                 intp={
@@ -994,9 +962,6 @@ def defdata[T](
 
     base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
     tp = typeof(base_term)
-    if tp is typing.Union:
-        raise ValueError("Terms that return Union types are not supported.")
-    assert isinstance(tp, type)
 
     typed_term = __dispatch(tp)(op, *args_, **kwargs_)
     return typed_term
@@ -1153,21 +1118,41 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
+        return (
+            op == op2
+            and len(args) == len(args2)
+            and set(kwargs) == set(kwargs2)
+            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
         )
     elif isinstance(x, Term) or isinstance(other, Term):
         return False
+    elif isinstance(x, collections.abc.Mapping) and isinstance(
+        other, collections.abc.Mapping
+    ):
+        return all(
+            k in x and k in other and syntactic_eq(x[k], other[k])
+            for k in set(x) | set(other)
+        )
+    elif isinstance(x, collections.abc.Sequence) and isinstance(
+        other, collections.abc.Sequence
+    ):
+        return len(x) == len(other) and all(
+            syntactic_eq(a, b) for a, b in zip(x, other)
+        )
+    elif (
+        dataclasses.is_dataclass(x)
+        and not isinstance(x, type)
+        and dataclasses.is_dataclass(other)
+        and not isinstance(other, type)
+    ):
+        return type(x) == type(other) and syntactic_eq(
+            {field.name: getattr(x, field.name) for field in dataclasses.fields(x)},
+            {
+                field.name: getattr(other, field.name)
+                for field in dataclasses.fields(other)
+            },
+        )
     else:
         return x == other
 
