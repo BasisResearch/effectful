@@ -1439,32 +1439,74 @@ def handle_build_string(
                 values.extend(elem.values)
             else:
                 values.append(elem)
-        concat_node = ast.JoinedStr(values=values)
+        return replace(state, stack=new_stack + [ast.JoinedStr(values=values)])
     elif all(isinstance(elem, ast.Constant) for elem in elements):
         # This is regular string concatenation or format spec building
         # If all elements are constants, we might be building a format spec
         # Concatenate the constant strings
-        concat_str = "".join(elem.value for elem in elements)
-        concat_node = ast.Constant(value=concat_str)
+        assert all(
+            isinstance(elem, ast.Constant) and isinstance(elem.value, str)
+            for elem in elements
+        )
+        concat_str = "".join(
+            elem.value
+            for elem in elements
+            if isinstance(elem, ast.Constant) and isinstance(elem.value, str)
+        )
+        return replace(state, stack=new_stack + [ast.Constant(value=concat_str)])
     else:
         raise TypeError("Should not be here?")
-
-    new_stack = new_stack + [concat_node]
-    return replace(state, stack=new_stack)
 
 
 @register_handler("FORMAT_VALUE", version=PythonVersion.PY_312)
 def handle_format_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # FORMAT_VALUE formats a string with a value
-    # Pops the value and the format string from the stack
+    # FORMAT_VALUE formats a string with a value in Python 3.12
+    # Flag bits: (flags & 0x03) = conversion, (flags & 0x04) = has format spec
+    assert instr.arg is not None, "FORMAT_VALUE requires flags argument"
     assert len(state.stack) >= 1, "Not enough items on stack for FORMAT_VALUE"
-    value = ensure_ast(state.stack[-1])
-    new_stack = state.stack[:-1]
 
-    # Create formatted string AST
-    formatted_node = ast.FormattedValue(value=value, conversion=-1, format_spec=None)
+    flags = instr.arg
+
+    # Check if there's a format specification
+    has_format_spec = bool(flags & 0x04)
+
+    if has_format_spec:
+        # Pop format spec and value
+        assert len(state.stack) >= 2, (
+            "FORMAT_VALUE with format spec needs 2 stack items"
+        )
+        format_spec = ensure_ast(state.stack[-1])
+        value = ensure_ast(state.stack[-2])
+        new_stack = state.stack[:-2]
+
+        # Wrap format spec in JoinedStr if it's a constant
+        if isinstance(format_spec, ast.Constant):
+            format_spec_node = ast.JoinedStr(values=[format_spec])
+        else:
+            assert isinstance(format_spec, ast.JoinedStr)
+            format_spec_node = format_spec
+    else:
+        # Just pop the value
+        value = ensure_ast(state.stack[-1])
+        new_stack = state.stack[:-1]
+        format_spec_node = None
+
+    # Determine conversion type from flags
+    conversion_flags = flags & 0x03
+    conversion_map = {
+        0: -1,  # No conversion
+        1: 115,  # str (!s)
+        2: 114,  # repr (!r)
+        3: 97,  # ascii (!a)
+    }
+    conversion = conversion_map[conversion_flags]
+
+    # Create formatted value AST
+    formatted_node = ast.FormattedValue(
+        value=value, conversion=conversion, format_spec=format_spec_node
+    )
     new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
@@ -1520,6 +1562,7 @@ def handle_format_with_spec(
         format_spec_node = ast.JoinedStr(values=[format_spec])
     else:
         # Already a JoinedStr from nested formatting
+        assert isinstance(format_spec, ast.JoinedStr)
         format_spec_node = format_spec
 
     formatted_node = ast.FormattedValue(
