@@ -11,7 +11,7 @@ All other functions and classes in this module are internal implementation detai
 
 Example:
     >>> g = (x * 2 for x in range(10) if x % 2 == 0)
-    >>> ast_node = reconstruct(g)
+    >>> ast_node = disassemble(g)
     >>> # ast_node is now an ast.Expression representing the original expression
 """
 
@@ -1745,7 +1745,7 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
 # ============================================================================
 
 
-def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
+def disassemble(genexpr: Generator[object, None, None]) -> ast.Expression:
     """
     Reconstruct an AST from a generator expression's bytecode.
 
@@ -1776,7 +1776,7 @@ def reconstruct(genexpr: Generator[object, None, None]) -> ast.Expression:
     Example:
         >>> # Generator expression
         >>> g = (x * 2 for x in range(10) if x % 2 == 0)
-        >>> ast_node = reconstruct(g)
+        >>> ast_node = disassemble(g)
         >>> isinstance(ast_node, ast.Expression)
         True
 
