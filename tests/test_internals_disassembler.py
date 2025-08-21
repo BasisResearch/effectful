@@ -1,10 +1,10 @@
 import ast
+import collections.abc
 import dis
 from types import GeneratorType
 from typing import Any
 
 import pytest
-import tree
 
 from effectful.internals.disassembler import reconstruct
 
@@ -28,18 +28,22 @@ def compile_and_eval(
     return eval(code, globals_dict)
 
 
-def materialize(genexpr: GeneratorType) -> tree.Structure:
+def materialize(genexpr: GeneratorType) -> list:
     """Materialize a nested generator expression to a nested list."""
 
     def _materialize(genexpr):
-        if isinstance(genexpr, GeneratorType):
-            return tree.map_structure(_materialize, list(genexpr))
-        elif tree.is_nested(genexpr):
-            return tree.map_structure(_materialize, genexpr)
+        if isinstance(genexpr, str | bytes):
+            return genexpr
+        elif isinstance(genexpr, collections.abc.Generator):
+            return _materialize(list(genexpr))
+        elif isinstance(genexpr, collections.abc.Sequence | collections.abc.Set):
+            return [_materialize(item) for item in genexpr]
+        elif isinstance(genexpr, collections.abc.Mapping):
+            return {_materialize(k): _materialize(v) for k, v in genexpr.items()}
         else:
             return genexpr
 
-    return _materialize(genexpr)
+    return [_materialize(x) for x in genexpr]
 
 
 def assert_ast_equivalent(
