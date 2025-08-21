@@ -232,7 +232,7 @@ def handle_return_generator(
         "RETURN_GENERATOR must be the first instruction"
     )
     new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
-    new_stack = state.stack + [new_result]
+    new_stack = state.stack + [Null()]
     return replace(state, result=new_result, stack=new_stack)
 
 
