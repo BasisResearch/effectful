@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from effectful.internals.disassembler import reconstruct
+from effectful.internals.disassembly import reconstruct
 
 
 def compile_and_eval(
@@ -666,7 +666,7 @@ def test_complex_scenarios(genexpr, globals_dict):
 )
 def test_ensure_ast(value, expected_str):
     """Test that ensure_ast correctly converts various values to AST nodes."""
-    from effectful.internals.disassembler import ensure_ast
+    from effectful.internals.disassembly import ensure_ast
 
     result = ensure_ast(value)
 
@@ -694,7 +694,7 @@ def test_comp_lambda_copy():
     """Test that CompLambda is compatible with copy.copy and copy.deepcopy."""
     import copy
 
-    from effectful.internals.disassembler import CompLambda, DummyIterName
+    from effectful.internals.disassembly import CompLambda, DummyIterName
 
     # Create a test generator expression AST
     genexpr_ast = ast.GeneratorExp(
