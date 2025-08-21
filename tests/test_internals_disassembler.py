@@ -169,14 +169,52 @@ def test_arithmetic_expressions(genexpr):
 # ============================================================================
 
 
-@pytest.mark.xfail(reason="f-string expressions not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
-        # simple cases
-        (f"{x} is {x**2}" for x in range(5)),
-        (f"{x:02d}" for x in range(10)),
-        (f"{x:.2f}" for x in [1.2345, 2.3456, 3.4567]),
+        # Basic f-string cases
+        (f"{x}" for x in range(5)),  # Single value, no format
+        (f"{x} is {x**2}" for x in range(5)),  # Multiple values
+        (f"{x:02d}" for x in range(10)),  # Format spec
+        (f"{x:.2f}" for x in [1.2345, 2.3456, 3.4567]),  # Float format spec
+        # Conversion specifiers
+        (f"{x!r}" for x in ["hello", "world"]),  # repr conversion
+        (f"{x!s}" for x in [1, 2, 3]),  # str conversion
+        (f"{x!a}" for x in ["hello\n", "world\t"]),  # ascii conversion
+        # Conversion with format spec
+        (f"{x!r:>10}" for x in ["hello", "world"]),  # repr with alignment
+        (f"{x!s:^15}" for x in [1, 2, 3]),  # str with center align
+        # Empty and literal f-strings
+        ("" for x in range(3)),  # Empty f-string
+        ("constant" for x in range(3)),  # No formatting
+        (f"x={x}" for x in range(5)),  # Literal prefix
+        (f"result: {x * 2}" for x in range(5)),  # Literal with expression
+        # Complex expressions in f-strings
+        (f"{x + 1}" for x in range(5)),  # Arithmetic
+        (f"{x * x}" for x in range(5)),  # Multiplication
+        (f"{x % 2}" for x in range(10)),  # Modulo
+        (f"{-x}" for x in range(-2, 3)),  # Unary minus
+        # Nested formatting
+        (f"{x:0{2}d}" for x in range(5)),  # Format spec with expression
+        (f"{x:>{3 * 2}}" for x in range(5)),  # Expression in format spec
+        # Multiple formatted values
+        (f"{x} + {y} = {x + y}" for x in range(3) for y in range(3)),  # Multiple vars
+        (f"({x}, {y})" for x in range(2) for y in range(2)),  # Tuple display
+        # F-strings with various data types
+        (f"{s}" for s in ["hello", "world"]),  # Strings
+        (f"{b}" for b in [True, False]),  # Booleans
+        (f"{n}" for n in [None, None]),  # None values
+        (f"{lst}" for lst in [[1, 2], [3, 4]]),  # Lists
+        # Complex format specifications
+        (f"{x:+05d}" for x in range(-2, 3)),  # Sign, zero pad, width
+        (f"{x:.2%}" for x in [0.1, 0.25, 0.333]),  # Percentage format
+        (f"{x:.2e}" for x in [100, 1000, 10000]),  # Scientific notation
+        (f"{x:#x}" for x in [10, 15, 255]),  # Hex with prefix
+        (f"{x:b}" for x in [2, 7, 15]),  # Binary format
+        # Edge cases
+        ("{x}" for x in range(3)),  # Escaped braces
+        (f"{{x}} = {x}" for x in range(3)),  # Mixed escaped/formatted
+        (f"{{{x}}}" for x in range(3)),  # Brace around formatted
     ],
 )
 def test_fstring_expressions(genexpr):
