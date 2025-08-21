@@ -478,25 +478,50 @@ def test_different_comprehension_types(genexpr):
 
 
 @pytest.mark.xfail(reason="Conditional expressions not yet properly supported")
-@pytest.mark.parametrize("genexpr", [
-    # simple conditional expressions without nesting
-    ((lambda x: x if x % 2 == 0 else -x)(xi) for xi in range(5)),
-    ((lambda x: (x + 1) if x < 5 else (x - 1))(xi) for xi in range(10)),
-    ((lambda x: (x * 2) if x > 0 else (x / 2))(xi) for xi in range(-5, 5)),
-    ((lambda x: (x**2) if x != 0 else 1)(xi) for xi in range(-3, 4)),
-    # simple conditional expressions with negation
-    ((lambda x: (x + 10) if not (x < 5) else (x - 10))(xi) for xi in range(20)),
-    ((lambda x: (x * 3) if not (x % 2 == 0) else (x // 3))(xi) for xi in range(10)),
-    ((lambda x: (x**3) if not (x < 0) else (x**0.5))(xi) for xi in range(-5, 15)),
-    # conditional expressions with lazy test
-    ((lambda x: (x + 10) if (x > 5 and x < 15) else (x - 10))(xi) for xi in range(20)),
-    ((lambda x: (x * 3) if (x % 2 == 0 or x % 3 == 0) else (x // 3))(xi) for xi in range(10)),
-    ((lambda x: (x**3) if not (x < 0 or x > 10) else (x**0.5))(xi) for xi in range(-5, 15)),
-    # nested conditional expressions
-    ((lambda x: (x + 1) if x < 5 else ((x - 1) if x < 10 else (x * 2)))(xi) for xi in range(15)),
-    ((lambda x: (x * 2) if x % 2 == 0 else ((x // 2) if x % 3 == 0 else (x + 2)))(xi) for xi in range(10)),
-    ((lambda x: (x**2) if x > 0 else ((-x)**2 if x < -5 else 1))(xi) for xi in range(-10, 5)),
-])
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # simple conditional expressions without nesting
+        ((lambda x: x if x % 2 == 0 else -x)(xi) for xi in range(5)),
+        ((lambda x: (x + 1) if x < 5 else (x - 1))(xi) for xi in range(10)),
+        ((lambda x: (x * 2) if x > 0 else (x / 2))(xi) for xi in range(-5, 5)),
+        ((lambda x: (x**2) if x != 0 else 1)(xi) for xi in range(-3, 4)),
+        # simple conditional expressions with negation
+        ((lambda x: (x + 10) if not (x < 5) else (x - 10))(xi) for xi in range(20)),
+        ((lambda x: (x * 3) if not (x % 2 == 0) else (x // 3))(xi) for xi in range(10)),
+        ((lambda x: (x**3) if not (x < 0) else (x**0.5))(xi) for xi in range(-5, 15)),
+        # conditional expressions with lazy test
+        (
+            (lambda x: (x + 10) if (x > 5 and x < 15) else (x - 10))(xi)
+            for xi in range(20)
+        ),
+        (
+            (lambda x: (x * 3) if (x % 2 == 0 or x % 3 == 0) else (x // 3))(xi)
+            for xi in range(10)
+        ),
+        (
+            (lambda x: (x**3) if not (x < 0 or x > 10) else (x**0.5))(xi)
+            for xi in range(-5, 15)
+        ),
+        # nested conditional expressions
+        (
+            (lambda x: (x + 1) if x < 5 else ((x - 1) if x < 10 else (x * 2)))(xi)
+            for xi in range(15)
+        ),
+        (
+            (
+                lambda x: (x * 2)
+                if x % 2 == 0
+                else ((x // 2) if x % 3 == 0 else (x + 2))
+            )(xi)
+            for xi in range(10)
+        ),
+        (
+            (lambda x: (x**2) if x > 0 else ((-x) ** 2 if x < -5 else 1))(xi)
+            for xi in range(-10, 5)
+        ),
+    ],
+)
 def test_conditional_expressions_no_comprehension(genexpr):
     """Test reconstruction of conditional expressions isolated from comprehension bodies."""
     ast_node = disassemble(genexpr)
