@@ -666,6 +666,43 @@ def test_lazy_boolean_and_chained_comparisons(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Simple conditional as function argument
+        (max(x if x > 0 else 0) for x in range(-2, 3)),
+        (abs(x if x < 0 else -x) for x in range(-3, 3)),
+        (len(str(x) if x > 10 else "small") for x in range(15)),
+        # Multiple conditional arguments
+        (
+            max(x if x > 0 else 0, y if y > 0 else 0)
+            for x in range(-1, 2)
+            for y in range(-1, 2)
+        ),
+        (
+            pow(x if x != 0 else 1, y if y > 0 else 1)
+            for x in range(3)
+            for y in range(3)
+        ),
+        # Nested function calls with conditionals
+        (max(abs(x if x < 0 else -x), 1) for x in range(-3, 4)),
+        (int(str(x if x > 5 else x + 10)) for x in range(10)),
+        # Conditionals in keyword arguments (using dict constructor as example)
+        (dict(a=x if x > 0 else 0, b=x * 2 if x < 5 else x) for x in range(8)),
+        # Method calls with conditional arguments
+        ([1, 2, 3].index(x if x in [1, 2, 3] else 1) for x in range(5)),
+        ("hello".replace("l", x if isinstance(x, str) else "X") for x in ["a", 1, "b"]),
+        # Mixed: conditional in function call within comprehension filter
+        (x for x in range(20) if max(x if x > 10 else 0, 5) > 8),
+        # Complex nested case: conditional in function argument, function call in conditional
+        (max(x if len(str(x)) > 1 else x * 10) for x in range(15)),
+    ],
+)
+def test_conditional_expressions_function_arguments(genexpr):
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
 # ============================================================================
 # GENERATOR EXPRESSION WITH GLOBALS
 # ============================================================================
