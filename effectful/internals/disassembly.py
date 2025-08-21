@@ -1741,6 +1741,14 @@ def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
     return ensure_ast(value.__reduce__()[1][0])  # type: ignore
 
 
+def _symbolic_exec(code: types.CodeType) -> ReconstructionState:
+    # TODO respect control flow
+    state = ReconstructionState(code=code)
+    for instr in state.instructions.values():
+        state = OP_HANDLERS[instr.opname](state, instr)
+    return state
+
+
 @ensure_ast.register
 def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
     assert inspect.iscode(value), "Input must be a code object"
@@ -1763,10 +1771,7 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         raise TypeError(f"Unsupported code object type: {value.co_name}")
 
     # Symbolic execution to reconstruct the AST
-    state = ReconstructionState(code=value)
-    for instr in state.instructions.values():
-        state = OP_HANDLERS[instr.opname](state, instr)
-    result: ast.expr = state.result
+    result: ast.expr = _symbolic_exec(value).result
 
     # Check postconditions
     assert not any(isinstance(x, ast.stmt) for x in ast.walk(result)), (
