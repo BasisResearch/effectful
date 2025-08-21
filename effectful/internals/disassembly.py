@@ -52,6 +52,19 @@ class Null(ast.Constant):
         super().__init__(value=value)
 
 
+class ConvertedValue(ast.expr):
+    """Wrapper for values that have been converted with CONVERT_VALUE."""
+
+    def __init__(self, value: ast.expr, conversion: int):
+        self.value = value
+        self.conversion = conversion
+        # Map CONVERT_VALUE args to ast.FormattedValue conversion values
+        # CONVERT_VALUE: 0=None, 1=str, 2=repr, 3=ascii
+        # ast.FormattedValue: -1=none, 115=str, 114=repr, 97=ascii
+        conversion_map = {0: -1, 1: 115, 2: 114, 3: 97}
+        self.ast_conversion = conversion_map.get(conversion, -1)
+
+
 class CompLambda(ast.Lambda):
     """Placeholder AST node representing a lambda function used in comprehensions."""
 
@@ -250,7 +263,6 @@ def handle_yield_value(
         "YIELD_VALUE must be called before yielding"
     )
     assert len(state.result.generators) > 0, "YIELD_VALUE should have generators"
-
     ret = ast.GeneratorExp(
         elt=ensure_ast(state.stack[-1]),
         generators=state.result.generators,
@@ -923,6 +935,25 @@ handle_unary_not = register_handler(
 )
 
 
+@register_handler("CONVERT_VALUE", version=PythonVersion.PY_313)
+def handle_convert_value(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # CONVERT_VALUE applies a conversion to the value on top of stack
+    # Used for f-string conversions like !r, !s, !a
+    # The conversion type is stored in instr.arg:
+    # 0 = None, 1 = str (!s), 2 = repr (!r), 3 = ascii (!a)
+    assert len(state.stack) > 0, "CONVERT_VALUE requires a value on stack"
+    assert instr.arg is not None, "CONVERT_VALUE requires conversion type"
+
+    # Wrap the value with conversion information
+    value = state.stack[-1]
+    converted = ConvertedValue(value, instr.arg)
+    new_stack = state.stack[:-1] + [converted]
+
+    return replace(state, stack=new_stack)
+
+
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_312)
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
 def handle_call_intrinsic_1(
@@ -1384,27 +1415,41 @@ def handle_dict_update(
 def handle_build_string(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # BUILD_STRING creates a string from the top of the stack
-    # The number of elements to pop is determined by the instruction argument
+    # BUILD_STRING concatenates strings from the stack
+    # For f-strings, it combines FormattedValue and Constant nodes
     assert instr.arg is not None
     string_size: int = instr.arg
 
     if string_size == 0:
         # Empty string case
         new_stack = state.stack + [ast.Constant(value="")]
+        return replace(state, stack=new_stack)
+
+    # Pop elements for the string
+    elements = [ensure_ast(elem) for elem in state.stack[-string_size:]]
+    new_stack = state.stack[:-string_size]
+
+    # Check if this is an f-string build (has FormattedValue nodes)
+    # or a regular string concatenation
+    if any(isinstance(elem, ast.JoinedStr) for elem in elements):
+        # This is an f-string - create JoinedStr
+        values = []
+        for elem in elements:
+            if isinstance(elem, ast.JoinedStr):
+                values.extend(elem.values)
+            else:
+                values.append(elem)
+        concat_node = ast.JoinedStr(values=values)
+    elif all(isinstance(elem, ast.Constant) for elem in elements):
+        # This is regular string concatenation or format spec building
+        # If all elements are constants, we might be building a format spec
+        # Concatenate the constant strings
+        concat_str = "".join(elem.value for elem in elements)
+        concat_node = ast.Constant(value=concat_str)
     else:
-        # Pop elements for the string
-        elements = (
-            [ensure_ast(elem) for elem in state.stack[-string_size:]]
-            if string_size > 0
-            else []
-        )
-        new_stack = state.stack[:-string_size]
+        raise TypeError("Should not be here?")
 
-        # Create concatenated string AST
-        concat_node = ast.JoinedStr(values=elements)
-        new_stack = new_stack + [concat_node]
-
+    new_stack = new_stack + [concat_node]
     return replace(state, stack=new_stack)
 
 
@@ -1420,7 +1465,7 @@ def handle_format_value(
 
     # Create formatted string AST
     formatted_node = ast.FormattedValue(value=value, conversion=-1, format_spec=None)
-    new_stack = new_stack + [formatted_node]
+    new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
 
@@ -1431,12 +1476,22 @@ def handle_format_simple(
     # FORMAT_SIMPLE formats a string with a single value
     # Pops the value and the format string from the stack
     assert len(state.stack) >= 1, "Not enough items on stack for FORMAT_SIMPLE"
-    value = ensure_ast(state.stack[-1])
+    value = state.stack[-1]
     new_stack = state.stack[:-1]
 
+    # Check if the value was converted
+    if isinstance(value, ConvertedValue):
+        conversion = value.ast_conversion
+        value = value.value
+    else:
+        conversion = -1
+        value = ensure_ast(value)
+
     # Create formatted string AST
-    formatted_node = ast.FormattedValue(value=value, conversion=-1, format_spec=None)
-    new_stack = new_stack + [formatted_node]
+    formatted_node = ast.FormattedValue(
+        value=value, conversion=conversion, format_spec=None
+    )
+    new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
 
@@ -1444,18 +1499,33 @@ def handle_format_simple(
 def handle_format_with_spec(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # FORMAT_WITH_SPEC formats a string with a value and a format specifier
-    # Pops the value, format string, and format specifier from the stack
+    # FORMAT_WITH_SPEC formats a value with a format specifier
+    # Stack order in Python 3.13: format_spec on top, value below
     assert len(state.stack) >= 2, "Not enough items on stack for FORMAT_WITH_SPEC"
-    value = ensure_ast(state.stack[-1])
-    format_string = ensure_ast(state.stack[-2])
+    format_spec = ensure_ast(state.stack[-1])  # Format spec is on top
+    value = state.stack[-2]  # Value is below
     new_stack = state.stack[:-2]
 
+    # Check if the value was converted
+    if isinstance(value, ConvertedValue):
+        conversion = value.ast_conversion
+        value = value.value
+    else:
+        conversion = -1
+        value = ensure_ast(value)
+
     # Create formatted string AST with specifier
+    # The format_spec should be wrapped in a JoinedStr if it's a simple constant
+    if isinstance(format_spec, ast.Constant):
+        format_spec_node = ast.JoinedStr(values=[format_spec])
+    else:
+        # Already a JoinedStr from nested formatting
+        format_spec_node = format_spec
+
     formatted_node = ast.FormattedValue(
-        value=value, conversion=-1, format_spec=format_string
+        value=value, conversion=conversion, format_spec=format_spec_node
     )
-    new_stack = new_stack + [formatted_node]
+    new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
 
@@ -1660,7 +1730,8 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         "Final return value must not contain statement nodes"
     )
     assert not any(
-        isinstance(x, Placeholder | Null | CompLambda) for x in ast.walk(result)
+        isinstance(x, Placeholder | Null | CompLambda | ConvertedValue)
+        for x in ast.walk(result)
     ), "Final return value must not contain temporary nodes"
     assert not any(x.arg == ".0" for x in ast.walk(result) if isinstance(x, ast.arg)), (
         "Final return value must not contain .0 argument"
