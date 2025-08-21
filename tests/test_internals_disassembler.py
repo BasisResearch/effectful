@@ -536,7 +536,6 @@ def test_different_comprehension_types(genexpr):
 # ============================================================================
 
 
-@pytest.mark.xfail(reason="Conditional expressions not yet properly supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
@@ -583,6 +582,86 @@ def test_different_comprehension_types(genexpr):
 )
 def test_conditional_expressions_no_comprehension(genexpr):
     """Test reconstruction of conditional expressions isolated from comprehension bodies."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Basic conditional expressions in comprehension bodies
+        ((x if x % 2 == 0 else -x) for x in range(5)),
+        ((x * 2 if x > 0 else x / 2) for x in range(-3, 4)),
+        ((x**2 if x != 0 else 1) for x in range(-2, 3)),
+        # Conditional expressions with filters
+        ((x if x % 2 == 0 else -x) for x in range(10) if x > 2),
+        ((x * 3 if x > 5 else x + 1) for x in range(20) if x % 3 == 0),
+        # Nested loops with conditional expressions
+        ((x + y if x > y else x - y) for x in range(3) for y in range(3)),
+        (
+            (x * y if x != 0 and y != 0 else 0)
+            for x in range(-2, 3)
+            for y in range(-2, 3)
+        ),
+        # Multiple conditional expressions
+        (
+            (x if x > 0 else 0) + (y if y > 0 else 0)
+            for x in range(-2, 3)
+            for y in range(-2, 3)
+        ),
+        # Conditional expressions in different parts
+        ([x if x > 0 else -x for x in range(i)] for i in range(1, 4)),
+        ((x if x % 2 == 0 else -x) for x in (y if y > 2 else y + 10 for y in range(5))),
+        # Complex nested conditional expressions
+        ((x if x > 0 else (x + 5 if x > -3 else x * 2)) for x in range(-5, 5)),
+        ((x * 2 if x > 0 else (x / 2 if x < 0 else 1)) for x in range(-3, 4)),
+        # Conditional expressions with function calls
+        ((abs(x) if x < 0 else x) for x in range(-3, 4)),
+        ((max(x, 0) if x is not None else 0) for x in [None, -1, 0, 1, 2]),
+        # Mixed with other complex expressions
+        ((x + 1 if x % 2 == 0 else x - 1) * 2 for x in range(5)),
+        ((x, y, x + y if x > y else x - y) for x in range(3) for y in range(3)),
+    ],
+)
+def test_conditional_expressions_simple_comprehensions(genexpr):
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Lazy boolean operations (and/or)
+        (x for x in range(10) if x > 2 and x < 8),
+        (x for x in range(10) if x < 3 or x > 7),
+        (x for x in range(20) if x > 5 and x % 2 == 0 and x < 15),
+        (x for x in range(20) if x < 5 or x > 15 or x == 10),
+        # Mixed and/or
+        (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
+        (x for x in range(20) if x > 5 and (x < 10 or x > 15)),
+        # Chained comparisons
+        (x for x in range(20) if 5 < x < 15),
+        (x for x in range(20) if 0 <= x <= 10),
+        (x for x in range(50) if 10 < x < 20 < x * 2),
+        (x for x in range(10) if 0 <= x <= 5 <= x + 5),
+        # Mixed chained and boolean
+        (x for x in range(50) if 5 < x < 15 and x % 2 == 0),
+        (x for x in range(50) if x > 20 or 5 < x < 15),
+        # Complex boolean expressions in comprehension body
+        ((x if x > 5 and x < 15 else 0) for x in range(20)),
+        ((x if x < 3 or x > 17 else -x) for x in range(20)),
+        # Chained comparisons in conditional expressions
+        ((x if 5 < x < 15 else 0) for x in range(20)),
+        ((x * 2 if 0 <= x <= 10 else x / 2) for x in range(-5, 15)),
+        # Nested boolean logic
+        (x for x in range(100) if (x > 10 and x < 50) and (x % 3 == 0 or x % 5 == 0)),
+        (x for x in range(100) if not (x > 30 and x < 70)),
+        # Boolean expressions with function calls
+        (x for x in range(-10, 10) if abs(x) > 3 and x % 2 == 0),
+        (x for x in ["hello", "world", "test"] if len(x) > 3 and x.startswith("h")),
+    ],
+)
+def test_lazy_boolean_and_chained_comparisons(genexpr):
     ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
