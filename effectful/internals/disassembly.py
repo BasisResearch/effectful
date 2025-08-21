@@ -1649,6 +1649,42 @@ def handle_pop_jump_if_not_none(
     )
 
 
+@register_handler("SEND", version=PythonVersion.PY_312)
+@register_handler("SEND", version=PythonVersion.PY_313)
+def handle_send(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError("SEND instruction should not appear in generator comprehensions")
+
+
+@register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_312)
+@register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_313)
+def handle_jump_backward_no_interrupt(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError(
+        "JUMP_BACKWARD_NO_INTERRUPT instruction should not appear in generator comprehensions"
+    )
+
+
+@register_handler("JUMP", version=PythonVersion.PY_312)
+@register_handler("JUMP", version=PythonVersion.PY_313)
+def handle_jump(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError("JUMP instruction should not appear in generator comprehensions")
+
+
+@register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_312)
+@register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_313)
+def handle_jump_no_interrupt(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError(
+        "JUMP_NO_INTERRUPT instruction should not appear in generator comprehensions"
+    )
+
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
@@ -1742,10 +1778,57 @@ def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
 
 
 def _symbolic_exec(code: types.CodeType) -> ReconstructionState:
-    # TODO respect control flow
+    """Execute bytecode symbolically, following control flow."""
     state = ReconstructionState(code=code)
-    for instr in state.instructions.values():
-        state = OP_HANDLERS[instr.opname](state, instr)
+    instructions = state.instructions
+    instrs_list = list(instructions.values())
+    next_instr = {
+        i1.offset: i2.offset for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])
+    }
+
+    loop_state = collections.Counter()
+    branch_state = collections.Counter()
+
+    instr = next(iter(instructions.values()))  # Start at first instruction
+    while instr is not None:
+        if instr.opname == "FOR_ITER":
+            # FOR_ITER has two paths: continue loop or exit when exhausted
+            # For reconstruction, we execute the continue path once
+            if loop_state[instr.offset] > 0:
+                # Simulate iterator exhaustion - jump to FOR_ITER target
+                instr = instructions[instr.jump_target]
+            else:
+                # Continue loop - execute FOR_ITER handler
+                state = OP_HANDLERS[instr.opname](state, instr)
+                loop_state[instr.offset] += 1
+                instr = instructions[next_instr[instr.offset]]
+        elif instr.opname.startswith("POP_JUMP_IF_"):
+            # POP_JUMP_IF_*: conditional jump, follow the jump path once
+            if branch_state[instr.offset] > 0:
+                # Simulate not taking the jump - continue to next instruction
+                instr = instructions[next_instr[instr.offset]]
+            else:
+                # Take the jump - execute the POP_JUMP_IF_* handler
+                state = OP_HANDLERS[instr.opname](state, instr)
+                instr = instructions[instr.jump_target]
+                branch_state[instr.offset] += 1
+        elif instr.opname in {"JUMP_BACKWARD", "JUMP_FORWARD"}:
+            # JUMP_BACKWARD: loop back to FOR_ITER
+            state = OP_HANDLERS[instr.opname](state, instr)
+            instr = instructions[instr.jump_target]
+        elif instr.opname in {"RETURN_VALUE", "RETURN_CONST"}:
+            # YIELD_VALUE and RETURN_VALUE end execution
+            state = OP_HANDLERS[instr.opname](state, instr)
+            instr = None
+        else:
+            # All other operations: handle normally
+            state = OP_HANDLERS[instr.opname](state, instr)
+            instr = (
+                instructions[next_instr[instr.offset]]
+                if instr.offset in next_instr
+                else None
+            )
+
     return state
 
 
