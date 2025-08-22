@@ -195,6 +195,7 @@ def register_handler(
 
         if instr.opcode in dis.hasjrel:
             assert jump is not None, f"Jump op {opname} must have jump state"
+            assert instr.argval == getattr(instr, "jump_target", instr.argval)
             new_state = handler(state, instr, jump=jump)
         else:
             assert jump is None, f"Non-jump op {opname} must not have jump state"
