@@ -219,7 +219,12 @@ def register_handler(
 
 def _symbolic_exec(code: types.CodeType) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
-    state = ReconstructionState(code=code, stack=[Null()])
+    state = ReconstructionState(
+        code=code,
+        stack=[Null(), Null()]
+        if PythonVersion(sys.version_info.minor) == PythonVersion.PY_312
+        else [Null()],
+    )
     instructions = state.instructions
     instrs_list = list(instructions.values())
     next_instr = {
@@ -237,7 +242,7 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
             if loop_state[instr.offset] > 0:
                 # Simulate iterator exhaustion - jump to FOR_ITER target
                 state = OP_HANDLERS[instr.opname](state, instr, jump=True)
-                instr = instructions[instr.jump_target]
+                instr = instructions[instr.argval]
             else:
                 # Continue loop - execute FOR_ITER handler
                 state = OP_HANDLERS[instr.opname](state, instr, jump=False)
@@ -257,12 +262,12 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
             else:
                 # Simulate not taking the jump - continue to next instruction
                 state = OP_HANDLERS[instr.opname](state, instr, jump=False)
-                instr = instructions[instr.jump_target]
+                instr = instructions[instr.argval]
                 branch_state[instr.offset] += 1
         elif instr.opname in {"JUMP_BACKWARD", "JUMP_FORWARD"}:
             # JUMP_BACKWARD: loop back to FOR_ITER
             state = OP_HANDLERS[instr.opname](state, instr, jump=True)
-            instr = instructions[instr.jump_target]
+            instr = instructions[instr.argval]
         elif instr.opname in {"RETURN_VALUE", "RETURN_CONST"}:
             # RETURN_VALUE ends execution
             state = OP_HANDLERS[instr.opname](state, instr)
@@ -289,12 +294,11 @@ def handle_return_generator_312(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
-    assert isinstance(state.stack[-1], Placeholder), (
+    assert len(state.stack) == 2 and all(isinstance(x, Null) for x in state.stack), (
         "RETURN_GENERATOR must be the first instruction"
     )
     new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
-    new_stack = state.stack[:-1] + [new_result]
-    return replace(state, stack=new_stack)
+    return replace(state, stack=[new_result, Null()])
 
 
 @register_handler("RETURN_GENERATOR", version=PythonVersion.PY_313)
@@ -302,6 +306,9 @@ def handle_return_generator(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
+    assert len(state.stack) == 1 and isinstance(state.stack[0], Null), (
+        "RETURN_GENERATOR must be the first instruction"
+    )
     return replace(
         state, stack=[ast.GeneratorExp(elt=Placeholder(), generators=[]), Null()]
     )
