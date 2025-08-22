@@ -676,7 +676,7 @@ def test_lazy_boolean_and_chained_comparisons(genexpr):
     "genexpr",
     [
         # Simple conditional as function argument
-        (max(x if x > 0 else 0) for x in range(-2, 3)),
+        (max(x if x > 0 else 0, 1) for x in range(-2, 3)),
         (abs(x if x < 0 else -x) for x in range(-3, 3)),
         (len(str(x) if x > 10 else "small") for x in range(15)),
         # Multiple conditional arguments
@@ -701,7 +701,7 @@ def test_lazy_boolean_and_chained_comparisons(genexpr):
         # Mixed: conditional in function call within comprehension filter
         (x for x in range(20) if max(x if x > 10 else 0, 5) > 8),
         # Complex nested case: conditional in function argument, function call in conditional
-        (max(x if len(str(x)) > 1 else x * 10) for x in range(15)),
+        (abs(x if len(str(x)) > 1 else x * 10) for x in range(15)),
     ],
 )
 def test_conditional_expressions_function_arguments(genexpr):
