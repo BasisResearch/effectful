@@ -218,6 +218,17 @@ def register_handler(
     return handler  # return the original handler for multiple decorator usage
 
 
+LOOP_OPS = {"FOR_ITER"}
+BRANCH_OPS = {
+    "POP_JUMP_IF_TRUE",
+    "POP_JUMP_IF_FALSE",
+    "POP_JUMP_IF_NOT_NONE",
+    "POP_JUMP_IF_NONE",
+}
+RETURN_OPS = {"RETURN_VALUE", "RETURN_CONST"}
+JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN_OPS
+
+
 def _symbolic_exec(code: types.CodeType) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
     state = ReconstructionState(
@@ -237,7 +248,7 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
 
     instr = next(iter(instructions.values()))  # Start at first instruction
     while instr is not None:
-        if instr.opname in {"FOR_ITER"}:
+        if instr.opname in LOOP_OPS:
             # FOR_ITER has two paths: continue loop or exit when exhausted
             # For reconstruction, we execute the continue path once
             if loop_state[instr.offset] > 0:
@@ -249,12 +260,7 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
                 state = OP_HANDLERS[instr.opname](state, instr, jump=False)
                 loop_state[instr.offset] += 1
                 instr = instructions[next_instr[instr.offset]]
-        elif instr.opname in {
-            "POP_JUMP_IF_TRUE",
-            "POP_JUMP_IF_FALSE",
-            "POP_JUMP_IF_NOT_NONE",
-            "POP_JUMP_IF_NONE",
-        }:
+        elif instr.opname in BRANCH_OPS:
             # POP_JUMP_IF_*: conditional jump, follow the jump path once
             if branch_state[instr.offset] > 0:
                 # Take the jump - execute the POP_JUMP_IF_* handler
@@ -265,11 +271,11 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
                 state = OP_HANDLERS[instr.opname](state, instr, jump=False)
                 instr = instructions[instr.argval]
                 branch_state[instr.offset] += 1
-        elif instr.opname in {"JUMP_BACKWARD", "JUMP_FORWARD"}:
+        elif instr.opname in JUMP_OPS:
             # JUMP_BACKWARD: loop back to FOR_ITER
             state = OP_HANDLERS[instr.opname](state, instr, jump=True)
             instr = instructions[instr.argval]
-        elif instr.opname in {"RETURN_VALUE", "RETURN_CONST"}:
+        elif instr.opname in RETURN_OPS:
             # RETURN_VALUE ends execution
             state = OP_HANDLERS[instr.opname](state, instr)
             instr = None
