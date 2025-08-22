@@ -4,12 +4,12 @@ from weighted.ops.fold import fold
 from weighted.ops.monoid import (
     ArgMaxMonoid,
     ArgMinMonoid,
+    JaxCartesianProdMonoid,
     LogSumMonoid,
     MaxMonoid,
     MinMonoid,
     ProdMonoid,
     SumMonoid,
-    TensorCartesianProdMonoid,
 )
 
 
@@ -51,4 +51,4 @@ def LogSum(streams, body):
 
 
 def CartesianProd(streams, body):
-    return fold(TensorCartesianProdMonoid, streams, body)
+    return fold(JaxCartesianProdMonoid, streams, body)

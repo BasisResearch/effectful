@@ -73,18 +73,42 @@ class Monoid[T]:
 
     def distributes_with(self, op) -> bool:
         """
-        Returns whether a monoid is distributive w.r.t. a jax op.
+        Returns whether a monoid is distributive w.r.t.
+        another monoid/op. I.e. the two monoids form a semiring.
+        (May have false negatives but no false positives.)
         """
+        op = self.from_jax_op(op) or op
+        if isinstance(op, Monoid):
+            op = op.add
+
         if self.add is add:
-            return op is jnp.multiply
+            return op is mul
         elif self.add is min:
-            return op is jnp.add
+            return op is add
         elif self.add is max:
-            return op is jnp.multiply or op is jnp.min or op is jnp.add
+            return op is mul or op is min or op is add
         elif self.add is logaddexp:
-            return op is jnp.add
+            return op is add
         else:
             return False
+
+    @classmethod
+    def from_jax_op(cls, op):
+        """
+        Returns the Monoid corresponding to a binary jax function.
+        """
+        if op is jnp.add:
+            return SumMonoid
+        elif op is jnp.multiply:
+            return ProdMonoid
+        elif op is jnp.minimum:
+            return MinMonoid
+        elif op is jnp.maximum:
+            return MaxMonoid
+        elif op is jnp.logaddexp:
+            return LogSumMonoid
+        else:
+            return None
 
 
 # Semiring laws:
@@ -163,7 +187,7 @@ def logaddexp(a, b):
 
 
 @defop
-def tensor_cartesian_prod(xs, ys):
+def jax_cartesian_prod(xs, ys):
     x, y = jnp.meshgrid(xs, ys, indexing="ij")
     return jnp.stack([x.ravel(), y.ravel()]).T
 
@@ -216,8 +240,8 @@ ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(arg_min, (float("inf"), None), 
 
 ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(arg_max, (float("-inf"), None), "ArgMax")
 
-TensorCartesianProdMonoid: Monoid[jax.Array] = Monoid(
-    tensor_cartesian_prod, jnp.array([]), "TensorCartesionProd"
+JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid(
+    jax_cartesian_prod, jnp.array([]), "JaxCartesianProd"
 )
 
 StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
