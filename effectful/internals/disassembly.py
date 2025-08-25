@@ -211,7 +211,7 @@ def register_handler(
 
         new_state = handler(state, instr)
 
-        jump: bool | None
+        jump: bool | None  # argument to dis.stack_effect
         if instr.opname in LOOP_OPS:
             if state.loops[instr.offset] > 0:
                 new_state = replace(
