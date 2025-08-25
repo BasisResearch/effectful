@@ -17,6 +17,7 @@ Example:
 
 import ast
 import collections
+import collections.abc
 import copy
 import dis
 import enum
@@ -124,8 +125,14 @@ class ReconstructionState:
     """
 
     code: types.CodeType
-    stack: list[ast.expr]
+    instruction: dis.Instruction
+
+    stack: list[ast.expr] = field(default_factory=list)
     result: ast.expr = field(default_factory=Placeholder)
+
+    loops: dict[int, int] = field(default_factory=collections.Counter)
+    branches: dict[int, int] = field(default_factory=collections.Counter)
+    finished: bool = field(default=False)
 
     @property
     def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
@@ -133,6 +140,11 @@ class ReconstructionState:
         return collections.OrderedDict(
             (instr.offset, instr) for instr in dis.get_instructions(self.code)
         )
+
+    @property
+    def next_instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
+        instrs_list = list(self.instructions.values())
+        return {i1.offset: i2 for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])}
 
 
 # Python version enum for version-specific handling
@@ -183,23 +195,58 @@ def register_handler(
         raise ValueError(f"Handler for '{opname}' (version {version}) already exists.")
 
     if dis.opmap[opname] in dis.hasjrel:
-        assert "jump" in inspect.signature(handler).parameters
+        assert opname in LOOP_OPS | BRANCH_OPS | JUMP_OPS
+    else:
+        assert opname not in LOOP_OPS | BRANCH_OPS | JUMP_OPS
 
     @functools.wraps(handler)
     def _wrapper(
-        state: ReconstructionState, instr: dis.Instruction, *, jump: bool | None = None
+        state: ReconstructionState,
+        instr: dis.Instruction,
     ) -> ReconstructionState:
         assert instr.opname == opname, (
             f"Handler for '{opname}' called with wrong instruction"
         )
+        assert not state.finished, "Cannot process instruction on finished state"
 
-        if instr.opcode in dis.hasjrel:
-            assert jump is not None, f"Jump op {opname} must have jump state"
-            assert instr.argval == getattr(instr, "jump_target", instr.argval)
-            new_state = handler(state, instr, jump=jump)
+        new_state = handler(state, instr)
+
+        jump: bool | None
+        if instr.opname in LOOP_OPS:
+            if state.loops[instr.offset] > 0:
+                new_state = replace(
+                    new_state, instruction=state.instructions[instr.argval]
+                )
+                jump = True
+            else:
+                new_state = replace(
+                    new_state, instruction=state.next_instructions[instr.offset]
+                )
+                new_state.loops[instr.offset] += 1
+                jump = False
+        elif instr.opname in BRANCH_OPS:
+            if state.branches[instr.offset] > 0:
+                new_state = replace(
+                    new_state, instruction=state.next_instructions[instr.offset]
+                )
+                jump = False
+            else:
+                new_state = replace(
+                    new_state, instruction=state.instructions[instr.argval]
+                )
+                new_state.branches[instr.offset] += 1
+                jump = True
+        elif instr.opname in JUMP_OPS:
+            new_state = replace(new_state, instruction=state.instructions[instr.argval])
+            jump = True
+        elif instr.opname not in RETURN_OPS and instr.offset in state.next_instructions:
+            new_state = replace(
+                new_state, instruction=state.next_instructions[instr.offset]
+            )
+            jump = None
         else:
-            assert jump is None, f"Non-jump op {opname} must not have jump state"
-            new_state = handler(state, instr)
+            new_state = replace(new_state, finished=True)
+            jump = None
 
         # post-condition: check stack effect
         expected_stack_effect = dis.stack_effect(instr.opcode, instr.arg, jump=jump)
@@ -233,60 +280,14 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
     state = ReconstructionState(
         code=code,
+        instruction=next(iter(dis.get_instructions(code))),
         stack=[Null(), Null()]
         if PythonVersion(sys.version_info.minor) == PythonVersion.PY_312
         else [Null()],
     )
-    instructions = state.instructions
-    instrs_list = list(instructions.values())
-    next_instr = {
-        i1.offset: i2.offset for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])
-    }
 
-    loop_state: collections.Counter[int] = collections.Counter()
-    branch_state: collections.Counter[int] = collections.Counter()
-
-    instr = next(iter(instructions.values()))  # Start at first instruction
-    while instr is not None:
-        if instr.opname in LOOP_OPS:
-            # FOR_ITER has two paths: continue loop or exit when exhausted
-            # For reconstruction, we execute the continue path once
-            if loop_state[instr.offset] > 0:
-                # Simulate iterator exhaustion - jump to FOR_ITER target
-                state = OP_HANDLERS[instr.opname](state, instr, jump=True)
-                instr = instructions[instr.argval]
-            else:
-                # Continue loop - execute FOR_ITER handler
-                state = OP_HANDLERS[instr.opname](state, instr, jump=False)
-                loop_state[instr.offset] += 1
-                instr = instructions[next_instr[instr.offset]]
-        elif instr.opname in BRANCH_OPS:
-            # POP_JUMP_IF_*: conditional jump, follow the jump path once
-            if branch_state[instr.offset] > 0:
-                # Take the jump - execute the POP_JUMP_IF_* handler
-                state = OP_HANDLERS[instr.opname](state, instr, jump=True)
-                instr = instructions[next_instr[instr.offset]]
-            else:
-                # Simulate not taking the jump - continue to next instruction
-                state = OP_HANDLERS[instr.opname](state, instr, jump=False)
-                instr = instructions[instr.argval]
-                branch_state[instr.offset] += 1
-        elif instr.opname in JUMP_OPS:
-            # JUMP_BACKWARD: loop back to FOR_ITER
-            state = OP_HANDLERS[instr.opname](state, instr, jump=True)
-            instr = instructions[instr.argval]
-        elif instr.opname in RETURN_OPS:
-            # RETURN_VALUE ends execution
-            state = OP_HANDLERS[instr.opname](state, instr)
-            instr = None
-        else:
-            # All other operations: handle normally
-            state = OP_HANDLERS[instr.opname](state, instr)
-            instr = (
-                instructions[next_instr[instr.offset]]
-                if instr.offset in next_instr
-                else None
-            )
+    while not state.finished:
+        state = OP_HANDLERS[state.instruction.opname](state, state.instruction)
 
     return state.result
 
@@ -518,13 +519,13 @@ def handle_return_const(
 @register_handler("FOR_ITER", version=PythonVersion.PY_312)
 @register_handler("FOR_ITER", version=PythonVersion.PY_313)
 def handle_for_iter(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # FOR_ITER pops an iterator from the stack and pushes the next item
     # If the iterator is exhausted, it jumps to the target instruction
     assert len(state.stack) > 0, "FOR_ITER must have an iterator on the stack"
 
-    if jump:
+    if state.loops[instr.offset] > 0:
         return replace(state, stack=state.stack + [Null()])
 
     # The iterator should be on top of stack
@@ -570,22 +571,20 @@ def handle_get_iter(
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
 def handle_jump_forward(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool = True
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # JUMP_FORWARD is used to jump forward in the code
     # In generator expressions, this is often used to skip code in conditional logic
-    assert jump, "JUMP_FORWARD always jumps"
     return state
 
 
 @register_handler("JUMP_BACKWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
 def handle_jump_backward(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool = True
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
     # In generator expressions, this typically indicates the end of the loop body
-    assert jump, "JUMP_BACKWARD always jumps"
     return state
 
 
@@ -1639,8 +1638,6 @@ def _handle_pop_jump_if(
     f_condition: Callable[[ast.expr], ast.expr],
     state: ReconstructionState,
     instr: dis.Instruction,
-    *,
-    jump: bool,
 ) -> ReconstructionState:
     # Generic handler for POP_JUMP_IF_* instructions
     # Pops a value from the stack and jumps if the condition is met
@@ -1662,29 +1659,29 @@ def _handle_pop_jump_if(
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_true(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_TRUE pops a value from the stack and jumps if it's true
     # In Python 3.13, this is used for filter conditions where True means continue
-    return _handle_pop_jump_if(lambda c: c, state, instr, jump=jump)
+    return _handle_pop_jump_if(lambda c: c, state, instr)
 
 
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_false(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_FALSE pops a value from the stack and jumps if it's false
     # In comprehensions, this is used for filter conditions
     return _handle_pop_jump_if(
-        lambda c: ast.UnaryOp(op=ast.Not(), operand=c), state, instr, jump=jump
+        lambda c: ast.UnaryOp(op=ast.Not(), operand=c), state, instr
     )
 
 
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_none(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_NONE pops a value and jumps if it's None
     return _handle_pop_jump_if(
@@ -1693,14 +1690,13 @@ def handle_pop_jump_if_none(
         ),
         state,
         instr,
-        jump=jump,
     )
 
 
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_313)
 def handle_pop_jump_if_not_none(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # POP_JUMP_IF_NOT_NONE pops a value and jumps if it's not None
     return _handle_pop_jump_if(
@@ -1709,14 +1705,13 @@ def handle_pop_jump_if_not_none(
         ),
         state,
         instr,
-        jump=jump,
     )
 
 
 @register_handler("SEND", version=PythonVersion.PY_312)
 @register_handler("SEND", version=PythonVersion.PY_313)
 def handle_send(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     raise TypeError("SEND instruction should not appear in generator comprehensions")
 
@@ -1724,7 +1719,7 @@ def handle_send(
 @register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_312)
 @register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_313)
 def handle_jump_backward_no_interrupt(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     raise TypeError(
         "JUMP_BACKWARD_NO_INTERRUPT instruction should not appear in generator comprehensions"
@@ -1734,7 +1729,7 @@ def handle_jump_backward_no_interrupt(
 @register_handler("JUMP", version=PythonVersion.PY_312)
 @register_handler("JUMP", version=PythonVersion.PY_313)
 def handle_jump(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     raise TypeError("JUMP instruction should not appear in generator comprehensions")
 
@@ -1742,7 +1737,7 @@ def handle_jump(
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_312)
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_313)
 def handle_jump_no_interrupt(
-    state: ReconstructionState, instr: dis.Instruction, *, jump: bool
+    state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     raise TypeError(
         "JUMP_NO_INTERRUPT instruction should not appear in generator comprehensions"
