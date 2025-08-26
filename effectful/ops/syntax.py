@@ -791,13 +791,9 @@ def deffn[T, A, B](
     """An operation that represents a lambda function.
 
     :param body: The body of the function.
-    :type body: T
     :param args: Operations representing the positional arguments of the function.
-    :type args: Operation
     :param kwargs: Operations representing the keyword arguments of the function.
-    :type kwargs: Operation
     :returns: A callable term.
-    :rtype: Callable[..., T]
 
     :func:`deffn` terms are eliminated by the :func:`call` operation, which
     performs beta-reduction.
@@ -870,9 +866,7 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
-    :type value: T
     :returns: A term.
-    :rtype: Expr[T]
     """
     if isinstance(value, Term):
         return value
@@ -1118,9 +1112,7 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.
-    :type x: Expr[T]
     :param other: Another term.
-    :type other: Expr[T]
     :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
     """
     if isinstance(x, Term) and isinstance(other, Term):

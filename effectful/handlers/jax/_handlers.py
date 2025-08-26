@@ -201,11 +201,9 @@ def bind_dims[T, A, B](
     """Convert named dimensions to positional dimensions.
 
     :param t: An array.
-    :type t: T
     :param args: Named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type args: Operation[[], jax.Array]
     :return: An array with the named dimensions in ``args`` converted to positional dimensions.
 
     **Example usage**:

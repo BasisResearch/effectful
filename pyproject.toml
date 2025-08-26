@@ -58,6 +58,7 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
+    "sphinx_autodoc_typehints",
 ]
 
 [tool.ruff]
