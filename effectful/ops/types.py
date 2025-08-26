@@ -6,12 +6,11 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from typing import (
-    Any,
-    _ProtocolMeta,
-    overload,
-    runtime_checkable,
-)
+from typing import Any, _ProtocolMeta, overload, runtime_checkable
+
+
+class NotHandled(Exception):
+    pass
 
 
 @functools.total_ordering
@@ -29,15 +28,15 @@ class Operation[**Q, V](abc.ABC):
 
     @abc.abstractmethod
     def __eq__(self, other):
-        raise NotImplementedError
+        raise NotHandled
 
     @abc.abstractmethod
     def __hash__(self):
-        raise NotImplementedError
+        raise NotHandled
 
     @abc.abstractmethod
     def __lt__(self, other):
-        raise NotImplementedError
+        raise NotHandled
 
     @abc.abstractmethod
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
@@ -45,12 +44,12 @@ class Operation[**Q, V](abc.ABC):
 
         If no default rule is supplied, the free rule is used instead.
         """
-        raise NotImplementedError
+        raise NotHandled
 
     @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments."""
-        raise NotImplementedError
+        raise NotHandled
 
     @abc.abstractmethod
     def __fvs_rule__(
@@ -67,7 +66,7 @@ class Operation[**Q, V](abc.ABC):
         subtracting the results of this method from the free variables of the subterms,
         allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
         """
-        raise NotImplementedError
+        raise NotHandled
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
@@ -92,19 +91,19 @@ class Term[T](abc.ABC):
     @abc.abstractmethod
     def op(self) -> Operation[..., T]:
         """Abstract property for the operation."""
-        raise NotImplementedError
+        raise NotHandled
 
     @property
     @abc.abstractmethod
     def args(self) -> Sequence[Expr[Any]]:
         """Abstract property for the arguments."""
-        raise NotImplementedError
+        raise NotHandled
 
     @property
     @abc.abstractmethod
     def kwargs(self) -> Mapping[str, Expr[Any]]:
         """Abstract property for the keyword arguments."""
-        raise NotImplementedError
+        raise NotHandled
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.op!r}, {self.args!r}, {self.kwargs!r})"
@@ -179,43 +178,43 @@ class Interpretation[T, V](typing.Protocol, metaclass=_InterpretationMeta):
     """An interpretation is a mapping from operations to their implementations."""
 
     def keys(self):
-        raise NotImplementedError
+        raise NotHandled
 
     def values(self):
-        raise NotImplementedError
+        raise NotHandled
 
     def items(self):
-        raise NotImplementedError
+        raise NotHandled
 
     @overload
     def get(self, key: Operation[..., T], /) -> Callable[..., V] | None:
-        raise NotImplementedError
+        raise NotHandled
 
     @overload
     def get(
         self, key: Operation[..., T], default: Callable[..., V], /
     ) -> Callable[..., V]:
-        raise NotImplementedError
+        raise NotHandled
 
     @overload
     def get[S](self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
-        raise NotImplementedError
+        raise NotHandled
 
     def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
-        raise NotImplementedError
+        raise NotHandled
 
     def __contains__(self, key: Operation[..., T]) -> bool:
-        raise NotImplementedError
+        raise NotHandled
 
     def __iter__(self):
-        raise NotImplementedError
+        raise NotHandled
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
 
 class Annotation(abc.ABC):
     @classmethod
     @abc.abstractmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        raise NotImplementedError
+        raise NotHandled

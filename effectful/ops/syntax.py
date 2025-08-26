@@ -5,10 +5,11 @@ import inspect
 import random
 import types
 import typing
+import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Concatenate
 
-from effectful.ops.types import Annotation, Expr, Operation, Term
+from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
 
 @dataclasses.dataclass
@@ -62,7 +63,7 @@ class Scoped(Annotation):
       ...     var: Annotated[Operation[[], S], Scoped[A]],
       ...     body: Annotated[T, Scoped[A | B]]
       ... ) -> Annotated[Callable[[S], T], Scoped[B]]:
-      ...     raise NotImplementedError
+      ...     raise NotHandled
 
     * The :class:`Scoped` annotation is used here to indicate that the argument ``var``
       passed to :func:`Lambda` may appear free in ``body``, but not in the resulting function.
@@ -84,7 +85,7 @@ class Scoped(Annotation):
       ...     *args: Annotated[Operation[[], S], Scoped[A]],
       ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
       ... ) -> Annotated[Callable[..., T], Scoped[B]]:
-      ...     raise NotImplementedError
+      ...     raise NotHandled
 
       This is equivalent to the built-in :class:`Operation` :func:`deffn`:
 
@@ -100,7 +101,7 @@ class Scoped(Annotation):
       ...     val: Annotated[S, Scoped[B]],
       ...     body: Annotated[T, Scoped[A | B]]
       ... ) -> Annotated[T, Scoped[B]]:
-      ...     raise NotImplementedError
+      ...     raise NotHandled
 
       Here the variable ``var`` is bound by :func:`Let` in `body` but not in ``val`` :
 
@@ -420,12 +421,12 @@ def defop[**P, T](
     * Defining an operation with no default rule:
 
       We can use :func:`defop` and the
-      :exc:`NotImplementedError` exception to define an
+      :exc:`NotHandled` exception to define an
       operation with no default rule:
 
       >>> @defop
       ... def add(x: int, y: int) -> int:
-      ...     raise NotImplementedError
+      ...     raise NotHandled
       >>> print(str(add(1, 2)))
       add(1, 2)
 
@@ -548,8 +549,15 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         try:
-            return self._default(*args, **kwargs)
-        except NotImplementedError:
+            try:
+                return self._default(*args, **kwargs)
+            except NotImplementedError:
+                warnings.warn(
+                    "Operations should raise effectful.ops.syntax.NotHandled instead of NotImplementedError.",
+                    DeprecationWarning,
+                )
+                raise NotHandled
+        except NotHandled:
             return typing.cast(
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
@@ -628,7 +636,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
 def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        raise NotImplementedError
+        raise NotHandled
 
     if name is None:
         name = getattr(t, "__name__", str(t))
@@ -643,7 +651,7 @@ def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]
 @defop.register(typing.cast(type, types.UnionType))
 def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
-        raise NotImplementedError
+        raise NotHandled
 
     freshening = []
     if name is None:
@@ -665,7 +673,7 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
         if not fvsof((args, kwargs)):
             return t(*args, **kwargs)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     return defop(func, name=name)
 
@@ -817,7 +825,7 @@ def deffn[T, A, B](
       automatically create the right free variables.
 
     """
-    raise NotImplementedError
+    raise NotHandled
 
 
 class _CustomSingleDispatchCallable[**P, **Q, S, T]:
@@ -1079,7 +1087,7 @@ def defstream[S, T, A, B](
     streams: Annotated[Mapping[Operation[[], S], Iterable[S]], Scoped[B]],
 ) -> Annotated[Iterable[T], Scoped[A]]:
     """A higher-order operation that represents a for-expression."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defdata.register(collections.abc.Iterable)
@@ -1089,7 +1097,7 @@ class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
         if not isinstance(self, Term):
             return iter(self)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
 
 @defdata.register(collections.abc.Iterator)
@@ -1099,7 +1107,7 @@ class _IteratorTerm[T](_IterableTerm[T]):
         if not isinstance(self, Term):
             return next(self)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
 
 iter_ = _IterableTerm.__iter__

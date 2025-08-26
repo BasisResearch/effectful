@@ -16,7 +16,7 @@ from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import NotHandled, Operation, Term
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -95,7 +95,7 @@ def _unbind_distribution(
         d = defterm(d)
 
     if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
-        raise NotImplementedError
+        raise NotHandled
 
     # TODO: this is a hack to avoid mangling arguments that are array-valued, but not batched
     aux_kwargs = set(["total_count"])
@@ -143,7 +143,7 @@ def _bind_dims_distribution(
         d = defterm(d)
 
     if not (isinstance(d, Term) and typeof(d) is dist.Distribution):
-        raise NotImplementedError
+        raise NotHandled
 
     sizes = sizesof(d)
     indices = {k: sizes[k] for k in names}
@@ -162,7 +162,7 @@ def _register_distribution_op(
     # introduce a wrapper so that we can control type annotations
     def wrapper(*args, **kwargs) -> dist.Distribution:
         if any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
-            raise NotImplementedError
+            raise NotHandled
         return dist_constr(*args, **kwargs)
 
     return defop(wrapper, name=dist_constr.__name__)
@@ -333,7 +333,7 @@ class _DistributionTerm(dist.Distribution):
         return self._pos_base_dist.entropy()
 
     def to_event(self, reinterpreted_batch_ndims=None):
-        raise NotImplementedError
+        raise NotHandled
 
     def expand(self, batch_shape):
         def expand_arg(a, batch_shape):

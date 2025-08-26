@@ -17,7 +17,7 @@ from effectful.handlers.jax._handlers import (
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.syntax import defdata
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 class _IndexUpdateHelper:
@@ -289,7 +289,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
 
     # ensure that the result is a jax_getitem with an array as the first argument
     if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):
-        raise NotImplementedError
+        raise NotHandled
 
     array = result.args[0]
     dims = result.args[1]
@@ -298,7 +298,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     # ensure that the order is a subset of the named dimensions
     order_set = set(args)
     if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
-        raise NotImplementedError
+        raise NotHandled
 
     # permute the inner array so that the leading dimensions are in the order
     # specified and the trailing dimensions are the remaining named dimensions

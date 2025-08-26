@@ -286,7 +286,7 @@ def test_defop_method():
         assert another_instance.my_method(10) == 12
 
 
-def test_defop_bound_method():
+def test_defop_bound_method() -> None:
     """Test that defop can be used as a bound method decorator."""
 
     class MyClass:
@@ -303,7 +303,7 @@ def test_defop_bound_method():
         assert my_bound_method_op(5) == 6
 
 
-def test_defop_setattr():
+def test_defop_setattr() -> None:
     class MyClass:
         def __init__(self, my_op: Operation):
             self.my_op = my_op
@@ -322,7 +322,7 @@ def test_defop_setattr():
     assert tm.op is my_op
 
 
-def test_defop_setattr_class():
+def test_defop_setattr_class() -> None:
     class MyClass:
         my_op: ClassVar[Operation]
 
@@ -544,7 +544,7 @@ def test_defstream_1():
     assert tm_iter_next.op is next_
 
 
-def test_eval_dataclass():
+def test_eval_dataclass() -> None:
     @dataclasses.dataclass
     class Point:
         x: int

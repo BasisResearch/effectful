@@ -7,7 +7,7 @@ import operator
 from typing import Any
 
 from effectful.ops.syntax import defdata, defop
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 @defdata.register(numbers.Number)
@@ -42,7 +42,7 @@ def _wrap_cmp(op):
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
@@ -53,7 +53,7 @@ def _wrap_binop(op):
         if not any(isinstance(a, Term) for a in (x, y)):
             return op(x, y)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
@@ -64,7 +64,7 @@ def _wrap_unop(op):
         if not isinstance(x, Term):
             return op(x)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     _wrapped_op.__name__ = op.__name__
     return _wrapped_op
@@ -147,16 +147,16 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
         raise ValueError("Cannot convert term to float")
 
     def __trunc__(self) -> numbers.Integral:
-        raise NotImplementedError
+        raise NotHandled
 
     def __floor__(self) -> numbers.Integral:
-        raise NotImplementedError
+        raise NotHandled
 
     def __ceil__(self) -> numbers.Integral:
-        raise NotImplementedError
+        raise NotHandled
 
     def __round__(self, ndigits=None) -> numbers.Integral:
-        raise NotImplementedError
+        raise NotHandled
 
     def __floordiv__(self, other):
         return floordiv(self, other)
@@ -182,11 +182,11 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
 class _RationalTerm(_RealTerm, Term[numbers.Rational]):
     @property
     def numerator(self):
-        raise NotImplementedError
+        raise NotHandled
 
     @property
     def denominator(self):
-        raise NotImplementedError
+        raise NotHandled
 
 
 # Integral specific methods

@@ -29,7 +29,7 @@ from effectful.handlers.torch import (
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import NotHandled, Operation, Term
 
 
 @defop
@@ -383,7 +383,7 @@ def _unbind_dims_distribution(
         d = defterm(d)
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
-        raise NotImplementedError
+        raise NotHandled
 
     new_d = d.op(
         *[_to_named(a) for a in d.args],
@@ -431,7 +431,7 @@ def _bind_dims_distribution(
         d = defterm(d)
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
-        raise NotImplementedError
+        raise NotHandled
 
     sizes = sizesof(d)
     indices = {k: sizes[k] for k in names}
