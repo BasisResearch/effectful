@@ -240,7 +240,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
     # E.g. { a: { f, g }, b: { f, h } } =>
     # { handler({f: f_a, g: g_a, h: h_default})(f_a), handler({f: f_a, g: g_a})(g_a),
     #   handler({f: f_b, h: h_b})(f_b), handler({f: f_b, h: h_b})(h_b) }
-    translation_intps = {
+    translation_intps: dict[Operation, Interpretation] = {
         prompt: {op: renaming[(prompt, op)] for op in result_ops} for prompt in intps
     }
 
@@ -330,7 +330,9 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
         result_intp[argsof] = lambda prompt: argsof_prompts[prompt](prompt)
         return _pack(result_intp)
 
-    product_intp = {op: functools.partial(product_op, op) for op in result_ops}
+    product_intp: Interpretation = {
+        op: functools.partial(product_op, op) for op in result_ops
+    }
     return product_intp
 
 
