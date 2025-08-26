@@ -179,7 +179,7 @@ def vertical_fusion[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
                     v1,  # type: ignore
                     Let(
                         e_lhs,
-                        v2,
+                        v2,  # type: ignore
                         Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs))),  # type: ignore
                     ),
                 )
