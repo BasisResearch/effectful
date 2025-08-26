@@ -93,19 +93,19 @@ class Term[T](abc.ABC):
     @abc.abstractmethod
     def op(self) -> Operation[..., T]:
         """Abstract property for the operation."""
-        raise NotHandled
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def args(self) -> Sequence[Expr[Any]]:
         """Abstract property for the arguments."""
-        raise NotHandled
+        raise NotImplementedError
 
     @property
     @abc.abstractmethod
     def kwargs(self) -> Mapping[str, Expr[Any]]:
         """Abstract property for the keyword arguments."""
-        raise NotHandled
+        raise NotImplementedError
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.op!r}, {self.args!r}, {self.kwargs!r})"
@@ -180,43 +180,43 @@ class Interpretation[T, V](typing.Protocol, metaclass=_InterpretationMeta):
     """An interpretation is a mapping from operations to their implementations."""
 
     def keys(self):
-        raise NotHandled
+        raise NotImplementedError
 
     def values(self):
-        raise NotHandled
+        raise NotImplementedError
 
     def items(self):
-        raise NotHandled
+        raise NotImplementedError
 
     @overload
     def get(self, key: Operation[..., T], /) -> Callable[..., V] | None:
-        raise NotHandled
+        raise NotImplementedError
 
     @overload
     def get(
         self, key: Operation[..., T], default: Callable[..., V], /
     ) -> Callable[..., V]:
-        raise NotHandled
+        raise NotImplementedError
 
     @overload
     def get[S](self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
-        raise NotHandled
+        raise NotImplementedError
 
     def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
-        raise NotHandled
+        raise NotImplementedError
 
     def __contains__(self, key: Operation[..., T]) -> bool:
-        raise NotHandled
+        raise NotImplementedError
 
     def __iter__(self):
-        raise NotHandled
+        raise NotImplementedError
 
     def __len__(self) -> int:
-        raise NotHandled
+        raise NotImplementedError
 
 
 class Annotation(abc.ABC):
     @classmethod
     @abc.abstractmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        raise NotHandled
+        raise NotImplementedError
