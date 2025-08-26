@@ -941,8 +941,14 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, typeof
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import apply, evaluate, productN
 
+    if not args and not kwargs:
+        return __dispatch(op.__type_rule__())(op)
+
+    # If this operation binds variables, we need to rename them in the
+    # appropriate parts of the child term.
     arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
@@ -950,29 +956,63 @@ def defdata[T](
         for var in bound_vars
     }
 
-    args_, kwargs_ = list(args), dict(kwargs)
-    for i, (v, c) in (
-        *enumerate(zip(args, arg_ctxs)),
-        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
-    ):
-        if c:
-            res = evaluate(
-                v,
-                intp={
-                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-                    **{op: renaming[op] for op in c},
+    if not renaming:
+        # No renaming needed, just return the term.
+        return __dispatch(op.__type_rule__(*args, **kwargs))(op, *args, **kwargs)
+
+    # Create base analyses for type computation and term reconstruction
+    typ = defop(object, name="typ")
+    cast = defop(object, name="cast")
+
+    def apply_type(_, op, *args, **kwargs):
+        return op.__type_rule__(*args, **kwargs)
+
+    def apply_cast(_, op, *args, **kwargs):
+        return __dispatch(typ())(op, *args, **kwargs)
+
+    def evaluate_with_renaming(expr, name_prefix, ctx):
+        """Evaluate an expression with renaming applied if context is non-empty."""
+        if not ctx:
+            return expr
+
+        # If expr is an operation that needs renaming, rename it directly
+        if isinstance(expr, Operation):
+            if expr in ctx:
+                return renaming.get(expr, expr)
+            return expr
+
+        # Build analysis for this specific expression
+        expr_analysis = {
+            typ: {apply: apply_type},
+            cast: {
+                apply: apply_cast,
+                **{
+                    old_var: new_var
+                    for old_var, new_var in renaming.items()
+                    if old_var in ctx
                 },
-            )
-            if isinstance(i, int):
-                args_[i] = res
-            elif isinstance(i, str):
-                kwargs_[i] = res
+            },
+        }
+        analysis = productN(expr_analysis)
+        result = evaluate(expr, intp=analysis)
+        return result
 
-    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    tp = typeof(base_term)
+    # Process arguments with immediate evaluation
+    renamed_args = []
+    for i, (arg, ctx) in enumerate(zip(args, arg_ctxs)):
+        renamed_args.append(evaluate_with_renaming(arg, f"rename_arg_{i}", ctx))
 
-    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
-    return typed_term
+    # Process keyword arguments with immediate evaluation
+    renamed_kwargs = {}
+    for k, kwarg in kwargs.items():
+        ctx = kwarg_ctxs.get(k, frozenset())
+        renamed_kwargs[k] = evaluate_with_renaming(kwarg, f"rename_kwarg_{k}", ctx)
+
+    # Build the final term with type analysis
+    base_analyses = {typ: {apply: apply_type}, cast: {apply: apply_cast}}
+    with interpreter(productN(base_analyses)):
+        result = op(*renamed_args, **renamed_kwargs)
+    return result.values(cast)  # type: ignore
 
 
 @defterm.register(object)

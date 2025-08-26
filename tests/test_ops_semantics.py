@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import itertools
 import logging
 from collections.abc import Callable
@@ -9,12 +10,14 @@ import pytest
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
     apply,
+    argsof,
     coproduct,
     evaluate,
     fvsof,
     fwd,
     handler,
     product,
+    productN,
     runner,
     typeof,
 )
@@ -743,6 +746,198 @@ def test_typeof_generic():
 
     # Generic types are simplified to their origin type
     assert typeof(box_value(42)) is Box
+
+
+def test_simul_analysis():
+    @defop
+    def plus1(x: int) -> int:
+        raise NotImplementedError
+
+    @defop
+    def plus2(x: int) -> int:
+        raise NotImplementedError
+
+    @defop
+    def times(x: int, y: int) -> int:
+        raise NotImplementedError
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    typ = defop(Interpretation, name="typ")
+    value = defop(Interpretation, name="value")
+
+    type_rules = {
+        plus1: lambda x: int,
+        plus2: lambda x: int,
+        times: lambda x, y: int,
+        x: lambda: int,
+        y: lambda: int,
+    }
+
+    def plus1_value(x):
+        return x + 1
+
+    def plus2_value(x):
+        return plus1(plus1(x))
+
+    def times_value(x, y):
+        if typ() is int and argsof(typ)[0][0] is int:
+            return x * y
+        raise TypeError("unexpected type!")
+
+    value_rules = {
+        plus1: plus1_value,
+        plus2: plus2_value,
+        times: times_value,
+        x: lambda: 3,
+        y: lambda: 4,
+    }
+
+    analysisN = productN({typ: type_rules, value: value_rules})
+
+    def f1():
+        v1 = x()  # {typ: lambda: int, val: lambda: 3}
+        v2 = y()  # {typ: lambda: int, val: lambda: 4}
+        v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
+        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 20}
+        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 21}
+        return v5  # {typ: lambda: int, val: lambda: 21}
+
+    with handler(analysisN):
+        i = f1()
+        t = i.values(typ)
+        v = i.values(value)
+        assert t is int
+        assert v == 21
+
+
+def test_simul_analysis_apply():
+    @defop
+    def plus1[T](x: T) -> T:
+        raise NotImplementedError
+
+    @defop
+    def plus2[T](x: T) -> T:
+        raise NotImplementedError
+
+    @defop
+    def times[T](x: T, y: T) -> T:
+        raise NotImplementedError
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    typ = defop(Interpretation, name="typ")
+    value = defop(Interpretation, name="value")
+
+    def apply_type(_, op, *a, **k):
+        return op.__type_rule__(*a, **k)
+
+    type_rules = {apply: apply_type}
+
+    def plus1_value(x):
+        return x + 1
+
+    def plus2_value(x):
+        return plus1(plus1(x))
+
+    def times_value(x, y):
+        if typ() is int and argsof(typ)[0][0] is int:
+            return x * y
+        raise TypeError("unexpected type!")
+
+    value_rules = {
+        plus1: plus1_value,
+        plus2: plus2_value,
+        times: times_value,
+        x: lambda: 3,
+        y: lambda: 4,
+    }
+
+    analysisN = productN({typ: type_rules, value: value_rules})
+
+    def f1():
+        v1 = x()  # {typ: lambda: int, val: lambda: 3}
+        v2 = y()  # {typ: lambda: int, val: lambda: 4}
+        v3 = plus2(v1)  # {typ: lambda: int, val: lambda: 5}
+        v4 = times(v2, v3)  # {typ: lambda: int, val: lambda: 20}
+        v5 = plus1(v4)  # {typ: lambda: int, val: lambda: 21}
+        return v5  # {typ: lambda: int, val: lambda: 21}
+
+    with handler(analysisN):
+        i = f1()
+        t = i.values(typ)
+        v = i.values(value)
+        assert t is int
+        assert v == 21
+
+
+def test_productN_distributive():
+    """Test that productN distributes over coproducts."""
+
+    @defop
+    def add[T](x: T, y: T) -> T:
+        raise NotImplementedError
+
+    x = defop(object, name="x")
+    i = defop(object, name="i")
+    s = defop(object, name="s")
+
+    intp1 = {add: lambda x, y: x + y}
+    intp2 = {x: lambda: 1}
+    intp3 = {x: lambda: "a"}
+
+    term = add(x(), x())
+
+    prod_intp1 = productN({i: coproduct(intp2, intp1), s: coproduct(intp3, intp1)})
+    prod_intp2 = coproduct(
+        productN({i: intp2, s: intp3}), productN({i: intp1, s: intp1})
+    )
+    result1 = evaluate(term, intp=prod_intp1)
+    result2 = evaluate(term, intp=prod_intp2)
+
+    assert result1.values(i) == result2.values(i) == 2
+    assert result1.values(s) == result2.values(s) == "aa"
+
+
+def test_defdata_large(benchmark):
+    """Test defdata with large nested operations that form a binary tree of arbitrary size."""
+    import random
+
+    @defop
+    def f[T, A, B](
+        v: Annotated[Operation[[], int], Scoped[A]],
+        x: Annotated[T, Scoped[A | B]],
+        y: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        """Generic operation that takes two arguments of the same type and returns that type."""
+        raise NotImplementedError
+
+    def build_tree(depth: int) -> Any:
+        """
+        Recursively build a binary tree of f operations with the specified depth.
+
+        Args:
+            depth: The depth of the tree (0 means just a leaf)
+            leaf_type: The type of values at the leaves (int, str, etc.)
+            start_value: The starting value for leaf generation
+
+        Returns:
+            A nested tree of f operations with leaves of the specified type
+        """
+        if depth == 0:
+            if random.random() < 0.5:
+                return 0
+            else:
+                return defop(int)()
+
+        # Recursively build left and right subtrees
+        left = build_tree(depth - 1)
+        right = build_tree(depth - 1)
+
+        return f(defop(int), left, right)
+
+    # Test a very large tree (depth 8 = 255 leaf nodes)
+    benchmark(functools.partial(build_tree, 7))
 
 
 def test_evaluate_deep():
