@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 
 @defop
@@ -34,7 +34,7 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     By installing an :func:`apply` handler, we capture the term instead:
 
     >>> def default(*args, **kwargs):
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> with handler({apply: default }):
     ...     term = mul(add(1, 2), 3)
     >>> print(str(term))
@@ -71,7 +71,7 @@ def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     elif not fvsof((fn, args, kwargs)):
         return fn(*args, **kwargs)
     else:
-        raise NotImplementedError
+        raise NotHandled
 
 
 @defop
@@ -238,7 +238,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
 
     >>> @defop
     ... def add(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> expr = add(1, add(2, 3))
     >>> print(str(expr))
     add(1, add(2, 3))
@@ -301,7 +301,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def cmp(x: int, y: int) -> bool:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(cmp(1, 2))
     <class 'bool'>
 
@@ -309,7 +309,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def if_then_else[T](x: bool, a: T, b: T) -> T:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
@@ -344,7 +344,7 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     >>> @defop
     ... def f(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> fvs = fvsof(f(1, 2))
     >>> assert f in fvs
     >>> assert len(fvs) == 1

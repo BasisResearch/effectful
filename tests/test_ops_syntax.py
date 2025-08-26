@@ -18,7 +18,7 @@ from effectful.ops.syntax import (
     iter_,
     next_,
 )
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import NotHandled, Operation, Term
 
 
 def test_always_fresh():
@@ -81,7 +81,7 @@ def test_gensym_annotations():
         var: Annotated[Operation[[], S], Scoped[A]],
         body: Annotated[T, Scoped[A]],
     ) -> Callable[[S], T]:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int)
     y = defop(int)
@@ -120,7 +120,7 @@ def test_scoped_collections():
         bindings: Annotated[Mapping[Operation[[], T], T], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int, name="x")
     y = defop(int, name="y")
@@ -147,7 +147,7 @@ def test_scoped_collections():
         bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     w = defop(int, name="w")
     nested_bindings = [(x, 1), (y, 2)]
@@ -171,7 +171,7 @@ def test_no_default_tracing():
 
     @defop
     def add(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     def f1(x: int) -> int:
         return add(x, add(y(), 1))
@@ -211,7 +211,7 @@ def test_defop_singledispatch():
     @defop
     @functools.singledispatch
     def process(x: object) -> object:
-        raise NotImplementedError("Unsupported type")
+        raise NotHandled("Unsupported type")
 
     @process.register(int)
     def _(x: int):
@@ -255,7 +255,7 @@ def test_defop_method():
     class MyClass:
         @defop
         def my_method(self, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     term = instance.my_method(5)
@@ -286,12 +286,12 @@ def test_defop_method():
         assert another_instance.my_method(10) == 12
 
 
-def test_defop_bound_method():
+def test_defop_bound_method() -> None:
     """Test that defop can be used as a bound method decorator."""
 
     class MyClass:
         def my_bound_method(self, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     my_bound_method_op = defop(instance.my_bound_method)
@@ -303,14 +303,14 @@ def test_defop_bound_method():
         assert my_bound_method_op(5) == 6
 
 
-def test_defop_setattr():
+def test_defop_setattr() -> None:
     class MyClass:
         def __init__(self, my_op: Operation):
             self.my_op = my_op
 
     @defop
     def my_op(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     instance = MyClass(my_op)
     assert isinstance(instance.my_op, Operation)
@@ -322,13 +322,13 @@ def test_defop_setattr():
     assert tm.op is my_op
 
 
-def test_defop_setattr_class():
+def test_defop_setattr_class() -> None:
     class MyClass:
         my_op: ClassVar[Operation]
 
     @defop
     def my_op(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     MyClass.my_op = my_op
 
@@ -350,7 +350,7 @@ def test_defop_classmethod():
         @defop
         @classmethod
         def my_classmethod(cls, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     term = MyClass.my_classmethod(5)
 
@@ -386,7 +386,7 @@ def test_defop_staticmethod():
         @defop
         @staticmethod
         def my_staticmethod(x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     term = MyClass.my_staticmethod(5)
 
@@ -419,7 +419,7 @@ def test_defop_property():
         @defop
         @property
         def my_property(self) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     term = instance.my_property
@@ -452,7 +452,7 @@ def test_defop_singledispatchmethod():
         @defop
         @functools.singledispatchmethod
         def my_singledispatch(self, x: object) -> object:
-            raise NotImplementedError
+            raise NotHandled
 
         @my_singledispatch.register
         def _(self, x: int) -> int:
@@ -494,7 +494,7 @@ def test_defop_singledispatchmethod():
 def test_defdata_iterable():
     @defop
     def cons_iterable(*args: int) -> Iterable[int]:
-        raise NotImplementedError
+        raise NotHandled
 
     tm = cons_iterable(1, 2, 3)
     assert isinstance(tm, Term)
@@ -544,7 +544,7 @@ def test_defstream_1():
     assert tm_iter_next.op is next_
 
 
-def test_eval_dataclass():
+def test_eval_dataclass() -> None:
     @dataclasses.dataclass
     class Point:
         x: int
