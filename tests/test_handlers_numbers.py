@@ -1,15 +1,19 @@
 import collections
+import collections.abc
 import logging
 import os
+import typing
 
 import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import defop, trace
+from effectful.ops.syntax import defop, syntactic_eq, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
+
+T = typing.TypeVar("T")
 
 
 def test_lambda_calculus_1():
@@ -19,9 +23,9 @@ def test_lambda_calculus_1():
         e1 = x() + 1
         f1 = Lam(x, e1)
 
-        assert App(f1, 1) == 2
-        assert Lam(y, f1) == f1
-        assert Lam(x, f1.args[1]) == f1.args[1]
+        assert syntactic_eq(App(f1, 1), 2)
+        assert syntactic_eq(Lam(y, f1), f1)
+        assert syntactic_eq(Lam(x, f1.args[1]), f1.args[1])
 
         assert fvsof(e1) == fvsof(x() + 1)
         assert fvsof(Lam(x, e1).args[1]) != fvsof(Lam(x, e1).args[1])
@@ -35,31 +39,35 @@ def test_lambda_calculus_2():
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
-        assert App(App(f2, 1), 2) == 3
-        assert Lam(y, f2) == f2
+        assert syntactic_eq(App(App(f2, 1), 2), 3)
+        assert syntactic_eq(Lam(y, f2), f2)
 
 
 def test_lambda_calculus_3():
-    x, y, f = defop(int), defop(int), defop(collections.abc.Callable)
+    x, y, f = (
+        defop(int),
+        defop(int),
+        defop(collections.abc.Callable[[int], collections.abc.Callable[[int], int]]),
+    )
 
     with handler(eager_mixed):
         f2 = Lam(x, Lam(y, (x() + y())))
         app2 = Lam(f, Lam(x, Lam(y, App(App(f(), x()), y()))))
-        assert App(App(App(app2, f2), 1), 2) == 3
+        assert syntactic_eq(App(App(App(app2, f2), 1), 2), 3)
 
 
 def test_lambda_calculus_4():
     x, f, g = (
         defop(int),
-        defop(collections.abc.Callable),
-        defop(collections.abc.Callable),
+        defop(collections.abc.Callable[[T], T]),
+        defop(collections.abc.Callable[[T], T]),
     )
 
     with handler(eager_mixed):
         add1 = Lam(x, (x() + 1))
         compose = Lam(f, Lam(g, Lam(x, App(f(), App(g(), x())))))
         f1_twice = App(App(compose, add1), add1)
-        assert App(f1_twice, 1) == 3
+        assert syntactic_eq(App(f1_twice, 1), 3)
 
 
 def test_lambda_calculus_5():
@@ -75,8 +83,8 @@ def test_lambda_calculus_5():
         assert x not in fvsof(f_add1)
         assert f_add1.args[0] != f_add1.args[1].args[0]
 
-        assert App(f_add1, 1) == 2
-        assert Let(x, 1, e_add1) == 2
+        assert syntactic_eq(App(f_add1, 1), 2)
+        assert syntactic_eq(Let(x, 1, e_add1), 2)
 
 
 def test_arithmetic_1():
@@ -84,9 +92,9 @@ def test_arithmetic_1():
     x, y = x_(), y_()
 
     with handler(eager_mixed):
-        assert (1 + 2) + x == x + 3
-        assert not (x + 1 == y + 1)
-        assert x + 0 == 0 + x == x
+        assert syntactic_eq((1 + 2) + x, x + 3)
+        assert not syntactic_eq(x + 1, y + 1)
+        assert syntactic_eq(x + 0, 0 + x) and syntactic_eq(0 + x, x)
 
 
 def test_arithmetic_2():
@@ -94,10 +102,10 @@ def test_arithmetic_2():
     x, y = x_(), y_()
 
     with handler(eager_mixed):
-        assert x + y == y + x
-        assert 3 + x == x + 3
-        assert 1 + (x + 2) == x + 3
-        assert (x + 1) + 2 == x + 3
+        assert syntactic_eq(x + y, y + x)
+        assert syntactic_eq(3 + x, x + 3)
+        assert syntactic_eq(1 + (x + 2), x + 3)
+        assert syntactic_eq((x + 1) + 2, x + 3)
 
 
 def test_arithmetic_3():
@@ -105,9 +113,9 @@ def test_arithmetic_3():
     x, y = x_(), y_()
 
     with handler(eager_mixed):
-        assert (1 + (y + 1)) + (1 + (x + 1)) == (y + x) + 4
-        assert 1 + ((x + y) + 2) == (x + y) + 3
-        assert 1 + ((x + (y + 1)) + 1) == (x + y) + 3
+        assert syntactic_eq((1 + (y + 1)) + (1 + (x + 1)), (y + x) + 4)
+        assert syntactic_eq(1 + ((x + y) + 2), (x + y) + 3)
+        assert syntactic_eq(1 + ((x + (y + 1)) + 1), (x + y) + 3)
 
 
 def test_arithmetic_4():
@@ -115,23 +123,25 @@ def test_arithmetic_4():
     x, y = x_(), y_()
 
     with handler(eager_mixed):
-        assert (
-            ((x + x) + (x + x)) + ((x + x) + (x + x))
-            == x + (x + (x + (x + (x + (x + (x + x))))))
-            == ((((((x + x) + x) + x) + x) + x) + x) + x
-        )
+        expr1 = ((x + x) + (x + x)) + ((x + x) + (x + x))
+        expr2 = x + (x + (x + (x + (x + (x + (x + x))))))
+        expr3 = ((((((x + x) + x) + x) + x) + x) + x) + x
+        assert syntactic_eq(expr1, expr2) and syntactic_eq(expr2, expr3)
 
-        assert (x + y) + (y + x) == (y + (x + x)) + y == y + (x + (y + x))
+        expr4 = (x + y) + (y + x)
+        expr5 = (y + (x + x)) + y
+        expr6 = y + (x + (y + x))
+        assert syntactic_eq(expr4, expr5) and syntactic_eq(expr5, expr6)
 
 
 def test_arithmetic_5():
     x, y = defop(int), defop(int)
 
     with handler(eager_mixed):
-        assert Let(x, x() + 3, x() + 1) == x() + 4
-        assert Let(x, x() + 3, x() + y() + 1) == y() + x() + 4
+        assert syntactic_eq(Let(x, x() + 3, x() + 1), x() + 4)
+        assert syntactic_eq(Let(x, x() + 3, x() + y() + 1), y() + x() + 4)
 
-        assert Let(x, x() + 3, Let(x, x() + 4, x() + y())) == x() + y() + 7
+        assert syntactic_eq(Let(x, x() + 3, Let(x, x() + 4, x() + y())), x() + y() + 7)
 
 
 def test_defun_1():
@@ -147,8 +157,8 @@ def test_defun_1():
         assert y in fvsof(f1)
         assert x not in fvsof(f1)
 
-        assert f1(1) == y() + 2
-        assert f1(x()) == x() + y() + 1
+        assert syntactic_eq(f1(1), y() + 2)
+        assert syntactic_eq(f1(x()), x() + y() + 1)
 
 
 def test_defun_2():
@@ -166,7 +176,7 @@ def test_defun_2():
 
             return f2_inner(y)
 
-        assert f1(1, 2) == f2(1, 2) == 3
+        assert syntactic_eq(f1(1, 2), 3) and syntactic_eq(f2(1, 2), 3)
 
 
 def test_defun_3():
@@ -177,10 +187,10 @@ def test_defun_3():
             return x + y
 
         @trace
-        def app2(f: collections.abc.Callable, x: int, y: int) -> int:
+        def app2(f: collections.abc.Callable[[int, int], int], x: int, y: int) -> int:
             return f(x, y)
 
-        assert app2(f2, 1, 2) == 3
+        assert syntactic_eq(app2(f2, 1, 2), 3)
 
 
 @pytest.mark.xfail(condition=os.getenv("CI") == "true", reason="Fails on CI")
@@ -216,8 +226,12 @@ def test_defun_4():
 
         assert callable(add1_twice), f"add1_twice is not callable: {add1_twice}"
 
-        assert add1_twice(1) == compose(add1, add1)(1) == 3
-        assert add1_twice(x()) == compose(add1, add1)(x()) == x() + 2
+        assert syntactic_eq(add1_twice(1), 3) and syntactic_eq(
+            compose(add1, add1)(1), 3
+        )
+        assert syntactic_eq(add1_twice(x()), x() + 2) and syntactic_eq(
+            compose(add1, add1)(x()), x() + 2
+        )
 
 
 def test_defun_5():

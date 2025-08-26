@@ -2,7 +2,7 @@ import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 try:
     import jax
@@ -11,7 +11,6 @@ except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
 import tree
-from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import fvsof, typeof
@@ -24,15 +23,6 @@ from effectful.ops.syntax import (
     defterm,
 )
 from effectful.ops.types import Expr, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
-
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
@@ -77,10 +67,6 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
 
     def _getitem_sizeof(x: jax.Array, key: tuple[Expr[IndexElement], ...]):
         if is_eager_array(x):
-            if len(key) > x.ndim:
-                raise IndexError(
-                    f"Indexing with too many dimensions: expected {x.ndim} got {len(key)}"
-                )
             for i, k in enumerate(key):
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
@@ -142,7 +128,7 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
 
 
 @functools.cache
-def _register_jax_op(jax_fn: Callable[P, T]):
+def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
@@ -177,6 +163,25 @@ def _register_jax_op(jax_fn: Callable[P, T]):
     return _jax_op
 
 
+@functools.cache
+def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
+    # FIXME: Presumably not all jax ops return arrays. In other cases, we won't
+    # get the right kind of term.
+    @defop
+    def _jax_op(*args, **kwargs) -> jax.Array:
+        if not any(
+            tree.flatten(
+                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
+            )
+        ):
+            return typing.cast(jax.Array, jax_fn(*args, **kwargs))
+        else:
+            raise NotImplementedError
+
+    functools.update_wrapper(_jax_op, jax_fn)
+    return _jax_op
+
+
 @_register_jax_op
 def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     """Operation for indexing an array. Unlike the standard __getitem__ method,
@@ -186,21 +191,10 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     return x[tuple(key)]
 
 
-@_CustomSingleDispatchCallable
-def _bind_dims(
-    __dispatch: Callable[[type], Callable[..., T]],
-    value: T,
-    *names: Operation[[], jax.Array],
-) -> T:
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: _bind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
-
-
 @defop
-def bind_dims(
+@_CustomSingleDispatchCallable
+def bind_dims[T, A, B](
+    __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A]]:
@@ -223,29 +217,26 @@ def bind_dims(
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
-    return _bind_dims(value, *names)
-
-
-@_CustomSingleDispatchCallable
-def _unbind_dims(
-    __dispatch: Callable[[type], Callable[..., T]],
-    value: T,
-    *names: Operation[[], jax.Array],
-) -> T:
     if tree.is_nested(value):
-        return tree.map_structure(lambda v: _unbind_dims(v, *names), value)
+        return tree.map_structure(lambda v: bind_dims(v, *names), value)
 
     semantic_type = typeof(value)
     return __dispatch(semantic_type)(value, *names)
 
 
 @defop
-def unbind_dims(
+@_CustomSingleDispatchCallable
+def unbind_dims[T, A, B](
+    __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
-    return _unbind_dims(value, *names)
+    if tree.is_nested(value):
+        return tree.map_structure(lambda v: unbind_dims(v, *names), value)
+
+    semantic_type = typeof(value)
+    return __dispatch(semantic_type)(value, *names)
 
 
 def jit(f, *args, **kwargs):
@@ -254,7 +245,7 @@ def jit(f, *args, **kwargs):
     return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
 
 
-def _indexed_func_wrapper(
+def _indexed_func_wrapper[**P, S, T](
     func: Callable[P, T], getitem, sizesof
 ) -> tuple[Callable[P, S], Callable[[S], T]]:
     # index expressions for the result of the function

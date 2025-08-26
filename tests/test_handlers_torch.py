@@ -1,9 +1,7 @@
 import logging
-from typing import TypeVar
 
 import pytest
 import torch
-from typing_extensions import ParamSpec
 
 from effectful.handlers.torch import (
     bind_dims,
@@ -22,10 +20,6 @@ from effectful.ops.syntax import deffn, defop, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
-
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
 
 
 def test_tpe_1():
@@ -628,3 +622,11 @@ def test_longtensor_index_variables():
 
     z = x[i()] + y[j()]
     assert isinstance(z, torch.Tensor)
+
+
+def test_tensor_iter():
+    i = defop(torch.Tensor)
+    with pytest.raises(TypeError):
+        len(i())
+    with pytest.raises(TypeError):
+        tuple(i())

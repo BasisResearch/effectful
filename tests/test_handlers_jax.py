@@ -1,17 +1,11 @@
-from typing import TypeVar
-
 import jax
-from typing_extensions import ParamSpec
+import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Term
-
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
 
 
 def test_bind_dims():
@@ -259,11 +253,117 @@ def test_jax_nested_getitem():
     assert sizesof(t_ij) == {i: 2, j: 3}
 
 
+def test_jax_at_updates():
+    """Test .at array update functionality for indexed arrays."""
+    i, j, k = defop(jax.Array), defop(jax.Array), defop(jax.Array)
+
+    # Test the exact case from the original issue
+    a = jax_getitem(jnp.ones((5, 4, 3)), [i(), j()])
+    a = a.at[1].set(0)
+    b = jax_getitem(jnp.array([0, 1]), [k()])
+    a = a.at[b].set(0)
+
+    # Verify the result has the expected properties
+    assert isinstance(a, Term)
+    assert a.shape == (3,)
+
+    # Test with 1D remaining dimension
+    arr_2d = jnp.ones((3, 5))
+    indexed_2d = jax_getitem(arr_2d, [i()])  # Shape (5,)
+    updated_2d = indexed_2d.at[2].set(99.0)
+    assert isinstance(updated_2d, Term)
+    assert updated_2d.shape == (5,)
+
+    # Test with 2D remaining dimensions
+    arr_3d = jnp.ones((2, 3, 4))
+    indexed_3d = jax_getitem(arr_3d, [i()])  # Shape (3, 4)
+    updated_3d = indexed_3d.at[1, 2].set(99.0)
+    assert isinstance(updated_3d, Term)
+    assert updated_3d.shape == (3, 4)
+
+    # Test using term as index
+    arr = jnp.ones((5, 3))
+    a = jax_getitem(arr, [i()])  # Shape (3,)
+    k = defop(jax.Array)
+    b = jax_getitem(jnp.array([0, 1, 2]), [k()])  # Shape ()
+    updated = a.at[b].set(99.0)
+    assert isinstance(updated, Term)
+    assert updated.shape == (3,)
+
+
 def test_jax_len():
     i = defop(jax.Array, name="i")
+    with pytest.raises(TypeError):
+        len(i())
+
     t = jnp.ones((2, 3, 4))
     t_i = jax_getitem(t, [i()])
     assert len(t_i) == 3
 
     for row in t_i:
         assert len(row) == 4
+
+
+def test_jax_dimension_addition():
+    """Test jax_getitem with dimension addition via None indexing."""
+    i = defop(jax.Array, name="i")
+    i2 = defop(i)
+
+    # Basic case: indexing with slice and defop
+    x = jax_getitem(jnp.eye(3), (i(), slice(None)))
+    assert x.shape == (3,)
+    assert fvsof(x) >= {i}
+
+    # Multiple defops with None - this should work fine
+    x2 = jax_getitem(jnp.eye(3), (i(), i2(), None))
+    assert x2.shape == (1,)
+    assert fvsof(x2) >= {i, i2}
+
+    # The problematic case: indexing a Term with defop and None
+    # This should work but may currently fail
+    x3 = jax_getitem(x, (i2(), None))
+    assert x3.shape == (1,)
+    assert fvsof(x3) >= {i, i2}
+
+    # Additional test cases for dimension addition
+    # Test with multiple None dimensions
+    x4 = jax_getitem(x, (i2(), None, None))
+    assert x4.shape == (1, 1)
+    assert fvsof(x4) >= {i, i2}
+
+    # Test with slice and None
+    x5 = jax_getitem(x, (slice(None), None))
+    assert x5.shape == (3, 1)
+    assert fvsof(x5) >= {i}
+
+    # Test with Ellipsis and None
+    x6 = jax_getitem(x, (..., None))
+    assert x6.shape == (3, 1)
+    assert fvsof(x6) >= {i}
+
+    # Test nested indexing with dimension addition
+    base = jnp.ones((2, 3, 4))
+    y = jax_getitem(base, (i(), slice(None), slice(None)))
+    assert y.shape == (3, 4)
+    assert fvsof(y) >= {i}
+
+    # Index the result with another defop and add dimension
+    y2 = jax_getitem(y, (i2(), slice(None), None))
+    assert y2.shape == (4, 1)
+    assert fvsof(y2) >= {i, i2}
+
+
+def test_jax_iter():
+    i = defop(jax.Array, name="i")
+    with pytest.raises(TypeError):
+        tuple(i())
+
+
+def test_jax_array():
+    x, y = defop(jax.Array), defop(jax.Array)
+
+    t1 = jnp.array([x()])
+    assert isinstance(t1, Term)
+
+    t2 = jnp.array([jax_getitem(jnp.array([1, 2, 3]), [y()])])
+    assert isinstance(t2, Term)

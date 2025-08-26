@@ -1,6 +1,9 @@
+import collections.abc
 import contextlib
 import dataclasses
 import functools
+import types
+import typing
 from collections.abc import Callable, Mapping
 from typing import Any, Generic, TypeVar
 
@@ -10,12 +13,6 @@ from typing_extensions import ParamSpec
 from effectful.internals.runtime import CallByNeed
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
 
 
 @defop
@@ -48,8 +45,10 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     mul(add(1, 2), 3)
 
     """
+    from effectful.internals.runtime import interpreter
+
     if op in intp:
-        return intp[op](*args, **kwargs)
+        return interpreter(intp)(intp[op])(*args, **kwargs)
     elif apply in intp:
         return intp[apply](intp, op, *args, **kwargs)
     else:
@@ -57,7 +56,7 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
 
 
 @defop  # type: ignore
-def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """An operation that eliminates a callable term.
 
     This operation is invoked by the ``__call__`` method of a callable term.
@@ -73,7 +72,7 @@ def call(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         }
         with handler(subs):
             return evaluate(body)
-    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
+    elif not fvsof((fn, args, kwargs)):
         return fn(*args, **kwargs)
     else:
         raise NotImplementedError
@@ -195,7 +194,7 @@ def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     """
     if any(op in intp for op in intp2):  # alpha-rename
-        renaming = {op: defop(op) for op in intp2 if op in intp}
+        renaming: Interpretation = {op: defop(op) for op in intp2 if op in intp}
         intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
         return product(intp_fresh, intp2)
     else:
@@ -345,7 +344,7 @@ def runner(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
-    def _reapply(_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply[**P, S](_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
     with interpreter({apply: _reapply, **intp}):
@@ -364,7 +363,7 @@ def handler(intp: Interpretation):
         yield intp
 
 
-def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
+def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     """Evaluate expression ``expr`` using interpretation ``intp``. If no
     interpretation is provided, uses the current interpretation.
 
@@ -383,23 +382,53 @@ def evaluate(expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
     6
 
     """
-    if intp is None:
-        from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation, interpreter
 
-        intp = get_interpretation()
+    if intp is not None:
+        return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        (args, kwargs) = tree.map_structure(
-            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        return expr.op(*args, **kwargs)
+    elif isinstance(expr, Operation):
+        op_intp = get_interpretation().get(expr, expr)
+        return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
+    elif isinstance(expr, collections.abc.Mapping):
+        if isinstance(expr, collections.defaultdict):
+            return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))  # type: ignore
+        elif isinstance(expr, types.MappingProxyType):
+            return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
+        else:
+            return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
+    elif isinstance(expr, collections.abc.Sequence):
+        if isinstance(expr, str | bytes):
+            return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.Set):
+        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
+            return {evaluate(item) for item in expr}  # type: ignore
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.ValuesView):
+        return [evaluate(item) for item in expr]  # type: ignore
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return typing.cast(
+            T,
+            dataclasses.replace(
+                expr,
+                **{
+                    field.name: evaluate(getattr(expr, field.name))
+                    for field in dataclasses.fields(expr)
+                },
+            ),
         )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)
-    elif tree.is_nested(expr):
-        return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
     else:
-        return expr
+        return typing.cast(T, expr)
 
 
-def typeof(term: Expr[T]) -> type[T]:
+def typeof[T](term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
     **Example usage**:
@@ -414,10 +443,8 @@ def typeof(term: Expr[T]) -> type[T]:
 
     Types can be computed in the presence of type variables.
 
-    >>> from typing import TypeVar
-    >>> T = TypeVar('T')
     >>> @defop
-    ... def if_then_else(x: bool, a: T, b: T) -> T:
+    ... def if_then_else[T](x: bool, a: T, b: T) -> T:
     ...     raise NotImplementedError
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
@@ -426,10 +453,27 @@ def typeof(term: Expr[T]) -> type[T]:
     from effectful.internals.runtime import interpreter
 
     with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
+        if isinstance(term, Term):
+            # If term is a Term, we evaluate it to get its type
+            tp = evaluate(term)
+            if isinstance(tp, typing.TypeVar):
+                tp = (
+                    tp.__bound__
+                    if tp.__bound__
+                    else tp.__constraints__[0]
+                    if tp.__constraints__
+                    else object
+                )
+            if isinstance(tp, types.UnionType):
+                raise TypeError(
+                    f"Cannot determine type of {term} because it is a union type: {tp}"
+                )
+            return typing.get_origin(tp) or tp  # type: ignore
+        else:
+            return type(term)
 
 
-def fvsof(term: Expr[S]) -> set[Operation]:
+def fvsof[S](term: Expr[S]) -> set[Operation]:
     """Return the free variables of an expression.
 
     **Example usage**:

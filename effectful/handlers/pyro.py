@@ -1,7 +1,7 @@
 import functools
 import typing
 from collections.abc import Collection, Mapping
-from typing import Any, TypeVar
+from typing import Any
 
 import pyro.poutine.subsample_messenger
 
@@ -21,11 +21,7 @@ try:
 except ImportError:
     raise ImportError("PyTorch is required to use effectful.handlers.pyro.")
 
-from typing_extensions import ParamSpec
-
 from effectful.handlers.torch import (
-    _bind_dims,
-    _unbind_dims,
     bind_dims,
     sizesof,
     unbind_dims,
@@ -34,10 +30,6 @@ from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import defdata, defop, defterm
 from effectful.ops.types import Operation, Term
-
-P = ParamSpec("P")
-A = TypeVar("A")
-B = TypeVar("B")
 
 
 @defop
@@ -341,8 +333,8 @@ PyroDistribution = (
 )
 
 
-@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
-@_unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+@unbind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)  # type: ignore
+@unbind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)  # type: ignore
 def _unbind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],
@@ -401,8 +393,8 @@ def _unbind_dims_distribution(
     return new_d
 
 
-@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)
-@_bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)
+@bind_dims.register(pyro.distributions.torch_distribution.TorchDistribution)  # type: ignore
+@bind_dims.register(pyro.distributions.torch_distribution.TorchDistributionMixin)  # type: ignore
 def _bind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],

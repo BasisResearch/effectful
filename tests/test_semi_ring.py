@@ -1,9 +1,13 @@
 import random
+import typing
 
-from docs.source.semi_ring import Dict, Field, Let, Sum, eager, ops, opt
+from docs.source.semi_ring import Dict, Field, Let, SemiRingDict, Sum, eager, ops, opt
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop, trace
 from effectful.ops.types import Term
+
+S = typing.TypeVar("S")
+T = typing.TypeVar("T")
 
 
 @trace
@@ -12,32 +16,32 @@ def add1(v: int) -> int:
 
 
 def test_simple_sum():
-    x = defop(str, name="x")
-    y = defop(object, name="y")
+    x = defop(SemiRingDict[str, T], name="x")
+    y = defop(SemiRingDict[str, T], name="y")
     k = defop(str, name="k")
     v = defop(int, name="v")
 
     with handler(eager):
-        e = Sum(Dict("a", 1, "b", 2), k, v, Dict("v", v()))
+        e = Sum(Dict(("a", 1), ("b", 2)), k, v, Dict(("v", v())))
         assert e["v"] == 3
 
     with handler(eager):
-        e = Let(Dict("a", 1, "b", 2), x, Field(x(), "b"))
+        e = Let(Dict(("a", 1), ("b", 2)), x, Field(x(), "b"))
         assert e == 2
 
     with handler(eager):
-        e = Sum(Dict("a", 1, "b", 2), k, v, Dict(k(), add1(add1(v()))))
+        e = Sum(Dict(("a", 1), ("b", 2)), k, v, Dict((k(), add1(add1(v())))))
         assert e["a"] == 3
         assert e["b"] == 4
 
     with handler(eager), handler(opt):
         e = Let(
-            Dict("a", 1, "b", 2),
+            Dict(("a", 1), ("b", 2)),
             x,
             Let(
-                Sum(x(), k, v, Dict(k(), add1(v()))),
+                Sum(x(), k, v, Dict((k(), add1(v())))),
                 y,
-                Sum(y(), k, v, Dict(k(), add1(v()))),
+                Sum(y(), k, v, Dict((k(), add1(v())))),
             ),
         )
         assert e["a"] == 3
@@ -45,19 +49,19 @@ def test_simple_sum():
 
 
 def fusion_test(d):
-    x = defop(object, name="x")
-    y = defop(object, name="y")
-    k = defop(object, name="k")
-    v = defop(object, name="v")
+    x = defop(SemiRingDict[S, T], name="x")
+    y = defop(SemiRingDict[S, T], name="y")
+    k = defop(str, name="k")
+    v = defop(int, name="v")
 
     return (
         Let(
             d,
             x,
             Let(
-                Sum(x(), k, v, Dict(k(), add1(v()))),
+                Sum(x(), k, v, Dict((k(), add1(v())))),
                 y,
-                Sum(y(), k, v, Dict(k(), add1(v()))),
+                Sum(y(), k, v, Dict((k(), add1(v())))),
             ),
         ),
         (x, y, k, v),
@@ -65,15 +69,11 @@ def fusion_test(d):
 
 
 def make_dict(n):
-    kv = []
-    for i in range(n):
-        kv.append(i)
-        kv.append(random.randint(1, 10))
-    return Dict(*kv)
+    return Dict(*[(i, random.randint(1, 10)) for i in range(n)])
 
 
 def test_fusion_term():
-    dvar = defop(object, name="dvar")
+    dvar = defop(SemiRingDict[str, T], name="dvar")
     with handler(eager), handler(opt):
         result, (x, _, k, v) = fusion_test(dvar())
 

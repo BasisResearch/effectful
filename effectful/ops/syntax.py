@@ -5,21 +5,10 @@ import inspect
 import random
 import types
 import typing
-from collections.abc import Callable
-from typing import Annotated, Concatenate, Generic, TypeVar
+from collections.abc import Callable, Iterable, Mapping
+from typing import Annotated, Concatenate
 
-import tree
-from typing_extensions import ParamSpec
-
-from effectful.ops.types import Annotation, Expr, Interpretation, Operation, Term
-
-P = ParamSpec("P")
-Q = ParamSpec("Q")
-S = TypeVar("S")
-T = TypeVar("T")
-V = TypeVar("V")
-A = TypeVar("A")
-B = TypeVar("B")
+from effectful.ops.types import Annotation, Expr, Operation, Term
 
 
 @dataclasses.dataclass
@@ -57,11 +46,10 @@ class Scoped(Annotation):
     We illustrate the use of :class:`Scoped` with a few case studies of classical
     syntactic variable binding constructs expressed as :class:`Operation` s.
 
-    >>> from typing import Annotated, TypeVar
+    >>> from typing import Annotated
     >>> from effectful.ops.syntax import Scoped, defop
     >>> from effectful.ops.semantics import fvsof
     >>> from effectful.handlers.numbers import add
-    >>> A, B, S, T = TypeVar('A'), TypeVar('B'), TypeVar('S'), TypeVar('T')
     >>> x, y = defop(int, name='x'), defop(int, name='y')
 
     * For example, we can define a higher-order operation :func:`Lambda`
@@ -70,7 +58,7 @@ class Scoped(Annotation):
       and returns a :class:`Term` representing a lambda function:
 
       >>> @defop
-      ... def Lambda(
+      ... def Lambda[S, T, A, B](
       ...     var: Annotated[Operation[[], S], Scoped[A]],
       ...     body: Annotated[T, Scoped[A | B]]
       ... ) -> Annotated[Callable[[S], T], Scoped[B]]:
@@ -91,7 +79,7 @@ class Scoped(Annotation):
       number of arguments and keyword arguments:
 
       >>> @defop
-      ... def LambdaN(
+      ... def LambdaN[S, T, A, B](
       ...     body: Annotated[T, Scoped[A | B]],
       ...     *args: Annotated[Operation[[], S], Scoped[A]],
       ...     **kwargs: Annotated[Operation[[], S], Scoped[A]]
@@ -107,7 +95,7 @@ class Scoped(Annotation):
       a :class:`Term` ``body`` to a ``value`` that may be another possibly open :class:`Term` :
 
       >>> @defop
-      ... def Let(
+      ... def Let[S, T, A, B](
       ...     var: Annotated[Operation[[], S], Scoped[A]],
       ...     val: Annotated[S, Scoped[B]],
       ...     body: Annotated[T, Scoped[A | B]]
@@ -129,7 +117,7 @@ class Scoped(Annotation):
 
     ordinal: collections.abc.Set
 
-    def __class_getitem__(cls, item: TypeVar | typing._SpecialForm):
+    def __class_getitem__(cls, item: typing.TypeVar | typing._SpecialForm):
         assert not isinstance(item, tuple), "can only be in one scope"
         if isinstance(item, typing.TypeVar):
             return cls(ordinal=frozenset({item}))
@@ -188,7 +176,7 @@ class Scoped(Annotation):
 
     @classmethod
     def _get_fresh_ordinal(cls, *, name: str = "RootScope") -> collections.abc.Set:
-        return {TypeVar(name)}
+        return {typing.TypeVar(name)}
 
     @classmethod
     def _check_has_single_scope(cls, sig: inspect.Signature) -> bool:
@@ -216,8 +204,8 @@ class Scoped(Annotation):
 
         def _get_free_type_vars(
             tp: type | typing._SpecialForm | inspect.Parameter | tuple | list,
-        ) -> collections.abc.Set[TypeVar]:
-            if isinstance(tp, TypeVar):
+        ) -> collections.abc.Set[typing.TypeVar]:
+            if isinstance(tp, typing.TypeVar):
                 return {tp}
             elif isinstance(tp, tuple | list):
                 return set().union(*map(_get_free_type_vars, tp))
@@ -346,36 +334,50 @@ class Scoped(Annotation):
         return_ordinal = self._get_param_ordinal(bound_sig.signature.return_annotation)
         for name, param in bound_sig.signature.parameters.items():
             param_ordinal = self._get_param_ordinal(param)
-            if (
-                self._param_is_var(param)
-                and param_ordinal <= self.ordinal
-                and not param_ordinal <= return_ordinal
-            ):
-                if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name]) == len(
-                        set(bound_sig.arguments[name])
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name]}
-                elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                    # pre-condition: all bound variables should be distinct
-                    assert len(bound_sig.arguments[name].values()) == len(
-                        set(bound_sig.arguments[name].values())
-                    )
-                    param_bound_vars = {*bound_sig.arguments[name].values()}
-                else:
-                    param_bound_vars = {bound_sig.arguments[name]}
+            if param_ordinal <= self.ordinal and not param_ordinal <= return_ordinal:
+                param_value = bound_sig.arguments[name]
+                param_bound_vars = set()
+
+                if self._param_is_var(param):
+                    # Handle individual Operation parameters (existing behavior)
+                    if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value) == len(set(param_value))
+                        param_bound_vars = set(param_value)
+                    elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                        # pre-condition: all bound variables should be distinct
+                        assert len(param_value.values()) == len(
+                            set(param_value.values())
+                        )
+                        param_bound_vars = set(param_value.values())
+                    else:
+                        param_bound_vars = {param_value}
+                elif param_ordinal:  # Only process if there's a Scoped annotation
+                    # We can't use flatten here because we want to be able
+                    # to see dict keys
+                    def extract_operations(obj):
+                        if isinstance(obj, Operation):
+                            param_bound_vars.add(obj)
+                        elif isinstance(obj, dict):
+                            for k, v in obj.items():
+                                extract_operations(k)
+                                extract_operations(v)
+                        elif isinstance(obj, list | set | tuple):
+                            for v in obj:
+                                extract_operations(v)
+
+                    extract_operations(param_value)
 
                 # pre-condition: all bound variables should be distinct
-                assert not bound_vars & param_bound_vars
-
-                bound_vars |= param_bound_vars
+                if param_bound_vars:
+                    assert not bound_vars & param_bound_vars
+                    bound_vars |= param_bound_vars
 
         return bound_vars
 
 
 @functools.singledispatch
-def defop(
+def defop[**P, T](
     t: Callable[P, T], *, name: str | None = None, freshening=list[int] | None
 ) -> Operation[P, T]:
     """Creates a fresh :class:`Operation`.
@@ -512,7 +514,7 @@ def defop(
 
 
 @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
-class _BaseOperation(Generic[Q, V], Operation[Q, V]):
+class _BaseOperation[**Q, V](Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
 
@@ -584,52 +586,28 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
         return tuple(result_sig.args), dict(result_sig.kwargs)
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        def unwrap_annotation(typ):
-            """Unwrap Annotated types."""
-            return (
-                typing.get_args(typ)[0] if typing.get_origin(typ) is Annotated else typ
-            )
+        from effectful.internals.unification import (
+            freetypevars,
+            nested_type,
+            substitute,
+            unify,
+        )
 
-        def cleanup_type(typ):
-            """Strip parameters from polymorphic types."""
-            origin = typing.get_origin(typ)
-            typ = typ if origin is None else origin
+        return_anno = self.__signature__.return_annotation
+        if typing.get_origin(return_anno) is typing.Annotated:
+            return_anno = typing.get_args(return_anno)[0]
 
-            if typ is typing.Any:
-                return object
-            return typ
-
-        sig = self.__signature__
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        anno = sig.return_annotation
-        anno = unwrap_annotation(anno)
-
-        if anno is None:
-            return typing.cast(type[V], type(None))
-
-        if anno is inspect.Signature.empty:
+        if return_anno is inspect.Parameter.empty:
             return typing.cast(type[V], object)
+        elif return_anno is None:
+            return type(None)  # type: ignore
+        elif not freetypevars(return_anno):
+            return return_anno
 
-        if isinstance(anno, typing.TypeVar):
-            # rudimentary but sound special-case type inference sufficient for syntax ops:
-            # if the return type annotation is a TypeVar,
-            # look for a parameter with the same annotation and return its type,
-            # otherwise give up and return Any/object
-            for name, param in bound_sig.signature.parameters.items():
-                param_typ = unwrap_annotation(param.annotation)
-                if param_typ is anno and param.kind not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
-                    arg = bound_sig.arguments[name]
-                    tp: type[V] = type(arg) if not isinstance(arg, type) else arg
-                    return cleanup_type(tp)
-
-            return typing.cast(type[V], object)
-
-        return cleanup_type(anno)
+        type_args = tuple(nested_type(a) for a in args)
+        type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
+        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
+        return substitute(return_anno, unify(self.__signature__, bound_sig))  # type: ignore
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -637,9 +615,17 @@ class _BaseOperation(Generic[Q, V], Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    def __get__(self, instance, owner):
+        if instance is not None:
+            # This is an instance-level operation, so we need to bind the instance
+            return functools.partial(self, instance)
+        else:
+            # This is a static operation, so we return the operation itself
+            return self
+
 
 @defop.register(Operation)
-def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
         raise NotImplementedError
@@ -652,7 +638,10 @@ def _(t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(type)
-def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
+@defop.register(typing.cast(type, types.GenericAlias))
+@defop.register(typing.cast(type, typing._GenericAlias))  # type: ignore
+@defop.register(typing.cast(type, types.UnionType))
+def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotImplementedError
 
@@ -668,10 +657,12 @@ def _(t: type[T], *, name: str | None = None) -> Operation[[], T]:
 
 
 @defop.register(types.BuiltinFunctionType)
-def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
+def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
-        if not any(isinstance(a, Term) for a in tree.flatten((args, kwargs))):
+        from effectful.ops.semantics import fvsof
+
+        if not fvsof((args, kwargs)):
             return t(*args, **kwargs)
         else:
             raise NotImplementedError
@@ -679,8 +670,112 @@ def _(t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
+@defop.register(classmethod)
+def _[**P, S, T](  # type: ignore
+    t: classmethod, *, name: str | None = None
+) -> Operation[Concatenate[type[S], P], T]:
+    raise NotImplementedError("classmethod operations are not yet supported")
+
+
+@defop.register(staticmethod)
+class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
+    def __init__(self, default: staticmethod, **kwargs):
+        super().__init__(default=default.__func__, **kwargs)
+
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]:
+        return self
+
+
+@defop.register(property)
+class _PropertyOperation[S, T](_BaseOperation[[S], T]):
+    def __init__(self, default: property, **kwargs):  # type: ignore
+        assert not default.fset, "property with setter is not supported"
+        assert not default.fdel, "property with deleter is not supported"
+        super().__init__(default=typing.cast(Callable[[S], T], default.fget), **kwargs)
+
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_PropertyOperation[S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> T: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return self(instance)
+        else:
+            return self
+
+
+@defop.register(functools.singledispatchmethod)
+class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
+    _default: Callable[Concatenate[S, P], T]
+
+    def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
+        if isinstance(default.func, classmethod):
+            raise NotImplementedError("Operations as classmethod are not yet supported")
+
+        @functools.wraps(default.func)
+        def _wrapper(obj: S, *args: P.args, **kwargs: P.kwargs) -> T:
+            return default.__get__(obj)(*args, **kwargs)
+
+        self._registry: functools.singledispatchmethod = default
+        super().__init__(_wrapper, **kwargs)
+
+    @typing.overload
+    def __get__(
+        self, instance: None, owner: type[S] | None = None
+    ) -> "_SingleDispatchMethodOperation[P, S, T]": ...
+
+    @typing.overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]: ...
+
+    def __get__(self, instance, owner: type[S] | None = None):
+        if instance is not None:
+            return functools.partial(self, instance)
+        else:
+            return self
+
+    @property
+    def register(self):
+        return self._registry.register
+
+    @property
+    def __isabstractmethod__(self):
+        return self._registry.__isabstractmethod__
+
+
+class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
+    _default: "functools._SingleDispatchCallable[T]"
+
+    @property
+    def register(self):
+        return self._default.register
+
+    @property
+    def dispatch(self):
+        return self._default.dispatch
+
+
+if typing.TYPE_CHECKING:
+    defop.register(functools._SingleDispatchCallable)(_SingleDispatchOperation)
+else:
+
+    @typing.runtime_checkable
+    class _SingleDispatchCallable(typing.Protocol):
+        registry: types.MappingProxyType[object, Callable]
+
+        def dispatch(self, cls: type) -> Callable: ...
+        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
+        def _clear_cache(self) -> None: ...
+        def __call__(self, /, *args, **kwargs): ...
+
+    defop.register(_SingleDispatchCallable)(_SingleDispatchOperation)
+
+
 @defop
-def deffn(
+def deffn[T, A, B](
     body: Annotated[T, Scoped[A | B]],
     *args: Annotated[Operation, Scoped[A]],
     **kwargs: Annotated[Operation, Scoped[A]],
@@ -725,11 +820,11 @@ def deffn(
     raise NotImplementedError
 
 
-class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
+class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     def __init__(
         self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
     ):
-        self._func = func
+        self.func = func
         self._registry = functools.singledispatch(func)
         functools.update_wrapper(self, func)
 
@@ -742,11 +837,28 @@ class _CustomSingleDispatchCallable(Generic[P, Q, S, T]):
         return self._registry.register
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        return self._func(self.dispatch, *args, **kwargs)
+        return self.func(self.dispatch, *args, **kwargs)
+
+
+@defop.register(_CustomSingleDispatchCallable)
+class _CustomSingleDispatchOperation[**P, **Q, S, T](_BaseOperation[P, T]):
+    _default: _CustomSingleDispatchCallable[P, Q, S, T]
+
+    def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
+        super().__init__(default, **kwargs)
+        self.__signature__ = inspect.signature(functools.partial(default.func, None))  # type: ignore
+
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
 
 
 @_CustomSingleDispatchCallable
-def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
+def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     """Convert a value to a term, using the type of the value to dispatch.
 
     :param value: The value to convert.
@@ -761,7 +873,7 @@ def defterm(__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
 
 
 @_CustomSingleDispatchCallable
-def defdata(
+def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
     op: Operation[..., T],
     *args,
@@ -786,7 +898,7 @@ def defdata(
 
     .. code-block:: python
 
-      class _CallableTerm(Generic[P, T], Term[collections.abc.Callable[P, T]]):
+      class _CallableTerm[**P, T](Term[collections.abc.Callable[P, T]]):
           def __init__(
               self,
               op: Operation[..., T],
@@ -900,12 +1012,12 @@ def defdata(
 @defterm.register(Term)
 @defterm.register(type)
 @defterm.register(types.BuiltinFunctionType)
-def _(value: T) -> T:
+def _[T](value: T) -> T:
     return value
 
 
 @defdata.register(object)
-class _BaseTerm(Generic[T], Term[T]):
+class _BaseTerm[T](Term[T]):
     _op: Operation[..., T]
     _args: collections.abc.Sequence[Expr]
     _kwargs: collections.abc.Mapping[str, Expr]
@@ -939,14 +1051,14 @@ class _BaseTerm(Generic[T], Term[T]):
 
 
 @defdata.register(collections.abc.Callable)
-class _CallableTerm(Generic[P, T], _BaseTerm[collections.abc.Callable[P, T]]):
+class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
     def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
         from effectful.ops.semantics import call
 
         return call(self, *args, **kwargs)  # type: ignore
 
 
-def trace(value: Callable[P, T]) -> Callable[P, T]:
+def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
     """Convert a callable to a term by calling it with appropriately typed free variables.
 
     **Example usage**:
@@ -1001,7 +1113,40 @@ def trace(value: Callable[P, T]) -> Callable[P, T]:
     return deffn(body, *bound_sig.args, **bound_sig.kwargs)
 
 
-def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
+@defop
+def defstream[S, T, A, B](
+    body: Annotated[T, Scoped[A | B]],
+    streams: Annotated[Mapping[Operation[[], S], Iterable[S]], Scoped[B]],
+) -> Annotated[Iterable[T], Scoped[A]]:
+    """A higher-order operation that represents a for-expression."""
+    raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterable)
+class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
+    @defop
+    def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
+        if not isinstance(self, Term):
+            return iter(self)
+        else:
+            raise NotImplementedError
+
+
+@defdata.register(collections.abc.Iterator)
+class _IteratorTerm[T](_IterableTerm[T]):
+    @defop
+    def __next__(self: collections.abc.Iterator[T]) -> T:
+        if not isinstance(self, Term):
+            return next(self)
+        else:
+            raise NotImplementedError
+
+
+iter_ = _IterableTerm.__iter__
+next_ = _IteratorTerm.__next__
+
+
+def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.
@@ -1013,26 +1158,46 @@ def syntactic_eq(x: Expr[T], other: Expr[T]) -> bool:
     if isinstance(x, Term) and isinstance(other, Term):
         op, args, kwargs = x.op, x.args, x.kwargs
         op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
+        return (
+            op == op2
+            and len(args) == len(args2)
+            and set(kwargs) == set(kwargs2)
+            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
         )
     elif isinstance(x, Term) or isinstance(other, Term):
         return False
+    elif isinstance(x, collections.abc.Mapping) and isinstance(
+        other, collections.abc.Mapping
+    ):
+        return all(
+            k in x and k in other and syntactic_eq(x[k], other[k])
+            for k in set(x) | set(other)
+        )
+    elif isinstance(x, collections.abc.Sequence) and isinstance(
+        other, collections.abc.Sequence
+    ):
+        return len(x) == len(other) and all(
+            syntactic_eq(a, b) for a, b in zip(x, other)
+        )
+    elif (
+        dataclasses.is_dataclass(x)
+        and not isinstance(x, type)
+        and dataclasses.is_dataclass(other)
+        and not isinstance(other, type)
+    ):
+        return type(x) == type(other) and syntactic_eq(
+            {field.name: getattr(x, field.name) for field in dataclasses.fields(x)},
+            {
+                field.name: getattr(other, field.name)
+                for field in dataclasses.fields(other)
+            },
+        )
     else:
         return x == other
 
 
-class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
+class ObjectInterpretation[T, V](collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
 
@@ -1109,7 +1274,7 @@ class ObjectInterpretation(Generic[T, V], Interpretation[T, V]):
         return self.implementations[item].__get__(self, type(self))
 
 
-class _ImplementedOperation(Generic[P, Q, T, V]):
+class _ImplementedOperation[**P, **Q, T, V]:
     impl: Callable[Q, V] | None
     op: Operation[P, T]
 
@@ -1134,7 +1299,7 @@ class _ImplementedOperation(Generic[P, Q, T, V]):
         owner._temporary_implementations[self.op] = self.impl
 
 
-def implements(op: Operation[P, V]):
+def implements[**P, V](op: Operation[P, V]):
     """Marks a method in an :class:`ObjectInterpretation` as the implementation of a
     particular abstract :class:`Operation`.
 

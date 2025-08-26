@@ -3,10 +3,9 @@ import functools
 import itertools
 import logging
 from collections.abc import Callable
-from typing import Annotated, Any, Generic, TypeVar, Union
+from typing import Annotated, Any, Union
 
 import pytest
-from typing_extensions import ParamSpec
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
@@ -22,19 +21,14 @@ from effectful.ops.semantics import (
     runner,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, Operation
 
 logger = logging.getLogger(__name__)
 
 
-P = ParamSpec("P")
-S = TypeVar("S")
-T = TypeVar("T")
-
-
 @contextlib.contextmanager
-def closed_handler(intp: Interpretation[S, T]):
+def closed_handler[S, T](intp: Interpretation[S, T]):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     with interpreter(coproduct({}, {**get_interpretation(), **intp})):
@@ -647,19 +641,17 @@ def test_typeof_nested():
 
 def test_typeof_polymorphic():
     """Test typeof with operations that have polymorphic return types."""
-    T = TypeVar("T")
-    U = TypeVar("U")
 
     @defop
-    def identity(x: T) -> T:
+    def identity[T](x: T) -> T:
         raise NotImplementedError
 
     @defop
-    def first(x: T, y: U) -> T:
+    def first[T, U](x: T, y: U) -> T:
         raise NotImplementedError
 
     @defop
-    def if_then_else(cond: bool, then_val: T, else_val: T) -> T:
+    def if_then_else[T](cond: bool, then_val: T, else_val: T) -> T:
         raise NotImplementedError
 
     assert typeof(identity(42)) is int
@@ -687,13 +679,9 @@ def test_typeof_none():
 
 def test_typeof_scoped():
     """Test typeof with operations that have scoped annotations."""
-    A = TypeVar("A")
-    B = TypeVar("B")
-    S = TypeVar("S")
-    T = TypeVar("T")
 
     @defop
-    def Lambda(
+    def Lambda[S, T, A, B](
         var: Annotated[Operation[[], S], Scoped[A]], body: Annotated[T, Scoped[A | B]]
     ) -> Annotated[Callable[[S], T], Scoped[B]]:
         raise NotImplementedError
@@ -747,14 +735,13 @@ def test_typeof_optional():
 
 def test_typeof_generic():
     """Test typeof with generic classes."""
-    T = TypeVar("T")
 
-    class Box(Generic[T]):
+    class Box[T]:
         def __init__(self, value: T):
             self.value = value
 
     @defop
-    def box_value(x: T) -> Box[T]:
+    def box_value[T](x: T) -> Box[T]:
         raise NotImplementedError
 
     # Generic types are simplified to their origin type
@@ -959,3 +946,17 @@ def test_defdata_large(benchmark):
 
     # Test a very large tree (depth 8 = 255 leaf nodes)
     benchmark(functools.partial(build_tree, 7))
+
+
+def test_evaluate_deep():
+    x, y, z = defop(int), defop(int), defop(int)
+    intp = {x: deffn(1), y: deffn(2), z: deffn(x() + y())}
+
+    with handler(intp):
+        assert z() == 3
+
+    assert handler(intp)(z)() == 3
+
+    assert evaluate(evaluate(z(), intp=intp), intp=intp) == 3
+
+    assert evaluate(z(), intp=intp) == 3
