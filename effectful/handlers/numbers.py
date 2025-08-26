@@ -147,16 +147,16 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
         raise ValueError("Cannot convert term to float")
 
     def __trunc__(self) -> numbers.Integral:
-        raise NotHandled
+        raise NotImplementedError
 
     def __floor__(self) -> numbers.Integral:
-        raise NotHandled
+        raise NotImplementedError
 
     def __ceil__(self) -> numbers.Integral:
-        raise NotHandled
+        raise NotImplementedError
 
     def __round__(self, ndigits=None) -> numbers.Integral:
-        raise NotHandled
+        raise NotImplementedError
 
     def __floordiv__(self, other):
         return floordiv(self, other)
@@ -182,11 +182,11 @@ class _RealTerm(_ComplexTerm, Term[numbers.Real]):
 class _RationalTerm(_RealTerm, Term[numbers.Rational]):
     @property
     def numerator(self):
-        raise NotHandled
+        raise NotImplementedError
 
     @property
     def denominator(self):
-        raise NotHandled
+        raise NotImplementedError
 
 
 # Integral specific methods
