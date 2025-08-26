@@ -553,7 +553,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                 return self._default(*args, **kwargs)
             except NotImplementedError:
                 warnings.warn(
-                    "Operations should raise effectful.ops.syntax.NotHandled instead of NotImplementedError.",
+                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
                     DeprecationWarning,
                 )
                 raise NotHandled
