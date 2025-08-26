@@ -206,13 +206,8 @@ def test_term_str():
 
 
 def test_defdata_renaming():
-    T = TypeVar("T")
-    A = TypeVar("A")
-    B = TypeVar("B")
-    S = TypeVar("S")
-
     @defop
-    def Let(
+    def Let[S, T, A, B](
         var: Annotated[Operation[[], S], Scoped[A]],
         val: Annotated[S, Scoped[B]],
         body: Annotated[T, Scoped[A | B]],

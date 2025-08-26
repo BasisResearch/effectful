@@ -2,9 +2,7 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Any, Generic, TypeVar
-
-from typing_extensions import ParamSpec
+from typing import Any
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
@@ -75,7 +73,7 @@ def _set_prompt[**P, T](
 
 
 @dataclasses.dataclass
-class CallByNeed(Generic[P, T]):
+class CallByNeed[**P, T]:
     func: Callable[P, T]
     args: Any  # P.args
     kwargs: Any  # P.kwargs

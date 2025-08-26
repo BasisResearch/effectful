@@ -812,18 +812,16 @@ def test_simul_analysis():
 
 
 def test_simul_analysis_apply():
-    T = TypeVar("T")
-
     @defop
-    def plus1(x: T) -> T:
+    def plus1[T](x: T) -> T:
         raise NotImplementedError
 
     @defop
-    def plus2(x: T) -> T:
+    def plus2[T](x: T) -> T:
         raise NotImplementedError
 
     @defop
-    def times(x: T, y: T) -> T:
+    def times[T](x: T, y: T) -> T:
         raise NotImplementedError
 
     x, y = defop(int, name="x"), defop(int, name="y")
@@ -876,10 +874,8 @@ def test_simul_analysis_apply():
 def test_productN_distributive():
     """Test that productN distributes over coproducts."""
 
-    T = TypeVar("T")
-
     @defop
-    def add(x: T, y: T) -> T:
+    def add[T](x: T, y: T) -> T:
         raise NotImplementedError
 
     x = defop(object, name="x")
@@ -907,12 +903,8 @@ def test_defdata_large(benchmark):
     """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random
 
-    T = TypeVar("T")
-    A = TypeVar("A")
-    B = TypeVar("B")
-
     @defop
-    def f(
+    def f[T, A, B](
         v: Annotated[Operation[[], int], Scoped[A]],
         x: Annotated[T, Scoped[A | B]],
         y: Annotated[T, Scoped[A | B]],

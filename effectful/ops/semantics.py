@@ -5,10 +5,9 @@ import functools
 import types
 import typing
 from collections.abc import Callable, Mapping
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 import tree
-from typing_extensions import ParamSpec
 
 from effectful.internals.runtime import CallByNeed
 from effectful.ops.syntax import deffn, defop
@@ -209,7 +208,7 @@ def argsof(op: Operation) -> tuple[list, dict]:
 
 
 @dataclasses.dataclass
-class Product(Generic[S, T]):
+class Product[S, T]:
     values: object
 
 
