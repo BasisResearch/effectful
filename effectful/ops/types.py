@@ -10,6 +10,8 @@ from typing import Any, _ProtocolMeta, overload, runtime_checkable
 
 
 class NotHandled(Exception):
+    """Raised by an operation when the operation should remain unhandled."""
+
     pass
 
 
