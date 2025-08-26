@@ -30,15 +30,15 @@ class Operation[**Q, V](abc.ABC):
 
     @abc.abstractmethod
     def __eq__(self, other):
-        raise NotHandled
+        raise NotImplementedError
 
     @abc.abstractmethod
     def __hash__(self):
-        raise NotHandled
+        raise NotImplementedError
 
     @abc.abstractmethod
     def __lt__(self, other):
-        raise NotHandled
+        raise NotImplementedError
 
     @abc.abstractmethod
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
@@ -46,12 +46,12 @@ class Operation[**Q, V](abc.ABC):
 
         If no default rule is supplied, the free rule is used instead.
         """
-        raise NotHandled
+        raise NotImplementedError
 
     @abc.abstractmethod
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments."""
-        raise NotHandled
+        raise NotImplementedError
 
     @abc.abstractmethod
     def __fvs_rule__(
@@ -68,7 +68,7 @@ class Operation[**Q, V](abc.ABC):
         subtracting the results of this method from the free variables of the subterms,
         allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
         """
-        raise NotHandled
+        raise NotImplementedError
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
