@@ -223,7 +223,7 @@ class _ArrayTerm(Term[jax.Array]):
     def __iter__(self):
         raise TypeError("A free array is not iterable.")
 
-"""
+
 for name in jax.Array.__dict__:
     if (
         not name.startswith("_")
@@ -231,7 +231,6 @@ for name in jax.Array.__dict__:
         and name not in _ArrayTerm.__dict__
     ):
         setattr(_ArrayTerm, name, getattr(jnp, name))
-"""
 
 
 class _EagerArrayTerm(_ArrayTerm):
