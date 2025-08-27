@@ -1,18 +1,22 @@
 import collections.abc
 import contextlib
 import dataclasses
-import functools
 import types
 import typing
-from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.syntax import defop
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+    Term,
+)
 
 
-@defop
-def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
+@defop  # type: ignore
+def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -41,37 +45,15 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_interpretation
 
+    intp = get_interpretation()
     if op in intp:
-        return interpreter(intp)(intp[op])(*args, **kwargs)
+        return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
+        return intp[apply](op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)
-
-
-@defop  # type: ignore
-def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """An operation that eliminates a callable term.
-
-    This operation is invoked by the ``__call__`` method of a callable term.
-
-    """
-    if isinstance(fn, Term) and fn.op is deffn:
-        body: Expr[Callable[P, T]] = fn.args[0]
-        argvars: tuple[Operation, ...] = fn.args[1:]
-        kwvars: dict[str, Operation] = fn.kwargs
-        subs = {
-            **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
-            **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
-        }
-        with handler(subs):
-            return evaluate(body)
-    elif not fvsof((fn, args, kwargs)):
-        return fn(*args, **kwargs)
-    else:
-        raise NotHandled
+        return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop
@@ -208,7 +190,7 @@ def runner(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
-    def _reapply[**P, S](_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
     with interpreter({apply: _reapply, **intp}):
@@ -316,7 +298,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
+    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
         if isinstance(term, Term):
             # If term is a Term, we evaluate it to get its type
             tp = evaluate(term)
@@ -353,7 +335,7 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     _fvs: set[Operation] = set()
 
-    def _update_fvs(_, op, *args, **kwargs):
+    def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
         arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
         bound_vars = set().union(

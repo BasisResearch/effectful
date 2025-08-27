@@ -1,9 +1,10 @@
 import functools
 
-from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Term
+
+add = defdata.dispatch(int).__add__
 
 
 def beta_add(x: int, y: int) -> int:

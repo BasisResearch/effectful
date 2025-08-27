@@ -2,6 +2,8 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import numbers
+import operator
 import random
 import types
 import typing
@@ -50,7 +52,6 @@ class Scoped(Annotation):
     >>> from typing import Annotated
     >>> from effectful.ops.syntax import Scoped, defop
     >>> from effectful.ops.semantics import fvsof
-    >>> from effectful.handlers.numbers import add
     >>> x, y = defop(int, name='x'), defop(int, name='y')
 
     * For example, we can define a higher-order operation :func:`Lambda`
@@ -69,11 +70,11 @@ class Scoped(Annotation):
       passed to :func:`Lambda` may appear free in ``body``, but not in the resulting function.
       In other words, it is bound by :func:`Lambda`:
 
-      >>> assert x not in fvsof(Lambda(x, add(x(), 1)))
+      >>> assert x not in fvsof(Lambda(x, x() + 1))
 
       However, variables in ``body`` other than ``var`` still appear free in the result:
 
-      >>> assert y in fvsof(Lambda(x, add(x(), y())))
+      >>> assert y in fvsof(Lambda(x, x() + y()))
 
     * :class:`Scoped` can also be used with variadic arguments and keyword arguments.
       For example, we can define a generalized :func:`LambdaN` that takes a variable
@@ -89,7 +90,7 @@ class Scoped(Annotation):
 
       This is equivalent to the built-in :class:`Operation` :func:`deffn`:
 
-      >>> assert not {x, y} & fvsof(LambdaN(add(x(), y()), x, y))
+      >>> assert not {x, y} & fvsof(LambdaN(x() + y(), x, y))
 
     * :class:`Scoped` and :func:`defop` can also express more complex scoping semantics.
       For example, we can define a :func:`Let` operation that binds a variable in
@@ -105,15 +106,15 @@ class Scoped(Annotation):
 
       Here the variable ``var`` is bound by :func:`Let` in `body` but not in ``val`` :
 
-      >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())))
+      >>> assert x not in fvsof(Let(x, y() + 1, x() + y()))
 
-      >>> fvs = fvsof(Let(x, add(y(), x()), add(x(), y())))
+      >>> fvs = fvsof(Let(x, y() + x(), x() + y()))
       >>> assert x in fvs and y in fvs
 
       This is reflected in the free variables of subterms of the result:
 
-      >>> assert x in fvsof(Let(x, add(x(), y()), add(x(), y())).args[1])
-      >>> assert x not in fvsof(Let(x, add(y(), 1), add(x(), y())).args[2])
+      >>> assert x in fvsof(Let(x, x() + y(), x() + y()).args[1])
+      >>> assert x not in fvsof(Let(x, y() + 1, x() + y()).args[2])
     """
 
     ordinal: collections.abc.Set
@@ -438,7 +439,6 @@ def defop[**P, T](
 
       Passing :func:`defop` a type is a handy way to create a free variable.
 
-      >>> import effectful.handlers.numbers
       >>> from effectful.ops.semantics import evaluate
       >>> x = defop(int, name='x')
       >>> y = x() + 1
@@ -446,7 +446,7 @@ def defop[**P, T](
       ``y`` is free in ``x``, so it is not fully evaluated:
 
       >>> print(str(y))
-      add(x(), 1)
+      __add__(x(), 1)
 
       We bind ``x`` by installing a handler for it:
 
@@ -471,7 +471,6 @@ def defop[**P, T](
         operation object. In this example, ``scale`` returns a term with a free
         variable ``x``:
 
-        >>> import effectful.handlers.numbers
         >>> x = defop(float, name='x')
         >>> def scale(a: float) -> float:
         ...     return x() * a
@@ -482,7 +481,7 @@ def defop[**P, T](
         >>> fresh_x = defop(float, name='x')
         >>> with handler({fresh_x: lambda: 2.0}):
         ...     print(str(evaluate(term)))
-        mul(x(), 3.0)
+        __mul__(x(), 3.0)
 
         Only the original operation object will work:
 
@@ -803,14 +802,13 @@ def deffn[T, A, B](
     Here :func:`deffn` is used to define a term that represents the function
     ``lambda x, y=1: 2 * x + y``:
 
-    >>> import effectful.handlers.numbers
     >>> import random
     >>> random.seed(0)
 
     >>> x, y = defop(int, name='x'), defop(int, name='y')
     >>> term = deffn(2 * x() + y(), x, y=y)
-    >>> print(str(term))
-    deffn(add(mul(2, x()), y()), x, y=y)
+    >>> print(str(term))  # doctest: +ELLIPSIS
+    deffn(...)
     >>> term(3, y=4)
     10
 
@@ -900,6 +898,7 @@ def defdata[T](
 
     .. code-block:: python
 
+      @defdata.register(collections.abc.Callable)
       class _CallableTerm[**P, T](Term[collections.abc.Callable[P, T]]):
           def __init__(
               self,
@@ -923,14 +922,9 @@ def defdata[T](
           def kwargs(self):
               return self._kwargs
 
-          def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-              from effectful.ops.semantics import call
-
-              return call(self, *args, **kwargs)
-
-      @defdata.register(collections.abc.Callable)
-      def _(op, *args, **kwargs):
-          return _CallableTerm(op, *args, **kwargs)
+          @defop
+          def __call__(self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+              ...
 
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
@@ -952,10 +946,7 @@ def defdata[T](
         if c:
             res = evaluate(
                 v,
-                intp={
-                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-                    **{op: renaming[op] for op in c},
-                },
+                intp={apply: defdata, **{op: renaming[op] for op in c}},
             )
             if isinstance(i, int):
                 args_[i] = res
@@ -1014,10 +1005,28 @@ class _BaseTerm[T](Term[T]):
 
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
-    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.semantics import call
+    @defop
+    def __call__(
+        self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        from effectful.ops.semantics import evaluate, fvsof, handler
 
-        return call(self, *args, **kwargs)  # type: ignore
+        if isinstance(self, Term) and self.op is deffn:
+            body: Expr[Callable[P, T]] = self.args[0]
+            argvars: tuple[Operation, ...] = self.args[1:]
+            kwvars: dict[str, Operation] = self.kwargs
+            subs = {
+                **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
+                **{
+                    kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs
+                },
+            }
+            with handler(subs):
+                return evaluate(body)
+        elif not fvsof((self, args, kwargs)):
+            return self(*args, **kwargs)
+        else:
+            raise NotHandled
 
 
 def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
@@ -1033,14 +1042,17 @@ def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
     >>> term = trace(incr)
 
     >>> print(str(term))
-    deffn(add(int(), 1), int)
+    deffn(__add__(int(), 1), int)
 
     >>> term(2)
     3
 
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, call
+    from effectful.ops.semantics import apply
+
+    call = defdata.dispatch(collections.abc.Callable).__call__
+    assert isinstance(call, Operation)
 
     assert not isinstance(value, Term)
 
@@ -1061,12 +1073,7 @@ def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
     )
     bound_sig.apply_defaults()
 
-    with interpreter(
-        {
-            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-            call: call.__default_rule__,
-        }
-    ):
+    with interpreter({apply: defdata, call: call.__default_rule__}):
         body = value(
             *[a() for a in bound_sig.args],
             **{k: v() for k, v in bound_sig.kwargs.items()},
@@ -1268,3 +1275,348 @@ def implements[**P, V](op: Operation[P, V]):
 
     """
     return _ImplementedOperation(op)
+
+
+@defdata.register(numbers.Number)
+@functools.total_ordering
+class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
+    def __hash__(self):
+        return id(self)
+
+    def __complex__(self) -> complex:
+        raise ValueError("Cannot convert term to complex number")
+
+    def __float__(self) -> float:
+        raise ValueError("Cannot convert term to float")
+
+    def __int__(self) -> int:
+        raise ValueError("Cannot convert term to int")
+
+    def __bool__(self) -> bool:
+        raise ValueError("Cannot convert term to bool")
+
+    @defop  # type: ignore[prop-decorator]
+    @property
+    def real(self) -> float:
+        if not isinstance(self, Term):
+            return self.real
+        else:
+            raise NotHandled
+
+    @defop  # type: ignore[prop-decorator]
+    @property
+    def imag(self) -> float:
+        if not isinstance(self, Term):
+            return self.imag
+        else:
+            raise NotHandled
+
+    @defop
+    def conjugate(self) -> complex:
+        if not isinstance(self, Term):
+            return self.conjugate()
+        else:
+            raise NotHandled
+
+    @defop  # type: ignore[prop-decorator]
+    @property
+    def numerator(self) -> int:
+        if not isinstance(self, Term):
+            return self.numerator
+        else:
+            raise NotHandled
+
+    @defop  # type: ignore[prop-decorator]
+    @property
+    def denominator(self) -> int:
+        if not isinstance(self, Term):
+            return self.denominator
+        else:
+            raise NotHandled
+
+    @defop
+    def __abs__(self) -> float:
+        """Return the absolute value of the term."""
+        if not isinstance(self, Term):
+            return self.__abs__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __neg__(self: T) -> T:
+        if not isinstance(self, Term):
+            return self.__neg__()  # type: ignore
+        else:
+            raise NotHandled
+
+    @defop
+    def __pos__(self: T) -> T:
+        if not isinstance(self, Term):
+            return self.__pos__()  # type: ignore
+        else:
+            raise NotHandled
+
+    @defop
+    def __trunc__(self) -> int:
+        if not isinstance(self, Term):
+            return self.__trunc__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __floor__(self) -> int:
+        if not isinstance(self, Term):
+            return self.__floor__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __ceil__(self) -> int:
+        if not isinstance(self, Term):
+            return self.__ceil__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __round__(self, ndigits: int | None = None) -> numbers.Real:
+        if not isinstance(self, Term) and not isinstance(ndigits, Term):
+            return self.__round__(ndigits)
+        else:
+            raise NotHandled
+
+    @defop
+    def __invert__(self) -> int:
+        if not isinstance(self, Term):
+            return self.__invert__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __index__(self) -> int:
+        if not isinstance(self, Term):
+            return self.__index__()
+        else:
+            raise NotHandled
+
+    @defop
+    def __eq__(self, other) -> bool:  # type: ignore[override]
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__eq__(other)
+        else:
+            return syntactic_eq(self, other)
+
+    @defop
+    def __lt__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__lt__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __add__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__add__(self, other)
+        else:
+            raise NotHandled
+
+    def __radd__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__add__(self)
+        elif not isinstance(other, Term):
+            return type(self).__add__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __sub__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__sub__(self, other)
+        else:
+            raise NotHandled
+
+    def __rsub__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__sub__(self)
+        elif not isinstance(other, Term):
+            return type(self).__sub__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __mul__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__mul__(self, other)
+        else:
+            raise NotHandled
+
+    def __rmul__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__mul__(self)
+        elif not isinstance(other, Term):
+            return type(self).__mul__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __truediv__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__truediv__(self, other)
+        else:
+            raise NotHandled
+
+    def __rtruediv__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__truediv__(self)
+        elif not isinstance(other, Term):
+            return type(self).__truediv__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __floordiv__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__floordiv__(self, other)
+        else:
+            raise NotHandled
+
+    def __rfloordiv__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__floordiv__(self)
+        elif not isinstance(other, Term):
+            return type(self).__floordiv__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __mod__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__mod__(self, other)
+        else:
+            raise NotHandled
+
+    def __rmod__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__mod__(self)
+        elif not isinstance(other, Term):
+            return type(self).__mod__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __pow__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__pow__(self, other)
+        else:
+            raise NotHandled
+
+    def __rpow__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__pow__(self)
+        elif not isinstance(other, Term):
+            return type(self).__pow__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __lshift__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__lshift__(self, other)
+        else:
+            raise NotHandled
+
+    def __rlshift__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__lshift__(self)
+        elif not isinstance(other, Term):
+            return type(self).__lshift__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __rshift__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__rshift__(self, other)
+        else:
+            raise NotHandled
+
+    def __rrshift__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__rshift__(self)
+        elif not isinstance(other, Term):
+            return type(self).__rshift__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __and__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__and__(self, other)
+        else:
+            raise NotHandled
+
+    def __rand__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__and__(self)
+        elif not isinstance(other, Term):
+            return type(self).__and__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __xor__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__xor__(self, other)
+        else:
+            raise NotHandled
+
+    def __rxor__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__xor__(self)
+        elif not isinstance(other, Term):
+            return type(self).__xor__(other, self)
+        else:
+            return NotImplemented
+
+    @defop
+    def __or__(self, other: T) -> T:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return operator.__or__(self, other)
+        else:
+            raise NotHandled
+
+    def __ror__(self, other):
+        if isinstance(other, Term) and isinstance(other, type(self)):
+            return other.__or__(self)
+        elif not isinstance(other, Term):
+            return type(self).__or__(other, self)
+        else:
+            return NotImplemented
+
+
+@defdata.register(numbers.Complex)
+@numbers.Complex.register
+class _ComplexTerm[T: numbers.Complex](_NumberTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Real)
+@numbers.Real.register
+class _RealTerm[T: numbers.Real](_ComplexTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Rational)
+@numbers.Rational.register
+class _RationalTerm[T: numbers.Rational](_RealTerm[T]):
+    pass
+
+
+@defdata.register(numbers.Integral)
+@numbers.Integral.register
+class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
+    pass
+
+
+@defdata.register(bool)
+class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
+    pass

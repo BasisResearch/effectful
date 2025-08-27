@@ -64,9 +64,10 @@ Here's an example demonstrating how ``effectful`` can be used to implement a sim
    import functools
 
    from effectful.ops.types import Term
-   from effectful.ops.syntax import defop
+   from effectful.ops.syntax import defdata, defop
    from effectful.ops.semantics import handler, evaluate, coproduct, fwd
-   from effectful.handlers.numbers import add
+
+   add = defdata.dispatch(int).__add__
 
    def beta_add(x: int, y: int) -> int:
        match x, y:

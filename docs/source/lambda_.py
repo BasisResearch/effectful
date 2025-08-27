@@ -1,10 +1,11 @@
 import functools
 from typing import Annotated, Callable
 
-from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
-from effectful.ops.syntax import Scoped, defop, syntactic_eq
+from effectful.ops.syntax import Scoped, defdata, defop, syntactic_eq
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+
+add = defdata.dispatch(int).__add__
 
 
 @defop

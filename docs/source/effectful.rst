@@ -44,6 +44,7 @@ Handlers
    :members:
    :undoc-members:
 
+
 Jax
 ^^^
 
@@ -65,13 +66,6 @@ Jax
    :members:
    :undoc-members:
    
-      
-Numbers
-^^^^^^^
-
-.. automodule:: effectful.handlers.numbers
-   :members:
-   :undoc-members:
 
 Numpyro
 ^^^^^^^

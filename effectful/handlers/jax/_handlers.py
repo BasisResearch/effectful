@@ -12,7 +12,6 @@ except ImportError:
 
 import tree
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
