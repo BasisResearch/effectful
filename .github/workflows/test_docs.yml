@@ -1,4 +1,4 @@
-name: Test
+name: Build Docs
 
 on:
   push:
@@ -11,9 +11,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["'<3.13'", "'>=3.13'"]
     steps:
       - uses: actions/checkout@v4
       
@@ -24,7 +21,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          uv sync --docs --python ${{ matrix.python-version }}
+          uv sync --docs
           
       - name: Build docs
         run: cd docs && uv run make html
