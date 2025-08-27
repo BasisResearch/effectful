@@ -906,6 +906,7 @@ def defdata[T](
 
     .. code-block:: python
 
+      @defdata.register(collections.abc.Callable)
       class _CallableTerm[**P, T](Term[collections.abc.Callable[P, T]]):
           def __init__(
               self,
@@ -929,14 +930,9 @@ def defdata[T](
           def kwargs(self):
               return self._kwargs
 
-          def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-              from effectful.ops.semantics import call
-
-              return call(self, *args, **kwargs)
-
-      @defdata.register(collections.abc.Callable)
-      def _(op, *args, **kwargs):
-          return _CallableTerm(op, *args, **kwargs)
+          @defop
+          def __call__(self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+              raise NotHandled
 
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
@@ -1020,10 +1016,28 @@ class _BaseTerm[T](Term[T]):
 
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
-    def __call__(self, *args: Expr, **kwargs: Expr) -> Expr[T]:
-        from effectful.ops.semantics import call
+    @defop
+    def __call__(
+        self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        from effectful.ops.semantics import evaluate, fvsof, handler
 
-        return call(self, *args, **kwargs)  # type: ignore
+        if isinstance(self, Term) and self.op is deffn:
+            body: Expr[Callable[P, T]] = self.args[0]
+            argvars: tuple[Operation, ...] = self.args[1:]
+            kwvars: dict[str, Operation] = self.kwargs
+            subs = {
+                **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
+                **{
+                    kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs
+                },
+            }
+            with handler(subs):
+                return evaluate(body)
+        elif not fvsof((self, args, kwargs)):
+            return self(*args, **kwargs)
+        else:
+            raise NotHandled
 
 
 def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
@@ -1046,7 +1060,10 @@ def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
 
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, call
+    from effectful.ops.semantics import apply
+
+    call = defdata.dispatch(collections.abc.Callable).__call__
+    assert isinstance(call, Operation)
 
     assert not isinstance(value, Term)
 
