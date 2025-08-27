@@ -11,7 +11,6 @@ except ImportError:
 
 import tree
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof

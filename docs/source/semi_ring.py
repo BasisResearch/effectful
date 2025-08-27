@@ -3,7 +3,6 @@ import operator
 import types
 from typing import Annotated, Tuple, Union, cast, overload
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
 from effectful.ops.syntax import Scoped, defop
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term

@@ -44,13 +44,6 @@ Handlers
    :members:
    :undoc-members:
 
-Numbers
-^^^^^^^
-
-.. automodule:: effectful.handlers.numbers
-   :members:
-   :undoc-members:
-
 Pyro
 ^^^^
 

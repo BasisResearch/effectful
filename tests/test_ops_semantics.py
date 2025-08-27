@@ -6,7 +6,6 @@ from typing import Annotated, Any, Union
 
 import pytest
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
     coproduct,
     evaluate,
