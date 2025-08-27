@@ -42,12 +42,19 @@ jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
 
 [dependency-groups]
-dev = [
+docs = [
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
+    "sphinx_autodoc_typehints",
+    {include-group = "torch"},
+    {include-group = "pyro"},
+    {include-group = "jax"},
+    {include-group = "numpyro"},
+]
+dev = [
     "pytest",
     "pytest-cov",
     "pytest-xdist",
@@ -56,7 +63,7 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
-    "sphinx_autodoc_typehints",
+    {include-group = "docs"},
 ]
 
 [tool.ruff]
