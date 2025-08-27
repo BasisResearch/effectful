@@ -28,9 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = [
-    "dm-tree",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://www.basis.ai/"
@@ -38,10 +36,10 @@ Source = "https://github.com/BasisResearch/effectful"
 "Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
 
 [project.optional-dependencies]
-torch = ["torch"]
-pyro = ["pyro-ppl>=1.9.1"]
-jax = ["jax"]
-numpyro = ["numpyro>=0.19"]
+torch = ["torch", "dm-tree"]
+pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
+jax = ["jax", "dm-tree"]
+numpyro = ["numpyro>=0.19", "dm-tree"]
 
 [dependency-groups]
 dev = [
