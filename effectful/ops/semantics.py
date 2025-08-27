@@ -11,8 +11,8 @@ from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 
-@defop
-def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
+@defop  # type: ignore
+def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -41,14 +41,15 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_interpretation
 
+    intp = get_interpretation()
     if op in intp:
-        return interpreter(intp)(intp[op])(*args, **kwargs)
+        return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
+        return intp[apply](op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop  # type: ignore
@@ -208,7 +209,7 @@ def runner(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
-    def _reapply[**P, S](_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
     with interpreter({apply: _reapply, **intp}):
@@ -316,7 +317,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
+    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
         if isinstance(term, Term):
             # If term is a Term, we evaluate it to get its type
             tp = evaluate(term)
@@ -353,7 +354,7 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     _fvs: set[Operation] = set()
 
-    def _update_fvs(_, op, *args, **kwargs):
+    def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
         arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
         bound_vars = set().union(

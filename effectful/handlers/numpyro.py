@@ -85,7 +85,7 @@ def _unbind_distribution(
             return a
 
     # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
+    def _apply(op, *args, **kwargs):
         typ = op.__type_rule__(*args, **kwargs)
         if issubclass(typ, dist.Distribution):
             return defdata(op, *args, **kwargs)
@@ -133,7 +133,7 @@ def _bind_dims_distribution(
             return a
 
     # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(intp, op, *args, **kwargs):
+    def _apply(op, *args, **kwargs):
         typ = op.__type_rule__(*args, **kwargs)
         if issubclass(typ, dist.Distribution):
             return defdata(op, *args, **kwargs)

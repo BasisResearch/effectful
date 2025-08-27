@@ -72,10 +72,9 @@ class Operation[**Q, V](abc.ABC):
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import apply
 
-        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
+        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
@@ -146,7 +145,7 @@ class Term[T](abc.ABC):
                 )
             return str(term)
 
-        def _apply(_, op, *args, **kwargs) -> str:
+        def _apply(op, *args, **kwargs) -> str:
             args_str = ", ".join(map(term_str, args)) if args else ""
             kwargs_str = (
                 ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())

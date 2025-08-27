@@ -958,10 +958,7 @@ def defdata[T](
         if c:
             res = evaluate(
                 v,
-                intp={
-                    apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-                    **{op: renaming[op] for op in c},
-                },
+                intp={apply: defdata, **{op: renaming[op] for op in c}},
             )
             if isinstance(i, int):
                 args_[i] = res
@@ -1067,12 +1064,7 @@ def trace[**P, T](value: Callable[P, T]) -> Callable[P, T]:
     )
     bound_sig.apply_defaults()
 
-    with interpreter(
-        {
-            apply: lambda _, op, *a, **k: defdata(op, *a, **k),
-            call: call.__default_rule__,
-        }
-    ):
+    with interpreter({apply: defdata, call: call.__default_rule__}):
         body = value(
             *[a() for a in bound_sig.args],
             **{k: v() for k, v in bound_sig.kwargs.items()},
