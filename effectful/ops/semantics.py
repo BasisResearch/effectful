@@ -6,7 +6,13 @@ import typing
 from typing import Any
 
 from effectful.ops.syntax import defop
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+    Term,
+)
 
 
 @defop  # type: ignore
