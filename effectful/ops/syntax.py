@@ -441,12 +441,12 @@ def defop[**P, T](
 
       >>> from effectful.ops.semantics import evaluate
       >>> x = defop(int, name='x')
-      >>> y = add(x(), 1)
+      >>> y = x() + 1
 
       ``y`` is free in ``x``, so it is not fully evaluated:
 
       >>> print(str(y))
-      add(x(), 1)
+      __add__(x(), 1)
 
       We bind ``x`` by installing a handler for it:
 
@@ -481,7 +481,7 @@ def defop[**P, T](
         >>> fresh_x = defop(float, name='x')
         >>> with handler({fresh_x: lambda: 2.0}):
         ...     print(str(evaluate(term)))
-        mul(x(), 3.0)
+        __mul__(x(), 3.0)
 
         Only the original operation object will work:
 
@@ -811,8 +811,8 @@ def deffn[T, A, B](
 
     >>> x, y = defop(int, name='x'), defop(int, name='y')
     >>> term = deffn(2 * x() + y(), x, y=y)
-    >>> print(str(term))
-    deffn(...)  # doctest: +ELLIPSIS
+    >>> print(str(term))  # doctest: +ELLIPSIS
+    deffn(...)
     >>> term(3, y=4)
     10
 
