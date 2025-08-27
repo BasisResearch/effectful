@@ -6,3 +6,4 @@ nbsphinx
 pyro-ppl
 torch
 dm-tree
+sphinx_autodoc_typehints
