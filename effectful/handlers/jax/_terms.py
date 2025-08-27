@@ -224,11 +224,12 @@ class _ArrayTerm(Term[jax.Array]):
         raise TypeError("A free array is not iterable.")
 
 
-for name in jax.Array.__dict__:
+for name, func in jax.Array.__dict__.items():
     if (
         not name.startswith("_")
         and name in jnp.__dict__
         and name not in _ArrayTerm.__dict__
+        and hasattr(func, "__call__")
     ):
         setattr(_ArrayTerm, name, getattr(jnp, name))
 
