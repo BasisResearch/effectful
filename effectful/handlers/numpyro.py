@@ -89,7 +89,7 @@ def _unbind_distribution(
         typ = op.__type_rule__(*args, **kwargs)
         if issubclass(typ, dist.Distribution):
             return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
         d = defterm(d)
@@ -137,7 +137,7 @@ def _bind_dims_distribution(
         typ = op.__type_rule__(*args, **kwargs)
         if issubclass(typ, dist.Distribution):
             return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
         d = defterm(d)

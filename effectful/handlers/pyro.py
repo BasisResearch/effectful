@@ -377,7 +377,7 @@ def _unbind_dims_distribution(
             typ, pyro.distributions.torch_distribution.TorchDistributionMixin
         ):
             return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
         d = defterm(d)
@@ -425,7 +425,7 @@ def _bind_dims_distribution(
             typ, pyro.distributions.torch_distribution.TorchDistributionMixin
         ):
             return defdata(op, *args, **kwargs)
-        return apply.__default_rule__({}, op, *args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
         d = defterm(d)
