@@ -44,6 +44,36 @@ Handlers
    :members:
    :undoc-members:
 
+
+Jax
+^^^
+
+.. automodule:: effectful.handlers.jax
+   :members:
+   :undoc-members:
+
+   .. autofunction:: effectful.handlers.jax.bind_dims
+   .. autofunction:: effectful.handlers.jax.jax_getitem
+   .. autofunction:: effectful.handlers.jax.jit
+   .. autofunction:: effectful.handlers.jax.sizesof
+   .. autofunction:: effectful.handlers.jax.unbind_dims
+
+.. automodule:: effectful.handlers.jax.numpy
+   :members:
+   :undoc-members:
+
+.. automodule:: effectful.handlers.jax.scipy
+   :members:
+   :undoc-members:
+   
+
+Numpyro
+^^^^^^^
+
+.. automodule:: effectful.handlers.numpyro
+   :members:
+   :undoc-members:
+      
 Pyro
 ^^^^
 

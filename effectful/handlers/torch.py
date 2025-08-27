@@ -146,11 +146,9 @@ def bind_dims[
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
-    :type t: T
     :param args: Named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type args: Operation[[], torch.Tensor]
     :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
 
     **Example usage**:
