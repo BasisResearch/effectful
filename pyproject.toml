@@ -49,10 +49,10 @@ docs = [
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    {include-group = "torch"},
-    {include-group = "pyro"},
-    {include-group = "jax"},
-    {include-group = "numpyro"},
+    "effectful[torch]",
+    "effectful[pyro]",
+    "effectful[jax]",
+    "effectful[numpyro]",
 ]
 dev = [
     "pytest",
