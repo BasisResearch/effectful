@@ -1,3 +1,4 @@
+import collections.abc
 import dataclasses
 import functools
 import inspect
@@ -7,10 +8,11 @@ from typing import Annotated, ClassVar
 import pytest
 
 import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
+    defdata,
     deffn,
     defop,
     defstream,
@@ -19,6 +21,8 @@ from effectful.ops.syntax import (
     next_,
 )
 from effectful.ops.types import NotHandled, Operation, Term
+
+call = defdata.dispatch(collections.abc.Callable).__call__
 
 
 def test_always_fresh():

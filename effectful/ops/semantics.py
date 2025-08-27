@@ -1,14 +1,18 @@
 import collections.abc
 import contextlib
 import dataclasses
-import functools
 import types
 import typing
-from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.syntax import defop
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+    Term,
+)
 
 
 @defop  # type: ignore
@@ -50,29 +54,6 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         return intp[apply](op, *args, **kwargs)
     else:
         return op.__default_rule__(*args, **kwargs)  # type: ignore
-
-
-@defop  # type: ignore
-def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """An operation that eliminates a callable term.
-
-    This operation is invoked by the ``__call__`` method of a callable term.
-
-    """
-    if isinstance(fn, Term) and fn.op is deffn:
-        body: Expr[Callable[P, T]] = fn.args[0]
-        argvars: tuple[Operation, ...] = fn.args[1:]
-        kwvars: dict[str, Operation] = fn.kwargs
-        subs = {
-            **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
-            **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
-        }
-        with handler(subs):
-            return evaluate(body)
-    elif not fvsof((fn, args, kwargs)):
-        return fn(*args, **kwargs)
-    else:
-        raise NotHandled
 
 
 @defop
