@@ -12,10 +12,11 @@ from typing import Annotated, ClassVar
 import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
-from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
+    defdata,
     deffn,
     defop,
     defstream,
@@ -30,6 +31,8 @@ from effectful.ops.types import NotHandled, Operation, Term
 logger = logging.getLogger(__name__)
 
 T = typing.TypeVar("T")
+
+call = defdata.dispatch(collections.abc.Callable).__call__
 
 
 def test_always_fresh():
