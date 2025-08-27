@@ -1303,129 +1303,129 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __bool__(self) -> bool:
         raise ValueError("Cannot convert term to bool")
 
-    @defop
+    @defop  # type: ignore[prop-decorator]
     @property
-    def real(self: numbers.Complex) -> float:
+    def real(self) -> float:
         if not isinstance(self, Term):
             return self.real
         else:
-            raise NotImplementedError
+            raise NotHandled
 
-    @defop
+    @defop  # type: ignore[prop-decorator]
     @property
-    def imag(self: numbers.Complex) -> float:
+    def imag(self) -> float:
         if not isinstance(self, Term):
             return self.imag
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def conjugate(self: T) -> T:
+    def conjugate(self) -> complex:
         if not isinstance(self, Term):
             return self.conjugate()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
-    @defop
+    @defop  # type: ignore[prop-decorator]
     @property
-    def numerator(self: numbers.Rational) -> int:
+    def numerator(self) -> int:
         if not isinstance(self, Term):
             return self.numerator
         else:
-            raise NotImplementedError
+            raise NotHandled
 
-    @defop
+    @defop  # type: ignore[prop-decorator]
     @property
-    def denominator(self: numbers.Rational) -> int:
+    def denominator(self) -> int:
         if not isinstance(self, Term):
             return self.denominator
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __abs__(self: numbers.Complex) -> float:
+    def __abs__(self) -> float:
         """Return the absolute value of the term."""
         if not isinstance(self, Term):
             return self.__abs__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
     def __neg__(self: T) -> T:
         if not isinstance(self, Term):
-            return self.__neg__()
+            return self.__neg__()  # type: ignore
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
     def __pos__(self: T) -> T:
         if not isinstance(self, Term):
-            return self.__pos__()
+            return self.__pos__()  # type: ignore
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __trunc__(self: numbers.Real) -> int:
+    def __trunc__(self) -> int:
         if not isinstance(self, Term):
             return self.__trunc__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __floor__(self: numbers.Real) -> int:
+    def __floor__(self) -> int:
         if not isinstance(self, Term):
             return self.__floor__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __ceil__(self: numbers.Real) -> int:
+    def __ceil__(self) -> int:
         if not isinstance(self, Term):
             return self.__ceil__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __round__(self: numbers.Real, ndigits: int | None = None) -> int | float:
+    def __round__(self, ndigits: int | None = None) -> numbers.Real:
         if not isinstance(self, Term) and not isinstance(ndigits, Term):
             return self.__round__(ndigits)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __invert__(self: numbers.Integral) -> int:
+    def __invert__(self) -> int:
         if not isinstance(self, Term):
             return self.__invert__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __index__(self: numbers.Integral) -> int:
+    def __index__(self) -> int:
         if not isinstance(self, Term):
             return self.__index__()
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __eq__(self: numbers.Complex, other: numbers.Complex) -> bool:
+    def __eq__(self, other) -> bool:  # type: ignore[override]
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
         else:
             return syntactic_eq(self, other)
 
     @defop
-    def __lt__(self: numbers.Real, other: numbers.Real) -> bool:
+    def __lt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__lt__(other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     @defop
-    def __add__(self: T, other: T) -> T:
+    def __add__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__add__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __radd__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1436,11 +1436,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __sub__(self: T, other: T) -> T:
+    def __sub__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__sub__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rsub__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1451,11 +1451,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __mul__(self: T, other: T) -> T:
+    def __mul__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__mul__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rmul__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1466,11 +1466,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __truediv__(self: T, other: T) -> T:
+    def __truediv__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__truediv__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rtruediv__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1481,11 +1481,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __floordiv__(self: T, other: T) -> T:
+    def __floordiv__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__floordiv__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rfloordiv__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1496,11 +1496,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __mod__(self: T, other: T) -> T:
+    def __mod__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__mod__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rmod__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1511,11 +1511,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __pow__(self: T, other: T) -> T:
+    def __pow__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__pow__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rpow__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1526,11 +1526,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __lshift__(self: T, other: T) -> T:
+    def __lshift__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__lshift__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rlshift__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1541,11 +1541,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __rshift__(self: T, other: T) -> T:
+    def __rshift__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__rshift__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rrshift__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1556,11 +1556,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __and__(self: T, other: T) -> T:
+    def __and__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__and__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rand__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1571,11 +1571,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __xor__(self: T, other: T) -> T:
+    def __xor__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__xor__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __rxor__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1586,11 +1586,11 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             return NotImplemented
 
     @defop
-    def __or__(self: T, other: T) -> T:
+    def __or__(self, other: T) -> T:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return operator.__or__(self, other)
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     def __ror__(self, other):
         if isinstance(other, Term) and isinstance(other, type(self)):
@@ -1626,5 +1626,5 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 
 
 @defdata.register(bool)
-class _BoolTerm[T: bool](_IntegralTerm[T]):
+class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
