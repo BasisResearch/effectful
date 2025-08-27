@@ -8,7 +8,6 @@ import pytest
 
 import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
-    apply,
     coproduct,
     evaluate,
     fvsof,
@@ -578,7 +577,6 @@ def test_handler_typing() -> None:
     runner(i)
     product(i, i)
     coproduct(i, i)
-    apply(i, f, 1)
     evaluate(0, intp=i)
 
     # include tests with inlined interpretation, because mypy might do inference
@@ -593,7 +591,6 @@ def test_handler_typing() -> None:
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
     )
-    apply({f: lambda x: x + 1, g: lambda x, y: x + str(y)}, f, 1)
     evaluate(0, intp={f: lambda x: x + 1, g: lambda x, y: x + str(y)})
 
 

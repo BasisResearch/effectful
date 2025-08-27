@@ -72,7 +72,7 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
 
         return defdata(torch_getitem, x, key)
 
-    def _apply(_, op, *args, **kwargs):
+    def _apply(op, *args, **kwargs):
         args, kwargs = tree.map_structure(defterm, (args, kwargs))
         return defdata(op, *args, **kwargs)
 
