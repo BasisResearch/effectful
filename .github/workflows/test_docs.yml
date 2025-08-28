@@ -19,14 +19,10 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install pandoc
-        run: |
-          sudo apt install -y pandoc
-
       - name: Install Python dependencies
         run: |
           uv sync --all-extras --dev
           
       - name: Build docs
         run: |
-          cd docs && uv run make html
+          uv run sphinx-build -b html ./docs/source/ ./docs/build/
