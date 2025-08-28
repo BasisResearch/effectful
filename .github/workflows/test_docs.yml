@@ -19,10 +19,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install pandoc
-        run: |
-          sudo apt install -y pandoc
-
       - name: Install Python dependencies
         run: |
           uv sync --all-extras --dev

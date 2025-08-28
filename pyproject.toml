@@ -43,16 +43,15 @@ numpyro = ["numpyro>=0.19", "dm-tree"]
 
 [dependency-groups]
 docs = [
+    "effectful[torch|pyro|jax|numpyro]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    "effectful[torch]",
-    "effectful[pyro]",
-    "effectful[jax]",
-    "effectful[numpyro]",
+    "pypandoc",
+    "pypandoc_binary",
 ]
 dev = [
     "pytest",
