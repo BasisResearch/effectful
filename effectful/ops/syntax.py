@@ -9,7 +9,7 @@ import types
 import typing
 import warnings
 from collections.abc import Callable, Iterable, Mapping
-from typing import Annotated, Concatenate
+from typing import Annotated, Any, Concatenate
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
@@ -1115,8 +1115,10 @@ iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
 
 
-@functools.singledispatch
-def syntactic_eq(x, other) -> bool:
+@_CustomSingleDispatchCallable
+def syntactic_eq(
+    __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
+) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.
@@ -1137,7 +1139,7 @@ def syntactic_eq(x, other) -> bool:
             },
         )
     else:
-        return x == other
+        return __dispatch(type(x))(x, other)
 
 
 @syntactic_eq.register
@@ -1171,6 +1173,15 @@ def _(x: collections.abc.Sequence, other) -> bool:
         and len(x) == len(other)
         and all(syntactic_eq(a, b) for a, b in zip(x, other))
     )
+
+
+@syntactic_eq.register(object)
+@syntactic_eq.register(str | bytes)
+def _(x: object, other) -> bool:
+    # if isinstance(other, Term):
+    #     return False
+    breakpoint()
+    return x == other
 
 
 class ObjectInterpretation[T, V](collections.abc.Mapping):
