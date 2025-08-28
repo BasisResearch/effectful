@@ -43,7 +43,7 @@ numpyro = ["numpyro>=0.19", "dm-tree"]
 
 [dependency-groups]
 docs = [
-    "effectful[torch|pyro|jax|numpyro]",
+    "effectful[torch,pyro,jax,numpyro]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
