@@ -850,6 +850,19 @@ def test_evaluate_2():
         assert evaluate(t) == 3
 
 
+def test_syntactic_eq() -> None:
+    l = defop(list[int])()
+    assert syntactic_eq("test", "test")
+    assert syntactic_eq([1, 2, 3], [1, 2, 3])
+    assert syntactic_eq(set([1, 2, 3]), set([1, 2, 3]))
+    assert syntactic_eq({"a": 1, "b": 2}, {"b": 2, "a": 1})
+    assert syntactic_eq(l, l)
+    assert not syntactic_eq(1, defop(int)())
+    assert not syntactic_eq(defop(int)(), 1)
+    assert not syntactic_eq([], l)
+    assert not syntactic_eq(1, [])
+
+
 def test_arg_positioning():
     @defop
     def f(x):

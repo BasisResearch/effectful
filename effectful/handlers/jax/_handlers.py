@@ -20,6 +20,7 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     defterm,
+    syntactic_eq,
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
@@ -283,3 +284,10 @@ def _indexed_func_wrapper[**P, S, T](
         return indexed_ret
 
     return deindexed, reindex
+
+
+@syntactic_eq.register
+def _(x: jax.typing.ArrayLike, other) -> bool:
+    return isinstance(other, jax.typing.ArrayLike) and bool(  # type: ignore[arg-type]
+        (jnp.asarray(x) == jnp.asarray(other)).all()
+    )
