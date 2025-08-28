@@ -54,12 +54,7 @@ class Operation[**Q, V](abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
-        tuple[collections.abc.Set[Operation], ...],
-        dict[str, collections.abc.Set[Operation]],
-    ]:
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         """
         Returns the sets of variables that appear free in each argument and keyword argument
         but not in the result of the operation, i.e. the variables bound by the operation.

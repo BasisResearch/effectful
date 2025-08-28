@@ -561,12 +561,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
-        tuple[collections.abc.Set[Operation], ...],
-        dict[str, collections.abc.Set[Operation]],
-    ]:
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         sig = Scoped.infer_annotations(self.__signature__)
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
@@ -590,7 +585,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                         else:
                             result_sig.arguments[name] = param_bound_vars
 
-        return tuple(result_sig.args), dict(result_sig.kwargs)
+        return result_sig
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         from effectful.internals.unification import (
@@ -931,33 +926,31 @@ def defdata[T](
     """
     from effectful.ops.semantics import apply, evaluate, typeof
 
-    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    bindings: inspect.BoundArguments = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
-        for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
+        for bound_vars in (*bindings.args, *bindings.kwargs.values())
         for var in bound_vars
     }
 
-    args_, kwargs_ = list(args), dict(kwargs)
-    for i, (v, c) in (
-        *enumerate(zip(args, arg_ctxs)),
-        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
-    ):
-        if c:
-            res = evaluate(
-                v,
-                intp={apply: defdata, **{op: renaming[op] for op in c}},
-            )
-            if isinstance(i, int):
-                args_[i] = res
-            elif isinstance(i, str):
-                kwargs_[i] = res
+    renamed_args: inspect.BoundArguments = op.__signature__.bind(*args, **kwargs)
+    renamed_args.apply_defaults()
+
+    args_ = [
+        evaluate(
+            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.args[i]}}
+        )
+        for i, arg in enumerate(renamed_args.args)
+    ]
+    kwargs_ = {
+        k: evaluate(
+            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.kwargs[k]}}
+        )
+        for k, arg in renamed_args.kwargs.items()
+    }
 
     base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    tp = typeof(base_term)
-
-    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
-    return typed_term
+    return __dispatch(typeof(base_term))(op, *args_, **kwargs_)
 
 
 @defterm.register(object)

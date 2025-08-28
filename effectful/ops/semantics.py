@@ -319,7 +319,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
             return type(term)
 
 
-def fvsof[S](term: Expr[S]) -> set[Operation]:
+def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """Return the free variables of an expression.
 
     **Example usage**:
@@ -337,12 +337,8 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
-        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-        bound_vars = set().union(
-            *(a for a in arg_ctxs),
-            *(k for k in kwarg_ctxs.values()),
-        )
-        for bound_var in bound_vars:
+        bindings = op.__fvs_rule__(*args, **kwargs)
+        for bound_var in set().union(*(bindings.args, *bindings.kwargs.values())):
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 

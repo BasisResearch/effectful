@@ -848,3 +848,13 @@ def test_evaluate_2():
     assert isinstance(t, Term)
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == 3
+
+
+def test_arg_positioning():
+    @defop
+    def f(x):
+        raise NotHandled
+
+    assert isinstance(f(0), Term) and isinstance(f(x=0), Term)
+    assert f(0).args == f(x=0).args == (0,)
+    assert f(0).kwargs == f(x=0).kwargs == {}
