@@ -107,9 +107,15 @@ Internals
    :members:
    :undoc-members:
 
+Runtime
+^^^^^^^
+
 .. automodule:: effectful.internals.runtime
    :members:
    :undoc-members:
+
+Unification
+^^^^^^^^^^^
 
 .. automodule:: effectful.internals.unification
    :members:
