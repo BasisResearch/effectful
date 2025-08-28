@@ -1173,7 +1173,6 @@ def _(x: collections.abc.Sequence, other) -> bool:
     )
 
 
-@syntactic_eq.register
 class ObjectInterpretation[T, V](collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
