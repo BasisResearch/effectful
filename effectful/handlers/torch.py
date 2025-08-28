@@ -14,7 +14,7 @@ import tree
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, defterm
+from effectful.ops.syntax import Scoped, defdata, defop, defterm, syntactic_eq
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
@@ -717,3 +717,8 @@ def vmap(func, *args, **kwargs):
     # indexed_dim_n, pos_dim_1, ..., pos_dim_m], so we reapply indexes starting
     # at dim 1
     return lambda *a, **k: reindex(vmap_func(*a, *k), starting_dim=1)
+
+
+@syntactic_eq.register
+def _(x: torch.Tensor, other) -> bool:
+    return isinstance(other, torch.Tensor) and bool((x == other).all())
