@@ -861,3 +861,13 @@ def test_syntactic_eq() -> None:
     assert not syntactic_eq(defop(int)(), 1)
     assert not syntactic_eq([], l)
     assert not syntactic_eq(1, [])
+
+
+def test_arg_positioning():
+    @defop
+    def f(x):
+        raise NotHandled
+
+    assert isinstance(f(0), Term) and isinstance(f(x=0), Term)
+    assert f(0).args == f(x=0).args == (0,)
+    assert f(0).kwargs == f(x=0).kwargs == {}
