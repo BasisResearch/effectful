@@ -40,14 +40,18 @@ torch = ["torch", "dm-tree"]
 pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
 jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
-
-[dependency-groups]
-dev = [
+docs = [
+    "effectful[torch,pyro,jax,numpyro]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
+    "sphinx_autodoc_typehints",
+    "pypandoc_binary",
+]
+test = [
+    "effectful[torch,pyro,jax,numpyro,docs]",
     "pytest",
     "pytest-cov",
     "pytest-xdist",
@@ -56,8 +60,10 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
-    "sphinx_autodoc_typehints",
 ]
+
+[dependency-groups]
+dev = ["effectful[torch,pyro,jax,numpyro,docs,test]"]
 
 [tool.ruff]
 target-version = "py312"
