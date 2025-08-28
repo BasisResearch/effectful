@@ -4,7 +4,7 @@ import pytest
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.syntax import defdata, defop, syntactic_eq
 from effectful.ops.types import Term
 
 
@@ -367,3 +367,9 @@ def test_jax_array():
 
     t2 = jnp.array([jax_getitem(jnp.array([1, 2, 3]), [y()])])
     assert isinstance(t2, Term)
+
+
+def test_array_eq():
+    x = defop(jax.Array)()
+    y = jnp.array([1, 2, 3])
+    assert syntactic_eq(x + y, x + y)
