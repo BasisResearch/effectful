@@ -50,7 +50,6 @@ docs = [
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    "pypandoc",
     "pypandoc_binary",
 ]
 dev = [
