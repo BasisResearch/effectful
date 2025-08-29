@@ -359,6 +359,13 @@ def test_jax_iter():
         tuple(i())
 
 
+def test_arrayterm_methods():
+    i = defop(jax.Array, name="i")
+    i().sum(axis=0)
+    i().trace()
+    i().transpose()
+
+
 def test_jax_array():
     x, y = defop(jax.Array), defop(jax.Array)
 

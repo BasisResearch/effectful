@@ -224,6 +224,16 @@ class _ArrayTerm(Term[jax.Array]):
         raise TypeError("A free array is not iterable.")
 
 
+for name, func in jax.Array.__dict__.items():
+    if (
+        not name.startswith("_")
+        and name in jnp.__dict__
+        and name not in _ArrayTerm.__dict__
+        and hasattr(func, "__call__")
+    ):
+        setattr(_ArrayTerm, name, getattr(jnp, name))
+
+
 class _EagerArrayTerm(_ArrayTerm):
     def __init__(self, op, tensor, key):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
