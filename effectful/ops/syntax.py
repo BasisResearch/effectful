@@ -9,7 +9,7 @@ import types
 import typing
 import warnings
 from collections.abc import Callable, Iterable, Mapping
-from typing import Annotated, Concatenate
+from typing import Annotated, Any, Concatenate
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
@@ -561,12 +561,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                 Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
             )(self, *args, **kwargs)
 
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
-        tuple[collections.abc.Set[Operation], ...],
-        dict[str, collections.abc.Set[Operation]],
-    ]:
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         sig = Scoped.infer_annotations(self.__signature__)
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
@@ -590,7 +585,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                         else:
                             result_sig.arguments[name] = param_bound_vars
 
-        return tuple(result_sig.args), dict(result_sig.kwargs)
+        return result_sig
 
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         from effectful.internals.unification import (
@@ -931,33 +926,31 @@ def defdata[T](
     """
     from effectful.ops.semantics import apply, evaluate, typeof
 
-    arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
+    bindings: inspect.BoundArguments = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
-        for bound_vars in (*arg_ctxs, *kwarg_ctxs.values())
+        for bound_vars in (*bindings.args, *bindings.kwargs.values())
         for var in bound_vars
     }
 
-    args_, kwargs_ = list(args), dict(kwargs)
-    for i, (v, c) in (
-        *enumerate(zip(args, arg_ctxs)),
-        *{k: (v, kwarg_ctxs[k]) for k, v in kwargs.items()}.items(),
-    ):
-        if c:
-            res = evaluate(
-                v,
-                intp={apply: defdata, **{op: renaming[op] for op in c}},
-            )
-            if isinstance(i, int):
-                args_[i] = res
-            elif isinstance(i, str):
-                kwargs_[i] = res
+    renamed_args: inspect.BoundArguments = op.__signature__.bind(*args, **kwargs)
+    renamed_args.apply_defaults()
+
+    args_ = [
+        evaluate(
+            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.args[i]}}
+        )
+        for i, arg in enumerate(renamed_args.args)
+    ]
+    kwargs_ = {
+        k: evaluate(
+            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.kwargs[k]}}
+        )
+        for k, arg in renamed_args.kwargs.items()
+    }
 
     base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    tp = typeof(base_term)
-
-    typed_term = __dispatch(tp)(op, *args_, **kwargs_)
-    return typed_term
+    return __dispatch(typeof(base_term))(op, *args_, **kwargs_)
 
 
 @defterm.register(object)
@@ -1115,39 +1108,17 @@ iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
 
 
-def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
+@_CustomSingleDispatchCallable
+def syntactic_eq(
+    __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
+) -> bool:
     """Syntactic equality, ignoring the interpretation of the terms.
 
     :param x: A term.
     :param other: Another term.
     :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
     """
-    if isinstance(x, Term) and isinstance(other, Term):
-        op, args, kwargs = x.op, x.args, x.kwargs
-        op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        return (
-            op == op2
-            and len(args) == len(args2)
-            and set(kwargs) == set(kwargs2)
-            and all(syntactic_eq(a, b) for a, b in zip(args, args2))
-            and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
-        )
-    elif isinstance(x, Term) or isinstance(other, Term):
-        return False
-    elif isinstance(x, collections.abc.Mapping) and isinstance(
-        other, collections.abc.Mapping
-    ):
-        return all(
-            k in x and k in other and syntactic_eq(x[k], other[k])
-            for k in set(x) | set(other)
-        )
-    elif isinstance(x, collections.abc.Sequence) and isinstance(
-        other, collections.abc.Sequence
-    ):
-        return len(x) == len(other) and all(
-            syntactic_eq(a, b) for a, b in zip(x, other)
-        )
-    elif (
+    if (
         dataclasses.is_dataclass(x)
         and not isinstance(x, type)
         and dataclasses.is_dataclass(other)
@@ -1161,7 +1132,46 @@ def syntactic_eq[T](x: Expr[T], other: Expr[T]) -> bool:
             },
         )
     else:
-        return x == other
+        return __dispatch(type(x))(x, other)
+
+
+@syntactic_eq.register
+def _(x: Term, other) -> bool:
+    if not isinstance(other, Term):
+        return False
+
+    op, args, kwargs = x.op, x.args, x.kwargs
+    op2, args2, kwargs2 = other.op, other.args, other.kwargs
+    return (
+        op == op2
+        and len(args) == len(args2)
+        and set(kwargs) == set(kwargs2)
+        and all(syntactic_eq(a, b) for a, b in zip(args, args2))
+        and all(syntactic_eq(kwargs[k], kwargs2[k]) for k in kwargs)
+    )
+
+
+@syntactic_eq.register
+def _(x: collections.abc.Mapping, other) -> bool:
+    return isinstance(other, collections.abc.Mapping) and all(
+        k in x and k in other and syntactic_eq(x[k], other[k])
+        for k in set(x) | set(other)
+    )
+
+
+@syntactic_eq.register
+def _(x: collections.abc.Sequence, other) -> bool:
+    return (
+        isinstance(other, collections.abc.Sequence)
+        and len(x) == len(other)
+        and all(syntactic_eq(a, b) for a, b in zip(x, other))
+    )
+
+
+@syntactic_eq.register(object)
+@syntactic_eq.register(str | bytes)
+def _(x: object, other) -> bool:
+    return x == other
 
 
 class ObjectInterpretation[T, V](collections.abc.Mapping):

@@ -16,7 +16,7 @@ from effectful.handlers.torch import (
     vmap,
 )
 from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import deffn, defop, trace
+from effectful.ops.syntax import deffn, defop, syntactic_eq, trace
 from effectful.ops.types import Term
 
 logger = logging.getLogger(__name__)
@@ -630,3 +630,9 @@ def test_tensor_iter():
         len(i())
     with pytest.raises(TypeError):
         tuple(i())
+
+
+def test_tensor_eq():
+    x = defop(torch.Tensor)()
+    y = torch.tensor([1, 2, 3])
+    assert syntactic_eq(x + y, x + y)

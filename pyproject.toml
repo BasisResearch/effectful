@@ -28,9 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = [
-    "dm-tree",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://www.basis.ai/"
@@ -38,18 +36,22 @@ Source = "https://github.com/BasisResearch/effectful"
 "Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
 
 [project.optional-dependencies]
-torch = ["torch"]
-pyro = ["pyro-ppl>=1.9.1"]
-jax = ["jax"]
-numpyro = ["numpyro>=0.19"]
-
-[dependency-groups]
-dev = [
+torch = ["torch", "dm-tree"]
+pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
+jax = ["jax", "dm-tree"]
+numpyro = ["numpyro>=0.19", "dm-tree"]
+docs = [
+    "effectful[torch,pyro,jax,numpyro]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
+    "sphinx_autodoc_typehints",
+    "pypandoc_binary",
+]
+test = [
+    "effectful[torch,pyro,jax,numpyro,docs]",
     "pytest",
     "pytest-cov",
     "pytest-xdist",
@@ -58,8 +60,10 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
-    "sphinx_autodoc_typehints",
 ]
+
+[dependency-groups]
+dev = ["effectful[torch,pyro,jax,numpyro,docs,test]"]
 
 [tool.ruff]
 target-version = "py312"
