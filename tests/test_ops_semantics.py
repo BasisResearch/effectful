@@ -753,3 +753,23 @@ def test_evaluate_deep():
     assert evaluate(evaluate(z(), intp=intp), intp=intp) == 3
 
     assert evaluate(z(), intp=intp) == 3
+
+
+def test_fvsof_binder():
+    x, y, z = defop(int), defop(int), defop(int)
+
+    @defop
+    def add(a: int, b: int) -> int:
+        raise NotHandled
+
+    @defop
+    def Lam2[A, B](
+        body: Annotated[int, Scoped[A | B]],
+        var1: Annotated[Operation[[], int], Scoped[A]],
+        var2: Annotated[Operation[[], int], Scoped[A]],
+    ) -> Annotated[Callable[[int, int], int], Scoped[B]]:
+        raise NotHandled
+
+    term = Lam2(add(x(), add(y(), z())), x, y)
+    assert not {x, y} <= fvsof(term)
+    assert fvsof(term) == {z, Lam2, add}
