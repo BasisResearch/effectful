@@ -338,7 +338,8 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
         bindings = op.__fvs_rule__(*args, **kwargs)
-        for bound_var in set().union(*(bindings.args, *bindings.kwargs.values())):
+        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
+            assert isinstance(bound_var, Operation)
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 
