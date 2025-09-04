@@ -6,12 +6,13 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from typing import (
-    Any,
-    _ProtocolMeta,
-    overload,
-    runtime_checkable,
-)
+from typing import Any, _ProtocolMeta, overload, runtime_checkable
+
+
+class NotHandled(Exception):
+    """Raised by an operation when the operation should remain unhandled."""
+
+    pass
 
 
 @functools.total_ordering
@@ -53,12 +54,7 @@ class Operation[**Q, V](abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __fvs_rule__(
-        self, *args: Q.args, **kwargs: Q.kwargs
-    ) -> tuple[
-        tuple[collections.abc.Set[Operation], ...],
-        dict[str, collections.abc.Set[Operation]],
-    ]:
+    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         """
         Returns the sets of variables that appear free in each argument and keyword argument
         but not in the result of the operation, i.e. the variables bound by the operation.
@@ -71,10 +67,9 @@ class Operation[**Q, V](abc.ABC):
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import apply
 
-        return apply.__default_rule__(get_interpretation(), self, *args, **kwargs)  # type: ignore
+        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
@@ -145,7 +140,7 @@ class Term[T](abc.ABC):
                 )
             return str(term)
 
-        def _apply(_, op, *args, **kwargs) -> str:
+        def _apply(op, *args, **kwargs) -> str:
             args_str = ", ".join(map(term_str, args)) if args else ""
             kwargs_str = (
                 ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())

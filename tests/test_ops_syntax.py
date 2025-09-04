@@ -1,24 +1,38 @@
+import collections
+import collections.abc
 import dataclasses
 import functools
 import inspect
+import logging
+import os
+import typing
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Annotated, ClassVar
 
 import pytest
 
-import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import call, evaluate, fvsof, handler, typeof
+from docs.source.lambda_ import App, Lam, Let, eager_mixed
+from effectful.ops.semantics import evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
+    defdata,
     deffn,
     defop,
     defstream,
     defterm,
     iter_,
     next_,
+    syntactic_eq,
+    trace,
 )
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import NotHandled, Operation, Term
+
+logger = logging.getLogger(__name__)
+
+T = typing.TypeVar("T")
+
+call = defdata.dispatch(collections.abc.Callable).__call__
 
 
 def test_always_fresh():
@@ -81,7 +95,7 @@ def test_gensym_annotations():
         var: Annotated[Operation[[], S], Scoped[A]],
         body: Annotated[T, Scoped[A]],
     ) -> Callable[[S], T]:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int)
     y = defop(int)
@@ -120,7 +134,7 @@ def test_scoped_collections():
         bindings: Annotated[Mapping[Operation[[], T], T], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int, name="x")
     y = defop(int, name="y")
@@ -147,7 +161,7 @@ def test_scoped_collections():
         bindings: Annotated[list[tuple[Operation[[], T], T]], Scoped[A]],
         body: Annotated[S, Scoped[A | B]],
     ) -> Annotated[S, Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     w = defop(int, name="w")
     nested_bindings = [(x, 1), (y, 2)]
@@ -171,7 +185,7 @@ def test_no_default_tracing():
 
     @defop
     def add(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     def f1(x: int) -> int:
         return add(x, add(y(), 1))
@@ -198,11 +212,11 @@ def test_term_str():
 
     assert str(x1) == str(x2) == str(x3) == "x"
     assert repr(x1) != repr(x2) != repr(x3)
-    assert str(x1() + x2()) == "add(x(), x!1())"
-    assert str(x1() + x1()) == "add(x(), x())"
-    assert str(deffn(x1() + x1(), x1)) == "deffn(add(x(), x()), x)"
-    assert str(deffn(x1() + x1(), x2)) == "deffn(add(x(), x()), x!1)"
-    assert str(deffn(x1() + x2(), x1)) == "deffn(add(x(), x!1()), x)"
+    assert str(x1() + x2()) == "__add__(x(), x!1())"
+    assert str(x1() + x1()) == "__add__(x(), x())"
+    assert str(deffn(x1() + x1(), x1)) == "deffn(__add__(x(), x()), x)"
+    assert str(deffn(x1() + x1(), x2)) == "deffn(__add__(x(), x()), x!1)"
+    assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
 def test_defop_singledispatch():
@@ -211,7 +225,7 @@ def test_defop_singledispatch():
     @defop
     @functools.singledispatch
     def process(x: object) -> object:
-        raise NotImplementedError("Unsupported type")
+        raise NotHandled("Unsupported type")
 
     @process.register(int)
     def _(x: int):
@@ -255,7 +269,7 @@ def test_defop_method():
     class MyClass:
         @defop
         def my_method(self, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     term = instance.my_method(5)
@@ -286,12 +300,12 @@ def test_defop_method():
         assert another_instance.my_method(10) == 12
 
 
-def test_defop_bound_method():
+def test_defop_bound_method() -> None:
     """Test that defop can be used as a bound method decorator."""
 
     class MyClass:
         def my_bound_method(self, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     my_bound_method_op = defop(instance.my_bound_method)
@@ -303,14 +317,14 @@ def test_defop_bound_method():
         assert my_bound_method_op(5) == 6
 
 
-def test_defop_setattr():
+def test_defop_setattr() -> None:
     class MyClass:
         def __init__(self, my_op: Operation):
             self.my_op = my_op
 
     @defop
     def my_op(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     instance = MyClass(my_op)
     assert isinstance(instance.my_op, Operation)
@@ -322,13 +336,13 @@ def test_defop_setattr():
     assert tm.op is my_op
 
 
-def test_defop_setattr_class():
+def test_defop_setattr_class() -> None:
     class MyClass:
         my_op: ClassVar[Operation]
 
     @defop
     def my_op(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     MyClass.my_op = my_op
 
@@ -350,7 +364,7 @@ def test_defop_classmethod():
         @defop
         @classmethod
         def my_classmethod(cls, x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     term = MyClass.my_classmethod(5)
 
@@ -386,7 +400,7 @@ def test_defop_staticmethod():
         @defop
         @staticmethod
         def my_staticmethod(x: int) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     term = MyClass.my_staticmethod(5)
 
@@ -419,7 +433,7 @@ def test_defop_property():
         @defop
         @property
         def my_property(self) -> int:
-            raise NotImplementedError
+            raise NotHandled
 
     instance = MyClass()
     term = instance.my_property
@@ -452,7 +466,7 @@ def test_defop_singledispatchmethod():
         @defop
         @functools.singledispatchmethod
         def my_singledispatch(self, x: object) -> object:
-            raise NotImplementedError
+            raise NotHandled
 
         @my_singledispatch.register
         def _(self, x: int) -> int:
@@ -494,7 +508,7 @@ def test_defop_singledispatchmethod():
 def test_defdata_iterable():
     @defop
     def cons_iterable(*args: int) -> Iterable[int]:
-        raise NotImplementedError
+        raise NotHandled
 
     tm = cons_iterable(1, 2, 3)
     assert isinstance(tm, Term)
@@ -544,7 +558,7 @@ def test_defstream_1():
     assert tm_iter_next.op is next_
 
 
-def test_eval_dataclass():
+def test_eval_dataclass() -> None:
     @dataclasses.dataclass
     class Point:
         x: int
@@ -578,3 +592,282 @@ def test_eval_dataclass():
         origin=Point(3, 4),
         lines=[Line(Point(3, 4), Point(4, 5))],
     )
+
+
+def test_lambda_calculus_1():
+    x, y = defop(int), defop(int)
+
+    with handler(eager_mixed):
+        e1 = x() + 1
+        f1 = Lam(x, e1)
+
+        assert syntactic_eq(App(f1, 1), 2)
+        assert syntactic_eq(Lam(y, f1), f1)
+        assert syntactic_eq(Lam(x, f1.args[1]), f1.args[1])
+
+        assert fvsof(e1) == fvsof(x() + 1)
+        assert fvsof(Lam(x, e1).args[1]) != fvsof(Lam(x, e1).args[1])
+
+        assert typeof(e1) is int
+        assert typeof(f1) is collections.abc.Callable
+
+
+def test_lambda_calculus_2():
+    x, y = defop(int), defop(int)
+
+    with handler(eager_mixed):
+        f2 = Lam(x, Lam(y, (x() + y())))
+        assert syntactic_eq(App(App(f2, 1), 2), 3)
+        assert syntactic_eq(Lam(y, f2), f2)
+
+
+def test_lambda_calculus_3():
+    x, y, f = (
+        defop(int),
+        defop(int),
+        defop(collections.abc.Callable[[int], collections.abc.Callable[[int], int]]),
+    )
+
+    with handler(eager_mixed):
+        f2 = Lam(x, Lam(y, (x() + y())))
+        app2 = Lam(f, Lam(x, Lam(y, App(App(f(), x()), y()))))
+        assert syntactic_eq(App(App(App(app2, f2), 1), 2), 3)
+
+
+def test_lambda_calculus_4():
+    x, f, g = (
+        defop(int),
+        defop(collections.abc.Callable[[T], T]),
+        defop(collections.abc.Callable[[T], T]),
+    )
+
+    with handler(eager_mixed):
+        add1 = Lam(x, (x() + 1))
+        compose = Lam(f, Lam(g, Lam(x, App(f(), App(g(), x())))))
+        f1_twice = App(App(compose, add1), add1)
+        assert syntactic_eq(App(f1_twice, 1), 3)
+
+
+def test_lambda_calculus_5():
+    x = defop(int)
+
+    with handler(eager_mixed):
+        e_add1 = Let(x, x(), (x() + 1))
+        f_add1 = Lam(x, e_add1)
+
+        assert x in fvsof(e_add1)
+        assert e_add1.args[0] != x
+
+        assert x not in fvsof(f_add1)
+        assert f_add1.args[0] != f_add1.args[1].args[0]
+
+        assert syntactic_eq(App(f_add1, 1), 2)
+        assert syntactic_eq(Let(x, 1, e_add1), 2)
+
+
+def test_arithmetic_1():
+    x_, y_ = defop(int), defop(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        assert syntactic_eq((1 + 2) + x, x + 3)
+        assert not syntactic_eq(x + 1, y + 1)
+        assert syntactic_eq(x + 0, 0 + x) and syntactic_eq(0 + x, x)
+
+
+def test_arithmetic_2():
+    x_, y_ = defop(int), defop(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        assert syntactic_eq(x + y, y + x)
+        assert syntactic_eq(3 + x, x + 3)
+        assert syntactic_eq(1 + (x + 2), x + 3)
+        assert syntactic_eq((x + 1) + 2, x + 3)
+
+
+def test_arithmetic_3():
+    x_, y_ = defop(int), defop(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        assert syntactic_eq((1 + (y + 1)) + (1 + (x + 1)), (y + x) + 4)
+        assert syntactic_eq(1 + ((x + y) + 2), (x + y) + 3)
+        assert syntactic_eq(1 + ((x + (y + 1)) + 1), (x + y) + 3)
+
+
+def test_arithmetic_4():
+    x_, y_ = defop(int), defop(int)
+    x, y = x_(), y_()
+
+    with handler(eager_mixed):
+        expr1 = ((x + x) + (x + x)) + ((x + x) + (x + x))
+        expr2 = x + (x + (x + (x + (x + (x + (x + x))))))
+        expr3 = ((((((x + x) + x) + x) + x) + x) + x) + x
+        assert syntactic_eq(expr1, expr2) and syntactic_eq(expr2, expr3)
+
+        expr4 = (x + y) + (y + x)
+        expr5 = (y + (x + x)) + y
+        expr6 = y + (x + (y + x))
+        assert syntactic_eq(expr4, expr5) and syntactic_eq(expr5, expr6)
+
+
+def test_arithmetic_5():
+    x, y = defop(int), defop(int)
+
+    with handler(eager_mixed):
+        assert syntactic_eq(Let(x, x() + 3, x() + 1), x() + 4)
+        assert syntactic_eq(Let(x, x() + 3, x() + y() + 1), y() + x() + 4)
+
+        assert syntactic_eq(Let(x, x() + 3, Let(x, x() + 4, x() + y())), x() + y() + 7)
+
+
+def test_defun_1():
+    x, y = defop(int), defop(int)
+
+    with handler(eager_mixed):
+
+        @trace
+        def f1(x: int) -> int:
+            return x + y() + 1
+
+        assert typeof(f1) is collections.abc.Callable
+        assert y in fvsof(f1)
+        assert x not in fvsof(f1)
+
+        assert syntactic_eq(f1(1), y() + 2)
+        assert syntactic_eq(f1(x()), x() + y() + 1)
+
+
+def test_defun_2():
+    with handler(eager_mixed):
+
+        @trace
+        def f1(x: int, y: int) -> int:
+            return x + y
+
+        @trace
+        def f2(x: int, y: int) -> int:
+            @trace
+            def f2_inner(y: int) -> int:
+                return x + y
+
+            return f2_inner(y)
+
+        assert syntactic_eq(f1(1, 2), 3) and syntactic_eq(f2(1, 2), 3)
+
+
+def test_defun_3():
+    with handler(eager_mixed):
+
+        @trace
+        def f2(x: int, y: int) -> int:
+            return x + y
+
+        @trace
+        def app2(f: collections.abc.Callable[[int, int], int], x: int, y: int) -> int:
+            return f(x, y)
+
+        assert syntactic_eq(app2(f2, 1, 2), 3)
+
+
+@pytest.mark.xfail(condition=os.getenv("CI") == "true", reason="Fails on CI")
+def test_defun_4():
+    x = defop(int)
+
+    with handler(eager_mixed):
+
+        @trace
+        def compose(
+            f: collections.abc.Callable[[int], int],
+            g: collections.abc.Callable[[int], int],
+        ) -> collections.abc.Callable[[int], int]:
+            @trace
+            def fg(x: int) -> int:
+                assert callable(f), f"f is not callable: {f}"
+                assert callable(g), f"g is not callable: {g}"
+                return f(g(x))
+
+            return fg
+
+        assert callable(compose), f"compose is not callable: {compose}"
+
+        @trace
+        def add1(x: int) -> int:
+            return x + 1
+
+        assert callable(add1), f"add1 is not callable: {add1}"
+
+        @trace
+        def add1_twice(x: int) -> int:
+            return compose(add1, add1)(x)
+
+        assert callable(add1_twice), f"add1_twice is not callable: {add1_twice}"
+
+        assert syntactic_eq(add1_twice(1), 3) and syntactic_eq(
+            compose(add1, add1)(1), 3
+        )
+        assert syntactic_eq(add1_twice(x()), x() + 2) and syntactic_eq(
+            compose(add1, add1)(x()), x() + 2
+        )
+
+
+def test_defun_5():
+    with pytest.raises(ValueError, match="variadic"):
+        trace(lambda *xs: None)
+
+    with pytest.raises(ValueError, match="variadic"):
+        trace(lambda **ys: None)
+
+    with pytest.raises(ValueError, match="variadic"):
+        trace(lambda y=1, **ys: None)
+
+    with pytest.raises(ValueError, match="variadic"):
+        trace(lambda x, *xs, y=1, **ys: None)
+
+
+def test_evaluate_2():
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+    t = x() + y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 1, y: lambda: 3}):
+        assert evaluate(t) == 4
+
+    t = x() * y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 2, y: lambda: 3}):
+        assert evaluate(t) == 6
+
+    t = x() - y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 2, y: lambda: 3}):
+        assert evaluate(t) == -1
+
+    t = x() ^ y()
+    assert isinstance(t, Term)
+    with handler({x: lambda: 1, y: lambda: 2}):
+        assert evaluate(t) == 3
+
+
+def test_syntactic_eq() -> None:
+    l = defop(list[int])()
+    assert syntactic_eq("test", "test")
+    assert syntactic_eq([1, 2, 3], [1, 2, 3])
+    assert syntactic_eq(set([1, 2, 3]), set([1, 2, 3]))
+    assert syntactic_eq({"a": 1, "b": 2}, {"b": 2, "a": 1})
+    assert syntactic_eq(l, l)
+    assert not syntactic_eq(1, defop(int)())
+    assert not syntactic_eq(defop(int)(), 1)
+    assert not syntactic_eq([], l)
+    assert not syntactic_eq(1, [])
+
+
+def test_arg_positioning():
+    @defop
+    def f(x):
+        raise NotHandled
+
+    assert isinstance(f(0), Term) and isinstance(f(x=0), Term)
+    assert f(0).args == f(x=0).args == (0,)
+    assert f(0).kwargs == f(x=0).kwargs == {}
