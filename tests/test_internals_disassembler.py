@@ -536,7 +536,6 @@ def test_different_comprehension_types(genexpr):
 # ============================================================================
 
 
-@pytest.mark.xfail(reason="Conditional expressions not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
@@ -562,6 +561,18 @@ def test_different_comprehension_types(genexpr):
             (lambda x: (x**3) if not (x < 0 or x > 10) else (x**0.5))(xi)
             for xi in range(-5, 15)
         ),
+    ],
+)
+def test_conditional_expressions_simple_no_comprehension(genexpr):
+    """Test reconstruction of simple conditional expressions isolated from comprehension bodies."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.xfail(reason="Nested conditional expressions not yet fully supported")
+@pytest.mark.parametrize(
+    "genexpr",
+    [
         # nested conditional expressions
         (
             (lambda x: (x + 1) if x < 5 else ((x - 1) if x < 10 else (x * 2)))(xi)
@@ -581,13 +592,12 @@ def test_different_comprehension_types(genexpr):
         ),
     ],
 )
-def test_conditional_expressions_no_comprehension(genexpr):
-    """Test reconstruction of conditional expressions isolated from comprehension bodies."""
+def test_conditional_expressions_nested_no_comprehension(genexpr):
+    """Test reconstruction of nested conditional expressions isolated from comprehension bodies."""
     ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
 
 
-@pytest.mark.xfail(reason="Conditional expressions not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [

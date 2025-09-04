@@ -46,6 +46,13 @@ class DummyIterName(ast.Name):
         super().__init__(id=id, ctx=ctx)
 
 
+class Skipped(ast.Name):
+    """Placeholder for skipped branches in if-expressions."""
+
+    def __init__(self, id: str, ctx=ast.Load()):
+        super().__init__(id=id, ctx=ctx)
+
+
 class Null(ast.Constant):
     """Placeholder for NULL values generated in bytecode."""
 
@@ -100,6 +107,20 @@ class CompLambda(ast.Lambda):
         return res
 
 
+class ReplacePlaceholder(ast.NodeTransformer):
+    def __init__(self, value: ast.expr):
+        self.value = value
+        self._done = False
+        super().__init__()
+
+    def visit(self, node):
+        if isinstance(node, Placeholder) and not self._done:
+            self._done = True
+            return self.value
+        else:
+            return self.generic_visit(node)
+
+
 @dataclass(frozen=True)
 class ReconstructionState:
     """State maintained during AST reconstruction from bytecode.
@@ -131,8 +152,9 @@ class ReconstructionState:
     result: ast.expr = field(default_factory=Placeholder)
 
     loops: dict[int, int] = field(default_factory=collections.Counter)
-    branches: dict[int, int] = field(default_factory=collections.Counter)
     finished: bool = field(default=False)
+
+    branches: dict[int, int] = field(default_factory=collections.Counter)
 
     @property
     def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
@@ -145,6 +167,24 @@ class ReconstructionState:
     def next_instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
         instrs_list = list(self.instructions.values())
         return {i1.offset: i2 for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])}
+
+    @property
+    def is_filter(self) -> bool:
+        """Check if an instruction is a filter clause in a comprehension"""
+        return (
+            self.instruction.opname in BRANCH_OPS
+            and self.next_instructions[self.instruction.offset].opname
+            == "JUMP_BACKWARD"
+            and self.instructions[
+                self.next_instructions[self.instruction.offset].argval
+            ].opname
+            in LOOP_OPS
+        )
+
+    @property
+    def is_branch(self) -> bool:
+        """Check if an instruction is a branch in an if-expression"""
+        return self.instruction.opname in BRANCH_OPS and not self.is_filter
 
 
 # Python version enum for version-specific handling
@@ -225,7 +265,7 @@ def register_handler(
                 new_state.loops[instr.offset] += 1
                 jump = False
         elif instr.opname in BRANCH_OPS:
-            if state.branches[instr.offset] > 0:
+            if state.branches.get(instr.offset, 0):
                 new_state = replace(
                     new_state, instruction=state.next_instructions[instr.offset]
                 )
@@ -234,7 +274,6 @@ def register_handler(
                 new_state = replace(
                     new_state, instruction=state.instructions[instr.argval]
                 )
-                new_state.branches[instr.offset] += 1
                 jump = True
         elif instr.opname in JUMP_OPS:
             new_state = replace(new_state, instruction=state.instructions[instr.argval])
@@ -278,18 +317,53 @@ JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN
 
 def _symbolic_exec(code: types.CodeType) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
-    state = ReconstructionState(
-        code=code,
-        instruction=next(iter(dis.get_instructions(code))),
-        stack=[Null(), Null()]
-        if PythonVersion(sys.version_info.minor) == PythonVersion.PY_312
-        else [Null()],
+    continuations: list[ReconstructionState] = [
+        ReconstructionState(
+            code=code,
+            instruction=next(iter(dis.get_instructions(code))),
+            stack=[Placeholder(), Placeholder()]
+            if PythonVersion(sys.version_info.minor) == PythonVersion.PY_312
+            else [Placeholder()],
+        )
+    ]
+
+    results: list[ast.expr] = []
+
+    while continuations:
+        state = continuations.pop()
+        while not state.finished:
+            if state.is_branch and not state.branches.get(state.instruction.offset, 0):
+                continuations.append(
+                    replace(
+                        state, branches=state.branches | {state.instruction.offset: 1}
+                    )
+                )
+            state = OP_HANDLERS[state.instruction.opname](state, state.instruction)
+        results.append(state.result)
+
+    assert results, "No results from symbolic execution"
+    return functools.reduce(
+        lambda a, b: _MergeBranches(a).visit(b), reversed(results[:-1]), results[-1]
     )
 
-    while not state.finished:
-        state = OP_HANDLERS[state.instruction.opname](state, state.instruction)
 
-    return state.result
+class _MergeBranches(ast.NodeTransformer):
+    def __init__(self, node_with_orelse: ast.expr):
+        self._orelses = {
+            n.body.id: n.orelse
+            for n in ast.walk(node_with_orelse)
+            if isinstance(n, ast.IfExp) and isinstance(n.body, Skipped)
+        }
+        assert self._orelses, "No orelse branches to merge"
+        super().__init__()
+
+    def visit_IfExp(self, node: ast.IfExp):
+        if isinstance(node.orelse, Skipped) and node.orelse.id in self._orelses:
+            return ast.IfExp(
+                test=node.test, body=node.body, orelse=self._orelses[node.orelse.id]
+            )
+        else:
+            return self.generic_visit(node)
 
 
 # ============================================================================
@@ -302,9 +376,9 @@ def handle_return_generator_312(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
-    assert len(state.stack) == 2 and all(isinstance(x, Null) for x in state.stack), (
-        "RETURN_GENERATOR must be the first instruction"
-    )
+    assert len(state.stack) == 2 and all(
+        isinstance(x, Null | Placeholder) for x in state.stack
+    ), "RETURN_GENERATOR must be the first instruction"
     new_result = ast.GeneratorExp(elt=Placeholder(), generators=[])
     return replace(state, stack=[new_result, Null()])
 
@@ -314,7 +388,7 @@ def handle_return_generator(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # RETURN_GENERATOR is the first instruction in generator expressions in Python 3.13+
-    assert len(state.stack) == 1 and isinstance(state.stack[0], Null), (
+    assert len(state.stack) == 1 and isinstance(state.stack[0], Null | Placeholder), (
         "RETURN_GENERATOR must be the first instruction"
     )
     return replace(
@@ -334,11 +408,11 @@ def handle_yield_value(
     assert isinstance(new_result, ast.GeneratorExp), (
         "YIELD_VALUE must be called after RETURN_GENERATOR"
     )
-    assert isinstance(new_result.elt, Placeholder), (
-        "YIELD_VALUE must be called before yielding"
-    )
     assert len(new_result.generators) > 0, "YIELD_VALUE should have generators"
-    new_result.elt = ensure_ast(state.stack[-1])
+    assert any(isinstance(x, Placeholder) for x in ast.walk(new_result.elt))
+    new_result.elt = ReplacePlaceholder(ensure_ast(state.stack[-1])).visit(
+        new_result.elt
+    )
     new_stack = [new_result] + state.stack[1:]
     return replace(state, stack=new_stack, result=new_result)
 
@@ -377,11 +451,11 @@ def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.stack[-instr.argval - 1], ast.ListComp)
-    assert isinstance(state.stack[-instr.argval - 1].elt, Placeholder)
 
     # add the body to the comprehension
     comp: ast.ListComp = copy.deepcopy(state.stack[-instr.argval - 1])
-    comp.elt = state.stack[-1]
+    assert any(isinstance(x, Placeholder) for x in ast.walk(comp.elt))
+    comp.elt = ReplacePlaceholder(state.stack[-1]).visit(comp.elt)
 
     # swap the return value
     new_stack = state.stack[:-1]
@@ -421,11 +495,11 @@ def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.stack[-instr.argval - 1], ast.SetComp)
-    assert isinstance(state.stack[-instr.argval - 1].elt, Placeholder)
 
     # add the body to the comprehension
     comp: ast.SetComp = copy.deepcopy(state.stack[-instr.argval - 1])
-    comp.elt = state.stack[-1]
+    assert any(isinstance(x, Placeholder) for x in ast.walk(comp.elt))
+    comp.elt = ReplacePlaceholder(state.stack[-1]).visit(comp.elt)
 
     # swap the return value
     new_stack = state.stack[:-1]
@@ -471,13 +545,13 @@ def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.stack[-instr.argval - 2], ast.DictComp)
-    assert isinstance(state.stack[-instr.argval - 2].key, Placeholder)
-    assert isinstance(state.stack[-instr.argval - 2].value, Placeholder)
 
     # add the body to the comprehension
     comp: ast.DictComp = copy.deepcopy(state.stack[-instr.argval - 2])
-    comp.key = state.stack[-2]
-    comp.value = state.stack[-1]
+    assert any(isinstance(x, Placeholder) for x in ast.walk(comp.key))
+    assert any(isinstance(x, Placeholder) for x in ast.walk(comp.value))
+    comp.key = ReplacePlaceholder(state.stack[-2]).visit(comp.key)
+    comp.value = ReplacePlaceholder(state.stack[-1]).visit(comp.value)
 
     # swap the return value
     new_stack = state.stack[:-2]
@@ -497,7 +571,8 @@ def handle_return_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     assert isinstance(state.result, Placeholder)
-    new_result = ensure_ast(state.stack[-1])
+    assert len(state.stack) == 2
+    new_result = ReplacePlaceholder(ensure_ast(state.stack[-1])).visit(state.stack[-2])
     new_stack = state.stack[:-1]
     return replace(state, stack=new_stack, result=new_result)
 
@@ -1643,17 +1718,32 @@ def _handle_pop_jump_if(
     # Pops a value from the stack and jumps if the condition is met
     condition = f_condition(ensure_ast(state.stack[-1]))
 
-    for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-        if isinstance(item, CompExp) and isinstance(
-            getattr(item, "elt", getattr(item, "key", None)), Placeholder
-        ):
-            new_result = copy.deepcopy(item)
-            new_result.generators[-1].ifs.append(condition)
-            new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
-            return replace(state, stack=new_stack)
-
-    # Not in a comprehension context - might be boolean logic
-    raise NotImplementedError("Lazy and+or behavior not implemented yet")
+    if state.is_filter:
+        for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
+            if isinstance(item, CompExp) and isinstance(
+                getattr(item, "elt", getattr(item, "key", None)), Placeholder
+            ):
+                new_result = copy.deepcopy(item)
+                new_result.generators[-1].ifs.append(condition)
+                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
+                return replace(state, stack=new_stack)
+        raise TypeError("No comprehension context found for filter condition")
+    else:
+        for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
+            if any(isinstance(x, Placeholder) for x in ast.walk(item)):
+                body: Skipped | Placeholder
+                orelse: Skipped | Placeholder
+                if state.branches.get(instr.offset, 0):
+                    # we don't jump, so we're in the orelse branch
+                    body, orelse = Skipped(id=f".SKIPPED_{instr.offset}"), Placeholder()
+                else:
+                    # we jump, so we're in the body branch
+                    body, orelse = Placeholder(), Skipped(id=f".SKIPPED_{instr.offset}")
+                new_ifexp = ast.IfExp(test=condition, body=body, orelse=orelse)
+                new_result = ReplacePlaceholder(new_ifexp).visit(copy.deepcopy(item))
+                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
+                return replace(state, stack=new_stack)
+        raise TypeError("No placeholder found for conditional expression")
 
 
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_312)
@@ -1865,7 +1955,7 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         "Final return value must not contain statement nodes"
     )
     assert not any(
-        isinstance(x, Placeholder | Null | CompLambda | ConvertedValue)
+        isinstance(x, Placeholder | Skipped | Null | CompLambda | ConvertedValue)
         for x in ast.walk(result)
     ), "Final return value must not contain temporary nodes"
     assert not any(x.arg == ".0" for x in ast.walk(result) if isinstance(x, ast.arg)), (
