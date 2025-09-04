@@ -349,10 +349,12 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
 
 class _MergeBranches(ast.NodeTransformer):
     def __init__(self, node_with_orelse: ast.expr):
-        self._orelses = {
+        self._orelses: dict[str, ast.expr] = {
             n.body.id: n.orelse
             for n in ast.walk(node_with_orelse)
-            if isinstance(n, ast.IfExp) and isinstance(n.body, Skipped)
+            if isinstance(n, ast.IfExp)
+            and isinstance(n.body, Skipped)
+            and not isinstance(n.orelse, Skipped | Placeholder)
         }
         assert self._orelses, "No orelse branches to merge"
         super().__init__()
