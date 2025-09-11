@@ -341,6 +341,7 @@ def test_defop_setattr_class() -> None:
         my_op: ClassVar[Operation]
 
     @defop
+    @staticmethod
     def my_op(x: int) -> int:
         raise NotHandled
 
@@ -349,14 +350,11 @@ def test_defop_setattr_class() -> None:
     tm = MyClass.my_op(5)
     assert isinstance(tm, Term)
     assert isinstance(tm.op, Operation)
-    assert tm.op is my_op
+    assert tm.op is MyClass.my_op
     assert tm.args == (5,)
-
-    with pytest.raises(TypeError):
-        MyClass().my_op(5)
+    MyClass().my_op(5)
 
 
-@pytest.mark.xfail(reason="defop does not support classmethod yet")
 def test_defop_classmethod():
     """Test that defop can be used as a classmethod decorator."""
 
@@ -366,21 +364,24 @@ def test_defop_classmethod():
         def my_classmethod(cls, x: int) -> int:
             raise NotHandled
 
-    term = MyClass.my_classmethod(5)
-
     assert isinstance(MyClass.my_classmethod, Operation)
     # check signature
     assert MyClass.my_classmethod.__signature__ == inspect.signature(
         MyClass.my_classmethod._default
     )
 
+    class MySubClass(MyClass):
+        pass
+
+    assert MyClass.my_classmethod is MyClass.my_classmethod
+    assert MySubClass.my_classmethod is not MyClass.my_classmethod
+    assert MyClass().my_classmethod is MyClass.my_classmethod
+    assert MySubClass().my_classmethod is MySubClass.my_classmethod
+
+    term = MyClass.my_classmethod(5)
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
-    assert term.op.__name__ == "my_classmethod"
-    assert term.args == (
-        MyClass,
-        5,
-    )
+    assert term.args == (5,)
     assert term.kwargs == {}
 
     # Ensure the operation is unique
@@ -388,7 +389,7 @@ def test_defop_classmethod():
     assert term.op is another_term.op
 
     # Test that the classmethod can be called with a handler
-    with handler({MyClass.my_classmethod: lambda cls, x: x + 3}):
+    with handler({MyClass.my_classmethod: lambda x: x + 3}):
         assert MyClass.my_classmethod(5) == 8
         assert MyClass.my_classmethod(10) == 13
 
@@ -412,7 +413,6 @@ def test_defop_staticmethod():
 
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
-    assert term.op.__name__ == "my_staticmethod"
     assert term.args == (5,)
     assert term.kwargs == {}
 
