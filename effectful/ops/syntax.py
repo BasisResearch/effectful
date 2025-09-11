@@ -684,6 +684,15 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
+@defop.register(types.MethodType)
+class _BoundMethodOperation[**P, T](_BaseOperation[P, T]):
+    def __set_name__(self, owner, name):
+        pass
+
+    def __get__(self, instance, owner) -> Operation[P, T]:
+        return self
+
+
 class _ClassMethodOpDescriptor(classmethod):
     def __set_name__(self, owner, name):
         self._attrname = f"_descriptorop_{name}"
