@@ -618,6 +618,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return self.__name__
 
     def __set_name__(self, owner, name):
+        assert not hasattr(self, "_attrname"), "should only be called once"
         self._attrname = f"_descriptorop_{name}"
 
     def __get__(self, instance, owner):
@@ -628,7 +629,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         elif self._attrname in instance.__dict__:
             return instance.__dict__[self._attrname]
         else:
-            instanced_op = defop(types.MethodType(self, instance), name=self._attrname)
+            instanced_op = defop(types.MethodType(self, instance))
             instance.__dict__[self._attrname] = instanced_op
             return instanced_op
 
@@ -681,7 +682,7 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 @defop.register(classmethod)
 class _ClassMethodOperation[**P, S, T](_BaseOperation[Concatenate[type[S], P], T]):
-    def __init__(self, default: classmethod, **kwargs):
+    def __init__(self, default: "classmethod[S, P, T]", **kwargs):  # type: ignore
         super().__init__(default=default.__func__, **kwargs)
         self._descriptor = default
 
@@ -696,7 +697,7 @@ class _ClassMethodOperation[**P, S, T](_BaseOperation[Concatenate[type[S], P], T
 
 
 @defop.register(staticmethod)
-def _[**P, T](t: staticmethod, **kwargs):
+def _[**P, T](t: "staticmethod[P, T]", **kwargs):
     return staticmethod(defop(t.__func__, **kwargs))
 
 

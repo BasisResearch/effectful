@@ -341,11 +341,10 @@ def test_defop_setattr_class() -> None:
         my_op: ClassVar[Operation]
 
     @defop
-    @staticmethod
     def my_op(x: int) -> int:
         raise NotHandled
 
-    MyClass.my_op = my_op
+    MyClass.my_op = staticmethod(my_op)  # type: ignore
 
     tm = MyClass.my_op(5)
     assert isinstance(tm, Term)
