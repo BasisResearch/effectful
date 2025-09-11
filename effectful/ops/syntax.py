@@ -617,6 +617,10 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    @property
+    def __isabstractmethod__(self) -> bool:
+        return getattr(self._default, "__isabstractmethod__", False)
+
     def __set_name__(self, owner, name):
         assert not hasattr(self, "_attrname"), "should only be called once"
         self._attrname = f"_descriptorop_{name}"
@@ -680,20 +684,23 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
-@defop.register(classmethod)
-class _ClassMethodOperation[**P, S, T](_BaseOperation[Concatenate[type[S], P], T]):
-    def __init__(self, default: "classmethod[S, P, T]", **kwargs):  # type: ignore
-        super().__init__(default=default.__func__, **kwargs)
-        self._descriptor = default
+class _ClassMethodOpDescriptor(classmethod):
+    def __set_name__(self, owner, name):
+        self._attrname = f"_descriptorop_{name}"
 
-    def __get__(self, instance: S, owner: type[S] | None = None) -> Operation[P, T]:
+    def __get__(self, instance, owner: type | None = None):
         owner = owner if owner is not None else type(instance)
         try:
             return owner.__dict__[self._attrname]
         except KeyError:
-            bound_op = defop(self._descriptor.__get__(instance, owner))
+            bound_op = defop(super().__get__(instance, owner))
             setattr(owner, self._attrname, bound_op)
             return bound_op
+
+
+@defop.register(classmethod)
+def _[**P, S, T](t: "classmethod[S, P, T]", **kwargs):  # type: ignore
+    return _ClassMethodOpDescriptor(t.__func__)
 
 
 @defop.register(staticmethod)
