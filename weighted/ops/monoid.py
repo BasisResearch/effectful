@@ -187,9 +187,13 @@ def logaddexp(a, b):
 
 
 @defop
-def jax_cartesian_prod(xs, ys):
-    x, y = jnp.meshgrid(xs, ys, indexing="ij")
-    return jnp.stack([x.ravel(), y.ravel()]).T
+def jax_cartesian_prod(x, y):
+    if x.ndim == 1:
+        x = x[:, None]
+    if y.ndim == 1:
+        y = y[:, None]
+    x, y = jnp.repeat(x, y.shape[0], axis=0), jnp.tile(y, (x.shape[0], 1))
+    return jnp.hstack([x, y])
 
 
 def _promote_add(add, a, b):

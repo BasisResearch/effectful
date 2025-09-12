@@ -4,6 +4,7 @@ from effectful.ops.semantics import coproduct
 
 from weighted.handlers.jax import DenseTensorFold
 from weighted.handlers.optimization import (
+    FoldDistributeTerm,
     FoldEliminateDterm,
     FoldFactorization,
     FoldFusion,
@@ -21,6 +22,7 @@ SPLIT_TRANS = FoldSplit()
 PROPAGATE_TRANS = FoldPropagateUnusedStreams()
 FACTORIZE_TRANS = FoldFactorization()
 FUSE_TRANS = FoldFusion()
+DISTRIBUTE_TERM_TRANS = FoldDistributeTerm()
 D_ELIMINATE_TRANS = FoldEliminateDterm()
 
 FOLD_TRANSFORMS = (
@@ -29,12 +31,14 @@ FOLD_TRANSFORMS = (
     PROPAGATE_TRANS,
     FACTORIZE_TRANS,
     FUSE_TRANS,
+    DISTRIBUTE_TERM_TRANS,
     D_ELIMINATE_TRANS,
 )
 
 DEFAULT_TRANS = reduce(
     coproduct,  # type: ignore
     [
+        DISTRIBUTE_TERM_TRANS,
         REORDER_TRANS,
         FACTORIZE_TRANS,
         FUSE_TRANS,

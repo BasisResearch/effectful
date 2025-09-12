@@ -15,6 +15,10 @@ from weighted.handlers.jax import (
     syntactic_eq_jax,
 )
 from weighted.handlers.optimization import FoldPropagateUnusedStreams
+from weighted.handlers.optimization.cartesian_product import (
+    FoldDistributeCartesianProduct,
+    unify_streams,
+)
 from weighted.handlers.optimization.distribution import (
     NormalVerticalFusion,
     SampleAddNormalFusion,
@@ -24,11 +28,12 @@ from weighted.handlers.optimization.distribution import (
     interpretation as simplify_normals_intp,
 )
 from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
+from weighted.handlers.optimization.reorder import FoldDistributeTerm, FoldNoStreams
 from weighted.ops.distribution import log_prob, sample
 from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.jax import reals
 from weighted.ops.monoid import mul
-from weighted.ops.sugar import Max, Sum
+from weighted.ops.sugar import CartesianProd, Max, Prod, Sum
 
 parameterize_base_intp = mark.parametrize(
     "base_intp",
@@ -240,3 +245,100 @@ def test_distributional_equivalence_normal_transforms():
 
     assert allclose(jnp.std(expected_samples), jnp.std(actual_samples), atol=1)
     assert allclose(jnp.mean(expected_samples), jnp.mean(actual_samples), atol=1)
+
+
+def test_cartesian_product_distribution():
+    key = random.PRNGKey(42)
+
+    x_size, i_size = 3, 2
+    i = defop(jax.Array, name="i")
+    x = defop(jax.Array, name="x")
+    i_stream = {i: jnp.arange(i_size)}
+    x_stream = {x: CartesianProd(i_stream, jnp.arange(x_size))}
+
+    arr = random.uniform(key, shape=(x_size, i_size))
+    expr = Sum(x_stream, Prod(i_stream, jax_getitem(arr, (x()[i()], i()))))
+
+    with handler(BaselineFold()):
+        expected = evaluate(expr)
+
+    with handler(FoldDistributeCartesianProduct()), handler(FoldNoStreams()):
+        expr_eval = evaluate(expr)
+        # check if optimization is applied
+        assert str(expr_eval.args[0]) == "Prod"
+
+    # check if the result is the same
+    with handler(DenseTensorFold()):
+        result = evaluate(expr_eval)
+    assert allclose(result, expected)
+
+
+def test_unify_streams():
+    i = defop(jax.Array, name="i")
+    j = defop(jax.Array, name="j")
+    i_stream = jnp.arange(3)
+    j_stream = jax_getitem(jnp.ones((3, 4)), (i(),))
+    expr = Sum({i: i_stream}, i())
+
+    # different sized streams, don't unify
+    expr2 = Sum({i: jnp.arange(4)}, i())
+    assert unify_streams(expr.args[1], expr2.args[1]) is None
+
+    # different key in stream, don't unify
+    expr2 = Sum({j: i_stream}, i())
+    assert unify_streams(expr.args[1], expr2.args[1]) is None
+
+    # same streams, unify
+    expr2 = Sum({i: i_stream}, i())
+    unifier = unify_streams(expr.args[1], expr2.args[1])
+    fresh_i = tuple(expr.args[1].keys())[0]
+    fresh_i2 = tuple(expr2.args[1].keys())[0]
+    assert syntactic_eq(unifier, {fresh_i: fresh_i2})
+
+    # same dependent streams, unify
+    expr = Sum({i: i_stream, j: j_stream}, j())
+    expr2 = Sum({i: i_stream, j: j_stream}, j())
+    unifier = unify_streams(expr.args[1], expr2.args[1])
+    assert unifier is not None
+
+    # dependent streams with different structure, don't unify
+    expr2 = Sum({i: i_stream, j: jax_getitem(jnp.ones((4, 4)), (i(),))}, j())
+    assert unify_streams(expr.args[1], expr2.args[1]) is None
+
+    # different variable names in dependency, don't unify
+    k = defop(jax.Array, name="k")
+    expr2 = Sum({k: jnp.arange(3), j: jax_getitem(jnp.ones((3, 4)), (k(),))}, j())
+    assert unify_streams(expr.args[1], expr2.args[1]) is None
+
+
+def test_fold_distribute_term():
+    i = defop(jax.Array, name="i")
+    j = defop(jax.Array, name="j")
+    k = defop(jax.Array, name="k")
+
+    i_stream = jnp.arange(2)
+    j_stream = jnp.arange(3)
+    k_stream = jax_getitem(jnp.arange(12).reshape((3, 4)), (j(),))
+    streams = {i: i_stream, j: j_stream, k: k_stream}
+
+    a = defop(jax.Array, name="a")
+    b = defop(jax.Array, name="b")
+
+    term1 = jax_getitem(a(), (i(),))
+    term2 = jax_getitem(b(), (i(), k()))
+
+    expr = Sum(streams, term1 * term2)
+    with handler(FoldDistributeTerm()):
+        # Sum({i: i_stream}, term_1 * Sum({j: j_stream, k: k_stream}, term_2))
+        optimized_expr = evaluate(expr)
+
+    # Check if the optimization triggered
+    assert len(optimized_expr.args[1]) == 1
+
+    k1, k2 = random.split(random.PRNGKey(42))
+    arr_intp = {a: deffn(random.normal(k1, (2,))), b: deffn(random.normal(k2, (2, 4)))}
+
+    with handler(BaselineFold()), handler(arr_intp):
+        expected = evaluate(expr)
+        result = evaluate(optimized_expr)
+    assert allclose(result, expected)

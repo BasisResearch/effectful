@@ -2,7 +2,6 @@ from collections.abc import Sized
 from functools import reduce
 
 import effectful.handlers.numbers  # noqa: F401
-import tree
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.numbers import mul
 from effectful.ops.semantics import fvsof, fwd
@@ -10,8 +9,24 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 from scipy.cluster.hierarchy import DisjointSet
 
-from weighted.handlers.optimization.utils import parse_terms, parse_with_op
-from weighted.ops.fold import fold
+import weighted.ops.fold as ops
+from weighted.handlers.optimization.utils import (
+    parse_terms,
+    parse_with_op,
+    partition_streams,
+)
+
+
+class FoldNoStreams(ObjectInterpretation):
+    """Implements the identity
+    fold(R, ∅, body) = 0
+    """
+
+    @implements(ops.fold)
+    def fold(self, monoid, streams, _):
+        if len(streams) == 0:
+            return monoid.zero
+        return fwd()
 
 
 class FoldFusion(ObjectInterpretation):
@@ -22,21 +37,13 @@ class FoldFusion(ObjectInterpretation):
     over the product of their streams, which can be more efficient.
     """
 
-    @implements(fold)
+    @implements(ops.fold)
     def fold(self, monoid, streams, body):
-        # Only proceed if body is a fold operation.
-        if not (isinstance(body, Term) and body.op is fold):
-            return fwd()
-
-        # Extract the inner fold's parameters.
-        inner_monoid, inner_streams, inner_body = body.args
-
-        # Only fuse if both folds use the same monoid.
-        if monoid != inner_monoid:
-            return fwd()
-
-        # Return the fused fold.
-        return fold(monoid, streams | inner_streams, inner_body)
+        match body:
+            case Term(ops.fold, (inner_monoid, inner_streams, inner_body)):
+                if monoid == inner_monoid:
+                    return ops.fold(monoid, streams | inner_streams, inner_body)
+        return fwd()
 
 
 class FoldSplit(ObjectInterpretation):
@@ -47,18 +54,49 @@ class FoldSplit(ObjectInterpretation):
     allows for individual terms to be further optimized.
     """
 
-    @implements(fold)
+    @implements(ops.fold)
     def fold(self, monoid, streams, body):
-        # Only proceed if body is a monoid addition.
-        if not (isinstance(body, Term) and body.op is monoid.add):
+        match body:
+            case Term(monoid.add, _):
+                add_terms = parse_with_op(body, monoid.add)
+                new_terms = (ops.fold(monoid, streams, t) for t in add_terms)
+                return reduce(monoid, new_terms, monoid.zero)
+        return fwd()
+
+
+class FoldDistributeTerm(ObjectInterpretation):
+    """Implements the identity
+        fold(⊕, S1 × S2, b1 ⊗ b2) = fold(⊕, S1, b1 ⊗ fold(⊕, S2, b2))
+            where fvsof(S2) ∩ fvsof(b1) = ∅
+
+    Note: this in more general than FoldReorderReduction in that it
+     supports free/unevaluated streams as well as dependent streams,
+     but will give worse orderings (unless the einsum is hierarchical,
+     which is relevant for lifting).
+    """
+
+    @implements(ops.fold)
+    def fold(self, monoid, streams, body):
+        mul, terms = parse_terms(body, monoid)
+        if len(terms) < 2 or len(streams) < 2:
             return fwd()
 
-        # Create separate D terms for each addend.
-        add_terms = parse_with_op(body, monoid.add)
-        new_terms = (fold(monoid, streams, t) for t in add_terms)
+        stream_vars = set(streams.keys())
+        stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
+        independent_streams = stream_vars - stream_fvs
+        if not independent_streams:
+            return fwd()
 
-        # Apply fold to the new body.
-        return reduce(monoid, new_terms, monoid.zero)
+        for i, term in enumerate(terms):
+            free_streams = independent_streams - fvsof(term)
+            if len(free_streams):
+                unused_streams, used_streams = partition_streams(streams, free_streams)
+                other_terms = (t for j, t in enumerate(terms) if j != i)
+                inner_body = reduce(mul, other_terms)
+                inner_fold = ops.fold(monoid, unused_streams, inner_body)
+                return ops.fold(monoid, used_streams, mul(term, inner_fold))
+
+        return fwd()
 
 
 class FoldPropagateUnusedStreams(ObjectInterpretation):
@@ -72,7 +110,7 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
     streams are never eliminated.
     """
 
-    @implements(fold)
+    @implements(ops.fold)
     def fold(self, monoid, streams, body):
         # A stream is redundant if it doesn't appear in the body or in another stream.
         stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
@@ -97,34 +135,33 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
             constant = 1
 
         used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
-        new_fold = fold(monoid, used_streams, body)
+        new_fold = ops.fold(monoid, used_streams, body)
         return monoid.scalar_mul()(new_fold, constant)
 
 
 class FoldReorderReduction(ObjectInterpretation):
     """
     Performs smarter reduction/multiplication ordering.
-    Also known as pushing aggregates past joins (in probabilistic inference)
+    Also known as variable elimination (in probabilistic inference)
     or contraction ordering (in tensor networks).
     """
 
-    @implements(fold)
+    @implements(ops.fold)
     def fold(self, monoid, streams, body):
         mul, terms = parse_terms(body, monoid)
 
-        # only proceed if the body multiplies multiple tensors
-        if len(terms) < 2 or not all(is_eager_array(t) for t in terms):
+        # Only proceed when folding over multiple streams & tensors
+        if len(terms) < 2 or len(streams) < 2:
+            return fwd()
+        if any(not is_eager_array(t) for t in terms):
             return fwd()
 
-        term_vars = set.union(*[fvsof(t.args[1]) for t in terms])
+        term_vars = set.union(*map(fvsof, terms))
         out_vars = term_vars - set(streams.keys())
         # todo: support dependent streams
         var_sizes = {str(k): len(v) for k, v in streams.items()}
         in_vars = [fvsof(term.args[1]) for term in terms]
         fold_path = _order_variables(var_sizes, in_vars, out_vars)
-
-        if len(fold_path) == 0:
-            return fwd()  # no actual folding happening
 
         for fold_positions in fold_path:
             fold_terms = [terms[i] for i in fold_positions]
@@ -135,10 +172,9 @@ class FoldReorderReduction(ObjectInterpretation):
             in_vars = [x for i, x in enumerate(in_vars) if i not in fold_positions]
             in_vars.append(set(fold_out_vars))
 
-            new_fold = reduce(mul, fold_terms)
+            new_body = reduce(mul, fold_terms)
             current_streams = {v: streams[v] for v in eliminated_vars}
-            if len(current_streams) > 0:
-                new_fold = fold(monoid, current_streams, new_fold)
+            new_fold = ops.fold(monoid, current_streams, new_body)
             terms.append(new_fold)
 
         assert len(terms) == 1
@@ -197,28 +233,22 @@ class FoldFactorization(ObjectInterpretation):
     """
 
     @staticmethod
-    def _separate_factors(factors, xs) -> list[set]:
-        var_sets = DisjointSet(xs)
+    def _separate_factors(factors, vs) -> list[set]:
+        var_sets = DisjointSet(vs)
         for factor in factors:
-            factor_vars = tuple(fvsof(factor) & xs)
+            factor_vars = tuple(fvsof(factor) & vs)
             for v in factor_vars[1:]:
                 var_sets.merge(factor_vars[0], v)
         return var_sets.subsets()
 
-    @implements(fold)
+    @implements(ops.fold)
     def fold(self, monoid, streams, body):
-        if not isinstance(body, Term):
-            return fwd()
-
+        stream_vars = fvsof(streams.keys())
         # We assume all streams are used
-        if len(set(streams.keys()) - fvsof(body)) > 0:
+        if len(stream_vars - fvsof(body)) > 0:
             return fwd()
 
         mul, terms = parse_terms(body, monoid)
-        if len(terms) < 2:
-            return fwd()
-
-        stream_vars = set(tree.flatten(streams.keys()))
         partitions = self._separate_factors(terms, stream_vars)
 
         if len(partitions) < 2:
@@ -227,8 +257,8 @@ class FoldFactorization(ObjectInterpretation):
         new_folds = []
         for partition in partitions:
             partition_streams = {k: v for k, v in streams.items() if k in partition}
-            partition_terms = [t for t in terms if len(fvsof(t) & partition) > 0]
+            partition_terms = (t for t in terms if len(fvsof(t) & partition) > 0)
             partition_term = reduce(mul, partition_terms)
-            new_folds.append(fold(monoid, partition_streams, partition_term))
+            new_folds.append(ops.fold(monoid, partition_streams, partition_term))
 
         return reduce(mul, new_folds)

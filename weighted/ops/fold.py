@@ -44,12 +44,16 @@ def _body_value(body: Body, intp: Interpretation) -> Body:
         return evaluate(body, intp=intp)
 
 
-def order_streams[T](streams: Streams[T]) -> list[Operation[[], T]]:
+def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
     """Determine an order to evaluate the streams based on their dependencies"""
     stream_vars = set(streams.keys())
-    topo = TopologicalSorter({k: fvsof(v) & stream_vars for k, v in streams.items()})
-    loop_order = list(topo.static_order())
-    return loop_order
+    dependencies = {k: fvsof(v) & stream_vars for k, v in streams.items()}
+    topo = TopologicalSorter(dependencies)
+    topo.prepare()
+    while topo.is_active():
+        node_group = topo.get_ready()
+        yield from sorted(node_group, key=str)
+        topo.done(*node_group)
 
 
 class BaselineFold(ObjectInterpretation):
@@ -67,7 +71,7 @@ class BaselineFold(ObjectInterpretation):
             else:
                 yield {}
 
-        loop_order = order_streams(streams)
+        loop_order = list(order_streams(streams))
         values = (_body_value(body, intp) for intp in generator(loop_order))
         result = functools.reduce(monoid.add, values)  # type: ignore
         return result
