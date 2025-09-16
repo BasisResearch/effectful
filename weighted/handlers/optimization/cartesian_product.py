@@ -2,7 +2,6 @@ import itertools
 from functools import reduce
 
 import jax
-import numpy as np
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import evaluate, fvsof, fwd
@@ -117,8 +116,8 @@ class SplitCartesianProductFold(ObjectInterpretation):
                         continue  # cartesian streams need to be ground
 
                     cart_vals = tuple(itertools.product(*cart_streams.values()))
-                    fresh_vars = np.array(tuple(defop(stream_var)() for _ in cart_vals))
-                    stream_intp = {stream_var: deffn(fresh_vars)}
+                    fresh_vars = [defop(stream_var)() for _ in cart_vals]
+                    stream_intp = {stream_var: deffn(jnp.stack(fresh_vars))}
                     body = evaluate(body, intp=stream_intp)
                     new_streams = {
                         v.op: evaluate(plate_body, intp=stream_intp)

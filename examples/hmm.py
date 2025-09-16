@@ -1,4 +1,5 @@
 import argparse
+import time
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax
@@ -8,8 +9,11 @@ from jax import random
 from jax.numpy.linalg import norm
 
 from weighted.handlers.jax import DenseTensorFold
-from weighted.handlers.optimization import FoldReorderReduction
+from weighted.handlers.optimization import FoldDistributeTerm
+from weighted.handlers.optimization.cartesian_product import SplitCartesianProductFold
+from weighted.handlers.optimization.jax import StackIndex
 from weighted.ops.fold import BaselineFold
+from weighted.ops.monoid import mul
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 
@@ -39,11 +43,12 @@ def construct_hmm():
     initial_state = defop(jax.Array, name="initial")()
     observation = defop(jax.Array, name="observation")()
 
-    hmm_factor = (
-        initial_state[z[0]]
-        * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
-        * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
-    )
+    with handler(BaselineFold()):  # immediately unroll factors
+        hmm_factor = (
+            initial_state[z[0]]
+            * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
+            * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
+        )
 
     hmm = Sum(z_stream | x_stream, hmm_factor)
 
@@ -73,19 +78,22 @@ def create_hmm_params(transition_op, emission_op, initial_state_op, observation_
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--latent_size", type=int, default=4)
+    parser.add_argument("--latent_size", type=int, default=2)
     parser.add_argument("--emission_size", type=int, default=3)
-    parser.add_argument("--nb_time_steps", type=int, default=2)
+    parser.add_argument("--nb_time_steps", type=int, default=4)
     args = parser.parse_args()
 
-    # first, we construct an abstract HMM
-    with handler(BaselineFold()):
+    # first, we construct an abstract HMM, unroll it...
+    with handler(SplitCartesianProductFold()), handler({mul: jnp.multiply}):
         model, param_ops = construct_hmm()
+    # ... and optimize the fold ordering
+    with handler(FoldDistributeTerm()), handler(StackIndex()):
+        model = evaluate(model)
 
-    # next, we create arrays for the open HMM params
+    # finally, we create arrays for the open HMM params
     param_intp = create_hmm_params(*param_ops)
-
-    # finally, we do inference :)
-    with handler(param_intp), handler(DenseTensorFold()), handler(FoldReorderReduction()):
+    # .. and perform inference by computing the fold
+    t1 = time.perf_counter()
+    with handler(param_intp), handler(DenseTensorFold()):
         result = evaluate(model)
-    print(result)
+    print(result, f"(done in {time.perf_counter() - t1:.2f}s)")

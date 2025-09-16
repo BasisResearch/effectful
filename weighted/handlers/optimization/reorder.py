@@ -87,14 +87,20 @@ class FoldDistributeTerm(ObjectInterpretation):
         if not independent_streams:
             return fwd()
 
-        for i, term in enumerate(terms):
+        for term in terms:
             free_streams = independent_streams - fvsof(term)
             if len(free_streams):
                 unused_streams, used_streams = partition_streams(streams, free_streams)
-                other_terms = (t for j, t in enumerate(terms) if j != i)
-                inner_body = reduce(mul, other_terms)
+                t_free_fvs = [len(fvsof(t) & free_streams) > 0 for t in terms]
+
+                inner_terms = [t for t, b in zip(terms, t_free_fvs, strict=False) if b]
+                outer_terms = [
+                    t for t, b in zip(terms, t_free_fvs, strict=False) if not b
+                ]
+                inner_body = reduce(mul, inner_terms)
                 inner_fold = ops.fold(monoid, unused_streams, inner_body)
-                return ops.fold(monoid, used_streams, mul(term, inner_fold))
+                outer_term = reduce(mul, outer_terms)
+                return ops.fold(monoid, used_streams, mul(outer_term, inner_fold))
 
         return fwd()
 

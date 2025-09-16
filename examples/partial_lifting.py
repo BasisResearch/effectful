@@ -1,13 +1,14 @@
 import jax
 from effectful.handlers.jax import numpy as jnp
-from effectful.ops.semantics import evaluate, handler
+from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from jax import random
 
+from weighted.handlers.jax import DenseTensorFold
 from weighted.handlers.optimization.cartesian_product import (
     FoldDistributeCartesianProduct,
+    SplitCartesianProductFold,
 )
-from weighted.ops.fold import BaselineFold
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 """
@@ -48,12 +49,13 @@ def main():
     F_arr = random.uniform(key, shape=(x_size, y_size))
 
     # try lifting
-    with handler(FoldDistributeCartesianProduct()):
+    fold_opt = coproduct(SplitCartesianProductFold(), FoldDistributeCartesianProduct())
+    with handler(fold_opt):
         model = Sum(x_stream | y_stream, Prod(j_stream, Prod(i_stream, f[x[i], y[j]])))
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f.op: deffn(F_arr)}
-    with handler(factor_intp), handler(BaselineFold()):
+    with handler(factor_intp), handler(DenseTensorFold()):
         contraction = evaluate(model)
     print("result:", contraction)
 
