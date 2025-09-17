@@ -116,7 +116,6 @@ def test_canonicalize_1():
     assert canonicalize(GenericClass[int]) == GenericClass[int]
 
 
-
 @pytest.mark.parametrize(
     "typ,subs,expected",
     [
@@ -1650,12 +1649,3 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
         ),
         collections.abc.Mapping,
     )
-
-
-class Foo[T]:
-    def __init__(self, a: T):
-        self.a = a
-
-def test_nested():
-    print(type(Foo))
-    print(canonicalize(Foo[float]))
