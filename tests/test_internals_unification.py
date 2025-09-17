@@ -110,6 +110,11 @@ def test_canonicalize_1():
         dict[frozenset[int], frozenset[int]]
     )
 
+    class GenericClass[T]:
+        pass
+
+    assert canonicalize(GenericClass[int]) == GenericClass[int]
+
 
 @pytest.mark.parametrize(
     "typ,subs,expected",
