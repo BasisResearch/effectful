@@ -1161,11 +1161,23 @@ def _(x: collections.abc.Mapping, other) -> bool:
 
 @syntactic_eq.register
 def _(x: collections.abc.Sequence, other) -> bool:
-    return (
-        isinstance(other, collections.abc.Sequence)
-        and len(x) == len(other)
-        and all(syntactic_eq(a, b) for a, b in zip(x, other))
-    )
+    if (
+        isinstance(x, tuple)
+        and hasattr(x, "_fields")
+        and all(hasattr(x, f) for f in x._fields)
+    ):
+        return (
+            isinstance(other, tuple)
+            and hasattr(other, "_fields")
+            and x._fields == other._fields
+            and all(syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields)
+        )
+    else:
+        return (
+            isinstance(other, collections.abc.Sequence)
+            and len(x) == len(other)
+            and all(syntactic_eq(a, b) for a, b in zip(x, other))
+        )
 
 
 @syntactic_eq.register(object)

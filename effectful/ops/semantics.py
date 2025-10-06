@@ -255,7 +255,9 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             and hasattr(expr, "_fields")
             and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
         ):  # namedtuple
-            return type(expr)._make(evaluate(item) for item in expr)  # type: ignore
+            return type(expr)(
+                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+            )
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.Set):
