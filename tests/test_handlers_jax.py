@@ -375,6 +375,14 @@ def test_array_eq():
     assert syntactic_eq(x + y, x + y)
 
 
+def test_jax_rotation():
+    import jax.scipy.spatial.transform
+
+    x = jax.scipy.spatial.transform.Rotation.from_rotvec(jnp.array([1, 2, 3]))
+    y = evaluate(x)
+    assert syntactic_eq(x, y)
+
+
 def test_arrayterm_all():
     """Test .all() method on _ArrayTerm."""
     i = defop(jax.Array, name="i")
