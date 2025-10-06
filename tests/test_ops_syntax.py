@@ -594,6 +594,31 @@ def test_eval_dataclass() -> None:
     )
 
 
+def test_eval_namedtuple() -> None:
+    Point = collections.namedtuple("Point", ["x", "y"])
+    Line = collections.namedtuple("Line", ["start", "end"])
+    Lines = collections.namedtuple("Lines", ["origin", "lines"])
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    p1 = Point(x(), y())
+    p2 = Point(x() + 1, y() + 1)
+    line = Line(p1, p2)
+    lines = Lines(p1, [line])
+
+    assert {x, y} <= fvsof(lines)
+
+    assert p1 == lines.origin
+
+    with handler({x: lambda: 3, y: lambda: 4}):
+        evaluated_lines = evaluate(lines)
+
+    assert isinstance(evaluated_lines, Lines)
+    assert evaluated_lines == Lines(
+        origin=Point(3, 4),
+        lines=[Line(Point(3, 4), Point(4, 5))],
+    )
+
+
 def test_lambda_calculus_1():
     x, y = defop(int), defop(int)
 

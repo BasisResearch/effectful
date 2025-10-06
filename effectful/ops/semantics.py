@@ -250,6 +250,12 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
             return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
+        elif (
+            isinstance(expr, tuple)
+            and hasattr(expr, "_fields")
+            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+        ):  # namedtuple
+            return type(expr)._make(evaluate(item) for item in expr)  # type: ignore
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.Set):
