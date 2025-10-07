@@ -1166,11 +1166,8 @@ def _(x: collections.abc.Sequence, other) -> bool:
         and hasattr(x, "_fields")
         and all(hasattr(x, f) for f in x._fields)
     ):
-        return (
-            isinstance(other, tuple)
-            and hasattr(other, "_fields")
-            and x._fields == other._fields
-            and all(syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields)
+        return type(other) == type(x) and all(
+            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields
         )
     else:
         return (
