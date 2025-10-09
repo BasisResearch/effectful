@@ -174,7 +174,8 @@ class OpenAIAPIProvider(ObjectInterpretation):
             template.__prompt_template__, **bound_args.arguments
         )
 
-        tools = _tools_of_operations(get_interpretation())
+        tools = _tools_of_operations(template.tools)
+        tool_definitions = [t.function_definition for t in tools.values()]
 
         # Note: The OpenAI api only seems to accept images in the 'user' role.
         # The effect of different roles on the model's response is currently
@@ -187,7 +188,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
             response = self._client.responses.create(
                 model=self._model_name,
                 input=model_input,
-                tools=tools,
+                tools=tool_definitions,
                 tool_choice="auto",
             )
 
@@ -215,7 +216,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
             if not new_input:
                 break
 
-            model_input += new_input
+            model_input += response.output + new_input
 
         last_resp = response.output[-1]
         assert last_resp.type == "message"
