@@ -15,12 +15,14 @@ class Template[**P, T]:
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         raise NotImplementedError
 
-    @staticmethod
-    def define(body: Callable[P, T]) -> "Template[P, T]":
+    @classmethod
+    def define(cls, body: Callable[P, T]) -> "Template[P, T]":
         if not body.__doc__:
             raise ValueError("Expected a docstring on body")
 
-        return Template(inspect.signature(body), body.__doc__)
+        return cls(
+            __signature__=inspect.signature(body), __prompt_template__=body.__doc__
+        )
 
 
 class DecodeError(RuntimeError):
