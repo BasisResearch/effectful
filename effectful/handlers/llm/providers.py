@@ -1,0 +1,103 @@
+import base64
+import io
+import string
+
+try:
+    import openai
+except ImportError:
+    raise ImportError("'openai' is required to use effectful.handlers.providers")
+
+try:
+    from PIL import Image
+except ImportError:
+    raise ImportError("'pillow' is required to use effectful.handlers.providers")
+
+
+from effectful.handlers.llm import Template
+from effectful.handlers.llm.structure import decode
+from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
+    buf = io.BytesIO()
+    pil_image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
+    return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
+
+
+class _OpenAIPromptFormatter(string.Formatter):
+    def format_as_messages(
+        self, format_str: str, /, *args, **kwargs
+    ) -> openai.types.responses.ResponseInputMessageContentListParam:
+        prompt_parts = []
+        current_text = ""
+
+        def push_current_text():
+            nonlocal current_text
+            if current_text:
+                prompt_parts.append({"type": "input_text", "text": current_text})
+            current_text = ""
+
+        for literal, field_name, format_spec, conversion in self.parse(format_str):
+            current_text += literal
+
+            if field_name is not None:
+                obj, _ = self.get_field(field_name, args, kwargs)
+                obj = self.convert_field(obj, conversion)
+
+                if isinstance(obj, Image.Image):
+                    assert not format_spec, (
+                        "image template parameters cannot have format specifiers"
+                    )
+                    push_current_text()
+                    prompt_parts.append(
+                        {
+                            "type": "input_image",
+                            "image_url": _pil_image_to_base64_data_uri(obj),
+                        }
+                    )
+                else:
+                    current_text += self.format_field(
+                        obj, format_spec if format_spec else ""
+                    )
+
+        push_current_text()
+        return prompt_parts
+
+
+class OpenAIAPIProvider(ObjectInterpretation):
+    """Implements templates using the OpenAI API."""
+
+    def __init__(self, client: openai.OpenAI, model_name: str = "gpt-4o"):
+        self._client = client
+        self._model_name = model_name
+
+    @implements(Template.__call__)
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        prompt = _OpenAIPromptFormatter().format_as_messages(
+            template.__prompt_template__, **bound_args.arguments
+        )
+
+        # TODO: Support structured outputs https://platform.openai.com/docs/guides/structured-outputs
+
+        # Note: The OpenAI api only seems to accept images in the 'user' role.
+        # The effect of different roles on the model's response is currently
+        # unclear.
+        response = self._client.responses.create(
+            model=self._model_name, input=[{"content": prompt, "role": "user"}]
+        )
+
+        first_response = response.output[0]
+        assert first_response.type == "message"
+        first_response_content = first_response.content[0]
+        assert first_response_content.type == "output_text"
+
+        ret_type = template.__signature__.return_annotation
+        return decode(ret_type, first_response_content.text)
