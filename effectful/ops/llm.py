@@ -10,21 +10,17 @@ from effectful.ops.syntax import defop
 class Template[**P, T]:
     __signature__: inspect.Signature
     __prompt_template__: str
-    __name__: str
 
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         raise NotImplementedError
 
+    @staticmethod
+    def define(body: Callable[P, T]) -> "Template[P, T]":
+        if not body.__doc__:
+            raise ValueError("Expected a docstring on body")
 
-def template[**P, T](body: Callable[P, T]) -> Callable[P, T]:
-    """A prompt template intended to be filled in by an LLM."""
-    return typing.cast(
-        Callable[P, T],
-        Template(
-            inspect.signature(body), body.__doc__ if body.__doc__ else "", body.__name__
-        ),
-    )
+        return Template(inspect.signature(body), body.__doc__)
 
 
 class DecodeError(RuntimeError):
