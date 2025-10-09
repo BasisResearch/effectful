@@ -1,8 +1,15 @@
 import os
 import string
 
-import openai
-from PIL import Image
+try:
+    import openai
+except ImportError:
+    raise ImportError("'openai' is required to use effectful.handlers.openai")
+
+try:
+    from PIL import Image
+except ImportError:
+    raise ImportError("'pillow' is required to use effectful.handlers.openai")
 
 from effectful.handlers.llm.utils import _pil_image_to_base64_data_uri
 from effectful.ops.llm import Template, decode

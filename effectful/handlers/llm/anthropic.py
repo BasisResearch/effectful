@@ -1,8 +1,16 @@
 import os
 import string
 
-import anthropic
-from PIL import Image
+try:
+    import anthropic
+except ImportError:
+    raise ImportError("'anthropic' is required to use effectful.handlers.anthropic")
+
+try:
+    from PIL import Image
+except ImportError:
+    raise ImportError("'pillow' is required to use effectful.handlers.anthropic")
+
 
 from effectful.handlers.llm.utils import _pil_image_to_base64_data
 from effectful.ops.llm import Template, decode
