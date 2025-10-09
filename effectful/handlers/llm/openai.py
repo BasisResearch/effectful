@@ -1,3 +1,5 @@
+import base64
+import io
 import os
 import string
 
@@ -12,7 +14,6 @@ except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.openai")
 
 
-from effectful.handlers.llm.utils import _pil_image_to_base64_data_uri
 from effectful.ops.llm import Template, decode
 from effectful.ops.syntax import ObjectInterpretation, implements
 
