@@ -5,12 +5,12 @@ import string
 try:
     import openai
 except ImportError:
-    raise ImportError("'openai' is required to use effectful.handlers.openai")
+    raise ImportError("'openai' is required to use effectful.handlers.providers")
 
 try:
     from PIL import Image
 except ImportError:
-    raise ImportError("'pillow' is required to use effectful.handlers.openai")
+    raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
 
 from effectful.handlers.llm import Template, decode

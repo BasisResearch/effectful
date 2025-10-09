@@ -40,7 +40,7 @@ torch = ["torch", "dm-tree"]
 pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
 jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
-openai = ["openai", "pillow"]
+llm = ["openai", "pillow"]
 docs = [
     "effectful[torch,pyro,jax,numpyro]",
     "sphinx",
@@ -64,7 +64,7 @@ test = [
 ]
 
 [dependency-groups]
-dev = ["effectful[torch,pyro,jax,numpyro,openai,docs,test]"]
+dev = ["effectful[torch,pyro,jax,numpyro,llm,docs,test]"]
 
 [tool.ruff]
 target-version = "py312"
