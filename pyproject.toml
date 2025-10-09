@@ -10,23 +10,23 @@ readme = "README.rst"
 license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
 authors = [
-  { name = "Basis" },
+    { name = "Basis" },
 ]
 keywords = [
-  "machine learning",
-  "statistics",
-  "probabilistic programming",
-  "bayesian modeling",
-  "pytorch",
+    "machine learning",
+    "statistics",
+    "probabilistic programming",
+    "bayesian modeling",
+    "pytorch",
 ]
 classifiers = [
-  "Intended Audience :: Developers",
-  "Intended Audience :: Education",
-  "Intended Audience :: Science/Research",
-  "Operating System :: POSIX :: Linux",
-  "Operating System :: MacOS :: MacOS X",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = []
 
@@ -46,25 +46,25 @@ llm = [
   "pydantic",
 ]
 docs = [
-  "effectful[torch,pyro,jax,numpyro]",
-  "sphinx",
-  "sphinxcontrib-bibtex",
-  "sphinx_rtd_theme",
-  "myst-parser",
-  "nbsphinx",
-  "sphinx_autodoc_typehints",
-  "pypandoc_binary",
+    "effectful[torch,pyro,jax,numpyro]",
+    "sphinx",
+    "sphinxcontrib-bibtex",
+    "sphinx_rtd_theme",
+    "myst-parser",
+    "nbsphinx",
+    "sphinx_autodoc_typehints",
+    "pypandoc_binary",
 ]
 test = [
-  "effectful[torch,pyro,jax,numpyro,docs]",
-  "pytest",
-  "pytest-cov",
-  "pytest-xdist",
-  "pytest-benchmark",
-  "mypy",
-  "ruff",
-  "nbval",
-  "nbqa",
+    "effectful[torch,pyro,jax,numpyro,docs]",
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-benchmark",
+    "mypy",
+    "ruff",
+    "nbval",
+    "nbqa",
 ]
 
 [dependency-groups]
