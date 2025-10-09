@@ -1,8 +1,7 @@
 import dataclasses
 import inspect
 import typing
-from collections.abc import Callable
-from typing import Iterable
+from collections.abc import Callable, Iterable
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
