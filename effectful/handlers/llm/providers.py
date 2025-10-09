@@ -21,7 +21,8 @@ except ImportError:
 
 from openai.types.responses import FunctionToolParam
 
-from effectful.handlers.llm import Template, decode
+from effectful.handlers.llm import Template
+from effectful.handlers.llm.structure import decode
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
