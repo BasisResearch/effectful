@@ -14,7 +14,7 @@ except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.openai")
 
 
-from effectful.ops.llm import Template, decode
+from effectful.handlers.llm import Template, decode
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 

@@ -5,7 +5,7 @@ import re
 import textwrap
 import typing
 
-from effectful.ops.llm import Template, decode
+from effectful.handlers.llm import Template, decode
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
