@@ -2,12 +2,12 @@ import base64
 import dataclasses
 import inspect
 import io
-import json
 import string
-from typing import Any, Callable, Iterable, Mapping, Sequence, get_type_hints
+from collections.abc import Iterable, Mapping
+from typing import Any, get_type_hints
 
 import pydantic
-from pydantic import TypeAdapter, create_model
+from pydantic import create_model
 
 try:
     import openai
@@ -19,10 +19,7 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from openai.types.chat.chat_completion import ChatCompletionMessage
 from openai.types.responses import FunctionToolParam
-from openai.types.shared.function_definition import FunctionDefinition
-from openai.types.shared.function_parameters import FunctionParameters
 
 from effectful.handlers.llm import Template, decode
 from effectful.internals.runtime import get_interpretation
@@ -139,7 +136,7 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
-@defop
+@defop  # type: ignore
 def tool_call[**P, T](
     template: Template, tool: Operation[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> T:
@@ -148,23 +145,16 @@ def tool_call[**P, T](
 
 
 def _call_tool_with_json_args(
-    template: Template, tool: Tool, call_id: str, json_str_args: str
+    template: Template, tool: Tool, json_str_args: str
 ) -> dict:
-    def _function_call_output(output):
-        return {
-            "type": "function_call_output",
-            "call_id": call_id,
-            "output": str(output),
-        }
-
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result: Any = tool_call(
-            template, tool, **args.model_dump(exclude_defaults=True)
+            template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
-        return _function_call_output({"status": "success", "result": str(result)})
+        return {"status": "success", "result": str(result)}
     except Exception as exn:
-        return _function_call_output({"status": "failure", "exception": str(exn)})
+        return {"status": "failure", "exception": str(exn)}
 
 
 class OpenAIAPIProvider(ObjectInterpretation):
@@ -184,7 +174,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
             template.__prompt_template__, **bound_args.arguments
         )
 
-        tools, tool_names = _tools_of_operations(get_interpretation())
+        tools = _tools_of_operations(get_interpretation())
 
         # Note: The OpenAI api only seems to accept images in the 'user' role.
         # The effect of different roles on the model's response is currently
@@ -201,6 +191,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
                 tool_choice="auto",
             )
 
+            new_input = []
             for message in response.output:
                 if message.type != "function_call":
                     continue
@@ -210,20 +201,26 @@ class OpenAIAPIProvider(ObjectInterpretation):
                     continue
                 called_tools.add(call_id)
 
-                name = message.name
-                tool_result = None
-                try:
-                    args = json.loads(message.arguments)
-                except json.JSONDecodeError as exn:
-                    tool_result = exn
+                tool = tools[message.name]
+                tool_result = _call_tool_with_json_args(
+                    template, tool, message.arguments
+                )
+                tool_response = {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": str(tool_result),
+                }
+                new_input.append(tool_response)
 
-                if tool_result is None:
-                    tool_names[name]()
+            if not new_input:
+                break
 
-        first_response = response.output[0]
-        assert first_response.type == "message"
-        first_response_content = first_response.content[0]
-        assert first_response_content.type == "output_text"
+            model_input += new_input
+
+        last_resp = response.output[-1]
+        assert last_resp.type == "message"
+        last_resp_content = last_resp.content[0]
+        assert last_resp_content.type == "output_text"
 
         ret_type = template.__signature__.return_annotation
-        return decode(ret_type, first_response_content.text)
+        return decode(ret_type, last_resp_content.text)
