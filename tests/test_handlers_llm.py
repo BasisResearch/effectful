@@ -2,7 +2,8 @@ from collections.abc import Callable
 
 import pytest
 
-from effectful.handlers.llm import DecodeError, Template, decode
+from effectful.handlers.llm import Template
+from effectful.handlers.llm.structure import DecodeError, decode
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements

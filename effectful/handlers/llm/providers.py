@@ -13,7 +13,8 @@ except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
 
-from effectful.handlers.llm import Template, decode
+from effectful.handlers.llm import Template
+from effectful.handlers.llm.structure import decode
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
