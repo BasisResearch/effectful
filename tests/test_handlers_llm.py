@@ -2,9 +2,8 @@ from collections.abc import Callable
 
 import pytest
 
-from effectful.handlers.llm.cache import TemplateCache
+from effectful.handlers.llm import DecodeError, Template, decode
 from effectful.handlers.llm.synthesis import ProgramSynthesis
-from effectful.ops.llm import DecodeError, Template, decode
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -147,31 +146,3 @@ def test_decode_primitives():
 
     with pytest.raises(DecodeError):
         decode(bool, "maybe")
-
-
-def test_template_cache():
-    """Test that TemplateCache caches template results."""
-
-    class CountingMockProvider(ObjectInterpretation):
-        call_count = 0
-
-        @implements(Template.__call__)
-        def _call(self, template, *args, **kwargs):
-            self.call_count += 1
-            return f"response_{self.call_count}"
-
-    # Without cache - should call provider twice
-    counting_mock = CountingMockProvider()
-    with handler(counting_mock):
-        result1 = limerick("test")
-        result2 = limerick("test")
-        assert counting_mock.call_count == 2
-        assert result1 != result2  # Different responses
-
-    # With cache - should only call provider once
-    counting_mock = CountingMockProvider()
-    with handler(counting_mock), handler(TemplateCache()):
-        result1 = limerick("test")
-        result2 = limerick("test")
-        assert counting_mock.call_count == 1
-        assert result1 == result2  # Same cached response
