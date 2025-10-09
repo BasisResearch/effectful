@@ -1,6 +1,5 @@
 import base64
 import io
-import os
 import string
 
 try:
@@ -68,12 +67,11 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
-class OpenAI(ObjectInterpretation):
+class OpenAIAPIProvider(ObjectInterpretation):
     """Implements templates using the OpenAI API."""
 
-    def __init__(self, model_name: str = "gpt-4o", api_key: str | None = None):
-        api_key = os.getenv("OPENAI_API_KEY") if api_key is None else api_key
-        self._client = openai.OpenAI(api_key=api_key)
+    def __init__(self, client: openai.OpenAI, model_name: str = "gpt-4o"):
+        self._client = client
         self._model_name = model_name
 
     @implements(Template.__call__)
