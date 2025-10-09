@@ -11,9 +11,20 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.openai")
 
+
 from effectful.handlers.llm.utils import _pil_image_to_base64_data_uri
 from effectful.ops.llm import Template, decode
 from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
+    buf = io.BytesIO()
+    pil_image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
+    return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
 class _OpenAIPromptFormatter(string.Formatter):
