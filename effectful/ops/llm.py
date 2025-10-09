@@ -4,6 +4,7 @@ import typing
 from collections.abc import Callable
 
 from effectful.ops.syntax import defop
+from effectful.ops.types import NotHandled
 
 
 @dataclasses.dataclass(frozen=True)
@@ -13,7 +14,7 @@ class Template[**P, T]:
 
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     @classmethod
     def define(cls, body: Callable[P, T]) -> "Template[P, T]":
