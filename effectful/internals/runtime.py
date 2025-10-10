@@ -2,7 +2,6 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
-from typing import Any
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
@@ -70,23 +69,3 @@ def _set_prompt[**P, T](
             return body(*a, **k)
 
     return bound_body
-
-
-@dataclasses.dataclass
-class CallByNeed[**P, T]:
-    func: Callable[P, T]
-    args: Any  # P.args
-    kwargs: Any  # P.kwargs
-    value: T | None = None
-    initialized: bool = False
-
-    def __init__(self, func, *args, **kwargs):
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-
-    def __call__(self):
-        if not self.initialized:
-            self.value = self.func(*self.args, **self.kwargs)
-            self.initialized = True
-        return self.value
