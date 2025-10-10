@@ -72,7 +72,7 @@ def haiku(theme: str) -> str:
     raise NotImplementedError
 
 
-@Template.define
+@Template.define()
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
     raise NotImplementedError
