@@ -826,7 +826,7 @@ def test_simul_analysis_apply():
     typ = defop(Interpretation, name="typ")
     value = defop(Interpretation, name="value")
 
-    def apply_type(_, op, *a, **k):
+    def apply_type(op, *a, **k):
         return op.__type_rule__(*a, **k)
 
     type_rules = {apply: apply_type}

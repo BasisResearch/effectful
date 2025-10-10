@@ -932,7 +932,7 @@ def defdata[T](
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, evaluate, productN
+    from effectful.ops.semantics import _simple_type, apply, evaluate, productN
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -949,40 +949,36 @@ def defdata[T](
 
     def apply_type(op, *args, **kwargs):
         assert isinstance(op, Operation)
-        return op.__type_rule__(*args, **kwargs)
+        tp = op.__type_rule__(*args, **kwargs)
+        return _simple_type(tp)
 
     def apply_cast(op, *args, **kwargs):
         assert isinstance(op, Operation)
-        return __dispatch(typ())(op, *args, **kwargs)
+        dispatch_type = typ()
+        return __dispatch(dispatch_type)(op, *args, **kwargs)
 
-    def evaluate_with_renaming(expr, name_prefix, ctx):
-        """Evaluate an expression with renaming applied if context is non-empty."""
-        # Build analysis for this specific expression
+    def evaluate_with_renaming(expr, ctx):
+        """Evaluate an expression with renaming applied."""
+        renaming_ctx = {
+            old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
+        }
         expr_analysis = {
             typ: {apply: apply_type},
-            cast: {
-                apply: apply_cast,
-                **{
-                    old_var: new_var
-                    for old_var, new_var in renaming.items()
-                    if old_var in ctx
-                },
-            },
+            cast: {apply: apply_cast, **renaming_ctx},
         }
-        analysis = productN(expr_analysis)
         with interpreter(productN(expr_analysis)):
-            return evaluate(expr, intp=analysis)
+            return evaluate(expr)
 
     # Process arguments with immediate evaluation
     renamed_args = []
     for i, (arg, ctx) in enumerate(zip(args, bindings.args)):
-        renamed_args.append(evaluate_with_renaming(arg, f"rename_arg_{i}", ctx))
+        renamed_args.append(evaluate_with_renaming(arg, ctx))
 
     # Process keyword arguments with immediate evaluation
     renamed_kwargs = {}
     for k, kwarg in kwargs.items():
         ctx = bindings.kwargs.get(k, frozenset())
-        renamed_kwargs[k] = evaluate_with_renaming(kwarg, f"rename_kwarg_{k}", ctx)
+        renamed_kwargs[k] = evaluate_with_renaming(kwarg, ctx)
 
     # Build the final term with type analysis
     base_analyses: Mapping[Operation, Interpretation] = {
