@@ -967,27 +967,28 @@ def defdata[T](
             op_type = type(expr)
             op_renamed = renaming_ctx.get(expr, expr)
             return _pack({typ: lambda: op_type, cast: lambda: op_renamed})
+        elif isinstance(expr, Term):
+            expr_analysis = {
+                typ: {apply: apply_type},
+                cast: {apply: apply_cast, **renaming_ctx},
+            }
+            with interpreter(productN(expr_analysis)):
+                return evaluate(expr)
+        else:
+            val_type = type(expr)
+            return _pack({typ: lambda: val_type, cast: lambda: expr})
 
-        expr_analysis = {
-            typ: {apply: apply_type},
-            cast: {apply: apply_cast, **renaming_ctx},
-        }
-        with interpreter(productN(expr_analysis)):
-            return evaluate(expr)
+    renamed_args = op.__signature__.bind(*args, **kwargs)
+    renamed_args.apply_defaults()
 
-    # if str(op) == "Lam2":
-    #     breakpoint()
-
-    # Process arguments with immediate evaluation
-    renamed_args = []
-    for i, (arg, ctx) in enumerate(zip(args, bindings.args)):
-        renamed_args.append(evaluate_with_renaming(arg, ctx))
-
-    # Process keyword arguments with immediate evaluation
-    renamed_kwargs = {}
-    for k, kwarg in kwargs.items():
-        ctx = bindings.kwargs.get(k, frozenset())
-        renamed_kwargs[k] = evaluate_with_renaming(kwarg, ctx)
+    args_ = [
+        evaluate_with_renaming(arg, bindings.args[i])
+        for (i, arg) in enumerate(renamed_args.args)
+    ]
+    kwargs_ = {
+        k: evaluate_with_renaming(v, bindings.kwargs[k])
+        for (k, v) in renamed_args.kwargs.items()
+    }
 
     # Build the final term with type analysis
     base_analyses: Mapping[Operation, Interpretation] = {
@@ -995,7 +996,7 @@ def defdata[T](
         cast: {apply: apply_cast},
     }
     with interpreter(productN(base_analyses)):
-        result = op(*renamed_args, **renamed_kwargs)
+        result = op(*args_, **kwargs_)
     return result.values(cast)  # type: ignore
 
 
