@@ -924,8 +924,9 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
+    from effectful.internals.product_n import productN
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _simple_type, apply, evaluate, productN
+    from effectful.ops.semantics import _simple_type, apply, evaluate
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
