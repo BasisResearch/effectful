@@ -967,16 +967,23 @@ def defdata[T](
             op_type = type(expr)
             op_renamed = renaming_ctx.get(expr, expr)
             return _pack({typ: lambda: op_type, cast: lambda: op_renamed})
-        elif isinstance(expr, Term):
+        else:
             expr_analysis = {
                 typ: {apply: apply_type},
                 cast: {apply: apply_cast, **renaming_ctx},
             }
             with interpreter(productN(expr_analysis)):
-                return evaluate(expr)
-        else:
-            val_type = type(expr)
-            return _pack({typ: lambda: val_type, cast: lambda: expr})
+                result = evaluate(expr)
+                if str(op) == "let_many":
+                    breakpoint()
+                return result
+        # else:
+        #     val_type = type(expr)
+        #     val_renamed = evaluate(expr, intp=renaming_ctx)
+        #     return _pack({typ: lambda: val_type, cast: lambda: expr})
+
+    if str(op) == "let_many":
+        breakpoint()
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
