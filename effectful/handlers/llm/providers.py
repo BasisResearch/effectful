@@ -136,10 +136,9 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
-@defop  # type: ignore
-def tool_call[**P, T](
-    template: Template, tool: Operation[P, T], *args: P.args, **kwargs: P.kwargs
-) -> T:
+# Note: attempting to type the tool arguments causes type-checker failures
+@defop
+def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
     return tool(*args, **kwargs)
 
@@ -149,7 +148,7 @@ def _call_tool_with_json_args(
 ) -> dict:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
-        result: Any = tool_call(
+        result = tool_call(
             template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
         return {"status": "success", "result": str(result)}
@@ -182,7 +181,9 @@ class OpenAIAPIProvider(ObjectInterpretation):
         # unclear.
 
         called_tools = set([])  # tool calls that we have discharged
-        model_input = [{"content": prompt, "role": "user"}]
+        model_input: list[Any] = [
+            {"type": "message", "content": prompt, "role": "user"}
+        ]
 
         while True:
             response = self._client.responses.create(
