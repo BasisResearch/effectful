@@ -4,13 +4,13 @@ import dataclasses
 import functools
 import types
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 import tree
 
 from effectful.internals.runtime import CallByNeed
-from effectful.ops.syntax import deffn, defop
+from effectful.ops.syntax import defop
 from effectful.ops.types import (
     Expr,
     Interpretation,

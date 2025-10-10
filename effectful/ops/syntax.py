@@ -932,7 +932,7 @@ def defdata[T](
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _pack, _simple_type, apply, evaluate, productN
+    from effectful.ops.semantics import _simple_type, apply, evaluate, productN
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -963,27 +963,15 @@ def defdata[T](
             old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
         }
 
-        if isinstance(expr, Operation):
-            op_type = type(expr)
-            op_renamed = renaming_ctx.get(expr, expr)
-            return _pack({typ: lambda: op_type, cast: lambda: op_renamed})
-        else:
-            expr_analysis = {
-                typ: {apply: apply_type},
-                cast: {apply: apply_cast, **renaming_ctx},
-            }
-            with interpreter(productN(expr_analysis)):
-                result = evaluate(expr)
-                if str(op) == "let_many":
-                    breakpoint()
-                return result
-        # else:
-        #     val_type = type(expr)
-        #     val_renamed = evaluate(expr, intp=renaming_ctx)
-        #     return _pack({typ: lambda: val_type, cast: lambda: expr})
+        expr_analysis = {typ: {apply: apply_type}, cast: {apply: apply_cast}}
 
-    if str(op) == "let_many":
-        breakpoint()
+        # Note: coproduct cannot be used to compose these interpretations
+        # because evaluate will only do operation replacement when the handler
+        # is operation typed, which coproduct does not satisfy.
+        with interpreter(productN(expr_analysis) | renaming_ctx):
+            result = evaluate(expr)
+
+        return result
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
