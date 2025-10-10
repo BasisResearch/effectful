@@ -950,11 +950,12 @@ def defdata[T](
     def apply_type(op, *args, **kwargs):
         assert isinstance(op, Operation)
         tp = op.__type_rule__(*args, **kwargs)
-        return _simple_type(tp)
+        return tp
 
     def apply_cast(op, *args, **kwargs):
         assert isinstance(op, Operation)
-        dispatch_type = typ()
+        full_type = typ()
+        dispatch_type = _simple_type(full_type)
         return __dispatch(dispatch_type)(op, *args, **kwargs)
 
     def evaluate_with_renaming(expr, ctx):
