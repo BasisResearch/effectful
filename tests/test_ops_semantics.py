@@ -811,15 +811,15 @@ def test_simul_analysis():
 def test_simul_analysis_apply():
     @defop
     def plus1[T](x: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def plus2[T](x: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def times[T](x: T, y: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     x, y = defop(int, name="x"), defop(int, name="y")
 
@@ -873,7 +873,7 @@ def test_productN_distributive():
 
     @defop
     def add[T](x: T, y: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(object, name="x")
     i = defop(object, name="i")
@@ -907,7 +907,7 @@ def test_defdata_large(benchmark):
         y: Annotated[T, Scoped[A | B]],
     ) -> Annotated[T, Scoped[B]]:
         """Generic operation that takes two arguments of the same type and returns that type."""
-        raise NotImplementedError
+        raise NotHandled
 
     def build_tree(depth: int) -> Any:
         """
