@@ -1,6 +1,7 @@
 import collections.abc
 import contextlib
 import dataclasses
+import functools
 import types
 import typing
 from collections.abc import Callable, Mapping
