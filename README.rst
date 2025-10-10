@@ -1,7 +1,6 @@
-
 .. index-inclusion-marker
 
-Effectful 
+Effectful
 =========
 
 Effectful is an algebraic effect system for Python, intended for use in the
@@ -24,9 +23,12 @@ Install From Source
 Install With Optional PyTorch/Pyro Support
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``effectful`` has optional support for `PyTorch <https://pytorch.org/>`_ (tensors
-with named dimensions) and `Pyro <https://pyro.ai/>`_ (wrappers for Pyro
-effects).
+``effectful`` has optional support for:
+
+- `PyTorch <https://pytorch.org/>`_ (tensors with named dimensions)
+- `Pyro <https://pyro.ai/>`_ (wrappers for Pyro effects)
+- `Jax <https://docs.jax.dev/en/latest/index.html>`_ (tensors with named dimensions)
+- `Numpyro <https://num.pyro.ai>`_ (operations for Numpyro distributions)
 
 To enable PyTorch support:
 
@@ -40,6 +42,18 @@ Pyro support (which includes PyTorch support):
 
    pip install effectful[pyro]
 
+Jax support:
+
+.. code:: sh
+
+   pip install effectful[jax]
+
+Numpyro support (which includes Jax support):
+
+.. code:: sh
+
+   pip install effectful[numpyro]
+
 Getting Started
 ---------------
 
@@ -50,11 +64,12 @@ Here's an example demonstrating how ``effectful`` can be used to implement a sim
    import functools
 
    from effectful.ops.types import Term
-   from effectful.ops.syntax import defop
+   from effectful.ops.syntax import defdata, defop
    from effectful.ops.semantics import handler, evaluate, coproduct, fwd
-   from effectful.handlers.numbers import add
 
-   def beta_add(x: int, y: int) -> int:        
+   add = defdata.dispatch(int).__add__
+
+   def beta_add(x: int, y: int) -> int:
        match x, y:
            case int(), int():
                return x + y
@@ -64,14 +79,14 @@ Here's an example demonstrating how ``effectful`` can be used to implement a sim
    def commute_add(x: int, y: int) -> int:
        match x, y:
            case Term(), int():
-               return y + x  
+               return y + x
            case _:
                return fwd()
 
    def assoc_add(x: int, y: int) -> int:
        match x, y:
            case _, Term(op, (a, b)) if op == add:
-               return (x + a) + b 
+               return (x + a) + b
            case _:
                return fwd()
 
@@ -103,7 +118,7 @@ We can make the evaluation strategy smarter by taking advantage of the commutati
    >>> with handler(eager_mixed):
    >>>     print(evaluate(e))
    add(8, add(x(), y()))
-   
+
 Learn More
 ----------
 

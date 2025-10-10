@@ -17,7 +17,7 @@ from effectful.handlers.jax._handlers import (
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.syntax import defdata
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 class _IndexUpdateHelper:
@@ -223,11 +223,189 @@ class _ArrayTerm(Term[jax.Array]):
     def __iter__(self):
         raise TypeError("A free array is not iterable.")
 
+    def all(self, axis=None, keepdims=False, *, where=None):
+        return jnp.all(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)
+
+    def any(self, axis=None, keepdims=False, *, where=None):
+        return jnp.any(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)
+
+    def argmax(self, axis=None, keepdims=False):
+        return jnp.argmax(cast(jax.Array, self), axis=axis, keepdims=keepdims)
+
+    def argmin(self, axis=None, keepdims=False):
+        return jnp.argmin(cast(jax.Array, self), axis=axis, keepdims=keepdims)
+
+    def argpartition(self, kth, axis=-1):
+        return jnp.argpartition(cast(jax.Array, self), kth, axis=axis)
+
+    def argsort(self, axis=-1, descending=False, stable=True):
+        return jnp.argsort(
+            cast(jax.Array, self), axis=axis, descending=descending, stable=stable
+        )
+
+    def astype(self, dtype):
+        return jnp.astype(cast(jax.Array, self), dtype)
+
+    def choose(self, choices, mode="raise"):
+        return jnp.choose(cast(jax.Array, self), choices, mode=mode)
+
+    def clip(self, min=None, max=None):
+        return jnp.clip(cast(jax.Array, self), min=min, max=max)
+
+    def compress(self, condition, axis=None):
+        return jnp.compress(condition, cast(jax.Array, self), axis=axis)
+
+    def conj(self):
+        return jnp.conj(cast(jax.Array, self))
+
+    def conjugate(self):
+        return jnp.conjugate(cast(jax.Array, self))
+
+    def copy(self):
+        return jnp.copy(cast(jax.Array, self))
+
+    def cumprod(self, axis=None, dtype=None):
+        return jnp.cumprod(cast(jax.Array, self), axis=axis, dtype=dtype)
+
+    def cumsum(self, axis=None, dtype=None):
+        return jnp.cumsum(cast(jax.Array, self), axis=axis, dtype=dtype)
+
+    def diagonal(self, offset=0, axis1=0, axis2=1):
+        return jnp.diagonal(
+            cast(jax.Array, self), offset=offset, axis1=axis1, axis2=axis2
+        )
+
+    def dot(self, b):
+        return jnp.dot(cast(jax.Array, self), b)
+
+    def max(self, axis=None, keepdims=False, initial=None, where=None):
+        return jnp.max(
+            cast(jax.Array, self),
+            axis=axis,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+        )
+
+    def mean(self, axis=None, keepdims=False, *, where=None):
+        return jnp.mean(
+            cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where
+        )
+
+    def min(self, axis=None, keepdims=False, initial=None, where=None):
+        return jnp.min(
+            cast(jax.Array, self),
+            axis=axis,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+        )
+
+    def nonzero(self, *, size=None, fill_value=None):
+        return jnp.nonzero(cast(jax.Array, self), size=size, fill_value=fill_value)
+
+    def prod(
+        self, axis=None, keepdims=False, initial=None, where=None, promote_integers=True
+    ):
+        return jnp.prod(
+            cast(jax.Array, self),
+            axis=axis,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+            promote_integers=promote_integers,
+        )
+
+    def ptp(self, axis=None, keepdims=False):
+        return jnp.ptp(cast(jax.Array, self), axis=axis, keepdims=keepdims)
+
+    def ravel(self, order="C"):
+        return jnp.ravel(cast(jax.Array, self), order=order)
+
+    def repeat(self, repeats, axis=None, *, total_repeat_length=None):
+        return jnp.repeat(
+            cast(jax.Array, self),
+            repeats,
+            axis=axis,
+            total_repeat_length=total_repeat_length,
+        )
+
+    def reshape(self, *shape, order="C"):
+        if len(shape) == 1 and isinstance(shape[0], tuple | list):
+            shape = shape[0]
+        return jnp.reshape(cast(jax.Array, self), shape, order=order)
+
+    def round(self, decimals=0):
+        return jnp.round(cast(jax.Array, self), decimals=decimals)
+
+    def searchsorted(self, v, side="left", sorter=None):
+        return jnp.searchsorted(cast(jax.Array, self), v, side=side, sorter=sorter)
+
+    def sort(self, axis=-1, descending=False, stable=True):
+        return jnp.sort(
+            cast(jax.Array, self), axis=axis, descending=descending, stable=stable
+        )
+
+    def squeeze(self, axis=None):
+        return jnp.squeeze(cast(jax.Array, self), axis=axis)
+
+    def std(self, axis=None, keepdims=False, ddof=0, *, where=None):
+        return jnp.std(
+            cast(jax.Array, self), axis=axis, keepdims=keepdims, ddof=ddof, where=where
+        )
+
+    def sum(
+        self, axis=None, keepdims=False, initial=None, where=None, promote_integers=True
+    ):
+        return jnp.sum(
+            cast(jax.Array, self),
+            axis=axis,
+            keepdims=keepdims,
+            initial=initial,
+            where=where,
+            promote_integers=promote_integers,
+        )
+
+    def swapaxes(self, axis1, axis2):
+        return jnp.swapaxes(cast(jax.Array, self), axis1, axis2)
+
+    def take(
+        self,
+        indices,
+        axis=None,
+        mode=None,
+        unique_indices=False,
+        indices_are_sorted=False,
+        fill_value=None,
+    ):
+        return jnp.take(
+            cast(jax.Array, self),
+            indices,
+            axis=axis,
+            mode=mode,
+            unique_indices=unique_indices,
+            indices_are_sorted=indices_are_sorted,
+            fill_value=fill_value,
+        )
+
+    def trace(self, offset=0, axis1=0, axis2=1, dtype=None):
+        return jnp.trace(
+            cast(jax.Array, self), offset=offset, axis1=axis1, axis2=axis2, dtype=dtype
+        )
+
+    def transpose(self, axes=None):
+        return jnp.transpose(cast(jax.Array, self), axes=axes)
+
+    def var(self, axis=None, keepdims=False, ddof=0, *, where=None):
+        return jnp.var(
+            cast(jax.Array, self), axis=axis, keepdims=keepdims, ddof=ddof, where=where
+        )
+
 
 class _EagerArrayTerm(_ArrayTerm):
     def __init__(self, op, tensor, key):
         new_shape, new_key = _desugar_tensor_index(tensor.shape, key)
-        super().__init__(op, jnp.reshape(tensor, new_shape), new_key)
+        super().__init__(op, jax.numpy.reshape(tensor, new_shape), new_key)
 
     def __iter__(self):
         for i in range(len(self)):
@@ -255,11 +433,9 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     """Convert named dimensions to positional dimensions.
 
     :param t: An array.
-    :type t: T
     :param args: Named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type args: Operation[[], jax.Array]
     :return: An array with the named dimensions in ``args`` converted to positional dimensions.
 
     **Example usage**:
@@ -289,7 +465,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
 
     # ensure that the result is a jax_getitem with an array as the first argument
     if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):
-        raise NotImplementedError
+        raise NotHandled
 
     array = result.args[0]
     dims = result.args[1]
@@ -298,7 +474,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     # ensure that the order is a subset of the named dimensions
     order_set = set(args)
     if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
-        raise NotImplementedError
+        raise NotHandled
 
     # permute the inner array so that the leading dimensions are in the order
     # specified and the trailing dimensions are the remaining named dimensions

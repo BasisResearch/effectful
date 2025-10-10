@@ -440,9 +440,10 @@ def _(typ: type | abc.ABCMeta):
         return typ
     elif types.get_original_bases(typ):
         for base in types.get_original_bases(typ):
-            cbase = canonicalize(base)
-            if cbase != object:
-                return cbase
+            if typing.get_origin(base) is not typing.Generic:
+                cbase = canonicalize(base)
+                if cbase != object:
+                    return cbase
         return typ
     else:
         raise TypeError(f"Cannot canonicalize type {typ}.")

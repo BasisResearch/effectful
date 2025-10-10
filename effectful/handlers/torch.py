@@ -11,12 +11,11 @@ except ImportError:
 
 import tree
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, defterm
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.syntax import Scoped, defdata, defop, defterm, syntactic_eq
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
@@ -72,7 +71,7 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
 
         return defdata(torch_getitem, x, key)
 
-    def _apply(_, op, *args, **kwargs):
+    def _apply(op, *args, **kwargs):
         args, kwargs = tree.map_structure(defterm, (args, kwargs))
         return defdata(op, *args, **kwargs)
 
@@ -147,11 +146,9 @@ def bind_dims[
     """Convert named dimensions to positional dimensions.
 
     :param t: A tensor.
-    :type t: T
     :param args: Named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type args: Operation[[], torch.Tensor]
     :return: A tensor with the named dimensions in ``args`` converted to positional dimensions.
 
     **Example usage**:
@@ -163,7 +160,7 @@ def bind_dims[
     """
     if tree.is_nested(value):
         return tree.map_structure(lambda v: bind_dims(v, *names), value)
-    raise NotImplementedError
+    raise NotHandled
 
 
 @bind_dims.register  # type: ignore
@@ -190,7 +187,7 @@ def _bind_dims_tensor(
 
     # ensure that the result is a torch_getitem with a tensor as the first argument
     if not (result.op is torch_getitem and isinstance(result.args[0], torch.Tensor)):
-        raise NotImplementedError
+        raise NotHandled
 
     tensor = result.args[0]
     dims = result.args[1]
@@ -199,7 +196,7 @@ def _bind_dims_tensor(
     # ensure that the order is a subset of the named dimensions
     order_set = set(args)
     if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
-        raise NotImplementedError
+        raise NotHandled
 
     # permute the inner tensor so that the leading dimensions are in the order
     # specified and the trailing dimensions are the remaining named dimensions
@@ -229,7 +226,7 @@ def unbind_dims[
 ) -> Annotated[HasDims, Scoped[A | B]]:
     if tree.is_nested(value):
         return tree.map_structure(lambda v: unbind_dims(v, *names), value)
-    raise NotImplementedError
+    raise NotHandled
 
 
 @unbind_dims.register  # type: ignore
@@ -257,7 +254,7 @@ def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
             and args[1]
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
-            raise NotImplementedError
+            raise NotHandled
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {
             torch_getitem,
             _torch_op,
@@ -273,7 +270,7 @@ def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
         ):
             return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     functools.update_wrapper(_torch_op, torch_fn)
     return _torch_op
@@ -720,3 +717,8 @@ def vmap(func, *args, **kwargs):
     # indexed_dim_n, pos_dim_1, ..., pos_dim_m], so we reapply indexes starting
     # at dim 1
     return lambda *a, **k: reindex(vmap_func(*a, *k), starting_dim=1)
+
+
+@syntactic_eq.register
+def _(x: torch.Tensor, other) -> bool:
+    return isinstance(other, torch.Tensor) and bool((x == other).all())

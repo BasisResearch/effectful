@@ -1,22 +1,23 @@
 import functools
 from typing import Annotated, Callable
 
-from effectful.handlers.numbers import add
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
-from effectful.ops.syntax import Scoped, defop, syntactic_eq
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.syntax import Scoped, defdata, defop, syntactic_eq
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+
+add = defdata.dispatch(int).__add__
 
 
 @defop
 def App[S, T](f: Callable[[S], T], arg: S) -> T:
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
 def Lam[S, T, A](
     var: Annotated[Operation[[], S], Scoped[A]], body: Annotated[T, Scoped[A]]
 ) -> Callable[[S], T]:
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
@@ -25,7 +26,7 @@ def Let[S, T, A](
     val: S,
     body: Annotated[T, Scoped[A]],
 ) -> T:
-    raise NotImplementedError
+    raise NotHandled
 
 
 def beta_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
@@ -51,7 +52,9 @@ def beta_let[S, T](var: Operation[[], S], val: Expr[S], body: Expr[T]) -> Expr[T
     return handler({var: lambda: val})(evaluate)(body)
 
 
-def eta_lam[S, T](var: Operation[[], S], body: Expr[T]) -> Expr[Callable[[S], T]] | Expr[T]:
+def eta_lam[S, T](
+    var: Operation[[], S], body: Expr[T]
+) -> Expr[Callable[[S], T]] | Expr[T]:
     """eta reduction"""
     if var not in fvsof(body):
         return body

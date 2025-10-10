@@ -1,7 +1,6 @@
 import collections.abc
 import contextlib
 import dataclasses
-import functools
 import types
 import typing
 from collections.abc import Callable, Mapping
@@ -11,11 +10,17 @@ import tree
 
 from effectful.internals.runtime import CallByNeed
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+    Term,
+)
 
 
-@defop
-def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
+@defop  # type: ignore
+def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -37,44 +42,22 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     By installing an :func:`apply` handler, we capture the term instead:
 
     >>> def default(*args, **kwargs):
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> with handler({apply: default }):
     ...     term = mul(add(1, 2), 3)
     >>> print(str(term))
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_interpretation
 
+    intp = get_interpretation()
     if op in intp:
-        return interpreter(intp)(intp[op])(*args, **kwargs)
+        return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
+        return intp[apply](op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)
-
-
-@defop  # type: ignore
-def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """An operation that eliminates a callable term.
-
-    This operation is invoked by the ``__call__`` method of a callable term.
-
-    """
-    if isinstance(fn, Term) and fn.op is deffn:
-        body: Expr[Callable[P, T]] = fn.args[0]
-        argvars: tuple[Operation, ...] = fn.args[1:]
-        kwvars: dict[str, Operation] = fn.kwargs
-        subs = {
-            **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
-            **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
-        }
-        with handler(subs):
-            return evaluate(body)
-    elif not fvsof((fn, args, kwargs)):
-        return fn(*args, **kwargs)
-    else:
-        raise NotImplementedError
+        return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop
@@ -345,7 +328,7 @@ def runner(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
-    def _reapply[**P, S](_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
     with interpreter({apply: _reapply, **intp}):
@@ -375,7 +358,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
 
     >>> @defop
     ... def add(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> expr = add(1, add(2, 3))
     >>> print(str(expr))
     add(1, add(2, 3))
@@ -405,6 +388,14 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
             return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
+        elif (
+            isinstance(expr, tuple)
+            and hasattr(expr, "_fields")
+            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+        ):  # namedtuple
+            return type(expr)(
+                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+            )
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.Set):
@@ -438,7 +429,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def cmp(x: int, y: int) -> bool:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(cmp(1, 2))
     <class 'bool'>
 
@@ -446,14 +437,14 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def if_then_else[T](x: bool, a: T, b: T) -> T:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
+    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
         if isinstance(term, Term):
             # If term is a Term, we evaluate it to get its type
             tp = evaluate(term)
@@ -474,14 +465,14 @@ def typeof[T](term: Expr[T]) -> type[T]:
             return type(term)
 
 
-def fvsof[S](term: Expr[S]) -> set[Operation]:
+def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """Return the free variables of an expression.
 
     **Example usage**:
 
     >>> @defop
     ... def f(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> fvs = fvsof(f(1, 2))
     >>> assert f in fvs
     >>> assert len(fvs) == 1
@@ -490,14 +481,11 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     _fvs: set[Operation] = set()
 
-    def _update_fvs(_, op, *args, **kwargs):
+    def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
-        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-        bound_vars = set().union(
-            *(a for a in arg_ctxs),
-            *(k for k in kwarg_ctxs.values()),
-        )
-        for bound_var in bound_vars:
+        bindings = op.__fvs_rule__(*args, **kwargs)
+        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
+            assert isinstance(bound_var, Operation)
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 
