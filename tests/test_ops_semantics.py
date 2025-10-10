@@ -952,7 +952,7 @@ def test_evaluate_deep():
 
 
 def test_fvsof_binder():
-    x, y, z = defop(int), defop(int), defop(int)
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
 
     @defop
     def add(a: int, b: int) -> int:
