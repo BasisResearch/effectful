@@ -226,7 +226,7 @@ def test_defdata_renaming():
         val: Annotated[S, Scoped[B]],
         body: Annotated[T, Scoped[A | B]],
     ) -> Annotated[T, Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     x, y = defop(int, name="x"), defop(int, name="y")
 

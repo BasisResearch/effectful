@@ -11,14 +11,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
 
-from effectful.ops.types import (
-    Annotation,
-    Expr,
-    Interpretation,
-    NotHandled,
-    Operation,
-    Term,
-)
+from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
 
 @dataclasses.dataclass
@@ -943,7 +936,7 @@ def defdata[T](
         for var in bound_vars
     }
 
-    # Create base analyses for type computation and term reconstruction
+    # Analysis for type computation and term reconstruction
     typ = defop(object, name="typ")
     cast = defop(object, name="cast")
 
@@ -958,18 +951,18 @@ def defdata[T](
         dispatch_type = _simple_type(full_type)
         return __dispatch(dispatch_type)(op, *args, **kwargs)
 
+    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
+
     def evaluate_with_renaming(expr, ctx):
         """Evaluate an expression with renaming applied."""
         renaming_ctx = {
             old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
         }
 
-        expr_analysis = {typ: {apply: apply_type}, cast: {apply: apply_cast}}
-
         # Note: coproduct cannot be used to compose these interpretations
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
-        with interpreter(productN(expr_analysis) | renaming_ctx):
+        with interpreter(analysis | renaming_ctx):
             result = evaluate(expr)
 
         return result
@@ -987,12 +980,9 @@ def defdata[T](
     }
 
     # Build the final term with type analysis
-    base_analyses: Mapping[Operation, Interpretation] = {
-        typ: {apply: apply_type},
-        cast: {apply: apply_cast},
-    }
-    with interpreter(productN(base_analyses)):
+    with interpreter(analysis):
         result = op(*args_, **kwargs_)
+
     return result.values(cast)  # type: ignore
 
 
