@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import itertools
 import logging
 from collections.abc import Callable
@@ -741,6 +742,47 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_defdata_large(benchmark):
+    """Test defdata with large nested operations that form a binary tree of arbitrary size."""
+    import random
+
+    @defop
+    def f[T, A, B](
+        v: Annotated[Operation[[], int], Scoped[A]],
+        x: Annotated[T, Scoped[A | B]],
+        y: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        """Generic operation that takes two arguments of the same type and returns that type."""
+        raise NotHandled
+
+    def build_tree(depth: int) -> Any:
+        """
+        Recursively build a binary tree of f operations with the specified depth.
+
+        Args:
+            depth: The depth of the tree (0 means just a leaf)
+            leaf_type: The type of values at the leaves (int, str, etc.)
+            start_value: The starting value for leaf generation
+
+        Returns:
+            A nested tree of f operations with leaves of the specified type
+        """
+        if depth == 0:
+            if random.random() < 0.5:
+                return 0
+            else:
+                return defop(int)()
+
+        # Recursively build left and right subtrees
+        left = build_tree(depth - 1)
+        right = build_tree(depth - 1)
+
+        return f(defop(int), left, right)
+
+    # Test a very large tree (depth 8 = 255 leaf nodes)
+    benchmark(functools.partial(build_tree, 7))
+
+
 def test_evaluate_deep():
     x, y, z = defop(int), defop(int), defop(int)
     intp = {x: deffn(1), y: deffn(2), z: deffn(x() + y())}
@@ -756,7 +798,7 @@ def test_evaluate_deep():
 
 
 def test_fvsof_binder():
-    x, y, z = defop(int), defop(int), defop(int)
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
 
     @defop
     def add(a: int, b: int) -> int:

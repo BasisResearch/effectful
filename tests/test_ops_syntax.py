@@ -219,6 +219,27 @@ def test_term_str():
     assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
+def test_defdata_renaming():
+    @defop
+    def Let[S, T, A, B](
+        var: Annotated[Operation[[], S], Scoped[A]],
+        val: Annotated[S, Scoped[B]],
+        body: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        raise NotHandled
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+
+    # Constructing the term should rename the bound variable x in the right hand
+    # side of the let only.
+    let2 = Let(x, y() + x(), x() + y())
+    assert let2.args[0] != x
+    assert let2.args[1].args[0].op == y
+    assert let2.args[1].args[1].op == x
+    assert let2.args[2].args[0].op == let2.args[0]
+    assert let2.args[2].args[1].op == y
+
+
 def test_defop_singledispatch():
     """Test that defop can be used with singledispatch functions."""
 
