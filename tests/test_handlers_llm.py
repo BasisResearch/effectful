@@ -60,13 +60,13 @@ class SingleResponseLLMProvider(ObjectInterpretation):
 
 
 # Test templates from the notebook examples
-@Template.define()
+@Template.define
 def limerick(theme: str) -> str:
     """Write a limerick on the theme of {theme}."""
     raise NotImplementedError
 
 
-@Template.define()
+@Template.define
 def haiku(theme: str) -> str:
     """Write a haiku on the theme of {theme}."""
     raise NotImplementedError
@@ -78,7 +78,7 @@ def primes(first_digit: int) -> int:
     raise NotImplementedError
 
 
-@Template.define()
+@Template.define
 def count_char(char: str) -> Callable[[str], int]:
     """Write a function which takes a string and counts the occurrances of '{char}'."""
     raise NotImplementedError

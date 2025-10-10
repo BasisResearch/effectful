@@ -17,17 +17,17 @@ class Template[**P, T]:
         raise NotHandled
 
     @classmethod
-    def define(cls, tools: Iterable[Operation] | None = None):
-        tools_ = () if tools is None else tuple(tools)
-
-        def decorator(body: Callable[P, T]):
+    def define(cls, *args, **kwargs):
+        def decorator(body: Callable[P, T], tools=()):
             if not body.__doc__:
                 raise ValueError("Expected a docstring on body")
 
             return cls(
                 __signature__=inspect.signature(body),
                 __prompt_template__=body.__doc__,
-                tools=tools_,
+                tools=tools,
             )
 
+        if len(args) == 1 and callable(args[0]):
+            return decorator(args[0])
         return decorator
