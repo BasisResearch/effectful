@@ -936,8 +936,12 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.ops.semantics import apply, evaluate, typeof
+    from effectful.internals.product_n import productN
+    from effectful.internals.runtime import interpreter
+    from effectful.ops.semantics import _simple_type, apply, evaluate
 
+    # If this operation binds variables, we need to rename them in the
+    # appropriate parts of the child term.
     bindings: inspect.BoundArguments = op.__fvs_rule__(*args, **kwargs)
     renaming = {
         var: defop(var)
@@ -945,24 +949,54 @@ def defdata[T](
         for var in bound_vars
     }
 
-    renamed_args: inspect.BoundArguments = op.__signature__.bind(*args, **kwargs)
+    # Analysis for type computation and term reconstruction
+    typ = defop(object, name="typ")
+    cast = defop(object, name="cast")
+
+    def apply_type(op, *args, **kwargs):
+        assert isinstance(op, Operation)
+        tp = op.__type_rule__(*args, **kwargs)
+        return tp
+
+    def apply_cast(op, *args, **kwargs):
+        assert isinstance(op, Operation)
+        full_type = typ()
+        dispatch_type = _simple_type(full_type)
+        return __dispatch(dispatch_type)(op, *args, **kwargs)
+
+    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
+
+    def evaluate_with_renaming(expr, ctx):
+        """Evaluate an expression with renaming applied."""
+        renaming_ctx = {
+            old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
+        }
+
+        # Note: coproduct cannot be used to compose these interpretations
+        # because evaluate will only do operation replacement when the handler
+        # is operation typed, which coproduct does not satisfy.
+        with interpreter(analysis | renaming_ctx):
+            result = evaluate(expr)
+
+        return result
+
+    renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
 
     args_ = [
-        evaluate(
-            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.args[i]}}
-        )
-        for i, arg in enumerate(renamed_args.args)
+        evaluate_with_renaming(arg, bindings.args[i])
+        for (i, arg) in enumerate(renamed_args.args)
     ]
     kwargs_ = {
-        k: evaluate(
-            arg, intp={apply: defdata, **{v: renaming[v] for v in bindings.kwargs[k]}}
-        )
-        for k, arg in renamed_args.kwargs.items()
+        k: evaluate_with_renaming(v, bindings.kwargs[k])
+        for (k, v) in renamed_args.kwargs.items()
     }
 
-    base_term = __dispatch(typing.cast(type[T], object))(op, *args_, **kwargs_)
-    return __dispatch(typeof(base_term))(op, *args_, **kwargs_)
+    # Build the final term with type analysis
+    with interpreter(analysis):
+        result = op(*args_, **kwargs_)
+
+    return result.values(cast)  # type: ignore
 
 
 @defterm.register(object)
@@ -1173,11 +1207,20 @@ def _(x: collections.abc.Mapping, other) -> bool:
 
 @syntactic_eq.register
 def _(x: collections.abc.Sequence, other) -> bool:
-    return (
-        isinstance(other, collections.abc.Sequence)
-        and len(x) == len(other)
-        and all(syntactic_eq(a, b) for a, b in zip(x, other))
-    )
+    if (
+        isinstance(x, tuple)
+        and hasattr(x, "_fields")
+        and all(hasattr(x, f) for f in x._fields)
+    ):
+        return type(other) == type(x) and all(
+            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields
+        )
+    else:
+        return (
+            isinstance(other, collections.abc.Sequence)
+            and len(x) == len(other)
+            and all(syntactic_eq(a, b) for a, b in zip(x, other))
+        )
 
 
 @syntactic_eq.register(object)

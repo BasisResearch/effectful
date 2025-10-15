@@ -250,6 +250,14 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
             return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
+        elif (
+            isinstance(expr, tuple)
+            and hasattr(expr, "_fields")
+            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+        ):  # namedtuple
+            return type(expr)(
+                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+            )
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore
     elif isinstance(expr, collections.abc.Set):
@@ -272,6 +280,21 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
         )
     else:
         return typing.cast(T, expr)
+
+
+def _simple_type(tp: type) -> type:
+    """Convert a type object into a type that can be dispatched on."""
+    if isinstance(tp, typing.TypeVar):
+        tp = (
+            tp.__bound__
+            if tp.__bound__
+            else tp.__constraints__[0]
+            if tp.__constraints__
+            else object
+        )
+    if isinstance(tp, types.UnionType):
+        raise TypeError(f"Union types are not supported: {tp}")
+    return typing.get_origin(tp) or tp
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
@@ -302,19 +325,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
         if isinstance(term, Term):
             # If term is a Term, we evaluate it to get its type
             tp = evaluate(term)
-            if isinstance(tp, typing.TypeVar):
-                tp = (
-                    tp.__bound__
-                    if tp.__bound__
-                    else tp.__constraints__[0]
-                    if tp.__constraints__
-                    else object
-                )
-            if isinstance(tp, types.UnionType):
-                raise TypeError(
-                    f"Cannot determine type of {term} because it is a union type: {tp}"
-                )
-            return typing.get_origin(tp) or tp  # type: ignore
+            return _simple_type(typing.cast(type, tp))
         else:
             return type(term)
 
