@@ -376,6 +376,10 @@ class _TensorTerm(Term[torch.Tensor]):
     def __torch_function__[T](
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
+        if func is torch._C.TensorBase.__getitem__:
+            if not isinstance(args[1], tuple):
+                assert len(args) == 2
+                args = [args[0]] + [(args[1],)]
         return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
 
     def __add__(self, other: torch.Tensor) -> torch.Tensor:
