@@ -7,7 +7,6 @@ from collections.abc import Iterable, Mapping
 from typing import Any, get_type_hints
 
 import pydantic
-from pydantic import create_model
 
 try:
     import openai
@@ -48,20 +47,15 @@ class Tool[**P, T]:
     def of_operation(cls, op: Operation[P, T], name: str):
         sig = inspect.signature(op)
         hints = get_type_hints(op)
-
-        # Build field definitions with defaults
-        fields = {}
-        for param_name, param in sig.parameters.items():
-            field_type = hints.get(param_name, str)
-            if param.default == inspect.Parameter.empty:
-                field_desc = field_type
-            else:
-                field_desc = (field_type, param.default)
-            fields[param_name] = field_desc
-
-        parameter_model = create_model("Params", **fields)
-        result_model = create_model("Result", result=sig.return_annotation)
-
+        fields = {
+            param_name: hints.get(param_name, str) for param_name in sig.parameters
+        }
+        parameter_model = pydantic.create_model(
+            "Params", __config__={"extra": "forbid"}, **fields
+        )
+        result_model = pydantic.create_model(
+            "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
+        )
         return cls(
             parameter_model=parameter_model,
             result_model=result_model,
@@ -76,7 +70,7 @@ class Tool[**P, T]:
             "name": self.name,
             "description": self.operation.__doc__,
             "parameters": self.parameter_model.model_json_schema(),
-            "strict": False,
+            "strict": True,
         }
 
 
