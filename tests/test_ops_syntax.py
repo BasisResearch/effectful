@@ -917,3 +917,21 @@ def test_arg_positioning():
     assert isinstance(f(0), Term) and isinstance(f(x=0), Term)
     assert f(0).args == f(x=0).args == (0,)
     assert f(0).kwargs == f(x=0).kwargs == {}
+
+
+def test_defdata_dataclass():
+    @dataclasses.dataclass
+    class C:
+        x: int
+
+    @defop
+    def c(x: int) -> int:
+        raise NotHandled
+
+    @defop
+    def f(c: C) -> int:
+        raise NotHandled
+
+    obj = C(defop(int)())
+    term = defdata(f, obj)
+    assert isinstance(term.args[0], C) and isinstance(term.args[0].x, Term)
