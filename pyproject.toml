@@ -84,3 +84,12 @@ testpaths = ["./effectful", "./tests"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 exclude = "build"
+
+[tool.pyright]
+exclude = "build"
+venv = ".venv"
+venvPath = "."
+
+[tool.pyrefly]
+project-excludes = ["**/build*"]
+ignore-missing-imports = ["*"]
