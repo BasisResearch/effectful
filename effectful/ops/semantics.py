@@ -1,16 +1,22 @@
+import collections.abc
 import contextlib
-import functools
-from collections.abc import Callable
+import dataclasses
+import types
+import typing
 from typing import Any
 
-import tree
+from effectful.ops.syntax import defop
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+    Term,
+)
 
-from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Expr, Interpretation, Operation, Term
 
-
-@defop
-def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
+@defop  # type: ignore
+def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -32,44 +38,22 @@ def apply(intp: Interpretation, op: Operation, *args, **kwargs) -> Any:
     By installing an :func:`apply` handler, we capture the term instead:
 
     >>> def default(*args, **kwargs):
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> with handler({apply: default }):
     ...     term = mul(add(1, 2), 3)
     >>> print(str(term))
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_interpretation
 
+    intp = get_interpretation()
     if op in intp:
-        return interpreter(intp)(intp[op])(*args, **kwargs)
+        return intp[op](*args, **kwargs)
     elif apply in intp:
-        return intp[apply](intp, op, *args, **kwargs)
+        return intp[apply](op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)
-
-
-@defop  # type: ignore
-def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """An operation that eliminates a callable term.
-
-    This operation is invoked by the ``__call__`` method of a callable term.
-
-    """
-    if isinstance(fn, Term) and fn.op is deffn:
-        body: Expr[Callable[P, T]] = fn.args[0]
-        argvars: tuple[Operation, ...] = fn.args[1:]
-        kwvars: dict[str, Operation] = fn.kwargs
-        subs = {
-            **{v: functools.partial(lambda x: x, a) for v, a in zip(argvars, args)},
-            **{kwvars[k]: functools.partial(lambda x: x, kwargs[k]) for k in kwargs},
-        }
-        with handler(subs):
-            return evaluate(body)
-    elif not any(isinstance(a, Term) for a in tree.flatten((fn, args, kwargs))):
-        return fn(*args, **kwargs)
-    else:
-        raise NotImplementedError
+        return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop
@@ -206,7 +190,7 @@ def runner(intp: Interpretation):
     from effectful.internals.runtime import get_interpretation, interpreter
 
     @interpreter(get_interpretation())
-    def _reapply[**P, S](_, op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
+    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
         return op(*args, **kwargs)
 
     with interpreter({apply: _reapply, **intp}):
@@ -236,7 +220,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
 
     >>> @defop
     ... def add(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> expr = add(1, add(2, 3))
     >>> print(str(expr))
     add(1, add(2, 3))
@@ -244,20 +228,73 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
-    if intp is None:
-        from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import get_interpretation, interpreter
 
-        intp = get_interpretation()
+    if intp is not None:
+        return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        (args, kwargs) = tree.map_structure(
-            functools.partial(evaluate, intp=intp), (expr.args, expr.kwargs)
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        return expr.op(*args, **kwargs)
+    elif isinstance(expr, Operation):
+        op_intp = get_interpretation().get(expr, expr)
+        return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
+    elif isinstance(expr, collections.abc.Mapping):
+        if isinstance(expr, collections.defaultdict):
+            return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))  # type: ignore
+        elif isinstance(expr, types.MappingProxyType):
+            return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
+        else:
+            return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
+    elif isinstance(expr, collections.abc.Sequence):
+        if isinstance(expr, str | bytes):
+            return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
+        elif (
+            isinstance(expr, tuple)
+            and hasattr(expr, "_fields")
+            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+        ):  # namedtuple
+            return type(expr)(
+                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+            )
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.Set):
+        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
+            return {evaluate(item) for item in expr}  # type: ignore
+        else:
+            return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    elif isinstance(expr, collections.abc.ValuesView):
+        return [evaluate(item) for item in expr]  # type: ignore
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return typing.cast(
+            T,
+            dataclasses.replace(
+                expr,
+                **{
+                    field.name: evaluate(getattr(expr, field.name))
+                    for field in dataclasses.fields(expr)
+                },
+            ),
         )
-        return apply.__default_rule__(intp, expr.op, *args, **kwargs)
-    elif tree.is_nested(expr):
-        return tree.map_structure(functools.partial(evaluate, intp=intp), expr)
     else:
-        return expr
+        return typing.cast(T, expr)
+
+
+def _simple_type(tp: type) -> type:
+    """Convert a type object into a type that can be dispatched on."""
+    if isinstance(tp, typing.TypeVar):
+        tp = (
+            tp.__bound__
+            if tp.__bound__
+            else tp.__constraints__[0]
+            if tp.__constraints__
+            else object
+        )
+    if isinstance(tp, types.UnionType):
+        raise TypeError(f"Union types are not supported: {tp}")
+    return typing.get_origin(tp) or tp
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
@@ -269,7 +306,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def cmp(x: int, y: int) -> bool:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(cmp(1, 2))
     <class 'bool'>
 
@@ -277,25 +314,30 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     >>> @defop
     ... def if_then_else[T](x: bool, a: T, b: T) -> T:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda _, op, *a, **k: op.__type_rule__(*a, **k)}):
-        return evaluate(term) if isinstance(term, Term) else type(term)  # type: ignore
+    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
+        if isinstance(term, Term):
+            # If term is a Term, we evaluate it to get its type
+            tp = evaluate(term)
+            return _simple_type(typing.cast(type, tp))
+        else:
+            return type(term)
 
 
-def fvsof[S](term: Expr[S]) -> set[Operation]:
+def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """Return the free variables of an expression.
 
     **Example usage**:
 
     >>> @defop
     ... def f(x: int, y: int) -> int:
-    ...     raise NotImplementedError
+    ...     raise NotHandled
     >>> fvs = fvsof(f(1, 2))
     >>> assert f in fvs
     >>> assert len(fvs) == 1
@@ -304,14 +346,11 @@ def fvsof[S](term: Expr[S]) -> set[Operation]:
 
     _fvs: set[Operation] = set()
 
-    def _update_fvs(_, op, *args, **kwargs):
+    def _update_fvs(op, *args, **kwargs):
         _fvs.add(op)
-        arg_ctxs, kwarg_ctxs = op.__fvs_rule__(*args, **kwargs)
-        bound_vars = set().union(
-            *(a for a in arg_ctxs),
-            *(k for k in kwarg_ctxs.values()),
-        )
-        for bound_var in bound_vars:
+        bindings = op.__fvs_rule__(*args, **kwargs)
+        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
+            assert isinstance(bound_var, Operation)
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
 

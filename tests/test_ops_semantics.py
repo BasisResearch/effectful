@@ -1,4 +1,5 @@
 import contextlib
+import functools
 import itertools
 import logging
 from collections.abc import Callable
@@ -6,9 +7,7 @@ from typing import Annotated, Any, Union
 
 import pytest
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import (
-    apply,
     coproduct,
     evaluate,
     fvsof,
@@ -19,7 +18,7 @@ from effectful.ops.semantics import (
     typeof,
 )
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
-from effectful.ops.types import Interpretation, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation
 
 logger = logging.getLogger(__name__)
 
@@ -430,7 +429,7 @@ def test_fwd_default():
 def test_product_resets_fwd():
     @defop
     def do_stuff():
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def do_other_stuff():
@@ -449,17 +448,17 @@ def test_product_resets_fwd():
 
 @defop
 def op0():
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
 def op1():
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
 def op2():
-    raise NotImplementedError
+    raise NotHandled
 
 
 def f_op2():
@@ -532,7 +531,7 @@ def test_product_distributive():
 def test_evaluate():
     @defop
     def Nested(*args, **kwargs):
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int, name="x")
     y = defop(int, name="y")
@@ -548,7 +547,7 @@ def test_ctxof():
 
     @defop
     def Nested(*args, **kwargs):
-        raise NotImplementedError
+        raise NotHandled
 
     assert fvsof(Nested(x(), y())) >= {x, y}
     assert fvsof(Nested([x()], y())) >= {x, y}
@@ -564,7 +563,7 @@ def test_handler_typing() -> None:
 
     @defop
     def f(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def g(x: str, y: bool) -> str:
@@ -578,7 +577,6 @@ def test_handler_typing() -> None:
     runner(i)
     product(i, i)
     coproduct(i, i)
-    apply(i, f, 1)
     evaluate(0, intp=i)
 
     # include tests with inlined interpretation, because mypy might do inference
@@ -593,7 +591,6 @@ def test_handler_typing() -> None:
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
     )
-    apply({f: lambda x: x + 1, g: lambda x, y: x + str(y)}, f, 1)
     evaluate(0, intp={f: lambda x: x + 1, g: lambda x, y: x + str(y)})
 
 
@@ -602,15 +599,15 @@ def test_typeof_basic():
 
     @defop
     def add(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def is_positive(x: int) -> bool:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def get_name() -> str:
-        raise NotImplementedError
+        raise NotHandled
 
     assert typeof(add(1, 2)) is int
     assert typeof(is_positive(5)) is bool
@@ -622,15 +619,15 @@ def test_typeof_nested():
 
     @defop
     def add(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def multiply(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def is_even(x: int) -> bool:
-        raise NotImplementedError
+        raise NotHandled
 
     assert typeof(add(multiply(2, 3), 4)) is int
     assert typeof(is_even(add(1, 2))) is bool
@@ -641,15 +638,15 @@ def test_typeof_polymorphic():
 
     @defop
     def identity[T](x: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def first[T, U](x: T, y: U) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def if_then_else[T](cond: bool, then_val: T, else_val: T) -> T:
-        raise NotImplementedError
+        raise NotHandled
 
     assert typeof(identity(42)) is int
     assert typeof(identity("hello")) is str
@@ -664,11 +661,11 @@ def test_typeof_none():
 
     @defop
     def do_nothing() -> None:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def print_value(x: Any) -> None:
-        raise NotImplementedError
+        raise NotHandled
 
     assert typeof(do_nothing()) is type(None)
     assert typeof(print_value(42)) is type(None)
@@ -681,7 +678,7 @@ def test_typeof_scoped():
     def Lambda[S, T, A, B](
         var: Annotated[Operation[[], S], Scoped[A]], body: Annotated[T, Scoped[A | B]]
     ) -> Annotated[Callable[[S], T], Scoped[B]]:
-        raise NotImplementedError
+        raise NotHandled
 
     x = defop(int, name="x")
 
@@ -695,11 +692,11 @@ def test_typeof_no_annotations():
 
     @defop
     def untyped_op(x, y):
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def partially_typed_op(x: int, y):
-        raise NotImplementedError
+        raise NotHandled
 
     # Without annotations, the default is object
     assert typeof(untyped_op(1, 2)) is object
@@ -712,7 +709,7 @@ def test_typeof_union():
 
     @defop
     def maybe_int(b: bool) -> int | str:
-        raise NotImplementedError
+        raise NotHandled
 
     # Union types are simplified to their origin type
     assert typeof(maybe_int(True)) is Union
@@ -724,7 +721,7 @@ def test_typeof_optional():
 
     @defop
     def maybe_value(b: bool) -> int | None:
-        raise NotImplementedError
+        raise NotHandled
 
     # Optional[int] is Union[int, None], so it simplifies to Union
     assert typeof(maybe_value(True)) is Union
@@ -739,10 +736,51 @@ def test_typeof_generic():
 
     @defop
     def box_value[T](x: T) -> Box[T]:
-        raise NotImplementedError
+        raise NotHandled
 
     # Generic types are simplified to their origin type
     assert typeof(box_value(42)) is Box
+
+
+def test_defdata_large(benchmark):
+    """Test defdata with large nested operations that form a binary tree of arbitrary size."""
+    import random
+
+    @defop
+    def f[T, A, B](
+        v: Annotated[Operation[[], int], Scoped[A]],
+        x: Annotated[T, Scoped[A | B]],
+        y: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        """Generic operation that takes two arguments of the same type and returns that type."""
+        raise NotHandled
+
+    def build_tree(depth: int) -> Any:
+        """
+        Recursively build a binary tree of f operations with the specified depth.
+
+        Args:
+            depth: The depth of the tree (0 means just a leaf)
+            leaf_type: The type of values at the leaves (int, str, etc.)
+            start_value: The starting value for leaf generation
+
+        Returns:
+            A nested tree of f operations with leaves of the specified type
+        """
+        if depth == 0:
+            if random.random() < 0.5:
+                return 0
+            else:
+                return defop(int)()
+
+        # Recursively build left and right subtrees
+        left = build_tree(depth - 1)
+        right = build_tree(depth - 1)
+
+        return f(defop(int), left, right)
+
+    # Test a very large tree (depth 8 = 255 leaf nodes)
+    benchmark(functools.partial(build_tree, 7))
 
 
 def test_evaluate_deep():
@@ -757,3 +795,23 @@ def test_evaluate_deep():
     assert evaluate(evaluate(z(), intp=intp), intp=intp) == 3
 
     assert evaluate(z(), intp=intp) == 3
+
+
+def test_fvsof_binder():
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
+
+    @defop
+    def add(a: int, b: int) -> int:
+        raise NotHandled
+
+    @defop
+    def Lam2[A, B](
+        body: Annotated[int, Scoped[A | B]],
+        var1: Annotated[Operation[[], int], Scoped[A]],
+        var2: Annotated[Operation[[], int], Scoped[A]],
+    ) -> Annotated[Callable[[int, int], int], Scoped[B]]:
+        raise NotHandled
+
+    term = Lam2(add(x(), add(y(), z())), x, y)
+    assert not {x, y} <= fvsof(term)
+    assert fvsof(term) == {z, Lam2, add}

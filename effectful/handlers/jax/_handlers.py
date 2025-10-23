@@ -12,7 +12,6 @@ except ImportError:
 
 import tree
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
@@ -21,8 +20,9 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     defterm,
+    syntactic_eq,
 )
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
@@ -144,7 +144,7 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             and args[1]
             and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
         ):
-            raise NotImplementedError
+            raise NotHandled
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
             # note: this cast is a lie. partial_eval can return non-arrays, as
             # can jax_fn. for example, some jax functions return tuples,
@@ -157,7 +157,7 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
         ):
             return typing.cast(jax.Array, jax_fn(*args, **kwargs))
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     functools.update_wrapper(_jax_op, jax_fn)
     return _jax_op
@@ -176,7 +176,7 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
         ):
             return typing.cast(jax.Array, jax_fn(*args, **kwargs))
         else:
-            raise NotImplementedError
+            raise NotHandled
 
     functools.update_wrapper(_jax_op, jax_fn)
     return _jax_op
@@ -201,11 +201,9 @@ def bind_dims[T, A, B](
     """Convert named dimensions to positional dimensions.
 
     :param t: An array.
-    :type t: T
     :param args: Named dimensions to convert to positional dimensions.
                   These positional dimensions will appear at the beginning of the
                   shape.
-    :type args: Operation[[], jax.Array]
     :return: An array with the named dimensions in ``args`` converted to positional dimensions.
 
     **Example usage**:
@@ -286,3 +284,10 @@ def _indexed_func_wrapper[**P, S, T](
         return indexed_ret
 
     return deindexed, reindex
+
+
+@syntactic_eq.register
+def _(x: jax.typing.ArrayLike, other) -> bool:
+    return isinstance(other, jax.typing.ArrayLike) and bool(  # type: ignore[arg-type]
+        (jnp.asarray(x) == jnp.asarray(other)).all()
+    )

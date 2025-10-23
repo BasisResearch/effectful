@@ -3,10 +3,9 @@ import operator
 import types
 from typing import Annotated, Tuple, Union, cast, overload
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
 from effectful.ops.syntax import Scoped, defop
-from effectful.ops.types import Interpretation, Operation, Term
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 
 # https://stackoverflow.com/questions/2703599/what-would-a-frozen-dict-be
@@ -49,7 +48,7 @@ def Sum[K, V, S, T, A, B](
     v: Annotated[Operation[[], V], Scoped[A]],
     e2: Annotated[SemiRingDict[S, T], Scoped[A]],
 ) -> SemiRingDict[S, T]:
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
@@ -58,22 +57,22 @@ def Let[S, T, A, B](
     x: Annotated[Operation[[], T], Scoped[B]],
     e2: Annotated[S, Scoped[B]],
 ) -> Annotated[S, Scoped[A]]:
-    raise NotImplementedError
+    raise NotHandled
 
 
 @defop
-def Record[T](**kwargs: T) -> dict[str, T]:
-    raise NotImplementedError
+def Record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
+    raise NotHandled
 
 
 @defop
-def Field[T](record: dict[str, T], key: str) -> T:
-    raise NotImplementedError
+def Field[T](record: collections.abc.Mapping[str, T], key: str) -> T:
+    raise NotHandled
 
 
 @defop
-def Dict[K, V](*contents: Union[K, V]) -> SemiRingDict[K, V]:
-    raise NotImplementedError
+def Dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+    raise NotHandled
 
 
 @defop
@@ -81,7 +80,7 @@ def add[T](x: T, y: T) -> T:
     if not any(isinstance(a, Term) for a in (x, y)):
         return operator.add(x, y)
     else:
-        raise NotImplementedError
+        raise NotHandled
 
 
 ops = types.SimpleNamespace()
@@ -92,20 +91,14 @@ ops.Dict = Dict
 ops.Field = Field
 
 
-def eager_dict[K, V](*contents: Tuple[K, V]) -> SemiRingDict[K, V]:
-    if not any(isinstance(v, Term) for v in contents):
-        if len(contents) % 2 != 0:
-            raise ValueError("Dict requires an even number of arguments")
-
-        kv = []
-        for i in range(0, len(contents), 2):
-            kv.append((contents[i], contents[i + 1]))
-        return SemiRingDict(kv)
+def eager_dict[K, V](*contents: tuple[K, V]) -> SemiRingDict[K, V]:
+    if not any(isinstance(v, Term) for kv in contents for v in kv):
+        return SemiRingDict(list(contents))
     else:
         return fwd()
 
 
-def eager_record[T](**kwargs: T) -> dict[str, T]:
+def eager_record[T](**kwargs: T) -> collections.abc.Mapping[str, T]:
     if not any(isinstance(v, Term) for v in kwargs.values()):
         return dict(**kwargs)
     else:
@@ -117,7 +110,9 @@ def eager_add(x: int, y: int) -> int: ...
 
 
 @overload
-def eager_add[K, V](x: SemiRingDict[K, V], y: SemiRingDict[K, V]) -> SemiRingDict[K, V]: ...
+def eager_add[K, V](
+    x: SemiRingDict[K, V], y: SemiRingDict[K, V]
+) -> SemiRingDict[K, V]: ...
 
 
 def eager_add(x, y):
@@ -175,16 +170,16 @@ def vertical_fusion[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
         case (
             Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
             Term(ops.Sum, (Term(xa), k2, v2, Term(ops.Dict, (Term(k2a), e_rhs)))),
-        ) if (
-            x == xa and k1 == k1a and k2 == k2a
-        ):
+        ) if x == xa and k1 == k1a and k2 == k2a:
             return evaluate(
                 Sum(
                     e_sum,  # type: ignore
                     k1,  # type: ignore
                     v1,  # type: ignore
                     Let(
-                        e_lhs, v2, Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs)))  # type: ignore
+                        e_lhs,
+                        v2,  # type: ignore
+                        Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs))),  # type: ignore
                     ),
                 )
             )
@@ -215,7 +210,7 @@ if __name__ == "__main__":
     )
 
     term: SemiRingDict[int, int] = Let(
-        Sum(x(), k, v, Dict(k(), v() + 1)), y, Sum(y(), k, v, Dict(k(), v() + 1))
+        Sum(x(), k, v, Dict((k(), v() + 1))), y, Sum(y(), k, v, Dict((k(), v() + 1)))
     )
 
     print("Without optimization:", term)

@@ -13,9 +13,9 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import typeof
+from effectful.ops.semantics import apply, runner, typeof
 from effectful.ops.syntax import _BaseOperation, defdata, defop, defterm
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -381,7 +381,7 @@ class DistributionTerm(dist.Distribution, metaclass=DistributionMeta):
 
     @defop
     def to_event(self, reinterpreted_batch_ndims=None):
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def expand(self, batch_shape):

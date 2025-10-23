@@ -1,4 +1,4 @@
-name: Test
+name: Build Docs
 
 on:
   push:
@@ -11,9 +11,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["'<3.13'", "'3.13'"]
     steps:
       - uses: actions/checkout@v4
       
@@ -22,11 +19,14 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install pandoc
+        run: |
+          sudo apt install -y pandoc
+
       - name: Install Python dependencies
         run: |
-          uv sync --all-extras --dev --python ${{ matrix.python-version }}
+          uv sync --all-extras --dev
           
-      - name: Run tests
-        env:
-          MKL_NUM_THREADS: 1
-        run: uv run ./scripts/test.sh
+      - name: Build docs
+        run: |
+          cd docs && uv run make html
