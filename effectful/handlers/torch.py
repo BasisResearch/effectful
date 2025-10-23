@@ -347,6 +347,21 @@ def _embed_tensor(op, *args, **kwargs):
         return _TensorTerm(op, *args, **kwargs)
 
 
+def _torch_function[T](func: Callable[..., T], args=(), kwargs=None) -> Expr[T]:
+    """Evaluate a torch function on arguments. Registers the torch function as
+    an operation first.
+
+    """
+    # __getitem__ accepts either tuples or bare single indexes as the second
+    # argument. torch_getitem expects only tuples.
+    if func is torch._C.TensorBase.__getitem__:
+        if not isinstance(args[1], tuple):
+            assert len(args) == 2
+            args = [args[0]] + [(args[1],)]
+
+    return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+
+
 class _TensorTerm(Term[torch.Tensor]):
     def __init__(
         self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
@@ -376,7 +391,7 @@ class _TensorTerm(Term[torch.Tensor]):
     def __torch_function__[T](
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
-        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+        return _torch_function(func, args, kwargs)
 
     def __add__(self, other: torch.Tensor) -> torch.Tensor:
         return torch.add(typing.cast(torch.Tensor, self), other)
@@ -525,7 +540,7 @@ class _EagerTensorTerm(torch.Tensor):
     def __torch_function__[T](
         cls, func: Callable[..., T], types, args=(), kwargs=None
     ) -> Expr[T]:
-        return _register_torch_op(func)(*args, **({} if kwargs is None else kwargs))
+        return _torch_function(func, args, kwargs)
 
     def __getitem__(self, key) -> torch.Tensor:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))

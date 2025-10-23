@@ -7,7 +7,6 @@ from collections.abc import Iterable, Mapping
 from typing import Any, get_type_hints
 
 import pydantic
-from pydantic import create_model
 
 try:
     import openai
@@ -22,7 +21,6 @@ except ImportError:
 from openai.types.responses import FunctionToolParam
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.structure import decode
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
@@ -48,20 +46,15 @@ class Tool[**P, T]:
     def of_operation(cls, op: Operation[P, T], name: str):
         sig = inspect.signature(op)
         hints = get_type_hints(op)
-
-        # Build field definitions with defaults
-        fields = {}
-        for param_name, param in sig.parameters.items():
-            field_type = hints.get(param_name, str)
-            if param.default == inspect.Parameter.empty:
-                field_desc = field_type
-            else:
-                field_desc = (field_type, param.default)
-            fields[param_name] = field_desc
-
-        parameter_model = create_model("Params", **fields)
-        result_model = create_model("Result", result=sig.return_annotation)
-
+        fields = {
+            param_name: hints.get(param_name, str) for param_name in sig.parameters
+        }
+        parameter_model = pydantic.create_model(
+            "Params", __config__={"extra": "forbid"}, **fields
+        )
+        result_model = pydantic.create_model(
+            "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
+        )
         return cls(
             parameter_model=parameter_model,
             result_model=result_model,
@@ -76,7 +69,7 @@ class Tool[**P, T]:
             "name": self.name,
             "description": self.operation.__doc__,
             "parameters": self.parameter_model.model_json_schema(),
-            "strict": False,
+            "strict": True,
         }
 
 
@@ -167,6 +160,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
+        ret_type = template.__signature__.return_annotation
         bound_args = template.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
         prompt = _OpenAIPromptFormatter().format_as_messages(
@@ -176,21 +170,40 @@ class OpenAIAPIProvider(ObjectInterpretation):
         tools = _tools_of_operations(template.tools)
         tool_definitions = [t.function_definition for t in tools.values()]
 
+        response_kwargs: dict[str, Any] = {
+            "model": self._model_name,
+            "tools": tool_definitions,
+            "tool_choice": "auto",
+        }
+
+        if ret_type == str:
+            result_schema = None
+        else:
+            Result = pydantic.create_model(
+                "Response", value=ret_type, __config__={"extra": "forbid"}
+            )
+            result_schema = openai.lib._pydantic.to_strict_json_schema(Result)
+            response_kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "schema": result_schema,
+                    "strict": True,
+                }
+            }
+
+        called_tools = set([])  # tool calls that we have discharged
+
         # Note: The OpenAI api only seems to accept images in the 'user' role.
         # The effect of different roles on the model's response is currently
         # unclear.
-
-        called_tools = set([])  # tool calls that we have discharged
         model_input: list[Any] = [
             {"type": "message", "content": prompt, "role": "user"}
         ]
 
         while True:
             response = self._client.responses.create(
-                model=self._model_name,
-                input=model_input,
-                tools=tool_definitions,
-                tool_choice="auto",
+                input=model_input, **response_kwargs
             )
 
             new_input = []
@@ -223,6 +236,11 @@ class OpenAIAPIProvider(ObjectInterpretation):
         assert last_resp.type == "message"
         last_resp_content = last_resp.content[0]
         assert last_resp_content.type == "output_text"
+        result_str = last_resp_content.text
 
-        ret_type = template.__signature__.return_annotation
-        return decode(ret_type, last_resp_content.text)
+        if result_schema is None:
+            return result_str
+
+        result = Result.model_validate_json(result_str)
+        assert isinstance(result, Result)
+        return result.value  # type: ignore[attr-defined]
