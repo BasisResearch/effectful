@@ -1,10 +1,10 @@
 import dataclasses
 import inspect
 from collections.abc import Callable, Iterable
-import functools
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
+
 
 @dataclasses.dataclass(frozen=True)
 class Template[**P, T]:
@@ -15,12 +15,6 @@ class Template[**P, T]:
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         raise NotHandled
-
-    def __get__(self, instance, _owner):
-        if instance is not None:
-            return functools.partial(self, instance)
-        else:
-            return self
 
     @classmethod
     def define(cls, _func=None, *, tools: Iterable[Operation] = ()):
