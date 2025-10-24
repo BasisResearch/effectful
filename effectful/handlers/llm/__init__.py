@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import inspect
 from collections.abc import Callable, Iterable
 
@@ -15,6 +16,12 @@ class Template[**P, T]:
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         raise NotHandled
+
+    def __get__(self, instance, _owner):
+        if instance is not None:
+            return functools.partial(self, instance)
+        else:
+            return self
 
     @classmethod
     def define(cls, _func=None, *, tools: Iterable[Operation] = ()):
