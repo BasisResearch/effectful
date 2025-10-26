@@ -621,21 +621,28 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
     def __isabstractmethod__(self) -> bool:
         return getattr(self._default, "__isabstractmethod__", False)
 
-    def __set_name__(self, owner, name):
-        assert not hasattr(self, "_attrname"), "should only be called once"
-        self._attrname = f"_descriptorop_{name}"
+    def __set_name__[T](self, owner: type[T], name: str) -> None:
+        assert not hasattr(self, "_name_on_instance"), "should only be called once"
+        self._name_on_instance = f"__instanceop_{name}"
+
+        @functools.cached_property
+        def instanceop(__instance: T):
+            from effectful.ops.semantics import fvsof
+
+            if isinstance(__instance, Term) or fvsof(__instance):
+                return types.MethodType(self, __instance)
+            else:
+                return defop(types.MethodType(self, __instance))
+
+        instanceop.__set_name__(owner, self._name_on_instance)
+        setattr(owner, self._name_on_instance, instanceop)
 
     def __get__(self, instance, owner):
-        if instance is None:
-            return self
-        elif isinstance(instance, Term):
-            return types.MethodType(self, instance)
-        elif self._attrname in instance.__dict__:
-            return instance.__dict__[self._attrname]
-        else:
-            instanced_op = defop(types.MethodType(self, instance))
-            instance.__dict__[self._attrname] = instanced_op
-            return instanced_op
+        return getattr(
+            instance,
+            self._name_on_instance,
+            self if instance is None else types.MethodType(self, instance),
+        )
 
 
 @defop.register(Operation)
@@ -684,26 +691,18 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
-@defop.register(types.MethodType)
-class _BoundMethodOperation[**P, T](_BaseOperation[P, T]):
-    def __set_name__(self, owner, name):
-        pass
-
-    def __get__(self, instance, owner) -> Operation[P, T]:
-        return self
-
-
 class _ClassMethodOpDescriptor(classmethod):
     def __set_name__(self, owner, name):
-        self._attrname = f"_descriptorop_{name}"
+        assert not hasattr(self, "_name_on_owner"), "should only be called once"
+        self._name_on_owner = f"_descriptorop_{name}"
 
     def __get__(self, instance, owner: type | None = None):
         owner = owner if owner is not None else type(instance)
         try:
-            return owner.__dict__[self._attrname]
+            return owner.__dict__[self._name_on_owner]
         except KeyError:
             bound_op = defop(super().__get__(instance, owner))
-            setattr(owner, self._attrname, bound_op)
+            setattr(owner, self._name_on_owner, bound_op)
             return bound_op
 
 
