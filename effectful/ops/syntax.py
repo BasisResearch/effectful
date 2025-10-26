@@ -625,6 +625,9 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         assert not hasattr(self, "_name_on_instance"), "should only be called once"
         self._name_on_instance = f"__instanceop_{name}"
 
+        if issubclass(owner, Term):
+            return None
+
         @functools.cached_property
         def instanceop(__instance: T):
             from effectful.ops.semantics import fvsof
