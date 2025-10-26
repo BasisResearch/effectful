@@ -129,7 +129,17 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
-# Note: attempting to type the tool arguments causes type-checker failures
+# Emitted for model request/response rounds so handlers can observe/log requests.
+@defop
+def llm_request(
+    client: openai.OpenAI,
+    model_input: list[Any],
+    response_kwargs: dict[str, Any],
+) -> Any:
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
+    return client.responses.create(input=model_input, **response_kwargs)
+
+
 @defop
 def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
@@ -202,9 +212,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
         ]
 
         while True:
-            response = self._client.responses.create(
-                input=model_input, **response_kwargs
-            )
+            response = llm_request(self._client, model_input, response_kwargs)
 
             new_input = []
             for message in response.output:
