@@ -629,7 +629,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             return None
 
         @functools.cached_property
-        def instanceop(__instance: T):
+        def _instanceop(__instance: T):
             from effectful.ops.semantics import fvsof
 
             if isinstance(__instance, Term) or fvsof(__instance):
@@ -637,8 +637,8 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             else:
                 return defop(types.MethodType(self, __instance))
 
-        instanceop.__set_name__(owner, self._name_on_instance)
-        setattr(owner, self._name_on_instance, instanceop)
+        _instanceop.__set_name__(owner, self._name_on_instance)
+        setattr(owner, self._name_on_instance, _instanceop)
 
     def __get__(self, instance, owner):
         return getattr(
