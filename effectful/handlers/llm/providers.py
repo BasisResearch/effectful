@@ -140,6 +140,7 @@ def llm_request(
     return client.responses.create(input=model_input, **response_kwargs)
 
 
+# Note: attempting to type the tool arguments causes type-checker failures
 @defop
 def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
