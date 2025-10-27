@@ -22,6 +22,7 @@ except ImportError:
 from openai.types.responses import FunctionToolParam
 
 from effectful.handlers.llm import Template
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
@@ -153,47 +154,35 @@ class LLMLoggingHandler(ObjectInterpretation):
     def __init__(
         self,
         *,
-        logger: logging.Logger | None = None,
-        logger_name: str = "effectful.llm",
+        logger_name: str | None = None,
         level: int = logging.INFO,
     ):
         """Initialize the logging handler.
 
         Args:
-            logger: The logger to use. If None, a logger with the given name will be created.
-            logger_name: The name of the logger to use.
+            logger_name: The name of the logger to use. If None, the logger name will be the name of the class.
             level: The level to log at.
-            max_text_chars: The maximum number of characters to log for text.
-            redact_images: Whether to redact image data URIs.
         """
-        self._logger = logger or logging.getLogger(logger_name)
-        self._logger.setLevel(level)
+        self.logger = logging.getLogger(
+            logger_name if logger_name is not None else __name__
+        )
+        self.logger.setLevel(level)
 
     @implements(llm_request)
-    def _log_llm_request[**P, T](self, client: openai.OpenAI, *args, **kwargs) -> Any:
+    def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
-        from effectful.ops.semantics import fwd
 
-        self._logger.info(
+        self.logger.info(
             "llm.request",
-            extra={"payload": {"args": args, "kwargs": kwargs}},
+            extra={
+                "payload": {
+                    "args": [str(a) for a in args],
+                    "kwargs": {k: str(v) for k, v in kwargs.items()},
+                }
+            },
         )
         response = fwd()
-        try:
-            outputs = getattr(response, "output", []) or []
-            self._logger.info(
-                "llm.response",
-                extra={
-                    "payload": {
-                        "num_outputs": len(outputs),
-                        "output_types": [getattr(m, "type", None) for m in outputs],
-                    }
-                },
-            )
-        except Exception:
-            self._logger.info(
-                "llm.response", extra={"payload": {"info": str(response)[:256]}}
-            )
+        self.logger.info("llm.response", extra={"payload": {"response": str(response)}})
         return response
 
     @implements(tool_call)
@@ -201,24 +190,26 @@ class LLMLoggingHandler(ObjectInterpretation):
         self, template: Template, tool: Operation, *args, **kwargs
     ) -> Any:
         """Log the tool call and result."""
-        from effectful.ops.semantics import fwd
 
-        try:
-            tool_name = getattr(tool, "__name__", str(tool))
-        except Exception:
-            tool_name = str(tool)
-        self._logger.info(
+        tool_name = tool.__name__
+        self.logger.info(
             "llm.tool_call",
-            extra={"payload": {"tool": tool_name, "args": args, "kwargs": kwargs}},
+            extra={
+                "payload": {
+                    "tool": tool_name,
+                    "args": [str(a) for a in args],
+                    "kwargs": {k: str(v) for k, v in kwargs.items()},
+                }
+            },
         )
         result = fwd()
-        self._logger.info(
+        self.logger.info(
             "llm.tool_result",
             extra={
                 "payload": {
                     "tool": tool_name,
-                    "args": args,
-                    "kwargs": kwargs,
+                    "args": [str(a) for a in args],
+                    "kwargs": {str(k): str(v) for k, v in kwargs.items()},
                     "result": str(result),
                 }
             },
