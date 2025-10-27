@@ -628,7 +628,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         if issubclass(owner, Term):
             return None
 
-        @functools.cached_property
+        @functools.cached_property  # type: ignore
         def _instanceop(__instance: T):
             from effectful.ops.semantics import fvsof
 
@@ -637,6 +637,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             else:
                 return defop(types.MethodType(self, __instance))
 
+        assert isinstance(_instanceop, functools.cached_property)
         _instanceop.__set_name__(owner, self._name_on_instance)
         setattr(owner, self._name_on_instance, _instanceop)
 
