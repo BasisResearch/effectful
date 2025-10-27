@@ -172,17 +172,17 @@ class LLMLoggingHandler(ObjectInterpretation):
     def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
 
+        response = fwd()
         self.logger.info(
             "llm.request",
             extra={
                 "payload": {
-                    "args": [str(a) for a in args],
-                    "kwargs": {k: str(v) for k, v in kwargs.items()},
+                    "args": args,
+                    "kwargs": kwargs,
+                    "response": response,
                 }
             },
         )
-        response = fwd()
-        self.logger.info("llm.response", extra={"payload": {"response": str(response)}})
         return response
 
     @implements(tool_call)
@@ -192,25 +192,14 @@ class LLMLoggingHandler(ObjectInterpretation):
         """Log the tool call and result."""
 
         tool_name = tool.__name__
+        result = fwd()
         self.logger.info(
             "llm.tool_call",
             extra={
                 "payload": {
                     "tool": tool_name,
-                    "args": [str(a) for a in args],
-                    "kwargs": {k: str(v) for k, v in kwargs.items()},
-                }
-            },
-        )
-        result = fwd()
-        self.logger.info(
-            "llm.tool_result",
-            extra={
-                "payload": {
-                    "tool": tool_name,
-                    "args": [str(a) for a in args],
-                    "kwargs": {str(k): str(v) for k, v in kwargs.items()},
-                    "result": str(result),
+                    "args": args,
+                    "kwargs": kwargs,
                 }
             },
         )
