@@ -2,6 +2,7 @@ import base64
 import dataclasses
 import inspect
 import io
+import logging
 import string
 from collections.abc import Iterable, Mapping
 from typing import Any, get_type_hints
@@ -131,13 +132,9 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(
-    client: openai.OpenAI,
-    model_input: list[Any],
-    response_kwargs: dict[str, Any],
-) -> Any:
+def llm_request(client: openai.OpenAI, *args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return client.responses.create(input=model_input, **response_kwargs)
+    return client.responses.create(*args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -145,6 +142,93 @@ def llm_request(
 def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
     return tool(*args, **kwargs)
+
+
+class LLMLoggingHandler(ObjectInterpretation):
+    """Logs llm_request rounds and tool_call invocations using Python logging.
+
+    Configure with a logger or logger name. By default logs at INFO level.
+    """
+
+    def __init__(
+        self,
+        *,
+        logger: logging.Logger | None = None,
+        logger_name: str = "effectful.llm",
+        level: int = logging.INFO,
+    ):
+        """Initialize the logging handler.
+
+        Args:
+            logger: The logger to use. If None, a logger with the given name will be created.
+            logger_name: The name of the logger to use.
+            level: The level to log at.
+            max_text_chars: The maximum number of characters to log for text.
+            redact_images: Whether to redact image data URIs.
+        """
+        self._logger = logger or logging.getLogger(logger_name)
+        self._logger.setLevel(level)
+
+    @implements(llm_request)
+    def _log_llm_request[**P, T](
+        self,
+        client: openai.OpenAI,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> Any:
+        """Log the LLM request and response."""
+        from effectful.ops.semantics import fwd
+
+        self._logger.info(
+            "llm.request",
+            extra={"payload": {"args": args, "kwargs": kwargs}},
+        )
+        response = fwd()
+        try:
+            outputs = getattr(response, "output", []) or []
+            self._logger.info(
+                "llm.response",
+                extra={
+                    "payload": {
+                        "num_outputs": len(outputs),
+                        "output_types": [getattr(m, "type", None) for m in outputs],
+                    }
+                },
+            )
+        except Exception:
+            self._logger.info(
+                "llm.response", extra={"payload": {"info": str(response)[:256]}}
+            )
+        return response
+
+    @implements(tool_call)
+    def _log_tool_call(
+        self, template: Template, tool: Operation, *args, **kwargs
+    ) -> Any:
+        """Log the tool call and result."""
+        from effectful.ops.semantics import fwd
+
+        try:
+            tool_name = getattr(tool, "__name__", str(tool))
+        except Exception:
+            tool_name = str(tool)
+        self._logger.info(
+            "llm.tool_call",
+            extra={"payload": {"tool": tool_name, "args": args, "kwargs": kwargs}},
+        )
+        result = fwd()
+        self._logger.info(
+            "llm.tool_result",
+            extra={
+                "payload": {
+                    "tool": tool_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                    "result": str(result),
+                }
+            },
+        )
+        return result
 
 
 def _call_tool_with_json_args(
@@ -213,7 +297,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
         ]
 
         while True:
-            response = llm_request(self._client, model_input, response_kwargs)
+            response = llm_request(self._client, input=model_input, **response_kwargs)
 
             new_input = []
             for message in response.output:
