@@ -1,13 +1,17 @@
+import collections.abc
 import dataclasses
 import functools
+import types
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import tree
-
 from effectful.ops.semantics import apply, coproduct, handler
 from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, Operation
+from effectful.ops.types import (
+    Interpretation,
+    NotHandled,  # noqa: F401
+    Operation,
+)
 
 
 @dataclasses.dataclass
@@ -35,9 +39,11 @@ def argsof(op: Operation) -> tuple[list, dict]:
     raise RuntimeError("Prompt argsof not bound.")
 
 
-@dataclasses.dataclass
-class Product[S, T]:
+class Product:
     values: object
+
+    def __init__(self, values):
+        self.values = values
 
 
 def _pack(intp):
@@ -50,6 +56,51 @@ def _unpack(x, prompt):
     if isinstance(x, Product):
         return x.values(prompt)
     return x
+
+
+def map_structure(func, expr):
+    if isinstance(expr, collections.abc.Mapping):
+        if isinstance(expr, collections.defaultdict):
+            return type(expr)(
+                expr.default_factory, map_structure(func, tuple(expr.items()))
+            )
+        elif isinstance(expr, types.MappingProxyType):
+            return type(expr)(dict(map_structure(func, tuple(expr.items()))))
+        else:
+            return type(expr)(map_structure(func, tuple(expr.items())))
+    elif isinstance(expr, collections.abc.Sequence):
+        if isinstance(expr, str | bytes):
+            return expr
+        elif (
+            isinstance(expr, tuple)
+            and hasattr(expr, "_fields")
+            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+        ):  # namedtuple
+            return type(expr)(
+                **{
+                    field: map_structure(func, getattr(expr, field))
+                    for field in expr._fields
+                }
+            )
+        else:
+            return type(expr)(map_structure(func, item) for item in expr)
+    elif isinstance(expr, collections.abc.Set):
+        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
+            return {map_structure(func, item) for item in expr}
+        else:
+            return type(expr)(map_structure(func, item) for item in expr)
+    elif isinstance(expr, collections.abc.ValuesView):
+        return [map_structure(func, item) for item in expr]
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return dataclasses.replace(
+            expr,
+            **{
+                field.name: map_structure(func, getattr(expr, field.name))
+                for field in dataclasses.fields(expr)
+            },
+        )
+    else:
+        return func(expr)
 
 
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
@@ -111,7 +162,7 @@ def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
             #
             # TODO: `get_for_intp` has to guess whether a dict value is an
             # interpretation or not. This is probably a latent bug.
-            intp_args, intp_kwargs = tree.map_structure(
+            intp_args, intp_kwargs = map_structure(
                 lambda x: _unpack(x, prompt), (args, kwargs)
             )
 
