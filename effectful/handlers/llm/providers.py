@@ -170,12 +170,7 @@ class LLMLoggingHandler(ObjectInterpretation):
         self._logger.setLevel(level)
 
     @implements(llm_request)
-    def _log_llm_request[**P, T](
-        self,
-        client: openai.OpenAI,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> Any:
+    def _log_llm_request[**P, T](self, client: openai.OpenAI, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
         from effectful.ops.semantics import fwd
 
