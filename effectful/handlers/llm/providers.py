@@ -2,6 +2,7 @@ import base64
 import dataclasses
 import inspect
 import io
+import logging
 import string
 from collections.abc import Iterable, Mapping
 from typing import Any, get_type_hints
@@ -21,6 +22,7 @@ except ImportError:
 from openai.types.responses import FunctionToolParam
 
 from effectful.handlers.llm import Template
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
@@ -129,11 +131,74 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
+# Emitted for model request/response rounds so handlers can observe/log requests.
+@defop
+def llm_request(client: openai.OpenAI, *args, **kwargs) -> Any:
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
+    return client.responses.create(*args, **kwargs)
+
+
 # Note: attempting to type the tool arguments causes type-checker failures
 @defop
 def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
     return tool(*args, **kwargs)
+
+
+class LLMLoggingHandler(ObjectInterpretation):
+    """Logs llm_request rounds and tool_call invocations using Python logging.
+
+    Configure with a logger or logger name. By default logs at INFO level.
+    """
+
+    def __init__(
+        self,
+        *,
+        logger: logging.Logger | None = None,
+    ):
+        """Initialize the logging handler.
+
+        Args:
+            logger: The logger to use. If None, the logger name will be the name of the class. Note that the logger should have a handler that print out also the extra payload, e.g. `%(payload)s`.
+        """
+        self.logger = logger or logging.getLogger(__name__)
+
+    @implements(llm_request)
+    def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+        """Log the LLM request and response."""
+
+        response = fwd()
+        self.logger.info(
+            "llm.request",
+            extra={
+                "payload": {
+                    "args": args,
+                    "kwargs": kwargs,
+                    "response": response,
+                }
+            },
+        )
+        return response
+
+    @implements(tool_call)
+    def _log_tool_call(
+        self, template: Template, tool: Operation, *args, **kwargs
+    ) -> Any:
+        """Log the tool call and result."""
+
+        tool_name = tool.__name__
+        result = fwd()
+        self.logger.info(
+            "llm.tool_call",
+            extra={
+                "payload": {
+                    "tool": tool_name,
+                    "args": args,
+                    "kwargs": kwargs,
+                }
+            },
+        )
+        return result
 
 
 def _call_tool_with_json_args(
@@ -202,9 +267,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
         ]
 
         while True:
-            response = self._client.responses.create(
-                input=model_input, **response_kwargs
-            )
+            response = llm_request(self._client, input=model_input, **response_kwargs)
 
             new_input = []
             for message in response.output:
