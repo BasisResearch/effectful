@@ -3,8 +3,8 @@ import dataclasses
 import inspect
 import io
 import string
-from collections.abc import Iterable, Mapping
-from typing import Any, Literal, get_type_hints
+from collections.abc import Callable, Iterable, Mapping
+from typing import Annotated, Any, Literal, get_type_hints
 
 import pydantic
 from openai import BaseModel
@@ -38,27 +38,52 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
 
 # this type is present in OpenAI's python bindings under ResponseInputImageParam but not exported.
 class ImageFunctionOutput(BaseModel):
-    detail: Literal["auto"]
+    detail: Literal["auto"] = "auto"
     """The detail level of the image to be sent to the model."""
 
-    type: Literal["input_image"]
+    type: Literal["input_image"] = "input_image"
     """The type of the input item. Always `input_image`."""
 
     image_url: str
     """A base64 encoded image in a data URL."""
 
+    @classmethod
+    def of_image(cls, image: Image.Image):
+        return cls(image_url=_pil_image_to_base64_data_uri(image))
 
-ToolResultModel = (
-    type[pydantic.BaseModel]
-    | type[ImageFunctionOutput]
-    | type[list[ImageFunctionOutput]]
-)
+
+def build_model(ty: type) -> type[pydantic.BaseModel]:
+    """Constructs a pydantic model capable of serialising model outputs"""
+
+    # special handling of PIL image types/sequences of image types
+    def with_converter[T](ty: type[T], converter: Callable[..., T]):
+        return Annotated[
+            ty, pydantic.WrapValidator(lambda value, handler: handler(converter(value)))
+        ]
+
+    result_ty = with_converter(
+        str, lambda vl: str({"status": "success", "result": str(vl)})
+    )
+    if ty == Image.Image:
+        result_ty = with_converter(
+            list[ImageFunctionOutput], lambda vl: [ImageFunctionOutput.of_image(vl)]
+        )
+    elif ty == list[Image.Image]:
+        result_ty = with_converter(
+            list[ImageFunctionOutput],
+            lambda vls: list(map(ImageFunctionOutput.of_image, vls)),
+        )
+
+    result_model = pydantic.create_model(
+        "Result", __config__={"extra": "forbid"}, result=result_ty
+    )
+    return result_model
 
 
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    result_model: ToolResultModel
+    result_model: type[pydantic.BaseModel]
     operation: Operation[P, T]
     name: str
 
@@ -74,15 +99,7 @@ class Tool[**P, T]:
             "Params", __config__={"extra": "forbid"}, **fields
         )
 
-        # special handling of PIL image types/sequences of image types
-        if sig.return_annotation == Image.Image:
-            result_model: ToolResultModel = ImageFunctionOutput
-        elif sig.return_annotation == list[Image.Image]:
-            result_model = list[ImageFunctionOutput]
-        else:
-            result_model = pydantic.create_model(
-                "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
-            )
+        result_model = build_model(sig.return_annotation)
 
         return cls(
             parameter_model=parameter_model,
@@ -173,26 +190,9 @@ def _call_tool_with_json_args(
         result = tool_call(
             template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
-        # special handling of image responses
-        if tool.result_model == ImageFunctionOutput:
-            return [
-                {
-                    "detail": "auto",
-                    "type": "input_image",
-                    "image_url": _pil_image_to_base64_data_uri(result),
-                }
-            ]
-        elif tool.result_model == list[ImageFunctionOutput]:
-            return [
-                {
-                    "detail": "auto",
-                    "type": "input_image",
-                    "image_url": _pil_image_to_base64_data_uri(image),
-                }
-                for image in result
-            ]
-        else:
-            return str({"status": "success", "result": str(result)})
+        result = tool.result_model(result=result)
+        result_json = result.model_dump(mode="json")
+        return result_json["result"]
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 
