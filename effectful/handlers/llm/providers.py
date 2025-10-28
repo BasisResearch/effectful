@@ -154,19 +154,14 @@ class LLMLoggingHandler(ObjectInterpretation):
     def __init__(
         self,
         *,
-        logger_name: str | None = None,
-        level: int = logging.INFO,
+        logger: logging.Logger | None = None,
     ):
         """Initialize the logging handler.
 
         Args:
-            logger_name: The name of the logger to use. If None, the logger name will be the name of the class.
-            level: The level to log at.
+            logger: The logger to use. If None, the logger name will be the name of the class. Note that the logger should have a handler that print out also the extra payload, e.g. `%(payload)s`.
         """
-        self.logger = logging.getLogger(
-            logger_name if logger_name is not None else __name__
-        )
-        self.logger.setLevel(level)
+        self.logger = logger or logging.getLogger(__name__)
 
     @implements(llm_request)
     def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
