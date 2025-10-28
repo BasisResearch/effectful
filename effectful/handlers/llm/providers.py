@@ -3,11 +3,11 @@ import dataclasses
 import inspect
 import io
 import string
-from collections.abc import Iterable, Mapping
-from typing import Any, Literal, get_type_hints
+import typing
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, get_type_hints
 
 import pydantic
-from openai import BaseModel
 
 try:
     import openai
@@ -36,31 +36,46 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-# this type is present in OpenAI's python bindings under ResponseInputImageParam but not exported.
-class ImageFunctionOutput(BaseModel):
-    detail: Literal["auto"]
-    """The detail level of the image to be sent to the model."""
-
-    type: Literal["input_image"]
-    """The type of the input item. Always `input_image`."""
-
-    image_url: str
-    """A base64 encoded image in a data URL."""
+def _pil_image_to_openai_image_param(
+    pil_image: Image.Image,
+) -> openai.types.responses.ResponseInputImageParam:
+    return openai.types.responses.ResponseInputImageParam(
+        type="input_image",
+        detail="auto",
+        image_url=_pil_image_to_base64_data_uri(pil_image),
+    )
 
 
-ToolResultModel = (
-    type[pydantic.BaseModel]
-    | type[ImageFunctionOutput]
-    | type[list[ImageFunctionOutput]]
+OpenAIFunctionOutputParamType = (
+    str | list[openai.types.responses.ResponseInputImageParam]
 )
 
 
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    result_model: ToolResultModel
     operation: Operation[P, T]
     name: str
+
+    def serialise_return_value(self, value) -> OpenAIFunctionOutputParamType:
+        """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
+        sig = inspect.signature(self.operation)
+        ret_ty = sig.return_annotation
+        ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
+        ret_ty_args = typing.get_args(ret_ty)
+
+        # special casing for images
+        if ret_ty == Image.Image:
+            return [_pil_image_to_openai_image_param(value)]
+
+        # special casing for sequences of images (tuple[Image.Image, Image.Image], etc.)
+        if issubclass(ret_ty_origin, Sequence) and all(
+            arg == Image.Image for arg in ret_ty_args
+        ):
+            return [_pil_image_to_openai_image_param(image) for image in value]
+
+        # otherwise stringify
+        return str({"status": "success", "result": str(value)})
 
     @classmethod
     def of_operation(cls, op: Operation[P, T], name: str):
@@ -74,19 +89,8 @@ class Tool[**P, T]:
             "Params", __config__={"extra": "forbid"}, **fields
         )
 
-        # special handling of PIL image types/sequences of image types
-        if sig.return_annotation == Image.Image:
-            result_model: ToolResultModel = ImageFunctionOutput
-        elif sig.return_annotation == list[Image.Image]:
-            result_model = list[ImageFunctionOutput]
-        else:
-            result_model = pydantic.create_model(
-                "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
-            )
-
         return cls(
             parameter_model=parameter_model,
-            result_model=result_model,
             operation=op,
             name=name,
         )
@@ -167,32 +171,13 @@ def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -
 
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
-) -> pydantic.JsonValue:
+) -> OpenAIFunctionOutputParamType:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
             template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
-        # special handling of image responses
-        if tool.result_model == ImageFunctionOutput:
-            return [
-                {
-                    "detail": "auto",
-                    "type": "input_image",
-                    "image_url": _pil_image_to_base64_data_uri(result),
-                }
-            ]
-        elif tool.result_model == list[ImageFunctionOutput]:
-            return [
-                {
-                    "detail": "auto",
-                    "type": "input_image",
-                    "image_url": _pil_image_to_base64_data_uri(image),
-                }
-                for image in result
-            ]
-        else:
-            return str({"status": "success", "result": str(result)})
+        return tool.serialise_return_value(result)
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 
