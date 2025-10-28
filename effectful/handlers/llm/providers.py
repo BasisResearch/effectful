@@ -4,9 +4,10 @@ import inspect
 import io
 import string
 from collections.abc import Iterable, Mapping
-from typing import Any, get_type_hints
+from typing import Any, Literal, get_type_hints
 
 import pydantic
+from openai import BaseModel
 
 try:
     import openai
@@ -35,10 +36,29 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
+# this type is present in OpenAI's python bindings under ResponseInputImageParam but not exported.
+class ImageFunctionOutput(BaseModel):
+    detail: Literal["auto"]
+    """The detail level of the image to be sent to the model."""
+
+    type: Literal["input_image"]
+    """The type of the input item. Always `input_image`."""
+
+    image_url: str
+    """A base64 encoded image in a data URL."""
+
+
+ToolResultModel = (
+    type[pydantic.BaseModel]
+    | type[ImageFunctionOutput]
+    | type[list[ImageFunctionOutput]]
+)
+
+
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    result_model: type[pydantic.BaseModel]
+    result_model: ToolResultModel
     operation: Operation[P, T]
     name: str
 
@@ -49,12 +69,21 @@ class Tool[**P, T]:
         fields = {
             param_name: hints.get(param_name, str) for param_name in sig.parameters
         }
+
         parameter_model = pydantic.create_model(
             "Params", __config__={"extra": "forbid"}, **fields
         )
-        result_model = pydantic.create_model(
-            "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
-        )
+
+        # special handling of PIL image types/sequences of image types
+        if sig.return_annotation == Image.Image:
+            result_model: ToolResultModel = ImageFunctionOutput
+        elif sig.return_annotation == list[Image.Image]:
+            result_model = list[ImageFunctionOutput]
+        else:
+            result_model = pydantic.create_model(
+                "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
+            )
+
         return cls(
             parameter_model=parameter_model,
             result_model=result_model,
@@ -138,15 +167,34 @@ def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -
 
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
-) -> dict:
+) -> pydantic.JsonValue:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
             template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
-        return {"status": "success", "result": str(result)}
+        # special handling of image responses
+        if tool.result_model == ImageFunctionOutput:
+            return [
+                {
+                    "detail": "auto",
+                    "type": "input_image",
+                    "image_url": _pil_image_to_base64_data_uri(result),
+                }
+            ]
+        elif tool.result_model == list[ImageFunctionOutput]:
+            return [
+                {
+                    "detail": "auto",
+                    "type": "input_image",
+                    "image_url": _pil_image_to_base64_data_uri(image),
+                }
+                for image in result
+            ]
+        else:
+            return str({"status": "success", "result": str(result)})
     except Exception as exn:
-        return {"status": "failure", "exception": str(exn)}
+        return str({"status": "failure", "exception": str(exn)})
 
 
 class OpenAIAPIProvider(ObjectInterpretation):
@@ -223,7 +271,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
                 tool_response = {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": str(tool_result),
+                    "output": tool_result,
                 }
                 new_input.append(tool_response)
 
