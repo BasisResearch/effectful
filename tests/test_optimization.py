@@ -27,6 +27,7 @@ from weighted.handlers.optimization.distribution import (
 from weighted.handlers.optimization.distribution import (
     interpretation as simplify_normals_intp,
 )
+from weighted.handlers.optimization.polyhedral import FoldLinearIndexer
 from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
 from weighted.handlers.optimization.reorder import FoldDistributeTerm, FoldNoStreams
 from weighted.ops.distribution import log_prob, sample
@@ -341,4 +342,23 @@ def test_fold_distribute_term():
     with handler(BaselineFold()), handler(arr_intp):
         expected = evaluate(expr)
         result = evaluate(optimized_expr)
+    assert allclose(result, expected)
+
+
+def test_polyhedral():
+    # 2D triangle
+    # { [i, j] : i + 10 <= j < 2 * i + 10 and 1 <= i < 10 + 1}
+    i = defop(jax.Array, name="i")
+    j = defop(jax.Array, name="j")
+
+    streams = {
+        i: jnp.arange(1, 10),
+        j: jnp.arange(i() + 10, 2 * i() + 10),
+    }
+
+    with handler(DenseTensorFold()), handler(FoldLinearIndexer()):
+        result = Sum(streams, i() / j())
+
+    with handler(BaselineFold()):
+        expected = Sum(streams, i() / j())
     assert allclose(result, expected)

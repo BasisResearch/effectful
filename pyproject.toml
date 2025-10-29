@@ -49,6 +49,7 @@ dev = [
     "nbqa",
     "matplotlib",
     "pyro-ppl",
+    "islpy",
 ]
 
 

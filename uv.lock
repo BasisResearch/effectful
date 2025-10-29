@@ -609,6 +609,26 @@ wheels = [
 ]
 
 [[package]]
+name = "islpy"
+version = "2025.2.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/78/61366bc6b2a9d8ca81c5db67f9c4fd5ea24ac97987fe08cac51fbb420bab/islpy-2025.2.5.tar.gz", hash = "sha256:cfcff7fa20efe50e4b8b518e8e4ce46a4513f7e12ba0b6228fd4f833fe8c6526", size = 1370317, upload-time = "2025-06-15T21:11:45.536Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/63/da8305d6421e9d2afe4bdf0bb7b4e9d1caf9806022fe02b1f56de9b010a1/islpy-2025.2.5-cp312-cp312-macosx_10_14_x86_64.whl", hash = "sha256:0531ae5566d58dfc01d118615e51fec9969cd8ab35cf897a75a102638c6d9246", size = 2875265, upload-time = "2025-06-15T21:11:23.196Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/cc/92fd0916e563aa8a7f9aabd2df677ec92d4b6a245a0ca87c11efcc38cb24/islpy-2025.2.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a91c19d92f35b5867a0b90640002faf156e5fcd46e1b72f79cc0342be9cabe17", size = 2267875, upload-time = "2025-06-15T21:11:24.696Z" },
+    { url = "https://files.pythonhosted.org/packages/14/9d/2ce89afc37df0b0681024cf40b72294aeaf5c77bd18e60f07b1a4c486a40/islpy-2025.2.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fc7ec748045041f198da427c2c62c9665fe1efd3fa3284016db40a784286f878", size = 2412425, upload-time = "2025-06-15T21:11:26.721Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/b0/5e7617a3b42dbc9de5650a23c62e360e63c4a8086771d29ce109f1ac83b0/islpy-2025.2.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d4d84e02dafbbd6605adc7aff28f8c6aafc52ee0832408353548d845ef79db94", size = 2808910, upload-time = "2025-06-15T21:11:28.245Z" },
+    { url = "https://files.pythonhosted.org/packages/45/4e/52bc160af82612ea862886dd0be23bef2d524ed37dcf0fb367a38326b57a/islpy-2025.2.5-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2c1d239d927d2416f3623434cd8d3877960b47cecad13da624f5b4e2deec0539", size = 2657841, upload-time = "2025-06-15T21:11:29.947Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/33/d8da21d97879cc4611068f1fa8275e5bb7e0a8043fe6dc483495d5a1a241/islpy-2025.2.5-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:b22ddd9ca0a90d4fd3272664d38e77ab480e0758292a8056698e7cc22224291c", size = 3024667, upload-time = "2025-06-15T21:11:31.976Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/a7/f229ac457347bd9574ebc63bc8e6bdbd81cb7142b9eebc7d02d689c60340/islpy-2025.2.5-cp313-cp313-macosx_10_14_x86_64.whl", hash = "sha256:56c3b8cddfe489b3822fcbf066e2b2297945679569edf6ca23470e13cc289a7d", size = 2875217, upload-time = "2025-06-15T21:11:34.006Z" },
+    { url = "https://files.pythonhosted.org/packages/28/d4/7490076d99ba95e57067a69187872d2e7e3c484e5a618cf645c63983fdd4/islpy-2025.2.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:dba6018edab60d5ac3df62e0608f43595408921d5f549ea6a829162d9e5a51c1", size = 2267810, upload-time = "2025-06-15T21:11:35.629Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/0b/0a78b594108641d76a65c39548227cde191161c7b7494b4f3fda3e6f0d8a/islpy-2025.2.5-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:48882fced72c69bc1500c082c8370ecc6c4f9e8953e9796431ac517e1b09a397", size = 2412501, upload-time = "2025-06-15T21:11:37.648Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/0b/1399af722edca7c9c6ddc304493d2796a4e90c983fdf47fe36f5b079739c/islpy-2025.2.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b7acdbd4839a0a513549405563b1dde3e49d90726257e43231026bc1c48550ff", size = 2808886, upload-time = "2025-06-15T21:11:39.649Z" },
+    { url = "https://files.pythonhosted.org/packages/67/6c/b674bb2e301173ef5b0b56698cfb88d4f7e7be3e1f451cd115f6964d368b/islpy-2025.2.5-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:cfe327d0f98630748cac382e42966704904a2ecb99ce25d4203ff656d8073c9c", size = 2657726, upload-time = "2025-06-15T21:11:41.819Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/a3/90495fab1e8eca7767d9ab5ffb3fca76efc154482d33bb3e9f7c2fcfd06a/islpy-2025.2.5-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:b9d6a11b95cd0fcaf511e68e7d93efc631b5b29514da8cb1b1ad8816176df8d7", size = 3024451, upload-time = "2025-06-15T21:11:43.524Z" },
+]
+
+[[package]]
 name = "jax"
 version = "0.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2473,6 +2493,7 @@ docs = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "islpy" },
     { name = "matplotlib" },
     { name = "mypy" },
     { name = "myst-parser" },
@@ -2509,6 +2530,7 @@ provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "islpy" },
     { name = "matplotlib" },
     { name = "mypy" },
     { name = "myst-parser" },
