@@ -4,7 +4,8 @@ import inspect
 import io
 import logging
 import string
-from collections.abc import Iterable, Mapping
+import typing
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
@@ -37,12 +38,46 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
+def _pil_image_to_openai_image_param(
+    pil_image: Image.Image,
+) -> openai.types.responses.ResponseInputImageParam:
+    return openai.types.responses.ResponseInputImageParam(
+        type="input_image",
+        detail="auto",
+        image_url=_pil_image_to_base64_data_uri(pil_image),
+    )
+
+
+OpenAIFunctionOutputParamType = (
+    str | list[openai.types.responses.ResponseInputImageParam]
+)
+
+
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    result_model: type[pydantic.BaseModel]
     operation: Operation[P, T]
     name: str
+
+    def serialise_return_value(self, value) -> OpenAIFunctionOutputParamType:
+        """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
+        sig = inspect.signature(self.operation)
+        ret_ty = sig.return_annotation
+        ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
+        ret_ty_args = typing.get_args(ret_ty)
+
+        # special casing for images
+        if ret_ty == Image.Image:
+            return [_pil_image_to_openai_image_param(value)]
+
+        # special casing for sequences of images (tuple[Image.Image, Image.Image], etc.)
+        if issubclass(ret_ty_origin, Sequence) and all(
+            arg == Image.Image for arg in ret_ty_args
+        ):
+            return [_pil_image_to_openai_image_param(image) for image in value]
+
+        # otherwise stringify
+        return str({"status": "success", "result": str(value)})
 
     @classmethod
     def of_operation(cls, op: Operation[P, T], name: str):
@@ -51,15 +86,13 @@ class Tool[**P, T]:
         fields = {
             param_name: hints.get(param_name, str) for param_name in sig.parameters
         }
+
         parameter_model = pydantic.create_model(
             "Params", __config__={"extra": "forbid"}, **fields
         )
-        result_model = pydantic.create_model(
-            "Result", __config__={"extra": "forbid"}, result=sig.return_annotation
-        )
+
         return cls(
             parameter_model=parameter_model,
-            result_model=result_model,
             operation=op,
             name=name,
         )
@@ -203,15 +236,15 @@ class LLMLoggingHandler(ObjectInterpretation):
 
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
-) -> dict:
+) -> OpenAIFunctionOutputParamType:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
             template, tool.operation, **args.model_dump(exclude_defaults=True)
         )
-        return {"status": "success", "result": str(result)}
+        return tool.serialise_return_value(result)
     except Exception as exn:
-        return {"status": "failure", "exception": str(exn)}
+        return str({"status": "failure", "exception": str(exn)})
 
 
 class OpenAIAPIProvider(ObjectInterpretation):
@@ -286,7 +319,7 @@ class OpenAIAPIProvider(ObjectInterpretation):
                 tool_response = {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": str(tool_result),
+                    "output": tool_result,
                 }
                 new_input.append(tool_response)
 
