@@ -1,1 +1,1 @@
-import effectful.internals.pretty
+import effectful.internals.pretty  # noqa: F401

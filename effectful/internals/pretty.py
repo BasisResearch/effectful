@@ -1,4 +1,4 @@
-from effectful.ops.types import Operation, Term
+from effectful.ops.types import Term
 
 try:
     from prettyprinter import install_extras, pretty_call, register_pretty
