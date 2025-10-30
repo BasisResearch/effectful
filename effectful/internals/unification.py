@@ -73,6 +73,7 @@ except ImportError:
     from typing import _collect_parameters as _freetypevars  # type: ignore
 
 import effectful.ops.types
+from effectful.ops.types import Box
 
 if typing.TYPE_CHECKING:
     TypeConstant = type | abc.ABCMeta | types.EllipsisType | None
@@ -582,7 +583,7 @@ def _(typ: typing.ForwardRef):
 
 
 @functools.singledispatch
-def nested_type(value) -> TypeExpression:
+def nested_type(value) -> Box[TypeExpression]:
     """
     Infer the type of a value, handling nested collections with generic parameters.
 
@@ -694,11 +695,11 @@ def nested_type(value) -> TypeExpression:
         >>> nested_type(int | str)
         int | str
     """
-    return type(value)
+    return Box(type(value))
 
 
 @nested_type.register
-def _(value: TypeExpression):
+def _(value: Box):
     return value
 
 
@@ -709,23 +710,23 @@ def _(value: effectful.ops.types.Term):
 
 @nested_type.register
 def _(value: effectful.ops.types.Operation):
-    typ = nested_type.dispatch(collections.abc.Callable)(value)
+    typ = nested_type.dispatch(collections.abc.Callable)(value).value
     (arg_types, return_type) = typing.get_args(typ)
-    return effectful.ops.types.Operation[arg_types, return_type]  # type: ignore
+    return Box(effectful.ops.types.Operation[arg_types, return_type])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Callable):
     if typing.get_overloads(value):
-        return type(value)
+        return Box(type(value))
 
     try:
         sig = inspect.signature(value)
     except ValueError:
-        return type(value)
+        return Box(type(value))
 
     if sig.return_annotation is inspect.Signature.empty:
-        return type(value)
+        return Box(type(value))
     elif any(
         p.annotation is inspect.Parameter.empty
         or p.kind
@@ -736,60 +737,65 @@ def _(value: collections.abc.Callable):
         }
         for p in sig.parameters.values()
     ):
-        return collections.abc.Callable[..., sig.return_annotation]
+        return Box(collections.abc.Callable[..., sig.return_annotation])
     else:
-        return collections.abc.Callable[
-            [p.annotation for p in sig.parameters.values()], sig.return_annotation
-        ]
+        return Box(
+            collections.abc.Callable[
+                [p.annotation for p in sig.parameters.values()], sig.return_annotation
+            ]
+        )
 
 
 @nested_type.register
 def _(value: collections.abc.Mapping):
     if value and isinstance(value, effectful.ops.types.Interpretation):
-        return effectful.ops.types.Interpretation
+        return Box(effectful.ops.types.Interpretation)
 
     if len(value) == 0:
-        return type(value)
+        return Box(type(value))
     elif len(value) == 1:
-        ktyp = nested_type(next(iter(value.keys())))
-        vtyp = nested_type(next(iter(value.values())))
-        return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
+        ktyp = nested_type(next(iter(value.keys()))).value
+        vtyp = nested_type(next(iter(value.values()))).value
+        return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
     else:
-        ktyp = functools.reduce(operator.or_, map(nested_type, value.keys()))
-        vtyp = functools.reduce(operator.or_, map(nested_type, value.values()))
+        ktyp = functools.reduce(
+            operator.or_, [nested_type(x).value for x in value.keys()]
+        )
+        vtyp = functools.reduce(
+            operator.or_, [nested_type(x).value for x in value.values()]
+        )
         if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
-            return type(value)
+            return Box(type(value))
         else:
-            return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
+            return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Collection):
     if len(value) == 0:
-        return type(value)
+        return Box(type(value))
     elif len(value) == 1:
-        vtyp = nested_type(next(iter(value)))
-        return canonicalize(type(value))[vtyp]  # type: ignore
+        vtyp = nested_type(next(iter(value))).value
+        return Box(canonicalize(type(value))[vtyp])  # type: ignore
     else:
-        valtyp = functools.reduce(operator.or_, map(nested_type, value))
+        valtyp = functools.reduce(operator.or_, [nested_type(x).value for x in value])
         if isinstance(valtyp, UnionType):
-            return type(value)
+            return Box(type(value))
         else:
-            return canonicalize(type(value))[valtyp]  # type: ignore
+            return Box(canonicalize(type(value))[valtyp])  # type: ignore
 
 
 @nested_type.register
 def _(value: tuple):
-    return (
-        nested_type.dispatch(collections.abc.Sequence)(value)
-        if type(value) != tuple or len(value) == 0
-        else tuple[tuple(nested_type(item) for item in value)]  # type: ignore
-    )
+    if type(value) != tuple or len(value) == 0:
+        return nested_type.dispatch(collections.abc.Sequence)(value)
+    else:
+        return Box(tuple[tuple(nested_type(item).value for item in value)])  # type: ignore
 
 
 @nested_type.register
 def _(value: str | bytes | range | None):
-    return type(value)
+    return Box(type(value))
 
 
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
