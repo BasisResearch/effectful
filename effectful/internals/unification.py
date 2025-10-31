@@ -619,80 +619,80 @@ def nested_type(value) -> Box[TypeExpression]:
         >>> from effectful.internals.unification import nested_type
 
         # Basic types are returned as their type
-        >>> nested_type(42)
+        >>> nested_type(42).value
         <class 'int'>
-        >>> nested_type("hello")
+        >>> nested_type("hello").value
         <class 'str'>
-        >>> nested_type(3.14)
+        >>> nested_type(3.14).value
         <class 'float'>
-        >>> nested_type(True)
+        >>> nested_type(True).value
         <class 'bool'>
 
-        # Type objects pass through unchanged
-        >>> nested_type(int)
+        # Boxed type objects pass through unchanged
+        >>> nested_type(Box(int)).value
         <class 'int'>
-        >>> nested_type(str)
+        >>> nested_type(Box(str)).value
         <class 'str'>
-        >>> nested_type(list)
+        >>> nested_type(Box(list)).value
         <class 'list'>
 
         # Empty collections return their base type
-        >>> nested_type([])
+        >>> nested_type([]).value
         <class 'list'>
-        >>> nested_type({})
+        >>> nested_type({}).value
         <class 'dict'>
-        >>> nested_type(set())
+        >>> nested_type(set()).value
         <class 'set'>
 
         # Sequences become Sequence[element_type]
-        >>> nested_type([1, 2, 3])
+        >>> nested_type([1, 2, 3]).value
         collections.abc.MutableSequence[int]
-        >>> nested_type(["a", "b", "c"])
+        >>> nested_type(["a", "b", "c"]).value
         collections.abc.MutableSequence[str]
 
         # Tuples preserve exact structure
-        >>> nested_type((1, "hello", 3.14))
+        >>> nested_type((1, "hello", 3.14)).value
         tuple[int, str, float]
-        >>> nested_type(())
+        >>> nested_type(()).value
         <class 'tuple'>
-        >>> nested_type((1,))
+        >>> nested_type((1,)).value
         tuple[int]
 
         # Sets become Set[element_type]
-        >>> nested_type({1, 2, 3})
+        >>> nested_type({1, 2, 3}).value
         collections.abc.MutableSet[int]
-        >>> nested_type({"a", "b"})
+        >>> nested_type({"a", "b"}).value
         collections.abc.MutableSet[str]
 
         # Mappings become Mapping[key_type, value_type]
-        >>> nested_type({"key": "value"})
+        >>> nested_type({"key": "value"}).value
         collections.abc.MutableMapping[str, str]
-        >>> nested_type({1: "one", 2: "two"})
+        >>> nested_type({1: "one", 2: "two"}).value
         collections.abc.MutableMapping[int, str]
 
         # Strings and bytes are NOT treated as sequences
-        >>> nested_type("hello")
+        >>> nested_type("hello").value
         <class 'str'>
-        >>> nested_type(b"bytes")
+        >>> nested_type(b"bytes").value
         <class 'bytes'>
 
         # Annotated functions return types derived from their annotations
         >>> def annotated_func(x: int) -> str:
         ...     return str(x)
-        >>> nested_type(annotated_func)
+        >>> nested_type(annotated_func).value
         collections.abc.Callable[[int], str]
 
         # Unannotated functions/callables return their type
         >>> def f(): pass
-        >>> nested_type(f)
+        >>> nested_type(f).value
         <class 'function'>
-        >>> nested_type(lambda x: x)
+        >>> nested_type(lambda x: x).value
         <class 'function'>
 
         # Generic aliases and union types pass through
-        >>> nested_type(list[int])
+        >>> nested_type(Box(list[int])).value
         list[int]
-        >>> nested_type(int | str)
+        >>> nested_type(Box(int | str)).value
         int | str
     """
     return Box(type(value))
