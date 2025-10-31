@@ -7,6 +7,7 @@ from typing import Any
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import (
+    Box,
     Expr,
     Interpretation,
     NotHandled,  # noqa: F401
@@ -322,12 +323,10 @@ def typeof[T](term: Expr[T]) -> type[T]:
     from effectful.internals.runtime import interpreter
 
     with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
-        if isinstance(term, Term):
-            # If term is a Term, we evaluate it to get its type
-            tp = evaluate(term)
-            return _simple_type(typing.cast(type, tp))
-        else:
-            return type(term)
+        type_or_value = evaluate(term)
+        if isinstance(type_or_value, Box):
+            return _simple_type(type_or_value.value)
+        return typing.cast(type[T], type(type_or_value))
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:

@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
 
-from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
+from effectful.ops.types import Annotation, Box, Expr, NotHandled, Operation, Term
 
 
 @dataclasses.dataclass
@@ -587,7 +587,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
 
         return result_sig
 
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Box[type[V]]:
         from effectful.internals.unification import (
             freetypevars,
             nested_type,
@@ -600,16 +600,17 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             return_anno = typing.get_args(return_anno)[0]
 
         if return_anno is inspect.Parameter.empty:
-            return typing.cast(type[V], object)
+            return Box(typing.cast(type[V], object))
         elif return_anno is None:
-            return type(None)  # type: ignore
+            return Box(typing.cast(type[V], type(None)))
         elif not freetypevars(return_anno):
-            return return_anno
+            return Box(return_anno)
 
-        type_args = tuple(nested_type(a) for a in args)
-        type_kwargs = {k: nested_type(v) for k, v in kwargs.items()}
+        type_args = tuple(nested_type(a).value for a in args)
+        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
         bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
-        return substitute(return_anno, unify(self.__signature__, bound_sig))  # type: ignore
+        subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
+        return Box(typing.cast(type[V], subst_type))
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -949,7 +950,7 @@ def defdata[T](
     def apply_cast(op, *args, **kwargs):
         assert isinstance(op, Operation)
         full_type = typ()
-        dispatch_type = _simple_type(full_type)
+        dispatch_type = _simple_type(full_type.value)
         return __dispatch(dispatch_type)(op, *args, **kwargs)
 
     analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})

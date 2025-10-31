@@ -37,7 +37,9 @@ def test_simul_analysis():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        if typ() is int and argsof(typ)[0][0] is int:
+        t = typ()
+        arg = argsof(typ)[0][0]
+        if t is int and arg is int:
             return x * y
         raise TypeError("unexpected type!")
 
@@ -97,7 +99,9 @@ def test_simul_analysis_apply():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        if typ() is int and argsof(typ)[0][0] is int:
+        t = typ().value
+        arg = argsof(typ)[0][0].value
+        if t is int and arg is int:
             return x * y
         raise TypeError("unexpected type!")
 
@@ -121,7 +125,7 @@ def test_simul_analysis_apply():
 
     with handler(analysisN):
         i = f1()
-        t = i.values(typ)
+        t = i.values(typ).value
         v = i.values(value)
         assert t is int
         assert v == 21
