@@ -6,6 +6,7 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, _ProtocolMeta, overload, runtime_checkable
 
 
@@ -13,6 +14,16 @@ class NotHandled(Exception):
     """Raised by an operation when the operation should remain unhandled."""
 
     pass
+
+
+@dataclass
+class Box[T]:
+    """Boxed types. Prevents confusion between types computed by __type_rule__
+    and values.
+
+    """
+
+    value: T
 
 
 @functools.total_ordering
@@ -49,7 +60,7 @@ class Operation[**Q, V](abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Box[type[V]]:
         """Returns the type of the operation applied to arguments."""
         raise NotImplementedError
 
