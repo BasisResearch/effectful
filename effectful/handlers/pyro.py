@@ -370,7 +370,7 @@ def _unbind_dims_distribution(
 
     # Convert to a term in a context that does not evaluate distribution constructors.
     def _apply(op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs).value
+        typ = op.__type_rule__(*args, **kwargs)
         if issubclass(
             typ, pyro.distributions.torch_distribution.TorchDistribution
         ) or issubclass(
@@ -418,7 +418,7 @@ def _bind_dims_distribution(
 
     # Convert to a term in a context that does not evaluate distribution constructors.
     def _apply(op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs).value
+        typ = op.__type_rule__(*args, **kwargs)
         if issubclass(
             typ, pyro.distributions.torch_distribution.TorchDistribution
         ) or issubclass(
