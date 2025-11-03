@@ -5,13 +5,13 @@ import typing
 import pytest
 
 from effectful.internals.unification import (
+    Box,
     canonicalize,
     freetypevars,
     nested_type,
     substitute,
     unify,
 )
-from effectful.ops.types import Box
 
 if typing.TYPE_CHECKING:
     T = typing.Any

@@ -6,7 +6,6 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any, _ProtocolMeta, overload, runtime_checkable
 
 
