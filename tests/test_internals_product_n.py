@@ -1,4 +1,5 @@
 from effectful.internals.product_n import argsof, productN
+from effectful.internals.unification import Box
 from effectful.ops.semantics import apply, coproduct, evaluate, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, NotHandled
@@ -88,7 +89,7 @@ def test_simul_analysis_apply():
     value = defop(Interpretation, name="value")
 
     def apply_type(op, *a, **k):
-        return op.__type_rule__(*a, **k)
+        return Box(op.__type_rule__(*a, **k))
 
     type_rules = {apply: apply_type}
 
