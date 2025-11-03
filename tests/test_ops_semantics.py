@@ -2,7 +2,7 @@ import contextlib
 import functools
 import itertools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Union
 
 import pytest
@@ -18,7 +18,7 @@ from effectful.ops.semantics import (
     typeof,
 )
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
-from effectful.ops.types import Interpretation, NotHandled, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -815,3 +815,14 @@ def test_fvsof_binder():
     term = Lam2(add(x(), add(y(), z())), x, y)
     assert not {x, y} <= fvsof(term)
     assert fvsof(term) == {z, Lam2, add}
+
+
+def test_interpretation_typing():
+    @defop
+    def f[T](m: Mapping[Operation, T], x: T) -> T:
+        raise NotHandled
+
+    x = defop(int)
+    t1 = f({x: x()}, 2)
+
+    assert isinstance(t1, Term) and typeof(t1) == int
