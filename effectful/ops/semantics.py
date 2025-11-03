@@ -322,7 +322,10 @@ def typeof[T](term: Expr[T]) -> type[T]:
     """
     from effectful.internals.runtime import interpreter
 
-    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
+    def _apply(op, *args, **kwargs):
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    with interpreter({apply: _apply}):
         type_or_value = evaluate(term)
         if isinstance(type_or_value, Box):
             return _simple_type(type_or_value.value)

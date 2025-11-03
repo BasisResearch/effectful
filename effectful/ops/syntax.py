@@ -587,7 +587,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
 
         return result_sig
 
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Box[type[V]]:
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         from effectful.internals.unification import (
             freetypevars,
             nested_type,
@@ -600,17 +600,17 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             return_anno = typing.get_args(return_anno)[0]
 
         if return_anno is inspect.Parameter.empty:
-            return Box(typing.cast(type[V], object))
+            return typing.cast(type[V], object)
         elif return_anno is None:
-            return Box(typing.cast(type[V], type(None)))
+            return typing.cast(type[V], type(None))
         elif not freetypevars(return_anno):
-            return Box(return_anno)
+            return return_anno
 
         type_args = tuple(nested_type(a).value for a in args)
         type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
         bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
         subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
-        return Box(typing.cast(type[V], subst_type))
+        return typing.cast(type[V], subst_type)
 
     def __repr__(self):
         return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
@@ -945,7 +945,7 @@ def defdata[T](
     def apply_type(op, *args, **kwargs):
         assert isinstance(op, Operation)
         tp = op.__type_rule__(*args, **kwargs)
-        return tp
+        return Box(tp)
 
     def apply_cast(op, *args, **kwargs):
         assert isinstance(op, Operation)

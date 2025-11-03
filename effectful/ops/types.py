@@ -60,8 +60,18 @@ class Operation[**Q, V](abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Box[type[V]]:
-        """Returns the type of the operation applied to arguments."""
+    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+        """Returns the type of the operation applied to arguments.
+
+        .. note::
+
+           The arguments are expected to be either :class:`Box`ed types or
+           collections containing values and :class:`Box`ed types. Callers are
+           expected to apply the appropriate boxing. Boxing the input types
+           prevents confusion between types and values and allows for terms that
+           compute on type-valued arguments.
+
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
