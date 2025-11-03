@@ -7,7 +7,6 @@ from typing import Any
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import (
-    Box,
     Expr,
     Interpretation,
     NotHandled,  # noqa: F401
@@ -321,6 +320,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     """
     from effectful.internals.runtime import interpreter
+    from effectful.internals.unification import Box
 
     def _apply(op, *args, **kwargs):
         return Box(op.__type_rule__(*args, **kwargs))

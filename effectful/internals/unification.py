@@ -66,6 +66,7 @@ import numbers
 import operator
 import types
 import typing
+from dataclasses import dataclass
 
 try:
     from typing import _collect_type_parameters as _freetypevars  # type: ignore
@@ -73,7 +74,6 @@ except ImportError:
     from typing import _collect_parameters as _freetypevars  # type: ignore
 
 import effectful.ops.types
-from effectful.ops.types import Box
 
 if typing.TYPE_CHECKING:
     TypeConstant = type | abc.ABCMeta | types.EllipsisType | None
@@ -92,6 +92,16 @@ TypeExpression = TypeVariable | TypeConstant | TypeApplication
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
+
+
+@dataclass
+class Box[T]:
+    """Boxed types. Prevents confusion between types computed by __type_rule__
+    and values.
+
+    """
+
+    value: T
 
 
 @typing.overload

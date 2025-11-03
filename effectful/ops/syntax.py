@@ -11,7 +11,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
 
-from effectful.ops.types import Annotation, Box, Expr, NotHandled, Operation, Term
+from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
 
 @dataclasses.dataclass
@@ -943,6 +943,8 @@ def defdata[T](
     cast = defop(object, name="cast")
 
     def apply_type(op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
         assert isinstance(op, Operation)
         tp = op.__type_rule__(*args, **kwargs)
         return Box(tp)

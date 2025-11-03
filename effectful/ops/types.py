@@ -16,16 +16,6 @@ class NotHandled(Exception):
     pass
 
 
-@dataclass
-class Box[T]:
-    """Boxed types. Prevents confusion between types computed by __type_rule__
-    and values.
-
-    """
-
-    value: T
-
-
 @functools.total_ordering
 class Operation[**Q, V](abc.ABC):
     """An abstract class representing an effect that can be implemented by an effect handler.
@@ -65,11 +55,12 @@ class Operation[**Q, V](abc.ABC):
 
         .. note::
 
-           The arguments are expected to be either :class:`Box`ed types or
-           collections containing values and :class:`Box`ed types. Callers are
-           expected to apply the appropriate boxing. Boxing the input types
-           prevents confusion between types and values and allows for terms that
-           compute on type-valued arguments.
+           The arguments are expected to be either
+           :class:`effectful.internals.unification.Box`ed types or collections
+           containing values and :class:`effectful.internals.unification.Box`ed
+           types. Callers are expected to apply the appropriate boxing. Boxing
+           the input types prevents confusion between types and values and
+           allows for terms that compute on type-valued arguments.
 
         """
         raise NotImplementedError
