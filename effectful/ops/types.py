@@ -133,11 +133,17 @@ class Operation[**Q, V](abc.ABC):
 
         return result_sig
 
-    @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import apply
 
-        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
+        intp = get_interpretation()
+        if self in intp:
+            return intp[self](*args, **kwargs)
+        elif self is apply:
+            return self.__default__(*args, **kwargs)
+        else:
+            return apply(self, *args, **kwargs)
 
     def __get__(self, instance, owner):
         if instance is not None:
