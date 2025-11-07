@@ -228,15 +228,53 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
+    import inspect
+
     from effectful.internals.runtime import get_interpretation, interpreter
 
     if intp is not None:
         return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        args = tuple(evaluate(arg) for arg in expr.args)
-        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-        return expr.op(*args, **kwargs)
+        # Check if we need async evaluation
+        args_evaluated = [evaluate(arg) for arg in expr.args]
+        kwargs_evaluated = {k: evaluate(v) for k, v in expr.kwargs.items()}
+
+        # Check if any evaluated args/kwargs are coroutines
+        has_coro = any(inspect.iscoroutine(a) for a in args_evaluated) or any(
+            inspect.iscoroutine(v) for v in kwargs_evaluated.values()
+        )
+
+        if has_coro:
+            # Return an async wrapper
+            async def async_evaluate_term():
+                # Await any coroutines in args
+                args_list = []
+                for a in args_evaluated:
+                    if inspect.iscoroutine(a):
+                        args_list.append(await a)
+                    else:
+                        args_list.append(a)
+                args = tuple(args_list)
+
+                kwargs = {}
+                for k, v in kwargs_evaluated.items():
+                    if inspect.iscoroutine(v):
+                        kwargs[k] = await v
+                    else:
+                        kwargs[k] = v
+
+                result = expr.op(*args, **kwargs)
+                # The op call itself might return a coroutine
+                if inspect.iscoroutine(result):
+                    return await result
+                return result
+
+            return async_evaluate_term()  # type: ignore
+        else:
+            args = tuple(args_evaluated)
+            kwargs = dict(kwargs_evaluated)
+            return expr.op(*args, **kwargs)
     elif isinstance(expr, Operation):
         op_intp = get_interpretation().get(expr, expr)
         return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
@@ -256,7 +294,7 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
             and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
         ):  # namedtuple
             return type(expr)(
-                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+                **{field: evaluate(getattr(expr, field)) for field in expr._fields}  # type: ignore
             )
         else:
             return type(expr)(evaluate(item) for item in expr)  # type: ignore

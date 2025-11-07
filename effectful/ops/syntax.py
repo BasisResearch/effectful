@@ -8,7 +8,7 @@ import random
 import types
 import typing
 import warnings
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
@@ -519,6 +519,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
     __name__: str
 
     _default: Callable[Q, V]
+    _is_async: bool
 
     def __init__(
         self,
@@ -532,6 +533,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
+        self._is_async = inspect.iscoroutinefunction(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -547,19 +549,43 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return hash(self._default)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        try:
+        if self._is_async:
+            # For async operations, create an async wrapper
+            async def async_default_rule():
+                try:
+                    try:
+                        # Call the async function and await it
+                        result: Coroutine = self._default(*args, **kwargs)  # type: ignore
+                        # Type ignore because we know it's async but the type system doesn't
+                        return await result
+                    except NotImplementedError:
+                        warnings.warn(
+                            "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
+                            DeprecationWarning,
+                        )
+                        raise NotHandled
+                except NotHandled:
+                    # Return the term representation
+                    return typing.cast(
+                        Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+                    )(self, *args, **kwargs)
+
+            return async_default_rule()
+        else:
+            # Synchronous path (original behavior)
             try:
-                return self._default(*args, **kwargs)
-            except NotImplementedError:
-                warnings.warn(
-                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                    DeprecationWarning,
-                )
-                raise NotHandled
-        except NotHandled:
-            return typing.cast(
-                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
-            )(self, *args, **kwargs)
+                try:
+                    return self._default(*args, **kwargs)
+                except NotImplementedError:
+                    warnings.warn(
+                        "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
+                        DeprecationWarning,
+                    )
+                    raise NotHandled
+            except NotHandled:
+                return typing.cast(
+                    Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+                )(self, *args, **kwargs)
 
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         sig = Scoped.infer_annotations(self.__signature__)
