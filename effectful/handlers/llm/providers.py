@@ -190,7 +190,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
         self.cache = {}
         self.silent_failure = silent_failure
 
-    def _make_hashable(self, obj: Any) -> tuple[bool, Any]:
+    def _make_hashable(self, obj: Any) -> Any:
         """Recursively convert objects to hashable representations."""
         if isinstance(obj, dict):
             return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
