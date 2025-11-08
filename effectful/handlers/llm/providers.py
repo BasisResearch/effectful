@@ -187,10 +187,10 @@ class CacheLLMRequestHandler(ObjectInterpretation):
         Args:
             silent_failure: If True, will not raise an error if args and kwargs are not hashable, proceed as normal LLM calls.
         """
-        self.cache = {}
+        self.cache: dict[tuple[Hashable, Hashable], Any] = {}
         self.silent_failure = silent_failure
 
-    def _make_hashable(self, obj: Any) -> Hashable | Any:
+    def _make_hashable(self, obj: Any) -> Hashable:
         """Recursively convert objects to hashable representations."""
         if isinstance(obj, dict):
             return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
@@ -207,10 +207,9 @@ class CacheLLMRequestHandler(ObjectInterpretation):
 
     @implements(llm_request)
     def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
-        # Build hashable key from args and kwargs
-        args = self._make_hashable(args)
-        kwargs = self._make_hashable(kwargs)
-        key = (args, kwargs)
+        hashable_args = self._make_hashable(args)
+        hashable_kwargs = self._make_hashable(kwargs)
+        key = (hashable_args, hashable_kwargs)
         if key in self.cache:
             return self.cache[key]
         response = fwd()
