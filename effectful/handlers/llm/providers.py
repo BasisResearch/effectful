@@ -178,6 +178,48 @@ def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -
     return tool(*args, **kwargs)
 
 
+class CacheLLMRequestHandler(ObjectInterpretation):
+    """Caches LLM requests."""
+
+    def __init__(self, silent_failure: bool = True):
+        """Initialize the cache handler.
+
+        Args:
+            silent_failure: If True, will not raise an error if args and kwargs are not hashable, proceed as normal LLM calls.
+        """
+        self.cache = {}
+        self.silent_failure = silent_failure
+
+    def _make_hashable(self, obj: Any) -> tuple[bool, Any]:
+        """Recursively convert objects to hashable representations."""
+        if isinstance(obj, dict):
+            return True, tuple(
+                sorted((k, self._make_hashable(v)) for k, v in obj.items())
+            )
+        elif isinstance(obj, list | tuple):
+            return True, tuple(self._make_hashable(item) for item in obj)
+        elif isinstance(obj, set):
+            return True, frozenset(self._make_hashable(item) for item in obj)
+        else:
+            return False, obj
+
+    @implements(llm_request)
+    def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+        # Build hashable key from args and kwargs
+        is_hashable, args = self._make_hashable(args)
+        is_hashable, kwargs = self._make_hashable(kwargs)
+        if not is_hashable:
+            if self.silent_failure:
+                return fwd()
+            raise ValueError("Args and kwargs must be hashable")
+        key = (args, kwargs)
+        if key in self.cache:
+            return self.cache[key]
+        response = fwd()
+        self.cache[key] = response
+        return response
+
+
 class LLMLoggingHandler(ObjectInterpretation):
     """Logs llm_request rounds and tool_call invocations using Python logging.
 
