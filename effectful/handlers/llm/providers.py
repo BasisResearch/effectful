@@ -5,7 +5,7 @@ import io
 import logging
 import string
 import typing
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
@@ -190,7 +190,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
         self.cache = {}
         self.silent_failure = silent_failure
 
-    def _make_hashable(self, obj: Any) -> Any:
+    def _make_hashable(self, obj: Any) -> Hashable | Any:
         """Recursively convert objects to hashable representations."""
         if isinstance(obj, dict):
             return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
