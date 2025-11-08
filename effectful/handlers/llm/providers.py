@@ -193,25 +193,23 @@ class CacheLLMRequestHandler(ObjectInterpretation):
     def _make_hashable(self, obj: Any) -> tuple[bool, Any]:
         """Recursively convert objects to hashable representations."""
         if isinstance(obj, dict):
-            return True, tuple(
-                sorted((k, self._make_hashable(v)) for k, v in obj.items())
-            )
+            return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
         elif isinstance(obj, list | tuple):
-            return True, tuple(self._make_hashable(item) for item in obj)
+            return tuple(self._make_hashable(item) for item in obj)
         elif isinstance(obj, set):
-            return True, frozenset(self._make_hashable(item) for item in obj)
+            return frozenset(self._make_hashable(item) for item in obj)
+        elif isinstance(obj, int | float | bool | str | bytes):
+            return obj
         else:
-            return False, obj
+            if self.silent_failure:
+                return obj
+            raise ValueError(f"Object {obj} is not hashable")
 
     @implements(llm_request)
     def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
         # Build hashable key from args and kwargs
-        is_hashable, args = self._make_hashable(args)
-        is_hashable, kwargs = self._make_hashable(kwargs)
-        if not is_hashable:
-            if self.silent_failure:
-                return fwd()
-            raise ValueError("Args and kwargs must be hashable")
+        args = self._make_hashable(args)
+        kwargs = self._make_hashable(kwargs)
         key = (args, kwargs)
         if key in self.cache:
             return self.cache[key]
