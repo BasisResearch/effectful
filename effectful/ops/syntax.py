@@ -549,8 +549,11 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return hash(self._default)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        from effectful.ops.semantics import await_
+
         if self._is_async:
             # For async operations, create an async wrapper
+            @functools.wraps(self)
             async def async_default_rule():
                 try:
                     try:
@@ -568,7 +571,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
                     # Return the term representation
                     return typing.cast(
                         Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
-                    )(self, *args, **kwargs)
+                    )(await_, self, *args, **kwargs)
 
             return async_default_rule()
         else:

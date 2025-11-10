@@ -1,6 +1,7 @@
 import collections.abc
 import contextlib
 import dataclasses
+import functools
 import types
 import typing
 from typing import Any
@@ -13,6 +14,20 @@ from effectful.ops.types import (
     Operation,
     Term,
 )
+
+
+@defop
+def await_[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Embeds await the asynchronous computation ``op`` applied to ``args``, ``kwargs`` in interpretation ``intp``.
+
+    Handling `await_`  changes the evaluation strategy of async operations.
+    """
+
+    @functools.wraps(op)
+    async def wrapper():
+        return await op(*args, **kwargs)  # type: ignore
+
+    return wrapper()  # type: ignore
 
 
 @defop  # type: ignore
