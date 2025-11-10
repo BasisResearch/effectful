@@ -868,10 +868,11 @@ async def await_[**P, T](
     """An operation that represents awaiting an async operation.
 
     This operation reifies the async/sync boundary. When an async operation
-    is called, it routes through :func:`await_`, which captures the current
-    handler and ensures it's used when the coroutine is awaited.
+    is called, it routes through :func:`await_`, which then delegates to
+    :func:`async_apply` to handle the actual operation execution.
 
-    This ensures handlers are bound at construction time, not await time.
+    Handler capture happens in ``Operation.__call__``, ensuring handlers are
+    bound at construction time, not await time.
 
     :param op: The async operation to await.
     :param args: Positional arguments to the operation.
@@ -899,31 +900,10 @@ async def await_[**P, T](
     >>> with handler({fetch: mock_fetch}):
     ...     result = await coro  # doctest: +SKIP
     """
-    from effectful.internals.runtime import get_interpretation
     from effectful.ops.semantics import async_apply as async_apply_op
-    import inspect
 
-    # Capture the handler at construction time
-    intp = get_interpretation()
-
-    if op in intp:
-        # Handler for the specific operation
-        handler_fn = intp[op]
-        result = handler_fn(*args, **kwargs)
-        if inspect.iscoroutine(result):
-            return await result  # type: ignore
-        return result  # type: ignore
-    elif async_apply_op in intp:
-        # Handler for async_apply
-        return await intp[async_apply_op](op, *args, **kwargs)  # type: ignore
-    else:
-        # No handler - try the default or construct a term
-        try:
-            coro = op._default(*args, **kwargs)  # type: ignore
-            return await coro  # type: ignore
-        except NotHandled:
-            from effectful.ops.syntax import defdata
-            return defdata(op, *args, **kwargs)  # type: ignore
+    # Delegate to async_apply to handle the operation
+    return await async_apply_op(op, *args, **kwargs)  # type: ignore
 
 
 class _CustomSingleDispatchCallable[**P, **Q, S, T]:
