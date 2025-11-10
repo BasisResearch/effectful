@@ -9,27 +9,24 @@ from effectful.ops.types import Interpretation, Operation
 
 @dataclasses.dataclass
 class Runtime[S, T]:
-    interpretation: "Interpretation[S, T]"
+    interpretation: "contextvars.ContextVar[Interpretation[S, T]]"
 
 
 @functools.lru_cache(maxsize=1)
 def get_runtime() -> Runtime:
-    return Runtime(interpretation={})
-
+    return Runtime(interpretation=contextvars.ContextVar('interpretation', default=typing.cast(Interpretation, {})))
 
 def get_interpretation():
-    return get_runtime().interpretation
-
+    return get_runtime().interpretation.get()
 
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
     r = get_runtime()
-    old_intp = r.interpretation
+    token = r.interpretation.set(intp)
     try:
-        old_intp, r.interpretation = r.interpretation, dict(intp)
         yield intp
     finally:
-        r.interpretation = old_intp
+        r.interpretation.reset(token)
 
 
 @defop
