@@ -56,6 +56,65 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
+@defop  # type: ignore
+async def async_apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Apply an async ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
+
+    This is the async counterpart to :func:`apply`. It is called by :func:`await_`
+    to handle async operations. Users can override this to customize async
+    application behavior specifically.
+
+    **Example usage**:
+
+    >>> @defop
+    ... async def fetch(url: str) -> dict:
+    ...     raise NotHandled
+
+    By default, async_apply looks for a handler for the operation:
+
+    >>> async def mock_fetch(url: str) -> dict:
+    ...     return {"url": url, "data": "..."}
+    >>> import asyncio
+    >>> with handler({fetch: mock_fetch}):
+    ...     result = asyncio.run(async_apply(fetch, "http://example.com"))  # doctest: +SKIP
+
+    You can also override async_apply itself to add logging, rate limiting, etc.:
+
+    >>> async def logged_async_apply(op, *args, **kwargs):
+    ...     print(f"Calling {op.__name__}")
+    ...     # Delegate to the original async_apply
+    ...     return await fwd(op, *args, **kwargs)
+    >>> with handler({async_apply: logged_async_apply}):
+    ...     result = asyncio.run(async_apply(fetch, "http://example.com"))  # doctest: +SKIP
+
+    """
+    from effectful.internals.runtime import get_interpretation
+
+    intp = get_interpretation()
+    if op in intp:
+        handler_fn = intp[op]
+        result = handler_fn(*args, **kwargs)
+        # Handler might be async or sync
+        if typing.get_origin(typing.get_type_hints(handler_fn).get('return')) is collections.abc.Coroutine:
+            return await result  # type: ignore
+        # Check at runtime
+        import inspect
+        if inspect.iscoroutine(result):
+            return await result  # type: ignore
+        return result  # type: ignore
+    elif async_apply in intp:
+        return await intp[async_apply](op, *args, **kwargs)  # type: ignore
+    else:
+        # No handler - try to call the default, or construct a term if NotHandled
+        try:
+            coro = op._default(*args, **kwargs)  # type: ignore
+            return await coro  # type: ignore
+        except NotHandled:
+            # No handler and no default - construct a term directly
+            from effectful.ops.syntax import defdata
+            return defdata(op, *args, **kwargs)  # type: ignore
+
+
 @defop
 def fwd(*args, **kwargs) -> Any:
     """Forward execution to the next most enclosing handler.
@@ -236,42 +295,50 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
         return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        # Check if we need async evaluation
+        # Evaluate arguments first
         args_evaluated = [evaluate(arg) for arg in expr.args]
         kwargs_evaluated = {k: evaluate(v) for k, v in expr.kwargs.items()}
 
-        # Check if any evaluated args/kwargs are coroutines
-        has_coro = any(inspect.iscoroutine(a) for a in args_evaluated) or any(
+        # Check if we need async evaluation (any arg/kwarg is a coroutine)
+        has_async_args = any(inspect.iscoroutine(a) for a in args_evaluated) or any(
             inspect.iscoroutine(v) for v in kwargs_evaluated.values()
         )
 
-        if has_coro:
-            # Return an async wrapper
+        # Special handling for await_ terms
+        from effectful.ops.syntax import await_
+        is_await_term = expr.op == await_
+
+        # If we have async components or it's an await_ term, return a coroutine
+        if has_async_args or is_await_term:
             async def async_evaluate_term():
                 # Await any coroutines in args
                 args_list = []
                 for a in args_evaluated:
-                    if inspect.iscoroutine(a):
-                        args_list.append(await a)
-                    else:
-                        args_list.append(a)
+                    args_list.append(await a if inspect.iscoroutine(a) else a)
                 args = tuple(args_list)
 
-                kwargs = {}
+                kwargs_dict = {}
                 for k, v in kwargs_evaluated.items():
-                    if inspect.iscoroutine(v):
-                        kwargs[k] = await v
-                    else:
-                        kwargs[k] = v
+                    kwargs_dict[k] = await v if inspect.iscoroutine(v) else v
+                kwargs = kwargs_dict
 
-                result = expr.op(*args, **kwargs)
-                # The op call itself might return a coroutine
-                if inspect.iscoroutine(result):
-                    return await result
+                # For await_ terms, call async_apply instead of the op directly
+                if is_await_term:
+                    async_op = args[0]  # First arg is the async operation
+                    op_args = args[1:]  # Rest are arguments
+                    result = await async_apply(async_op, *op_args, **kwargs)
+                else:
+                    # Regular term evaluation
+                    result = expr.op(*args, **kwargs)
+                    # The result itself might be a coroutine
+                    if inspect.iscoroutine(result):
+                        result = await result
+
                 return result
 
-            return async_evaluate_term()
+            return async_evaluate_term()  # type: ignore
         else:
+            # Synchronous path
             args = tuple(args_evaluated)
             kwargs = dict(kwargs_evaluated)
             return expr.op(*args, **kwargs)

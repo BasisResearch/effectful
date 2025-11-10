@@ -69,7 +69,44 @@ class Operation[**Q, V](abc.ABC):
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.ops.semantics import apply
 
-        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
+        # Check if this is an async operation
+        from effectful.ops.syntax import _BaseAsyncOperation, await_
+        from effectful.ops.semantics import async_apply
+
+        # Special case: await_ and async_apply should not route through await_
+        # to prevent infinite recursion
+        if isinstance(self, _BaseAsyncOperation) and self not in (await_, async_apply):
+            # For user-defined async operations, route through await_
+            # Capture the handler at construction time
+            from effectful.internals.runtime import get_interpretation
+            from effectful.ops.semantics import handler
+
+            intp = get_interpretation()
+            captured_handler = intp.get(self)
+            captured_async_apply = intp.get(async_apply)
+
+            # Create the await_ coroutine, which will call our operation
+            base_coro = apply.__default_rule__(await_, self, *args, **kwargs)  # type: ignore
+
+            # If there's a captured handler, wrap the coroutine to use it
+            if captured_handler is not None or captured_async_apply is not None:
+                async def wrapped_coro():
+                    # Install the captured handlers when the coroutine runs
+                    handler_dict = {}  # type: ignore
+                    if captured_handler is not None:
+                        handler_dict[self] = captured_handler  # type: ignore
+                    if captured_async_apply is not None:
+                        handler_dict[async_apply] = captured_async_apply  # type: ignore
+
+                    with handler(handler_dict):
+                        return await base_coro  # type: ignore
+
+                return wrapped_coro()  # type: ignore
+            else:
+                return base_coro  # type: ignore
+        else:
+            # For sync operations, await_, and async_apply, use normal apply
+            return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

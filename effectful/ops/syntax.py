@@ -512,14 +512,23 @@ def defop[**P, T](
     """
     raise NotImplementedError(f"expected type or callable, got {t}")
 
-
 @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
+def _defop_callable[**Q, V](
+    t: Callable[Q, V], *, name: str | None = None, freshening: list[int] | None = None
+) -> Operation[Q, V]:
+    """Dispatcher for callable defop registration."""
+    # Check if it's an async function
+    if inspect.iscoroutinefunction(t):
+        return _BaseAsyncOperation(t, name=name, freshening=freshening)
+    else:
+        return _BaseOperation(t, name=name, freshening=freshening)
+
+
 class _BaseOperation[**Q, V](Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
 
     _default: Callable[Q, V]
-    _is_async: bool
 
     def __init__(
         self,
@@ -533,7 +542,6 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
-        self._is_async = inspect.iscoroutinefunction(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -549,43 +557,19 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return hash(self._default)
 
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        if self._is_async:
-            # For async operations, create an async wrapper
-            async def async_default_rule():
-                try:
-                    try:
-                        # Call the async function and await it
-                        result: Coroutine = self._default(*args, **kwargs)  # type: ignore
-                        # Type ignore because we know it's async but the type system doesn't
-                        return await result
-                    except NotImplementedError:
-                        warnings.warn(
-                            "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                            DeprecationWarning,
-                        )
-                        raise NotHandled
-                except NotHandled:
-                    # Return the term representation
-                    return typing.cast(
-                        Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
-                    )(self, *args, **kwargs)
-
-            return async_default_rule()
-        else:
-            # Synchronous path (original behavior)
+        try:
             try:
-                try:
-                    return self._default(*args, **kwargs)
-                except NotImplementedError:
-                    warnings.warn(
-                        "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                        DeprecationWarning,
-                    )
-                    raise NotHandled
-            except NotHandled:
-                return typing.cast(
-                    Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
-                )(self, *args, **kwargs)
+                return self._default(*args, **kwargs)
+            except NotImplementedError:
+                warnings.warn(
+                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
+                    DeprecationWarning,
+                )
+                raise NotHandled
+        except NotHandled:
+            return typing.cast(
+                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+            )(self, *args, **kwargs)
 
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         sig = Scoped.infer_annotations(self.__signature__)
@@ -650,6 +634,38 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         else:
             # This is a static operation, so we return the operation itself
             return self
+
+
+class _BaseAsyncOperation[**Q, V](_BaseOperation[Q, V]):
+    """Operation subclass for async functions.
+
+    Async operations return coroutines. When not handled, those coroutines
+    yield await_ terms, which reify the async/sync boundary.
+    """
+
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+        # For async operations, try to call the default implementation
+        # If it raises NotHandled, construct a term
+        try:
+            try:
+                # Call the async default - this returns a coroutine
+                result = self._default(*args, **kwargs)
+                # Return the coroutine - caller must await it
+                return result  # type: ignore
+            except NotImplementedError:
+                warnings.warn(
+                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
+                    DeprecationWarning,
+                )
+                raise NotHandled
+        except NotHandled:
+            # No implementation - construct a term
+            return typing.cast(
+                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+            )(self, *args, **kwargs)
+
+    def __repr__(self):
+        return f"_BaseAsyncOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
 
 
 @defop.register(Operation)
@@ -841,6 +857,73 @@ def deffn[T, A, B](
 
     """
     raise NotHandled
+
+
+@defop
+async def await_[**P, T](
+    op: Operation[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+    """An operation that represents awaiting an async operation.
+
+    This operation reifies the async/sync boundary. When an async operation
+    is called, it routes through :func:`await_`, which captures the current
+    handler and ensures it's used when the coroutine is awaited.
+
+    This ensures handlers are bound at construction time, not await time.
+
+    :param op: The async operation to await.
+    :param args: Positional arguments to the operation.
+    :param kwargs: Keyword arguments to the operation.
+    :returns: The result of awaiting the operation.
+
+    **Example usage**:
+
+    >>> @defop
+    ... async def fetch(url: str) -> dict:
+    ...     raise NotHandled
+
+    When called without a handler, routes through await_:
+
+    >>> import asyncio
+    >>> coro = fetch("http://example.com")  # Returns coroutine
+    >>> asyncio.iscoroutine(coro)  # doctest: +SKIP
+    True
+
+    The coroutine can be awaited later with a handler:
+
+    >>> from effectful.ops.semantics import handler
+    >>> async def mock_fetch(url: str) -> dict:
+    ...     return {"url": url, "data": "..."}
+    >>> with handler({fetch: mock_fetch}):
+    ...     result = await coro  # doctest: +SKIP
+    """
+    from effectful.internals.runtime import get_interpretation
+    from effectful.ops.semantics import async_apply as async_apply_op
+    import inspect
+
+    # Capture the handler at construction time
+    intp = get_interpretation()
+
+    if op in intp:
+        # Handler for the specific operation
+        handler_fn = intp[op]
+        result = handler_fn(*args, **kwargs)
+        if inspect.iscoroutine(result):
+            return await result  # type: ignore
+        return result  # type: ignore
+    elif async_apply_op in intp:
+        # Handler for async_apply
+        return await intp[async_apply_op](op, *args, **kwargs)  # type: ignore
+    else:
+        # No handler - try the default or construct a term
+        try:
+            coro = op._default(*args, **kwargs)  # type: ignore
+            return await coro  # type: ignore
+        except NotHandled:
+            from effectful.ops.syntax import defdata
+            return defdata(op, *args, **kwargs)  # type: ignore
 
 
 class _CustomSingleDispatchCallable[**P, **Q, S, T]:
