@@ -926,12 +926,15 @@ def test_arrayterm_transpose():
     array_term = jax_getitem(base_array, (i(),))
 
     result = array_term.transpose()
+    result_T = array_term.T
     jnp_result = jnp.transpose(array_term)
 
     with handler({i: lambda: jnp.array([0, 1])}):
         eval_result = evaluate(result)
+        eval_result_T = evaluate(result_T)
         eval_jnp_result = evaluate(jnp_result)
         assert jnp.allclose(eval_result, eval_jnp_result)
+        assert jnp.allclose(eval_result_T, eval_jnp_result)
 
 
 def test_arrayterm_var():
