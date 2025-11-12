@@ -181,14 +181,8 @@ def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -
 class CacheLLMRequestHandler(ObjectInterpretation):
     """Caches LLM requests."""
 
-    def __init__(self, silent_failure: bool = True):
-        """Initialize the cache handler.
-
-        Args:
-            silent_failure: If True, will not raise an error if args and kwargs are not hashable, proceed as normal LLM calls.
-        """
+    def __init__(self):
         self.cache: dict[tuple[Hashable, Hashable], Any] = {}
-        self.silent_failure = silent_failure
 
     def _make_hashable(self, obj: Any) -> Hashable:
         """Recursively convert objects to hashable representations."""
@@ -198,18 +192,12 @@ class CacheLLMRequestHandler(ObjectInterpretation):
             return tuple(self._make_hashable(item) for item in obj)
         elif isinstance(obj, set):
             return frozenset(self._make_hashable(item) for item in obj)
-        elif isinstance(obj, int | float | bool | str | bytes):
-            return obj
         else:
-            if self.silent_failure:
-                return obj
-            raise ValueError(f"Object {obj} is not hashable")
+            return hash(obj)
 
     @implements(llm_request)
     def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
-        hashable_args = self._make_hashable(args)
-        hashable_kwargs = self._make_hashable(kwargs)
-        key = (hashable_args, hashable_kwargs)
+        key = self._make_hashable((args, kwargs))
         if key in self.cache:
             return self.cache[key]
         response = fwd()
