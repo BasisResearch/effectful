@@ -5,7 +5,7 @@ import io
 import logging
 import string
 import typing
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
@@ -176,6 +176,34 @@ def llm_request(client: openai.OpenAI, *args, **kwargs) -> Any:
 def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
     """Perform a model-initiated tool call."""
     return tool(*args, **kwargs)
+
+
+class CacheLLMRequestHandler(ObjectInterpretation):
+    """Caches LLM requests."""
+
+    def __init__(self):
+        self.cache: dict[Hashable, Any] = {}
+
+    def _make_hashable(self, obj: Any) -> Hashable:
+        """Recursively convert objects to hashable representations."""
+        if isinstance(obj, dict):
+            return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
+        elif isinstance(obj, list | tuple):
+            return tuple(self._make_hashable(item) for item in obj)
+        elif isinstance(obj, set):
+            return frozenset(self._make_hashable(item) for item in obj)
+        else:
+            # Primitives (int, float, str, bytes, etc.) are already hashable
+            return obj
+
+    @implements(llm_request)
+    def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+        key = self._make_hashable((args, kwargs))
+        if key in self.cache:
+            return self.cache[key]
+        response = fwd()
+        self.cache[key] = response
+        return response
 
 
 class LLMLoggingHandler(ObjectInterpretation):
