@@ -159,3 +159,29 @@ async def test_mixed_sync_async_advanced():
         assert isinstance(res, int), (
             "terms consisting of only sync operations behave as normal in an async context."
         )
+
+@pytest.mark.asyncio
+async def test_awaited_uninterpreted_terms_contain_await():
+    """Test that awaited uninterpreted async terms produce terms with await_ inside"""
+    from effectful.ops.semantics import await_
+
+    coro = async_add(10, 20)
+    assert asyncio.iscoroutine(coro), "Async operation without handler returns coroutine"
+
+    term = await coro
+    assert isinstance(term, Term), "Awaiting uninterpreted async operation returns a Term"
+    assert term.op == await_, "The term is an await_ term"
+    assert term.args[0] == async_add, "await_ term contains the async operation"
+    assert term.args[1] == 10, "await_ term contains first argument"
+    assert term.args[2] == 20, "await_ term contains second argument"
+
+    async def add_handler(a: int, b: int) -> int:
+        await asyncio.sleep(0.01)
+        return a + b
+
+    with handler({async_add: add_handler}):
+        result_coro = evaluate(term)
+        assert asyncio.iscoroutine(result_coro), "Evaluating await_ term returns coroutine"
+        result = await result_coro
+        assert result == 30, "Evaluating the await_ term produces the correct result"
+
