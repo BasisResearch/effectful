@@ -1,35 +1,28 @@
 import contextlib
-import dataclasses
+import contextvars
 import functools
+import typing
 from collections.abc import Callable, Mapping
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
 
-
-@dataclasses.dataclass
-class Runtime[S, T]:
-    interpretation: "Interpretation[S, T]"
-
-
-@functools.lru_cache(maxsize=1)
-def get_runtime() -> Runtime:
-    return Runtime(interpretation={})
+INTERPRETER: contextvars.ContextVar[Interpretation] = contextvars.ContextVar(
+    "interpretation", default=typing.cast(Interpretation, {})
+)
 
 
 def get_interpretation():
-    return get_runtime().interpretation
+    return INTERPRETER.get()
 
 
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
-    r = get_runtime()
-    old_intp = r.interpretation
+    token = INTERPRETER.set(intp)
     try:
-        old_intp, r.interpretation = r.interpretation, dict(intp)
         yield intp
     finally:
-        r.interpretation = old_intp
+        INTERPRETER.reset(token)
 
 
 @defop

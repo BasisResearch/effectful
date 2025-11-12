@@ -61,6 +61,7 @@ test = [
     "pytest-cov",
     "pytest-xdist",
     "pytest-benchmark",
+    "pytest-asyncio",
     "mypy",
     "ruff",
     "nbval",

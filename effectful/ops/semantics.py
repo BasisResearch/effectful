@@ -1,18 +1,28 @@
 import collections.abc
 import contextlib
 import dataclasses
+import functools
+import inspect
 import types
 import typing
 from typing import Any
 
 from effectful.ops.syntax import defop
-from effectful.ops.types import (
-    Expr,
-    Interpretation,
-    NotHandled,  # noqa: F401
-    Operation,
-    Term,
-)
+from effectful.ops.types import Expr, Interpretation, Operation, Term
+
+
+@defop
+def await_[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Embeds await the asynchronous computation ``op`` applied to ``args``, ``kwargs`` in interpretation ``intp``.
+
+    Handling `await_`  changes the evaluation strategy of async operations.
+    """
+
+    @functools.wraps(op)
+    async def wrapper():
+        return await op(*args, **kwargs)  # type: ignore
+
+    return wrapper()  # type: ignore
 
 
 @defop  # type: ignore
@@ -228,15 +238,52 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
+
     from effectful.internals.runtime import get_interpretation, interpreter
 
     if intp is not None:
         return interpreter(intp)(evaluate)(expr)
 
     if isinstance(expr, Term):
-        args = tuple(evaluate(arg) for arg in expr.args)
-        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-        return expr.op(*args, **kwargs)
+        # Check if we need async evaluation
+        args_evaluated = [evaluate(arg) for arg in expr.args]
+        kwargs_evaluated = {k: evaluate(v) for k, v in expr.kwargs.items()}
+
+        # Check if any evaluated args/kwargs are coroutines
+        has_coro = any(inspect.iscoroutine(a) for a in args_evaluated) or any(
+            inspect.iscoroutine(v) for v in kwargs_evaluated.values()
+        )
+
+        if has_coro:
+            # Return an async wrapper
+            async def async_evaluate_term():
+                # Await any coroutines in args
+                args_list = []
+                for a in args_evaluated:
+                    if inspect.iscoroutine(a):
+                        args_list.append(await a)
+                    else:
+                        args_list.append(a)
+                args = tuple(args_list)
+
+                kwargs = {}
+                for k, v in kwargs_evaluated.items():
+                    if inspect.iscoroutine(v):
+                        kwargs[k] = await v
+                    else:
+                        kwargs[k] = v
+
+                result = expr.op(*args, **kwargs)
+                # The op call itself might return a coroutine
+                if inspect.iscoroutine(result):
+                    return await result
+                return result
+
+            return async_evaluate_term()
+        else:
+            args = tuple(args_evaluated)
+            kwargs = dict(kwargs_evaluated)
+            return expr.op(*args, **kwargs)
     elif isinstance(expr, Operation):
         op_intp = get_interpretation().get(expr, expr)
         return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
