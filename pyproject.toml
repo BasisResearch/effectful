@@ -53,7 +53,7 @@ docs = [
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    "pypandoc_binary",
+    "pypandoc",
 ]
 test = [
     "effectful[torch,pyro,jax,numpyro,docs]",

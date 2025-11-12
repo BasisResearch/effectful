@@ -193,7 +193,8 @@ class CacheLLMRequestHandler(ObjectInterpretation):
         elif isinstance(obj, set):
             return frozenset(self._make_hashable(item) for item in obj)
         else:
-            return hash(obj)
+            # Primitives (int, float, str, bytes, etc.) are already hashable
+            return obj
 
     @implements(llm_request)
     def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
