@@ -182,7 +182,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
     """Caches LLM requests."""
 
     def __init__(self):
-        self.cache: dict[tuple[Hashable, Hashable], Any] = {}
+        self.cache: dict[Hashable, Any] = {}
 
     def _make_hashable(self, obj: Any) -> Hashable:
         """Recursively convert objects to hashable representations."""
