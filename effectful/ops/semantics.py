@@ -2,18 +2,13 @@ import collections.abc
 import contextlib
 import dataclasses
 import functools
+import inspect
 import types
 import typing
 from typing import Any
 
 from effectful.ops.syntax import defop
-from effectful.ops.types import (
-    Expr,
-    Interpretation,
-    NotHandled,  # noqa: F401
-    Operation,
-    Term,
-)
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 
 @defop
@@ -243,7 +238,6 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
-    import inspect
 
     from effectful.internals.runtime import get_interpretation, interpreter
 
