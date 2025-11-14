@@ -541,7 +541,7 @@ def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
         batch_shape = evaluate(d._batch_shape)
         base_dist = evaluate(d.base_dist)
-        base_batch_shape = base_dist.batch_shape
+        base_batch_shape = base_dist.batch_shape  # type: ignore
         if batch_shape == base_batch_shape:
             return base_dist
 
