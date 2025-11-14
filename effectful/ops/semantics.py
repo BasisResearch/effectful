@@ -3,9 +3,10 @@ import contextlib
 import dataclasses
 import types
 import typing
+from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import _CustomSingleDispatchCallable, defop
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -209,7 +210,13 @@ def handler(intp: Interpretation):
         yield intp
 
 
-def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]:
+@_CustomSingleDispatchCallable
+def evaluate[T](
+    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    expr: Expr[T],
+    *,
+    intp: Interpretation | None = None,
+) -> Expr[T]:
     """Evaluate expression ``expr`` using interpretation ``intp``. If no
     interpretation is provided, uses the current interpretation.
 
@@ -228,46 +235,12 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
     6
 
     """
-    from effectful.internals.runtime import get_interpretation, interpreter
+    from effectful.internals.runtime import interpreter
 
     if intp is not None:
         return interpreter(intp)(evaluate)(expr)
 
-    if isinstance(expr, Term):
-        args = tuple(evaluate(arg) for arg in expr.args)
-        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-        return expr.op(*args, **kwargs)
-    elif isinstance(expr, Operation):
-        op_intp = get_interpretation().get(expr, expr)
-        return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
-    elif isinstance(expr, collections.abc.Mapping):
-        if isinstance(expr, collections.defaultdict):
-            return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))  # type: ignore
-        elif isinstance(expr, types.MappingProxyType):
-            return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
-        else:
-            return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
-    elif isinstance(expr, collections.abc.Sequence):
-        if isinstance(expr, str | bytes):
-            return typing.cast(T, expr)  # mypy doesnt like ignore here, so we use cast
-        elif (
-            isinstance(expr, tuple)
-            and hasattr(expr, "_fields")
-            and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
-        ):  # namedtuple
-            return type(expr)(
-                **{field: evaluate(getattr(expr, field)) for field in expr._fields}
-            )
-        else:
-            return type(expr)(evaluate(item) for item in expr)  # type: ignore
-    elif isinstance(expr, collections.abc.Set):
-        if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
-            return {evaluate(item) for item in expr}  # type: ignore
-        else:
-            return type(expr)(evaluate(item) for item in expr)  # type: ignore
-    elif isinstance(expr, collections.abc.ValuesView):
-        return [evaluate(item) for item in expr]  # type: ignore
-    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+    if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return typing.cast(
             T,
             dataclasses.replace(
@@ -278,8 +251,75 @@ def evaluate[T](expr: Expr[T], *, intp: Interpretation | None = None) -> Expr[T]
                 },
             ),
         )
+
+    return __dispatch(type(expr))(expr)
+
+
+@evaluate.register(object)
+@evaluate.register(str)
+@evaluate.register(bytes)
+def _evaluate_object(expr, **kwargs):
+    return expr
+
+
+@evaluate.register(Term)
+def _evaluate_term(expr, **kwargs):
+    args = tuple(evaluate(arg) for arg in expr.args)
+    kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+    return expr.op(*args, **kwargs)
+
+
+@evaluate.register(Operation)
+def _evaluate_operation(expr, **kwargs):
+    from effectful.internals.runtime import get_interpretation
+
+    op_intp = get_interpretation().get(expr, expr)
+    return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
+
+
+@evaluate.register(collections.defaultdict)
+def _evaluate_defaultdict(expr, **kwargs):
+    return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))  # type: ignore
+
+
+@evaluate.register(types.MappingProxyType)
+def _evaluate_mappingproxytype(expr, **kwargs):
+    return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
+
+
+@evaluate.register(collections.abc.Mapping)
+def _evaluate_mapping(expr, **kwargs):
+    return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
+
+
+@evaluate.register(tuple)
+def _evaluate_tuple(expr, **kwargs):
+    if (
+        isinstance(expr, tuple)
+        and hasattr(expr, "_fields")
+        and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
+    ):  # namedtuple
+        return type(expr)(
+            **{field: evaluate(getattr(expr, field)) for field in expr._fields}
+        )
     else:
-        return typing.cast(T, expr)
+        return type(expr)(evaluate(item) for item in expr)  # type: ignore
+
+
+@evaluate.register(collections.abc.Sequence)
+def _evaluate_sequence(expr, **kwargs):
+    return type(expr)(evaluate(item) for item in expr)  # type: ignore
+
+
+@evaluate.register(collections.abc.ItemsView)
+@evaluate.register(collections.abc.KeysView)
+def _evaluate_set_view(expr, **kwargs):
+    return {evaluate(item) for item in expr}  # type: ignore
+
+
+@evaluate.register(collections.abc.ValuesView)
+def _evaluate_list_view(expr, **kwargs):
+    return [evaluate(item) for item in expr]  # type: ignore
 
 
 def _simple_type(tp: type) -> type:
