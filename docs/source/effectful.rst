@@ -15,7 +15,6 @@ Syntax
    :members:
    :undoc-members:
 
-   .. autofunction:: effectful.ops.syntax.defterm(value: T) -> Expr[T]
    .. autofunction:: effectful.ops.syntax.defdata(value: Term[T]) -> Expr[T]
 
 Semantics

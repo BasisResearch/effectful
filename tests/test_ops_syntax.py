@@ -20,7 +20,6 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     defstream,
-    defterm,
     iter_,
     next_,
     syntactic_eq,
@@ -190,7 +189,7 @@ def test_no_default_tracing():
     def f1(x: int) -> int:
         return add(x, add(y(), 1))
 
-    f1_term = defterm(f1)
+    f1_term = evaluate(f1)
 
     f1_app = call(f1, x())
     f1_term_app = f1_term(x())
