@@ -258,38 +258,38 @@ def evaluate[T](
 @evaluate.register(object)
 @evaluate.register(str)
 @evaluate.register(bytes)
-def _evaluate_object(expr, **kwargs):
+def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
 @evaluate.register(Term)
-def _evaluate_term(expr, **kwargs):
+def _evaluate_term(expr: Term, **kwargs):
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
     return expr.op(*args, **kwargs)
 
 
 @evaluate.register(Operation)
-def _evaluate_operation(expr, **kwargs):
+def _evaluate_operation(expr: Operation, **kwargs) -> Operation:
     from effectful.internals.runtime import get_interpretation
 
     op_intp = get_interpretation().get(expr, expr)
-    return op_intp if isinstance(op_intp, Operation) else expr  # type: ignore
+    return op_intp if isinstance(op_intp, Operation) else expr
 
 
 @evaluate.register(collections.defaultdict)
 def _evaluate_defaultdict(expr, **kwargs):
-    return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))  # type: ignore
+    return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))
 
 
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
-    return type(expr)(dict(evaluate(tuple(expr.items()))))  # type: ignore
+    return type(expr)(dict(evaluate(tuple(expr.items()))))
 
 
 @evaluate.register(collections.abc.Mapping)
 def _evaluate_mapping(expr, **kwargs):
-    return type(expr)(evaluate(tuple(expr.items())))  # type: ignore
+    return type(expr)(evaluate(tuple(expr.items())))
 
 
 @evaluate.register(tuple)
@@ -303,23 +303,23 @@ def _evaluate_tuple(expr, **kwargs):
             **{field: evaluate(getattr(expr, field)) for field in expr._fields}
         )
     else:
-        return type(expr)(evaluate(item) for item in expr)  # type: ignore
+        return type(expr)(evaluate(item) for item in expr)
 
 
 @evaluate.register(collections.abc.Sequence)
 def _evaluate_sequence(expr, **kwargs):
-    return type(expr)(evaluate(item) for item in expr)  # type: ignore
+    return type(expr)(evaluate(item) for item in expr)
 
 
 @evaluate.register(collections.abc.ItemsView)
 @evaluate.register(collections.abc.KeysView)
 def _evaluate_set_view(expr, **kwargs):
-    return {evaluate(item) for item in expr}  # type: ignore
+    return {evaluate(item) for item in expr}
 
 
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
-    return [evaluate(item) for item in expr]  # type: ignore
+    return [evaluate(item) for item in expr]
 
 
 def _simple_type(tp: type) -> type:
