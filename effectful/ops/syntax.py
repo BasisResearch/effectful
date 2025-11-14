@@ -989,15 +989,6 @@ def defdata[T](
     return _unpack(result, cast)
 
 
-@defterm.register(object)
-@defterm.register(Operation)
-@defterm.register(Term)
-@defterm.register(type)
-@defterm.register(types.BuiltinFunctionType)
-def _[T](value: T) -> T:
-    return value
-
-
 @defdata.register(object)
 class _BaseTerm[T](Term[T]):
     _op: Operation[..., T]
