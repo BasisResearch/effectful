@@ -10,7 +10,6 @@ import typing
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
-from warnings import warn
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
