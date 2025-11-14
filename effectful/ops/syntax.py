@@ -10,6 +10,7 @@ import typing
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Concatenate
+from warnings import warn
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
 
@@ -861,10 +862,11 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     :param value: The value to convert.
     :returns: A term.
     """
-    if isinstance(value, Term):
-        return value
-    else:
-        return __dispatch(type(value))(value)
+    from effectful.ops.semantics import evaluate
+
+    warnings.warn("defterm is replaced by evaluate", DeprecationWarning)
+
+    return evaluate(value)
 
 
 @_CustomSingleDispatchCallable
