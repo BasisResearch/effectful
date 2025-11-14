@@ -339,7 +339,6 @@ def _unbind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],
 ) -> pyro.distributions.torch_distribution.TorchDistribution:
-    d = value
     batch_shape = None
 
     def _validate_batch_shape(t):
@@ -380,7 +379,7 @@ def _unbind_dims_distribution(
         return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
-        d = evaluate(d)
+        d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
         raise NotHandled
@@ -399,8 +398,6 @@ def _bind_dims_distribution(
     value: pyro.distributions.torch_distribution.TorchDistribution,
     *names: Operation[[], torch.Tensor],
 ) -> pyro.distributions.torch_distribution.TorchDistribution:
-    d = value
-
     def _to_positional(a, indices):
         if isinstance(a, torch.Tensor):
             # broadcast to full indexed shape
@@ -428,7 +425,7 @@ def _bind_dims_distribution(
         return op.__default_rule__(*args, **kwargs)
 
     with runner({apply: _apply}):
-        d = evaluate(d)
+        d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
         raise NotHandled
