@@ -1,20 +1,25 @@
 import contextlib
-import dataclasses
 import functools
+import threading
 from collections.abc import Callable, Mapping
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
 
 
-@dataclasses.dataclass
-class Runtime[S, T]:
+class Runtime[S, T](threading.local):
+    """Thread-local runtime for effectful interpretations."""
+
     interpretation: "Interpretation[S, T]"
+
+    def __init__(self):
+        super().__init__()
+        self.interpretation = {}
 
 
 @functools.lru_cache(maxsize=1)
 def get_runtime() -> Runtime:
-    return Runtime(interpretation={})
+    return Runtime()
 
 
 def get_interpretation():
