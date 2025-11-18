@@ -72,6 +72,36 @@ def test_mutual_exclusion():
         assert add_calls == 10
 
 
+def test_concurrent_client_execution():
+    add_calls = 0
+    add_calls_interp = 0
+
+    def add_interp(x: int, y: int) -> int:
+        nonlocal add_calls
+        no_calls = add_calls
+        time.sleep(0.001)
+        add_calls = no_calls + 1
+        return x + y
+
+    def client(x: int):
+        # clients submitted to the executor ARE NOT synchronous
+        nonlocal add_calls_interp
+        no_calls = add_calls_interp
+        time.sleep(0.001)
+        add_calls_interp = no_calls + 1
+        return add(x, x)
+
+    with (
+        handler(ThreadPoolFuturesInterpretation(max_workers=4)),
+        handler({add: add_interp}),
+    ):
+        _ = sum(Executor.map(client, list(range(10))))
+        # With mutual exclusion, we're guaranteed to get exactly 10
+        assert add_calls == 10
+        # client is not synchronous so no guarantees.
+        assert add_calls_interp != 10
+
+
 def test_release_lock_for_concurrent_io():
     """Test that release_handler_lock allows concurrent I/O operations.
 

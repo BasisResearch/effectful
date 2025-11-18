@@ -9,7 +9,7 @@ automatic preservation of interpretation context.
 import concurrent.futures as futures
 import functools
 from collections.abc import Callable, Iterable
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
 
@@ -179,22 +179,6 @@ class ThreadPoolFuturesInterpretation(FuturesInterpretation):
         :param max_workers: Maximum number of worker threads (default: None, uses default from ThreadPoolExecutor)
         """
         super().__init__(ThreadPoolExecutor(max_workers=max_workers))
-
-
-class ProcessPoolFuturesInterpretation(FuturesInterpretation):
-    """
-    Interpretation for ProcessPoolExecutor with automatic context preservation.
-
-    Note: Context preservation across processes has limitations due to pickling constraints.
-    """
-
-    def __init__(self, max_workers=None):
-        """
-        Initialize with a ProcessPoolExecutor.
-
-        :param max_workers: Maximum number of worker processes (default: None, uses default from ProcessPoolExecutor)
-        """
-        super().__init__(ProcessPoolExecutor(max_workers=max_workers))
 
 
 type ReturnOptions = Literal["All_COMPLETED", "FIRST_COMPLETED", "FIRST_EXCEPTION"]

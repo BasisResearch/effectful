@@ -6,6 +6,7 @@ import logging
 import string
 import typing
 from collections.abc import Hashable, Iterable, Mapping, Sequence
+from concurrent.futures import Future
 from typing import Any, get_type_hints
 
 import pydantic
@@ -22,6 +23,7 @@ except ImportError:
 
 from openai.types.responses import FunctionToolParam
 
+from effectful.handlers.futures import Executor
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
@@ -282,13 +284,13 @@ class OpenAIAPIProvider(ObjectInterpretation):
         self._client = client
         self._model_name = model_name
 
-    @implements(Template.__call__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        ret_type = template.__signature__.return_annotation
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
+    def _openai_api_call[**P, T, RT](
+        self,
+        template: Template[P, T],
+        bound_args: inspect.BoundArguments,
+        ret_type: type[RT],
+    ) -> RT:
+        """Execute the actual OpenAI API call and decode the response."""
         prompt = _OpenAIPromptFormatter().format_as_messages(
             template.__prompt_template__, **bound_args.arguments
         )
@@ -368,3 +370,24 @@ class OpenAIAPIProvider(ObjectInterpretation):
         result = Result.model_validate_json(result_str)
         assert isinstance(result, Result)
         return result.value  # type: ignore[attr-defined]
+
+    @implements(Template.__call__)
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        ret_type = template.__signature__.return_annotation
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+
+        # Check if return type is Future[T]
+        origin = typing.get_origin(ret_type)
+        if origin is Future:
+            inner_type = typing.get_args(ret_type)[0]
+            return Executor.submit(
+                self._openai_api_call,  # type: ignore
+                template,  # type: ignore
+                bound_args,  # type: ignore
+                inner_type,
+            )
+
+        return self._openai_api_call(template, bound_args, ret_type)
