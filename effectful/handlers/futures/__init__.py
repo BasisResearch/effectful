@@ -242,7 +242,6 @@ def wait[T](
         or any(not isinstance(t, Future) for t in fs)
     ):
         raise NotHandled
-    print(f"wait called with {fs} {timeout} {return_when}")
     return futures.wait(fs, timeout, return_when)  # type: ignore
 
 
