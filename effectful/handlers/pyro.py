@@ -27,7 +27,7 @@ from effectful.handlers.torch import (
     unbind_dims,
 )
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, runner, typeof
+from effectful.ops.semantics import apply, evaluate, handler, typeof
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
 
@@ -369,16 +369,9 @@ def _unbind_dims_distribution(
 
     # Convert to a term in a context that does not evaluate distribution constructors.
     def _apply(op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(
-            typ, pyro.distributions.torch_distribution.TorchDistribution
-        ) or issubclass(
-            typ, pyro.distributions.torch_distribution.TorchDistributionMixin
-        ):
-            return defdata(op, *args, **kwargs)
-        return op.__default_rule__(*args, **kwargs)
+        return defdata(op, *args, **kwargs)
 
-    with runner({apply: _apply}):
+    with handler({apply: _apply}):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
@@ -415,16 +408,9 @@ def _bind_dims_distribution(
 
     # Convert to a term in a context that does not evaluate distribution constructors.
     def _apply(op, *args, **kwargs):
-        typ = op.__type_rule__(*args, **kwargs)
-        if issubclass(
-            typ, pyro.distributions.torch_distribution.TorchDistribution
-        ) or issubclass(
-            typ, pyro.distributions.torch_distribution.TorchDistributionMixin
-        ):
-            return defdata(op, *args, **kwargs)
-        return op.__default_rule__(*args, **kwargs)
+        return defdata(op, *args, **kwargs)
 
-    with runner({apply: _apply}):
+    with handler({apply: _apply}):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
@@ -449,7 +435,7 @@ def _register_distribution_op(
     def wrapper(*args, **kwargs) -> TorchDistribution:
         return dist_constr(*args, **kwargs)
 
-    return defop(wrapper)
+    return defop(wrapper, name=dist_constr.__name__)
 
 
 @defdata.register(pyro.distributions.torch_distribution.TorchDistribution)
@@ -536,14 +522,24 @@ def _embed_distribution(dist: TorchDistribution) -> Term[TorchDistribution]:
     )
 
 
+################################################################################
+# Note: Accessing attributes on a distribution actually mutates the
+# distribution, so it is unsafe to access attributes in a context that overrides
+# torch_getitem and the partial evaluation rules.
+################################################################################
+
+
 @evaluate.register
 def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        batch_shape = evaluate(d._batch_shape)
-        base_dist = evaluate(d.base_dist)
-        base_batch_shape = base_dist.batch_shape  # type: ignore
-        if batch_shape == base_batch_shape:
-            return base_dist
+        batch_shape_raw = d._batch_shape
+        base_dist_raw = d.base_dist
+
+    batch_shape = evaluate(batch_shape_raw)
+    base_dist = evaluate(base_dist_raw)
+    base_batch_shape = base_dist.batch_shape  # type: ignore
+    if batch_shape == base_batch_shape:
+        return base_dist
 
     raise ValueError("Nontrivial ExpandedDistribution not implemented.")
 
@@ -551,8 +547,11 @@ def _embed_expanded(d: dist.ExpandedDistribution) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_independent(d: dist.Independent) -> Term[TorchDistribution]:
     with interpreter({}):
-        base_dist = evaluate(d.base_dist)
-        reinterpreted_batch_ndims = evaluate(d.reinterpreted_batch_ndims)
+        base_dist_raw = d.base_dist
+        reinterpreted_batch_ndims_raw = d.reinterpreted_batch_ndims
+
+    base_dist = evaluate(base_dist_raw)
+    reinterpreted_batch_ndims = evaluate(reinterpreted_batch_ndims_raw)
 
     return _register_distribution_op(type(d))(base_dist, reinterpreted_batch_ndims)
 
@@ -560,7 +559,9 @@ def _embed_independent(d: dist.Independent) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_folded(d: dist.FoldedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        base_dist = evaluate(d.base_dist)
+        base_dist_raw = d.base_dist
+
+    base_dist = evaluate(base_dist_raw)
 
     return _register_distribution_op(type(d))(base_dist)  # type: ignore
 
@@ -568,8 +569,11 @@ def _embed_folded(d: dist.FoldedDistribution) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_masked(d: dist.MaskedDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        base_dist = evaluate(d.base_dist)
-        mask = evaluate(d._mask)
+        base_dist_raw = d.base_dist
+        mask_raw = d._mask
+
+    base_dist = evaluate(base_dist_raw)
+    mask = evaluate(mask_raw)
 
     return _register_distribution_op(type(d))(base_dist, mask)
 
@@ -584,10 +588,13 @@ def _embed_masked(d: dist.MaskedDistribution) -> Term[TorchDistribution]:
 @evaluate.register(dist.StudentT)
 def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        loc = evaluate(d.loc)
-        scale = evaluate(d.scale)
+        loc_raw = d.loc
+        scale_raw = d.scale
 
-    return _register_distribution_op(type(d))(evaluate(loc), evaluate(scale))
+    loc = evaluate(loc_raw)
+    scale = evaluate(scale_raw)
+
+    return _register_distribution_op(type(d))(loc, scale)
 
 
 @evaluate.register(dist.Bernoulli)
@@ -598,7 +605,9 @@ def _embed_loc_scale(d: TorchDistribution) -> Term[TorchDistribution]:
 @evaluate.register(dist.OneHotCategoricalStraightThrough)
 def _embed_probs(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        probs = evaluate(d.probs)
+        probs_raw = d.probs
+
+    probs = evaluate(probs_raw)
 
     return _register_distribution_op(type(d))(probs)
 
@@ -607,8 +616,11 @@ def _embed_probs(d: TorchDistribution) -> Term[TorchDistribution]:
 @evaluate.register(dist.Kumaraswamy)
 def _embed_beta(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        concentration1 = evaluate(d.concentration1)
-        concentration0 = evaluate(d.concentration0)
+        concentration1_raw = d.concentration1
+        concentration0_raw = d.concentration0
+
+    concentration1 = evaluate(concentration1_raw)
+    concentration0 = evaluate(concentration0_raw)
 
     return _register_distribution_op(type(d))(concentration1, concentration0)
 
@@ -616,8 +628,11 @@ def _embed_beta(d: TorchDistribution) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_binomial(d: dist.Binomial) -> Term[TorchDistribution]:
     with interpreter({}):
-        total_count = evaluate(d.total_count)
-        probs = evaluate(d.probs)
+        total_count_raw = d.total_count
+        probs_raw = d.probs
+
+    total_count = evaluate(total_count_raw)
+    probs = evaluate(probs_raw)
 
     return _register_distribution_op(dist.Binomial)(total_count, probs)
 
@@ -625,7 +640,9 @@ def _embed_binomial(d: dist.Binomial) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_chi2(d: dist.Chi2) -> Term[TorchDistribution]:
     with interpreter({}):
-        df = evaluate(d.df)
+        df_raw = d.df
+
+    df = evaluate(df_raw)
 
     return _register_distribution_op(dist.Chi2)(df)
 
@@ -633,7 +650,9 @@ def _embed_chi2(d: dist.Chi2) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[TorchDistribution]:
     with interpreter({}):
-        concentration = evaluate(d.concentration)
+        concentration_raw = d.concentration
+
+    concentration = evaluate(concentration_raw)
 
     return _register_distribution_op(dist.Dirichlet)(concentration)
 
@@ -641,7 +660,9 @@ def _embed_dirichlet(d: dist.Dirichlet) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_exponential(d: dist.Exponential) -> Term[TorchDistribution]:
     with interpreter({}):
-        rate = evaluate(d.rate)
+        rate_raw = d.rate
+
+    rate = evaluate(rate_raw)
 
     return _register_distribution_op(dist.Exponential)(rate)
 
@@ -649,8 +670,11 @@ def _embed_exponential(d: dist.Exponential) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_fisher_snedecor(d: dist.FisherSnedecor) -> Term[TorchDistribution]:
     with interpreter({}):
-        df1 = evaluate(d.df1)
-        df2 = evaluate(d.df2)
+        df1_raw = d.df1
+        df2_raw = d.df2
+
+    df1 = evaluate(df1_raw)
+    df2 = evaluate(df2_raw)
 
     return _register_distribution_op(dist.FisherSnedecor)(df1, df2)
 
@@ -658,8 +682,11 @@ def _embed_fisher_snedecor(d: dist.FisherSnedecor) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_gamma(d: dist.Gamma) -> Term[TorchDistribution]:
     with interpreter({}):
-        concentration = evaluate(d.concentration)
-        rate = evaluate(d.rate)
+        concentration_raw = d.concentration
+        rate_raw = d.rate
+
+    concentration = evaluate(concentration_raw)
+    rate = evaluate(rate_raw)
 
     return _register_distribution_op(dist.Gamma)(concentration, rate)
 
@@ -668,7 +695,9 @@ def _embed_gamma(d: dist.Gamma) -> Term[TorchDistribution]:
 @evaluate.register(dist.HalfNormal)
 def _embed_half_cauchy(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        scale = evaluate(d.scale)
+        scale_raw = d.scale
+
+    scale = evaluate(scale_raw)
 
     return _register_distribution_op(type(d))(scale)
 
@@ -676,8 +705,11 @@ def _embed_half_cauchy(d: TorchDistribution) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
     with interpreter({}):
-        dim = evaluate(d.dim)
-        concentration = evaluate(d.concentration)
+        dim_raw = d.dim
+        concentration_raw = d.concentration
+
+    dim = evaluate(dim_raw)
+    concentration = evaluate(concentration_raw)
 
     return _register_distribution_op(dist.LKJCholesky)(dim, concentration=concentration)
 
@@ -685,8 +717,11 @@ def _embed_lkj_cholesky(d: dist.LKJCholesky) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
     with interpreter({}):
-        total_count = evaluate(d.total_count)
-        probs = evaluate(d.probs)
+        total_count_raw = d.total_count
+        probs_raw = d.probs
+
+    total_count = evaluate(total_count_raw)
+    probs = evaluate(probs_raw)
 
     return _register_distribution_op(dist.Multinomial)(total_count, probs)
 
@@ -694,8 +729,11 @@ def _embed_multinomial(d: dist.Multinomial) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[TorchDistribution]:
     with interpreter({}):
-        loc = evaluate(d.loc)
-        scale_tril = evaluate(d.scale_tril)
+        loc_raw = d.loc
+        scale_tril_raw = d.scale_tril
+
+    loc = evaluate(loc_raw)
+    scale_tril = evaluate(scale_tril_raw)
 
     return _register_distribution_op(dist.MultivariateNormal)(
         loc, scale_tril=scale_tril
@@ -705,8 +743,11 @@ def _embed_multivariate_normal(d: dist.MultivariateNormal) -> Term[TorchDistribu
 @evaluate.register
 def _embed_negative_binomial(d: dist.NegativeBinomial) -> Term[TorchDistribution]:
     with interpreter({}):
-        total_count = evaluate(d.total_count)
-        probs = evaluate(d.probs)
+        total_count_raw = d.total_count
+        probs_raw = d.probs
+
+    total_count = evaluate(total_count_raw)
+    probs = evaluate(probs_raw)
 
     return _register_distribution_op(dist.NegativeBinomial)(total_count, probs)
 
@@ -714,8 +755,11 @@ def _embed_negative_binomial(d: dist.NegativeBinomial) -> Term[TorchDistribution
 @evaluate.register
 def _embed_pareto(d: dist.Pareto) -> Term[TorchDistribution]:
     with interpreter({}):
-        scale = evaluate(d.scale)
-        alpha = evaluate(d.alpha)
+        scale_raw = d.scale
+        alpha_raw = d.alpha
+
+    scale = evaluate(scale_raw)
+    alpha = evaluate(alpha_raw)
 
     return _register_distribution_op(dist.Pareto)(scale, alpha)
 
@@ -723,7 +767,9 @@ def _embed_pareto(d: dist.Pareto) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_poisson(d: dist.Poisson) -> Term[TorchDistribution]:
     with interpreter({}):
-        rate = evaluate(d.rate)
+        rate_raw = d.rate
+
+    rate = evaluate(rate_raw)
 
     return _register_distribution_op(dist.Poisson)(rate)
 
@@ -732,8 +778,11 @@ def _embed_poisson(d: dist.Poisson) -> Term[TorchDistribution]:
 @evaluate.register(dist.RelaxedOneHotCategorical)
 def _embed_relaxed(d: TorchDistribution) -> Term[TorchDistribution]:
     with interpreter({}):
-        temperature = evaluate(d.temperature)
-        probs = evaluate(d.probs)
+        temperature_raw = d.temperature
+        probs_raw = d.probs
+
+    temperature = evaluate(temperature_raw)
+    probs = evaluate(probs_raw)
 
     return _register_distribution_op(type(d))(temperature, probs)
 
@@ -741,8 +790,11 @@ def _embed_relaxed(d: TorchDistribution) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_uniform(d: dist.Uniform) -> Term[TorchDistribution]:
     with interpreter({}):
-        low = evaluate(d.low)
-        high = evaluate(d.high)
+        low_raw = d.low
+        high_raw = d.high
+
+    low = evaluate(low_raw)
+    high = evaluate(high_raw)
 
     return _register_distribution_op(dist.Uniform)(low, high)
 
@@ -750,8 +802,11 @@ def _embed_uniform(d: dist.Uniform) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_von_mises(d: dist.VonMises) -> Term[TorchDistribution]:
     with interpreter({}):
-        loc = evaluate(d.loc)
-        concentration = evaluate(d.concentration)
+        loc_raw = d.loc
+        concentration_raw = d.concentration
+
+    loc = evaluate(loc_raw)
+    concentration = evaluate(concentration_raw)
 
     return _register_distribution_op(dist.VonMises)(loc, concentration)
 
@@ -759,8 +814,11 @@ def _embed_von_mises(d: dist.VonMises) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_weibull(d: dist.Weibull) -> Term[TorchDistribution]:
     with interpreter({}):
-        scale = evaluate(d.scale)
-        concentration = evaluate(d.concentration)
+        scale_raw = d.scale
+        concentration_raw = d.concentration
+
+    scale = evaluate(scale_raw)
+    concentration = evaluate(concentration_raw)
 
     return _register_distribution_op(dist.Weibull)(scale, concentration)
 
@@ -768,8 +826,11 @@ def _embed_weibull(d: dist.Weibull) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
     with interpreter({}):
-        df = evaluate(d.df)
-        scale_tril = evaluate(d.scale_tril)
+        df_raw = d.df
+        scale_tril_raw = d.scale_tril
+
+    df = evaluate(df_raw)
+    scale_tril = evaluate(scale_tril_raw)
 
     return _register_distribution_op(dist.Wishart)(df, scale_tril)
 
@@ -777,9 +838,13 @@ def _embed_wishart(d: dist.Wishart) -> Term[TorchDistribution]:
 @evaluate.register
 def _embed_delta(d: dist.Delta) -> Term[TorchDistribution]:
     with interpreter({}):
-        v = evaluate(d.v)
-        log_density = evaluate(d.log_density)
-        event_dim = evaluate(d.event_dim)
+        v_raw = d.v
+        log_density_raw = d.log_density
+        event_dim_raw = d.event_dim
+
+    v = evaluate(v_raw)
+    log_density = evaluate(log_density_raw)
+    event_dim = evaluate(event_dim_raw)
 
     return _register_distribution_op(dist.Delta)(
         v, log_density=log_density, event_dim=event_dim

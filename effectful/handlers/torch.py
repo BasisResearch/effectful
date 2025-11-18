@@ -166,35 +166,24 @@ def bind_dims[
 def _bind_dims_tensor(
     value: torch.Tensor, *names: Operation[[], torch.Tensor]
 ) -> torch.Tensor:
-    def _evaluate(expr):
-        if isinstance(expr, Term):
-            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
-            return _partial_eval(expr)
-        if tree.is_nested(expr):
-            return tree.map_structure(_evaluate, expr)
-        return expr
+    names_set = set(names)
 
-    t = value
-    args = names
+    if not len(names_set) == len(names):
+        raise ValueError("Expected names to be distinct")
 
-    if not isinstance(t, Term):
-        return t
-
-    result = _evaluate(t)
-    if not isinstance(result, Term) or not args:
-        return result
+    if not (names_set & set(sizesof(value).keys())):
+        return value
 
     # ensure that the result is a torch_getitem with a tensor as the first argument
-    if not (result.op is torch_getitem and isinstance(result.args[0], torch.Tensor)):
+    if not (value.op is torch_getitem and isinstance(value.args[0], torch.Tensor)):
         raise NotHandled
 
-    tensor = result.args[0]
-    dims = result.args[1]
+    tensor = value.args[0]
+    dims = value.args[1]
     assert isinstance(dims, Sequence)
 
     # ensure that the order is a subset of the named dimensions
-    order_set = set(args)
-    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
+    if not names_set <= set(a.op for a in dims if isinstance(a, Term)):
         raise NotHandled
 
     # permute the inner tensor so that the leading dimensions are in the order
@@ -203,12 +192,12 @@ def _bind_dims_tensor(
     reindex_dims = [
         i
         for i, o in enumerate(dims)
-        if not isinstance(o, Term) or o.op not in order_set
+        if not isinstance(o, Term) or o.op not in names_set
     ]
     dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
-    perm = [dim_ops.index(o) for o in args] + reindex_dims
+    perm = [dim_ops.index(o) for o in names] + reindex_dims
     tensor = tensor.permute(perm)
-    return tensor[(slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)]
+    return tensor[(slice(None),) * len(names) + tuple(dims[i] for i in reindex_dims)]
 
 
 @defop
