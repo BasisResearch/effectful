@@ -368,10 +368,7 @@ def _unbind_dims_distribution(
             return a
 
     # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
-
-    with handler({apply: _apply}):
+    with handler({apply: defdata}):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
@@ -406,11 +403,7 @@ def _bind_dims_distribution(
         else:
             return a
 
-    # Convert to a term in a context that does not evaluate distribution constructors.
-    def _apply(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
-
-    with handler({apply: _apply}):
+    with handler({apply: defdata}):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):

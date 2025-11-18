@@ -175,7 +175,11 @@ def _bind_dims_tensor(
         return value
 
     # ensure that the result is a torch_getitem with a tensor as the first argument
-    if not (value.op is torch_getitem and isinstance(value.args[0], torch.Tensor)):
+    if not (
+        isinstance(value, Term)
+        and value.op is torch_getitem
+        and isinstance(value.args[0], torch.Tensor)
+    ):
         raise NotHandled
 
     tensor = value.args[0]
