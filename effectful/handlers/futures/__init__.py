@@ -9,7 +9,6 @@ automatic preservation of interpretation context.
 import concurrent.futures as futures
 import functools
 from collections.abc import Callable, Iterable
-from concurrent.futures import Executor as FuturesExecutor
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
@@ -95,14 +94,14 @@ class FuturesInterpretation(ObjectInterpretation):
     work correctly across thread boundaries.
     """
 
-    def __init__(self, executor):
+    def __init__(self, executor: futures.Executor):
         """
         Initialize the futures interpretation.
 
         :param executor: The executor to use (ThreadPoolExecutor or ProcessPoolExecutor)
         """
         super().__init__()
-        self.executor: FuturesExecutor = executor
+        self.executor: futures.Executor = executor
 
     def shutdown(self, *args, **kwargs):
         self.executor.shutdown(*args, **kwargs)
@@ -233,7 +232,7 @@ class _DoneAndNotDoneFuturesTerm[T](Term[DoneAndNotDoneFutures[T]]):
     def done(self) -> set[Future[T]]:
         """Get the set of done futures."""
         if not isinstance(self, Term):
-            return self.done  # type: ignore
+            return self.done
         else:
             raise NotHandled
 
@@ -242,7 +241,7 @@ class _DoneAndNotDoneFuturesTerm[T](Term[DoneAndNotDoneFutures[T]]):
     def not_done(self) -> set[Future[T]]:
         """Get the set of not done futures."""
         if not isinstance(self, Term):
-            return self.not_done  # type: ignore
+            return self.not_done
         else:
             raise NotHandled
 

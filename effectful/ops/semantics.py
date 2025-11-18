@@ -19,6 +19,10 @@ from effectful.ops.types import (
 def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
+    Handler execution is mutually exclusive by default - only one thread can
+    execute handlers at a time. Use :func:`release_handler_lock` to temporarily
+    release the lock for I/O operations that should allow concurrent execution.
+
     Handling :func:`apply` changes the evaluation strategy of terms.
 
     **Example usage**:
@@ -45,15 +49,16 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import acquire_handler_lock, get_interpretation
 
-    intp = get_interpretation()
-    if op in intp:
-        return intp[op](*args, **kwargs)
-    elif apply in intp:
-        return intp[apply](op, *args, **kwargs)
-    else:
-        return op.__default_rule__(*args, **kwargs)  # type: ignore
+    with acquire_handler_lock():
+        intp = get_interpretation()
+        if op in intp:
+            return intp[op](*args, **kwargs)
+        elif apply in intp:
+            return intp[apply](op, *args, **kwargs)
+        else:
+            return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop
