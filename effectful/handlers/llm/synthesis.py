@@ -86,4 +86,7 @@ class ProgramSynthesis(ObjectInterpretation):
             **kwargs,
         )
 
-        return self._parse_and_eval(ret_type, response)
+        functional = self._parse_and_eval(ret_type, response)
+        setattr(functional, "__src__", response)
+
+        return functional
