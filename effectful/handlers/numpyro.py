@@ -244,7 +244,7 @@ class _DistributionTerm(dist.Distribution):
 
     @defop  # type: ignore
     @property
-    def batch_shape(self):
+    def batch_shape(self) -> tuple[int, ...]:
         if not (self._is_eager):
             raise NotHandled
         return self._pos_base_dist.batch_shape[len(self._indices) :]
@@ -258,7 +258,7 @@ class _DistributionTerm(dist.Distribution):
 
     @defop  # type: ignore
     @property
-    def event_shape(self):
+    def event_shape(self) -> tuple[int, ...]:
         if not (self._is_eager):
             raise NotHandled
         return self._pos_base_dist.event_shape
@@ -269,7 +269,7 @@ class _DistributionTerm(dist.Distribution):
         return ret
 
     @defop
-    def rsample(self, key, sample_shape=()):
+    def rsample(self, key, sample_shape=()) -> jax.Array:
         if not (self._is_eager and is_eager_array(key)):
             raise NotHandled
 
@@ -278,7 +278,7 @@ class _DistributionTerm(dist.Distribution):
         )
 
     @defop
-    def sample(self, key, sample_shape=()):
+    def sample(self, key, sample_shape=()) -> jax.Array:
         if not (self._is_eager and is_eager_array(key)):
             raise NotHandled
 
@@ -287,7 +287,7 @@ class _DistributionTerm(dist.Distribution):
         )
 
     @defop
-    def log_prob(self, value):
+    def log_prob(self, value) -> jax.Array:
         if not (self._is_eager and is_eager_array(value)):
             raise NotHandled
 
@@ -314,7 +314,7 @@ class _DistributionTerm(dist.Distribution):
 
     @defop  # type: ignore
     @property
-    def mean(self):
+    def mean(self) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
         try:
@@ -324,7 +324,7 @@ class _DistributionTerm(dist.Distribution):
 
     @defop  # type: ignore
     @property
-    def variance(self):
+    def variance(self) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
         try:
@@ -333,23 +333,23 @@ class _DistributionTerm(dist.Distribution):
             raise RuntimeError(f"variance is not implemented for {type(self).__name__}")
 
     @defop
-    def enumerate_support(self, expand=True):
+    def enumerate_support(self, expand=True) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
         return self._reindex_sample(self._pos_base_dist.enumerate_support(expand), ())
 
     @defop
-    def entropy(self):
+    def entropy(self) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
         return self._pos_base_dist.entropy()
 
     @defop
-    def to_event(self, reinterpreted_batch_ndims=None):
+    def to_event(self, reinterpreted_batch_ndims=None) -> dist.Distribution:
         raise NotHandled
 
     @defop
-    def expand(self, batch_shape):
+    def expand(self, batch_shape) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
 
