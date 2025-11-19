@@ -389,14 +389,14 @@ expand = _DistributionTerm.expand
 
 
 @defop
-def Cauchy(*args, **kwargs) -> dist.Cauchy:
+def Cauchy(loc=0.0, scale=1.0, **kwargs) -> dist.Cauchy:
     raise NotHandled
 
 
 @defdata.register(dist.Cauchy)
 class CauchyTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.Cauchy, Cauchy, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.Cauchy, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -407,14 +407,14 @@ def _embed_cauchy(d: dist.Cauchy) -> Term[dist.Cauchy]:
 
 
 @defop
-def Gumbel(*args, **kwargs) -> dist.Gumbel:
+def Gumbel(loc=0.0, scale=1.0, **kwargs) -> dist.Gumbel:
     raise NotHandled
 
 
 @defdata.register(dist.Gumbel)
 class GumbelTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.Gumbel, Gumbel, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.Gumbel, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -425,14 +425,14 @@ def _embed_gumbel(d: dist.Gumbel) -> Term[dist.Gumbel]:
 
 
 @defop
-def Laplace(*args, **kwargs) -> dist.Laplace:
+def Laplace(loc=0.0, scale=1.0, **kwargs) -> dist.Laplace:
     raise NotHandled
 
 
 @defdata.register(dist.Laplace)
 class LaplaceTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.Laplace, Laplace, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.Laplace, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -443,14 +443,14 @@ def _embed_laplace(d: dist.Laplace) -> Term[dist.Laplace]:
 
 
 @defop
-def LogNormal(*args, **kwargs) -> dist.LogNormal:
+def LogNormal(loc=0.0, scale=1.0, **kwargs) -> dist.LogNormal:
     raise NotHandled
 
 
 @defdata.register(dist.LogNormal)
 class LogNormalTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.LogNormal, LogNormal, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.LogNormal, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -461,14 +461,14 @@ def _embed_lognormal(d: dist.LogNormal) -> Term[dist.LogNormal]:
 
 
 @defop
-def Logistic(*args, **kwargs) -> dist.Logistic:
+def Logistic(loc=0.0, scale=1.0, **kwargs) -> dist.Logistic:
     raise NotHandled
 
 
 @defdata.register(dist.Logistic)
 class LogisticTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.Logistic, Logistic, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.Logistic, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -479,14 +479,14 @@ def _embed_logistic(d: dist.Logistic) -> Term[dist.Logistic]:
 
 
 @defop
-def Normal(*args, **kwargs) -> dist.Normal:
+def Normal(loc=0.0, scale=1.0, **kwargs) -> dist.Normal:
     raise NotHandled
 
 
 @defdata.register(dist.Normal)
 class NormalTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.Normal, Normal, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.Normal, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -497,14 +497,14 @@ def _embed_normal(d: dist.Normal) -> Term[dist.Normal]:
 
 
 @defop
-def StudentT(*args, **kwargs) -> dist.StudentT:
+def StudentT(loc=0.0, scale=1.0, **kwargs) -> dist.StudentT:
     raise NotHandled
 
 
 @defdata.register(dist.StudentT)
 class StudentTTerm(_DistributionTerm):
-    def __init__(self, loc=0.0, scale=1.0, **kwargs):
-        super().__init__(dist.StudentT, StudentT, loc, scale, **kwargs)
+    def __init__(self, op, loc, scale, **kwargs):
+        super().__init__(dist.StudentT, op, loc, scale, **kwargs)
         self.loc = loc
         self.scale = scale
 
@@ -515,14 +515,14 @@ def _embed_studentt(d: dist.StudentT) -> Term[dist.StudentT]:
 
 
 @defop
-def BernoulliProbs(*args, **kwargs) -> dist.BernoulliProbs:
+def BernoulliProbs(probs, **kwargs) -> dist.BernoulliProbs:
     raise NotHandled
 
 
 @defdata.register(dist.BernoulliProbs)
 class BernoulliProbsTerm(_DistributionTerm):
-    def __init__(self, probs, **kwargs):
-        super().__init__(dist.BernoulliProbs, BernoulliProbs, probs, **kwargs)
+    def __init__(self, op, probs, **kwargs):
+        super().__init__(dist.BernoulliProbs, op, probs, **kwargs)
         self.probs = probs
 
 
@@ -532,14 +532,14 @@ def _embed_bernoulliprobs(d: dist.BernoulliProbs) -> Term[dist.BernoulliProbs]:
 
 
 @defop
-def CategoricalProbs(*args, **kwargs) -> dist.CategoricalProbs:
+def CategoricalProbs(probs, **kwargs) -> dist.CategoricalProbs:
     raise NotHandled
 
 
 @defdata.register(dist.CategoricalProbs)
 class CategoricalProbsTerm(_DistributionTerm):
-    def __init__(self, probs, **kwargs):
-        super().__init__(dist.CategoricalProbs, CategoricalProbs, probs, **kwargs)
+    def __init__(self, op, probs, **kwargs):
+        super().__init__(dist.CategoricalProbs, op, probs, **kwargs)
         self.probs = probs
 
 
@@ -549,14 +549,14 @@ def _embed_categoricalprobs(d: dist.CategoricalProbs) -> Term[dist.CategoricalPr
 
 
 @defop
-def GeometricProbs(*args, **kwargs) -> dist.GeometricProbs:
+def GeometricProbs(probs, **kwargs) -> dist.GeometricProbs:
     raise NotHandled
 
 
 @defdata.register(dist.GeometricProbs)
 class GeometricProbsTerm(_DistributionTerm):
-    def __init__(self, probs, **kwargs):
-        super().__init__(dist.GeometricProbs, GeometricProbs, probs, **kwargs)
+    def __init__(self, op, probs, **kwargs):
+        super().__init__(dist.GeometricProbs, op, probs, **kwargs)
         self.probs = probs
 
 
@@ -566,14 +566,14 @@ def _embed_geometricprobs(d: dist.GeometricProbs) -> Term[dist.GeometricProbs]:
 
 
 @defop
-def BernoulliLogits(*args, **kwargs) -> dist.BernoulliLogits:
+def BernoulliLogits(logits, **kwargs) -> dist.BernoulliLogits:
     raise NotHandled
 
 
 @defdata.register(dist.BernoulliLogits)
 class BernoulliLogitsTerm(_DistributionTerm):
-    def __init__(self, logits, **kwargs):
-        super().__init__(dist.BernoulliLogits, BernoulliLogits, logits, **kwargs)
+    def __init__(self, op, logits, **kwargs):
+        super().__init__(dist.BernoulliLogits, op, logits, **kwargs)
         self.logits = logits
 
 
@@ -583,14 +583,14 @@ def _embed_bernoullilogits(d: dist.BernoulliLogits) -> Term[dist.BernoulliLogits
 
 
 @defop
-def CategoricalLogits(*args, **kwargs) -> dist.CategoricalLogits:
+def CategoricalLogits(logits, **kwargs) -> dist.CategoricalLogits:
     raise NotHandled
 
 
 @defdata.register(dist.CategoricalLogits)
 class CategoricalLogitsTerm(_DistributionTerm):
-    def __init__(self, logits, **kwargs):
-        super().__init__(dist.CategoricalLogits, CategoricalLogits, logits, **kwargs)
+    def __init__(self, op, logits, **kwargs):
+        super().__init__(dist.CategoricalLogits, op, logits, **kwargs)
         self.logits = logits
 
 
@@ -600,14 +600,14 @@ def _embed_categoricallogits(d: dist.CategoricalLogits) -> Term[dist.Categorical
 
 
 @defop
-def GeometricLogits(*args, **kwargs) -> dist.GeometricLogits:
+def GeometricLogits(logits, **kwargs) -> dist.GeometricLogits:
     raise NotHandled
 
 
 @defdata.register(dist.GeometricLogits)
 class GeometricLogitsTerm(_DistributionTerm):
-    def __init__(self, logits, **kwargs):
-        super().__init__(dist.GeometricLogits, GeometricLogits, logits, **kwargs)
+    def __init__(self, op, logits, **kwargs):
+        super().__init__(dist.GeometricLogits, op, logits, **kwargs)
         self.logits = logits
 
 
@@ -617,14 +617,14 @@ def _embed_geometriclogits(d: dist.GeometricLogits) -> Term[dist.GeometricLogits
 
 
 @defop
-def Beta(*args, **kwargs) -> dist.Beta:
+def Beta(concentration1, concentration0, **kwargs) -> dist.Beta:
     raise NotHandled
 
 
 @defdata.register(dist.Beta)
 class BetaTerm(_DistributionTerm):
-    def __init__(self, concentration1, concentration0, **kwargs):
-        super().__init__(dist.Beta, Beta, concentration1, concentration0, **kwargs)
+    def __init__(self, op, concentration1, concentration0, **kwargs):
+        super().__init__(dist.Beta, op, concentration1, concentration0, **kwargs)
         self.concentration1 = concentration1
         self.concentration0 = concentration0
 
@@ -635,16 +635,14 @@ def _embed_beta(d: dist.Beta) -> Term[dist.Beta]:
 
 
 @defop
-def Kumaraswamy(*args, **kwargs) -> dist.Kumaraswamy:
+def Kumaraswamy(concentration1, concentration0, **kwargs) -> dist.Kumaraswamy:
     raise NotHandled
 
 
 @defdata.register(dist.Kumaraswamy)
 class KumaraswamyTerm(_DistributionTerm):
-    def __init__(self, concentration1, concentration0, **kwargs):
-        super().__init__(
-            dist.Kumaraswamy, Kumaraswamy, concentration1, concentration0, **kwargs
-        )
+    def __init__(self, op, concentration1, concentration0, **kwargs):
+        super().__init__(dist.Kumaraswamy, op, concentration1, concentration0, **kwargs)
         self.concentration1 = concentration1
         self.concentration0 = concentration0
 
@@ -655,16 +653,14 @@ def _embed_kumaraswamy(d: dist.Kumaraswamy) -> Term[dist.Kumaraswamy]:
 
 
 @defop
-def BinomialProbs(*args, **kwargs) -> dist.BinomialProbs:
+def BinomialProbs(probs, total_count=1, **kwargs) -> dist.BinomialProbs:
     raise NotHandled
 
 
 @defdata.register(dist.BinomialProbs)
 class BinomialProbsTerm(_DistributionTerm):
-    def __init__(self, probs, total_count=1, **kwargs):
-        super().__init__(
-            dist.BinomialProbs, BinomialProbs, probs, total_count, **kwargs
-        )
+    def __init__(self, op, probs, total_count, **kwargs):
+        super().__init__(dist.BinomialProbs, op, probs, total_count, **kwargs)
         self.probs = probs
         self.total_count = total_count
 
@@ -675,20 +671,14 @@ def _embed_binomialprobs(d: dist.BinomialProbs) -> Term[dist.BinomialProbs]:
 
 
 @defop
-def NegativeBinomialProbs(*args, **kwargs) -> dist.NegativeBinomialProbs:
+def NegativeBinomialProbs(total_count, probs, **kwargs) -> dist.NegativeBinomialProbs:
     raise NotHandled
 
 
 @defdata.register(dist.NegativeBinomialProbs)
 class NegativeBinomialProbsTerm(_DistributionTerm):
-    def __init__(self, total_count, probs, **kwargs):
-        super().__init__(
-            dist.NegativeBinomialProbs,
-            NegativeBinomialProbs,
-            total_count,
-            probs,
-            **kwargs,
-        )
+    def __init__(self, op, total_count, probs, **kwargs):
+        super().__init__(dist.NegativeBinomialProbs, op, total_count, probs, **kwargs)
         self.total_count = total_count
         self.probs = probs
 
@@ -701,16 +691,14 @@ def _embed_negativebinomialprobs(
 
 
 @defop
-def MultinomialProbs(*args, **kwargs) -> dist.MultinomialProbs:
+def MultinomialProbs(probs, total_count=1, **kwargs) -> dist.MultinomialProbs:
     raise NotHandled
 
 
 @defdata.register(dist.MultinomialProbs)
 class MultinomialProbsTerm(_DistributionTerm):
-    def __init__(self, probs, total_count=1, **kwargs):
-        super().__init__(
-            dist.MultinomialProbs, MultinomialProbs, probs, total_count, **kwargs
-        )
+    def __init__(self, op, probs, total_count, **kwargs):
+        super().__init__(dist.MultinomialProbs, op, probs, total_count, **kwargs)
         self.probs = probs
         self.total_count = total_count
 
@@ -721,16 +709,14 @@ def _embed_multinomialprobs(d: dist.MultinomialProbs) -> Term[dist.MultinomialPr
 
 
 @defop
-def BinomialLogits(*args, **kwargs) -> dist.BinomialLogits:
+def BinomialLogits(logits, total_count=1, **kwargs) -> dist.BinomialLogits:
     raise NotHandled
 
 
 @defdata.register(dist.BinomialLogits)
 class BinomialLogitsTerm(_DistributionTerm):
-    def __init__(self, logits, total_count=1, **kwargs):
-        super().__init__(
-            dist.BinomialLogits, BinomialLogits, logits, total_count, **kwargs
-        )
+    def __init__(self, op, logits, total_count, **kwargs):
+        super().__init__(dist.BinomialLogits, op, logits, total_count, **kwargs)
         self.logits = logits
         self.total_count = total_count
 
@@ -741,20 +727,16 @@ def _embed_binomiallogits(d: dist.BinomialLogits) -> Term[dist.BinomialLogits]:
 
 
 @defop
-def NegativeBinomialLogits(*args, **kwargs) -> dist.NegativeBinomialLogits:
+def NegativeBinomialLogits(
+    total_count, logits, **kwargs
+) -> dist.NegativeBinomialLogits:
     raise NotHandled
 
 
 @defdata.register(dist.NegativeBinomialLogits)
 class NegativeBinomialLogitsTerm(_DistributionTerm):
-    def __init__(self, total_count, logits, **kwargs):
-        super().__init__(
-            dist.NegativeBinomialLogits,
-            NegativeBinomialLogits,
-            total_count,
-            logits,
-            **kwargs,
-        )
+    def __init__(self, op, total_count, logits, **kwargs):
+        super().__init__(dist.NegativeBinomialLogits, op, total_count, logits, **kwargs)
         self.total_count = total_count
         self.logits = logits
 
@@ -767,16 +749,14 @@ def _embed_negativebinomiallogits(
 
 
 @defop
-def MultinomialLogits(*args, **kwargs) -> dist.MultinomialLogits:
+def MultinomialLogits(logits, total_count=1, **kwargs) -> dist.MultinomialLogits:
     raise NotHandled
 
 
 @defdata.register(dist.MultinomialLogits)
 class MultinomialLogitsTerm(_DistributionTerm):
-    def __init__(self, logits, total_count=1, **kwargs):
-        super().__init__(
-            dist.MultinomialLogits, MultinomialLogits, logits, total_count, **kwargs
-        )
+    def __init__(self, op, logits, total_count, **kwargs):
+        super().__init__(dist.MultinomialLogits, op, logits, total_count, **kwargs)
         self.logits = logits
         self.total_count = total_count
 
@@ -787,14 +767,14 @@ def _embed_multinomiallogits(d: dist.MultinomialLogits) -> Term[dist.Multinomial
 
 
 @defop
-def Chi2(*args, **kwargs) -> dist.Chi2:
+def Chi2(df, **kwargs) -> dist.Chi2:
     raise NotHandled
 
 
 @defdata.register(dist.Chi2)
 class Chi2Term(_DistributionTerm):
-    def __init__(self, df, **kwargs):
-        super().__init__(dist.Chi2, Chi2, df, **kwargs)
+    def __init__(self, op, df, **kwargs):
+        super().__init__(dist.Chi2, op, df, **kwargs)
         self.df = df
 
 
@@ -804,14 +784,14 @@ def _embed_chi2(d: dist.Chi2) -> Term[dist.Chi2]:
 
 
 @defop
-def Dirichlet(*args, **kwargs) -> dist.Dirichlet:
+def Dirichlet(concentration, **kwargs) -> dist.Dirichlet:
     raise NotHandled
 
 
 @defdata.register(dist.Dirichlet)
 class DirichletTerm(_DistributionTerm):
-    def __init__(self, concentration, **kwargs):
-        super().__init__(dist.Dirichlet, Dirichlet, concentration, **kwargs)
+    def __init__(self, op, concentration, **kwargs):
+        super().__init__(dist.Dirichlet, op, concentration, **kwargs)
         self.concentration = concentration
 
 
@@ -821,19 +801,17 @@ def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Dirichlet]:
 
 
 @defop
-def DirichletMultinomial(*args, **kwargs) -> dist.DirichletMultinomial:
+def DirichletMultinomial(
+    concentration, total_count=1, **kwargs
+) -> dist.DirichletMultinomial:
     raise NotHandled
 
 
 @defdata.register(dist.DirichletMultinomial)
 class DirichletMultinomialTerm(_DistributionTerm):
-    def __init__(self, concentration, total_count=1, **kwargs):
+    def __init__(self, op, concentration, total_count, **kwargs):
         super().__init__(
-            dist.DirichletMultinomial,
-            DirichletMultinomial,
-            concentration,
-            total_count,
-            **kwargs,
+            dist.DirichletMultinomial, op, concentration, total_count, **kwargs
         )
         self.concentration = concentration
         self.total_count = total_count
@@ -847,14 +825,14 @@ def _embed_dirichletmultinomial(
 
 
 @defop
-def Exponential(*args, **kwargs) -> dist.Exponential:
+def Exponential(rate=1.0, **kwargs) -> dist.Exponential:
     raise NotHandled
 
 
 @defdata.register(dist.Exponential)
 class ExponentialTerm(_DistributionTerm):
-    def __init__(self, rate=1.0, **kwargs):
-        super().__init__(dist.Exponential, Exponential, rate, **kwargs)
+    def __init__(self, op, rate, **kwargs):
+        super().__init__(dist.Exponential, op, rate, **kwargs)
         self.rate = rate
 
 
@@ -864,14 +842,14 @@ def _embed_exponential(d: dist.Exponential) -> Term[dist.Exponential]:
 
 
 @defop
-def Poisson(*args, **kwargs) -> dist.Poisson:
+def Poisson(rate, **kwargs) -> dist.Poisson:
     raise NotHandled
 
 
 @defdata.register(dist.Poisson)
 class PoissonTerm(_DistributionTerm):
-    def __init__(self, rate, **kwargs):
-        super().__init__(dist.Poisson, Poisson, rate, **kwargs)
+    def __init__(self, op, rate, **kwargs):
+        super().__init__(dist.Poisson, op, rate, **kwargs)
         self.rate = rate
 
 
@@ -881,14 +859,14 @@ def _embed_poisson(d: dist.Poisson) -> Term[dist.Poisson]:
 
 
 @defop
-def Gamma(*args, **kwargs) -> dist.Gamma:
+def Gamma(concentration, rate=1.0, **kwargs) -> dist.Gamma:
     raise NotHandled
 
 
 @defdata.register(dist.Gamma)
 class GammaTerm(_DistributionTerm):
-    def __init__(self, concentration, rate=1.0, **kwargs):
-        super().__init__(dist.Gamma, Gamma, concentration, rate, **kwargs)
+    def __init__(self, op, concentration, rate, **kwargs):
+        super().__init__(dist.Gamma, op, concentration, rate, **kwargs)
         self.concentration = concentration
         self.rate = rate
 
@@ -899,14 +877,14 @@ def _embed_gamma(d: dist.Gamma) -> Term[dist.Gamma]:
 
 
 @defop
-def HalfCauchy(*args, **kwargs) -> dist.HalfCauchy:
+def HalfCauchy(scale=1.0, **kwargs) -> dist.HalfCauchy:
     raise NotHandled
 
 
 @defdata.register(dist.HalfCauchy)
 class HalfCauchyTerm(_DistributionTerm):
-    def __init__(self, scale=1.0, **kwargs):
-        super().__init__(dist.HalfCauchy, HalfCauchy, scale, **kwargs)
+    def __init__(self, op, scale, **kwargs):
+        super().__init__(dist.HalfCauchy, op, scale, **kwargs)
         self.scale = scale
 
 
@@ -916,14 +894,14 @@ def _embed_halfcauchy(d: dist.HalfCauchy) -> Term[dist.HalfCauchy]:
 
 
 @defop
-def HalfNormal(*args, **kwargs) -> dist.HalfNormal:
+def HalfNormal(scale=1.0, **kwargs) -> dist.HalfNormal:
     raise NotHandled
 
 
 @defdata.register(dist.HalfNormal)
 class HalfNormalTerm(_DistributionTerm):
-    def __init__(self, scale=1.0, **kwargs):
-        super().__init__(dist.HalfNormal, HalfNormal, scale, **kwargs)
+    def __init__(self, op, scale, **kwargs):
+        super().__init__(dist.HalfNormal, op, scale, **kwargs)
         self.scale = scale
 
 
@@ -933,14 +911,14 @@ def _embed_halfnormal(d: dist.HalfNormal) -> Term[dist.HalfNormal]:
 
 
 @defop
-def LKJCholesky(*args, **kwargs) -> dist.LKJCholesky:
+def LKJCholesky(dim, concentration=1.0, **kwargs) -> dist.LKJCholesky:
     raise NotHandled
 
 
 @defdata.register(dist.LKJCholesky)
 class LKJCholeskyTerm(_DistributionTerm):
-    def __init__(self, dim, concentration=1.0, **kwargs):
-        super().__init__(dist.LKJCholesky, LKJCholesky, dim, concentration, **kwargs)
+    def __init__(self, op, dim, concentration, **kwargs):
+        super().__init__(dist.LKJCholesky, op, dim, concentration, **kwargs)
         self.dim = dim
         self.concentration = concentration
 
@@ -951,16 +929,14 @@ def _embed_lkjcholesky(d: dist.LKJCholesky) -> Term[dist.LKJCholesky]:
 
 
 @defop
-def MultivariateNormal(*args, **kwargs) -> dist.MultivariateNormal:
+def MultivariateNormal(scale_tril, loc=0.0, **kwargs) -> dist.MultivariateNormal:
     raise NotHandled
 
 
 @defdata.register(dist.MultivariateNormal)
 class MultivariateNormalTerm(_DistributionTerm):
-    def __init__(self, scale_tril, loc=0.0, **kwargs):
-        super().__init__(
-            dist.MultivariateNormal, MultivariateNormal, loc, scale_tril, **kwargs
-        )
+    def __init__(self, op, loc, scale_tril, **kwargs):
+        super().__init__(dist.MultivariateNormal, op, loc, scale_tril, **kwargs)
         self.loc = loc
         self.scale_tril = scale_tril
 
@@ -973,14 +949,14 @@ def _embed_multivariatenormal(
 
 
 @defop
-def Pareto(*args, **kwargs) -> dist.Pareto:
+def Pareto(scale, alpha, **kwargs) -> dist.Pareto:
     raise NotHandled
 
 
 @defdata.register(dist.Pareto)
 class ParetoTerm(_DistributionTerm):
-    def __init__(self, scale, alpha, **kwargs):
-        super().__init__(dist.Pareto, Pareto, scale, alpha, **kwargs)
+    def __init__(self, op, scale, alpha, **kwargs):
+        super().__init__(dist.Pareto, op, scale, alpha, **kwargs)
         self.scale = scale
         self.alpha = alpha
 
@@ -991,14 +967,14 @@ def _embed_pareto(d: dist.Pareto) -> Term[dist.Pareto]:
 
 
 @defop
-def Uniform(*args, **kwargs) -> dist.Uniform:
+def Uniform(low=0.0, high=1.0, **kwargs) -> dist.Uniform:
     raise NotHandled
 
 
 @defdata.register(dist.Uniform)
 class UniformTerm(_DistributionTerm):
-    def __init__(self, low=0.0, high=1.0, **kwargs):
-        super().__init__(dist.Uniform, Uniform, low, high, **kwargs)
+    def __init__(self, op, low, high, **kwargs):
+        super().__init__(dist.Uniform, op, low, high, **kwargs)
         self.low = low
         self.high = high
 
@@ -1009,14 +985,14 @@ def _embed_uniform(d: dist.Uniform) -> Term[dist.Uniform]:
 
 
 @defop
-def VonMises(*args, **kwargs) -> dist.VonMises:
+def VonMises(loc, concentration, **kwargs) -> dist.VonMises:
     raise NotHandled
 
 
 @defdata.register(dist.VonMises)
 class VonMisesTerm(_DistributionTerm):
-    def __init__(self, loc, concentration, **kwargs):
-        super().__init__(dist.VonMises, VonMises, loc, concentration, **kwargs)
+    def __init__(self, op, loc, concentration, **kwargs):
+        super().__init__(dist.VonMises, op, loc, concentration, **kwargs)
         self.loc = loc
         self.concentration = concentration
 
@@ -1027,14 +1003,14 @@ def _embed_vonmises(d: dist.VonMises) -> Term[dist.VonMises]:
 
 
 @defop
-def Weibull(*args, **kwargs) -> dist.Weibull:
+def Weibull(scale, concentration, **kwargs) -> dist.Weibull:
     raise NotHandled
 
 
 @defdata.register(dist.Weibull)
 class WeibullTerm(_DistributionTerm):
-    def __init__(self, scale, concentration, **kwargs):
-        super().__init__(dist.Weibull, Weibull, scale, concentration, **kwargs)
+    def __init__(self, op, scale, concentration, **kwargs):
+        super().__init__(dist.Weibull, op, scale, concentration, **kwargs)
         self.scale = scale
         self.concentration = concentration
 
@@ -1045,14 +1021,14 @@ def _embed_weibull(d: dist.Weibull) -> Term[dist.Weibull]:
 
 
 @defop
-def Wishart(*args, **kwargs) -> dist.Wishart:
+def Wishart(df, scale_tril, **kwargs) -> dist.Wishart:
     raise NotHandled
 
 
 @defdata.register(dist.Wishart)
 class WishartTerm(_DistributionTerm):
-    def __init__(self, df, scale_tril, **kwargs):
-        super().__init__(dist.Wishart, Wishart, df, scale_tril, **kwargs)
+    def __init__(self, op, df, scale_tril, **kwargs):
+        super().__init__(dist.Wishart, op, df, scale_tril, **kwargs)
         self.df = df
         self.scale_tril = scale_tril
 
@@ -1063,14 +1039,14 @@ def _embed_wishart(d: dist.Wishart) -> Term[dist.Wishart]:
 
 
 @defop
-def Delta(*args, **kwargs) -> dist.Delta:
+def Delta(v=0.0, log_density=0.0, event_dim=0, **kwargs) -> dist.Delta:
     raise NotHandled
 
 
 @defdata.register(dist.Delta)
 class DeltaTerm(_DistributionTerm):
-    def __init__(self, v=0.0, log_density=0.0, event_dim=0, **kwargs):
-        super().__init__(dist.Delta, Delta, v, log_density, event_dim, **kwargs)
+    def __init__(self, op, v, log_density, event_dim, **kwargs):
+        super().__init__(dist.Delta, op, v, log_density, event_dim, **kwargs)
         self.v = v
         self.log_density = log_density
         self.event_dim = event_dim
@@ -1082,20 +1058,17 @@ def _embed_delta(d: dist.Delta) -> Term[dist.Delta]:
 
 
 @defop
-def LowRankMultivariateNormal(*args, **kwargs) -> dist.LowRankMultivariateNormal:
+def LowRankMultivariateNormal(
+    loc, cov_factor, cov_diag, **kwargs
+) -> dist.LowRankMultivariateNormal:
     raise NotHandled
 
 
 @defdata.register(dist.LowRankMultivariateNormal)
 class LowRankMultivariateNormalTerm(_DistributionTerm):
-    def __init__(self, loc, cov_factor, cov_diag, **kwargs):
+    def __init__(self, op, loc, cov_factor, cov_diag, **kwargs):
         super().__init__(
-            dist.LowRankMultivariateNormal,
-            LowRankMultivariateNormal,
-            loc,
-            cov_factor,
-            cov_diag,
-            **kwargs,
+            dist.LowRankMultivariateNormal, op, loc, cov_factor, cov_diag, **kwargs
         )
         self.loc = loc
         self.cov_factor = cov_factor
@@ -1110,20 +1083,16 @@ def _embed_lowrankmultivariatenormal(
 
 
 @defop
-def RelaxedBernoulliLogits(*args, **kwargs) -> dist.RelaxedBernoulliLogits:
+def RelaxedBernoulliLogits(
+    temperature, logits, **kwargs
+) -> dist.RelaxedBernoulliLogits:
     raise NotHandled
 
 
 @defdata.register(dist.RelaxedBernoulliLogits)
 class RelaxedBernoulliLogitsTerm(_DistributionTerm):
-    def __init__(self, temperature, logits, **kwargs):
-        super().__init__(
-            dist.RelaxedBernoulliLogits,
-            RelaxedBernoulliLogits,
-            temperature,
-            logits,
-            **kwargs,
-        )
+    def __init__(self, op, temperature, logits, **kwargs):
+        super().__init__(dist.RelaxedBernoulliLogits, op, temperature, logits, **kwargs)
         self.temperature = temperature
         self.logits = logits
 
@@ -1136,19 +1105,15 @@ def _embed_relaxedbernoullilogits(
 
 
 @defop
-def Independent(*args, **kwargs) -> dist.Independent:
+def Independent(base_dist, reinterpreted_batch_ndims, **kwargs) -> dist.Independent:
     raise NotHandled
 
 
 @defdata.register(dist.Independent)
 class IndependentTerm(_DistributionTerm):
-    def __init__(self, base_dist, reinterpreted_batch_ndims, **kwargs):
+    def __init__(self, op, base_dist, reinterpreted_batch_ndims, **kwargs):
         super().__init__(
-            dist.Independent,
-            Independent,
-            base_dist,
-            reinterpreted_batch_ndims,
-            **kwargs,
+            dist.Independent, op, base_dist, reinterpreted_batch_ndims, **kwargs
         )
         self.base_dist = base_dist
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
