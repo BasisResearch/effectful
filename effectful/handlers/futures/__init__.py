@@ -42,9 +42,8 @@ class Executor:
             >>> from effectful.handlers.futures import ThreadPoolFuturesInterpretation
             >>> from effectful.ops.semantics import handler
             >>>
-            >>> pool = ThreadPoolExecutor()
-            >>> with handler(ThreadPoolFuturesInterpretation(pool)):
-            >>>     future = Executor.submit(my_function, arg1, arg2)
+            >>> with handler(ThreadPoolFuturesInterpretation()):
+            >>>     future = Executor.submit(lambda x,y: x + y, 1, 2)
         """
         raise NotHandled
 
@@ -153,16 +152,17 @@ class ThreadPoolFuturesInterpretation(FuturesInterpretation):
 
     Example:
         >>> from concurrent.futures import ThreadPoolExecutor, Future
-        >>> from effectful.ops.semantics import defop, handler
+        >>> from effectful.ops.syntax import defop
+        >>> from effectful.ops.semantics import handler
         >>> from effectful.handlers.futures import Executor, ThreadPoolFuturesInterpretation
         >>>
         >>> @defop
-        >>> def async_pow(n: int, k: int) -> Future[int]:
+        >>> def pow(n: int, k: int) -> Future[int]:
         >>>     return Executor.submit(pow, n, k)
         >>>
         >>> pool = ThreadPoolExecutor()
         >>> with handler(ThreadPoolFuturesInterpretation(pool)):
-        >>>     result = async_pow(2, 10).result()
+        >>>     result = pow(2, 10).result()
         >>>     print(result)  # 1024
     """
 
