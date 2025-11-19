@@ -299,7 +299,7 @@ class _DistributionTerm(dist.Distribution):
         value = bind_dims(_broadcast_to_named(value, self._indices), *self._indices)
         dims = list(range(len(value.shape)))
         n_named_batch = len(self._indices)
-        perm = (
+        perm = tuple(
             dims[n_named_batch : n_named_batch + len(sample_shape)]
             + dims[:n_named_batch]
             + dims[n_named_batch + len(sample_shape) :]
