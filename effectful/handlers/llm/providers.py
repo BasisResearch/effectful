@@ -6,7 +6,6 @@ import logging
 import string
 import typing
 from collections.abc import Hashable, Iterable, Mapping, Sequence
-from concurrent.futures import Future
 from typing import Any, get_type_hints
 
 import pydantic
@@ -23,7 +22,6 @@ except ImportError:
 
 from openai.types.responses import FunctionToolParam
 
-from effectful.handlers.futures import Executor
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
@@ -378,16 +376,4 @@ class OpenAIAPIProvider(ObjectInterpretation):
         ret_type = template.__signature__.return_annotation
         bound_args = template.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
-
-        # Check if return type is Future[T]
-        origin = typing.get_origin(ret_type)
-        if origin is Future:
-            inner_type = typing.get_args(ret_type)[0]
-            return Executor.submit(
-                self._openai_api_call,  # type: ignore
-                template,  # type: ignore
-                bound_args,  # type: ignore
-                inner_type,
-            )
-
         return self._openai_api_call(template, bound_args, ret_type)
