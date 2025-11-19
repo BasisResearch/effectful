@@ -166,13 +166,13 @@ class ThreadPoolFuturesInterpretation(FuturesInterpretation):
         >>>     print(result)  # 1024
     """
 
-    def __init__(self, max_workers=None):
+    def __init__(self, *args, **kwargs):
         """
         Initialize with a ThreadPoolExecutor.
 
         :param max_workers: Maximum number of worker threads (default: None, uses default from ThreadPoolExecutor)
         """
-        super().__init__(ThreadPoolExecutor(max_workers=max_workers))
+        super().__init__(ThreadPoolExecutor(*args, **kwargs))
 
 
 type ReturnOptions = Literal["All_COMPLETED", "FIRST_COMPLETED", "FIRST_EXCEPTION"]
