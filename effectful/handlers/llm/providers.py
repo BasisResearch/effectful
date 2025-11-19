@@ -282,13 +282,13 @@ class OpenAIAPIProvider(ObjectInterpretation):
         self._client = client
         self._model_name = model_name
 
-    @implements(Template.__call__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        ret_type = template.__signature__.return_annotation
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
+    def _openai_api_call[**P, T, RT](
+        self,
+        template: Template[P, T],
+        bound_args: inspect.BoundArguments,
+        ret_type: type[RT],
+    ) -> RT:
+        """Execute the actual OpenAI API call and decode the response."""
         prompt = _OpenAIPromptFormatter().format_as_messages(
             template.__prompt_template__, **bound_args.arguments
         )
@@ -368,3 +368,12 @@ class OpenAIAPIProvider(ObjectInterpretation):
         result = Result.model_validate_json(result_str)
         assert isinstance(result, Result)
         return result.value  # type: ignore[attr-defined]
+
+    @implements(Template.__call__)
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        ret_type = template.__signature__.return_annotation
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        return self._openai_api_call(template, bound_args, ret_type)

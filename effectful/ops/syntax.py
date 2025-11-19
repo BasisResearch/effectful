@@ -9,6 +9,7 @@ import types
 import typing
 import warnings
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import Future
 from typing import Annotated, Any, Concatenate
 
 from effectful.ops.types import Annotation, Expr, NotHandled, Operation, Term
@@ -1673,3 +1674,67 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+# Future support
+@defdata.register(Future)
+class _FutureTerm[T](_BaseTerm[Future[T]]):
+    """Term representing a Future computation."""
+
+    @defop
+    def result(self: Future[T], timeout: float | None = None) -> T:
+        """Get the result of the future."""
+        if not isinstance(self, Term):
+            return self.result(timeout=timeout)
+        else:
+            raise NotHandled
+
+    @defop
+    def exception(
+        self: Future[T], timeout: float | None = None
+    ) -> BaseException | None:
+        """Get the exception from the future, if any."""
+        if not isinstance(self, Term):
+            return self.exception(timeout=timeout)
+        else:
+            raise NotHandled
+
+    @defop
+    def cancel(self: Future[T]) -> bool:
+        """Attempt to cancel the future."""
+        if not isinstance(self, Term):
+            return self.cancel()
+        else:
+            raise NotHandled
+
+    @defop
+    def cancelled(self: Future[T]) -> bool:
+        """Check if the future was cancelled."""
+        if not isinstance(self, Term):
+            return self.cancelled()
+        else:
+            raise NotHandled
+
+    @defop
+    def done(self: Future[T]) -> bool:
+        """Check if the future is done."""
+        if not isinstance(self, Term):
+            return self.done()
+        else:
+            raise NotHandled
+
+    @defop
+    def running(self: Future[T]) -> bool:
+        """Check if the future is currently running."""
+        if not isinstance(self, Term):
+            return self.running()
+        else:
+            raise NotHandled
+
+    @defop
+    def add_done_callback(self: Future[T], fn: Callable[[Future[T]], None]) -> None:
+        """Add a callback to be called when the future completes."""
+        if not isinstance(self, Term):
+            return self.add_done_callback(fn)
+        else:
+            raise NotHandled
