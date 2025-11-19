@@ -67,11 +67,9 @@ class Operation[**Q, V](abc.ABC):
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import acquire_handler_lock
         from effectful.ops.semantics import apply
 
-        with acquire_handler_lock():
-            return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
+        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

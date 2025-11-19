@@ -7,13 +7,13 @@ including context preservation across thread boundaries.
 
 import time
 from concurrent.futures import Future
+from threading import RLock
 
 import effectful.handlers.futures as futures
 from effectful.handlers.futures import (
     Executor,
     ThreadPoolFuturesInterpretation,
 )
-from effectful.internals.runtime import release_handler_lock
 from effectful.ops.semantics import NotHandled, defop, evaluate, handler
 from effectful.ops.types import Term
 
@@ -45,11 +45,14 @@ def test_uninterp_async():
 
 
 def test_mutual_exclusion():
-    """Test that handler execution is mutually exclusive by default.
+    """Handler execution is not mutually exclusive by default, just
+    like any other object call. As in python, if you call a function
+    that may have some shared state, you must lock it as a client.
 
     Without mutual exclusion, the race condition in add_interp would cause
     add_calls to be less than 10. With mutual exclusion, we're guaranteed
     to get exactly 10 calls.
+
     """
     add_calls = 0
 
@@ -60,8 +63,13 @@ def test_mutual_exclusion():
         add_calls = no_calls + 1
         return x + y
 
+    client_lock = RLock()
+
     def client(x: int):
-        return add(x, x)
+        # hey, I'm running a function that may have shared state, let me lock it
+        with client_lock:
+            res = add(x, x)
+        return res
 
     with (
         handler(ThreadPoolFuturesInterpretation(max_workers=4)),
@@ -96,57 +104,10 @@ def test_concurrent_client_execution():
         handler({add: add_interp}),
     ):
         _ = sum(Executor.map(client, list(range(10))))
-        # With mutual exclusion, we're guaranteed to get exactly 10
-        assert add_calls == 10
+        # Without mutual exclusion, we're not guaranteed to get exactly 10
+        assert add_calls != 10
         # client is not synchronous so no guarantees.
         assert add_calls_interp != 10
-
-
-def test_release_lock_for_concurrent_io():
-    """Test that release_handler_lock allows concurrent I/O operations.
-
-    This demonstrates the pattern for handlers that perform I/O and want
-    to allow other handlers to run concurrently during the I/O wait.
-    """
-    from effectful.internals.runtime import release_handler_lock
-
-    io_calls = 0
-    concurrent_ios = 0
-    max_concurrent = 0
-
-    @defop
-    def io_operation(x: int) -> int:
-        """Simulates a slow io operation"""
-        raise NotHandled
-
-    def io_interp(x: int) -> int:
-        nonlocal io_calls, concurrent_ios, max_concurrent
-        # update state using lock
-        io_calls += 1
-
-        # release lock for IO
-        with release_handler_lock():
-            concurrent_ios += 1
-            max_concurrent = max(max_concurrent, concurrent_ios)
-            time.sleep(0.01)  # Simulate I/O wait
-            concurrent_ios -= 1
-        return x * 2
-
-    def client(x: int):
-        return io_operation(x)
-
-    with (
-        handler(ThreadPoolFuturesInterpretation(max_workers=4)),
-        handler({io_operation: io_interp}),
-    ):
-        results = list(Executor.map(client, list(range(10))))
-
-        assert io_calls == 10
-        assert results == [x * 2 for x in range(10)]
-        # With release_handler_lock, multiple I/O operations can run concurrently
-        assert max_concurrent > 1, (
-            f"Expected concurrent I/O, got max_concurrent={max_concurrent}"
-        )
 
 
 def test_wait_several_futures():
@@ -234,8 +195,7 @@ def test_concurrent_execution_faster_than_sequential():
     def add_with_sleep(x, y):
         # important: we must release lock here to allow concurrency
         start = time.time()
-        with release_handler_lock():
-            time.sleep(sleep_duration)
+        time.sleep(sleep_duration)
         return time.time() - start
 
     with (

@@ -119,14 +119,8 @@ class FuturesInterpretation(ObjectInterpretation):
         # Capture the current interpretation context
         context = get_interpretation()
 
-        @functools.wraps(task)
-        def wrapped_task(*task_args, **task_kwargs):
-            # Restore the interpretation context in the worker thread
-            with interpreter(context):
-                return task(*task_args, **task_kwargs)
-
         # Submit the wrapped task to the underlying executor
-        return self.executor.submit(wrapped_task, *args, **kwargs)
+        return self.executor.submit(interpreter(context)(task), *args, **kwargs)
 
     @implements(Executor.map)
     def map(self, func: Callable, *iterables, timeout=None, chunksize=1):
