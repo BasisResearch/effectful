@@ -1,6 +1,6 @@
+import functools
 import itertools
 import operator
-from functools import reduce
 
 import jax
 import pyro.ops.contract
@@ -11,12 +11,12 @@ from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from torch import tensor
 
-from weighted.handlers.optimization import FoldDistributeTerm, FoldReorderReduction
+from weighted.handlers.optimization import ReduceDistributeTerm, ReduceReorderReduction
 from weighted.handlers.optimization.cartesian_product import (
-    FoldDistributeCartesianProduct,
-    SplitCartesianProductFold,
+    ReduceDistributeCartesianProduct,
+    SplitCartesianProductReduce,
 )
-from weighted.ops.fold import BaselineFold
+from weighted.ops.reduce import BaselineReduce
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 PLATED_EINSUM_EXAMPLES = [
@@ -28,21 +28,21 @@ PLATED_EINSUM_EXAMPLES = [
     ("ai,abi,bci,cdi->", "i"),
 ]
 
-base_intp = BaselineFold()
-lift_intp = reduce(
+base_intp = BaselineReduce()
+lift_intp = functools.reduce(
     coproduct,  # type: ignore
     (
-        BaselineFold(),
-        FoldDistributeCartesianProduct(),
-        FoldDistributeTerm(),
+        BaselineReduce(),
+        ReduceDistributeCartesianProduct(),
+        ReduceDistributeTerm(),
     ),
 )
-ground_intp = reduce(
+ground_intp = functools.reduce(
     coproduct,  # type: ignore
     (
-        BaselineFold(),
-        FoldReorderReduction(),
-        SplitCartesianProductFold(),
+        BaselineReduce(),
+        ReduceReorderReduction(),
+        SplitCartesianProductReduce(),
     ),
 )
 
@@ -96,7 +96,7 @@ def make_plated_einsum_example(equation: str, plates: str, sizes=(2, 3)):
     return var_sizes, plate_sizes, operands
 
 
-def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, fold_intp):
+def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, reduce_intp):
     symbols, inputs, outputs, plate_func = parse_equation(equation, plate_symbols)
     symbols = tuple(var_sizes.keys())
     symbol_ops = {s: defop(jax.Array, name=s) for s in symbols}
@@ -124,7 +124,7 @@ def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, fol
         var_stream = jnp.arange(var_sizes[s])
         var_streams[symbol_ops[s]] = CartesianProd(plate_streams, var_stream)
 
-    expr = reduce(operator.mul, input_terms)
+    expr = functools.reduce(operator.mul, input_terms)
     if len(var_streams):
         expr = Sum(var_streams, expr)
 
@@ -133,7 +133,7 @@ def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, fol
         for name, arr in zip(operand_ops, operands, strict=False)
     }
 
-    with handler(operand_intp), handler(fold_intp):
+    with handler(operand_intp), handler(reduce_intp):
         return evaluate(expr)
 
 

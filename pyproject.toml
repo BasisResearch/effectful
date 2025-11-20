@@ -7,7 +7,7 @@ name = "weighted"
 version = "0.0.1"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = {text = "Apache 2.0"}
 authors = [
     {name = "Basis"}
@@ -24,11 +24,11 @@ classifiers = [
     "Programming Language :: Python :: 3.11"
 ]
 dependencies = [
-    "effectful[jax,numpyro]@git+https://github.com/BasisResearch/effectful",
+    "effectful[jax,numpyro]@git+https://github.com/BasisResearch/effectful.git@jf-staging-weighted",
     "jax",
     "optax",
-    "flax",
-    "scipy"
+    "scipy",
+    "islpy",
 ]
 
 [dependency-groups]
@@ -47,9 +47,7 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
-    "matplotlib",
-    "pyro-ppl",
-    "islpy",
+    "prettyprinter>=0.18.0",
 ]
 
 
@@ -60,7 +58,12 @@ docs = [
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
-    "nbsphinx"
+    "nbsphinx",
+    "matplotlib",
+    "pyro-ppl",
+    "flax",
+    "pandas",
+    "torchvision",
 ]
 
 [project.urls]

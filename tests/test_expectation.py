@@ -9,14 +9,13 @@ from effectful.ops.syntax import deffn, defop
 from jax.numpy import isclose
 
 from weighted.handlers.jax import (
-    GradientOptimizationFold,
-    LikelihoodWeightingFold,
+    GradientOptimizationReduce,
+    LikelihoodWeightingReduce,
 )
 from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.distribution import log_prob, sample
-from weighted.ops.fold import BaselineFold, fold
 from weighted.ops.jax import reals
 from weighted.ops.monoid import StreamChainMonoid, SumMonoid, promote
+from weighted.ops.reduce import BaselineReduce, reduce
 from weighted.ops.sugar import ArgMin, Sum
 
 # Expectation(
@@ -46,27 +45,27 @@ def test_sampling():
     n_samples = 1
     key = jax.random.key(0)
 
-    s1 = sample(key, dist.Normal(0.0, 1.0), (n_samples,))
+    s1 = dist.Normal(0.0, 1.0).sample(key, (n_samples,))
     assert isinstance(s1, jax.Array)
 
     loc, scale = defop(jax.Array, name="loc"), defop(jax.Array, name="scale")
     with handler({loc: deffn(0.0), scale: deffn(1.0)}):
-        s2 = sample(key, dist.Normal(loc(), scale()), (n_samples,))
+        s2 = dist.Normal(loc(), scale()).sample(key, (n_samples,))
     assert isinstance(s2, jax.Array)
 
-    s3_term = sample(key, dist.Normal(loc(), scale()), (n_samples,))
+    s3_term = dist.Normal(loc(), scale()).sample(key, (n_samples,))
     assert not isinstance(s3_term, jax.Array)
     with handler({loc: deffn(0.0), scale: deffn(1.0)}):
         s3 = evaluate(s3_term)
     assert isinstance(s3, jax.Array)
 
 
-def test_stream_chain_fold():
+def test_stream_chain_reduce():
     x = defop(tuple, name="x")
     y = defop(tuple, name="y")
     streams = {x: (1, 2, 3), y: (4, 5)}
-    with handler(BaselineFold()):
-        expr = fold(StreamChainMonoid, streams, [(x(), y())])
+    with handler(BaselineReduce()):
+        expr = reduce(StreamChainMonoid, streams, [(x(), y())])
     expected = [(x, y) for x in (1, 2, 3) for y in (4, 5)]
     assert list(expr) == expected
 
@@ -87,15 +86,15 @@ def test_maximum_marginal_likelihood_smoke():
     with (
         handler(jax_intp),
         handler(
-            GradientOptimizationFold(
+            GradientOptimizationReduce(
                 steps=1,
                 learning_rate=0.1,
                 init={scale_z: jnp.array(1.0), scale_x: jnp.array(1.0)},
             )
         ),
     ):
-        weight = -(log_prob(z_dist, z()) + jnp.sum(log_prob(x_dist, data)))
-        intg_weight = Sum({z: sample(jax.random.key(0), z_dist, (n_samples,))}, weight)
+        weight = -(z_dist.log_prob(z()) + jnp.sum(x_dist.log_prob(data)))
+        intg_weight = Sum({z: z_dist.sample(jax.random.key(0), (n_samples,))}, weight)
         _min = ArgMin(
             {loc_z: reals(), scale_z: reals(), scale_x: reals()},
             (intg_weight, (loc_z(), scale_z(), scale_x())),
@@ -111,13 +110,13 @@ def run_expectation():
 
     x = defop(jax.Array, name="x")
     w = defop(jax.Array, name="w")
-    with handler(jax_intp), handler(LikelihoodWeightingFold(samples=1000)):
+    with handler(jax_intp), handler(LikelihoodWeightingReduce(samples=1000)):
         return Sum({(x, w): dist.Normal(loc, scale)}, jnp.exp(w()) * f(x()))
 
 
 def test_interpretation_body():
-    with handler(BaselineFold()):
-        Sum2 = functools.partial(fold, promote(SumMonoid))
+    with handler(BaselineReduce()):
+        Sum2 = functools.partial(reduce, promote(SumMonoid))
         w, x, y, z = (
             defop(int, name="w"),
             defop(int, name="x"),
@@ -180,7 +179,7 @@ def test_interpretation_body():
             evaluate(z(), intp=intp_circular)
 
 
-def test_integration(benchmark):
+def test_integration():
     intg = run_expectation()
     assert isinstance(intg, jax.Array)
     assert isclose(intg, jnp.array(0.5), atol=1e-1)

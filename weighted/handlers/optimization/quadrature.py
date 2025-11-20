@@ -1,24 +1,23 @@
-from functools import reduce
+import functools
 
+import effectful.handlers.numpyro as dist
 import jax
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
-from numpyro import distributions as dist
 from scipy.special import roots_hermite
 
-import weighted.ops.distribution as dist_op
 from weighted.handlers.optimization.utils import parse_terms
-from weighted.ops.fold import fold
 from weighted.ops.jax import reals
 from weighted.ops.monoid import SumMonoid
+from weighted.ops.reduce import reduce
 
 
 class GaussHermiteQuadrature(ObjectInterpretation):
     """
-    Transforms a fold over a normal distribution into
+    Transforms a reduce over a normal distribution into
     a quadrature of Hermite polynomials.
         Sum({x: reals()}, normal_distribution.prob(x()) * f(x()))
         => Sum({i: range(nb_points)}, weight[i()] * f(points[i()]))
@@ -44,9 +43,9 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         self.points = jnp.array(points) * jnp.sqrt(2)
         self.weights = jnp.array(weights) / jnp.sqrt(jax.numpy.pi)
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
-        if monoid is not SumMonoid:
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
+        if monoid != SumMonoid:
             return fwd()
 
         # Try to parse the body into a gaussian distribution
@@ -54,11 +53,18 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         mul, terms = parse_terms(body, monoid)
         for i, term in enumerate(terms):
             match term:
-                case Term(jnp.exp, (Term(dist_op.log_prob, (d, x)),)):
-                    if isinstance(d, dist.Normal):
-                        mu, sigma, x = d.loc, d.scale, x.op
-                        remaining_terms = (t for j, t in enumerate(terms) if i != j)
-                        break
+                case Term(
+                    jnp.exp,
+                    (
+                        Term(
+                            dist._DistributionTerm.log_prob,
+                            (Term(dist.Normal, (loc, scale)), x),
+                        ),
+                    ),
+                ):
+                    mu, sigma, x = loc, scale, x.op
+                    remaining_terms = (t for j, t in enumerate(terms) if i != j)
+                    break
         else:
             return fwd()
 
@@ -72,6 +78,6 @@ class GaussHermiteQuadrature(ObjectInterpretation):
             fresh_index: jnp.arange(self.nb_points),
             x: jax_getitem(points, (fresh_index(),)),
         }
-        remaining_body = reduce(mul, remaining_terms)
+        remaining_body = functools.reduce(mul, remaining_terms)
         new_body = jax_getitem(self.weights, (fresh_index(),)) * remaining_body
-        return fold(monoid, streams | new_streams, new_body)
+        return reduce(monoid, streams | new_streams, new_body)

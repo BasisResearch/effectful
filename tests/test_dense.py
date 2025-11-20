@@ -12,21 +12,21 @@ from effectful.ops.types import Term
 from jax import random as random
 from jax.numpy import allclose, isclose
 
-from tests.utils import DEFAULT_TEST_FOLD_INTP
+from tests.utils import DEFAULT_TEST_REDUCE_INTP
 from weighted.handlers.jax import (
-    DenseTensorFold,
-    GradientOptimizationFold,
-    PytreeMapFold,
-    ScanFold,
+    DenseTensorReduce,
+    GradientOptimizationReduce,
+    PytreeMapReduce,
+    ScanReduce,
 )
 from weighted.ops.distribution import D
-from weighted.ops.fold import fold
 from weighted.ops.jax import reals
+from weighted.ops.reduce import reduce
 from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_FOLD_INTP.items()],
+    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_REDUCE_INTP.items()],
 )
 parameterize_ops = pytest.mark.parametrize(
     "weighted_op,python_op",
@@ -110,7 +110,7 @@ def test_log_matmul(intp):
 
 
 @parameterize_intp
-def test_linalg_folds(intp):
+def test_linalg_reduces(intp):
     x, y, z = (
         defop(jax.Array, name="x"),
         defop(jax.Array, name="y"),
@@ -146,7 +146,7 @@ def test_linalg_folds(intp):
 
 
 @parameterize_intp
-def test_linalg_folds_named(intp):
+def test_linalg_reduces_named(intp):
     key = jax.random.PRNGKey(0)
     (x, y) = (defop(jax.Array, name="x"), defop(jax.Array, name="y"))
     A = random.normal(key, (3, 3))
@@ -161,8 +161,8 @@ def test_linalg_folds_named(intp):
 
 
 @parameterize_intp
-def test_basic_min_folds(intp):
-    """Test basic Min fold operations."""
+def test_basic_min_reduces(intp):
+    """Test basic Min reduce operations."""
     x = defop(jax.Array, name="x")
 
     with handler(intp):
@@ -188,8 +188,8 @@ def test_basic_min_folds(intp):
 
 
 @parameterize_intp
-def test_arg_min_folds(intp):
-    """Test ArgMin fold operations."""
+def test_arg_min_reduces(intp):
+    """Test ArgMin reduce operations."""
     x = defop(jax.Array, name="x")
 
     with handler(intp):
@@ -207,8 +207,8 @@ def test_arg_min_folds(intp):
 
 
 @parameterize_intp
-def test_multi_variable_min_folds(intp):
-    """Test Min fold operations with multiple variables."""
+def test_multi_variable_min_reduces(intp):
+    """Test Min reduce operations with multiple variables."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
     with handler(intp):
@@ -224,8 +224,8 @@ def test_multi_variable_min_folds(intp):
 
 
 @parameterize_intp
-def test_multi_variable_arg_min_folds(intp):
-    """Test ArgMin fold operations with multiple variables."""
+def test_multi_variable_arg_min_reduces(intp):
+    """Test ArgMin reduce operations with multiple variables."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
     with handler(intp):
@@ -240,8 +240,8 @@ def test_multi_variable_arg_min_folds(intp):
 
 
 @parameterize_intp
-def test_complex_arg_min_folds(intp):
-    """Test complex ArgMin fold operations with three variables."""
+def test_complex_arg_min_reduces(intp):
+    """Test complex ArgMin reduce operations with three variables."""
     x, y, z = (
         defop(jax.Array, name="x"),
         defop(jax.Array, name="y"),
@@ -262,21 +262,21 @@ def test_complex_arg_min_folds(intp):
 
 
 @parameterize_intp
-def test_nested_folds(intp):
-    """Test nested folds over jnp.arange to verify they work correctly."""
+def test_nested_reduces(intp):
+    """Test nested reduces over jnp.arange to verify they work correctly."""
     a, b, c = (
         defop(jax.Array, name="a"),
         defop(jax.Array, name="b"),
         defop(jax.Array, name="c"),
     )
 
-    # Define ranges for the nested folds
+    # Define ranges for the nested reduces
     a_range = jnp.arange(3)  # 0, 1, 2
     b_range = jnp.arange(2)  # 0, 1
     c_range = jnp.arange(4)  # 0, 1, 2, 3
 
     with handler(intp):
-        # Test a simple nested fold that computes the sum of all combinations
+        # Test a simple nested reduce that computes the sum of all combinations
         # This is equivalent to: sum(a + b + c for a in range(3) for b in range(2) for c in range(4))
         nested_result = Sum(
             {a: a_range}, Sum({b: b_range}, Sum({c: c_range}, a() + b() + c()))
@@ -293,7 +293,7 @@ def test_nested_folds(intp):
         assert isinstance(nested_result, jax.Array)
         assert nested_result[()] == expected
 
-        # Test a more complex nested fold with a different operation at each level
+        # Test a more complex nested reduce with a different operation at each level
         # Outer sum, middle product, inner min
         complex_nested = Sum(
             {a: a_range}, Min({b: b_range}, Sum({c: c_range}, a() * b() + c()))
@@ -308,13 +308,13 @@ def test_nested_folds(intp):
         assert isinstance(complex_nested, jax.Array)
         assert jnp.isclose(complex_nested[()], expected_complex)
 
-        # Test a nested fold with the same operation (Sum) at each level
-        # This should be optimizable by FoldFusion
+        # Test a nested reduce with the same operation (Sum) at each level
+        # This should be optimizable by ReduceFusion
         fusion_candidate = Sum(
             {a: a_range}, Sum({b: b_range}, Sum({c: c_range}, a() * b() * c()))
         )
 
-        # Direct computation using a single fold (what FoldFusion would produce)
+        # Direct computation using a single reduce (what ReduceFusion would produce)
         direct_computation = Sum({a: a_range, b: b_range, c: c_range}, a() * b() * c())
 
         # Both should give the same result
@@ -323,7 +323,7 @@ def test_nested_folds(intp):
 
 @parameterize_intp
 def test_partial_eval(intp):
-    """Fold over arrays with named dimensions."""
+    """Reduce over arrays with named dimensions."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     indexed_array = unbind_dims(jnp.ones((5, 4)), i)
@@ -345,12 +345,12 @@ def test_partial_eval(intp):
 
 @parameterize_intp
 @parameterize_ops
-def test_dependent_folds(intp, weighted_op, python_op):
-    """Test folds where indices depend on other indices within the same fold."""
+def test_dependent_reduces(intp, weighted_op, python_op):
+    """Test reduces where indices depend on other indices within the same reduce."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     with handler(intp):
-        # Test fold where j depends on i
+        # Test reduce where j depends on i
         # This is equivalent to: sum(i + j for i in range(5) for j in range(i+1))
         inner_1 = weighted_op({j: jax_getitem(jnp.ones((5, 4)), [i()])}, j())
         dependent_result_1 = weighted_op({i: jnp.arange(5)}, inner_1)
@@ -367,8 +367,8 @@ def test_dependent_folds(intp, weighted_op, python_op):
 
 
 @parameterize_intp
-def test_dependent_folds_unused(intp):
-    """Test a dependent fold with an unused stream whose length depends on another stream."""
+def test_dependent_reduces_unused(intp):
+    """Test a dependent reduce with an unused stream whose length depends on another stream."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     with handler(intp):
@@ -381,8 +381,8 @@ def test_dependent_folds_unused(intp):
 
 
 @parameterize_intp
-def test_cyclic_dependent_folds(intp):
-    """Test a dependent fold where two streams depend on each other."""
+def test_cyclic_dependent_reduces(intp):
+    """Test a dependent reduce where two streams depend on each other."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
     with handler(intp):
@@ -392,8 +392,8 @@ def test_cyclic_dependent_folds(intp):
 
 
 @parameterize_intp
-def test_dependent_partial_folds(intp):
-    """Test folds of parts of the indices that depend on other indices within the same fold."""
+def test_dependent_partial_reduces(intp):
+    """Test reduces of parts of the indices that depend on other indices within the same reduce."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     I, J = 3, 4
 
@@ -414,7 +414,7 @@ def test_dependent_partial_folds(intp):
 
 
 @parameterize_intp
-def test_doubly_dependent_partial_folds(intp):
+def test_doubly_dependent_partial_reduces(intp):
     i, j, k = (
         defop(jax.Array, name="i"),
         defop(jax.Array, name="j"),
@@ -458,7 +458,7 @@ def dependency_graph_of_streams(streams):
 
 
 @parameterize_intp
-def test_fold_chain(intp):
+def test_reduce_chain(intp):
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -471,24 +471,24 @@ def test_fold_chain(intp):
     deps = dependency_graph_of_streams(streams)
     assert longest_dependency_chain(deps) == n_iters
 
-    with handler(ScanFold()):
-        new_fold = Sum(streams, vs[-1]())
+    with handler(ScanReduce()):
+        new_reduce = Sum(streams, vs[-1]())
 
-    assert isinstance(new_fold, Term) and new_fold.op is fold
-    new_streams = new_fold.args[1]
+    assert isinstance(new_reduce, Term) and new_reduce.op is reduce
+    new_streams = new_reduce.args[1]
 
-    # ScanFold should break the dependency graph in the streams
+    # ScanReduce should break the dependency graph in the streams
     deps = dependency_graph_of_streams(new_streams)
     assert longest_dependency_chain(deps) < n_iters
 
     with handler(intp):
-        result = evaluate(new_fold)
+        result = evaluate(new_reduce)
 
     assert allclose(result, jnp.array([5, 6, 7]))
 
 
 @parameterize_intp
-def test_fold_chain_named(intp):
+def test_reduce_chain_named(intp):
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -502,18 +502,18 @@ def test_fold_chain_named(intp):
     deps = dependency_graph_of_streams(streams)
     assert longest_dependency_chain(deps) == n_iters
 
-    with handler(ScanFold()):
-        new_fold = Sum(streams, vs[-1]())
+    with handler(ScanReduce()):
+        new_reduce = Sum(streams, vs[-1]())
 
-    assert isinstance(new_fold, Term) and new_fold.op is fold
-    new_streams = new_fold.args[1]
+    assert isinstance(new_reduce, Term) and new_reduce.op is reduce
+    new_streams = new_reduce.args[1]
 
-    # ScanFold should break the dependency graph in the streams
+    # ScanReduce should break the dependency graph in the streams
     deps = dependency_graph_of_streams(new_streams)
     assert longest_dependency_chain(deps) < n_iters
 
     with handler(intp):
-        result = evaluate(new_fold)
+        result = evaluate(new_reduce)
 
     expected = jax_getitem(jnp.array([5, 6, 7]), [i()])
     assert jnp.all(bind_dims(jnp.allclose(result, expected), i))
@@ -528,16 +528,16 @@ class Point:
 @parameterize_ops
 @pytest.mark.parametrize(
     "pytree_constr",
-    [lambda x, y: (x, y), lambda x, y: Point(x=x, y=y), lambda x, y: [x, y]],
+    [lambda x, y: (x, y), lambda x, y: Point(x=x, y=y), lambda x, y: [x, y]],  # type: ignore
 )
-def test_pytree_fold(weighted_op, python_op, pytree_constr):
-    """A fold where the body is a pytree and the fold indices are arrays should
+def test_pytree_reduce(weighted_op, python_op, pytree_constr):
+    """A reduce where the body is a pytree and the reduce indices are arrays should
     produce a pytree of arrays.
 
     """
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    with handler(DenseTensorFold()), handler(PytreeMapFold()):
+    with handler(DenseTensorReduce()), handler(PytreeMapReduce()):
         actual = weighted_op(
             {i: jnp.arange(5), j: jnp.arange(7)}, pytree_constr(i() + j(), i() * j())
         )
@@ -559,7 +559,7 @@ def test_pytree_fold(weighted_op, python_op, pytree_constr):
 
 
 def test_gradient_optimization_init():
-    """Test that GradientOptimizationFold uses initialization values correctly."""
+    """Test that GradientOptimizationReduce uses initialization values correctly."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
     # Define a simple quadratic function with minimum at (2, -3)
@@ -568,8 +568,8 @@ def test_gradient_optimization_init():
 
     # Test with default initialization (zeros)
     with (
-        handler(GradientOptimizationFold(steps=100, learning_rate=0.1)),
-        handler(DenseTensorFold()),
+        handler(GradientOptimizationReduce(steps=100, learning_rate=0.1)),
+        handler(DenseTensorReduce()),
     ):
         result = Min({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be close to the minimum value (0)
@@ -589,9 +589,11 @@ def test_gradient_optimization_init():
     # Starting closer to the minimum should converge faster
     with (
         handler(
-            GradientOptimizationFold(steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5})
+            GradientOptimizationReduce(
+                steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5}
+            )
         ),
-        handler(DenseTensorFold()),
+        handler(DenseTensorReduce()),
     ):
         result = Min({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be very close to the minimum with fewer steps

@@ -1,5 +1,4 @@
 import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numbers  # noqa: F401
 import effectful.handlers.numpyro as dist
 import jax
 from effectful.handlers.jax import jax_getitem, unbind_dims
@@ -9,14 +8,11 @@ from jax import random
 from jax.numpy import allclose
 from pytest import mark, param
 
-from tests.utils import FOLD_TRANSFORMS
-from weighted.handlers.jax import (
-    DenseTensorFold,
-    syntactic_eq_jax,
-)
-from weighted.handlers.optimization import FoldPropagateUnusedStreams
+from tests.utils import REDUCE_TRANSFORMS
+from weighted.handlers.jax import DenseTensorReduce, syntactic_eq_jax
+from weighted.handlers.optimization import ReducePropagateUnusedStreams
 from weighted.handlers.optimization.cartesian_product import (
-    FoldDistributeCartesianProduct,
+    ReduceDistributeCartesianProduct,
     unify_streams,
 )
 from weighted.handlers.optimization.distribution import (
@@ -27,22 +23,19 @@ from weighted.handlers.optimization.distribution import (
 from weighted.handlers.optimization.distribution import (
     interpretation as simplify_normals_intp,
 )
-from weighted.handlers.optimization.polyhedral import FoldLinearIndexer
-from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
-from weighted.handlers.optimization.reorder import FoldDistributeTerm, FoldNoStreams
-from weighted.ops.distribution import log_prob, sample
-from weighted.ops.fold import BaselineFold, fold
-from weighted.ops.jax import reals
+from weighted.handlers.optimization.polyhedral import ReduceLinearIndexer
+from weighted.handlers.optimization.reorder import ReduceDistributeTerm, ReduceNoStreams
 from weighted.ops.monoid import mul
+from weighted.ops.reduce import BaselineReduce, reduce
 from weighted.ops.sugar import CartesianProd, Max, Prod, Sum
 
 parameterize_base_intp = mark.parametrize(
     "base_intp",
-    [param(BaselineFold(), id="baseline"), param(DenseTensorFold(), id="jax")],
+    [param(BaselineReduce(), id="baseline"), param(DenseTensorReduce(), id="jax")],
 )
 
 parameterize_transform_intp = mark.parametrize(
-    "transform_intp", [param(x, id=type(x).__name__) for x in FOLD_TRANSFORMS]
+    "transform_intp", [param(x, id=type(x).__name__) for x in REDUCE_TRANSFORMS]
 )
 
 
@@ -60,9 +53,9 @@ def test_factorize(base_intp, transform_intp):
     z_bound = unbind_dims(ops["z"](), ops["l"], ops["m"])
 
     streams = {ops[k]: jnp.arange(dim_size) for k in ix_names}
-    fold_expr = Sum(streams, x_bound * y_bound * z_bound)
+    reduce_expr = Sum(streams, x_bound * y_bound * z_bound)
     with handler(transform_intp):
-        fold_expr = evaluate(fold_expr)
+        reduce_expr = evaluate(reduce_expr)
 
     keys = random.split(key, len(arr_names))
     arrs = {
@@ -71,7 +64,7 @@ def test_factorize(base_intp, transform_intp):
     }
     arr_intp = {ops[k]: deffn(v) for k, v in arrs.items()}
     with handler(base_intp), handler(arr_intp):
-        result = evaluate(fold_expr)
+        result = evaluate(reduce_expr)
 
     expected = jnp.einsum("ij,kl,lm->", arrs["x"], arrs["y"], arrs["z"])
     assert allclose(result, expected)
@@ -95,10 +88,10 @@ def test_fuse_split(base_intp, transform_intp):
     y_stream = {y_ix: jnp.arange(dim_size)}
     arr_intp = {x_op: lambda: x_arr, y_op: lambda: y_arr}
 
-    fold_intp = coproduct(base_intp, transform_intp)
+    reduce_intp = coproduct(base_intp, transform_intp)
     expected = (x_arr.sum() + y_arr.sum()) * dim_size
 
-    with handler(fold_intp), handler(arr_intp):
+    with handler(reduce_intp), handler(arr_intp):
         x = jax_getitem(x_op(), (x_ix(),))
         y = jax_getitem(y_op(), (y_ix(),))
         result1 = Sum(x_stream, Sum(y_stream, x + y))
@@ -110,79 +103,37 @@ def test_fuse_split(base_intp, transform_intp):
 
 def test_unused_streams_optim():
     i, j = defop(jax.Array), defop(jax.Array)
-    intp = FoldPropagateUnusedStreams()
+    intp = ReducePropagateUnusedStreams()
 
     with handler(intp):
         expr = Sum({i: jnp.arange(3), j: jnp.arange(3)}, i())
 
     assert expr.op is mul
-    fold_expr, const = expr.args
-    assert fold_expr.op is fold
-    assert len(fold_expr.args[1]) == 1
+    reduce_expr, const = expr.args
+    assert reduce_expr.op is reduce
+    assert len(reduce_expr.args[1]) == 1
     assert const == 3
 
     with handler(intp):
         expr = Max({i: jnp.arange(3), j: jnp.arange(3)}, i())
 
-    assert expr.op is fold
+    assert expr.op is reduce
     assert len(expr.args[1]) == 1
-
-
-@parameterize_base_intp
-def test_quadrature(base_intp):
-    x = defop(jax.Array, name="x")
-    polynomial = 2 * x() + x() ** 2
-    mu, sigma = 2.5, 5.0
-    d = dist.Normal(mu, sigma)
-
-    body = jnp.exp(log_prob(d, x())) * polynomial
-    expr = Sum({x: reals()}, body)
-    # 3 points are sufficient as polynomial is quadratic
-    with handler(GaussHermiteQuadrature(3)):
-        expr = evaluate(expr)
-
-    with handler(base_intp):
-        expr = evaluate(expr)
-    expected = 2 * mu + mu**2 + sigma**2
-    assert allclose(expr, expected)
-
-
-@parameterize_base_intp
-def test_bivariate_quadrature(base_intp):
-    x = defop(jax.Array, name="x")
-    y = defop(jax.Array, name="y")
-    mu_x, sigma_x = 5.0, 3.0
-    mu_y, sigma_y = 1.0, 2.0
-    d_x = dist.Normal(mu_x, sigma_x)
-    d_y = dist.Normal(mu_y, sigma_y)
-    prob_x = jnp.exp(log_prob(d_x, x()))
-    prob_y = jnp.exp(log_prob(d_y, y()))
-
-    polynomial = 2 * x() + y() ** 2
-    body = prob_x * prob_y * polynomial
-    expr = Sum({x: reals(), y: reals()}, body)
-    # 3 points are sufficient as polynomial is quadratic
-    with handler(GaussHermiteQuadrature(3)):
-        expr = evaluate(expr)
-
-    with handler(base_intp):
-        expr = evaluate(expr)
-    expected = 2 * mu_x + mu_y**2 + sigma_y**2
-    assert allclose(expr, expected)
 
 
 def test_normal_vertical_fusion():
     key = random.PRNGKey(42)
-    mu = defop(jax.Array, name="mu")
-    sigma1 = defop(jax.Array, name="s1")
-    sigma2 = defop(jax.Array, name="s2")
 
-    d1 = dist.Normal(mu(), sigma1())
-    d1_samples = sample(key, d1, (1,))
+    mu = defop(jax.Array, name="mu")()
+    sigma1 = defop(jax.Array, name="s1")()
+    sigma2 = defop(jax.Array, name="s2")()
+
+    d1 = dist.Normal(mu, sigma1)
+    d1_samples = d1.sample(key)
     with handler(NormalVerticalFusion()):
-        d2_opt = dist.Normal(d1_samples, sigma2())
+        d2_opt = dist.Normal(d1_samples, sigma2)
 
-    expected = dist.Normal(mu(), jnp.sqrt(sigma2() ** 2 + sigma1() ** 2))
+    expected = dist.Normal(mu, jnp.sqrt(sigma2**2 + sigma1**2))
     assert syntactic_eq(d2_opt, expected)
 
 
@@ -193,26 +144,29 @@ def test_normal_constant_mul():
     d1 = dist.Normal(mu(), sigma())
 
     with handler(SampleMulConstantFusion()):
-        expr = 2.0 * sample(key, d1, (1,))
+        expr = 2.0 * d1.sample(key, (1,))
 
-    expected = sample(key, dist.Normal(2.0 * mu(), jnp.abs(2.0) * sigma()), (1,))
+    expected = dist.Normal(2.0 * mu(), jnp.abs(2.0) * sigma()).sample(key, (1,))
     assert syntactic_eq_jax(expr, expected)
 
 
 def test_add_normal_distributions():
     key = random.PRNGKey(42)
-    mu1 = defop(jax.Array, name="mu1")
-    sigma1 = defop(jax.Array, name="s1")
-    mu2 = defop(jax.Array, name="mu2")
-    sigma2 = defop(jax.Array, name="s2")
-    d1 = dist.Normal(mu1(), sigma1())
-    d2 = dist.Normal(mu2(), sigma2())
+
+    mu1 = defop(jax.Array, name="mu1")()
+    sigma1 = defop(jax.Array, name="s1")()
+    mu2 = defop(jax.Array, name="mu2")()
+    sigma2 = defop(jax.Array, name="s2")()
+
+    d1 = dist.Normal(mu1, sigma1)
+    d2 = dist.Normal(mu2, sigma2)
 
     with handler(SampleAddNormalFusion()):
-        expr = sample(key, d1, (1,)) + sample(key, d2, (1,))
+        expr = d1.sample(key) + d2.sample(key)
 
-    d3 = dist.Normal(mu1() + mu2(), jnp.sqrt(sigma1() ** 2 + sigma2() ** 2))
-    expected = sample(key, d3, (1,))
+    d3 = dist.Normal(mu1 + mu2, jnp.sqrt(sigma1**2 + sigma2**2))
+    expected = d3.sample(key)
+
     assert syntactic_eq_jax(expr, expected)
 
 
@@ -227,8 +181,8 @@ def test_distributional_equivalence_normal_transforms():
     d1 = dist.Normal(mu1(), sigma1())
     d2 = dist.Normal(mu2(), sigma2())
 
-    samples_d1 = sample(keys[0], d1, (nb_samples,))
-    samples_d2 = sample(keys[1], d2, (nb_samples,))
+    samples_d1 = d1.sample(keys[0], (nb_samples,))
+    samples_d2 = d2.sample(keys[1], (nb_samples,))
     c = random.uniform(keys[2]) * 10
     expected_d = dist.Normal(c * samples_d1 + samples_d2, sigma3())
     with handler(simplify_normals_intp):
@@ -241,8 +195,8 @@ def test_distributional_equivalence_normal_transforms():
     with handler(intp):
         expected_d = evaluate(expected_d)
         actual_d = evaluate(actual_d)
-    expected_samples = sample(keys[4], expected_d, (nb_samples,))
-    actual_samples = sample(keys[5], actual_d, (nb_samples,))
+    expected_samples = expected_d.sample(keys[4], (nb_samples,))
+    actual_samples = actual_d.sample(keys[5], (nb_samples,))
 
     assert allclose(jnp.std(expected_samples), jnp.std(actual_samples), atol=1)
     assert allclose(jnp.mean(expected_samples), jnp.mean(actual_samples), atol=1)
@@ -260,16 +214,16 @@ def test_cartesian_product_distribution():
     arr = random.uniform(key, shape=(x_size, i_size))
     expr = Sum(x_stream, Prod(i_stream, jax_getitem(arr, (x()[i()], i()))))
 
-    with handler(BaselineFold()):
+    with handler(BaselineReduce()):
         expected = evaluate(expr)
 
-    with handler(FoldDistributeCartesianProduct()), handler(FoldNoStreams()):
+    with handler(ReduceDistributeCartesianProduct()), handler(ReduceNoStreams()):
         expr_eval = evaluate(expr)
         # check if optimization is applied
         assert str(expr_eval.args[0]) == "Prod"
 
     # check if the result is the same
-    with handler(DenseTensorFold()):
+    with handler(DenseTensorReduce()):
         result = evaluate(expr_eval)
     assert allclose(result, expected)
 
@@ -312,7 +266,7 @@ def test_unify_streams():
     assert unify_streams(expr.args[1], expr2.args[1]) is None
 
 
-def test_fold_distribute_term():
+def test_reduce_distribute_term():
     i = defop(jax.Array, name="i")
     j = defop(jax.Array, name="j")
     k = defop(jax.Array, name="k")
@@ -329,7 +283,7 @@ def test_fold_distribute_term():
     term2 = jax_getitem(b(), (i(), k()))
 
     expr = Sum(streams, term1 * term2)
-    with handler(FoldDistributeTerm()):
+    with handler(ReduceDistributeTerm()):
         # Sum({i: i_stream}, term_1 * Sum({j: j_stream, k: k_stream}, term_2))
         optimized_expr = evaluate(expr)
 
@@ -339,7 +293,7 @@ def test_fold_distribute_term():
     k1, k2 = random.split(random.PRNGKey(42))
     arr_intp = {a: deffn(random.normal(k1, (2,))), b: deffn(random.normal(k2, (2, 4)))}
 
-    with handler(BaselineFold()), handler(arr_intp):
+    with handler(BaselineReduce()), handler(arr_intp):
         expected = evaluate(expr)
         result = evaluate(optimized_expr)
     assert allclose(result, expected)
@@ -356,9 +310,9 @@ def test_polyhedral():
         j: jnp.arange(i() + 10, 2 * i() + 10),
     }
 
-    with handler(DenseTensorFold()), handler(FoldLinearIndexer()):
+    with handler(DenseTensorReduce()), handler(ReduceLinearIndexer()):
         result = Sum(streams, i() / j())
 
-    with handler(BaselineFold()):
+    with handler(BaselineReduce()):
         expected = Sum(streams, i() / j())
     assert allclose(result, expected)

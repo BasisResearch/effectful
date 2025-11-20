@@ -8,12 +8,12 @@ from effectful.ops.syntax import deffn, defop
 from jax import random
 from jax.numpy.linalg import norm
 
-from weighted.handlers.jax import DenseTensorFold
-from weighted.handlers.optimization import FoldDistributeTerm
-from weighted.handlers.optimization.cartesian_product import SplitCartesianProductFold
+from weighted.handlers.jax import DenseTensorReduce
+from weighted.handlers.optimization import ReduceDistributeTerm
+from weighted.handlers.optimization.cartesian_product import SplitCartesianProductReduce
 from weighted.handlers.optimization.jax import StackIndex
-from weighted.ops.fold import BaselineFold
 from weighted.ops.monoid import mul
+from weighted.ops.reduce import BaselineReduce
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 
@@ -43,7 +43,7 @@ def construct_hmm():
     initial_state = defop(jax.Array, name="initial")()
     observation = defop(jax.Array, name="observation")()
 
-    with handler(BaselineFold()):  # immediately unroll factors
+    with handler(BaselineReduce()):  # immediately unroll factors
         hmm_factor = (
             initial_state[z[0]]
             * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
@@ -84,16 +84,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # first, we construct an abstract HMM, unroll it...
-    with handler(SplitCartesianProductFold()), handler({mul: jnp.multiply}):
+    with handler(SplitCartesianProductReduce()), handler({mul: jnp.multiply}):
         model, param_ops = construct_hmm()
-    # ... and optimize the fold ordering
-    with handler(FoldDistributeTerm()), handler(StackIndex()):
+    # ... and optimize the reduce ordering
+    with handler(ReduceDistributeTerm()), handler(StackIndex()):
         model = evaluate(model)
 
     # finally, we create arrays for the open HMM params
     param_intp = create_hmm_params(*param_ops)
-    # .. and perform inference by computing the fold
+    # .. and perform inference by computing the reduce
     t1 = time.perf_counter()
-    with handler(param_intp), handler(DenseTensorFold()):
+    with handler(param_intp), handler(DenseTensorReduce()):
         result = evaluate(model)
     print(result, f"(done in {time.perf_counter() - t1:.2f}s)")

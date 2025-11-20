@@ -6,12 +6,12 @@ from effectful.ops.syntax import deffn, defop
 from jax import random
 from torch import tensor
 
-from weighted.handlers.jax import DenseTensorFold
-from weighted.handlers.optimization import FoldDistributeTerm
+from weighted.handlers.jax import DenseTensorReduce
+from weighted.handlers.optimization import ReduceDistributeTerm
 from weighted.handlers.optimization.cartesian_product import (
-    FoldDistributeCartesianProduct,
+    ReduceDistributeCartesianProduct,
 )
-from weighted.handlers.optimization.reorder import FoldNoStreams
+from weighted.handlers.optimization.reorder import ReduceNoStreams
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 """
@@ -33,7 +33,7 @@ This is liftable as J is fully contained within I (c.f. [2]).
 
 A plated variable in a factor graph is implemented by
 taking a cartesian product over its stream. Computing this
-naively is highly inefficient, and the FoldDistributeCartesianProduct
+naively is highly inefficient, and the ReduceDistributeCartesianProduct
 reduces this to polynomial complexity.
 """
 
@@ -67,8 +67,8 @@ def main():
     H_arr = random.uniform(keys[2], shape=(x_size, y_size, i_size, j_size))
 
     # construct model with lifting optimizations
-    fold_opt = coproduct(FoldDistributeTerm(), FoldDistributeCartesianProduct())
-    with handler(fold_opt), handler(FoldNoStreams()):
+    reduce_opt = coproduct(ReduceDistributeTerm(), ReduceDistributeCartesianProduct())
+    with handler(reduce_opt), handler(ReduceNoStreams()):
         F = f()[x()]
         G = g()[y()[i()], i()]
         H = h()[x(), y()[i()], i(), j()]
@@ -77,7 +77,7 @@ def main():
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f: deffn(F_arr), g: deffn(G_arr), h: deffn(H_arr)}
-    with handler(factor_intp), handler(DenseTensorFold()):
+    with handler(factor_intp), handler(DenseTensorReduce()):
         contraction = evaluate(model)
     print("result:", contraction)
 

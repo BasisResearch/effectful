@@ -4,14 +4,14 @@ from effectful.handlers.jax import unbind_dims
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from weighted.handlers.jax import GradientOptimizationFold
+from weighted.handlers.jax import GradientOptimizationReduce
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMin, Min, Sum
 
 
 def assert_no_base_case(*args, **kwargs):
-    assert False, "vectorized fold missed a case"
+    assert False, "vectorized reduce missed a case"
 
 
 def test_opt():
@@ -20,7 +20,7 @@ def test_opt():
 
     theta = defop(jax.Array, name="theta")
 
-    with handler(GradientOptimizationFold(learning_rate=0.1)), handler(jax_intp):
+    with handler(GradientOptimizationReduce(learning_rate=0.1)), handler(jax_intp):
         min_loss = Min({theta: reals()}, loss(theta))
 
     # assert theta is close to 5.
@@ -46,7 +46,7 @@ def test_batched_matmul():
     )
 
     with (
-        handler(GradientOptimizationFold(learning_rate=0.1, steps=100)),
+        handler(GradientOptimizationReduce(learning_rate=0.1, steps=100)),
         handler(jax_intp),
     ):
         loss = Sum(

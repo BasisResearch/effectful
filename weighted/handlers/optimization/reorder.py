@@ -1,15 +1,13 @@
-from collections.abc import Sized
-from functools import reduce
+import functools
 
-import effectful.handlers.numbers  # noqa: F401
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
-from effectful.handlers.numbers import mul
 from effectful.ops.semantics import fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 from scipy.cluster.hierarchy import DisjointSet
 
-import weighted.ops.fold as ops
+import weighted.ops.reduce as ops
 from weighted.handlers.optimization.utils import (
     parse_terms,
     parse_with_op,
@@ -17,72 +15,72 @@ from weighted.handlers.optimization.utils import (
 )
 
 
-class FoldNoStreams(ObjectInterpretation):
+class ReduceNoStreams(ObjectInterpretation):
     """Implements the identity
-    fold(R, ∅, body) = 0
+    reduce(R, ∅, body) = 0
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, _):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, _):
         if len(streams) == 0:
             return monoid.zero
         return fwd()
 
 
-class FoldFusion(ObjectInterpretation):
+class ReduceFusion(ObjectInterpretation):
     """Implements the identity
-        fold(R, S1, fold(R, S2, body)) = fold(R, S1 ∪ S2, body)
+        reduce(R, S1, reduce(R, S2, body)) = reduce(R, S1 ∪ S2, body)
 
-    This optimization fuses nested folds with the same monoid into a single fold
+    This optimization fuses nested reduces with the same monoid into a single reduce
     over the product of their streams, which can be more efficient.
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         match body:
-            case Term(ops.fold, (inner_monoid, inner_streams, inner_body)):
+            case Term(ops.reduce, (inner_monoid, inner_streams, inner_body)):
                 if monoid == inner_monoid:
-                    return ops.fold(monoid, streams | inner_streams, inner_body)
+                    return ops.reduce(monoid, streams | inner_streams, inner_body)
         return fwd()
 
 
-class FoldSplit(ObjectInterpretation):
+class ReduceSplit(ObjectInterpretation):
     """Implements the identity
-        fold(R, S, b1 + ... + bn) = fold(R, S, b1) + ... + fold(R, S, bn)
+        reduce(R, S, b1 + ... + bn) = reduce(R, S, b1) + ... + reduce(R, S, bn)
 
-    By splitting a fold in several terms, this transforms
+    By splitting a reduce in several terms, this transforms
     allows for individual terms to be further optimized.
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         match body:
             case Term(monoid.add, _):
                 add_terms = parse_with_op(body, monoid.add)
-                new_terms = (ops.fold(monoid, streams, t) for t in add_terms)
-                return reduce(monoid, new_terms, monoid.zero)
+                new_terms = (ops.reduce(monoid, streams, t) for t in add_terms)
+                return functools.reduce(monoid, new_terms, monoid.zero)
         return fwd()
 
 
-class FoldDistributeTerm(ObjectInterpretation):
+class ReduceDistributeTerm(ObjectInterpretation):
     """Implements the identity
-        fold(⊕, S1 × S2, b1 ⊗ b2) = fold(⊕, S1, b1 ⊗ fold(⊕, S2, b2))
+        reduce(⊕, S1 × S2, b1 ⊗ b2) = reduce(⊕, S1, b1 ⊗ reduce(⊕, S2, b2))
             where fvsof(S2) ∩ fvsof(b1) = ∅
 
-    Note: this in more general than FoldReorderReduction in that it
+    Note: this in more general than ReduceReorderReduction in that it
      supports free/unevaluated streams as well as dependent streams,
      but will give worse orderings (unless the einsum is hierarchical,
      which is relevant for lifting).
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         mul, terms = parse_terms(body, monoid)
         if len(terms) < 2 or len(streams) < 2:
             return fwd()
 
         stream_vars = set(streams.keys())
-        stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
+        stream_fvs = functools.reduce(set.union, map(fvsof, streams.values()), set())
         independent_streams = stream_vars - stream_fvs
         if not independent_streams:
             return fwd()
@@ -97,18 +95,18 @@ class FoldDistributeTerm(ObjectInterpretation):
                 outer_terms = [
                     t for t, b in zip(terms, t_free_fvs, strict=False) if not b
                 ]
-                inner_body = reduce(mul, inner_terms)
-                inner_fold = ops.fold(monoid, unused_streams, inner_body)
-                outer_term = reduce(mul, outer_terms)
-                return ops.fold(monoid, used_streams, mul(outer_term, inner_fold))
+                inner_body = functools.reduce(mul, inner_terms)
+                inner_reduce = ops.reduce(monoid, unused_streams, inner_body)
+                outer_term = functools.reduce(mul, outer_terms)
+                return ops.reduce(monoid, used_streams, mul(outer_term, inner_reduce))
 
         return fwd()
 
 
-class FoldPropagateUnusedStreams(ObjectInterpretation):
+class ReducePropagateUnusedStreams(ObjectInterpretation):
     """
     Implements the identity
-        fold(R, S × S', body) = |S'| ⋅ fold(R, S, body)
+        reduce(R, S × S', body) = |S'| ⋅ reduce(R, S, body)
             where fvsof(body) ∩ S' = ∅
             and `⋅` is the scalar product of the monoid addition
 
@@ -116,47 +114,48 @@ class FoldPropagateUnusedStreams(ObjectInterpretation):
     streams are never eliminated.
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         # A stream is redundant if it doesn't appear in the body or in another stream.
-        stream_fvs = reduce(set.union, map(fvsof, streams.values()), set())
+        stream_fvs = functools.reduce(set.union, map(fvsof, streams.values()), set())
         fvs = fvsof(body) | stream_fvs
         redundant_streams = {k: v for k, v in streams.items() if k not in fvs}
 
-        # Only proceed if there are redundant streams
+        constant = 1
+        if not monoid.is_idempotent():
+            sized_redundant_streams = {}
+
+            for k, v in redundant_streams.items():
+                try:
+                    stream_len = len(v)
+                except TypeError:
+                    continue
+
+                sized_redundant_streams[k] = v
+                constant *= stream_len
+
+            redundant_streams = sized_redundant_streams
+
         if len(redundant_streams) == 0:
             return fwd()
 
-        if not monoid.is_idempotent():
-            # make sure we can calculate the length of each stream
-            has_size = lambda x: is_eager_array(x) or isinstance(x, Sized)
-            redundant_streams = {
-                k: v for k, v in redundant_streams.items() if has_size(v)
-            }
-            if len(redundant_streams) == 0:
-                return fwd()
-
-            constant = reduce(mul, map(len, redundant_streams.values()))
-        else:
-            constant = 1
-
         used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
-        new_fold = ops.fold(monoid, used_streams, body)
-        return monoid.scalar_mul()(new_fold, constant)
+        new_reduce = ops.reduce(monoid, used_streams, body)
+        return monoid.scalar_mul()(new_reduce, jnp.array(constant))
 
 
-class FoldReorderReduction(ObjectInterpretation):
+class ReduceReorderReduction(ObjectInterpretation):
     """
     Performs smarter reduction/multiplication ordering.
     Also known as variable elimination (in probabilistic inference)
     or contraction ordering (in tensor networks).
     """
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         mul, terms = parse_terms(body, monoid)
 
-        # Only proceed when folding over multiple streams & tensors
+        # Only proceed when reduceing over multiple streams & tensors
         if len(terms) < 2 or len(streams) < 2:
             return fwd()
         if any(not is_eager_array(t) for t in terms):
@@ -167,21 +166,21 @@ class FoldReorderReduction(ObjectInterpretation):
         # todo: support dependent streams
         var_sizes = {str(k): len(v) for k, v in streams.items()}
         in_vars = [fvsof(term.args[1]) for term in terms]
-        fold_path = _order_variables(var_sizes, in_vars, out_vars)
+        reduce_path = _order_variables(var_sizes, in_vars, out_vars)
 
-        for fold_positions in fold_path:
-            fold_terms = [terms[i] for i in fold_positions]
-            terms = [term for i, term in enumerate(terms) if i not in fold_positions]
-            fold_out_vars, eliminated_vars = _find_contraction(
-                fold_positions, in_vars, out_vars
+        for reduce_positions in reduce_path:
+            reduce_terms = [terms[i] for i in reduce_positions]
+            terms = [term for i, term in enumerate(terms) if i not in reduce_positions]
+            reduce_out_vars, eliminated_vars = _find_contraction(
+                reduce_positions, in_vars, out_vars
             )
-            in_vars = [x for i, x in enumerate(in_vars) if i not in fold_positions]
-            in_vars.append(set(fold_out_vars))
+            in_vars = [x for i, x in enumerate(in_vars) if i not in reduce_positions]
+            in_vars.append(set(reduce_out_vars))
 
-            new_body = reduce(mul, fold_terms)
+            new_body = functools.reduce(mul, reduce_terms)
             current_streams = {v: streams[v] for v in eliminated_vars}
-            new_fold = ops.fold(monoid, current_streams, new_body)
-            terms.append(new_fold)
+            new_reduce = ops.reduce(monoid, current_streams, new_body)
+            terms.append(new_reduce)
 
         assert len(terms) == 1
         return terms[0]
@@ -221,16 +220,16 @@ def _find_contraction(positions, in_vars, out_vars):
     return tuple(new_result), tuple(idx_removed)
 
 
-class FoldFactorization(ObjectInterpretation):
+class ReduceFactorization(ObjectInterpretation):
     """
     Implements factorization of independent terms.
     For example, when having two independent distributions,
     we can rewrite their marginalization as:
         ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
 
-    More specifically, in terms of folds we are performing:
-        fold(R, (S₁ × ... × Sₖ ) , A₁ * ... * Aₖ)
-        => fold(R, S₁, A₁) * ... * fold(R, Sₖ, Aₖ)
+    More specifically, in terms of reduces we are performing:
+        reduce(R, (S₁ × ... × Sₖ ) , A₁ * ... * Aₖ)
+        => reduce(R, S₁, A₁) * ... * reduce(R, Sₖ, Aₖ)
         where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
           and free(Aᵢ) ∩ Sᵢ ≠ ∅
 
@@ -247,8 +246,8 @@ class FoldFactorization(ObjectInterpretation):
                 var_sets.merge(factor_vars[0], v)
         return var_sets.subsets()
 
-    @implements(ops.fold)
-    def fold(self, monoid, streams, body):
+    @implements(ops.reduce)
+    def reduce(self, monoid, streams, body):
         stream_vars = fvsof(streams.keys())
         # We assume all streams are used
         if len(stream_vars - fvsof(body)) > 0:
@@ -260,11 +259,11 @@ class FoldFactorization(ObjectInterpretation):
         if len(partitions) < 2:
             return fwd()  # nothing to factorize :(
 
-        new_folds = []
+        new_reduces = []
         for partition in partitions:
             partition_streams = {k: v for k, v in streams.items() if k in partition}
             partition_terms = (t for t in terms if len(fvsof(t) & partition) > 0)
-            partition_term = reduce(mul, partition_terms)
-            new_folds.append(ops.fold(monoid, partition_streams, partition_term))
+            partition_term = functools.reduce(mul, partition_terms)
+            new_reduces.append(ops.reduce(monoid, partition_streams, partition_term))
 
-        return reduce(mul, new_folds)
+        return functools.reduce(mul, new_reduces)

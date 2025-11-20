@@ -3,7 +3,6 @@ import logging
 import operator
 
 import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numbers  # noqa: F401
 import jax
 import optax
 import tree
@@ -27,8 +26,7 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
 
-from weighted.ops.distribution import D, log_prob, sample
-from weighted.ops.fold import fold, order_streams
+from weighted.ops.distribution import D
 from weighted.ops.jax import key, reals
 from weighted.ops.monoid import (
     ArgMaxMonoid,
@@ -39,6 +37,7 @@ from weighted.ops.monoid import (
     ProdMonoid,
     SumMonoid,
 )
+from weighted.ops.reduce import order_streams, reduce
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +81,7 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
     return [((), body)]
 
 
-class DenseTensorFold(ObjectInterpretation):
+class DenseTensorReduce(ObjectInterpretation):
     def _sum_reductor(self, tensor, dims):
         for _ in range(dims):
             tensor = jnp.sum(tensor, axis=0)
@@ -152,9 +151,9 @@ class DenseTensorFold(ObjectInterpretation):
         else:
             return None
 
-    @implements(fold)
-    @timed(name="DenseTensorFold")
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    @timed(name="DenseTensorReduce")
+    def reduce(self, monoid, streams, body):
         reductor = self._get_reductor(monoid)
         if not (
             reductor and all(issubclass(typeof(s), jax.Array) for s in streams.values())
@@ -229,13 +228,13 @@ class DenseTensorFold(ObjectInterpretation):
         return result_4
 
 
-class GradientOptimizationFold(ObjectInterpretation):
+class GradientOptimizationReduce(ObjectInterpretation):
     """Handle min/argmin over reals using gradient descent.
 
     Notes:
     - A single empty output index is expected. Nontrivial output indexes would in
     principle allow us to represent partial optimization problems like the following:
-    fold(MinMonoid, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
+    reduce(MinMonoid, {x: reals(), y: reals()}, {x(): f(x(), y())}) = \\lambda x. min_{y\\in R} f(x, y).
 
     """
 
@@ -250,8 +249,8 @@ class GradientOptimizationFold(ObjectInterpretation):
         self.init = {} if init is None else init
         self.progress = progress
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
         # TODO: handle mixed discrete/continuous optimization
         if not (
             monoid in (MinMonoid, ArgMinMonoid)
@@ -341,21 +340,21 @@ class GradientOptimizationFold(ObjectInterpretation):
         return final_loss, final_arg
 
 
-class LikelihoodWeightingFold(ObjectInterpretation):
+class LikelihoodWeightingReduce(ObjectInterpretation):
     """Handle expectation computation using likelihood weighting."""
 
     def __init__(self, samples=1):
         self.samples = samples
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
         if not (
             monoid is SumMonoid
             and all(issubclass(typeof(v), Distribution) for v in streams.values())
         ):
             reason = "monoid" if monoid is not SumMonoid else "streams"
             logger.debug(
-                f"Skipping likelihood weighting (reason {reason}): fold({monoid}, {streams}, {body}"
+                f"Skipping likelihood weighting (reason {reason}): reduce({monoid}, {streams}, {body}"
             )
             return fwd()
 
@@ -366,7 +365,7 @@ class LikelihoodWeightingFold(ObjectInterpretation):
 
             if isinstance(k, Operation):
                 value = k
-                samples = sample(key(), v, (self.samples,))[s()]
+                samples = v.sample(key(), (self.samples,))[s()]
                 sample_streams[value] = deffn(samples)
             elif isinstance(k, tuple):
                 if not (len(k) == 2 and all(isinstance(i, Operation) for i in k)):
@@ -374,8 +373,8 @@ class LikelihoodWeightingFold(ObjectInterpretation):
                         "Expected a tuple of (value, weight) for likelihood weighting"
                     )
                 (value, weight) = k
-                samples = sample(key(), v, (self.samples,))
-                weights = log_prob(v, samples)
+                samples = v.sample(key(), (self.samples,))
+                weights = v.log_prob(samples)
                 weights = weights - logsumexp(weights)
                 samples = jax_getitem(samples, [s()])
                 weights = jax_getitem(weights, [s()])
@@ -389,14 +388,14 @@ class LikelihoodWeightingFold(ObjectInterpretation):
         with handler(sample_streams):
             body = evaluate(body)
 
-        return fold(SumMonoid, index_streams, body)
+        return reduce(SumMonoid, index_streams, body)
 
 
-class PytreeMapFold(ObjectInterpretation):
-    """Map a fold over a pytree body."""
+class PytreeMapReduce(ObjectInterpretation):
+    """Map a reduce over a pytree body."""
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
         if not (monoid in (MinMonoid, MaxMonoid, SumMonoid)):
             return fwd()
 
@@ -408,7 +407,7 @@ class PytreeMapFold(ObjectInterpretation):
             s = jax.tree.structure(t)
             if structure and structure != s:
                 raise ValueError(
-                    f"Found pytrees with different structures {structure} and {s} in fold body."
+                    f"Found pytrees with different structures {structure} and {s} in reduce body."
                 )
             structure = s
 
@@ -419,7 +418,7 @@ class PytreeMapFold(ObjectInterpretation):
         flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body_indices]
 
         flat_body = [
-            fold(
+            reduce(
                 monoid,
                 streams,
                 D(*[(k, v) for (k, _), v in zip(body_indices, vs, strict=True)]),
@@ -478,12 +477,12 @@ def syntactic_eq_jax[T](x: Expr[T], other: Expr[T]) -> bool:
         return x == other
 
 
-class ScanFold(ObjectInterpretation):
+class ScanReduce(ObjectInterpretation):
     def __init__(self, min_length=3):
         self.min_length = min_length
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
         # FIXME: This handler does not deal with the case where some but not all
         # stream variables form a chain
 
@@ -546,12 +545,12 @@ class ScanFold(ObjectInterpretation):
         for i, (var, _) in enumerate(chain[1:]):
             new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
 
-        return fold(monoid, new_streams, body)
+        return reduce(monoid, new_streams, body)
 
 
 interpretation = functools.reduce(
     coproduct,  # type: ignore
     [
-        DenseTensorFold(),
+        DenseTensorReduce(),
     ],
 )

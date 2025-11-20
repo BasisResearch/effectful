@@ -3,14 +3,15 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
-from effectful.ops.types import Interpretation, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation
 
 from .monoid import Monoid
 
-type Streams[T] = Mapping[Operation[[], T], Iterable[T]]
+# Note: The streams value type should be something like Iterable[T], but some of
+# our target stream types (e.g. jax.Array) are not subtypes of Iterable
+type Streams[T] = Mapping[Operation[[], T], Any]
 
 type Body[T] = (
     Iterable[T]
@@ -22,12 +23,12 @@ type Body[T] = (
 
 
 @defop
-def fold[A, B, S, T, U: Body](
+def reduce[A, B, S, U: Body](
     monoid: Monoid[S],
-    streams: Annotated[Streams[T], Scoped[A]],
+    streams: Annotated[Streams, Scoped[A]],
     body: Annotated[U, Scoped[A | B]],
 ) -> Annotated[U, Scoped[B]]:
-    raise NotImplementedError
+    raise NotHandled
 
 
 def _body_value(body: Body, intp: Interpretation) -> Body:
@@ -56,9 +57,9 @@ def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
         topo.done(*node_group)
 
 
-class BaselineFold(ObjectInterpretation):
-    @implements(fold)
-    def fold[T](self, monoid: Monoid[T], streams: Streams[T], body: Body[T]) -> Body[T]:
+class BaselineReduce(ObjectInterpretation):
+    @implements(reduce)
+    def reduce[T](self, monoid: Monoid[T], streams: Streams[T], body: Body[T]) -> Body[T]:
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]

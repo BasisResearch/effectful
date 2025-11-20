@@ -11,11 +11,12 @@ from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 from jax import random
+from jax.scipy.special import expit
 from matplotlib import pyplot as plt
 from torchvision import transforms
 from torchvision.datasets import MNIST
 
-from weighted.handlers.jax import DenseTensorFold, log_prob, sample
+from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import simplify_normals_intp
 from weighted.ops.distribution import kl_divergence
 from weighted.ops.sugar import Sum
@@ -65,7 +66,7 @@ class VAE(nnx.Module):
 
     def __call__(self, image, key):
         q = self.encode(image)
-        z = sample(key, q, ())
+        z = q.sample(key)
         p = self.decode(z)
         return p, q
 
@@ -78,7 +79,7 @@ def elbo_loss(model, x, key, beta=2.0):
     latent_stream = {latent_dim: jnp.arange(args.nb_latents)}
     batch_stream = {batch_dim: jnp.arange(x.shape[0])}
 
-    log_prob_x = unbind_dims(log_prob(p, x), batch_dim, img_x_dim, img_y_dim)
+    log_prob_x = unbind_dims(p.log_prob(x), batch_dim, img_x_dim, img_y_dim)
     reconstruction_loss = -Sum(image_streams, log_prob_x)
     kl_loss = Sum(latent_stream, kl_divergence(q, model.prior()))
     elbo = reconstruction_loss + beta * kl_loss
@@ -94,7 +95,7 @@ def train(dataset_loader, model, optimizer, key):
         data = jnp.array(data[:, 0, :, :])
         key, subkey = random.split(key)
 
-        with handler(DenseTensorFold()), handler(simplify_normals_intp):
+        with handler(DenseTensorReduce()), handler(simplify_normals_intp):
             loss, grads = elbo_loss_grad(model, data, subkey)
         total_loss += loss
         optimizer.update(grads)
@@ -114,7 +115,7 @@ def main(args):
 
     model.train()
     optimizer = optax.adamw(learning_rate=1e-3)
-    optimizer = nnx.Optimizer(model, optimizer, wrt=nnx.Param)
+    optimizer = nnx.ModelAndOptimizer(model, optimizer, wrt=nnx.Param)
 
     for epoch in range(args.nb_epochs):
         print(f"### epoch {epoch} ###")
@@ -131,9 +132,9 @@ def main(args):
 
 def plot_samples(model, key, n_samples=16):
     """Plot samples generated from the VAE"""
-    samples = sample(key, model.prior(), (n_samples,))
+    samples = model.prior().sample(key, (n_samples,))
     samples = unbind_dims(samples, batch_dim)
-    samples = model.decode(samples).probs
+    samples = expit(model.decode(samples).logits)
     fig, axes = plt.subplots(4, 4, figsize=(8, 8))
     fig.suptitle("Generated Samples", fontsize=16)
 
@@ -152,7 +153,7 @@ def plot_reconstructions(model, test_dataset, key, n_images=5):
 
     for i in range(n_images):
         img, label = test_dataset[i]
-        reconstructed = model(img, key)[0].probs
+        reconstructed = expit(model(img, key)[0].logits)
         # Original
         axes[0, i].imshow(img.squeeze(), cmap="gray")
         axes[0, i].set_title(f"Label: {label}")

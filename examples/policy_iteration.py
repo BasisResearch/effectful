@@ -18,7 +18,7 @@ from jax import random
 from matplotlib.animation import FuncAnimation
 from tqdm import tqdm
 
-from weighted.handlers.jax import D, ScanFold, key
+from weighted.handlers.jax import D, ScanReduce, key
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.monoid import add, mul
 from weighted.ops.sugar import ArgMax, Sum
@@ -354,7 +354,7 @@ class NNValueFn(ObjectInterpretation):
 with (
     handler(jax_intp),
     handler(NNValueFn()),
-    handler(ScanFold()),
+    handler(ScanReduce()),
     handler({actions: lambda: all_actions}),
 ):
     policy = policy_iteration(steps=30, horizon=5)

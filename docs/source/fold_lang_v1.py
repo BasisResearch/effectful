@@ -8,7 +8,6 @@ from collections.abc import Iterable
 from typing import Any, Callable, Generic, Mapping, ParamSpec, TypeAlias, TypeVar
 
 import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numbers  # noqa: F401
 import effectful.handlers.numpyro as dist
 import jax
 import numpyro

@@ -1,22 +1,21 @@
-import effectful.handlers.numbers  # noqa: F401
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
 
 from weighted.ops.distribution import D
-from weighted.ops.fold import fold
 from weighted.ops.monoid import ArgMaxMonoid, ArgMinMonoid, MaxMonoid, MinMonoid
+from weighted.ops.reduce import reduce
 
 
-class FlipOptimizationFold(ObjectInterpretation):
+class FlipOptimizationReduce(ObjectInterpretation):
     """Convert Max/ArgMax problems to Min/ArgMin by negating values.
 
     This handler transforms maximization problems into minimization problems
     by negating the objective function, allowing reuse of minimization algorithms.
     """
 
-    @implements(fold)
-    def fold(self, monoid, streams, body, **kwargs):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body, **kwargs):
         # Only handle MaxMonoid and ArgMaxMonoid
         if monoid not in (MaxMonoid, ArgMaxMonoid):
             return fwd()
@@ -54,7 +53,7 @@ class FlipOptimizationFold(ObjectInterpretation):
         new_body = D(*new_args)
 
         # Solve as a minimization problem
-        result = fold(target_monoid, streams, new_body, **kwargs)
+        result = reduce(target_monoid, streams, new_body, **kwargs)
 
         # For MaxMonoid, negate the result back
         if monoid is MaxMonoid:

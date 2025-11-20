@@ -7,7 +7,7 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Term
 
-from weighted.ops.fold import fold
+from weighted.ops.reduce import reduce
 
 
 def _intp_add(lhs, rhs):
@@ -50,11 +50,11 @@ def array_constraint(space, k, array):
     return arange_constraint(space, k, lower, upper)
 
 
-class FoldLinearIndexer(ObjectInterpretation):
+class ReduceLinearIndexer(ObjectInterpretation):
     """Tabular indexer for affine dependent streams."""
 
-    @implements(fold)
-    def fold(self, monoid, streams, body):
+    @implements(reduce)
+    def reduce(self, monoid, streams, body):
         stream_vars = set(streams.keys())
         linear_streams = {
             k: v for k, v in streams.items() if isinstance(v, Term) and v.op is jnp.arange
@@ -108,4 +108,4 @@ class FoldLinearIndexer(ObjectInterpretation):
             op: deffn(jax_getitem(op_range[op], (new_index(),))) for op in op_names
         }
         new_body = evaluate(body, intp=linear_intp)
-        return fold(monoid, new_streams, new_body)
+        return reduce(monoid, new_streams, new_body)

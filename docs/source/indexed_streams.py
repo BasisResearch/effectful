@@ -3,12 +3,20 @@ import dataclasses
 import functools
 import itertools
 import operator
-import tree
 from typing import Annotated, Callable, Concatenate, Generic, Literal, ParamSpec, TypeVar
 
-import effectful.handlers.numbers  # noqa: F401
-from effectful.ops.semantics import apply, call, coproduct, evaluate, fwd, handler, product, typeof
-from effectful.ops.syntax import Scoped, defop, defdata
+import tree
+from effectful.ops.semantics import (
+    apply,
+    call,
+    coproduct,
+    evaluate,
+    fwd,
+    handler,
+    product,
+    typeof,
+)
+from effectful.ops.syntax import Scoped, defdata, defop
 from effectful.ops.types import Interpretation, Operation, Term
 
 P = ParamSpec("P")
@@ -52,7 +60,6 @@ class Semiring(Generic[T]):
 
 
 def stream_mul(semiring: Semiring[V], s1: Stream[K, V], s2: Stream[K, V]) -> Stream[K, V]:
-
     # # coproduct version
     # return coproduct({
     #     index: lambda: max(s1[index](), fwd()),
@@ -125,7 +132,6 @@ def stream_eval(semiring: Semiring[V], s: Stream[K, V]) -> V | dict[K, V]:
 
 
 def Dense(vals: collections.abc.Sequence[V]) -> Stream[int, V]:
-
     i = 0
 
     def stream_index():
@@ -203,7 +209,7 @@ def Sparse(vals: collections.abc.Mapping[int, V]) -> Stream[int, V]:
 def unfolds(
     bindings: Interpretation,
     bodies: Interpretation,
-) -> Interpretation:    
+) -> Interpretation:
     return product(bindings, bodies)
 
 
@@ -270,11 +276,9 @@ def unfold(
 # index_ = {i: dense_i}
 # value = unfold(A[i()], index_)
 
+
 @defop
-def filter(
-    body: T,
-    guard: bool
-) -> T:  # collections.abc.Iterable[T]:
+def filter(body: T, guard: bool) -> T:  # collections.abc.Iterable[T]:
     if isinstance(body, Term) and body.op == filter:
         return filter(body.args[0], body.args[1] and guard)
     elif isinstance(body, Term) and body.op == unfold:
@@ -284,11 +288,7 @@ def filter(
 
 
 @defop
-def fmap(
-    fn: Callable[P, T],
-    *args: P.args,
-    **_: P.kwargs
-) -> T:
+def fmap(fn: Callable[P, T], *args: P.args, **_: P.kwargs) -> T:
     # e.g. stream_add == fmap(operator.add, x, y)
     # TODO distribute over unfold
     for i, arg in enumerate(args):
@@ -303,10 +303,14 @@ def fmap(
     return call(fn, *args, **_)
 
 
-def ranges(sizes: Mapping[Operation[[], int], int]) -> collections.abc.Iterable[Interpretation[int, int]]:
+def ranges(
+    sizes: Mapping[Operation[[], int], int],
+) -> collections.abc.Iterable[Interpretation[int, int]]:
     range_iters = itertools.product(*(range(sizes[op]) for op in sizes))
     for range_it in range_iters:
-        yield {op: functools.partial(lambda x: x, val) for op, val in zip(sizes, range_it)}
+        yield {
+            op: functools.partial(lambda x: x, val) for op, val in zip(sizes, range_it)
+        }
 
 
 Expectation(
@@ -338,36 +342,44 @@ def foldl(
     base_index_states: collections.abc.Iterable[Interpretation],
     body: T,
     *,
-    kernel: Callable[[V, T], V] = lambda aa, b: (a for a in (*aa, b))
+    kernel: Callable[[V, T], V] = lambda aa, b: (a for a in (*aa, b)),
 ) -> V:
-
     if isinstance(body, Term):
         if body.op == unfold:
-            return foldl(product(base_index_state, body.args[1]), body.args[0], kernel=kernel)
-
-        return functools.reduce(kernel, (
-            b
-            for (a, k) in (
-                tree.unflatten_as((body.args, body.kwargs), it)
-                for it in itertools.product(*(
-                    i if isinstance(i, collections.abc.Iterable) else (i,) 
-                    for i in tree.flatten((body.args, body.kwargs))
-                ))
+            return foldl(
+                product(base_index_state, body.args[1]), body.args[0], kernel=kernel
             )
-            for b in handler(base_index_state)(body.op)(*a, **k)
-        ))
+
+        return functools.reduce(
+            kernel,
+            (
+                b
+                for (a, k) in (
+                    tree.unflatten_as((body.args, body.kwargs), it)
+                    for it in itertools.product(
+                        *(
+                            i if isinstance(i, collections.abc.Iterable) else (i,)
+                            for i in tree.flatten((body.args, body.kwargs))
+                        )
+                    )
+                )
+                for b in handler(base_index_state)(body.op)(*a, **k)
+            ),
+        )
     elif tree.is_nested(body):
-        return tree.map_structure(functools.partial(foldl, base_index_state, kernel=kernel), body)
+        return tree.map_structure(
+            functools.partial(foldl, base_index_state, kernel=kernel), body
+        )
     else:
         return body
 
 
 def PointwiseFunctionSemiring(semiring: Semiring[T]) -> Semiring[Callable[..., T]]:
     return Semiring(
-        add = lambda f, g: lambda *a, **k: semiring.add(f(*a, **k), g(*a, **k)),
-        mul = lambda f, g: lambda *a, **k: semiring.mul(f(*a, **k), g(*a, **k)),
-        zero = lambda *_, **__: semiring.zero,
-        one = lambda *_, **__: semiring.one,
+        add=lambda f, g: lambda *a, **k: semiring.add(f(*a, **k), g(*a, **k)),
+        mul=lambda f, g: lambda *a, **k: semiring.mul(f(*a, **k), g(*a, **k)),
+        zero=lambda *_, **__: semiring.zero,
+        one=lambda *_, **__: semiring.one,
     )
 
 
@@ -375,9 +387,8 @@ def PointwiseFunctionSemiring(semiring: Semiring[T]) -> Semiring[Callable[..., T
 def Sum(
     semiring: Annotated[Semiring[T], Scoped[A]],
     body: Annotated[T, Scoped[A | B]],
-    *vars: Annotated[Operation[[], int], Scoped[B]]
+    *vars: Annotated[Operation[[], int], Scoped[B]],
 ) -> Annotated[T, Scoped[A]]:
-
     result = semiring.zero
     for vals in itertools.product(*(range(2) for _ in vars)):
         subs = {var: functools.partial(lambda x: x, val) for var, val in zip(vars, vals)}
@@ -386,12 +397,16 @@ def Sum(
 
 
 if __name__ == "__main__":
-
-    LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0., 1.)
+    LinAlg: Semiring[float] = Semiring(operator.add, operator.mul, 0.0, 1.0)
 
     print(stream_eval(LinAlg, stream_add(LinAlg, Dense([1, 2, 3]), Dense([4, 5, 6]))))
 
-    print(stream_eval(LinAlg, stream_contract(stream_add(LinAlg, Dense([1, 2, 3]), Dense([4, 5, 6])))))
+    print(
+        stream_eval(
+            LinAlg,
+            stream_contract(stream_add(LinAlg, Dense([1, 2, 3]), Dense([4, 5, 6]))),
+        )
+    )
 
     x, y = defop(int), defop(int)
     print(Sum(LinAlg, x() * y() ** 2, x, y))

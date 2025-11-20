@@ -1,5 +1,5 @@
+import functools
 import itertools
-from functools import reduce
 from operator import mul
 
 import effectful.handlers.jax.numpy as jnp
@@ -10,7 +10,7 @@ from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 
 from tests.utils import (
-    DEFAULT_TEST_FOLD_INTP,
+    DEFAULT_TEST_REDUCE_INTP,
 )
 from weighted.handlers.jax import D
 from weighted.ops.sugar import Sum
@@ -47,7 +47,7 @@ EINSUM_EXAMPLES = [
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",
-    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_FOLD_INTP.items()],
+    [pytest.param(intp, id=name) for name, intp in DEFAULT_TEST_REDUCE_INTP.items()],
 )
 
 
@@ -80,7 +80,7 @@ def einsum_weighted(
     equation: str,
     operands: list[jax.Array],
     sizes: dict[str, tuple[int, ...]],
-    fold_intp,
+    reduce_intp,
 ):
     symbols, inputs, outputs = parse_equation(equation)
     operands_map = {f"m{i}": tensor for i, tensor in enumerate(operands)}
@@ -93,11 +93,11 @@ def einsum_weighted(
         jax_getitem(operand_op, tuple(symbol_ops[s] for s in inp))
         for operand_op, inp in zip(operands_map.values(), inputs, strict=False)
     )
-    input_term = reduce(mul, input_terms)
+    input_term = functools.reduce(mul, input_terms)
 
     operand_intp = {operand_ops[name].op: deffn(o) for name, o in operands_map.items()}
     body = D((output_indices, input_term))
-    with handler(fold_intp), handler(operand_intp):
+    with handler(reduce_intp), handler(operand_intp):
         return evaluate(Sum(streams, body))
 
 

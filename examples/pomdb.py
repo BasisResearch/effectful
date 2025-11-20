@@ -3,11 +3,11 @@ from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-
-from weighted.handlers.jax import GradientOptimizationFold, reals
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.handlers.optimization import FoldReorderReduction
 from weighted.handlers.optimization.plates import plated
+
+from weighted.handlers.jax import GradientOptimizationReduce, reals
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.handlers.optimization import ReduceReorderReduction
 from weighted.ops.sugar import ArgMax, Sum
 
 """
@@ -91,11 +91,11 @@ def main():
     }
     time_stream = {t.op: jnp.arange(100)}
 
-    with handler(jax_intp), handler(FoldReorderReduction()):
+    with handler(jax_intp), handler(ReduceReorderReduction()):
         body = initial_state * reward * environment * policy * transition
         utility = plated(time_stream, Sum(streams, body))
 
-    gradient_intp = GradientOptimizationFold(
+    gradient_intp = GradientOptimizationReduce(
         lr=0.001, steps=1000, init={policy_model: random_policy}
     )
     with handler(gradient_intp):

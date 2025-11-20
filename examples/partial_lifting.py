@@ -4,10 +4,10 @@ from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from jax import random
 
-from weighted.handlers.jax import DenseTensorFold
+from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization.cartesian_product import (
-    FoldDistributeCartesianProduct,
-    SplitCartesianProductFold,
+    ReduceDistributeCartesianProduct,
+    SplitCartesianProductReduce,
 )
 from weighted.ops.sugar import CartesianProd, Prod, Sum
 
@@ -49,13 +49,15 @@ def main():
     F_arr = random.uniform(key, shape=(x_size, y_size))
 
     # try lifting
-    fold_opt = coproduct(SplitCartesianProductFold(), FoldDistributeCartesianProduct())
-    with handler(fold_opt):
+    reduce_opt = coproduct(
+        SplitCartesianProductReduce(), ReduceDistributeCartesianProduct()
+    )
+    with handler(reduce_opt):
         model = Sum(x_stream | y_stream, Prod(j_stream, Prod(i_stream, f[x[i], y[j]])))
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f.op: deffn(F_arr)}
-    with handler(factor_intp), handler(DenseTensorFold()):
+    with handler(factor_intp), handler(DenseTensorReduce()):
         contraction = evaluate(model)
     print("result:", contraction)
 

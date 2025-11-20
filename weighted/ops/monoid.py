@@ -1,5 +1,4 @@
 import collections.abc
-import dataclasses
 import functools
 import itertools
 import numbers
@@ -7,16 +6,14 @@ from collections.abc import Callable, Generator, Mapping
 from typing import Any
 
 import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numbers  # noqa: F401
 import jax
 import tree
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, Term
+from effectful.ops.types import Interpretation, NotHandled, Term
 
 
-@dataclasses.dataclass
 class Monoid[T]:
     add: Callable[[T, T], T]
     zero: T
@@ -122,7 +119,7 @@ class Monoid[T]:
 @defop
 def add[T](a: T, b: T) -> T:
     if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
-        raise NotImplementedError
+        raise NotHandled
     return a + b  # type: ignore
 
 
@@ -133,21 +130,21 @@ def mul[T](a: T, b: T) -> T:
     ):
         return 0  # type: ignore
     if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
-        raise NotImplementedError
+        raise NotHandled
     return a * b  # type: ignore
 
 
 @defop
 def min[T](a: T, b: T) -> T:
     if any(isinstance(x, Term) for x in (a, b)):
-        raise NotImplementedError
+        raise NotHandled
     return a if a < b else b  # type: ignore
 
 
 @defop
 def max[T](a: T, b: T) -> T:
     if any(isinstance(x, Term) for x in (a, b)):
-        raise NotImplementedError
+        raise NotHandled
     return a if a > b else b  # type: ignore
 
 
@@ -158,7 +155,7 @@ def arg_min(a, b):
     if isinstance(b, tuple) and isinstance(b[0], numbers.Number) and b[0] == float("inf"):
         return a
     if any(isinstance(x, Term) for x in tree.flatten((a, b))):
-        raise NotImplementedError
+        raise NotHandled
     return a if a[0] < b[0] else b
 
 
@@ -177,7 +174,7 @@ def arg_max(a, b):
     ):
         return a
     if any(isinstance(x, Term) for x in tree.flatten((a, b))):
-        raise NotImplementedError
+        raise NotHandled
     return a if a[0] > b[0] else b
 
 

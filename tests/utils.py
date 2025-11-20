@@ -1,31 +1,31 @@
-from functools import reduce
+import functools
 
 from effectful.ops.semantics import coproduct
 
-from weighted.handlers.jax import DenseTensorFold
+from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import (
-    FoldDistributeTerm,
-    FoldEliminateDterm,
-    FoldFactorization,
-    FoldFusion,
-    FoldPropagateUnusedStreams,
-    FoldReorderReduction,
-    FoldSplit,
+    ReduceDistributeTerm,
+    ReduceEliminateDterm,
+    ReduceFactorization,
+    ReduceFusion,
+    ReducePropagateUnusedStreams,
+    ReduceReorderReduction,
+    ReduceSplit,
 )
-from weighted.ops.fold import BaselineFold
+from weighted.ops.reduce import BaselineReduce
 
-JAX_INTP = DenseTensorFold()
-BASELINE_INTP = BaselineFold()
+JAX_INTP = DenseTensorReduce()
+BASELINE_INTP = BaselineReduce()
 
-REORDER_TRANS = FoldReorderReduction()
-SPLIT_TRANS = FoldSplit()
-PROPAGATE_TRANS = FoldPropagateUnusedStreams()
-FACTORIZE_TRANS = FoldFactorization()
-FUSE_TRANS = FoldFusion()
-DISTRIBUTE_TERM_TRANS = FoldDistributeTerm()
-D_ELIMINATE_TRANS = FoldEliminateDterm()
+REORDER_TRANS = ReduceReorderReduction()
+SPLIT_TRANS = ReduceSplit()
+PROPAGATE_TRANS = ReducePropagateUnusedStreams()
+FACTORIZE_TRANS = ReduceFactorization()
+FUSE_TRANS = ReduceFusion()
+DISTRIBUTE_TERM_TRANS = ReduceDistributeTerm()
+D_ELIMINATE_TRANS = ReduceEliminateDterm()
 
-FOLD_TRANSFORMS = (
+REDUCE_TRANSFORMS = (
     REORDER_TRANS,
     SPLIT_TRANS,
     PROPAGATE_TRANS,
@@ -35,7 +35,7 @@ FOLD_TRANSFORMS = (
     D_ELIMINATE_TRANS,
 )
 
-DEFAULT_TRANS = reduce(
+DEFAULT_TRANS = functools.reduce(
     coproduct,  # type: ignore
     [
         DISTRIBUTE_TERM_TRANS,
@@ -55,7 +55,7 @@ BASELINE_NO_D_INTP = coproduct(BASELINE_INTP, D_ELIMINATE_TRANS)
 JAX_DEFAULT_INTP = coproduct(JAX_INTP, DEFAULT_TRANS)
 BASELINE_DEFAULT_INTP = coproduct(BASELINE_INTP, DEFAULT_TRANS)
 
-DEFAULT_TEST_FOLD_INTP = {
+DEFAULT_TEST_REDUCE_INTP = {
     "jax": JAX_INTP,
     "jax_no_d": JAX_NO_D_INTP,
     "baseline_no_d": BASELINE_NO_D_INTP,

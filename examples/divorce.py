@@ -7,12 +7,12 @@ from effectful.handlers.numpyro import Normal
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn
 
-from weighted.handlers.jax import GradientOptimizationFold, log_prob, reals, sample
-from weighted.handlers.jax import interpretation as jax_fold
+from weighted.handlers.jax import GradientOptimizationReduce, reals
+from weighted.handlers.jax import interpretation as jax_reduce
 from weighted.handlers.optimization.distribution import (
     interpretation as simplify_normals,
 )
-from weighted.ops.fold import defop
+from weighted.ops.reduce import defop
 from weighted.ops.sugar import ArgMin
 
 
@@ -53,13 +53,13 @@ def main():
     def get_distribution(marriage=None, age=None):
         # now, we can define our distribution
         d_a = Normal(mu_a(), sigma_a())
-        mean = sample(key, d_a, (1,))
+        mean = d_a.sample(key)
         if marriage is not None:
             d_marriage = Normal(mu_marriage(), sigma_marriage())
-            mean += marriage * sample(key, d_marriage, (1,))
+            mean += marriage * d_marriage.sample(key)
         if age is not None:
             d_age = Normal(mu_age(), sigma_age())
-            mean += age * sample(key, d_age, (1,))
+            mean += age * d_age.sample(key)
         return Normal(mean, sigma_divorce())
 
     # create a free term for the negative log-likelihood
@@ -68,7 +68,7 @@ def main():
         age=jax_getitem(entry(), (1,)),
     )
     divorce = jax_getitem(entry(), (0,))
-    nll = -jnp.mean(log_prob(d, divorce))
+    nll = -jnp.mean(d.log_prob(divorce))
 
     # let the program transforms do their magic
     with handler(simplify_normals), handler({entry: deffn(dset)}):
@@ -78,10 +78,10 @@ def main():
     param_streams = {v: reals() for v in params}
     params_initialization = {v: jnp.array(1.0) for v in params}
     param_terms = tuple(p() for p in params)
-    grad_intp = GradientOptimizationFold(
+    grad_intp = GradientOptimizationReduce(
         learning_rate=0.1, steps=1000, init=params_initialization
     )
-    with handler(grad_intp), handler(jax_fold):
+    with handler(grad_intp), handler(jax_reduce):
         opt_nll, posterior_values = ArgMin(param_streams, (nll, param_terms))
 
     # Finally, let's make a plot of our posterior
