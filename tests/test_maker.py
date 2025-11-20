@@ -262,8 +262,9 @@ class FirstToAheadMoveSelector:
         while True:
             # submit a batch of votes
             for vote in futures.as_completed(
-                Executor.submit(agent.get_vote) for agent in self.agents
+                [Executor.submit(agent.get_vote) for agent in self.agents]
             ):
+                vote = vote.result()
                 self.votes[vote] += 1
                 max_other_votes = max(
                     (self.votes[o_vote] for o_vote in self.votes if o_vote != vote),
