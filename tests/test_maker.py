@@ -218,9 +218,7 @@ class MicroAgent:
         pattern = r"<step>\s*(\d+)\s*,\s*(\d+)\s*</step>"
         m = re.search(pattern, response)
         if not m:
-            raise ValueError(
-                f"No valid <step>start,end</step> tag found in: {response!r}"
-            )
+            return None
         return Step(int(m.group(1)), int(m.group(2)))
 
     def has_no_red_flags(self, response: str) -> Step | None:
