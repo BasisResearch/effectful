@@ -2,6 +2,7 @@ import itertools
 import logging
 import random
 import re
+import sys
 from collections import Counter
 from typing import Optional
 
@@ -15,7 +16,7 @@ from effectful.handlers.llm.providers import LLMLoggingHandler, OpenAIAPIProvide
 from effectful.ops.semantics import handler
 
 
-@dataclass
+@dataclass(frozen=True)
 class Step:
     start: int
     end: int
@@ -267,7 +268,8 @@ class FirstToAheadMoveSelector:
             ):
                 self.votes[vote] += 1
                 max_other_votes = max(
-                    self.votes[o_vote] for o_vote in self.votes if o_vote != vote
+                    (self.votes[o_vote] for o_vote in self.votes if o_vote != vote),
+                    default=0,
                 )
                 if self.votes[vote] >= max_other_votes + self.k:
                     return vote
@@ -303,11 +305,15 @@ def solve_hanoi(state: GameState):
         state.visualise()
 
 
-logging.basicConfig()
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 with (
-    handler(ThreadPoolFuturesInterpretation(max_workers=3)),
-    handler(LLMLoggingHandler()),
+    handler(ThreadPoolFuturesInterpretation()),
     handler(OpenAIAPIProvider(OpenAI())),
+    handler(LLMLoggingHandler()),
 ):
     solve_hanoi(state=GameState.new(3))
