@@ -861,10 +861,11 @@ def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
     :param value: The value to convert.
     :returns: A term.
     """
-    if isinstance(value, Term):
-        return value
-    else:
-        return __dispatch(type(value))(value)
+    from effectful.ops.semantics import evaluate
+
+    warnings.warn("defterm is replaced by evaluate", DeprecationWarning)
+
+    return evaluate(value)
 
 
 @_CustomSingleDispatchCallable
@@ -985,15 +986,6 @@ def defdata[T](
         result = op(*args_, **kwargs_)
 
     return _unpack(result, cast)
-
-
-@defterm.register(object)
-@defterm.register(Operation)
-@defterm.register(Term)
-@defterm.register(type)
-@defterm.register(types.BuiltinFunctionType)
-def _[T](value: T) -> T:
-    return value
 
 
 @defdata.register(object)
