@@ -302,6 +302,8 @@ def solve_hanoi(state: GameState):
 
         state = state.apply(step)
         state.visualise()
+        if state.is_done():
+            break
 
 
 logging.basicConfig(
