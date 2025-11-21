@@ -374,6 +374,9 @@ def test_array_eq():
     y = jnp.array([1, 2, 3])
     assert syntactic_eq(x + y, x + y)
 
+    z = jnp.array([1, 2, 3, 4])
+    assert not syntactic_eq(x + y, x + z)
+
 
 def test_jax_rotation():
     import jax.scipy.spatial.transform

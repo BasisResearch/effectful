@@ -281,7 +281,9 @@ def _indexed_func_wrapper[**P, S, T](
 
 
 @syntactic_eq.register
-def _(x: jax.typing.ArrayLike, other) -> bool:
-    return isinstance(other, jax.typing.ArrayLike) and bool(  # type: ignore[arg-type]
-        (jnp.asarray(x) == jnp.asarray(other)).all()
+def _(x: jax.Array, other) -> bool:
+    return (
+        isinstance(other, jax.Array)
+        and x.shape == other.shape
+        and bool((jnp.asarray(x) == jnp.asarray(other)).all())
     )
