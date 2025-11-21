@@ -12,6 +12,7 @@ except ImportError:
 
 import tree
 
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
@@ -74,7 +75,7 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     def _apply(op, *args, **kwargs):
         return defdata(op, *args, **kwargs)
 
-    with handler({jax_getitem: _getitem_sizeof, apply: _apply}):
+    with interpreter({jax_getitem: _getitem_sizeof, apply: _apply}):
         evaluate(value)
 
     return sizes
