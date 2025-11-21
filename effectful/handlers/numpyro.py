@@ -13,8 +13,8 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import typeof
-from effectful.ops.syntax import defdata, defop, defterm
+from effectful.ops.semantics import apply, evaluate, runner, typeof
+from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -87,7 +87,7 @@ def _unbind_distribution(
         else:
             return a
 
-    d = defterm(d)
+    d = evaluate(d)
 
     # FIXME: This assumes that the only operations that return distributions are
     # distribution constructors.
@@ -127,7 +127,7 @@ def _bind_dims_distribution(
         else:
             return a
 
-    d = defterm(d)
+    d = evaluate(d)
 
     # FIXME: This assumes that the only operations that return distributions are
     # distribution constructors.
@@ -401,7 +401,7 @@ class CauchyTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.Cauchy)
+@evaluate.register(dist.Cauchy)
 def _embed_cauchy(d: dist.Cauchy) -> Term[dist.Cauchy]:
     return Cauchy(d.loc, d.scale)
 
@@ -419,7 +419,7 @@ class GumbelTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.Gumbel)
+@evaluate.register(dist.Gumbel)
 def _embed_gumbel(d: dist.Gumbel) -> Term[dist.Gumbel]:
     return Gumbel(d.loc, d.scale)
 
@@ -437,7 +437,7 @@ class LaplaceTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.Laplace)
+@evaluate.register(dist.Laplace)
 def _embed_laplace(d: dist.Laplace) -> Term[dist.Laplace]:
     return Laplace(d.loc, d.scale)
 
@@ -455,7 +455,7 @@ class LogNormalTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.LogNormal)
+@evaluate.register(dist.LogNormal)
 def _embed_lognormal(d: dist.LogNormal) -> Term[dist.LogNormal]:
     return LogNormal(d.loc, d.scale)
 
@@ -473,7 +473,7 @@ class LogisticTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.Logistic)
+@evaluate.register(dist.Logistic)
 def _embed_logistic(d: dist.Logistic) -> Term[dist.Logistic]:
     return Logistic(d.loc, d.scale)
 
@@ -491,7 +491,7 @@ class NormalTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.Normal)
+@evaluate.register(dist.Normal)
 def _embed_normal(d: dist.Normal) -> Term[dist.Normal]:
     return Normal(d.loc, d.scale)
 
@@ -509,7 +509,7 @@ class StudentTTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.StudentT)
+@evaluate.register(dist.StudentT)
 def _embed_studentt(d: dist.StudentT) -> Term[dist.StudentT]:
     return StudentT(d.loc, d.scale)
 
@@ -526,7 +526,7 @@ class BernoulliProbsTerm(_DistributionTerm):
         self.probs = probs
 
 
-@defterm.register(dist.BernoulliProbs)
+@evaluate.register(dist.BernoulliProbs)
 def _embed_bernoulliprobs(d: dist.BernoulliProbs) -> Term[dist.BernoulliProbs]:
     return BernoulliProbs(d.probs)
 
@@ -543,7 +543,7 @@ class CategoricalProbsTerm(_DistributionTerm):
         self.probs = probs
 
 
-@defterm.register(dist.CategoricalProbs)
+@evaluate.register(dist.CategoricalProbs)
 def _embed_categoricalprobs(d: dist.CategoricalProbs) -> Term[dist.CategoricalProbs]:
     return CategoricalProbs(d.probs)
 
@@ -560,7 +560,7 @@ class GeometricProbsTerm(_DistributionTerm):
         self.probs = probs
 
 
-@defterm.register(dist.GeometricProbs)
+@evaluate.register(dist.GeometricProbs)
 def _embed_geometricprobs(d: dist.GeometricProbs) -> Term[dist.GeometricProbs]:
     return GeometricProbs(d.probs)
 
@@ -577,7 +577,7 @@ class BernoulliLogitsTerm(_DistributionTerm):
         self.logits = logits
 
 
-@defterm.register(dist.BernoulliLogits)
+@evaluate.register(dist.BernoulliLogits)
 def _embed_bernoullilogits(d: dist.BernoulliLogits) -> Term[dist.BernoulliLogits]:
     return BernoulliLogits(d.logits)
 
@@ -594,7 +594,7 @@ class CategoricalLogitsTerm(_DistributionTerm):
         self.logits = logits
 
 
-@defterm.register(dist.CategoricalLogits)
+@evaluate.register(dist.CategoricalLogits)
 def _embed_categoricallogits(d: dist.CategoricalLogits) -> Term[dist.CategoricalLogits]:
     return CategoricalLogits(d.logits)
 
@@ -611,7 +611,7 @@ class GeometricLogitsTerm(_DistributionTerm):
         self.logits = logits
 
 
-@defterm.register(dist.GeometricLogits)
+@evaluate.register(dist.GeometricLogits)
 def _embed_geometriclogits(d: dist.GeometricLogits) -> Term[dist.GeometricLogits]:
     return GeometricLogits(d.logits)
 
@@ -629,7 +629,7 @@ class BetaTerm(_DistributionTerm):
         self.concentration0 = concentration0
 
 
-@defterm.register(dist.Beta)
+@evaluate.register(dist.Beta)
 def _embed_beta(d: dist.Beta) -> Term[dist.Beta]:
     return Beta(d.concentration1, d.concentration0)
 
@@ -647,7 +647,7 @@ class KumaraswamyTerm(_DistributionTerm):
         self.concentration0 = concentration0
 
 
-@defterm.register(dist.Kumaraswamy)
+@evaluate.register(dist.Kumaraswamy)
 def _embed_kumaraswamy(d: dist.Kumaraswamy) -> Term[dist.Kumaraswamy]:
     return Kumaraswamy(d.concentration1, d.concentration0)
 
@@ -665,7 +665,7 @@ class BinomialProbsTerm(_DistributionTerm):
         self.total_count = total_count
 
 
-@defterm.register(dist.BinomialProbs)
+@evaluate.register(dist.BinomialProbs)
 def _embed_binomialprobs(d: dist.BinomialProbs) -> Term[dist.BinomialProbs]:
     return BinomialProbs(d.probs, d.total_count)
 
@@ -683,7 +683,7 @@ class NegativeBinomialProbsTerm(_DistributionTerm):
         self.probs = probs
 
 
-@defterm.register(dist.NegativeBinomialProbs)
+@evaluate.register(dist.NegativeBinomialProbs)
 def _embed_negativebinomialprobs(
     d: dist.NegativeBinomialProbs,
 ) -> Term[dist.NegativeBinomialProbs]:
@@ -703,7 +703,7 @@ class MultinomialProbsTerm(_DistributionTerm):
         self.total_count = total_count
 
 
-@defterm.register(dist.MultinomialProbs)
+@evaluate.register(dist.MultinomialProbs)
 def _embed_multinomialprobs(d: dist.MultinomialProbs) -> Term[dist.MultinomialProbs]:
     return MultinomialProbs(d.probs, d.total_count)
 
@@ -721,7 +721,7 @@ class BinomialLogitsTerm(_DistributionTerm):
         self.total_count = total_count
 
 
-@defterm.register(dist.BinomialLogits)
+@evaluate.register(dist.BinomialLogits)
 def _embed_binomiallogits(d: dist.BinomialLogits) -> Term[dist.BinomialLogits]:
     return BinomialLogits(d.logits, d.total_count)
 
@@ -741,7 +741,7 @@ class NegativeBinomialLogitsTerm(_DistributionTerm):
         self.logits = logits
 
 
-@defterm.register(dist.NegativeBinomialLogits)
+@evaluate.register(dist.NegativeBinomialLogits)
 def _embed_negativebinomiallogits(
     d: dist.NegativeBinomialLogits,
 ) -> Term[dist.NegativeBinomialLogits]:
@@ -761,7 +761,7 @@ class MultinomialLogitsTerm(_DistributionTerm):
         self.total_count = total_count
 
 
-@defterm.register(dist.MultinomialLogits)
+@evaluate.register(dist.MultinomialLogits)
 def _embed_multinomiallogits(d: dist.MultinomialLogits) -> Term[dist.MultinomialLogits]:
     return MultinomialLogits(d.logits, d.total_count)
 
@@ -778,7 +778,7 @@ class Chi2Term(_DistributionTerm):
         self.df = df
 
 
-@defterm.register(dist.Chi2)
+@evaluate.register(dist.Chi2)
 def _embed_chi2(d: dist.Chi2) -> Term[dist.Chi2]:
     return Chi2(d.df)
 
@@ -795,7 +795,7 @@ class DirichletTerm(_DistributionTerm):
         self.concentration = concentration
 
 
-@defterm.register(dist.Dirichlet)
+@evaluate.register(dist.Dirichlet)
 def _embed_dirichlet(d: dist.Dirichlet) -> Term[dist.Dirichlet]:
     return Dirichlet(d.concentration)
 
@@ -817,7 +817,7 @@ class DirichletMultinomialTerm(_DistributionTerm):
         self.total_count = total_count
 
 
-@defterm.register(dist.DirichletMultinomial)
+@evaluate.register(dist.DirichletMultinomial)
 def _embed_dirichletmultinomial(
     d: dist.DirichletMultinomial,
 ) -> Term[dist.DirichletMultinomial]:
@@ -836,7 +836,7 @@ class ExponentialTerm(_DistributionTerm):
         self.rate = rate
 
 
-@defterm.register(dist.Exponential)
+@evaluate.register(dist.Exponential)
 def _embed_exponential(d: dist.Exponential) -> Term[dist.Exponential]:
     return Exponential(d.rate)
 
@@ -853,7 +853,7 @@ class PoissonTerm(_DistributionTerm):
         self.rate = rate
 
 
-@defterm.register(dist.Poisson)
+@evaluate.register(dist.Poisson)
 def _embed_poisson(d: dist.Poisson) -> Term[dist.Poisson]:
     return Poisson(d.rate)
 
@@ -871,7 +871,7 @@ class GammaTerm(_DistributionTerm):
         self.rate = rate
 
 
-@defterm.register(dist.Gamma)
+@evaluate.register(dist.Gamma)
 def _embed_gamma(d: dist.Gamma) -> Term[dist.Gamma]:
     return Gamma(d.concentration, d.rate)
 
@@ -888,7 +888,7 @@ class HalfCauchyTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.HalfCauchy)
+@evaluate.register(dist.HalfCauchy)
 def _embed_halfcauchy(d: dist.HalfCauchy) -> Term[dist.HalfCauchy]:
     return HalfCauchy(d.scale)
 
@@ -905,7 +905,7 @@ class HalfNormalTerm(_DistributionTerm):
         self.scale = scale
 
 
-@defterm.register(dist.HalfNormal)
+@evaluate.register(dist.HalfNormal)
 def _embed_halfnormal(d: dist.HalfNormal) -> Term[dist.HalfNormal]:
     return HalfNormal(d.scale)
 
@@ -923,7 +923,7 @@ class LKJCholeskyTerm(_DistributionTerm):
         self.concentration = concentration
 
 
-@defterm.register(dist.LKJCholesky)
+@evaluate.register(dist.LKJCholesky)
 def _embed_lkjcholesky(d: dist.LKJCholesky) -> Term[dist.LKJCholesky]:
     return LKJCholesky(d.dim, d.concentration)
 
@@ -941,7 +941,7 @@ class MultivariateNormalTerm(_DistributionTerm):
         self.scale_tril = scale_tril
 
 
-@defterm.register(dist.MultivariateNormal)
+@evaluate.register(dist.MultivariateNormal)
 def _embed_multivariatenormal(
     d: dist.MultivariateNormal,
 ) -> Term[dist.MultivariateNormal]:
@@ -961,7 +961,7 @@ class ParetoTerm(_DistributionTerm):
         self.alpha = alpha
 
 
-@defterm.register(dist.Pareto)
+@evaluate.register(dist.Pareto)
 def _embed_pareto(d: dist.Pareto) -> Term[dist.Pareto]:
     return Pareto(d.scale, d.alpha)
 
@@ -979,7 +979,7 @@ class UniformTerm(_DistributionTerm):
         self.high = high
 
 
-@defterm.register(dist.Uniform)
+@evaluate.register(dist.Uniform)
 def _embed_uniform(d: dist.Uniform) -> Term[dist.Uniform]:
     return Uniform(d.low, d.high)
 
@@ -997,7 +997,7 @@ class VonMisesTerm(_DistributionTerm):
         self.concentration = concentration
 
 
-@defterm.register(dist.VonMises)
+@evaluate.register(dist.VonMises)
 def _embed_vonmises(d: dist.VonMises) -> Term[dist.VonMises]:
     return VonMises(d.loc, d.concentration)
 
@@ -1015,7 +1015,7 @@ class WeibullTerm(_DistributionTerm):
         self.concentration = concentration
 
 
-@defterm.register(dist.Weibull)
+@evaluate.register(dist.Weibull)
 def _embed_weibull(d: dist.Weibull) -> Term[dist.Weibull]:
     return Weibull(d.scale, d.concentration)
 
@@ -1033,7 +1033,7 @@ class WishartTerm(_DistributionTerm):
         self.scale_tril = scale_tril
 
 
-@defterm.register(dist.Wishart)
+@evaluate.register(dist.Wishart)
 def _embed_wishart(d: dist.Wishart) -> Term[dist.Wishart]:
     return Wishart(d.df, d.scale_tril)
 
@@ -1052,7 +1052,7 @@ class DeltaTerm(_DistributionTerm):
         self.event_dim = event_dim
 
 
-@defterm.register(dist.Delta)
+@evaluate.register(dist.Delta)
 def _embed_delta(d: dist.Delta) -> Term[dist.Delta]:
     return Delta(d.v, d.log_density, d.event_dim)
 
@@ -1075,7 +1075,7 @@ class LowRankMultivariateNormalTerm(_DistributionTerm):
         self.cov_diag = cov_diag
 
 
-@defterm.register(dist.LowRankMultivariateNormal)
+@evaluate.register(dist.LowRankMultivariateNormal)
 def _embed_lowrankmultivariatenormal(
     d: dist.LowRankMultivariateNormal,
 ) -> Term[dist.LowRankMultivariateNormal]:
@@ -1097,7 +1097,7 @@ class RelaxedBernoulliLogitsTerm(_DistributionTerm):
         self.logits = logits
 
 
-@defterm.register(dist.RelaxedBernoulliLogits)
+@evaluate.register(dist.RelaxedBernoulliLogits)
 def _embed_relaxedbernoullilogits(
     d: dist.RelaxedBernoulliLogits,
 ) -> Term[dist.RelaxedBernoulliLogits]:
@@ -1119,6 +1119,6 @@ class IndependentTerm(_DistributionTerm):
         self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
 
 
-@defterm.register(dist.Independent)
+@evaluate.register(dist.Independent)
 def _embed_independent(d: dist.Independent) -> Term[dist.Independent]:
     return Independent(d.base_dist, d.reinterpreted_batch_ndims)
