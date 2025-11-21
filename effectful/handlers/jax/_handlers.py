@@ -13,7 +13,7 @@ except ImportError:
 import tree
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
