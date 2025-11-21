@@ -612,7 +612,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return substitute(return_anno, unify(self.__signature__, bound_sig))  # type: ignore
 
     def __repr__(self):
-        return f"_BaseOperation({self._default}, name={self.__name__}, freshening={self._freshening})"
+        return f"{type(self).__name__}({self._default}, name={self.__name__}, freshening={self._freshening})"
 
     def __str__(self):
         return self.__name__
