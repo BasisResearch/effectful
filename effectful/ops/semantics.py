@@ -360,14 +360,16 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
     """
     from effectful.internals.runtime import interpreter
+    from effectful.internals.unification import Box
 
-    with interpreter({apply: lambda op, *a, **k: op.__type_rule__(*a, **k)}):
-        if isinstance(term, Term):
-            # If term is a Term, we evaluate it to get its type
-            tp = evaluate(term)
-            return _simple_type(typing.cast(type, tp))
-        else:
-            return type(term)
+    def _apply(op, *args, **kwargs):
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    with interpreter({apply: _apply}):
+        type_or_value = evaluate(term)
+        if isinstance(type_or_value, Box):
+            return _simple_type(type_or_value.value)
+        return typing.cast(type[T], type(type_or_value))
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
