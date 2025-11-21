@@ -13,7 +13,7 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import apply, evaluate, runner, typeof
+from effectful.ops.semantics import evaluate, typeof
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
 
