@@ -497,21 +497,22 @@ def _embed_normal(d: dist.Normal) -> Term[dist.Normal]:
 
 
 @defop
-def StudentT(loc=0.0, scale=1.0, **kwargs) -> dist.StudentT:
+def StudentT(df, loc=0.0, scale=1.0, **kwargs) -> dist.StudentT:
     raise NotHandled
 
 
 @defdata.register(dist.StudentT)
 class StudentTTerm(_DistributionTerm):
-    def __init__(self, op, loc, scale, **kwargs):
-        super().__init__(dist.StudentT, op, loc, scale, **kwargs)
+    def __init__(self, op, df, loc, scale, **kwargs):
+        super().__init__(dist.StudentT, op, df, loc, scale, **kwargs)
+        self.df = df
         self.loc = loc
         self.scale = scale
 
 
 @evaluate.register(dist.StudentT)
 def _embed_studentt(d: dist.StudentT) -> Term[dist.StudentT]:
-    return StudentT(d.loc, d.scale)
+    return StudentT(d.df, d.loc, d.scale)
 
 
 @defop
@@ -929,15 +930,29 @@ def _embed_lkjcholesky(d: dist.LKJCholesky) -> Term[dist.LKJCholesky]:
 
 
 @defop
-def MultivariateNormal(scale_tril, loc=0.0, **kwargs) -> dist.MultivariateNormal:
+def MultivariateNormal(
+    loc=0.0, covariance_matrix=None, precision_matrix=None, scale_tril=None, **kwargs
+) -> dist.MultivariateNormal:
     raise NotHandled
 
 
 @defdata.register(dist.MultivariateNormal)
 class MultivariateNormalTerm(_DistributionTerm):
-    def __init__(self, op, loc, scale_tril, **kwargs):
-        super().__init__(dist.MultivariateNormal, op, loc, scale_tril, **kwargs)
+    def __init__(
+        self, op, loc, covariance_matrix, precision_matrix, scale_tril, **kwargs
+    ):
+        super().__init__(
+            dist.MultivariateNormal,
+            op,
+            loc,
+            covariance_matrix,
+            precision_matrix,
+            scale_tril,
+            **kwargs,
+        )
         self.loc = loc
+        self.covariance_matrix = covariance_matrix
+        self.precision_matrix = precision_matrix
         self.scale_tril = scale_tril
 
 
@@ -945,7 +960,9 @@ class MultivariateNormalTerm(_DistributionTerm):
 def _embed_multivariatenormal(
     d: dist.MultivariateNormal,
 ) -> Term[dist.MultivariateNormal]:
-    return MultivariateNormal(d.loc, d.scale_tril)
+    return MultivariateNormal(
+        d.loc, d.covariance_matrix, d.precision_matrix, d.scale_tril
+    )
 
 
 @defop
@@ -1049,7 +1066,6 @@ class DeltaTerm(_DistributionTerm):
         super().__init__(dist.Delta, op, v, log_density, event_dim, **kwargs)
         self.v = v
         self.log_density = log_density
-        self.event_dim = event_dim
 
 
 @evaluate.register(dist.Delta)
