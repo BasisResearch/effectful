@@ -617,13 +617,36 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
     def __str__(self):
         return self.__name__
 
+    @property
+    def __isabstractmethod__(self) -> bool:
+        return getattr(self._default, "__isabstractmethod__", False)
+
+    def __set_name__[T](self, owner: type[T], name: str) -> None:
+        assert not hasattr(self, "_name_on_instance"), "should only be called once"
+        self._name_on_instance = f"__instanceop_{name}"
+
+        if issubclass(owner, Term):
+            return None
+
+        @functools.cached_property  # type: ignore
+        def _instanceop(__instance: T):
+            from effectful.ops.semantics import fvsof
+
+            if isinstance(__instance, Term) or fvsof(__instance):
+                return types.MethodType(self, __instance)
+            else:
+                return defop(types.MethodType(self, __instance))
+
+        assert isinstance(_instanceop, functools.cached_property)
+        _instanceop.__set_name__(owner, self._name_on_instance)
+        setattr(owner, self._name_on_instance, _instanceop)
+
     def __get__(self, instance, owner):
-        if instance is not None:
-            # This is an instance-level operation, so we need to bind the instance
-            return functools.partial(self, instance)
-        else:
-            # This is a static operation, so we return the operation itself
-            return self
+        return getattr(
+            instance,
+            self._name_on_instance,
+            self if instance is None else types.MethodType(self, instance),
+        )
 
 
 @defop.register(Operation)
@@ -672,20 +695,29 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
+class _ClassMethodOpDescriptor(classmethod):
+    def __set_name__(self, owner, name):
+        assert not hasattr(self, "_name_on_owner"), "should only be called once"
+        self._name_on_owner = f"_descriptorop_{name}"
+
+    def __get__(self, instance, owner: type | None = None):
+        owner = owner if owner is not None else type(instance)
+        try:
+            return owner.__dict__[self._name_on_owner]
+        except KeyError:
+            bound_op = defop(super().__get__(instance, owner))
+            setattr(owner, self._name_on_owner, bound_op)
+            return bound_op
+
+
 @defop.register(classmethod)
-def _[**P, S, T](  # type: ignore
-    t: classmethod, *, name: str | None = None
-) -> Operation[Concatenate[type[S], P], T]:
-    raise NotImplementedError("classmethod operations are not yet supported")
+def _[**P, S, T](t: "classmethod[S, P, T]", **kwargs):  # type: ignore
+    return _ClassMethodOpDescriptor(t.__func__)
 
 
 @defop.register(staticmethod)
-class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
-    def __init__(self, default: staticmethod, **kwargs):
-        super().__init__(default=default.__func__, **kwargs)
-
-    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]:
-        return self
+def _[**P, T](t: "staticmethod[P, T]", **kwargs):
+    return staticmethod(defop(t.__func__, **kwargs))
 
 
 @defop.register(property)
@@ -715,37 +747,20 @@ class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P]
     _default: Callable[Concatenate[S, P], T]
 
     def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
-        if isinstance(default.func, classmethod):
-            raise NotImplementedError("Operations as classmethod are not yet supported")
-
         @functools.wraps(default.func)
         def _wrapper(obj: S, *args: P.args, **kwargs: P.kwargs) -> T:
-            return default.__get__(obj)(*args, **kwargs)
+            return default.__get__(obj, type(obj))(*args, **kwargs)
 
-        self._registry: functools.singledispatchmethod = default
+        self._descriptor: functools.singledispatchmethod = default
         super().__init__(_wrapper, **kwargs)
-
-    @typing.overload
-    def __get__(
-        self, instance: None, owner: type[S] | None = None
-    ) -> "_SingleDispatchMethodOperation[P, S, T]": ...
-
-    @typing.overload
-    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]: ...
-
-    def __get__(self, instance, owner: type[S] | None = None):
-        if instance is not None:
-            return functools.partial(self, instance)
-        else:
-            return self
 
     @property
     def register(self):
-        return self._registry.register
+        return self._descriptor.register
 
     @property
     def __isabstractmethod__(self):
-        return self._registry.__isabstractmethod__
+        return self._descriptor.__isabstractmethod__
 
 
 class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
