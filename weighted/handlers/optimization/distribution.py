@@ -3,10 +3,9 @@ import functools
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import coproduct, fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import ObjectInterpretation, implements, syntactic_eq
 from effectful.ops.types import Term
 
-from weighted.handlers.jax import syntactic_eq_jax
 from weighted.ops.distribution import kl_divergence
 
 """
@@ -75,7 +74,7 @@ class SampleAddNormalFusion(ObjectInterpretation):
                     dist._DistributionTerm.sample,
                     (Term(dist.Normal, (loc2, scale2)), key2, shape2),
                 ),
-            ) if syntactic_eq_jax(shape1, shape2) and syntactic_eq_jax(key1, key2):
+            ) if syntactic_eq(shape1, shape2) and syntactic_eq(key1, key2):
                 new_d = dist.Normal(loc1 + loc2, jnp.sqrt(scale1**2 + scale2**2))
                 return new_d.sample(key1, shape1)
         return fwd()

@@ -9,7 +9,7 @@ from jax.numpy import allclose
 from pytest import mark, param
 
 from tests.utils import REDUCE_TRANSFORMS
-from weighted.handlers.jax import DenseTensorReduce, syntactic_eq_jax
+from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import ReducePropagateUnusedStreams
 from weighted.handlers.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
@@ -147,7 +147,7 @@ def test_normal_constant_mul():
         expr = 2.0 * d1.sample(key, (1,))
 
     expected = dist.Normal(2.0 * mu(), jnp.abs(2.0) * sigma()).sample(key, (1,))
-    assert syntactic_eq_jax(expr, expected)
+    assert syntactic_eq(expr, expected)
 
 
 def test_add_normal_distributions():
@@ -167,7 +167,7 @@ def test_add_normal_distributions():
     d3 = dist.Normal(mu1 + mu2, jnp.sqrt(sigma1**2 + sigma2**2))
     expected = d3.sample(key)
 
-    assert syntactic_eq_jax(expr, expected)
+    assert syntactic_eq(expr, expected)
 
 
 def test_distributional_equivalence_normal_transforms():

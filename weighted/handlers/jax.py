@@ -22,6 +22,7 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     implements,
+    syntactic_eq,
 )
 from effectful.ops.types import Expr, Operation, Term
 from numpyro.distributions import Distribution
@@ -444,39 +445,6 @@ def scan(f, init, *args, **kwargs):
     return carry, result
 
 
-def syntactic_eq_jax[T](x: Expr[T], other: Expr[T]) -> bool:
-    """Syntactic equality, ignoring the interpretation of the terms.
-
-    :param x: A term.
-    :type x: Expr[T]
-    :param other: Another term.
-    :type other: Expr[T]
-    :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
-    """
-    if isinstance(x, Term) and isinstance(other, Term):
-        op, args, kwargs = x.op, x.args, x.kwargs
-        op2, args2, kwargs2 = other.op, other.args, other.kwargs
-        try:
-            tree.assert_same_structure(
-                (op, args, kwargs), (op2, args2, kwargs2), check_types=True
-            )
-        except (TypeError, ValueError):
-            return False
-        return all(
-            tree.flatten(
-                tree.map_structure(
-                    syntactic_eq_jax, (op, args, kwargs), (op2, args2, kwargs2)
-                )
-            )
-        )
-    elif isinstance(x, Term) or isinstance(other, Term):
-        return False
-    elif isinstance(x, jax.Array):
-        return x.tolist() == other.tolist()  # type: ignore
-    else:
-        return x == other
-
-
 class ScanReduce(ObjectInterpretation):
     def __init__(self, min_length=3):
         self.min_length = min_length
@@ -525,7 +493,7 @@ class ScanReduce(ObjectInterpretation):
                 if chain_body is None:
                     chain_body = evaluate(chain[i][1])
                 else:
-                    if not syntactic_eq_jax(chain_body, evaluate(chain[i][1])):
+                    if not syntactic_eq(chain_body, evaluate(chain[i][1])):
                         return fwd()
 
         dummy_idx = defop(jax.Array, name="k")

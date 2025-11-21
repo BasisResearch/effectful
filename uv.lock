@@ -416,7 +416,7 @@ wheels = [
 [[package]]
 name = "effectful"
 version = "0.2.3"
-source = { git = "https://github.com/BasisResearch/effectful.git?rev=jf-staging-weighted#a6b8433ab5e02ab87413794297822796efdbb91c" }
+source = { git = "https://github.com/BasisResearch/effectful.git#0338fcce4a27eb50aeb6a5897ab3ca1b12c0ce9e" }
 
 [package.optional-dependencies]
 jax = [
@@ -2597,7 +2597,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "effectful", extras = ["jax", "numpyro"], git = "https://github.com/BasisResearch/effectful.git?rev=jf-staging-weighted" },
+    { name = "effectful", extras = ["jax", "numpyro"], git = "https://github.com/BasisResearch/effectful.git" },
     { name = "flax", marker = "extra == 'docs'" },
     { name = "islpy" },
     { name = "jax" },

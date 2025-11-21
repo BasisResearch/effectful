@@ -5,11 +5,16 @@ import jax
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import evaluate, fvsof, fwd
-from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    deffn,
+    defop,
+    implements,
+    syntactic_eq,
+)
 from effectful.ops.types import Term
 
 import weighted.ops.reduce as ops
-from weighted.handlers.jax import syntactic_eq_jax
 from weighted.ops.monoid import JaxCartesianProdMonoid
 from weighted.ops.reduce import order_streams
 
@@ -30,7 +35,7 @@ def unify_streams(streams1: dict, streams2: dict) -> dict | None:
     for k1, k2 in unifier.items():
         v1 = evaluate(streams1[k1], intp=unifier)  # type: ignore
         v2 = streams2[k2]
-        if k1.__name__ != k2.__name__ or not syntactic_eq_jax(v1, v2):
+        if k1.__name__ != k2.__name__ or not syntactic_eq(v1, v2):
             return None
     return unifier
 
