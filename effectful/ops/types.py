@@ -78,9 +78,7 @@ class Operation[**Q, V](abc.ABC):
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.ops.semantics import apply
-
-        return apply.__default_rule__(self, *args, **kwargs)  # type: ignore
+        return self.apply(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

@@ -934,3 +934,27 @@ def test_defdata_dataclass():
     obj = C(defop(int)())
     term = defdata(f, obj)
     assert isinstance(term.args[0], C) and isinstance(term.args[0].x, Term)
+
+
+def test_operation_subclass():
+    from effectful.ops.syntax import _BaseOperation
+
+    class TestOperation(_BaseOperation):
+        @defop
+        @classmethod
+        def apply(cls, op, *args, **kwargs):
+            return super().apply(cls, op, *args, **kwargs)
+
+    assert isinstance(TestOperation.apply, Operation)
+
+    @TestOperation
+    def my_func(a, b):
+        return a + b
+
+    assert my_func(1, 2) == 3
+
+    def my_apply(op, a, b, **kwargs):
+        return a * b
+
+    with handler({TestOperation.apply: my_apply}):
+        assert my_func(3, 4) == 12

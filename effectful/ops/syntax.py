@@ -626,6 +626,19 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             # This is a static operation, so we return the operation itself
             return self
 
+    @classmethod
+    def apply[**Q, V](cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
+        from effectful.ops.semantics import apply
+
+        intp = get_interpretation()
+        if op in intp:
+            return intp[op](*args, **kwargs)
+        elif cls.apply in intp:
+            return intp[cls.apply](cls, op, *args, **kwargs)
+        else:
+            return apply.__default_rule__(op, *args, **kwargs)
+
 
 @defop.register(Operation)
 def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
@@ -674,10 +687,19 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
 
 
 @defop.register(classmethod)
-def _[**P, S, T](  # type: ignore
-    t: classmethod, *, name: str | None = None
-) -> Operation[Concatenate[type[S], P], T]:
-    raise NotImplementedError("classmethod operations are not yet supported")
+class _ClassMethodOperation[**P, S, T]:
+    def __init__(self, default: classmethod, **kwargs):
+        self._default = default
+        self._defop_kwargs = kwargs
+        self._operation = None
+
+    def __get__(self, instance, owner: type[S]) -> Callable[P, T]:
+        if self._operation is None:
+            func = self._default.__func__
+            self._operation = defop(
+                functools.partial(func, owner), name=func.__name__, **self._defop_kwargs
+            )
+        return self._operation
 
 
 @defop.register(staticmethod)
