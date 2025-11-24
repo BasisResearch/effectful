@@ -941,7 +941,12 @@ def test_operation_subclass():
     class TestOperation(_BaseOperation):
         pass
 
+    class OtherOperation(_BaseOperation):
+        pass
+
     assert isinstance(TestOperation.apply, Operation)
+    assert isinstance(OtherOperation.apply, Operation)
+    assert TestOperation.apply != OtherOperation.apply
 
     @TestOperation
     def my_func(a, b):
@@ -954,10 +959,13 @@ def test_operation_subclass():
         assert op is my_func
         return "<apply handler>"
 
-    def _test_operation_apply(cls, op, a, b, **kwargs):
+    def _test_operation_apply(cls, op, a, b):
         assert cls is TestOperation
         assert op is my_func
         return "<TestOperation.apply handler>"
+
+    def _other_operation_apply(cls, op, a, b):
+        return "<OtherOperation.apply handler>"
 
     assert my_func(1, 2) == "<default handler>"
 
@@ -968,6 +976,9 @@ def test_operation_subclass():
     # Handling the class apply works
     with handler({TestOperation.apply: _test_operation_apply}):
         assert my_func(3, 4) == "<TestOperation.apply handler>"
+
+    with handler({OtherOperation.apply: _other_operation_apply}):
+        assert my_func(3, 4) == "<default handler>"
 
     # Handling global apply works
     with handler({apply: _apply}):

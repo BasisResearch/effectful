@@ -518,15 +518,17 @@ class _ClassMethodOperation[**P, S, T]:
     def __init__(self, default, **kwargs):  # type: ignore[misc]
         self._default = default
         self._defop_kwargs = kwargs
-        self._operation = None
+        self._operation = {}
 
     def __get__(self, instance, owner: type[S]) -> Callable[P, T]:
-        if self._operation is None:
+        op = self._operation.get(owner, None)
+        if op is None:
             func = self._default.__func__
-            self._operation = defop(
+            op = defop(
                 functools.partial(func, owner), name=func.__name__, **self._defop_kwargs
             )
-        return self._operation
+            self._operation[owner] = op
+        return op
 
 
 @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))

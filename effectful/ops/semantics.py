@@ -47,7 +47,6 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
     """
     from effectful.internals.runtime import get_interpretation
-    from effectful.ops.semantics import apply
 
     intp = get_interpretation()
     if op in intp:
