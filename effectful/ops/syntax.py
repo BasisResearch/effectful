@@ -515,7 +515,7 @@ def defop[**P, T](
 
 @defop.register(classmethod)
 class _ClassMethodOperation[**P, S, T]:
-    def __init__(self, default: classmethod, **kwargs):
+    def __init__(self, default, **kwargs):  # type: ignore[misc]
         self._default = default
         self._defop_kwargs = kwargs
         self._operation = None
@@ -644,7 +644,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
 
     @defop
     @classmethod
-    def apply[**Q, V](cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
+    def apply(cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import apply
 
@@ -654,7 +654,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         elif cls.apply in intp:
             return intp[cls.apply](cls, op, *args, **kwargs)
         else:
-            return apply.__default_rule__(op, *args, **kwargs)
+            return apply.__default_rule__(op, *args, **kwargs)  # type: ignore[arg-type,return-value]
 
 
 @defop.register(Operation)

@@ -55,7 +55,7 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     elif apply in intp:
         return intp[apply](op, *args, **kwargs)
     else:
-        return op.__default_rule__(*args, **kwargs)
+        return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
 @defop
