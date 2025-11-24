@@ -78,7 +78,7 @@ class Operation[**Q, V](abc.ABC):
 
     @typing.final
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return self.apply(self, *args, **kwargs)  # type: ignore
+        return self.apply.__default_rule__(self, *args, **kwargs)  # type: ignore
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

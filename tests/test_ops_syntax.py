@@ -12,9 +12,10 @@ from typing import Annotated, ClassVar
 import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
-from effectful.ops.semantics import evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
+    _BaseOperation,
     _CustomSingleDispatchCallable,
     defdata,
     deffn,
@@ -937,24 +938,55 @@ def test_defdata_dataclass():
 
 
 def test_operation_subclass():
-    from effectful.ops.syntax import _BaseOperation
-
     class TestOperation(_BaseOperation):
-        @defop
-        @classmethod
-        def apply(cls, op, *args, **kwargs):
-            return super().apply(cls, op, *args, **kwargs)
+        pass
 
     assert isinstance(TestOperation.apply, Operation)
 
     @TestOperation
     def my_func(a, b):
-        return a + b
+        return "<default handler>"
 
-    assert my_func(1, 2) == 3
+    def _my_func(a, b):
+        return "<op handler>"
 
-    def my_apply(op, a, b, **kwargs):
-        return a * b
+    def _apply(op, a, b, **kwargs):
+        assert op is my_func
+        return "<apply handler>"
 
-    with handler({TestOperation.apply: my_apply}):
-        assert my_func(3, 4) == 12
+    def _test_operation_apply(cls, op, a, b, **kwargs):
+        assert cls is TestOperation
+        assert op is my_func
+        return "<TestOperation.apply handler>"
+
+    assert my_func(1, 2) == "<default handler>"
+
+    # Handling the operation works
+    with handler({my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the class apply works
+    with handler({TestOperation.apply: _test_operation_apply}):
+        assert my_func(3, 4) == "<TestOperation.apply handler>"
+
+    # Handling global apply works
+    with handler({apply: _apply}):
+        assert my_func(3, 4) == "<apply handler>"
+
+    # Handling the operation takes precedence over the class apply
+    with handler({TestOperation.apply: _test_operation_apply, my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the class apply takes precedence over the global apply
+    with handler({apply: _apply, TestOperation.apply: _test_operation_apply}):
+        assert my_func(3, 4) == "<TestOperation.apply handler>"
+
+    # Handling the operation takes precedence over the global apply
+    with handler({apply: _apply, my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the operation takes precedence over the class apply and the global apply
+    with handler(
+        {apply: _apply, my_func: _my_func, TestOperation.apply: _test_operation_apply}
+    ):
+        assert my_func(3, 4) == "<op handler>"

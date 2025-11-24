@@ -513,6 +513,22 @@ def defop[**P, T](
     raise NotImplementedError(f"expected type or callable, got {t}")
 
 
+@defop.register(classmethod)
+class _ClassMethodOperation[**P, S, T]:
+    def __init__(self, default: classmethod, **kwargs):
+        self._default = default
+        self._defop_kwargs = kwargs
+        self._operation = None
+
+    def __get__(self, instance, owner: type[S]) -> Callable[P, T]:
+        if self._operation is None:
+            func = self._default.__func__
+            self._operation = defop(
+                functools.partial(func, owner), name=func.__name__, **self._defop_kwargs
+            )
+        return self._operation
+
+
 @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
 class _BaseOperation[**Q, V](Operation[Q, V]):
     __signature__: inspect.Signature
@@ -626,6 +642,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
             # This is a static operation, so we return the operation itself
             return self
 
+    @defop
     @classmethod
     def apply[**Q, V](cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
@@ -684,22 +701,6 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
             raise NotHandled
 
     return defop(func, name=name)
-
-
-@defop.register(classmethod)
-class _ClassMethodOperation[**P, S, T]:
-    def __init__(self, default: classmethod, **kwargs):
-        self._default = default
-        self._defop_kwargs = kwargs
-        self._operation = None
-
-    def __get__(self, instance, owner: type[S]) -> Callable[P, T]:
-        if self._operation is None:
-            func = self._default.__func__
-            self._operation = defop(
-                functools.partial(func, owner), name=func.__name__, **self._defop_kwargs
-            )
-        return self._operation
 
 
 @defop.register(staticmethod)
