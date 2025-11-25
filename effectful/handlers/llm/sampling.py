@@ -56,14 +56,14 @@ class ReducedKAheadSampler[**P, T, K](ObjectInterpretation):
     """Number of votes ahead before an answer is accepted"""
 
     votes: Counter[K] = Counter()
-    results: dict[K, set[T]] = defaultdict(set)
+    results: dict[K, list[T]] = defaultdict(list)
     reducer: Callable[[T], K]
-    select_best: Callable[[set[T]], T]
+    select_best: Callable[[list[T]], T]
 
     def __init__(
         self,
         reducer: Callable[[T], K],
-        select_best: Callable[[set[T]], T] = lambda s: next(iter(s)),
+        select_best: Callable[[list[T]], T] = lambda s: next(iter(s)),
         no_voters: int = 6,
         k: int = 3,
     ):
@@ -97,7 +97,7 @@ class ReducedKAheadSampler[**P, T, K](ObjectInterpretation):
                 res = fut.result()
                 vote = self.reducer(res)
                 self.votes[vote] += 1
-                self.results[vote].add(res)
+                self.results[vote].append(res)
                 tasks.append(executor.submit(interpreter(intp)(fwd), *args, **kwargs))
         executor.shutdown()
         vote = self.votes.most_common(1)[0][0]
