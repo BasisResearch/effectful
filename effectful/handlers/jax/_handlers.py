@@ -12,7 +12,8 @@ except ImportError:
 
 import tree
 
-from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
+from effectful.internals.runtime import interpreter
+from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
@@ -74,7 +75,7 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     def _apply(op, *args, **kwargs):
         return defdata(op, *args, **kwargs)
 
-    with handler({jax_getitem: _getitem_sizeof, apply: _apply}):
+    with interpreter({jax_getitem: _getitem_sizeof, apply: _apply}):
         evaluate(value)
 
     return sizes
@@ -281,7 +282,9 @@ def _indexed_func_wrapper[**P, S, T](
 
 
 @syntactic_eq.register
-def _(x: jax.typing.ArrayLike, other) -> bool:
-    return isinstance(other, jax.typing.ArrayLike) and bool(  # type: ignore[arg-type]
-        (jnp.asarray(x) == jnp.asarray(other)).all()
+def _(x: jax.Array, other) -> bool:
+    return (
+        isinstance(other, jax.Array)
+        and x.shape == other.shape
+        and bool((jnp.asarray(x) == jnp.asarray(other)).all())
     )
