@@ -1,11 +1,12 @@
 from collections import Counter
 from concurrent import futures
 from concurrent.futures.thread import ThreadPoolExecutor
+from typing import Callable, Sequence
 
 from effectful.handlers.llm import Template
 from effectful.internals.runtime import get_interpretation, interpreter
-from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.semantics import fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
 class KAheadSampler[**P, T](ObjectInterpretation):
@@ -45,3 +46,22 @@ class KAheadSampler[**P, T](ObjectInterpretation):
                 tasks.append(executor.submit(interpreter(intp)(fwd), *args, **kwargs))
         executor.shutdown()
         return self.votes.most_common(1)[0][0]
+
+
+def sample[**P, T](template: Template[P, T], n: int) -> Callable[P, Sequence[T]]:
+    @defop
+    def in_nested_call() -> bool:
+        return False
+
+    def _template_call(template, *args, **kwargs):
+        if in_nested_call():
+            return fwd()
+
+        with handler({in_nested_call: lambda: True}):
+            with ThreadPoolExecutor() as executor:
+                intp = get_interpretation()
+                tasks = [executor.submit(interpreter(intp)(fwd)) for _ in range(n)]
+                completed = futures.wait(tasks, return_when=futures.ALL_COMPLETED)
+                return [t.result() for t in completed.done]
+
+    return handler({Template.__call__: _template_call})(template)
