@@ -1,5 +1,4 @@
 from collections import Counter
-from collections.abc import Callable, Sequence
 from concurrent import futures
 from concurrent.futures.thread import ThreadPoolExecutor
 
