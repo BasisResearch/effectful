@@ -51,16 +51,14 @@ class Agent:
             setattr(cls, method_name, wrapper)
 
     def _format_model_input(self, template, other, *args, **kwargs):
-        with handler({Agent.current_agent: lambda: None}):
-            prompt = fwd()
+        prompt = fwd()
         if Agent.current_agent() is self:
             assert self is other
             prompt = self.state + prompt
         return prompt
 
     def _compute_response(self, *args, **kwargs):
-        with handler({Agent.current_agent: lambda: None}):
-            response = fwd()
+        response = fwd()
         if Agent.current_agent() is self:
             self.state += response.output
         return response
