@@ -1,7 +1,7 @@
 from collections import Counter
+from collections.abc import Callable, Sequence
 from concurrent import futures
 from concurrent.futures.thread import ThreadPoolExecutor
-from typing import Callable, Sequence
 
 from effectful.handlers.llm import Template
 from effectful.internals.runtime import get_interpretation, interpreter
@@ -48,7 +48,7 @@ class KAheadSampler[**P, T](ObjectInterpretation):
         return self.votes.most_common(1)[0][0]
 
 
-def sample[**P, T](template: Template[P, T], n: int) -> Callable[P, Sequence[T]]:
+def sample(template, n):
     @defop
     def in_nested_call() -> bool:
         return False
