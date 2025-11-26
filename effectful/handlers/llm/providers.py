@@ -5,7 +5,7 @@ import io
 import logging
 import string
 import typing
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
@@ -20,7 +20,7 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from openai.types.responses import FunctionToolParam
+from openai.types.responses import FunctionToolParam, Response
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
@@ -275,6 +275,111 @@ def _call_tool_with_json_args(
         return str({"status": "failure", "exception": str(exn)})
 
 
+def _pydantic_model_from_type(typ: type):
+    return pydantic.create_model("Response", value=typ, __config__={"extra": "forbid"})
+
+
+@defop
+def compute_response(
+    template: Template, client: openai.OpenAI, model_name: str, model_input: list[Any]
+) -> Response:
+    """Produce a complete model response for an input message sequence. This may
+    involve multiple API requests if tools are invoked by the model.
+
+    """
+    ret_type = template.__signature__.return_annotation
+
+    tools = _tools_of_operations(template.tools)
+    tool_definitions = [t.function_definition for t in tools.values()]
+
+    response_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "tools": tool_definitions,
+        "tool_choice": "auto",
+    }
+
+    if ret_type != str:
+        Result = _pydantic_model_from_type(ret_type)
+        result_schema = openai.lib._pydantic.to_strict_json_schema(Result)
+        response_kwargs["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": "response",
+                "schema": result_schema,
+                "strict": True,
+            }
+        }
+
+    while True:
+        response = llm_request(client, input=model_input, **response_kwargs)
+
+        new_input = []
+        for message in response.output:
+            if message.type != "function_call":
+                continue
+
+            call_id = message.call_id
+            tool = tools[message.name]
+            tool_result = _call_tool_with_json_args(template, tool, message.arguments)
+            tool_response = {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": tool_result,
+            }
+            new_input.append(tool_response)
+
+        if not new_input:
+            return response
+
+        model_input += response.output + new_input
+
+
+# Note: typing template as Template[P, T] causes term conversion to fail due to
+# unification limitations.
+@defop
+def decode_response[**P, T](template: Callable[P, T], response: Response) -> T:
+    """Decode an LLM response into an instance of the template return type. This
+    operation should raise if the output cannot be decoded.
+
+    """
+    assert isinstance(template, Template)
+
+    last_resp = response.output[-1]
+    assert last_resp.type == "message"
+    last_resp_content = last_resp.content[0]
+    assert last_resp_content.type == "output_text"
+    result_str = last_resp_content.text
+
+    ret_type = template.__signature__.return_annotation
+    if ret_type == str:
+        return result_str  # type: ignore[return-value]
+
+    Result = _pydantic_model_from_type(ret_type)
+    result = Result.model_validate_json(result_str)
+    assert isinstance(result, Result)
+    return result.value
+
+
+@defop
+def format_model_input[**P, T](
+    template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+) -> list[Any]:
+    """Format a template applied to arguments into a sequence of input
+    messages.
+
+    """
+    bound_args = template.__signature__.bind(*args, **kwargs)
+    bound_args.apply_defaults()
+    prompt = _OpenAIPromptFormatter().format_as_messages(
+        template.__prompt_template__, **bound_args.arguments
+    )
+
+    # Note: The OpenAI api only seems to accept images in the 'user' role. The
+    # effect of different roles on the model's response is currently unclear.
+    messages = [{"type": "message", "content": prompt, "role": "user"}]
+    return messages
+
+
 class OpenAIAPIProvider(ObjectInterpretation):
     """Implements templates using the OpenAI API."""
 
@@ -286,85 +391,6 @@ class OpenAIAPIProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        ret_type = template.__signature__.return_annotation
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        prompt = _OpenAIPromptFormatter().format_as_messages(
-            template.__prompt_template__, **bound_args.arguments
-        )
-
-        tools = _tools_of_operations(template.tools)
-        tool_definitions = [t.function_definition for t in tools.values()]
-
-        response_kwargs: dict[str, Any] = {
-            "model": self._model_name,
-            "tools": tool_definitions,
-            "tool_choice": "auto",
-        }
-
-        if ret_type == str:
-            result_schema = None
-        else:
-            Result = pydantic.create_model(
-                "Response", value=ret_type, __config__={"extra": "forbid"}
-            )
-            result_schema = openai.lib._pydantic.to_strict_json_schema(Result)
-            response_kwargs["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": "response",
-                    "schema": result_schema,
-                    "strict": True,
-                }
-            }
-
-        called_tools = set([])  # tool calls that we have discharged
-
-        # Note: The OpenAI api only seems to accept images in the 'user' role.
-        # The effect of different roles on the model's response is currently
-        # unclear.
-        model_input: list[Any] = [
-            {"type": "message", "content": prompt, "role": "user"}
-        ]
-
-        while True:
-            response = llm_request(self._client, input=model_input, **response_kwargs)
-
-            new_input = []
-            for message in response.output:
-                if message.type != "function_call":
-                    continue
-
-                call_id = message.call_id
-                if call_id in called_tools:
-                    continue
-                called_tools.add(call_id)
-
-                tool = tools[message.name]
-                tool_result = _call_tool_with_json_args(
-                    template, tool, message.arguments
-                )
-                tool_response = {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": tool_result,
-                }
-                new_input.append(tool_response)
-
-            if not new_input:
-                break
-
-            model_input += response.output + new_input
-
-        last_resp = response.output[-1]
-        assert last_resp.type == "message"
-        last_resp_content = last_resp.content[0]
-        assert last_resp_content.type == "output_text"
-        result_str = last_resp_content.text
-
-        if result_schema is None:
-            return result_str
-
-        result = Result.model_validate_json(result_str)
-        assert isinstance(result, Result)
-        return result.value  # type: ignore[attr-defined]
+        model_input = format_model_input(template, *args, **kwargs)  # type: ignore
+        resp = compute_response(template, self._client, self._model_name, model_input)
+        return decode_response(template, resp)
