@@ -11,6 +11,10 @@ from typing import Any, get_type_hints
 import pydantic
 
 try:
+    import litellm
+except ImportError:
+    raise ImportError("'litellm' is required to use effectful.handlers.providers")
+try:
     import openai
 except ImportError:
     raise ImportError("'openai' is required to use effectful.handlers.providers")
@@ -103,7 +107,9 @@ class Tool[**P, T]:
             "type": "function",
             "name": self.name,
             "description": self.operation.__doc__,
-            "parameters": self.parameter_model.model_json_schema(),
+            "parameters": openai.lib._pydantic.to_strict_json_schema(
+                self.parameter_model
+            ),
             "strict": True,
         }
 
@@ -166,9 +172,9 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(client: openai.OpenAI, *args, **kwargs) -> Any:
+def llm_request(*args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return client.responses.create(*args, **kwargs)
+    return litellm.responses(*args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -197,7 +203,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
             return obj
 
     @implements(llm_request)
-    def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+    def _cache_llm_request(self, *args, **kwargs) -> Any:
         key = self._make_hashable((args, kwargs))
         if key in self.cache:
             return self.cache[key]
@@ -225,7 +231,7 @@ class LLMLoggingHandler(ObjectInterpretation):
         self.logger = logger or logging.getLogger(__name__)
 
     @implements(llm_request)
-    def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+    def _log_llm_request(self, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
 
         response = fwd()
@@ -268,7 +274,12 @@ def _call_tool_with_json_args(
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
-            template, tool.operation, **args.model_dump(exclude_defaults=True)
+            template,
+            tool.operation,
+            **{
+                field: getattr(args, field)
+                for field in tool.parameter_model.model_fields
+            },
         )
         return tool.serialise_return_value(result)
     except Exception as exn:
@@ -281,7 +292,7 @@ def _pydantic_model_from_type(typ: type):
 
 @defop
 def compute_response(
-    template: Template, client: openai.OpenAI, model_name: str, model_input: list[Any]
+    template: Template, model_name: str, model_input: list[Any]
 ) -> Response:
     """Produce a complete model response for an input message sequence. This may
     involve multiple API requests if tools are invoked by the model.
@@ -290,28 +301,16 @@ def compute_response(
     ret_type = template.__signature__.return_annotation
 
     tools = _tools_of_operations(template.tools)
-    tool_definitions = [t.function_definition for t in tools.values()]
-
-    response_kwargs: dict[str, Any] = {
-        "model": model_name,
-        "tools": tool_definitions,
-        "tool_choice": "auto",
-    }
-
-    if ret_type != str:
-        Result = _pydantic_model_from_type(ret_type)
-        result_schema = openai.lib._pydantic.to_strict_json_schema(Result)
-        response_kwargs["text"] = {
-            "format": {
-                "type": "json_schema",
-                "name": "response",
-                "schema": result_schema,
-                "strict": True,
-            }
-        }
+    tool_schemas = [t.function_definition for t in tools.values()]
+    response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
 
     while True:
-        response = llm_request(client, input=model_input, **response_kwargs)
+        response = llm_request(
+            model_input,
+            response_format=response_format,
+            tools=tool_schemas,
+            model=model_name,
+        )
 
         new_input = []
         for message in response.output:
@@ -380,11 +379,10 @@ def format_model_input[**P, T](
     return messages
 
 
-class OpenAIAPIProvider(ObjectInterpretation):
-    """Implements templates using the OpenAI API."""
+class LLMProvider(ObjectInterpretation):
+    """Implements templates using the LiteLLM API."""
 
-    def __init__(self, client: openai.OpenAI, model_name: str = "gpt-4o"):
-        self._client = client
+    def __init__(self, model_name: str = "gpt-4o"):
         self._model_name = model_name
 
     @implements(Template.__call__)
@@ -392,5 +390,5 @@ class OpenAIAPIProvider(ObjectInterpretation):
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         model_input = format_model_input(template, *args, **kwargs)  # type: ignore
-        resp = compute_response(template, self._client, self._model_name, model_input)
+        resp = compute_response(template, self._model_name, model_input)
         return decode_response(template, resp)
