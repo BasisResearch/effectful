@@ -41,7 +41,7 @@ pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
 jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
 llm = [
-  "openai",
+  "litellm",
   "pillow",
   "pydantic",
 ]
