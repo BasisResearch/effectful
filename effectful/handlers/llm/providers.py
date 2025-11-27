@@ -9,6 +9,10 @@ from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
+from openai.types.responses.response_input_param import (
+    FunctionCallOutput,
+    ResponseInputItemParam,
+)
 
 try:
     import litellm
@@ -172,9 +176,9 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(*args, **kwargs) -> Any:
+def llm_request(model_input: list[ResponseInputItemParam], *args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return litellm.responses(*args, **kwargs)
+    return litellm.responses(model_input, *args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -314,23 +318,26 @@ def compute_response(
 
         new_input = []
         for message in response.output:
+            # anthropic requires 'function_call' be dropped in subsequent LLM calls
+            # openai requires they be preserved
+            # let's use the behaviour consistent with openai,
+            # we can provide a filter handler for anthropic
+            model_input.append(message.dict())
             if message.type != "function_call":
                 continue
-
             call_id = message.call_id
             tool = tools[message.name]
             tool_result = _call_tool_with_json_args(template, tool, message.arguments)
-            tool_response = {
+            tool_response: FunctionCallOutput = {
                 "type": "function_call_output",
                 "call_id": call_id,
                 "output": tool_result,
             }
             new_input.append(tool_response)
 
+        model_input += new_input
         if not new_input:
             return response
-
-        model_input += response.output + new_input
 
 
 # Note: typing template as Template[P, T] causes term conversion to fail due to
