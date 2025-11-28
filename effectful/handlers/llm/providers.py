@@ -308,10 +308,11 @@ def compute_response(
     tool_schemas = [t.function_definition for t in tools.values()]
     response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
 
+    # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
         response = llm_request(
             model_input,
-            response_format=response_format,
+            text_format=response_format,
             tools=tool_schemas,
             model=model_name,
         )
@@ -384,6 +385,19 @@ def format_model_input[**P, T](
     # effect of different roles on the model's response is currently unclear.
     messages = [{"type": "message", "content": prompt, "role": "user"}]
     return messages
+
+
+class AnthropicToolCompatibilityShim(ObjectInterpretation):
+    @implements(llm_request)
+    def _llm_request(
+        self, model_input: list[ResponseInputItemParam], *args, **kwargs
+    ) -> Any:
+        model_input = [
+            message
+            for message in model_input
+            if not message.get("type") or message.get("type") != "function_call"
+        ]
+        return fwd(model_input, *args, **kwargs)
 
 
 class LLMProvider(ObjectInterpretation):
