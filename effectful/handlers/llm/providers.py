@@ -9,10 +9,6 @@ from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import pydantic
-from openai.types.responses.response_input_param import (
-    FunctionCallOutput,
-    ResponseInputItemParam,
-)
 
 try:
     import litellm
@@ -28,7 +24,9 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from openai.types.responses import FunctionToolParam, Response
+from litellm import Choices, Message
+from litellm.types.utils import ModelResponse
+from openai.types.chat import ChatCompletionFunctionToolParam
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
@@ -106,15 +104,17 @@ class Tool[**P, T]:
         )
 
     @property
-    def function_definition(self) -> FunctionToolParam:
+    def function_definition(self) -> ChatCompletionFunctionToolParam:
         return {
             "type": "function",
-            "name": self.name,
-            "description": self.operation.__doc__,
-            "parameters": openai.lib._pydantic.to_strict_json_schema(
-                self.parameter_model
-            ),
-            "strict": True,
+            "function": {
+                "name": self.name,
+                "description": self.operation.__doc__ or "",
+                "parameters": openai.lib._pydantic.to_strict_json_schema(
+                    self.parameter_model
+                ),
+                "strict": True,
+            },
         }
 
 
@@ -144,7 +144,7 @@ class _OpenAIPromptFormatter(string.Formatter):
         def push_current_text():
             nonlocal current_text
             if current_text:
-                prompt_parts.append({"type": "input_text", "text": current_text})
+                prompt_parts.append({"type": "text", "text": current_text})
             current_text = ""
 
         for literal, field_name, format_spec, conversion in self.parse(format_str):
@@ -176,9 +176,9 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(model_input: list[ResponseInputItemParam], *args, **kwargs) -> Any:
+def llm_request(model_input: list[Message], *args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return litellm.responses(model_input, *args, **kwargs)
+    return litellm.completion(messages=model_input, *args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -297,7 +297,7 @@ def _pydantic_model_from_type(typ: type):
 @defop
 def compute_response(
     template: Template, model_name: str, model_input: list[Any]
-) -> Response:
+) -> ModelResponse:
     """Produce a complete model response for an input message sequence. This may
     involve multiple API requests if tools are invoked by the model.
 
@@ -310,52 +310,48 @@ def compute_response(
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
-        response = llm_request(
+        response: ModelResponse = llm_request(
             model_input,
-            text_format=response_format,
+            response_format=response_format,
             tools=tool_schemas,
             model=model_name,
         )
 
-        new_input = []
-        for message in response.output:
-            # anthropic requires 'function_call' be dropped in subsequent LLM calls
-            # openai requires they be preserved
-            # let's use the behaviour consistent with openai,
-            # we can provide a filter handler for anthropic
-            model_input.append(message.dict())
-            if message.type != "function_call":
-                continue
-            call_id = message.call_id
-            tool = tools[message.name]
-            tool_result = _call_tool_with_json_args(template, tool, message.arguments)
-            tool_response: FunctionCallOutput = {
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": tool_result,
-            }
-            new_input.append(tool_response)
-
-        model_input += new_input
-        if not new_input:
+        choice: Choices = typing.cast(Choices, response.choices[0])
+        message: Message = choice.message
+        if not message.tool_calls:
             return response
+        model_input.append(message.to_dict())
+
+        for tool_call in message.tool_calls:
+            function = tool_call.function
+            function_name = typing.cast(str, function.name)
+            tool = tools[function_name]
+            tool_result = _call_tool_with_json_args(template, tool, function.arguments)
+            model_input.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": tool_result,
+                }
+            )
 
 
 # Note: typing template as Template[P, T] causes term conversion to fail due to
 # unification limitations.
 @defop
-def decode_response[**P, T](template: Callable[P, T], response: Response) -> T:
+def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
     """Decode an LLM response into an instance of the template return type. This
     operation should raise if the output cannot be decoded.
 
     """
     assert isinstance(template, Template)
-
-    last_resp = response.output[-1]
-    assert last_resp.type == "message"
-    last_resp_content = last_resp.content[0]
-    assert last_resp_content.type == "output_text"
-    result_str = last_resp_content.text
+    choice: Choices = typing.cast(Choices, response.choices[0])
+    last_resp: Message = choice.message
+    assert isinstance(last_resp, Message)
+    result_str = last_resp.content or last_resp.reasoning_content
+    assert result_str
 
     ret_type = template.__signature__.return_annotation
     if ret_type == str:
@@ -389,9 +385,7 @@ def format_model_input[**P, T](
 
 class AnthropicToolCompatibilityShim(ObjectInterpretation):
     @implements(llm_request)
-    def _llm_request(
-        self, model_input: list[ResponseInputItemParam], *args, **kwargs
-    ) -> Any:
+    def _llm_request(self, model_input: list[Message], *args, **kwargs) -> Any:
         model_input = [
             message
             for message in model_input
