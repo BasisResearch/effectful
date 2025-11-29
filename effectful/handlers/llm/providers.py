@@ -383,17 +383,6 @@ def format_model_input[**P, T](
     return messages
 
 
-class AnthropicToolCompatibilityShim(ObjectInterpretation):
-    @implements(llm_request)
-    def _llm_request(self, model_input: list[Message], *args, **kwargs) -> Any:
-        model_input = [
-            message
-            for message in model_input
-            if not message.get("type") or message.get("type") != "function_call"
-        ]
-        return fwd(model_input, *args, **kwargs)
-
-
 class LLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
