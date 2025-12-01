@@ -387,7 +387,7 @@ class LiteLLMProvider(ObjectInterpretation):
     model_name: str
     config: dict[str, Any]
 
-    def __init__(self, model_name: str, **config):
+    def __init__(self, model_name: str = "gpt-4o", **config):
         self.model_name = model_name
         self.config = inspect.signature(completion).bind_partial(**config).kwargs
 
