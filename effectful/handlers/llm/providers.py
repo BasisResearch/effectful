@@ -384,14 +384,16 @@ def format_model_input[**P, T](
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
+    model_name: str
     config: dict[str, Any]
 
-    def __init__(self, **config):
+    def __init__(self, model_name: str, **config):
+        self.model_name = model_name
         self.config = inspect.signature(completion).bind_partial(**config).kwargs
 
     @implements(completion)
     def _completion(self, *args, **kwargs):
-        return fwd(*args, **(self.config | kwargs))
+        return fwd(self.model_name, *args, **(self.config | kwargs))
 
     @implements(Template.__call__)
     def _call[**P, T](
