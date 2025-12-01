@@ -242,22 +242,22 @@ class _DistributionTerm(dist.Distribution):
     def kwargs(self):
         return self._kwargs
 
-    @defop  # type: ignore
     @property
+    @defop
     def batch_shape(self) -> tuple[int, ...]:
         if not (self._is_eager):
             raise NotHandled
         return self._pos_base_dist.batch_shape[len(self._indices) :]
 
-    @defop  # type: ignore
     @property
+    @defop
     def has_rsample(self) -> bool:
         if not (self._is_eager):
             raise NotHandled
         return self._pos_base_dist.has_rsample
 
-    @defop  # type: ignore
     @property
+    @defop
     def event_shape(self) -> tuple[int, ...]:
         if not (self._is_eager):
             raise NotHandled
@@ -312,8 +312,8 @@ class _DistributionTerm(dist.Distribution):
         ind_log_prob = self._reindex_sample(pos_log_prob, sample_shape)
         return ind_log_prob
 
-    @defop  # type: ignore
     @property
+    @defop
     def mean(self) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
@@ -322,8 +322,8 @@ class _DistributionTerm(dist.Distribution):
         except NotImplementedError:
             raise RuntimeError(f"mean is not implemented for {type(self).__name__}")
 
-    @defop  # type: ignore
     @property
+    @defop
     def variance(self) -> jax.Array:
         if not self._is_eager:
             raise NotHandled
