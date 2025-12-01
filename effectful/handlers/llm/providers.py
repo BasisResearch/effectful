@@ -1,26 +1,31 @@
 import base64
 import dataclasses
+import functools
 import inspect
 import io
 import logging
 import string
 import typing
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
+import litellm
 import pydantic
-
-try:
-    import openai
-except ImportError:
-    raise ImportError("'openai' is required to use effectful.handlers.providers")
 
 try:
     from PIL import Image
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from openai.types.responses import FunctionToolParam
+from litellm import (
+    ChatCompletionImageObject,
+    Choices,
+    Message,
+    OpenAIChatCompletionToolParam,
+    OpenAIMessageContent,
+    OpenAIMessageContentListBlock,
+)
+from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
@@ -40,17 +45,14 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
 
 def _pil_image_to_openai_image_param(
     pil_image: Image.Image,
-) -> openai.types.responses.ResponseInputImageParam:
-    return openai.types.responses.ResponseInputImageParam(
-        type="input_image",
-        detail="auto",
-        image_url=_pil_image_to_base64_data_uri(pil_image),
-    )
-
-
-OpenAIFunctionOutputParamType = (
-    str | list[openai.types.responses.ResponseInputImageParam]
-)
+) -> ChatCompletionImageObject:
+    return {
+        "type": "image_url",
+        "image_url": {
+            "detail": "auto",
+            "url": _pil_image_to_base64_data_uri(pil_image),
+        },
+    }
 
 
 @dataclasses.dataclass
@@ -59,7 +61,7 @@ class Tool[**P, T]:
     operation: Operation[P, T]
     name: str
 
-    def serialise_return_value(self, value) -> OpenAIFunctionOutputParamType:
+    def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
         sig = inspect.signature(self.operation)
         ret_ty = sig.return_annotation
@@ -98,13 +100,21 @@ class Tool[**P, T]:
         )
 
     @property
-    def function_definition(self) -> FunctionToolParam:
+    def function_definition(self) -> OpenAIChatCompletionToolParam:
+        response_format = litellm.utils.type_to_response_format_param(
+            self.parameter_model
+        )
+        assert response_format is not None
         return {
             "type": "function",
-            "name": self.name,
-            "description": self.operation.__doc__,
-            "parameters": self.parameter_model.model_json_schema(),
-            "strict": True,
+            "function": {
+                "name": self.name,
+                "description": self.operation.__doc__ or "",
+                "parameters": response_format["json_schema"][
+                    "schema"
+                ],  # extract the schema
+                "strict": True,
+            },
         }
 
 
@@ -127,14 +137,14 @@ def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
 class _OpenAIPromptFormatter(string.Formatter):
     def format_as_messages(
         self, format_str: str, /, *args, **kwargs
-    ) -> openai.types.responses.ResponseInputMessageContentListParam:
-        prompt_parts = []
+    ) -> OpenAIMessageContent:
+        prompt_parts: list[OpenAIMessageContentListBlock] = []
         current_text = ""
 
         def push_current_text():
             nonlocal current_text
             if current_text:
-                prompt_parts.append({"type": "input_text", "text": current_text})
+                prompt_parts.append({"type": "text", "text": current_text})
             current_text = ""
 
         for literal, field_name, format_spec, conversion in self.parse(format_str):
@@ -151,7 +161,7 @@ class _OpenAIPromptFormatter(string.Formatter):
                     push_current_text()
                     prompt_parts.append(
                         {
-                            "type": "input_image",
+                            "type": "image_url",
                             "image_url": _pil_image_to_base64_data_uri(obj),
                         }
                     )
@@ -166,9 +176,10 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(client: openai.OpenAI, *args, **kwargs) -> Any:
+@functools.wraps(litellm.completion)
+def completion(*args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return client.responses.create(*args, **kwargs)
+    return litellm.completion(*args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -196,8 +207,8 @@ class CacheLLMRequestHandler(ObjectInterpretation):
             # Primitives (int, float, str, bytes, etc.) are already hashable
             return obj
 
-    @implements(llm_request)
-    def _cache_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+    @implements(completion)
+    def _cache_completion(self, *args, **kwargs) -> Any:
         key = self._make_hashable((args, kwargs))
         if key in self.cache:
             return self.cache[key]
@@ -207,7 +218,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
 
 
 class LLMLoggingHandler(ObjectInterpretation):
-    """Logs llm_request rounds and tool_call invocations using Python logging.
+    """Logs completion rounds and tool_call invocations using Python logging.
 
     Configure with a logger or logger name. By default logs at INFO level.
     """
@@ -224,8 +235,8 @@ class LLMLoggingHandler(ObjectInterpretation):
         """
         self.logger = logger or logging.getLogger(__name__)
 
-    @implements(llm_request)
-    def _log_llm_request(self, client: openai.OpenAI, *args, **kwargs) -> Any:
+    @implements(completion)
+    def _log_completion(self, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
 
         response = fwd()
@@ -264,107 +275,130 @@ class LLMLoggingHandler(ObjectInterpretation):
 
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
-) -> OpenAIFunctionOutputParamType:
+) -> OpenAIMessageContent:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
-            template, tool.operation, **args.model_dump(exclude_defaults=True)
+            template,
+            tool.operation,
+            **{
+                field: getattr(args, field)
+                for field in tool.parameter_model.model_fields
+            },
         )
         return tool.serialise_return_value(result)
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 
 
-class OpenAIAPIProvider(ObjectInterpretation):
-    """Implements templates using the OpenAI API."""
+def _pydantic_model_from_type(typ: type):
+    return pydantic.create_model("Response", value=typ, __config__={"extra": "forbid"})
 
-    def __init__(self, client: openai.OpenAI, model_name: str = "gpt-4o"):
-        self._client = client
-        self._model_name = model_name
+
+@defop
+def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
+    """Produce a complete model response for an input message sequence. This may
+    involve multiple API requests if tools are invoked by the model.
+
+    """
+    ret_type = template.__signature__.return_annotation
+
+    tools = _tools_of_operations(template.tools)
+    tool_schemas = [t.function_definition for t in tools.values()]
+    response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
+
+    # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+    while True:
+        response: ModelResponse = completion(
+            messages=model_input,
+            response_format=response_format,
+            tools=tool_schemas,
+        )
+
+        choice: Choices = typing.cast(Choices, response.choices[0])
+        message: Message = choice.message
+        if not message.tool_calls:
+            return response
+        model_input.append(message.to_dict())
+
+        for tool_call in message.tool_calls:
+            function = tool_call.function
+            function_name = typing.cast(str, function.name)
+            tool = tools[function_name]
+            tool_result = _call_tool_with_json_args(template, tool, function.arguments)
+            model_input.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": tool_result,
+                }
+            )
+
+
+# Note: typing template as Template[P, T] causes term conversion to fail due to
+# unification limitations.
+@defop
+def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
+    """Decode an LLM response into an instance of the template return type. This
+    operation should raise if the output cannot be decoded.
+
+    """
+    assert isinstance(template, Template)
+    choice: Choices = typing.cast(Choices, response.choices[0])
+    last_resp: Message = choice.message
+    assert isinstance(last_resp, Message)
+    result_str = last_resp.content or last_resp.reasoning_content
+    assert result_str
+
+    ret_type = template.__signature__.return_annotation
+    if ret_type == str:
+        return result_str  # type: ignore[return-value]
+
+    Result = _pydantic_model_from_type(ret_type)
+    result = Result.model_validate_json(result_str)
+    assert isinstance(result, Result)
+    return result.value
+
+
+@defop
+def format_model_input[**P, T](
+    template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+) -> list[Any]:
+    """Format a template applied to arguments into a sequence of input
+    messages.
+
+    """
+    bound_args = template.__signature__.bind(*args, **kwargs)
+    bound_args.apply_defaults()
+    prompt = _OpenAIPromptFormatter().format_as_messages(
+        template.__prompt_template__, **bound_args.arguments
+    )
+
+    # Note: The OpenAI api only seems to accept images in the 'user' role. The
+    # effect of different roles on the model's response is currently unclear.
+    messages = [{"type": "message", "content": prompt, "role": "user"}]
+    return messages
+
+
+class LiteLLMProvider(ObjectInterpretation):
+    """Implements templates using the LiteLLM API."""
+
+    model_name: str
+    config: dict[str, Any]
+
+    def __init__(self, model_name: str = "gpt-4o", **config):
+        self.model_name = model_name
+        self.config = inspect.signature(completion).bind_partial(**config).kwargs
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        return fwd(self.model_name, *args, **(self.config | kwargs))
 
     @implements(Template.__call__)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        ret_type = template.__signature__.return_annotation
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        prompt = _OpenAIPromptFormatter().format_as_messages(
-            template.__prompt_template__, **bound_args.arguments
-        )
-
-        tools = _tools_of_operations(template.tools)
-        tool_definitions = [t.function_definition for t in tools.values()]
-
-        response_kwargs: dict[str, Any] = {
-            "model": self._model_name,
-            "tools": tool_definitions,
-            "tool_choice": "auto",
-        }
-
-        if ret_type == str:
-            result_schema = None
-        else:
-            Result = pydantic.create_model(
-                "Response", value=ret_type, __config__={"extra": "forbid"}
-            )
-            result_schema = openai.lib._pydantic.to_strict_json_schema(Result)
-            response_kwargs["text"] = {
-                "format": {
-                    "type": "json_schema",
-                    "name": "response",
-                    "schema": result_schema,
-                    "strict": True,
-                }
-            }
-
-        called_tools = set([])  # tool calls that we have discharged
-
-        # Note: The OpenAI api only seems to accept images in the 'user' role.
-        # The effect of different roles on the model's response is currently
-        # unclear.
-        model_input: list[Any] = [
-            {"type": "message", "content": prompt, "role": "user"}
-        ]
-
-        while True:
-            response = llm_request(self._client, input=model_input, **response_kwargs)
-
-            new_input = []
-            for message in response.output:
-                if message.type != "function_call":
-                    continue
-
-                call_id = message.call_id
-                if call_id in called_tools:
-                    continue
-                called_tools.add(call_id)
-
-                tool = tools[message.name]
-                tool_result = _call_tool_with_json_args(
-                    template, tool, message.arguments
-                )
-                tool_response = {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": tool_result,
-                }
-                new_input.append(tool_response)
-
-            if not new_input:
-                break
-
-            model_input += response.output + new_input
-
-        last_resp = response.output[-1]
-        assert last_resp.type == "message"
-        last_resp_content = last_resp.content[0]
-        assert last_resp_content.type == "output_text"
-        result_str = last_resp_content.text
-
-        if result_schema is None:
-            return result_str
-
-        result = Result.model_validate_json(result_str)
-        assert isinstance(result, Result)
-        return result.value  # type: ignore[attr-defined]
+        model_input = format_model_input(template, *args, **kwargs)  # type: ignore
+        resp = compute_response(template, model_input)
+        return decode_response(template, resp)
