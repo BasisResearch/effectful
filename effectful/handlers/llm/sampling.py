@@ -1,8 +1,10 @@
+import threading
 from collections import Counter
 from concurrent import futures
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from effectful.handlers.llm import Template
+from effectful.handlers.llm.providers import completion, tool_call
 from effectful.internals.runtime import get_interpretation, interpreter
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
@@ -52,15 +54,48 @@ def sample(template, n):
     def in_nested_call() -> bool:
         return False
 
+    lock = threading.Lock()
+
     def _template_call(template, *args, **kwargs):
         if in_nested_call():
             return fwd()
 
         with handler({in_nested_call: lambda: True}):
             with ThreadPoolExecutor() as executor:
-                intp = get_interpretation()
-                tasks = [executor.submit(interpreter(intp)(fwd)) for _ in range(n)]
+
+                @interpreter(get_interpretation())
+                def do_work():
+                    lock.acquire()
+                    try:
+                        result = fwd()
+                    finally:
+                        assert lock.locked()
+                        lock.release()
+                    return result
+
+                tasks = [executor.submit(do_work) for _ in range(n)]
                 completed = futures.wait(tasks, return_when=futures.ALL_COMPLETED)
                 return [t.result() for t in completed.done]
 
-    return handler({Template.__call__: _template_call})(template)
+    def _completion(*args, **kwargs):
+        lock.release()
+        result = fwd()
+        lock.acquire()
+        return result
+
+    def _tool_call(*args, **kwargs):
+        lock.acquire()
+        try:
+            result = fwd()
+        except Exception as e:
+            lock.release()
+            raise e
+        return result
+
+    return handler(
+        {
+            Template.__call__: _template_call,
+            completion: _completion,
+            tool_call: _tool_call,
+        }
+    )(template)
