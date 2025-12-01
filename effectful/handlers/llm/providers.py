@@ -9,16 +9,9 @@ import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
+import litellm
+import openai
 import pydantic
-
-try:
-    import litellm
-except ImportError:
-    raise ImportError("'litellm' is required to use effectful.handlers.providers")
-try:
-    import openai
-except ImportError:
-    raise ImportError("'openai' is required to use effectful.handlers.providers")
 
 try:
     from PIL import Image
