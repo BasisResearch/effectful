@@ -30,7 +30,7 @@ from litellm.types.utils import ModelResponse
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.types import Operation
 
 
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
@@ -179,7 +179,7 @@ class _OpenAIPromptFormatter(string.Formatter):
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    raise NotHandled
+    return litellm.completion(*args, **kwargs)
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -384,13 +384,14 @@ def format_model_input[**P, T](
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
-    def __init__(self, model_name: str = "gpt-4o", **kwargs):
-        self._model_name = model_name
-        self._extra_args = kwargs
+    config: dict[str, Any]
+
+    def __init__(self, **config):
+        self.config = inspect.signature(completion).bind_partial(**config).kwargs
 
     @implements(completion)
     def _completion(self, *args, **kwargs):
-        return litellm.completion(*args, **kwargs, **self._extra_args)
+        return fwd(*args, **(self.config | kwargs))
 
     @implements(Template.__call__)
     def _call[**P, T](
