@@ -1,10 +1,7 @@
 import functools
-import inspect
-import typing
 from collections.abc import Callable
-from typing import Concatenate
 
-from effectful.ops.types import Operation, _CustomSingleDispatchCallable
+from effectful.ops.types import Operation
 
 
 class _ClassMethodOperation[**P, S, T]:

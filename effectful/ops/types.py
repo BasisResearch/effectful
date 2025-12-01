@@ -87,9 +87,9 @@ class Operation[**Q, V]:
 
     @functools.singledispatchmethod
     @classmethod
-    def define(
-        cls: type[typing.Self], default: Callable[Q, V], *, name: str | None = None
-    ) -> typing.Self:
+    def define[**P, T](
+        cls: Callable[P, T], default: Callable[Q, V], *, name: str | None = None
+    ) -> "Operation[P, T]":
         """Creates a fresh :class:`Operation`.
 
         :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -228,7 +228,9 @@ class Operation[**Q, V]:
 
         return _ClassMethodOperation(*args, **kwargs)
 
-    @define.register(collections.abc.Callable)
+    @define.register(
+        typing.cast(type[collections.abc.Callable], collections.abc.Callable)
+    )
     @classmethod
     def _define_callable[**P, T](
         cls, t: Callable[P, T], *, name: str | None = None, **kwargs
@@ -240,9 +242,11 @@ class Operation[**Q, V]:
                 raise NotHandled
 
             name = name or getattr(t, "__name__", str(t))
-            return cls(func, name=name, **kwargs)
+            op = cls(func, name=name, **kwargs)
+        else:
+            op = cls(t, name=name, **kwargs)  # type: ignore[arg-type]
 
-        return cls(t, name=name, **kwargs)
+        return op  # type: ignore[return-value]
 
     @define.register(type)
     @define.register(typing.cast(type, types.GenericAlias))
@@ -276,7 +280,7 @@ class Operation[**Q, V]:
             else:
                 raise NotHandled
 
-        return cls.define(func, name=name)
+        return typing.cast(Operation[P, T], cls.define(func, name=name))
 
     @define.register(staticmethod)
     @classmethod
