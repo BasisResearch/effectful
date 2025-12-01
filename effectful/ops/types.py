@@ -59,12 +59,18 @@ class Operation[**Q, V]:
     __name__: str
     __default__: Callable[Q, V]
 
-    def __init__(self, default: Callable[Q, V], *, name: str | None = None):
+    def __init__(
+        self,
+        default: Callable[Q, V],
+        *,
+        name: str | None = None,
+        signature: inspect.Signature | None = None,
+    ):
         functools.update_wrapper(self, default)
 
         self.__default__ = default
         self.__name__ = name or default.__name__
-        self.__signature__ = inspect.signature(default)
+        self.__signature__ = signature or inspect.signature(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -215,17 +221,17 @@ class Operation[**Q, V]:
         """
         raise NotImplementedError
 
-    @define.register(classmethod)  # type: ignore[attr-defined]
+    @define.register(classmethod)
     @classmethod
     def _define_classmethod(cls, *args, **kwargs):
         from effectful.internals.custom_operations import _ClassMethodOperation
 
         return _ClassMethodOperation(*args, **kwargs)
 
-    @define.register(Callable)  # type: ignore[attr-defined]
+    @define.register(collections.abc.Callable)
     @classmethod
     def _define_callable[**P, T](
-        cls, t: Callable[P, T], *, name: str | None = None
+        cls, t: Callable[P, T], *, name: str | None = None, **kwargs
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
 
@@ -233,17 +239,15 @@ class Operation[**Q, V]:
             def func(*args, **kwargs):
                 raise NotHandled
 
-            if name is None:
-                name = getattr(t, "__name__", str(t))
+            name = name or getattr(t, "__name__", str(t))
+            return cls(func, name=name, **kwargs)
 
-            return cls.define(func, name=name)
+        return cls(t, name=name, **kwargs)
 
-        return cls(t, name=name)
-
-    @define.register(type)  # type: ignore[attr-defined]
-    @define.register(typing.cast(type, types.GenericAlias))  # type: ignore[attr-defined]
-    @define.register(typing.cast(type, typing._GenericAlias))  # type: ignore
-    @define.register(typing.cast(type, types.UnionType))  # type: ignore[attr-defined]
+    @define.register(type)
+    @define.register(typing.cast(type, types.GenericAlias))
+    @define.register(typing.cast(type, typing._GenericAlias))  # type: ignore[attr-defined]
+    @define.register(typing.cast(type, types.UnionType))
     @classmethod
     def _define_type[T](
         cls, t: type[T], *, name: str | None = None
@@ -258,7 +262,7 @@ class Operation[**Q, V]:
 
         return typing.cast(Operation[[], T], cls.define(func, name=name))
 
-    @define.register(types.BuiltinFunctionType)  # type: ignore[attr-defined]
+    @define.register(types.BuiltinFunctionType)
     @classmethod
     def _define_builtinfunctiontype[**P, T](
         cls, t: Callable[P, T], *, name: str | None = None
@@ -274,24 +278,25 @@ class Operation[**Q, V]:
 
         return cls.define(func, name=name)
 
-    @define.register(staticmethod)  # type: ignore[attr-defined]
+    @define.register(staticmethod)
     @classmethod
     def _define_staticmethod[**P, T](cls, t: "staticmethod[P, T]", **kwargs):
         return staticmethod(cls.define(t.__func__, **kwargs))
 
-    # @define.register(property)  # type: ignore[attr-defined]
-    # @classmethod
-    # def _define_property(cls, *args, **kwargs):
-    #     from effectful.internals.custom_operations import _PropertyOperation
-
-    #     return _PropertyOperation(*args, **kwargs)
-
-    @define.register(functools.singledispatchmethod)  # type: ignore[attr-defined]
+    @define.register(functools.singledispatchmethod)
     @classmethod
-    def _define_singledispatchmethod(cls, *args, **kwargs):
-        from effectful.internals.custom_operations import _SingleDispatchMethodOperation
+    def _define_singledispatchmethod(cls, default, **kwargs):
+        if isinstance(default.func, classmethod):
+            raise NotImplementedError("Operations as classmethod are not yet supported")
 
-        return _SingleDispatchMethodOperation(*args, **kwargs)
+        @functools.wraps(default.func)
+        def _wrapper(obj, *args, **kwargs):
+            return default.__get__(obj)(*args, **kwargs)
+
+        op = cls.define(_wrapper, **kwargs)
+        op.register = default.register
+        op.__isabstractmethod__ = default.__isabstractmethod__
+        return op
 
     @typing.runtime_checkable
     class _SingleDispatchCallable(typing.Protocol):
@@ -304,17 +309,20 @@ class Operation[**Q, V]:
 
     @define.register(_SingleDispatchCallable)
     @classmethod
-    def _defop_singledispatchoperation(cls, *args, **kwargs):
-        from effectful.internals.custom_operations import _SingleDispatchOperation
+    def _defop_singledispatchoperation(cls, default, **kwargs):
+        op = cls._define_callable(default, **kwargs)
+        op.dispatch = default._registry.dispatch
+        op.register = default._registry.register
+        return op
 
-        return _SingleDispatchOperation(*args, **kwargs)
-
-    @define.register(_CustomSingleDispatchCallable)  # type: ignore[attr-defined]
+    @define.register(_CustomSingleDispatchCallable)
     @classmethod
-    def _defop_customsingledispatchcallable(*args, **kwargs):
-        from effectful.internals.custom_operations import _CustomSingleDispatchOperation
-
-        return _CustomSingleDispatchOperation(*args, **kwargs)
+    def _defop_customsingledispatchcallable(cls, default, **kwargs):
+        sig = inspect.signature(functools.partial(default.func, None))
+        op = cls._define_callable(default, signature=sig)
+        op.dispatch = default._registry.dispatch
+        op.register = default._registry.register
+        return op
 
     @typing.final
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
