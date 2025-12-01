@@ -30,7 +30,7 @@ from litellm.types.utils import ModelResponse
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Operation
+from effectful.ops.types import NotHandled, Operation
 
 
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
@@ -177,7 +177,7 @@ class _OpenAIPromptFormatter(string.Formatter):
 @defop
 def llm_request(model_input: list[Message], *args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
-    return litellm.completion(messages=model_input, *args, **kwargs)
+    raise NotHandled
 
 
 # Note: attempting to type the tool arguments causes type-checker failures
@@ -294,9 +294,7 @@ def _pydantic_model_from_type(typ: type):
 
 
 @defop
-def compute_response(
-    template: Template, model_name: str, model_input: list[Any]
-) -> ModelResponse:
+def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
     """Produce a complete model response for an input message sequence. This may
     involve multiple API requests if tools are invoked by the model.
 
@@ -313,7 +311,6 @@ def compute_response(
             model_input,
             response_format=response_format,
             tools=tool_schemas,
-            model=model_name,
         )
 
         choice: Choices = typing.cast(Choices, response.choices[0])
@@ -385,13 +382,20 @@ def format_model_input[**P, T](
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
-    def __init__(self, model_name: str = "gpt-4o"):
+    def __init__(self, model_name: str = "gpt-4o", **kwargs):
         self._model_name = model_name
+        self._extra_args = kwargs
+
+    @implements(llm_request)
+    def _llm_request(self, model_input: list[Message], *args, **kwargs):
+        return litellm.completion(
+            messages=model_input, *args, **kwargs, **self._extra_args
+        )
 
     @implements(Template.__call__)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         model_input = format_model_input(template, *args, **kwargs)  # type: ignore
-        resp = compute_response(template, self._model_name, model_input)
+        resp = compute_response(template, model_input)
         return decode_response(template, resp)
