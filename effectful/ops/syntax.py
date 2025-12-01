@@ -535,8 +535,7 @@ class _ClassMethodOperation[**P, S, T]:
 class _BaseOperation[**Q, V](Operation[Q, V]):
     __signature__: inspect.Signature
     __name__: str
-
-    _default: Callable[Q, V]
+    __default__: Callable[Q, V]
 
     def __init__(
         self,
@@ -546,7 +545,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         freshening: list[int] | None = None,
     ):
         functools.update_wrapper(self, default)
-        self._default = default
+        self.__default__ = default
         self.__name__ = name or default.__name__
         self._freshening = freshening or []
         self.__signature__ = inspect.signature(default)
@@ -562,87 +561,7 @@ class _BaseOperation[**Q, V](Operation[Q, V]):
         return id(self) < id(other)
 
     def __hash__(self):
-        return hash(self._default)
-
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
-        try:
-            try:
-                return self._default(*args, **kwargs)
-            except NotImplementedError:
-                warnings.warn(
-                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                    DeprecationWarning,
-                )
-                raise NotHandled
-        except NotHandled:
-            return typing.cast(
-                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
-            )(self, *args, **kwargs)
-
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
-        sig = Scoped.infer_annotations(self.__signature__)
-        bound_sig = sig.bind(*args, **kwargs)
-        bound_sig.apply_defaults()
-
-        result_sig = sig.bind(
-            *(frozenset() for _ in bound_sig.args),
-            **{k: frozenset() for k in bound_sig.kwargs},
-        )
-        for name, param in sig.parameters.items():
-            if typing.get_origin(param.annotation) is typing.Annotated:
-                for anno in typing.get_args(param.annotation)[1:]:
-                    if isinstance(anno, Scoped):
-                        param_bound_vars = anno.analyze(bound_sig)
-                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                            result_sig.arguments[name] = tuple(
-                                param_bound_vars for _ in bound_sig.arguments[name]
-                            )
-                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                            for k in bound_sig.arguments[name]:
-                                result_sig.arguments[name][k] = param_bound_vars
-                        else:
-                            result_sig.arguments[name] = param_bound_vars
-
-        return result_sig
-
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
-        from effectful.internals.unification import (
-            freetypevars,
-            nested_type,
-            substitute,
-            unify,
-        )
-
-        return_anno = self.__signature__.return_annotation
-        if typing.get_origin(return_anno) is typing.Annotated:
-            return_anno = typing.get_args(return_anno)[0]
-
-        if return_anno is inspect.Parameter.empty:
-            return typing.cast(type[V], object)
-        elif return_anno is None:
-            return typing.cast(type[V], type(None))
-        elif not freetypevars(return_anno):
-            return return_anno
-
-        type_args = tuple(nested_type(a).value for a in args)
-        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
-        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
-        subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
-        return typing.cast(type[V], subst_type)
-
-    def __repr__(self):
-        return f"{type(self).__name__}({self._default}, name={self.__name__}, freshening={self._freshening})"
-
-    def __str__(self):
-        return self.__name__
-
-    def __get__(self, instance, owner):
-        if instance is not None:
-            # This is an instance-level operation, so we need to bind the instance
-            return functools.partial(self, instance)
-        else:
-            # This is a static operation, so we return the operation itself
-            return self
+        return hash(self.__default__)
 
     @defop
     @classmethod
@@ -738,7 +657,7 @@ class _PropertyOperation[S, T](_BaseOperation[[S], T]):
 
 @defop.register(functools.singledispatchmethod)
 class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
-    _default: Callable[Concatenate[S, P], T]
+    __default__: Callable[Concatenate[S, P], T]
 
     def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
         if isinstance(default.func, classmethod):
@@ -775,15 +694,15 @@ class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P]
 
 
 class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
-    _default: "functools._SingleDispatchCallable[T]"
+    __default__: "functools._SingleDispatchCallable[T]"
 
     @property
     def register(self):
-        return self._default.register
+        return self.__default__.register
 
     @property
     def dispatch(self):
-        return self._default.dispatch
+        return self.__default__.dispatch
 
 
 if typing.TYPE_CHECKING:

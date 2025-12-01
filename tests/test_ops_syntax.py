@@ -299,7 +299,7 @@ def test_defop_method():
 
     # check signature
     assert MyClass.my_method.__signature__ == inspect.signature(
-        MyClass.my_method._default
+        MyClass.my_method.__default__
     )
 
     assert isinstance(term, Term)
@@ -392,7 +392,7 @@ def test_defop_classmethod():
     assert isinstance(MyClass.my_classmethod, Operation)
     # check signature
     assert MyClass.my_classmethod.__signature__ == inspect.signature(
-        MyClass.my_classmethod._default
+        MyClass.my_classmethod.__default__
     )
 
     assert isinstance(term, Term)
@@ -428,7 +428,7 @@ def test_defop_staticmethod():
     assert isinstance(MyClass.my_staticmethod, Operation)
     # check signature
     assert MyClass.my_staticmethod.__signature__ == inspect.signature(
-        MyClass.my_staticmethod._default
+        MyClass.my_staticmethod.__default__
     )
 
     assert isinstance(term, Term)
@@ -461,7 +461,7 @@ def test_defop_property():
 
     assert isinstance(MyClass.my_property, Operation)
     assert MyClass.my_property.__signature__ == inspect.signature(
-        MyClass.my_property._default
+        MyClass.my_property.__default__
     )
 
     assert isinstance(term, Term)
@@ -510,7 +510,7 @@ def test_defop_singledispatchmethod():
 
     assert isinstance(MyClass.my_singledispatch, Operation)
     assert MyClass.my_singledispatch.__signature__ == inspect.signature(
-        MyClass.my_singledispatch._default
+        MyClass.my_singledispatch.__default__
     )
 
     assert isinstance(term_float, Term)

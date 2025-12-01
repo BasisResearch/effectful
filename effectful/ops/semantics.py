@@ -46,15 +46,7 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     mul(add(1, 2), 3)
 
     """
-    from effectful.internals.runtime import get_interpretation
-
-    intp = get_interpretation()
-    if op in intp:
-        return intp[op](*args, **kwargs)
-    elif apply in intp:
-        return intp[apply](op, *args, **kwargs)
-    else:
-        return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
+    return op.__default_rule__(*args, **kwargs)  # type: ignore
 
 
 @defop

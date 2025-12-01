@@ -5,8 +5,9 @@ import collections.abc
 import functools
 import inspect
 import typing
+import warnings
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, _ProtocolMeta, overload, runtime_checkable
+from typing import Any, Concatenate, _ProtocolMeta, overload, runtime_checkable
 
 
 class NotHandled(Exception):
@@ -27,6 +28,7 @@ class Operation[**Q, V](abc.ABC):
 
     __signature__: inspect.Signature
     __name__: str
+    __default__: Callable[Q, V]
 
     @abc.abstractmethod
     def __eq__(self, other):
@@ -40,15 +42,35 @@ class Operation[**Q, V](abc.ABC):
     def __lt__(self, other):
         raise NotImplementedError
 
-    @abc.abstractmethod
+    @functools.singledispatchmethod
+    @classmethod
+    def define(cls, obj) -> Operation[Q, V]:
+        """Define an operation from a callable object."""
+        raise NotImplementedError
+
+    @typing.final
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
         """The default rule is used when the operation is not handled.
 
         If no default rule is supplied, the free rule is used instead.
         """
-        raise NotImplementedError
+        try:
+            try:
+                return self.__default__(*args, **kwargs)
+            except NotImplementedError:
+                warnings.warn(
+                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
+                    DeprecationWarning,
+                )
+                raise NotHandled
+        except NotHandled:
+            from effectful.ops.syntax import defdata
 
-    @abc.abstractmethod
+            return typing.cast(
+                Callable[Concatenate[Operation[Q, V], Q], Expr[V]], defdata
+            )(self, *args, **kwargs)
+
+    @typing.final
     def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments.
 
@@ -62,9 +84,31 @@ class Operation[**Q, V](abc.ABC):
            allows for terms that compute on type-valued arguments.
 
         """
-        raise NotImplementedError
+        from effectful.internals.unification import (
+            freetypevars,
+            nested_type,
+            substitute,
+            unify,
+        )
 
-    @abc.abstractmethod
+        return_anno = self.__signature__.return_annotation
+        if typing.get_origin(return_anno) is typing.Annotated:
+            return_anno = typing.get_args(return_anno)[0]
+
+        if return_anno is inspect.Parameter.empty:
+            return typing.cast(type[V], object)
+        elif return_anno is None:
+            return type(None)  # type: ignore
+        elif not freetypevars(return_anno):
+            return return_anno
+
+        type_args = tuple(nested_type(a).value for a in args)
+        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
+        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
+        subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
+        return typing.cast(type[V], subst_type)
+
+    @typing.final
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         """
         Returns the sets of variables that appear free in each argument and keyword argument
@@ -74,14 +118,69 @@ class Operation[**Q, V](abc.ABC):
         subtracting the results of this method from the free variables of the subterms,
         allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
         """
-        raise NotImplementedError
+        from effectful.ops.syntax import Scoped
 
-    @typing.final
+        sig = Scoped.infer_annotations(self.__signature__)
+        bound_sig = sig.bind(*args, **kwargs)
+        bound_sig.apply_defaults()
+
+        result_sig = sig.bind(
+            *(frozenset() for _ in bound_sig.args),
+            **{k: frozenset() for k in bound_sig.kwargs},
+        )
+        for name, param in sig.parameters.items():
+            if typing.get_origin(param.annotation) is typing.Annotated:
+                for anno in typing.get_args(param.annotation)[1:]:
+                    if isinstance(anno, Scoped):
+                        param_bound_vars = anno.analyze(bound_sig)
+                        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                            result_sig.arguments[name] = tuple(
+                                param_bound_vars for _ in bound_sig.arguments[name]
+                            )
+                        elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                            for k in bound_sig.arguments[name]:
+                                result_sig.arguments[name][k] = param_bound_vars
+                        else:
+                            result_sig.arguments[name] = param_bound_vars
+
+        return result_sig
+
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        return self.apply.__default_rule__(self, *args, **kwargs)  # type: ignore
+        return type(self).apply(self, *args, **kwargs)
+
+    @classmethod
+    def apply(cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
+        from effectful.ops.semantics import apply
+
+        intp = get_interpretation()
+
+        self_handler = intp.get(self)
+        if self_handler is not None:
+            return self_handler(*args, **kwargs)
+
+        if self is apply:
+            return self.__default__(*args, **kwargs)
+
+        op_apply_handler = intp.get(type(self).apply)
+        if op_apply_handler is not None:
+            return op_apply_handler(self, *args, **kwargs)
+
+        return apply(self, *args, **kwargs)
+
+    def __get__(self, instance, owner):
+        if instance is not None:
+            # This is an instance-level operation, so we need to bind the instance
+            return functools.partial(self, instance)
+        else:
+            # This is a static operation, so we return the operation itself
+            return self
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
+
+    def __str__(self):
+        return self.__name__
 
 
 class Term[T](abc.ABC):
