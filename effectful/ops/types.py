@@ -298,7 +298,7 @@ class Operation[**Q, V]:
         if global_apply_handler is not None:
             return global_apply_handler(self, *args, **kwargs)
 
-        return self.apply(self, *args, **kwargs)
+        return type(self).apply(self, *args, **kwargs)
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

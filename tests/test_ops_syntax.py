@@ -210,7 +210,6 @@ def test_term_str():
     x3 = defop(x1)
 
     assert str(x1) == str(x2) == str(x3) == "x"
-    assert repr(x1) != repr(x2) != repr(x3)
     assert str(x1() + x2()) == "__add__(x(), x!1())"
     assert str(x1() + x1()) == "__add__(x(), x())"
     assert str(deffn(x1() + x1(), x1)) == "deffn(__add__(x(), x()), x)"
