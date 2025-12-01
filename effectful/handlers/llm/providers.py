@@ -24,9 +24,8 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from litellm import Choices, Message
+from litellm import Choices, Message, OpenAIChatCompletionToolParam
 from litellm.types.utils import ModelResponse
-from openai.types.chat import ChatCompletionFunctionToolParam
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
@@ -104,7 +103,7 @@ class Tool[**P, T]:
         )
 
     @property
-    def function_definition(self) -> ChatCompletionFunctionToolParam:
+    def function_definition(self) -> OpenAIChatCompletionToolParam:
         return {
             "type": "function",
             "function": {
