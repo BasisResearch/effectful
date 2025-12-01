@@ -221,12 +221,28 @@ class Operation[**Q, V]:
         """
         raise NotImplementedError
 
+    class _ClassMethodOpDescriptor(classmethod):
+        def __init__(self, define, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._define = define
+
+        def __set_name__(self, owner, name):
+            assert not hasattr(self, "_name_on_owner"), "should only be called once"
+            self._name_on_owner = f"_descriptorop_{name}"
+
+        def __get__(self, instance, owner: type | None = None):
+            owner = owner if owner is not None else type(instance)
+            try:
+                return owner.__dict__[self._name_on_owner]
+            except KeyError:
+                bound_op = self._define(super().__get__(instance, owner))
+                setattr(owner, self._name_on_owner, bound_op)
+                return bound_op
+
     @define.register(classmethod)
     @classmethod
-    def _define_classmethod(cls, *args, **kwargs):
-        from effectful.internals.custom_operations import _ClassMethodOperation
-
-        return _ClassMethodOperation(*args, **kwargs)
+    def _define_classmethod(cls, default, **kwargs):
+        return Operation._ClassMethodOpDescriptor(cls.define, default.__func__)
 
     @define.register(
         typing.cast(type[collections.abc.Callable], collections.abc.Callable)
