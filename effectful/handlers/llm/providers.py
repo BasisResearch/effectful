@@ -1,5 +1,6 @@
 import base64
 import dataclasses
+import functools
 import inspect
 import io
 import logging
@@ -104,14 +105,18 @@ class Tool[**P, T]:
 
     @property
     def function_definition(self) -> OpenAIChatCompletionToolParam:
+        response_format = litellm.utils.type_to_response_format_param(
+            self.parameter_model
+        )
+        assert response_format is not None
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.operation.__doc__ or "",
-                "parameters": openai.lib._pydantic.to_strict_json_schema(
-                    self.parameter_model
-                ),
+                "parameters": response_format["json_schema"][
+                    "schema"
+                ],  # extract the schema
                 "strict": True,
             },
         }
@@ -175,7 +180,8 @@ class _OpenAIPromptFormatter(string.Formatter):
 
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
-def llm_request(model_input: list[Message], *args, **kwargs) -> Any:
+@functools.wraps(litellm.completion)
+def completion(model_input: list[Message], *args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
     raise NotHandled
 
@@ -205,8 +211,8 @@ class CacheLLMRequestHandler(ObjectInterpretation):
             # Primitives (int, float, str, bytes, etc.) are already hashable
             return obj
 
-    @implements(llm_request)
-    def _cache_llm_request(self, *args, **kwargs) -> Any:
+    @implements(completion)
+    def _cache_completion(self, *args, **kwargs) -> Any:
         key = self._make_hashable((args, kwargs))
         if key in self.cache:
             return self.cache[key]
@@ -216,7 +222,7 @@ class CacheLLMRequestHandler(ObjectInterpretation):
 
 
 class LLMLoggingHandler(ObjectInterpretation):
-    """Logs llm_request rounds and tool_call invocations using Python logging.
+    """Logs completion rounds and tool_call invocations using Python logging.
 
     Configure with a logger or logger name. By default logs at INFO level.
     """
@@ -233,8 +239,8 @@ class LLMLoggingHandler(ObjectInterpretation):
         """
         self.logger = logger or logging.getLogger(__name__)
 
-    @implements(llm_request)
-    def _log_llm_request(self, *args, **kwargs) -> Any:
+    @implements(completion)
+    def _log_completion(self, *args, **kwargs) -> Any:
         """Log the LLM request and response."""
 
         response = fwd()
@@ -307,7 +313,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
-        response: ModelResponse = llm_request(
+        response: ModelResponse = completion(
             model_input,
             response_format=response_format,
             tools=tool_schemas,
@@ -386,8 +392,8 @@ class LiteLLMProvider(ObjectInterpretation):
         self._model_name = model_name
         self._extra_args = kwargs
 
-    @implements(llm_request)
-    def _llm_request(self, model_input: list[Message], *args, **kwargs):
+    @implements(completion)
+    def _completion(self, model_input: list[Message], *args, **kwargs):
         return litellm.completion(
             messages=model_input, *args, **kwargs, **self._extra_args
         )
