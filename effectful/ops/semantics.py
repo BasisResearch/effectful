@@ -38,9 +38,8 @@ def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
     By installing an :func:`apply` handler, we capture the term instead:
 
-    >>> def default(*args, **kwargs):
-    ...     raise NotHandled
-    >>> with handler({apply: default }):
+    >>> from effectful.ops.syntax import defdata
+    >>> with handler({apply: defdata}):
     ...     term = mul(add(1, 2), 3)
     >>> print(str(term))
     mul(add(1, 2), 3)
