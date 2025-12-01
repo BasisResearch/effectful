@@ -1,9 +1,10 @@
-from __future__ import annotations
+# from __future__ import annotations
 
 import abc
 import collections.abc
 import functools
 import inspect
+import types
 import typing
 import warnings
 from collections.abc import Callable, Mapping, Sequence
@@ -21,6 +22,26 @@ class NotHandled(Exception):
     """Raised by an operation when the operation should remain unhandled."""
 
     pass
+
+
+class _CustomSingleDispatchCallable[**P, **Q, S, T]:
+    def __init__(
+        self, func: Callable[Concatenate[Callable[[type], Callable[Q, S]], P], T]
+    ):
+        self.func = func
+        self._registry = functools.singledispatch(func)
+        functools.update_wrapper(self, func)
+
+    @property
+    def dispatch(self):
+        return self._registry.dispatch
+
+    @property
+    def register(self):
+        return self._registry.register
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        return self.func(self.dispatch, *args, **kwargs)
 
 
 @functools.total_ordering
@@ -61,7 +82,7 @@ class Operation[**Q, V]:
     @functools.singledispatchmethod
     @classmethod
     def define(
-        cls: type[typing.Self], default: Callable[Q, V], *, name: str
+        cls: type[typing.Self], default: Callable[Q, V], *, name: str | None = None
     ) -> typing.Self:
         """Creates a fresh :class:`Operation`.
 
@@ -192,10 +213,111 @@ class Operation[**Q, V]:
           1 2
 
         """
-        return cls(default, name=name)
+        raise NotImplementedError
+
+    @define.register(classmethod)  # type: ignore[attr-defined]
+    @classmethod
+    def _define_classmethod(cls, *args, **kwargs):
+        from effectful.internals.custom_operations import _ClassMethodOperation
+
+        return _ClassMethodOperation(*args, **kwargs)
+
+    @define.register(Callable)  # type: ignore[attr-defined]
+    @classmethod
+    def _define_callable[**P, T](
+        cls, t: Callable[P, T], *, name: str | None = None
+    ) -> "Operation[P, T]":
+        if isinstance(t, Operation):
+
+            @functools.wraps(t)
+            def func(*args, **kwargs):
+                raise NotHandled
+
+            if name is None:
+                name = getattr(t, "__name__", str(t))
+
+            return cls.define(func, name=name)
+
+        return cls(t, name=name)
+
+    @define.register(type)  # type: ignore[attr-defined]
+    @define.register(typing.cast(type, types.GenericAlias))  # type: ignore[attr-defined]
+    @define.register(typing.cast(type, typing._GenericAlias))  # type: ignore
+    @define.register(typing.cast(type, types.UnionType))  # type: ignore[attr-defined]
+    @classmethod
+    def _define_type[T](
+        cls, t: type[T], *, name: str | None = None
+    ) -> "Operation[[], T]":
+        def func() -> t:  # type: ignore
+            raise NotHandled
+
+        typing.get_type_hints(func)
+
+        if name is None:
+            name = t.__name__
+
+        return typing.cast(Operation[[], T], cls.define(func, name=name))
+
+    @define.register(types.BuiltinFunctionType)  # type: ignore[attr-defined]
+    @classmethod
+    def _define_builtinfunctiontype[**P, T](
+        cls, t: Callable[P, T], *, name: str | None = None
+    ) -> "Operation[P, T]":
+        @functools.wraps(t)
+        def func(*args, **kwargs):
+            from effectful.ops.semantics import fvsof
+
+            if not fvsof((args, kwargs)):
+                return t(*args, **kwargs)
+            else:
+                raise NotHandled
+
+        return cls.define(func, name=name)
+
+    @define.register(staticmethod)  # type: ignore[attr-defined]
+    @classmethod
+    def _define_staticmethod[**P, T](cls, t: "staticmethod[P, T]", **kwargs):
+        return staticmethod(cls.define(t.__func__, **kwargs))
+
+    # @define.register(property)  # type: ignore[attr-defined]
+    # @classmethod
+    # def _define_property(cls, *args, **kwargs):
+    #     from effectful.internals.custom_operations import _PropertyOperation
+
+    #     return _PropertyOperation(*args, **kwargs)
+
+    @define.register(functools.singledispatchmethod)  # type: ignore[attr-defined]
+    @classmethod
+    def _define_singledispatchmethod(cls, *args, **kwargs):
+        from effectful.internals.custom_operations import _SingleDispatchMethodOperation
+
+        return _SingleDispatchMethodOperation(*args, **kwargs)
+
+    @typing.runtime_checkable
+    class _SingleDispatchCallable(typing.Protocol):
+        registry: types.MappingProxyType[object, Callable]
+
+        def dispatch(self, cls: type) -> Callable: ...
+        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
+        def _clear_cache(self) -> None: ...
+        def __call__(self, /, *args, **kwargs): ...
+
+    @define.register(_SingleDispatchCallable)
+    @classmethod
+    def _defop_singledispatchoperation(cls, *args, **kwargs):
+        from effectful.internals.custom_operations import _SingleDispatchOperation
+
+        return _SingleDispatchOperation(*args, **kwargs)
+
+    @define.register(_CustomSingleDispatchCallable)  # type: ignore[attr-defined]
+    @classmethod
+    def _defop_customsingledispatchcallable(*args, **kwargs):
+        from effectful.internals.custom_operations import _CustomSingleDispatchOperation
+
+        return _CustomSingleDispatchOperation(*args, **kwargs)
 
     @typing.final
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
+    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         """The default rule is used when the operation is not handled.
 
         If no default rule is supplied, the free rule is used instead.
@@ -329,8 +451,8 @@ class Operation[**Q, V]:
 
     @classmethod
     def apply[**A, B](
-        cls, op: Operation[A, B], *args: A.args, **kwargs: A.kwargs
-    ) -> Expr[B]:
+        cls, op: "Operation[A, B]", *args: A.args, **kwargs: A.kwargs
+    ) -> "Expr[B]":
         """Apply an operation to arguments.
 
         In subclasses of Operation, `apply` is an operation that may be handled.
@@ -340,11 +462,7 @@ class Operation[**Q, V]:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-
-        # Subclasses of Operation get a fresh apply operation, except for
-        # _BaseOperation.
-        if cls.__name__ != "_BaseOperation":
-            cls.apply = Operation.define(cls.apply, name=f"{cls.__name__}_apply")
+        cls.apply = cls.define(cls.apply, name=f"{cls.__name__}_apply")
 
 
 if typing.TYPE_CHECKING:
@@ -374,13 +492,13 @@ class Term[T](abc.ABC):
 
     @property
     @abc.abstractmethod
-    def args(self) -> Sequence[Expr[Any]]:
+    def args(self) -> Sequence["Expr[Any]"]:
         """Abstract property for the arguments."""
         raise NotImplementedError
 
     @property
     @abc.abstractmethod
-    def kwargs(self) -> Mapping[str, Expr[Any]]:
+    def kwargs(self) -> Mapping[str, "Expr[Any]"]:
         """Abstract property for the keyword arguments."""
         raise NotImplementedError
 
