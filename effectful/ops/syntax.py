@@ -378,142 +378,9 @@ class Scoped(Annotation):
         return bound_vars
 
 
-@functools.singledispatch
-def defop[**P, T](
-    t: Callable[P, T], *, name: str | None = None, freshening=list[int] | None
-) -> Operation[P, T]:
-    """Creates a fresh :class:`Operation`.
-
-    :param t: May be a type, callable, or :class:`Operation`. If a type, the
-              operation will have no arguments and return the type. If a callable,
-              the operation will have the same signature as the callable, but with
-              no default rule. If an operation, the operation will be a distinct
-              copy of the operation.
-    :param name: Optional name for the operation.
-    :returns: A fresh operation.
-
-    .. note::
-
-      The result of :func:`defop` is always fresh (i.e. ``defop(f) != defop(f)``).
-
-    **Example usage**:
-
-    * Defining an operation:
-
-      This example defines an operation that selects one of two integers:
-
-      >>> @defop
-      ... def select(x: int, y: int) -> int:
-      ...     return x
-
-      The operation can be called like a regular function. By default, ``select``
-      returns the first argument:
-
-      >>> select(1, 2)
-      1
-
-      We can change its behavior by installing a ``select`` handler:
-
-      >>> from effectful.ops.semantics import handler
-      >>> with handler({select: lambda x, y: y}):
-      ...     print(select(1, 2))
-      2
-
-    * Defining an operation with no default rule:
-
-      We can use :func:`defop` and the
-      :exc:`NotHandled` exception to define an
-      operation with no default rule:
-
-      >>> @defop
-      ... def add(x: int, y: int) -> int:
-      ...     raise NotHandled
-      >>> print(str(add(1, 2)))
-      add(1, 2)
-
-      When an operation has no default rule, the free rule is used instead, which
-      constructs a term of the operation applied to its arguments. This feature
-      can be used to conveniently define the syntax of a domain-specific language.
-
-    * Defining free variables:
-
-      Passing :func:`defop` a type is a handy way to create a free variable.
-
-      >>> from effectful.ops.semantics import evaluate
-      >>> x = defop(int, name='x')
-      >>> y = x() + 1
-
-      ``y`` is free in ``x``, so it is not fully evaluated:
-
-      >>> print(str(y))
-      __add__(x(), 1)
-
-      We bind ``x`` by installing a handler for it:
-
-      >>> with handler({x: lambda: 2}):
-      ...     print(evaluate(y))
-      3
-
-      .. note::
-
-        Because the result of :func:`defop` is always fresh, it's important to
-        be careful with variable identity.
-
-        Two operations with the same name that come from different calls to
-        ``defop`` are not equal:
-
-        >>> x1 = defop(int, name='x')
-        >>> x2 = defop(int, name='x')
-        >>> x1 == x2
-        False
-
-        This means that to correctly bind a variable, you must use the same
-        operation object. In this example, ``scale`` returns a term with a free
-        variable ``x``:
-
-        >>> x = defop(float, name='x')
-        >>> def scale(a: float) -> float:
-        ...     return x() * a
-
-        Binding the variable ``x`` as follows does not work:
-
-        >>> term = scale(3.0)
-        >>> fresh_x = defop(float, name='x')
-        >>> with handler({fresh_x: lambda: 2.0}):
-        ...     print(str(evaluate(term)))
-        __mul__(x(), 3.0)
-
-        Only the original operation object will work:
-
-        >>> from effectful.ops.semantics import fvsof
-        >>> with handler({x: lambda: 2.0}):
-        ...     print(evaluate(term))
-        6.0
-
-    * Defining a fresh :class:`Operation`:
-
-      Passing :func:`defop` an :class:`Operation` creates a fresh operation with
-      the same name and signature, but no default rule.
-
-      >>> fresh_select = defop(select)
-      >>> print(str(fresh_select(1, 2)))
-      select(1, 2)
-
-      The new operation is distinct from the original:
-
-      >>> with handler({select: lambda x, y: y}):
-      ...     print(select(1, 2), fresh_select(1, 2))
-      2 select(1, 2)
-
-      >>> with handler({fresh_select: lambda x, y: y}):
-      ...     print(select(1, 2), fresh_select(1, 2))
-      1 2
-
-    """
-    raise NotImplementedError(f"expected type or callable, got {t}")
+defop = Operation.define
 
 
-@defop.register(classmethod)
 class _ClassMethodOperation[**P, S, T]:
     def __init__(self, default, **kwargs):  # type: ignore[misc]
         self._default = default
@@ -531,51 +398,49 @@ class _ClassMethodOperation[**P, S, T]:
         return op
 
 
-@defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
-class _BaseOperation[**Q, V](Operation[Q, V]):
-    __signature__: inspect.Signature
-    __name__: str
-    __default__: Callable[Q, V]
+@defop.register(classmethod)
+def _defop_classmethod(*args, **kwargs):
+    return _ClassMethodOperation(*args, **kwargs)
 
-    def __init__(
-        self,
-        default: Callable[Q, V],
-        *,
-        name: str | None = None,
-        freshening: list[int] | None = None,
-    ):
-        functools.update_wrapper(self, default)
-        self.__default__ = default
-        self.__name__ = name or default.__name__
-        self._freshening = freshening or []
-        self.__signature__ = inspect.signature(default)
 
-    def __eq__(self, other):
-        if not isinstance(other, Operation):
-            return NotImplemented
-        return self is other
+# @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
+# class _BaseOperation[**Q, V](Operation[Q, V]):
+#     __signature__: inspect.Signature
+#     __name__: str
+#     __default__: Callable[Q, V]
 
-    def __lt__(self, other):
-        if not isinstance(other, Operation):
-            return NotImplemented
-        return id(self) < id(other)
+#     def __init__(
+#         self,
+#         default: Callable[Q, V],
+#         *,
+#         name: str | None = None,
+#         freshening: list[int] | None = None,
+#     ):
+#         functools.update_wrapper(self, default)
+#         self.__default__ = default
+#         self.__name__ = name or default.__name__
+#         self._freshening = freshening or []
+#         self.__signature__ = inspect.signature(default)
 
-    def __hash__(self):
-        return hash(self.__default__)
+#     def __eq__(self, other):
+#         if not isinstance(other, Operation):
+#             return NotImplemented
+#         return self is other
 
-    @defop
-    @classmethod
-    def apply(cls, op: Operation[Q, V], *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
-        from effectful.ops.semantics import apply
+#     def __lt__(self, other):
+#         if not isinstance(other, Operation):
+#             return NotImplemented
+#         return id(self) < id(other)
 
-        intp = get_interpretation()
-        if op in intp:
-            return intp[op](*args, **kwargs)
-        elif cls.apply in intp:
-            return intp[cls.apply](cls, op, *args, **kwargs)
-        else:
-            return apply.__default_rule__(op, *args, **kwargs)  # type: ignore[arg-type,return-value]
+#     def __hash__(self):
+#         return hash(self.__default__)
+
+#     def __init_subclass__(cls, **kwargs): ...
+
+
+# @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
+# def _(*args, **kwargs):
+#     return _BaseOperation(*args, **kwargs)
 
 
 @defop.register(Operation)
@@ -586,9 +451,8 @@ def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]
 
     if name is None:
         name = getattr(t, "__name__", str(t))
-    freshening = getattr(t, "_freshening", []) + [random.randint(0, 1 << 32)]
 
-    return defop(func, name=name, freshening=freshening)
+    return defop(func, name=name)
 
 
 @defop.register(type)
@@ -599,15 +463,10 @@ def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotHandled
 
-    freshening = []
     if name is None:
         name = t.__name__
-        freshening = [random.randint(0, 1 << 32)]
 
-    return typing.cast(
-        Operation[[], T],
-        defop(func, name=name, freshening=freshening),
-    )
+    return typing.cast(Operation[[], T], defop(func, name=name))
 
 
 @defop.register(types.BuiltinFunctionType)
@@ -624,8 +483,7 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
-@defop.register(staticmethod)
-class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
+class _StaticMethodOperation[**P, S, T](Operation[P, T]):
     def __init__(self, default: staticmethod, **kwargs):
         super().__init__(default=default.__func__, **kwargs)
 
@@ -633,8 +491,12 @@ class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
         return self
 
 
-@defop.register(property)
-class _PropertyOperation[S, T](_BaseOperation[[S], T]):
+@defop.register(staticmethod)
+def _defop_staticmethod(*args, **kwargs):
+    return _StaticMethodOperation(*args, **kwargs)
+
+
+class _PropertyOperation[S, T](Operation[[S], T]):
     def __init__(self, default: property, **kwargs):  # type: ignore
         assert not default.fset, "property with setter is not supported"
         assert not default.fdel, "property with deleter is not supported"
@@ -655,8 +517,12 @@ class _PropertyOperation[S, T](_BaseOperation[[S], T]):
             return self
 
 
-@defop.register(functools.singledispatchmethod)
-class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
+@Operation.define.register(property)
+def _defop_property(*args, **kwargs):
+    return _PropertyOperation(*args, **kwargs)
+
+
+class _SingleDispatchMethodOperation[**P, S, T](Operation[Concatenate[S, P], T]):
     __default__: Callable[Concatenate[S, P], T]
 
     def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
@@ -693,7 +559,12 @@ class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P]
         return self._registry.__isabstractmethod__
 
 
-class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
+@defop.register(functools.singledispatchmethod)
+def _defop_singledispatchmethod(*args, **kwargs):
+    return _SingleDispatchMethodOperation(*args, **kwargs)
+
+
+class _SingleDispatchOperation[**P, S, T](Operation[Concatenate[S, P], T]):
     __default__: "functools._SingleDispatchCallable[T]"
 
     @property
@@ -705,8 +576,12 @@ class _SingleDispatchOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
         return self.__default__.dispatch
 
 
+def _defop_singledispatchoperation(*args, **kwargs):
+    return _SingleDispatchOperation(*args, **kwargs)
+
+
 if typing.TYPE_CHECKING:
-    defop.register(functools._SingleDispatchCallable)(_SingleDispatchOperation)
+    defop.register(functools._SingleDispatchCallable)(_defop_singledispatchoperation)
 else:
 
     @typing.runtime_checkable
@@ -718,7 +593,7 @@ else:
         def _clear_cache(self) -> None: ...
         def __call__(self, /, *args, **kwargs): ...
 
-    defop.register(_SingleDispatchCallable)(_SingleDispatchOperation)
+    defop.register(_SingleDispatchCallable)(_defop_singledispatchoperation)
 
 
 @defop
@@ -782,8 +657,7 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
         return self.func(self.dispatch, *args, **kwargs)
 
 
-@defop.register(_CustomSingleDispatchCallable)
-class _CustomSingleDispatchOperation[**P, **Q, S, T](_BaseOperation[P, T]):
+class _CustomSingleDispatchOperation[**P, **Q, S, T](Operation[P, T]):
     _default: _CustomSingleDispatchCallable[P, Q, S, T]
 
     def __init__(self, default: _CustomSingleDispatchCallable[P, Q, S, T], **kwargs):
@@ -797,6 +671,11 @@ class _CustomSingleDispatchOperation[**P, **Q, S, T](_BaseOperation[P, T]):
     @property
     def register(self):
         return self._registry.register
+
+
+@defop.register(_CustomSingleDispatchCallable)
+def _defop_customsingledispatchcallable(*args, **kwargs):
+    return _CustomSingleDispatchOperation(*args, **kwargs)
 
 
 @_CustomSingleDispatchCallable
