@@ -464,7 +464,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
 @functools.cache
 def name_to_sym(name: str) -> Operation[[], jax.Array]:
-    return defop(jax.Array, name=name)  # type: ignore
+    return defop(jax.Array, name=name)
 
 
 def from_indexed(tensor, batch_dims):

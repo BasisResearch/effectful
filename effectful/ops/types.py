@@ -7,7 +7,14 @@ import inspect
 import typing
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Concatenate, _ProtocolMeta, overload, runtime_checkable
+from typing import (
+    Any,
+    Concatenate,
+    Protocol,
+    _ProtocolMeta,
+    overload,
+    runtime_checkable,
+)
 
 
 class NotHandled(Exception):
@@ -22,7 +29,8 @@ class Operation[**Q, V]:
 
     .. note::
 
-       Do not use :class:`Operation` directly. Instead, use :func:`defop` to define operations.
+       Do not instantiate :class:`Operation` directly. Instead, use
+       :func:`define` to define operations.
 
     """
 
@@ -52,20 +60,23 @@ class Operation[**Q, V]:
 
     @functools.singledispatchmethod
     @classmethod
-    def define(cls, *args, **kwargs) -> Operation[Q, V]:
+    def define(
+        cls: type[typing.Self], default: Callable[Q, V], *, name: str
+    ) -> typing.Self:
         """Creates a fresh :class:`Operation`.
 
         :param t: May be a type, callable, or :class:`Operation`. If a type, the
-                  operation will have no arguments and return the type. If a callable,
-                  the operation will have the same signature as the callable, but with
-                  no default rule. If an operation, the operation will be a distinct
-                  copy of the operation.
+                  operation will have no arguments and return the type. If a
+                  callable, the operation will have the same signature as the
+                  callable, but with no default rule. If an operation, the
+                  operation will be a distinct copy of the operation.
         :param name: Optional name for the operation.
         :returns: A fresh operation.
 
         .. note::
 
-          The result of :func:`defop` is always fresh (i.e. ``defop(f) != defop(f)``).
+          The result of :func:`Operation.define` is always fresh (i.e.
+          ``Operation.define(f) != Operation.define(f)``).
 
         **Example usage**:
 
@@ -73,12 +84,12 @@ class Operation[**Q, V]:
 
           This example defines an operation that selects one of two integers:
 
-          >>> @defop
+          >>> @Operation.define
           ... def select(x: int, y: int) -> int:
           ...     return x
 
-          The operation can be called like a regular function. By default, ``select``
-          returns the first argument:
+          The operation can be called like a regular function. By default,
+          ``select`` returns the first argument:
 
           >>> select(1, 2)
           1
@@ -92,26 +103,26 @@ class Operation[**Q, V]:
 
         * Defining an operation with no default rule:
 
-          We can use :func:`defop` and the
-          :exc:`NotHandled` exception to define an
-          operation with no default rule:
+          We can use :func:`Operation.define` and the :exc:`NotHandled`
+          exception to define an operation with no default rule:
 
-          >>> @defop
+          >>> @Operation.define
           ... def add(x: int, y: int) -> int:
           ...     raise NotHandled
           >>> print(str(add(1, 2)))
           add(1, 2)
 
-          When an operation has no default rule, the free rule is used instead, which
-          constructs a term of the operation applied to its arguments. This feature
-          can be used to conveniently define the syntax of a domain-specific language.
+          When an operation has no default rule, the free rule is used instead,
+          which constructs a term of the operation applied to its arguments.
+          This feature can be used to conveniently define the syntax of a
+          domain-specific language.
 
         * Defining free variables:
 
-          Passing :func:`defop` a type is a handy way to create a free variable.
+          Passing :func:`Operation.define` a type creates a free variable.
 
           >>> from effectful.ops.semantics import evaluate
-          >>> x = defop(int, name='x')
+          >>> x = Operation.define(int, name='x')
           >>> y = x() + 1
 
           ``y`` is free in ``x``, so it is not fully evaluated:
@@ -127,29 +138,29 @@ class Operation[**Q, V]:
 
           .. note::
 
-            Because the result of :func:`defop` is always fresh, it's important to
-            be careful with variable identity.
+            Because the result of :func:`Operation.define` is always fresh, it's
+            important to be careful with variable identity.
 
             Two operations with the same name that come from different calls to
-            ``defop`` are not equal:
+            ``Operation.define`` are not equal:
 
-            >>> x1 = defop(int, name='x')
-            >>> x2 = defop(int, name='x')
+            >>> x1 = Operation.define(int, name='x')
+            >>> x2 = Operation.define(int, name='x')
             >>> x1 == x2
             False
 
             This means that to correctly bind a variable, you must use the same
-            operation object. In this example, ``scale`` returns a term with a free
-            variable ``x``:
+            operation object. In this example, ``scale`` returns a term with a
+            free variable ``x``:
 
-            >>> x = defop(float, name='x')
+            >>> x = Operation.define(float, name='x')
             >>> def scale(a: float) -> float:
             ...     return x() * a
 
             Binding the variable ``x`` as follows does not work:
 
             >>> term = scale(3.0)
-            >>> fresh_x = defop(float, name='x')
+            >>> fresh_x = Operation.define(float, name='x')
             >>> with handler({fresh_x: lambda: 2.0}):
             ...     print(str(evaluate(term)))
             __mul__(x(), 3.0)
@@ -163,10 +174,10 @@ class Operation[**Q, V]:
 
         * Defining a fresh :class:`Operation`:
 
-          Passing :func:`defop` an :class:`Operation` creates a fresh operation with
-          the same name and signature, but no default rule.
+          Passing :func:`Operation.define` an :class:`Operation` creates a fresh
+          operation with the same name and signature, but no default rule.
 
-          >>> fresh_select = defop(select)
+          >>> fresh_select = Operation.define(select)
           >>> print(str(fresh_select(1, 2)))
           select(1, 2)
 
@@ -181,7 +192,7 @@ class Operation[**Q, V]:
           1 2
 
         """
-        return cls(*args, **kwargs)
+        return cls(default, name=name)
 
     @typing.final
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> Expr[V]:
@@ -245,13 +256,15 @@ class Operation[**Q, V]:
 
     @typing.final
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
-        """
-        Returns the sets of variables that appear free in each argument and keyword argument
-        but not in the result of the operation, i.e. the variables bound by the operation.
+        """Returns the sets of variables that appear free in each argument and
+        keyword argument but not in the result of the operation, i.e. the
+        variables bound by the operation.
 
-        These are used by :func:`fvsof` to determine the free variables of a term by
-        subtracting the results of this method from the free variables of the subterms,
-        allowing :func:`fvsof` to be implemented in terms of :func:`evaluate` .
+        These are used by :func:`fvsof` to determine the free variables of a
+        term by subtracting the results of this method from the free variables
+        of the subterms, allowing :func:`fvsof` to be implemented in terms of
+        :func:`evaluate` .
+
         """
         from effectful.ops.syntax import Scoped
 
@@ -298,7 +311,7 @@ class Operation[**Q, V]:
         if global_apply_handler is not None:
             return global_apply_handler(self, *args, **kwargs)
 
-        return type(self).apply(self, *args, **kwargs)
+        return type(self).apply(self, *args, **kwargs)  # type: ignore[return-value]
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
@@ -315,7 +328,14 @@ class Operation[**Q, V]:
             return self
 
     @classmethod
-    def apply(cls, op, *args, **kwargs):
+    def apply[**A, B](
+        cls, op: Operation[A, B], *args: A.args, **kwargs: A.kwargs
+    ) -> Expr[B]:
+        """Apply an operation to arguments.
+
+        In subclasses of Operation, `apply` is an operation that may be handled.
+
+        """
         return op.__default_rule__(*args, **kwargs)
 
     def __init_subclass__(cls, **kwargs):
@@ -325,6 +345,17 @@ class Operation[**Q, V]:
         # _BaseOperation.
         if cls.__name__ != "_BaseOperation":
             cls.apply = Operation.define(cls.apply, name=f"{cls.__name__}_apply")
+
+
+if typing.TYPE_CHECKING:
+
+    @runtime_checkable
+    class _OperationDefine(Protocol):
+        def __call__[**Q, V](
+            self, op: Callable[Q, V], *, name: str | None = None
+        ) -> Operation[Q, V]: ...
+
+    assert isinstance(Operation.define, _OperationDefine)
 
 
 class Term[T](abc.ABC):

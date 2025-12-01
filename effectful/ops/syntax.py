@@ -4,7 +4,6 @@ import functools
 import inspect
 import numbers
 import operator
-import random
 import types
 import typing
 import warnings
@@ -382,68 +381,25 @@ defop = Operation.define
 
 
 class _ClassMethodOperation[**P, S, T]:
-    def __init__(self, default, **kwargs):  # type: ignore[misc]
+    def __init__(self, default):
         self._default = default
-        self._defop_kwargs = kwargs
         self._operation = {}
 
     def __get__(self, instance, owner: type[S]) -> Callable[P, T]:
         op = self._operation.get(owner, None)
         if op is None:
             func = self._default.__func__
-            op = defop(
-                functools.partial(func, owner), name=func.__name__, **self._defop_kwargs
-            )
+            op = Operation.define(functools.partial(func, owner), name=func.__name__)
             self._operation[owner] = op
         return op
 
 
-@defop.register(classmethod)
+@Operation.define.register(classmethod)  # type: ignore[attr-defined]
 def _defop_classmethod(*args, **kwargs):
     return _ClassMethodOperation(*args, **kwargs)
 
 
-# @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
-# class _BaseOperation[**Q, V](Operation[Q, V]):
-#     __signature__: inspect.Signature
-#     __name__: str
-#     __default__: Callable[Q, V]
-
-#     def __init__(
-#         self,
-#         default: Callable[Q, V],
-#         *,
-#         name: str | None = None,
-#         freshening: list[int] | None = None,
-#     ):
-#         functools.update_wrapper(self, default)
-#         self.__default__ = default
-#         self.__name__ = name or default.__name__
-#         self._freshening = freshening or []
-#         self.__signature__ = inspect.signature(default)
-
-#     def __eq__(self, other):
-#         if not isinstance(other, Operation):
-#             return NotImplemented
-#         return self is other
-
-#     def __lt__(self, other):
-#         if not isinstance(other, Operation):
-#             return NotImplemented
-#         return id(self) < id(other)
-
-#     def __hash__(self):
-#         return hash(self.__default__)
-
-#     def __init_subclass__(cls, **kwargs): ...
-
-
-# @defop.register(typing.cast(type[collections.abc.Callable], collections.abc.Callable))
-# def _(*args, **kwargs):
-#     return _BaseOperation(*args, **kwargs)
-
-
-@defop.register(Operation)
+@Operation.define.register(Operation)  # type: ignore[attr-defined]
 def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
@@ -452,13 +408,13 @@ def _[**P, T](t: Operation[P, T], *, name: str | None = None) -> Operation[P, T]
     if name is None:
         name = getattr(t, "__name__", str(t))
 
-    return defop(func, name=name)
+    return Operation.define(func, name=name)
 
 
-@defop.register(type)
-@defop.register(typing.cast(type, types.GenericAlias))
-@defop.register(typing.cast(type, typing._GenericAlias))  # type: ignore
-@defop.register(typing.cast(type, types.UnionType))
+@Operation.define.register(type)  # type: ignore[attr-defined]
+@Operation.define.register(typing.cast(type, types.GenericAlias))  # type: ignore[attr-defined]
+@Operation.define.register(typing.cast(type, typing._GenericAlias))  # type: ignore
+@Operation.define.register(typing.cast(type, types.UnionType))  # type: ignore[attr-defined]
 def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     def func() -> t:  # type: ignore
         raise NotHandled
@@ -466,10 +422,10 @@ def _[T](t: type[T], *, name: str | None = None) -> Operation[[], T]:
     if name is None:
         name = t.__name__
 
-    return typing.cast(Operation[[], T], defop(func, name=name))
+    return typing.cast(Operation[[], T], Operation.define(func, name=name))
 
 
-@defop.register(types.BuiltinFunctionType)
+@Operation.define.register(types.BuiltinFunctionType)  # type: ignore[attr-defined]
 def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     @functools.wraps(t)
     def func(*args, **kwargs):
@@ -480,7 +436,7 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
         else:
             raise NotHandled
 
-    return defop(func, name=name)
+    return Operation.define(func, name=name)
 
 
 class _StaticMethodOperation[**P, S, T](Operation[P, T]):
@@ -491,13 +447,13 @@ class _StaticMethodOperation[**P, S, T](Operation[P, T]):
         return self
 
 
-@defop.register(staticmethod)
+@Operation.define.register(staticmethod)  # type: ignore[attr-defined]
 def _defop_staticmethod(*args, **kwargs):
     return _StaticMethodOperation(*args, **kwargs)
 
 
 class _PropertyOperation[S, T](Operation[[S], T]):
-    def __init__(self, default: property, **kwargs):  # type: ignore
+    def __init__(self, default: property, **kwargs):
         assert not default.fset, "property with setter is not supported"
         assert not default.fdel, "property with deleter is not supported"
         super().__init__(default=typing.cast(Callable[[S], T], default.fget), **kwargs)
@@ -517,7 +473,7 @@ class _PropertyOperation[S, T](Operation[[S], T]):
             return self
 
 
-@Operation.define.register(property)
+@Operation.define.register(property)  # type: ignore[attr-defined]
 def _defop_property(*args, **kwargs):
     return _PropertyOperation(*args, **kwargs)
 
@@ -525,7 +481,7 @@ def _defop_property(*args, **kwargs):
 class _SingleDispatchMethodOperation[**P, S, T](Operation[Concatenate[S, P], T]):
     __default__: Callable[Concatenate[S, P], T]
 
-    def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
+    def __init__(self, default: functools.singledispatchmethod, **kwargs):
         if isinstance(default.func, classmethod):
             raise NotImplementedError("Operations as classmethod are not yet supported")
 
@@ -559,7 +515,7 @@ class _SingleDispatchMethodOperation[**P, S, T](Operation[Concatenate[S, P], T])
         return self._registry.__isabstractmethod__
 
 
-@defop.register(functools.singledispatchmethod)
+@Operation.define.register(functools.singledispatchmethod)  # type: ignore[attr-defined]
 def _defop_singledispatchmethod(*args, **kwargs):
     return _SingleDispatchMethodOperation(*args, **kwargs)
 
@@ -581,7 +537,9 @@ def _defop_singledispatchoperation(*args, **kwargs):
 
 
 if typing.TYPE_CHECKING:
-    defop.register(functools._SingleDispatchCallable)(_defop_singledispatchoperation)
+    Operation.define.register(functools._SingleDispatchCallable)(  # type: ignore[attr-defined]
+        _defop_singledispatchoperation
+    )
 else:
 
     @typing.runtime_checkable
@@ -593,10 +551,10 @@ else:
         def _clear_cache(self) -> None: ...
         def __call__(self, /, *args, **kwargs): ...
 
-    defop.register(_SingleDispatchCallable)(_defop_singledispatchoperation)
+    Operation.define.register(_SingleDispatchCallable)(_defop_singledispatchoperation)  # type: ignore[attr-defined]
 
 
-@defop
+@Operation.define
 def deffn[T, A, B](
     body: Annotated[T, Scoped[A | B]],
     *args: Annotated[Operation, Scoped[A]],
@@ -673,7 +631,7 @@ class _CustomSingleDispatchOperation[**P, **Q, S, T](Operation[P, T]):
         return self._registry.register
 
 
-@defop.register(_CustomSingleDispatchCallable)
+@Operation.define.register(_CustomSingleDispatchCallable)  # type: ignore[attr-defined]
 def _defop_customsingledispatchcallable(*args, **kwargs):
     return _CustomSingleDispatchOperation(*args, **kwargs)
 
@@ -1270,7 +1228,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
             raise NotHandled
 
     @defop
-    def __eq__(self, other) -> bool:  # type: ignore[override]
+    def __eq__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
         else:

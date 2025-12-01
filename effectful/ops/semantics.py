@@ -16,7 +16,7 @@ from effectful.ops.types import (
 )
 
 
-@defop  # type: ignore
+@defop
 def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
