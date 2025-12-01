@@ -382,7 +382,7 @@ def format_model_input[**P, T](
     return messages
 
 
-class LLMProvider(ObjectInterpretation):
+class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
     def __init__(self, model_name: str = "gpt-4o"):
