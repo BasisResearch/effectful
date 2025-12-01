@@ -10,7 +10,6 @@ from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
 
 import litellm
-import openai
 import pydantic
 
 try:
@@ -18,7 +17,14 @@ try:
 except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
-from litellm import Choices, Message, OpenAIChatCompletionToolParam
+from litellm import (
+    ChatCompletionImageObject,
+    Choices,
+    Message,
+    OpenAIChatCompletionToolParam,
+    OpenAIMessageContent,
+    OpenAIMessageContentListBlock,
+)
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template
@@ -39,17 +45,14 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
 
 def _pil_image_to_openai_image_param(
     pil_image: Image.Image,
-) -> openai.types.responses.ResponseInputImageParam:
-    return openai.types.responses.ResponseInputImageParam(
-        type="input_image",
-        detail="auto",
-        image_url=_pil_image_to_base64_data_uri(pil_image),
-    )
-
-
-OpenAIFunctionOutputParamType = (
-    str | list[openai.types.responses.ResponseInputImageParam]
-)
+) -> ChatCompletionImageObject:
+    return {
+        "type": "image_url",
+        "image_url": {
+            "detail": "auto",
+            "url": _pil_image_to_base64_data_uri(pil_image),
+        },
+    }
 
 
 @dataclasses.dataclass
@@ -58,7 +61,7 @@ class Tool[**P, T]:
     operation: Operation[P, T]
     name: str
 
-    def serialise_return_value(self, value) -> OpenAIFunctionOutputParamType:
+    def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
         sig = inspect.signature(self.operation)
         ret_ty = sig.return_annotation
@@ -134,8 +137,8 @@ def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
 class _OpenAIPromptFormatter(string.Formatter):
     def format_as_messages(
         self, format_str: str, /, *args, **kwargs
-    ) -> openai.types.responses.ResponseInputMessageContentListParam:
-        prompt_parts = []
+    ) -> OpenAIMessageContent:
+        prompt_parts: list[OpenAIMessageContentListBlock] = []
         current_text = ""
 
         def push_current_text():
@@ -158,7 +161,7 @@ class _OpenAIPromptFormatter(string.Formatter):
                     push_current_text()
                     prompt_parts.append(
                         {
-                            "type": "input_image",
+                            "type": "image_url",
                             "image_url": _pil_image_to_base64_data_uri(obj),
                         }
                     )
@@ -174,7 +177,7 @@ class _OpenAIPromptFormatter(string.Formatter):
 # Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
 @functools.wraps(litellm.completion)
-def completion(model_input: list[Message], *args, **kwargs) -> Any:
+def completion(*args, **kwargs) -> Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
     raise NotHandled
 
@@ -272,7 +275,7 @@ class LLMLoggingHandler(ObjectInterpretation):
 
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
-) -> OpenAIFunctionOutputParamType:
+) -> OpenAIMessageContent:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
         result = tool_call(
@@ -307,7 +310,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
         response: ModelResponse = completion(
-            model_input,
+            messages=model_input,
             response_format=response_format,
             tools=tool_schemas,
         )
@@ -386,10 +389,8 @@ class LiteLLMProvider(ObjectInterpretation):
         self._extra_args = kwargs
 
     @implements(completion)
-    def _completion(self, model_input: list[Message], *args, **kwargs):
-        return litellm.completion(
-            messages=model_input, *args, **kwargs, **self._extra_args
-        )
+    def _completion(self, *args, **kwargs):
+        return litellm.completion(*args, **kwargs, **self._extra_args)
 
     @implements(Template.__call__)
     def _call[**P, T](
