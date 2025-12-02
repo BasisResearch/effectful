@@ -318,26 +318,11 @@ class Operation[**Q, V]:
         op.__isabstractmethod__ = default.__isabstractmethod__
         return op
 
-    @typing.runtime_checkable
-    class _SingleDispatchCallable(typing.Protocol):
-        registry: types.MappingProxyType[object, Callable]
-
-        def dispatch(self, cls: type) -> Callable: ...
-        def register(self, cls: type, func: Callable | None = None) -> Callable: ...
-        def _clear_cache(self) -> None: ...
-        def __call__(self, /, *args, **kwargs): ...
-
-    @define.register(_SingleDispatchCallable)
-    @classmethod
-    def _defop_singledispatchoperation(cls, default, **kwargs):
-        op = cls._define_callable(default, **kwargs)
-        op.dispatch = default._registry.dispatch
-        op.register = default._registry.register
-        return op
-
     @define.register(_CustomSingleDispatchCallable)
     @classmethod
-    def _defop_customsingledispatchcallable(cls, default, **kwargs):
+    def _defop_customsingledispatchcallable(
+        cls, default: _CustomSingleDispatchCallable, **kwargs
+    ):
         sig = inspect.signature(functools.partial(default.func, None))
         op = cls._define_callable(default, signature=sig)
         op.dispatch = default._registry.dispatch

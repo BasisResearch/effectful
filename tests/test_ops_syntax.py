@@ -445,6 +445,29 @@ def test_defop_staticmethod():
         assert MyClass.my_staticmethod(10) == 14
 
 
+def test_defop_singledispatch():
+    @defop
+    @functools.singledispatch
+    def process(x: object) -> object:
+        raise NotHandled("Unsupported type")
+
+    @process.register(int)
+    def _(x: int):
+        return x + 1
+
+    @process.register(str)
+    def _(x: str):
+        return x.upper()
+
+    assert isinstance(process, Operation)
+    assert process(1) == 2
+    assert process("hello") == "HELLO"
+
+    with handler({process: lambda _: "test"}):
+        assert process(0) == "test"
+        assert process("hello") == "test"
+
+
 def test_defop_singledispatchmethod():
     """Test that defop can be used as a singledispatchmethod decorator."""
 
