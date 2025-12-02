@@ -28,6 +28,7 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     ):
         self.func = func
         self._registry = functools.singledispatch(func)
+        self.__signature__ = inspect.signature(functools.partial(func, None))
         functools.update_wrapper(self, func)
 
     @property
@@ -77,17 +78,13 @@ class Operation[**Q, V]:
     __default__: Callable[Q, V]
 
     def __init__(
-        self,
-        default: Callable[Q, V],
-        *,
-        name: str | None = None,
-        signature: inspect.Signature | None = None,
+        self, signature: inspect.Signature, name: str, default: Callable[Q, V]
     ):
         functools.update_wrapper(self, default)
 
+        self.__signature__ = signature
+        self.__name__ = name
         self.__default__ = default
-        self.__name__ = name or default.__name__
-        self.__signature__ = signature or inspect.signature(default)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -248,7 +245,7 @@ class Operation[**Q, V]:
     )
     @classmethod
     def _define_callable[**P, T](
-        cls, t: Callable[P, T], *, name: str | None = None, **kwargs
+        cls, t: Callable[P, T], *, name: str | None = None
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
 
@@ -256,10 +253,10 @@ class Operation[**Q, V]:
             def func(*args, **kwargs):
                 raise NotHandled
 
-            name = name or getattr(t, "__name__", str(t))
-            op = cls.define(func, name=name, **kwargs)
+            op = cls.define(func, name=name)
         else:
-            op = cls(t, name=name, **kwargs)  # type: ignore[arg-type]
+            name = name or t.__name__
+            op = cls(inspect.signature(t), name, t)  # type: ignore[arg-type]
 
         return op  # type: ignore[return-value]
 
@@ -268,20 +265,18 @@ class Operation[**Q, V]:
     @define.register(typing.cast(type, typing._GenericAlias))  # type: ignore[attr-defined]
     @define.register(typing.cast(type, types.UnionType))
     @classmethod
-    def _define_type[T](
-        cls, t: type[T], *, name: str | None = None
-    ) -> "Operation[[], T]":
+    def _define_type[T](cls, t: type[T], **kwargs) -> "Operation[[], T]":
         def func():
             raise NotHandled
 
-        sig = inspect.Signature(return_annotation=t)
-        name = name or t.__name__
-        return typing.cast(Operation[[], T], cls.define(func, name=name, signature=sig))
+        func.__signature__ = inspect.Signature(return_annotation=t)
+        func.__name__ = t.__name__
+        return typing.cast(Operation[[], T], cls.define(func, **kwargs))
 
     @define.register(types.BuiltinFunctionType)
     @classmethod
     def _define_builtinfunctiontype[**P, T](
-        cls, t: Callable[P, T], *, name: str | None = None
+        cls, t: Callable[P, T], **kwargs
     ) -> "Operation[P, T]":
         @functools.wraps(t)
         def func(*args, **kwargs):
@@ -292,7 +287,7 @@ class Operation[**Q, V]:
             else:
                 raise NotHandled
 
-        return typing.cast(Operation[P, T], cls.define(func, name=name))
+        return typing.cast(Operation[P, T], cls.define(func, **kwargs))
 
     @define.register(staticmethod)
     @classmethod
@@ -319,8 +314,11 @@ class Operation[**Q, V]:
     def _defop_customsingledispatchcallable(
         cls, default: _CustomSingleDispatchCallable, **kwargs
     ):
-        sig = inspect.signature(functools.partial(default.func, None))
-        op = cls._define_callable(default, signature=sig)
+        @functools.wraps(default)
+        def func(*args, **kwargs):
+            return default(*args, **kwargs)
+
+        op = cls.define(func, **kwargs)
         op.dispatch = default._registry.dispatch
         op.register = default._registry.register
         return op
