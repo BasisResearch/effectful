@@ -440,7 +440,13 @@ class Operation[**Q, V]:
         if global_apply_handler is not None:
             return global_apply_handler(self, *args, **kwargs)
 
-        return type(self).apply(self, *args, **kwargs)  # type: ignore[return-value]
+        # Use type(self) instead of self because we do not want a bound method
+        class_apply = type(self).apply
+
+        # In Operation, cls.apply is a classmethod. In subclasses, it is an operation.
+        if isinstance(class_apply, Operation):
+            return class_apply.__default_rule__(self, *args, **kwargs)  # type: ignore[return-value]
+        return class_apply(self, *args, **kwargs)  # type: ignore[return-value]
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"

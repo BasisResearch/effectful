@@ -935,18 +935,18 @@ def test_operation_subclass():
     def _other_operation_apply(op, a, b):
         return "<OtherOperation.apply handler>"
 
-    # assert my_func(1, 2) == "<default handler>"
+    assert my_func(1, 2) == "<default handler>"
 
-    # # Handling the operation works
-    # with handler({my_func: _my_func}):
-    #     assert my_func(3, 4) == "<op handler>"
+    # Handling the operation works
+    with handler({my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
 
-    # # Handling the class apply works
-    # with handler({TestOperation.apply: _test_operation_apply}):
-    #     assert my_func(3, 4) == "<TestOperation.apply handler>"
+    # Handling the class apply works
+    with handler({TestOperation.apply: _test_operation_apply}):
+        assert my_func(3, 4) == "<TestOperation.apply handler>"
 
-    # with handler({OtherOperation.apply: _other_operation_apply}):
-    #     assert my_func(3, 4) == "<default handler>"
+    with handler({OtherOperation.apply: _other_operation_apply}):
+        assert my_func(3, 4) == "<default handler>"
 
     # Handling global apply works
     with handler({apply: _apply}):
