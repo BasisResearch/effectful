@@ -28,7 +28,7 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     ):
         self.func = func
         self._registry = functools.singledispatch(func)
-        self.__signature__ = inspect.signature(functools.partial(func, None))
+        self.__signature__ = inspect.signature(functools.partial(func, None))  # type: ignore[arg-type]
         functools.update_wrapper(self, func)
 
     @property
@@ -269,7 +269,7 @@ class Operation[**Q, V]:
         def func():
             raise NotHandled
 
-        func.__signature__ = inspect.Signature(return_annotation=t)
+        func.__signature__ = inspect.Signature(return_annotation=t)  # type: ignore[attr-defined]
         func.__name__ = t.__name__
         return typing.cast(Operation[[], T], cls.define(func, **kwargs))
 
@@ -319,8 +319,8 @@ class Operation[**Q, V]:
             return default(*args, **kwargs)
 
         op = cls.define(func, **kwargs)
-        op.dispatch = default._registry.dispatch
-        op.register = default._registry.register
+        op.dispatch = default._registry.dispatch  # type: ignore[attr-defined]
+        op.register = default._registry.register  # type: ignore[attr-defined]
         return op
 
     @typing.final
