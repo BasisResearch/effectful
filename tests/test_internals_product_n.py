@@ -1,4 +1,5 @@
 from effectful.internals.product_n import argsof, productN
+from effectful.internals.unification import Box
 from effectful.ops.semantics import apply, coproduct, evaluate, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, NotHandled
@@ -37,7 +38,9 @@ def test_simul_analysis():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        if typ() is int and argsof(typ)[0][0] is int:
+        t = typ()
+        arg = argsof(typ)[0][0]
+        if t is int and arg is int:
             return x * y
         raise TypeError("unexpected type!")
 
@@ -86,7 +89,7 @@ def test_simul_analysis_apply():
     value = defop(Interpretation, name="value")
 
     def apply_type(op, *a, **k):
-        return op.__type_rule__(*a, **k)
+        return Box(op.__type_rule__(*a, **k))
 
     type_rules = {apply: apply_type}
 
@@ -97,7 +100,9 @@ def test_simul_analysis_apply():
         return plus1(plus1(x))
 
     def times_value(x, y):
-        if typ() is int and argsof(typ)[0][0] is int:
+        t = typ().value
+        arg = argsof(typ)[0][0].value
+        if t is int and arg is int:
             return x * y
         raise TypeError("unexpected type!")
 
@@ -121,7 +126,7 @@ def test_simul_analysis_apply():
 
     with handler(analysisN):
         i = f1()
-        t = i.values(typ)
+        t = i.values(typ).value
         v = i.values(value)
         assert t is int
         assert v == 21

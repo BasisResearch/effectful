@@ -174,11 +174,11 @@ def vertical_fusion[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
             return evaluate(
                 Sum(
                     e_sum,  # type: ignore
-                    k1,  # type: ignore
-                    v1,  # type: ignore
+                    k1,
+                    v1,
                     Let(
                         e_lhs,
-                        v2,  # type: ignore
+                        v2,
                         Let(k1(), k2, Dict(k2(), Let(e_lhs, k2, e_rhs))),  # type: ignore
                     ),
                 )

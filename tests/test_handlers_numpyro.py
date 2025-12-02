@@ -11,6 +11,7 @@ import pytest
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.ops.semantics import typeof
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation, Term
 
@@ -43,7 +44,7 @@ def add_case(raw_dist, raw_params, batch_shape, xfail=None):
 for batch_shape in [(5,), (2, 3, 4), ()]:
     # BernoulliProbs
     add_case(
-        "dist.BernoulliProbs(probs=case.probs)",
+        "dist.BernoulliProbs(case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
@@ -67,7 +68,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Binomial
     add_case(
-        "dist.BinomialProbs(total_count=case.total_count, probs=case.probs)",
+        "dist.BinomialProbs(case.probs, case.total_count)",
         (
             ("total_count", "5"),
             ("probs", f"rand({batch_shape})"),
@@ -78,7 +79,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # CategoricalLogits
     for size in [2, 4]:
         add_case(
-            "dist.CategoricalLogits(logits=case.logits)",
+            "dist.CategoricalLogits(case.logits)",
             (("logits", f"rand({batch_shape + (size,)})"),),
             batch_shape,
         )
@@ -86,25 +87,25 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # CategoricalProbs
     for size in [2, 4]:
         add_case(
-            "dist.CategoricalProbs(probs=case.probs)",
+            "dist.CategoricalProbs(case.probs)",
             (("probs", f"rand({batch_shape + (size,)})"),),
             batch_shape,
         )
 
     # Cauchy
     add_case(
-        "dist.Cauchy(loc=case.loc, scale=case.scale)",
+        "dist.Cauchy(case.loc, case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Chi2
-    add_case("dist.Chi2(df=case.df)", (("df", f"rand({batch_shape})"),), batch_shape)
+    add_case("dist.Chi2(case.df)", (("df", f"rand({batch_shape})"),), batch_shape)
 
     # Delta
     for event_shape in [(), (4,), (3, 2)]:
         add_case(
-            f"dist.Delta(v=case.v, log_density=case.log_density, event_dim={len(event_shape)})",
+            f"dist.Delta(case.v, case.log_density, {len(event_shape)})",
             (
                 ("v", f"rand({batch_shape + event_shape})"),
                 ("log_density", f"rand({batch_shape})"),
@@ -133,9 +134,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Exponential
     add_case(
-        "dist.Exponential(rate=case.rate)",
-        (("rate", f"rand({batch_shape})"),),
-        batch_shape,
+        "dist.Exponential(case.rate)", (("rate", f"rand({batch_shape})"),), batch_shape
     )
 
     # Gamma
@@ -147,47 +146,43 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Geometric
     add_case(
-        "dist.GeometricProbs(probs=case.probs)",
+        "dist.GeometricProbs(case.probs)",
         (("probs", f"rand({batch_shape})"),),
         batch_shape,
     )
     add_case(
-        "dist.GeometricLogits(logits=case.logits)",
+        "dist.GeometricLogits(case.logits)",
         (("logits", f"rand({batch_shape})"),),
         batch_shape,
     )
 
     # Gumbel
     add_case(
-        "dist.Gumbel(loc=case.loc, scale=case.scale)",
+        "dist.Gumbel(case.loc, case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # HalfCauchy
     add_case(
-        "dist.HalfCauchy(scale=case.scale)",
-        (("scale", f"rand({batch_shape})"),),
-        batch_shape,
+        "dist.HalfCauchy(case.scale)", (("scale", f"rand({batch_shape})"),), batch_shape
     )
 
     # HalfNormal
     add_case(
-        "dist.HalfNormal(scale=case.scale)",
-        (("scale", f"rand({batch_shape})"),),
-        batch_shape,
+        "dist.HalfNormal(case.scale)", (("scale", f"rand({batch_shape})"),), batch_shape
     )
 
     # Laplace
     add_case(
-        "dist.Laplace(loc=case.loc, scale=case.scale)",
+        "dist.Laplace(case.loc, case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Logistic
     add_case(
-        "dist.Logistic(loc=case.loc, scale=case.scale)",
+        "dist.Logistic(case.loc, case.scale)",
         (("loc", f"rand({batch_shape})"), ("scale", f"rand({batch_shape})")),
         batch_shape,
     )
@@ -195,7 +190,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     # # LowRankMultivariateNormal
     for event_shape in [(3,), (4,)]:
         add_case(
-            "dist.LowRankMultivariateNormal(loc=case.loc, cov_factor=case.cov_factor, cov_diag=case.cov_diag)",
+            "dist.LowRankMultivariateNormal(case.loc, case.cov_factor, case.cov_diag)",
             (
                 ("loc", f"rand({batch_shape + event_shape})"),
                 ("cov_factor", f"rand({batch_shape + event_shape + (2,)})"),
@@ -227,7 +222,9 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     for n_event in [1, 3]:
         event_shape = (n_event,)
         add_case(
-            "dist.MultivariateNormal(loc=case.loc, scale_tril=case.scale_tril)",
+            # FIXME: See https://github.com/BasisResearch/effectful/issues/310
+            # The better call would be dist.MultivariateNormal(case.loc, scale_tril=case.scale_tril)
+            "dist.MultivariateNormal(case.loc, None, None, case.scale_tril)",
             (
                 ("loc", f"rand({batch_shape + event_shape})"),
                 ("scale_tril", f"random_scale_tril({batch_shape}, {n_event})"),
@@ -237,7 +234,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # NegativeBinomial
     add_case(
-        "dist.NegativeBinomialProbs(total_count=case.total_count, probs=case.probs)",
+        "dist.NegativeBinomialProbs(case.total_count, case.probs)",
         (
             ("total_count", "5"),
             ("probs", f"rand({batch_shape})"),
@@ -246,7 +243,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     )
 
     add_case(
-        "dist.NegativeBinomialLogits(total_count=case.total_count, logits=case.logits)",
+        "dist.NegativeBinomialLogits(case.total_count, case.logits)",
         (
             ("total_count", "5"),
             ("logits", f"rand({batch_shape})"),
@@ -263,28 +260,26 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Pareto
     add_case(
-        "dist.Pareto(scale=case.scale, alpha=case.alpha)",
+        "dist.Pareto(case.scale, case.alpha)",
         (("scale", f"rand({batch_shape})"), ("alpha", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # Poisson
     add_case(
-        "dist.Poisson(rate=case.rate)",
-        (("rate", f"rand({batch_shape})"),),
-        batch_shape,
+        "dist.Poisson(case.rate)", (("rate", f"rand({batch_shape})"),), batch_shape
     )
 
     # RelaxedBernoulli
     add_case(
-        "dist.RelaxedBernoulliLogits(temperature=case.temperature, logits=case.logits)",
+        "dist.RelaxedBernoulliLogits(case.temperature, case.logits)",
         (("temperature", f"rand({batch_shape})"), ("logits", f"rand({batch_shape})")),
         batch_shape,
     )
 
     # StudentT
     add_case(
-        "dist.StudentT(df=case.df, loc=case.loc, scale=case.scale)",
+        "dist.StudentT(case.df, case.loc, case.scale)",
         (
             ("df", f"rand({batch_shape})"),
             ("loc", f"rand({batch_shape})"),
@@ -295,7 +290,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Uniform
     add_case(
-        "dist.Uniform(low=case.low, high=case.high)",
+        "dist.Uniform(case.low, case.high)",
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
         batch_shape,
     )
@@ -309,7 +304,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
     # Weibull
     add_case(
-        "dist.Weibull(scale=case.scale, concentration=case.concentration)",
+        "dist.Weibull(case.scale, case.concentration)",
         (
             ("scale", f"exp(rand({batch_shape}))"),
             ("concentration", f"exp(rand({batch_shape}))"),
@@ -322,7 +317,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             [dist.transforms.ExpTransform()])
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
@@ -334,7 +329,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             [dist.transforms.ExpTransform().inv])
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
@@ -346,7 +341,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             [dist.transforms.TanhTransform(),])
         """,
         (("low", f"rand({batch_shape})"), ("high", f"2. + rand({batch_shape})")),
@@ -358,7 +353,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             [dist.transforms.TanhTransform().inv])
         """,
         (
@@ -373,7 +368,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             [dist.transforms.TanhTransform(),
              dist.transforms.ExpTransform()])
         """,
@@ -386,7 +381,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Uniform(low=case.low, high=case.high),
+            dist.Uniform(case.low, case.high),
             dist.transforms.ComposeTransform([
                 dist.transforms.TanhTransform(),
                 dist.transforms.ExpTransform()]))
@@ -400,7 +395,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Exponential(rate=case.rate),
+            dist.Exponential(case.rate),
             dist.transforms.PowerTransform(0.5))
         """,
         (("rate", f"rand({batch_shape})"),),
@@ -412,7 +407,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     add_case(
         """
         dist.TransformedDistribution(
-            dist.Normal(loc=case.loc, scale=1.).to_event(1),
+            dist.Normal(case.loc, 1.).to_event(1),
             dist.transforms.HaarTransform(dim=-1))
         """,
         (("loc", f"rand({batch_shape} + (3,))"),),
@@ -452,7 +447,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
             f"""
             dist.Independent(
                 dist.TransformedDistribution(
-                    dist.Uniform(low=case.low, high=case.high),
+                    dist.Uniform(case.low, case.high),
                     dist.transforms.ComposeTransform([
                         dist.transforms.TanhTransform(),
                         dist.transforms.ExpTransform()])),
@@ -469,7 +464,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
 
 @functools.cache
 def name_to_sym(name: str) -> Operation[[], jax.Array]:
-    return defop(jax.Array, name=name)  # type: ignore
+    return defop(jax.Array, name=name)
 
 
 def from_indexed(tensor, batch_dims):
@@ -717,9 +712,9 @@ def test_dist_expand(case_, sample_shape, indexed_sample_shape, extra_batch_shap
     sample = expanded.sample(key, sample_shape_full)
 
     # Index into the sample
-    indexed_sample = sample[
-        tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
-    ]
+    indexed_sample = jax_getitem(
+        sample, tuple(defop(jax.Array)() for _ in range(len(indexed_sample_shape)))
+    )
 
     # Check shapes
     expected_shape = (
@@ -818,8 +813,9 @@ def test_dist_stats(case_, statistic):
 
     try:
         expected = getattr(dist, statistic)
-    except NotImplementedError:
-        pytest.xfail(f"Statistic {statistic} not implemented for {case_.raw_dist}")
+    except RuntimeError as e:
+        if "not implemented" in repr(e):
+            pytest.xfail(f"Statistic {statistic} not implemented for {case_.raw_dist}")
 
     actual = getattr(indexed_dist, statistic)
 
@@ -840,9 +836,7 @@ def test_distribution_terms():
     y = defop(jax.Array, name="y")
 
     d1 = dist.Normal(x(), y())
-    assert isinstance(d1, Term) and not isinstance(
-        d1, numpyro.distributions.Distribution
-    )
+    assert isinstance(d1, Term) and isinstance(d1, numpyro.distributions.Distribution)
 
     a = jax_getitem(jnp.array([0.0]), [x()])
     b = jax_getitem(jnp.array([1.0]), [y()])
@@ -850,6 +844,77 @@ def test_distribution_terms():
     assert isinstance(d2, Term) and isinstance(d2, numpyro.distributions.Distribution)
 
     d3 = dist.Normal(jnp.array(0.0), jnp.array(1.0))
-    assert not isinstance(d3, Term) and isinstance(
-        d3, numpyro.distributions.Distribution
+    assert isinstance(d3, Term) and isinstance(d3, numpyro.distributions.Distribution)
+
+
+@pytest.mark.parametrize(
+    "dist_factory,dist_args",
+    [(dist.Normal, []), (dist.BernoulliProbs, [jnp.array(0.5)])],
+)
+def test_concrete_dist(dist_factory, dist_args):
+    """Test concrete distribution with indexed argument."""
+    index = defop(jax.Array, name="index")
+    sample = defop(jax.Array, name="sample")()
+
+    distribution = dist_factory(*dist_args)
+    sample_array = jnp.array([0.0, 1.0, 2.0])
+    indexed_sample_array = jax_getitem(sample_array, [index()])
+
+    assert isinstance(distribution.log_prob(sample_array), jax.Array)
+
+    assert isinstance(distribution.log_prob(sample), Term)
+
+    indexed_sample_logprob = distribution.log_prob(indexed_sample_array)
+    assert isinstance(indexed_sample_logprob, Term) and isinstance(
+        bind_dims(indexed_sample_logprob, index), jax.Array
+    )
+
+
+@pytest.mark.parametrize(
+    "dist_factory,param_array",
+    [
+        (dist.Normal, jnp.array([0.0, 1.0, 2.0])),
+        (dist.BernoulliProbs, jnp.array([0.5, 0.25])),
+    ],
+)
+def test_indexed_dist_symbolic_argument(dist_factory, param_array):
+    """Test indexed distribution with symbolic argument."""
+    sample = defop(jax.Array, name="sample")()
+    index = defop(jax.Array, name="index")
+    indexed_dist = dist_factory(jax_getitem(param_array, [index()]))
+    assert isinstance(indexed_dist.log_prob(sample), Term)
+
+
+@pytest.mark.parametrize("dist_factory", [dist.Normal, dist.BernoulliProbs])
+def test_symbolic_dist(dist_factory):
+    """Test symbolic distribution with concrete argument."""
+    param_sym = defop(jax.Array, name="param")()
+    sample_sym = defop(jax.Array, name="sample")()
+    index = defop(jax.Array, name="index")
+    distribution = dist_factory(param_sym)
+
+    result = distribution.log_prob(jnp.array(0.0))
+    assert isinstance(result, Term)
+
+    result = distribution.log_prob(sample_sym)
+    assert isinstance(result, Term)
+
+    indexed_sample_logprob = distribution.log_prob(
+        jax_getitem(jnp.array([0.0, 1.0]), [index()])
+    )
+    assert isinstance(indexed_sample_logprob, Term)
+
+
+def test_distribution_typeof():
+    """Check that typeof() behaves correctly on distribution-valued terms."""
+    assert (
+        typeof(dist.Normal(defop(jax.Array)()))
+        is numpyro.distributions.continuous.Normal
+    )
+
+    assert typeof(dist.Normal()) is numpyro.distributions.continuous.Normal
+
+    assert (
+        typeof(dist.Normal(jax_getitem(jnp.array([0, 1, 2]), [defop(jax.Array)()])))
+        is numpyro.distributions.continuous.Normal
     )

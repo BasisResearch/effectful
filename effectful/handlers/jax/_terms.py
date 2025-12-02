@@ -107,6 +107,10 @@ class _ArrayTerm(Term[jax.Array]):
     def ndim(self) -> Expr[int]:
         return jnp.ndim(cast(jax.Array, self))
 
+    @property
+    def T(self) -> jax.Array:
+        return jnp.transpose(cast(jax.Array, self))
+
     def __add__(self, other: jax.Array) -> jax.Array:
         return jnp.add(cast(jax.Array, self), other)
 
