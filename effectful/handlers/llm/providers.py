@@ -55,6 +55,32 @@ def _pil_image_to_openai_image_param(
     }
 
 
+@defop
+@functools.singledispatch
+def format_value(value: Any) -> OpenAIMessageContent:
+    """Convert a Python value to internal message part representation.
+
+    This function can be extended by registering handlers for
+    different types using @format_value.register.
+
+    Returns a OpenAIMessageContent - either a string or a list of OpenAIMessageContentListBlock.
+    """
+    return [{"type": "text", "text": str(value)}]
+
+
+@format_value.register(Image.Image)  # type: ignore
+def _(value: Image.Image) -> OpenAIMessageContent:
+    return [_pil_image_to_openai_image_param(value)]
+
+
+@format_value.register(Sequence)  # type: ignore
+def _(values: Sequence) -> OpenAIMessageContent:
+    if all(isinstance(value, Image.Image) for value in values):
+        return [_pil_image_to_openai_image_param(value) for value in values]
+    else:
+        return [{"type": "text", "text": str(values)}]
+
+
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
@@ -66,20 +92,8 @@ class Tool[**P, T]:
         sig = inspect.signature(self.operation)
         ret_ty = sig.return_annotation
         ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
-        ret_ty_args = typing.get_args(ret_ty)
 
-        # special casing for images
-        if ret_ty == Image.Image:
-            return [_pil_image_to_openai_image_param(value)]
-
-        # special casing for sequences of images (tuple[Image.Image, Image.Image], etc.)
-        if issubclass(ret_ty_origin, Sequence) and all(
-            arg == Image.Image for arg in ret_ty_args
-        ):
-            return [_pil_image_to_openai_image_param(image) for image in value]
-
-        # otherwise stringify
-        return str({"status": "success", "result": str(value)})
+        return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
 
     @classmethod
     def of_operation(cls, op: Operation[P, T], name: str):
