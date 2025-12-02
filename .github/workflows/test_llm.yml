@@ -1,12 +1,9 @@
 name: LLM Integration Tests
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches:
-      - master
-      - 'staging-*'
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
   # Allow manual trigger
   workflow_dispatch:
 
