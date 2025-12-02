@@ -1,5 +1,3 @@
-# from __future__ import annotations
-
 import abc
 import collections.abc
 import functools
@@ -259,7 +257,7 @@ class Operation[**Q, V]:
                 raise NotHandled
 
             name = name or getattr(t, "__name__", str(t))
-            op = cls(func, name=name, **kwargs)
+            op = cls.define(func, name=name, **kwargs)
         else:
             op = cls(t, name=name, **kwargs)  # type: ignore[arg-type]
 
@@ -273,15 +271,12 @@ class Operation[**Q, V]:
     def _define_type[T](
         cls, t: type[T], *, name: str | None = None
     ) -> "Operation[[], T]":
-        def func() -> t:  # type: ignore
+        def func():
             raise NotHandled
 
-        typing.get_type_hints(func)
-
-        if name is None:
-            name = t.__name__
-
-        return typing.cast(Operation[[], T], cls.define(func, name=name))
+        sig = inspect.Signature(return_annotation=t)
+        name = name or t.__name__
+        return typing.cast(Operation[[], T], cls.define(func, name=name, signature=sig))
 
     @define.register(types.BuiltinFunctionType)
     @classmethod
