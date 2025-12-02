@@ -28,7 +28,9 @@ from effectful.ops.types import NotHandled
 
 # Check for API keys
 HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-HAS_ANTHROPIC_KEY = "ANTHROPIC_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
+HAS_ANTHROPIC_KEY = (
+    "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
+)
 
 # Pytest markers for skipping tests based on API key availability
 requires_openai = pytest.mark.skipif(
