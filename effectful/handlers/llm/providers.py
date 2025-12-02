@@ -73,6 +73,16 @@ def _(value: Image.Image) -> OpenAIMessageContent:
     return [_pil_image_to_openai_image_param(value)]
 
 
+@format_value.register(str)  # type: ignore
+def _(value: str) -> OpenAIMessageContent:
+    return [{"type": "text", "text": value}]
+
+
+@format_value.register(bytes)  # type: ignore
+def _(value: bytes) -> OpenAIMessageContent:
+    return [{"type": "text", "text": str(value)}]
+
+
 @format_value.register(Sequence)  # type: ignore
 def _(values: Sequence) -> OpenAIMessageContent:
     if all(isinstance(value, Image.Image) for value in values):
