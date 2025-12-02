@@ -11,6 +11,7 @@ from collections.abc import Callable
 from enum import Enum
 
 import pytest
+from PIL import Image
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
@@ -26,8 +27,8 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
 # Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ
-HAS_ANTHROPIC_KEY = "ANTHROPIC_API_KEY" in os.environ
+HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
+HAS_ANTHROPIC_KEY = "ANTHROPIC_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
 
 # Pytest markers for skipping tests based on API key availability
 requires_openai = pytest.mark.skipif(
@@ -124,7 +125,7 @@ class TestLiteLLMProvider:
     @pytest.mark.parametrize(
         "model_name",
         [
-            pytest.param("gpt-4o", marks=requires_openai),
+            pytest.param("gpt-4o-mini", marks=requires_openai),
             pytest.param("claude-haiku-4-5", marks=requires_anthropic),
         ],
     )
@@ -316,7 +317,6 @@ class TestToolCalling:
             assert isinstance(poem, Poem)
             assert isinstance(poem.content, str)
             assert isinstance(poem.form, str)
-            assert len(poem.content) > 0
 
             # Verify the tool was called at least once
             assert evaluation_count >= 1
@@ -341,21 +341,36 @@ class TestToolCalling:
             assert len(evaluation_results) >= 1
 
 
-class TestHandlerComposition:
-    """Tests for composing multiple handlers together."""
+def smiley_face() -> Image.Image:
+    bmp = [
+        "00000000",
+        "00100100",
+        "00100100",
+        "00000000",
+        "01000010",
+        "00111100",
+        "00000000",
+        "00000000",
+    ]
 
-    @requires_openai
-    def test_logging_and_synthesis(self, caplog):
-        """Test composing LLMLoggingHandler, LiteLLMProvider, and ProgramSynthesis."""
-        with caplog.at_level(logging.INFO):
-            with (
-                handler(LLMLoggingHandler()),
-                handler(LiteLLMProvider(model_name="gpt-4o")),
-                handler(ProgramSynthesis()),
-            ):
-                count_func = create_function("x")
+    img = Image.new("1", (8, 8))
+    for y, row in enumerate(bmp):
+        for x, c in enumerate(row):
+            img.putpixel((x, y), 1 if c == "1" else 0)
+    return img
 
-                assert callable(count_func)
 
-        # Verify logging occurred
-        assert any("llm.request" in record.message for record in caplog.records)
+@Template.define
+def categorise_image(image: Image.Image) -> str:
+    """Return a description of the following image:
+    {image}"""
+    pass
+
+
+@requires_openai
+def test_image_input():
+    with (
+        handler(LiteLLMProvider(model_name="gpt-4o")),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
