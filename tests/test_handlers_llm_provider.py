@@ -260,18 +260,6 @@ class TestProgramSynthesis:
             assert count_func("aardvark") == 3
 
 
-# Global state for tool calling tests
-evaluation_count = 0
-evaluation_results = []
-
-
-def reset_evaluation_state():
-    """Reset global evaluation state for testing."""
-    global evaluation_count, evaluation_results
-    evaluation_count = 0
-    evaluation_results = []
-
-
 @dataclass
 class Poem:
     """A poem with content and form."""
@@ -296,17 +284,27 @@ def evaluate_poem_tool(poem: Poem, explanation: str) -> PoemQuality:
     - poem: Poem object representing the poem
     - explanation: natural language explanation of the thought process
     """
-    global evaluation_count, evaluation_results
-    evaluation_count += 1
+    raise NotHandled
 
-    # Simple heuristic: require at least 2 evaluations, then approve
-    quality = PoemQuality.BAD if evaluation_count < 2 else PoemQuality.GOOD
 
-    evaluation_results.append(
-        {"poem": poem, "explanation": explanation, "quality": quality}
-    )
+class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
+    """Provides an interpretation for `evaluate_poem_tool` that tracks evaluation counts."""
 
-    return quality
+    evaluation_count: int = 0
+    evaluation_results: list[dict] = []
+
+    @implements(evaluate_poem_tool)
+    def _evaluate_poem_tool(self, poem: Poem, explanation: str) -> PoemQuality:
+        self.evaluation_count += 1
+
+        # Simple heuristic: require at least 2 evaluations, then approve
+        quality = PoemQuality.BAD if self.evaluation_count < 2 else PoemQuality.GOOD
+
+        self.evaluation_results.append(
+            {"poem": poem, "explanation": explanation, "quality": quality}
+        )
+
+        return quality
 
 
 @Template.define(tools=[evaluate_poem_tool])
@@ -321,40 +319,29 @@ def generate_good_poem(topic: str) -> Poem:
 class TestToolCalling:
     """Tests for templates with tool calling functionality."""
 
-    @requires_openai
-    def test_tool_calling_openai(self):
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            pytest.param("gpt-4o", marks=requires_openai),
+            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
+        ],
+    )
+    def test_tool_calling(self, model_name):
         """Test that templates with tools work with openai."""
-        reset_evaluation_state()
+        poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
-            handler(LiteLLMProvider(model_name="gpt-4o")),
+            handler(LiteLLMProvider(model_name=model_name)),
             handler(LimitLLMCallsHandler(max_calls=3)),
+            handler(poem_eval_ctx),
         ):
             poem = generate_good_poem("Python")
             assert isinstance(poem, Poem)
             assert isinstance(poem.content, str)
             assert isinstance(poem.form, str)
 
-            # Verify the tool was called at least once
-            assert evaluation_count >= 1
-            assert len(evaluation_results) >= 1
-
-    @requires_anthropic
-    def test_tool_calling_anthropic(self):
-        """Test that templates with tools work across different providers."""
-        reset_evaluation_state()
-        with (
-            handler(LiteLLMProvider(model_name="claude-sonnet-4-5-20250929")),
-            handler(LimitLLMCallsHandler(max_calls=4)),
-        ):
-            poem = generate_good_poem("Python")
-            assert isinstance(poem, Poem)
-            assert isinstance(poem.content, str)
-            assert isinstance(poem.form, str)
-            assert len(poem.content) > 0
-
-            # Verify the tool was called at least once
-            assert evaluation_count >= 1
-            assert len(evaluation_results) >= 1
+        # Verify the tool was called at least once
+        assert poem_eval_ctx.evaluation_count >= 1
+        assert len(poem_eval_ctx.evaluation_results) >= 1
 
 
 def smiley_face() -> Image.Image:
