@@ -364,7 +364,7 @@ def smiley_face() -> Image.Image:
 def categorise_image(image: Image.Image) -> str:
     """Return a description of the following image:
     {image}"""
-    pass
+    raise NotHandled
 
 
 @requires_openai
