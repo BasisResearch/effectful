@@ -371,6 +371,6 @@ def categorise_image(image: Image.Image) -> str:
 def test_image_input():
     with (
         handler(LiteLLMProvider(model_name="gpt-4o")),
-        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
