@@ -475,7 +475,7 @@ class Operation[**Q, V]:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.apply = cls.define(cls.apply, name=f"{cls.__name__}_apply")
+        cls.apply = Operation.define(cls.apply, name=f"{cls.__name__}_apply")
 
 
 if typing.TYPE_CHECKING:
