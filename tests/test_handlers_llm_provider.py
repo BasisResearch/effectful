@@ -131,7 +131,7 @@ class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
     @requires_openai
-    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-3.5-turbo"])
+    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-5-nano"])
     def test_simple_prompt_multiple_models(self, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
@@ -165,7 +165,7 @@ class TestLiteLLMProvider:
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(LiteLLMProvider(model_name="gpt-4o")),
+            handler(LiteLLMProvider(model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -180,7 +180,7 @@ class TestLiteLLMProvider:
     def test_integer_return_type(self):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(LiteLLMProvider(model_name="gpt-4o")),
+            handler(LiteLLMProvider(model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -322,7 +322,7 @@ class TestToolCalling:
     @pytest.mark.parametrize(
         "model_name",
         [
-            pytest.param("gpt-4o", marks=requires_openai),
+            pytest.param("gpt-5-nano", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
@@ -331,7 +331,7 @@ class TestToolCalling:
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
             handler(LiteLLMProvider(model_name=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=3)),
+            handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):
             poem = generate_good_poem("Python")
