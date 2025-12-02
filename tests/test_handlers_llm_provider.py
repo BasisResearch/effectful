@@ -5,6 +5,7 @@ breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
 ProgramSynthesis, and sampling strategies.
 """
 
+import functools
 import logging
 import os
 from collections.abc import Callable
@@ -44,6 +45,23 @@ requires_anthropic = pytest.mark.skipif(
 # ============================================================================
 # Test Fixtures and Mock Data
 # ============================================================================
+def retry_on_error(error: type[Exception], n: int):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            for i in range(n):
+                try:
+                    return func(*args, **kwargs)
+                except error as e:
+                    if i < n - 1:
+                        continue
+                    raise e
+
+        return wrapper
+
+    return decorator
+
+
 class LimitLLMCallsHandler(ObjectInterpretation):
     max_calls: int
     no_calls: int = 0
@@ -225,26 +243,21 @@ class TestProgramSynthesis:
     """Tests for ProgramSynthesis handler functionality."""
 
     @requires_openai
+    @retry_on_error(error=SynthesisError, n=3)
     def test_generates_callable(self):
         """Test ProgramSynthesis handler generates executable code."""
-        for i in range(3):
-            try:
-                with (
-                    handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-                    handler(ProgramSynthesis()),
-                    handler(LimitLLMCallsHandler(max_calls=1)),
-                ):
-                    count_func = create_function("a")
+        with (
+            handler(LiteLLMProvider(model_name="gpt-4o-mini")),
+            handler(ProgramSynthesis()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            count_func = create_function("a")
 
-                    assert callable(count_func)
-                    # Test the generated function
-                    assert count_func("banana") == 3
-                    assert count_func("cherry") == 0
-                    assert count_func("aardvark") == 3
-            except SynthesisError as e:
-                if i < 2:
-                    continue
-                raise e
+            assert callable(count_func)
+            # Test the generated function
+            assert count_func("banana") == 3
+            assert count_func("cherry") == 0
+            assert count_func("aardvark") == 3
 
 
 # Global state for tool calling tests
