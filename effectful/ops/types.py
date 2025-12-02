@@ -451,7 +451,7 @@ class Operation[**Q, V]:
     def __get__(self, instance, owner):
         if instance is not None:
             # This is an instance-level operation, so we need to bind the instance
-            return functools.partial(self, instance)
+            return types.MethodType(self, instance)
         else:
             # This is a static operation, so we return the operation itself
             return self
