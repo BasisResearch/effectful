@@ -1,6 +1,7 @@
 import ast
 import collections.abc
 import dataclasses
+import linecache
 import re
 import textwrap
 import typing
@@ -43,10 +44,18 @@ class ProgramSynthesis(ObjectInterpretation):
         if not isinstance(last_decl, ast.FunctionDef):
             raise SynthesisError("last definition not a function", content)
 
+        source_code = textwrap.dedent(code)
+        lines = code.splitlines(keepends=True)
+        filename = f"<generated-{hash(code)}>"
+
+        # register into linecache
+        linecache.cache[filename] = (len(source_code), None, lines, filename)
+
         # TODO: assert callable type compatibility
         gs: dict = {}
         try:
-            exec(code, gs)
+            code_obj = compile(source_code, filename, "exec")
+            exec(code_obj, gs)
         except Exception as exc:
             raise SynthesisError("evaluation failed", content) from exc
 
@@ -86,4 +95,6 @@ class ProgramSynthesis(ObjectInterpretation):
             **kwargs,
         )
 
-        return self._parse_and_eval(ret_type, response)
+        functional = self._parse_and_eval(ret_type, response)
+
+        return functional
