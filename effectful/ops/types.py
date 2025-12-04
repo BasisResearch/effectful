@@ -499,10 +499,7 @@ class Operation[**Q, V]:
         cls.apply = cls.apply.define(_apply_wrapper)
 
 
-@functools.partial(setattr, Operation, "apply")  # type: ignore[misc]
-@Operation.define
-@staticmethod
-def _[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+def apply[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -531,6 +528,10 @@ def _[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
 
     """
     return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
+
+
+Operation.apply = Operation.define(staticmethod(apply))
+del apply
 
 
 if typing.TYPE_CHECKING:
