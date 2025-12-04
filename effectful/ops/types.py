@@ -454,10 +454,6 @@ class Operation[**Q, V]:
     def __str__(self):
         return self.__name__
 
-    @property
-    def __isabstractmethod__(self) -> bool:
-        return getattr(self.__default__, "__isabstractmethod__", False)
-
     def __get__(self, instance, owner):
         if instance is not None:
             # This is an instance-level operation, so we need to bind the instance
