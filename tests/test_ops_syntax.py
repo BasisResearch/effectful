@@ -379,7 +379,6 @@ def test_defop_setattr_class() -> None:
         MyClass().my_op(5)
 
 
-@pytest.mark.xfail(reason="defop does not support classmethod yet")
 def test_defop_classmethod():
     """Test that defop can be used as a classmethod decorator."""
 
@@ -400,10 +399,7 @@ def test_defop_classmethod():
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_classmethod"
-    assert term.args == (
-        MyClass,
-        5,
-    )
+    assert term.args == (5,)
     assert term.kwargs == {}
 
     # Ensure the operation is unique
@@ -411,7 +407,7 @@ def test_defop_classmethod():
     assert term.op is another_term.op
 
     # Test that the classmethod can be called with a handler
-    with handler({MyClass.my_classmethod: lambda cls, x: x + 3}):
+    with handler({MyClass.my_classmethod: lambda x: x + 3}):
         assert MyClass.my_classmethod(5) == 8
         assert MyClass.my_classmethod(10) == 13
 
