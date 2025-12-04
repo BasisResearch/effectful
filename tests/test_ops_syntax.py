@@ -958,3 +958,53 @@ def test_operation_subclass():
         {apply: _apply, my_func: _my_func, TestOperation.apply: _test_operation_apply}
     ):
         assert my_func(3, 4) == "<op handler>"
+
+
+def test_operation_subclass_inheritance():
+    class BaseOperation(Operation):
+        pass
+
+    class SubOperation(BaseOperation):
+        pass
+
+    @BaseOperation.define
+    def base_op(x):
+        return f"base_op: {x}"
+
+    @SubOperation.define
+    def sub_op(x):
+        return f"sub_op: {x}"
+
+    assert base_op(1) == "base_op: 1"
+
+    with handler({base_op: lambda x: f"handled base_op: {x}"}):
+        assert base_op(2) == "handled base_op: 2"
+
+    with handler(
+        {SubOperation.apply: lambda op, x, **kwargs: f"handled SubOperation: {op} {x}"}
+    ):
+        assert sub_op(3) == f"handled SubOperation: {sub_op} 3"
+        assert base_op(4) == "base_op: 4"
+
+    with handler(
+        {
+            BaseOperation.apply: lambda op,
+            x,
+            **kwargs: f"handled BaseOperation: {op} {x}"
+        }
+    ):
+        assert sub_op(4) == f"handled BaseOperation: {sub_op} 4"
+        assert base_op(5) == f"handled BaseOperation: {base_op} 5"
+
+    with handler(
+        {
+            SubOperation.apply: lambda op,
+            x,
+            **kwargs: f"handled SubOperation: {op} {x}",
+            BaseOperation.apply: lambda op,
+            x,
+            **kwargs: f"handled BaseOperation: {op} {x}",
+        }
+    ):
+        assert sub_op(6) == f"handled SubOperation: {sub_op} 6"
+        assert base_op(7) == f"handled BaseOperation: {base_op} 7"

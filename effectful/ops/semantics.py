@@ -15,37 +15,7 @@ from effectful.ops.types import (
     Term,
 )
 
-
-@defop
-def apply[**P, T](op: Operation[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
-
-    Handling :func:`apply` changes the evaluation strategy of terms.
-
-    **Example usage**:
-
-    >>> @defop
-    ... def add(x: int, y: int) -> int:
-    ...     return x + y
-    >>> @defop
-    ... def mul(x: int, y: int) -> int:
-    ...     return x * y
-
-    ``add`` and ``mul`` have default rules, so this term evaluates:
-
-    >>> mul(add(1, 2), 3)
-    9
-
-    By installing an :func:`apply` handler, we capture the term instead:
-
-    >>> from effectful.ops.syntax import defdata
-    >>> with handler({apply: defdata}):
-    ...     term = mul(add(1, 2), 3)
-    >>> print(str(term))
-    mul(add(1, 2), 3)
-
-    """
-    return op.__default_rule__(*args, **kwargs)  # type: ignore
+apply = Operation.apply
 
 
 @defop

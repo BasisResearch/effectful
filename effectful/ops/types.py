@@ -76,6 +76,7 @@ class Operation[**Q, V]:
     __signature__: inspect.Signature
     __name__: str
     __default__: Callable[Q, V]
+    apply: typing.ClassVar["Operation"]
 
     def __init__(
         self, signature: inspect.Signature, name: str, default: Callable[Q, V]
@@ -424,29 +425,17 @@ class Operation[**Q, V]:
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
-        from effectful.ops.semantics import apply
 
         intp = get_interpretation()
 
         self_handler = intp.get(self)
         if self_handler is not None:
             return self_handler(*args, **kwargs)
-
-        class_apply_handler = intp.get(type(self).apply)
-        if class_apply_handler is not None:
-            return class_apply_handler(self, *args, **kwargs)
-
-        global_apply_handler = intp.get(apply)
-        if global_apply_handler is not None:
-            return global_apply_handler(self, *args, **kwargs)
-
-        # Use type(self) instead of self because we do not want a bound method
-        class_apply = type(self).apply
-
-        # In Operation, cls.apply is a classmethod. In subclasses, it is an operation.
-        if isinstance(class_apply, Operation):
-            return class_apply.__default_rule__(self, *args, **kwargs)  # type: ignore[return-value]
-        return class_apply(self, *args, **kwargs)  # type: ignore[return-value]
+        elif args and isinstance(args[0], Operation) and self is args[0].apply:
+            # Prevent infinite recursion when calling self.apply directly
+            return self.__default__(*args, **kwargs)
+        else:
+            return self.apply(self, *args, **kwargs)
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
@@ -495,20 +484,53 @@ class Operation[**Q, V]:
         else:
             return self
 
-    @classmethod
-    def apply[**A, B](
-        cls, op: "Operation[A, B]", *args: A.args, **kwargs: A.kwargs
-    ) -> "Expr[B]":
-        """Apply an operation to arguments.
-
-        In subclasses of Operation, `apply` is an operation that may be handled.
-
-        """
-        return op.__default_rule__(*args, **kwargs)
-
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.apply = cls.define(cls.apply, name=f"{cls.__name__}_apply")
+        assert "apply" not in cls.__dict__ or cls is Operation, (
+            "Cannot manually override apply"
+        )
+        assert isinstance(cls.apply, Operation)
+        super_apply = cls.apply
+
+        @staticmethod
+        @functools.wraps(cls.apply)
+        def _apply_wrapper(op, *args, **kwargs):
+            return super_apply(op, *args, **kwargs)
+
+        cls.apply = cls.apply.define(_apply_wrapper)
+
+
+@functools.partial(setattr, Operation, "apply")  # type: ignore[misc]
+@Operation.define
+@staticmethod
+def _[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+    """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
+
+    Handling :func:`apply` changes the evaluation strategy of terms.
+
+    **Example usage**:
+
+    >>> @defop
+    ... def add(x: int, y: int) -> int:
+    ...     return x + y
+    >>> @defop
+    ... def mul(x: int, y: int) -> int:
+    ...     return x * y
+
+    ``add`` and ``mul`` have default rules, so this term evaluates:
+
+    >>> mul(add(1, 2), 3)
+    9
+
+    By installing an :func:`apply` handler, we capture the term instead:
+
+    >>> from effectful.ops.syntax import defdata
+    >>> with handler({apply: defdata}):
+    ...     term = mul(add(1, 2), 3)
+    >>> print(str(term))
+    mul(add(1, 2), 3)
+
+    """
+    return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
 if typing.TYPE_CHECKING:
