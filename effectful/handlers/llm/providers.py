@@ -423,6 +423,6 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        model_input = format_model_input(template, *args, **kwargs)  # type: ignore
+        model_input = format_model_input(template, *args, **kwargs)
         resp = compute_response(template, model_input)
         return decode_response(template, resp)
