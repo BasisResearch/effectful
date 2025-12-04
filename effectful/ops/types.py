@@ -235,11 +235,6 @@ class Operation[**Q, V]:
         """
         raise NotImplementedError
 
-    @define.register(classmethod)
-    @classmethod
-    def _define_classmethod(cls, default, **kwargs):
-        return Operation._ClassMethodOpDescriptor(cls.define, default.__func__)
-
     @define.register(
         typing.cast(type[collections.abc.Callable], collections.abc.Callable)
     )
@@ -293,6 +288,11 @@ class Operation[**Q, V]:
     @classmethod
     def _define_staticmethod[**P, T](cls, t: "staticmethod[P, T]", **kwargs):
         return staticmethod(cls.define(t.__func__, **kwargs))
+
+    @define.register(classmethod)
+    @classmethod
+    def _define_classmethod(cls, default, **kwargs):
+        return _ClassMethodOpDescriptor(cls.define, default.__func__)
 
     @define.register(functools.singledispatchmethod)
     @classmethod
@@ -475,7 +475,7 @@ class Operation[**Q, V]:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        cls.apply = Operation.define(cls.apply, name=f"{cls.__name__}_apply")
+        cls.apply = cls.define(cls.apply, name=f"{cls.__name__}_apply")
 
 
 if typing.TYPE_CHECKING:
