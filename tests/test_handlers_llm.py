@@ -127,10 +127,11 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # Structured response: LLM provides function name and body
+    # Structured response: LLM provides function name, param names, and body
     mock_response = SynthesizedFunction(
         function_name="count_occurrences",
-        body="    return arg0.count('a')",
+        param_names=["text"],
+        body="    return text.count('a')",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -158,10 +159,11 @@ def test_format_type_context():
 
 def test_count_char_with_typed_body():
     """Test program synthesis constructs function with correct prescribed types."""
-    # The body just needs to implement the logic - types are prescribed
+    # The body uses the LLM-provided parameter name
     mock_response = SynthesizedFunction(
         function_name="count_chars",
-        body="    return arg0.count('x')",
+        param_names=["s"],
+        body="    return s.count('x')",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -177,7 +179,8 @@ def test_make_greeter_with_program_synthesis():
     """Test program synthesis with custom type (Person) in the signature."""
     mock_response = SynthesizedFunction(
         function_name="greet_person",
-        body='    return f"Hello, {arg0.name}!"',
+        param_names=["person"],
+        body='    return f"Hello, {person.name}!"',
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -193,6 +196,7 @@ def test_program_synthesis_invalid_body():
     """Test that synthesis fails when body has syntax errors."""
     mock_response = SynthesizedFunction(
         function_name="bad_func",
+        param_names=["x"],
         body="    return this is not valid python",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
@@ -206,6 +210,7 @@ def test_program_synthesis_runtime_error():
     """Test that synthesis fails when body raises runtime error on compile."""
     mock_response = SynthesizedFunction(
         function_name="bad_func",
+        param_names=["x"],
         body="    return undefined_variable",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
@@ -222,7 +227,8 @@ def test_program_synthesis_with_type_check():
     """Test program synthesis with optional mypy type checking enabled."""
     mock_response = SynthesizedFunction(
         function_name="count_chars",
-        body="    return arg0.count('a')",
+        param_names=["text"],
+        body="    return text.count('a')",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -238,6 +244,7 @@ def test_program_synthesis_type_check_catches_body_errors():
     # Body returns wrong type (str instead of int)
     mock_response = SynthesizedFunction(
         function_name="bad_return",
+        param_names=["text"],
         body='    return "not an int"',
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
