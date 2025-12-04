@@ -459,8 +459,8 @@ class Operation[**Q, V]:
             assert not hasattr(self, "_name_on_instance"), "should only be called once"
             self._name_on_instance: str = f"__instanceop_{name}"
 
-    def __get__(self, instance, owner=None):
-        if hasattr(self, "_name_on_instance") and hasattr(instance, "__dict__"):
+    def __get__[T](self, instance: T | None, owner: type[T] | None = None):
+        if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
             from effectful.ops.semantics import fvsof
 
             if self._name_on_instance in instance.__dict__:
@@ -468,7 +468,26 @@ class Operation[**Q, V]:
             elif isinstance(instance, Term) or fvsof(instance):
                 return types.MethodType(self, instance)
             else:
-                instance_op = self.define(types.MethodType(self, instance))
+
+                @functools.wraps(self)
+                def _instance_op(instance, *args, **kwargs):
+                    from effectful.ops.syntax import defdata
+
+                    default_result = self(instance, *args, **kwargs)
+                    if (
+                        isinstance(default_result, Term)
+                        and default_result.op is self
+                        and isinstance(self.__get__(default_result.args[0]), Operation)
+                    ):
+                        return defdata(
+                            self.__get__(default_result.args[0]),
+                            *default_result.args[1:],
+                            **default_result.kwargs,
+                        )
+                    else:
+                        return default_result
+
+                instance_op = self.define(types.MethodType(_instance_op, instance))
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:

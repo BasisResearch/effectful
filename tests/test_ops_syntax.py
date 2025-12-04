@@ -306,11 +306,7 @@ def test_defop_method():
 
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
-    assert term.op.__name__ == "my_method"
-    assert term.args == (
-        instance,
-        5,
-    )
+    assert term.args == (5,)
     assert term.kwargs == {}
 
     # Ensure the operation is unique
@@ -480,10 +476,7 @@ def test_defop_singledispatchmethod():
 
     assert isinstance(term_float, Term)
     assert term_float.op.__name__ == "my_singledispatch"
-    assert term_float.args == (
-        instance,
-        1.5,
-    )
+    assert term_float.args == (1.5,)
     assert term_float.kwargs == {}
 
     # Test that the method can be called with a handler
