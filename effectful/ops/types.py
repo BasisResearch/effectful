@@ -455,27 +455,22 @@ class Operation[**Q, V]:
         return self.__name__
 
     def __set_name__[T](self, owner: type[T], name: str) -> None:
-        if issubclass(owner, Term):
-            return None
-
-        @functools.cached_property  # type: ignore
-        def _instanceop(__instance: T):
-            from effectful.ops.semantics import fvsof
-
-            if isinstance(__instance, Term) or fvsof(__instance):
-                return types.MethodType(self, __instance)
-            else:
-                return self.define(types.MethodType(self, __instance))
-
-        assert isinstance(_instanceop, functools.cached_property)
-        _instanceop.__set_name__(owner, f"__instanceop_{name}")
-        assert _instanceop.attrname is not None
-        self._name_on_instance: str = _instanceop.attrname
-        setattr(owner, self._name_on_instance, _instanceop)
+        if not issubclass(owner, Term):
+            assert not hasattr(self, "_name_on_instance"), "should only be called once"
+            self._name_on_instance: str = f"__instanceop_{name}"
 
     def __get__(self, instance, owner=None):
-        if instance is not None and hasattr(self, "_name_on_instance"):
-            return getattr(instance, self._name_on_instance)
+        if hasattr(self, "_name_on_instance") and hasattr(instance, "__dict__"):
+            from effectful.ops.semantics import fvsof
+
+            if self._name_on_instance in instance.__dict__:
+                return instance.__dict__[self._name_on_instance]
+            elif isinstance(instance, Term) or fvsof(instance):
+                return types.MethodType(self, instance)
+            else:
+                instance_op = self.define(types.MethodType(self, instance))
+                instance.__dict__[self._name_on_instance] = instance_op
+                return instance_op
         elif instance is not None:
             return types.MethodType(self, instance)
         else:
