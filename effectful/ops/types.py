@@ -458,9 +458,6 @@ class Operation[**Q, V]:
         if issubclass(owner, Term):
             return None
 
-        assert not hasattr(self, "_name_on_instance"), "should only be called once"
-        self._name_on_instance = f"__instanceop_{name}"
-
         @functools.cached_property  # type: ignore
         def _instanceop(__instance: T):
             from effectful.ops.semantics import fvsof
@@ -471,7 +468,9 @@ class Operation[**Q, V]:
                 return self.define(types.MethodType(self, __instance))
 
         assert isinstance(_instanceop, functools.cached_property)
-        _instanceop.__set_name__(owner, self._name_on_instance)
+        _instanceop.__set_name__(owner, f"__instanceop_{name}")
+        assert _instanceop.attrname is not None
+        self._name_on_instance: str = _instanceop.attrname
         setattr(owner, self._name_on_instance, _instanceop)
 
     def __get__(self, instance, owner=None):
