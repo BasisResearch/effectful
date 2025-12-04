@@ -423,20 +423,6 @@ class Operation[**Q, V]:
 
         return result_sig
 
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
-
-        intp = get_interpretation()
-
-        self_handler = intp.get(self)
-        if self_handler is not None:
-            return self_handler(*args, **kwargs)
-        elif args and isinstance(args[0], Operation) and self is args[0].apply:
-            # Prevent infinite recursion when calling self.apply directly
-            return self.__default__(*args, **kwargs)
-        else:
-            return self.apply(self, *args, **kwargs)
-
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
 
@@ -484,19 +470,36 @@ class Operation[**Q, V]:
         else:
             return self
 
-    def __init_subclass__(cls, **kwargs):
+    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
+
+        intp = get_interpretation()
+
+        self_handler = intp.get(self)
+        if self_handler is not None:
+            return self_handler(*args, **kwargs)
+        elif args and isinstance(args[0], Operation) and self is args[0].apply:
+            # Prevent infinite recursion when calling self.apply directly
+            return self.__default__(*args, **kwargs)
+        else:
+            return self.apply(self, *args, **kwargs)
+
+    def __init_subclass__(cls, **kwargs) -> None:
         assert "apply" not in cls.__dict__ or cls is Operation, (
             "Cannot manually override apply"
         )
         assert isinstance(cls.apply, Operation)
-        super_apply = cls.apply
 
-        @staticmethod
-        @functools.wraps(cls.apply)
-        def _apply_wrapper(op, *args, **kwargs):
-            return super_apply(op, *args, **kwargs)
-
-        cls.apply = cls.apply.define(_apply_wrapper)
+        cls.apply = cls.apply.define(
+            staticmethod(
+                functools.wraps(cls.apply)(
+                    functools.partial(
+                        lambda app, op, *args, **kwargs: app(op, *args, **kwargs),
+                        cls.apply,
+                    )
+                )
+            )
+        )
 
 
 def apply[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
