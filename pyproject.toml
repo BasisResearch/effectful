@@ -40,18 +40,19 @@ torch = ["torch", "dm-tree"]
 pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
 jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
+prettyprinter = ["prettyprinter"]
 docs = [
-    "effectful[torch,pyro,jax,numpyro]",
+    "effectful[torch,pyro,jax,numpyro,prettyprinter]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    "pypandoc_binary",
+    "pypandoc_binary<1.16",
 ]
 test = [
-    "effectful[torch,pyro,jax,numpyro,docs]",
+    "effectful[torch,pyro,jax,numpyro,docs,prettyprinter]",
     "pytest",
     "pytest-cov",
     "pytest-xdist",

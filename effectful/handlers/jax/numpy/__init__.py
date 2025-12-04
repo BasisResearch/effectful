@@ -17,6 +17,7 @@ for name, op in jax.numpy.__dict__.items():
     )
     globals()[name] = jax_op
 
+pi = jax.numpy.pi
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:

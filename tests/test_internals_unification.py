@@ -5,6 +5,7 @@ import typing
 import pytest
 
 from effectful.internals.unification import (
+    Box,
     canonicalize,
     freetypevars,
     nested_type,
@@ -612,27 +613,11 @@ def test_infer_return_type_failure(
         (None, type(None)),
         (b"bytes", bytes),
         (b"", bytes),
-        # Type objects pass through
-        (int, int),
-        (str, str),
-        (float, float),
-        (bool, bool),
-        (list, list),
-        (dict, dict),
-        (set, set),
-        (tuple, tuple),
-        (type(None), type(None)),
-        (type(...), type(...)),
-        # Generic aliases pass through
-        (list[int], list[int]),
-        (dict[str, int], dict[str, int]),
-        (set[bool], set[bool]),
-        (tuple[int, str], tuple[int, str]),
-        (int | str, int | str),
-        (list[T], list[T]),
-        (dict[K, V], dict[K, V]),
-        # Union types pass through
-        (int | str, int | str),
+        # Boxed type objects pass through
+        (Box(int), int),
+        # Boxed generic aliases pass through
+        (Box(list[int]), list[int]),
+        (int, type),
         # Empty collections
         ([], list),
         ({}, dict),
@@ -687,7 +672,7 @@ def test_infer_return_type_failure(
     ],
 )
 def test_nested_type(value, expected):
-    result = nested_type(value)
+    result = nested_type(value).value
     assert canonicalize(result) == canonicalize(expected)
 
 
@@ -1028,19 +1013,24 @@ def test_infer_composition_1(seq, index, key):
 
     inferred_type1 = substitute(
         sig1.return_annotation,
-        unify(sig1, sig1.bind(nested_type(seq), nested_type(index))),
+        unify(sig1, sig1.bind(nested_type(seq).value, nested_type(index).value)),
     )
 
     inferred_type2 = substitute(
         sig2.return_annotation,
-        unify(sig2, sig2.bind(nested_type(inferred_type1), nested_type(key))),
+        unify(
+            sig2,
+            sig2.bind(nested_type(Box(inferred_type1)).value, nested_type(key).value),
+        ),
     )
 
     inferred_type12 = substitute(
         sig12.return_annotation,
         unify(
             sig12,
-            sig12.bind(nested_type(seq), nested_type(index), nested_type(key)),
+            sig12.bind(
+                nested_type(seq).value, nested_type(index).value, nested_type(key).value
+            ),
         ),
     )
 
@@ -1049,7 +1039,10 @@ def test_infer_composition_1(seq, index, key):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(sequence_mapping_getitem(seq, index, key)), inferred_type12),
+        unify(
+            nested_type(sequence_mapping_getitem(seq, index, key)).value,
+            inferred_type12,
+        ),
         collections.abc.Mapping,
     )
 
@@ -1144,13 +1137,16 @@ def test_infer_composition_2(mapping, key, index):
     # First infer type of mapping_getitem(mapping, key) -> should be a sequence
     inferred_type1 = substitute(
         sig1.return_annotation,
-        unify(sig1, sig1.bind(nested_type(mapping), nested_type(key))),
+        unify(sig1, sig1.bind(nested_type(mapping).value, nested_type(key).value)),
     )
 
     # Then infer type of sequence_getitem(result_from_step1, index) -> should be element type
     inferred_type2 = substitute(
         sig2.return_annotation,
-        unify(sig2, sig2.bind(nested_type(inferred_type1), nested_type(index))),
+        unify(
+            sig2,
+            sig2.bind(nested_type(Box(inferred_type1)).value, nested_type(index).value),
+        ),
     )
 
     # Directly infer type of mapping_sequence_getitem(mapping, key, index)
@@ -1158,7 +1154,11 @@ def test_infer_composition_2(mapping, key, index):
         sig12.return_annotation,
         unify(
             sig12,
-            sig12.bind(nested_type(mapping), nested_type(key), nested_type(index)),
+            sig12.bind(
+                nested_type(mapping).value,
+                nested_type(key).value,
+                nested_type(index).value,
+            ),
         ),
     )
 
@@ -1168,7 +1168,8 @@ def test_infer_composition_2(mapping, key, index):
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
         unify(
-            nested_type(mapping_sequence_getitem(mapping, key, index)), inferred_type12
+            nested_type(mapping_sequence_getitem(mapping, key, index)).value,
+            inferred_type12,
         ),
         collections.abc.Mapping,
     )
@@ -1200,20 +1201,22 @@ def test_get_from_constructed_sequence(a, b, index):
 
     # Infer type of sequence_from_pair(a, b) -> Sequence[T]
     construct_subs = unify(
-        sig_construct, sig_construct.bind(nested_type(a), nested_type(b))
+        sig_construct, sig_construct.bind(nested_type(a).value, nested_type(b).value)
     )
     inferred_sequence_type = substitute(sig_construct.return_annotation, construct_subs)
 
     # Infer type of sequence_getitem(sequence, index) -> T
     getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(inferred_sequence_type, nested_type(index))
+        sig_getitem, sig_getitem.bind(inferred_sequence_type, nested_type(index).value)
     )
     inferred_element_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
     # Directly infer type of get_from_constructed_sequence(a, b, index)
     direct_subs = unify(
         sig_composed,
-        sig_composed.bind(nested_type(a), nested_type(b), nested_type(index)),
+        sig_composed.bind(
+            nested_type(a).value, nested_type(b).value, nested_type(index).value
+        ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
@@ -1224,7 +1227,9 @@ def test_get_from_constructed_sequence(a, b, index):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(get_from_constructed_sequence(a, b, index)), direct_type),
+        unify(
+            nested_type(get_from_constructed_sequence(a, b, index)).value, direct_type
+        ),
         collections.abc.Mapping,
     )
 
@@ -1254,13 +1259,15 @@ def test_get_from_constructed_mapping(key, value, lookup_key):
 
     # Infer type of mapping_from_pair(key, value) -> Mapping[K, V]
     construct_subs = unify(
-        sig_construct, sig_construct.bind(nested_type(key), nested_type(value))
+        sig_construct,
+        sig_construct.bind(nested_type(key).value, nested_type(value).value),
     )
     inferred_mapping_type = substitute(sig_construct.return_annotation, construct_subs)
 
     # Infer type of mapping_getitem(mapping, lookup_key) -> V
     getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(inferred_mapping_type, nested_type(lookup_key))
+        sig_getitem,
+        sig_getitem.bind(inferred_mapping_type, nested_type(lookup_key).value),
     )
     inferred_value_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
@@ -1268,7 +1275,9 @@ def test_get_from_constructed_mapping(key, value, lookup_key):
     direct_subs = unify(
         sig_composed,
         sig_composed.bind(
-            nested_type(key), nested_type(value), nested_type(lookup_key)
+            nested_type(key).value,
+            nested_type(value).value,
+            nested_type(lookup_key).value,
         ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
@@ -1279,7 +1288,7 @@ def test_get_from_constructed_mapping(key, value, lookup_key):
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
         unify(
-            nested_type(get_from_constructed_mapping(key, value, lookup_key)),
+            nested_type(get_from_constructed_mapping(key, value, lookup_key)).value,
             direct_type,
         ),
         collections.abc.Mapping,
@@ -1307,7 +1316,9 @@ def test_sequence_of_mappings(key1, val1, key2, val2, index):
     sig_composed = inspect.signature(sequence_of_mappings)
 
     # Step 1: Infer types of the two mappings
-    map1_subs = unify(sig_map, sig_map.bind(nested_type(key1), nested_type(val1)))
+    map1_subs = unify(
+        sig_map, sig_map.bind(nested_type(key1).value, nested_type(val1).value)
+    )
     map1_type = substitute(sig_map.return_annotation, map1_subs)
 
     # Step 2: Infer type of sequence containing these mappings
@@ -1321,7 +1332,10 @@ def test_sequence_of_mappings(key1, val1, key2, val2, index):
     direct_subs = unify(
         sig_composed,
         sig_composed.bind(
-            nested_type(key1), nested_type(val1), nested_type(key2), nested_type(val2)
+            nested_type(key1).value,
+            nested_type(val1).value,
+            nested_type(key2).value,
+            nested_type(val2).value,
         ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
@@ -1357,12 +1371,12 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
     nested_subs = unify(
         sig_nested,
         sig_nested.bind(
-            nested_type(k1),
-            nested_type(v1),
-            nested_type(v2),
-            nested_type(k2),
-            nested_type(v3),
-            nested_type(v4),
+            nested_type(k1).value,
+            nested_type(v1).value,
+            nested_type(v2).value,
+            nested_type(k2).value,
+            nested_type(v3).value,
+            nested_type(v4).value,
         ),
     )
     nested_seq_type = substitute(sig_nested.return_annotation, nested_subs)
@@ -1370,21 +1384,21 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
 
     # Step 2: Get element from outer sequence
     outer_get_subs = unify(
-        sig_seq_get, sig_seq_get.bind(nested_seq_type, nested_type(outer_idx))
+        sig_seq_get, sig_seq_get.bind(nested_seq_type, nested_type(outer_idx).value)
     )
     mapping_type = substitute(sig_seq_get.return_annotation, outer_get_subs)
     # This should be Mapping[K, Sequence[T]]
 
     # Step 3: Get sequence from mapping
     inner_map_subs = unify(
-        sig_map_get, sig_map_get.bind(mapping_type, nested_type(inner_key))
+        sig_map_get, sig_map_get.bind(mapping_type, nested_type(inner_key).value)
     )
     sequence_type = substitute(sig_map_get.return_annotation, inner_map_subs)
     # This should be Sequence[T]
 
     # Step 4: Get element from inner sequence
     final_get_subs = unify(
-        sig_seq_get, sig_seq_get.bind(sequence_type, nested_type(inner_idx))
+        sig_seq_get, sig_seq_get.bind(sequence_type, nested_type(inner_idx).value)
     )
     composed_type = substitute(sig_seq_get.return_annotation, final_get_subs)
     # This should be T
@@ -1393,15 +1407,15 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
     direct_subs = unify(
         sig_composed,
         sig_composed.bind(
-            nested_type(k1),
-            nested_type(v1),
-            nested_type(v2),
-            nested_type(k2),
-            nested_type(v3),
-            nested_type(v4),
-            nested_type(outer_idx),
-            nested_type(inner_key),
-            nested_type(inner_idx),
+            nested_type(k1).value,
+            nested_type(v1).value,
+            nested_type(v2).value,
+            nested_type(k2).value,
+            nested_type(v3).value,
+            nested_type(v4).value,
+            nested_type(outer_idx).value,
+            nested_type(inner_key).value,
+            nested_type(inner_idx).value,
         ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
@@ -1416,7 +1430,7 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
                 double_nested_get(
                     k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_idx
                 )
-            ),
+            ).value,
             direct_type,
         ),
         collections.abc.Mapping,
@@ -1442,18 +1456,20 @@ def test_apply_to_sequence_element(f, seq, index):
 
     # Step 1: Infer type of sequence_getitem(seq, index) -> T
     getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index))
+        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index).value)
     )
     element_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
     # Step 2: Infer type of call_func(f, element) -> U
-    call_subs = unify(sig_call, sig_call.bind(nested_type(f), element_type))
+    call_subs = unify(sig_call, sig_call.bind(nested_type(f).value, element_type))
     composed_type = substitute(sig_call.return_annotation, call_subs)
 
     # Direct inference
     direct_subs = unify(
         sig_composed,
-        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+        sig_composed.bind(
+            nested_type(f).value, nested_type(seq).value, nested_type(index).value
+        ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
@@ -1462,7 +1478,7 @@ def test_apply_to_sequence_element(f, seq, index):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(apply_to_sequence_element(f, seq, index)), direct_type),
+        unify(nested_type(apply_to_sequence_element(f, seq, index)).value, direct_type),
         collections.abc.Mapping,
     )
 
@@ -1484,17 +1500,23 @@ def test_map_and_get(f, seq, index):
     sig_composed = inspect.signature(map_and_get)
 
     # Step 1: Infer type of map_sequence(f, seq) -> Sequence[U]
-    map_subs = unify(sig_map, sig_map.bind(nested_type(f), nested_type(seq)))
+    map_subs = unify(
+        sig_map, sig_map.bind(nested_type(f).value, nested_type(seq).value)
+    )
     mapped_type = substitute(sig_map.return_annotation, map_subs)
 
     # Step 2: Infer type of sequence_getitem(mapped_seq, index) -> U
-    getitem_subs = unify(sig_getitem, sig_getitem.bind(mapped_type, nested_type(index)))
+    getitem_subs = unify(
+        sig_getitem, sig_getitem.bind(mapped_type, nested_type(index).value)
+    )
     composed_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
     # Direct inference
     direct_subs = unify(
         sig_composed,
-        sig_composed.bind(nested_type(f), nested_type(seq), nested_type(index)),
+        sig_composed.bind(
+            nested_type(f).value, nested_type(seq).value, nested_type(index).value
+        ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
@@ -1503,7 +1525,7 @@ def test_map_and_get(f, seq, index):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(map_and_get(f, seq, index)), direct_type),
+        unify(nested_type(map_and_get(f, seq, index)).value, direct_type),
         collections.abc.Mapping,
     )
 
@@ -1525,17 +1547,23 @@ def test_compose_and_apply(f, g, value):
     sig_composed = inspect.signature(compose_and_apply)
 
     # Step 1: Infer type of compose_mappings(f, g) -> Callable[[T], V]
-    compose_subs = unify(sig_compose, sig_compose.bind(nested_type(f), nested_type(g)))
+    compose_subs = unify(
+        sig_compose, sig_compose.bind(nested_type(f).value, nested_type(g).value)
+    )
     composed_func_type = substitute(sig_compose.return_annotation, compose_subs)
 
     # Step 2: Infer type of call_func(composed, value) -> V
-    call_subs = unify(sig_call, sig_call.bind(composed_func_type, nested_type(value)))
+    call_subs = unify(
+        sig_call, sig_call.bind(composed_func_type, nested_type(value).value)
+    )
     result_type = substitute(sig_call.return_annotation, call_subs)
 
     # Direct inference
     direct_subs = unify(
         sig_composed,
-        sig_composed.bind(nested_type(f), nested_type(g), nested_type(value)),
+        sig_composed.bind(
+            nested_type(f).value, nested_type(g).value, nested_type(value).value
+        ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
@@ -1544,7 +1572,7 @@ def test_compose_and_apply(f, g, value):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(compose_and_apply(f, g, value)), direct_type),
+        unify(nested_type(compose_and_apply(f, g, value)).value, direct_type),
         collections.abc.Mapping,
     )
 
@@ -1567,13 +1595,14 @@ def test_construct_apply_and_get(f, a, b, index):
 
     # Step 1: Infer type of sequence_from_pair(a, b) -> Sequence[T]
     construct_subs = unify(
-        sig_construct, sig_construct.bind(nested_type(a), nested_type(b))
+        sig_construct, sig_construct.bind(nested_type(a).value, nested_type(b).value)
     )
     seq_type = substitute(sig_construct.return_annotation, construct_subs)
 
     # Step 2: Infer type of apply_to_sequence_element(f, seq, index) -> U
     apply_subs = unify(
-        sig_apply, sig_apply.bind(nested_type(f), seq_type, nested_type(index))
+        sig_apply,
+        sig_apply.bind(nested_type(f).value, seq_type, nested_type(index).value),
     )
     composed_type = substitute(sig_apply.return_annotation, apply_subs)
 
@@ -1581,7 +1610,10 @@ def test_construct_apply_and_get(f, a, b, index):
     direct_subs = unify(
         sig_composed,
         sig_composed.bind(
-            nested_type(f), nested_type(a), nested_type(b), nested_type(index)
+            nested_type(f).value,
+            nested_type(a).value,
+            nested_type(b).value,
+            nested_type(index).value,
         ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
@@ -1591,7 +1623,7 @@ def test_construct_apply_and_get(f, a, b, index):
 
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
-        unify(nested_type(construct_apply_and_get(f, a, b, index)), direct_type),
+        unify(nested_type(construct_apply_and_get(f, a, b, index)).value, direct_type),
         collections.abc.Mapping,
     )
 
@@ -1614,18 +1646,19 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
 
     # Step 1: Infer types of sequence_getitem calls
     getitem1_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index1))
+        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index1).value)
     )
     elem1_type = substitute(sig_getitem.return_annotation, getitem1_subs)
 
     getitem2_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq), nested_type(index2))
+        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index2).value)
     )
     elem2_type = substitute(sig_getitem.return_annotation, getitem2_subs)
 
     # Step 2: Infer type of call_binary_func(f, elem1, elem2) -> V
     call_subs = unify(
-        sig_call_binary, sig_call_binary.bind(nested_type(f), elem1_type, elem2_type)
+        sig_call_binary,
+        sig_call_binary.bind(nested_type(f).value, elem1_type, elem2_type),
     )
     composed_type = substitute(sig_call_binary.return_annotation, call_subs)
 
@@ -1633,7 +1666,10 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
     direct_subs = unify(
         sig_composed,
         sig_composed.bind(
-            nested_type(f), nested_type(seq), nested_type(index1), nested_type(index2)
+            nested_type(f).value,
+            nested_type(seq).value,
+            nested_type(index1).value,
+            nested_type(index2).value,
         ),
     )
     direct_type = substitute(sig_composed.return_annotation, direct_subs)
@@ -1644,7 +1680,7 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
     # check that the result of nested_type on the value of the composition unifies with the inferred type
     assert isinstance(
         unify(
-            nested_type(binary_on_sequence_elements(f, seq, index1, index2)),
+            nested_type(binary_on_sequence_elements(f, seq, index1, index2)).value,
             direct_type,
         ),
         collections.abc.Mapping,
