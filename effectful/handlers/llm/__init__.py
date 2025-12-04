@@ -22,7 +22,7 @@ class Template[**P, T](Operation[P, T]):
         super().__init__(inspect.signature(body), body.__name__, body)
 
     @classmethod
-    def define(cls, _func=None, *, tools: Iterable[Operation] = ()):
+    def define(cls, _func=None, *, tools: Iterable[Operation] = (), **kwargs):
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
                 raise ValueError("Expected a docstring on body")
