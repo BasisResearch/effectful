@@ -395,7 +395,7 @@ class LiteLLMProvider(ObjectInterpretation):
     def _completion(self, *args, **kwargs):
         return fwd(self.model_name, *args, **(self.config | kwargs))
 
-    @implements(Template.__call__)
+    @implements(Template.apply)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

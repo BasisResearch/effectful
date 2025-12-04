@@ -18,7 +18,7 @@ class KAheadSampler[**P, T](ObjectInterpretation):
         self.no_voters = no_voters
         self.k = k
 
-    @implements(Template.__call__)
+    @implements(Template.apply)
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         executor = ThreadPoolExecutor()
         intp = get_interpretation()
