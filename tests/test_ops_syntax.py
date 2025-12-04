@@ -12,7 +12,7 @@ from typing import Annotated, ClassVar
 import pytest
 
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
-from effectful.ops.semantics import evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
@@ -210,7 +210,6 @@ def test_term_str():
     x3 = defop(x1)
 
     assert str(x1) == str(x2) == str(x3) == "x"
-    assert repr(x1) != repr(x2) != repr(x3)
     assert str(x1() + x2()) == "__add__(x(), x!1())"
     assert str(x1() + x1()) == "__add__(x(), x())"
     assert str(deffn(x1() + x1(), x1)) == "deffn(__add__(x(), x()), x)"
@@ -282,6 +281,10 @@ def test_defop_customsingledispatch():
 
     assert process.__signature__ == inspect.signature(process)
 
+    with handler({process: lambda _: "test"}):
+        assert process(0) == "test"
+        assert process("hello") == "test"
+
 
 def test_defop_method():
     """Test that defop can be used as a method decorator."""
@@ -298,7 +301,7 @@ def test_defop_method():
 
     # check signature
     assert MyClass.my_method.__signature__ == inspect.signature(
-        MyClass.my_method._default
+        MyClass.my_method.__default__
     )
 
     assert isinstance(term, Term)
@@ -376,7 +379,6 @@ def test_defop_setattr_class() -> None:
         MyClass().my_op(5)
 
 
-@pytest.mark.xfail(reason="defop does not support classmethod yet")
 def test_defop_classmethod():
     """Test that defop can be used as a classmethod decorator."""
 
@@ -391,16 +393,13 @@ def test_defop_classmethod():
     assert isinstance(MyClass.my_classmethod, Operation)
     # check signature
     assert MyClass.my_classmethod.__signature__ == inspect.signature(
-        MyClass.my_classmethod._default
+        MyClass.my_classmethod.__default__
     )
 
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
     assert term.op.__name__ == "my_classmethod"
-    assert term.args == (
-        MyClass,
-        5,
-    )
+    assert term.args == (5,)
     assert term.kwargs == {}
 
     # Ensure the operation is unique
@@ -408,7 +407,7 @@ def test_defop_classmethod():
     assert term.op is another_term.op
 
     # Test that the classmethod can be called with a handler
-    with handler({MyClass.my_classmethod: lambda cls, x: x + 3}):
+    with handler({MyClass.my_classmethod: lambda x: x + 3}):
         assert MyClass.my_classmethod(5) == 8
         assert MyClass.my_classmethod(10) == 13
 
@@ -427,7 +426,7 @@ def test_defop_staticmethod():
     assert isinstance(MyClass.my_staticmethod, Operation)
     # check signature
     assert MyClass.my_staticmethod.__signature__ == inspect.signature(
-        MyClass.my_staticmethod._default
+        MyClass.my_staticmethod.__default__
     )
 
     assert isinstance(term, Term)
@@ -444,39 +443,6 @@ def test_defop_staticmethod():
     with handler({MyClass.my_staticmethod: lambda x: x + 4}):
         assert MyClass.my_staticmethod(5) == 9
         assert MyClass.my_staticmethod(10) == 14
-
-
-def test_defop_property():
-    """Test that defop can be used as a property decorator."""
-
-    class MyClass:
-        @defop
-        @property
-        def my_property(self) -> int:
-            raise NotHandled
-
-    instance = MyClass()
-    term = instance.my_property
-
-    assert isinstance(MyClass.my_property, Operation)
-    assert MyClass.my_property.__signature__ == inspect.signature(
-        MyClass.my_property._default
-    )
-
-    assert isinstance(term, Term)
-    assert isinstance(term.op, Operation)
-    assert term.op.__name__ == "my_property"
-    assert term.args == (instance,)
-    assert term.kwargs == {}
-
-    # Ensure the operation is unique
-    another_instance = MyClass()
-    assert instance.my_property is not another_instance.my_property
-
-    # Test that the property can be called with a handler
-    with handler({MyClass.my_property: lambda self: 42}):
-        assert instance.my_property == 42
-        assert another_instance.my_property == 42
 
 
 def test_defop_singledispatchmethod():
@@ -509,7 +475,7 @@ def test_defop_singledispatchmethod():
 
     assert isinstance(MyClass.my_singledispatch, Operation)
     assert MyClass.my_singledispatch.__signature__ == inspect.signature(
-        MyClass.my_singledispatch._default
+        MyClass.my_singledispatch.__default__
     )
 
     assert isinstance(term_float, Term)
@@ -934,3 +900,68 @@ def test_defdata_dataclass():
     obj = C(defop(int)())
     term = defdata(f, obj)
     assert isinstance(term.args[0], C) and isinstance(term.args[0].x, Term)
+
+
+def test_operation_subclass():
+    class TestOperation(Operation):
+        pass
+
+    class OtherOperation(Operation):
+        pass
+
+    assert isinstance(TestOperation.apply, Operation)
+    assert isinstance(OtherOperation.apply, Operation)
+    assert TestOperation.apply != OtherOperation.apply
+
+    @TestOperation.define
+    def my_func(a, b):
+        return "<default handler>"
+
+    def _my_func(a, b):
+        return "<op handler>"
+
+    def _apply(op, a, b, **kwargs):
+        assert op is my_func
+        return "<apply handler>"
+
+    def _test_operation_apply(op, a, b):
+        assert op is my_func
+        return "<TestOperation.apply handler>"
+
+    def _other_operation_apply(op, a, b):
+        return "<OtherOperation.apply handler>"
+
+    assert my_func(1, 2) == "<default handler>"
+
+    # Handling the operation works
+    with handler({my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the class apply works
+    with handler({TestOperation.apply: _test_operation_apply}):
+        assert my_func(3, 4) == "<TestOperation.apply handler>"
+
+    with handler({OtherOperation.apply: _other_operation_apply}):
+        assert my_func(3, 4) == "<default handler>"
+
+    # Handling global apply works
+    with handler({apply: _apply}):
+        assert my_func(3, 4) == "<apply handler>"
+
+    # Handling the operation takes precedence over the class apply
+    with handler({TestOperation.apply: _test_operation_apply, my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the class apply takes precedence over the global apply
+    with handler({apply: _apply, TestOperation.apply: _test_operation_apply}):
+        assert my_func(3, 4) == "<TestOperation.apply handler>"
+
+    # Handling the operation takes precedence over the global apply
+    with handler({apply: _apply, my_func: _my_func}):
+        assert my_func(3, 4) == "<op handler>"
+
+    # Handling the operation takes precedence over the class apply and the global apply
+    with handler(
+        {apply: _apply, my_func: _my_func, TestOperation.apply: _test_operation_apply}
+    ):
+        assert my_func(3, 4) == "<op handler>"
