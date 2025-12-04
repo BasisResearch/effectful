@@ -1016,3 +1016,51 @@ def test_operation_subclass_inheritance():
     ):
         assert sub_op(6) == f"handled SubOperation: {sub_op} 6"
         assert base_op(7) == f"handled BaseOperation: {base_op} 7"
+
+
+def test_operation_instances():
+    """Test that defop on methods creates instance-level Operations.
+
+    When defop is used on a method, accessing it on an instance should
+    dynamically create a new instance-level Operation that is bound to
+    that instance. The default behavior of an unhandled instance-level
+    Operation should be to call the class-level Operation.
+    """
+
+    class Foo[T]:
+        @defop
+        def bar(self, x: T) -> T:
+            raise NotHandled
+
+    foo1, foo2 = Foo(), Foo()
+
+    # All of Foo.bar, foo1.bar, foo2.bar should be Operations
+    assert isinstance(Foo.bar, Operation)
+    assert isinstance(foo1.bar, Operation)
+    assert isinstance(foo2.bar, Operation)
+
+    # Instance-level operations are created once per instance (cached)
+    assert foo1.bar is foo1.bar
+    assert foo2.bar is foo2.bar
+
+    # Class-level and instance-level operations are distinct
+    assert Foo.bar is not foo1.bar
+    assert Foo.bar is not foo2.bar
+    assert foo1.bar is not foo2.bar
+
+    # Default behavior: unhandled instance-level operation calls class-level operation
+    def Foo_bar_impl(self, x):
+        return f"Foo.bar({self}, {x})"
+
+    def foo1_bar_impl(x):
+        return f"foo1.bar({x})"
+
+    with handler({Foo.bar: Foo_bar_impl}):
+        # foo1.bar is handled separately, does not call Foo.bar
+        with handler({foo1.bar: foo1_bar_impl}):
+            assert foo1.bar(42) == "foo1.bar(42)"
+            # foo2.bar is unhandled, so it should call Foo.bar
+            assert foo2.bar(42) == f"Foo.bar({foo2}, 42)"
+
+        # Without the inner handler, foo1.bar should also call Foo.bar
+        assert foo1.bar(42) == f"Foo.bar({foo1}, 42)"
