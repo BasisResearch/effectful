@@ -12,14 +12,14 @@ except ImportError:
 
 import tree
 
-from effectful.ops.semantics import fvsof, typeof
+from effectful.internals.runtime import interpreter
+from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
     defdata,
     deffn,
     defop,
-    defterm,
     syntactic_eq,
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
@@ -70,19 +70,14 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
             for i, k in enumerate(key):
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
+        return defdata(jax_getitem, x, key)
 
-    def _sizesof(expr):
-        expr = defterm(expr)
-        if isinstance(expr, Term):
-            for x in tree.flatten((expr.args, expr.kwargs)):
-                _sizesof(x)
-            if expr.op is jax_getitem:
-                _getitem_sizeof(*expr.args)
-        elif tree.is_nested(expr):
-            for x in tree.flatten(expr):
-                _sizesof(x)
+    def _apply(op, *args, **kwargs):
+        return defdata(op, *args, **kwargs)
 
-    _sizesof(value)
+    with interpreter({jax_getitem: _getitem_sizeof, apply: _apply}):
+        evaluate(value)
+
     return sizes
 
 
@@ -287,7 +282,9 @@ def _indexed_func_wrapper[**P, S, T](
 
 
 @syntactic_eq.register
-def _(x: jax.typing.ArrayLike, other) -> bool:
-    return isinstance(other, jax.typing.ArrayLike) and bool(  # type: ignore[arg-type]
-        (jnp.asarray(x) == jnp.asarray(other)).all()
+def _(x: jax.Array, other) -> bool:
+    return (
+        isinstance(other, jax.Array)
+        and x.shape == other.shape
+        and bool((jnp.asarray(x) == jnp.asarray(other)).all())
     )

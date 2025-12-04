@@ -374,6 +374,9 @@ def test_array_eq():
     y = jnp.array([1, 2, 3])
     assert syntactic_eq(x + y, x + y)
 
+    z = jnp.array([1, 2, 3, 4])
+    assert not syntactic_eq(x + y, x + z)
+
 
 def test_jax_rotation():
     import jax.scipy.spatial.transform
@@ -926,12 +929,15 @@ def test_arrayterm_transpose():
     array_term = jax_getitem(base_array, (i(),))
 
     result = array_term.transpose()
+    result_T = array_term.T
     jnp_result = jnp.transpose(array_term)
 
     with handler({i: lambda: jnp.array([0, 1])}):
         eval_result = evaluate(result)
+        eval_result_T = evaluate(result_T)
         eval_jnp_result = evaluate(jnp_result)
         assert jnp.allclose(eval_result, eval_jnp_result)
+        assert jnp.allclose(eval_result_T, eval_jnp_result)
 
 
 def test_arrayterm_var():
