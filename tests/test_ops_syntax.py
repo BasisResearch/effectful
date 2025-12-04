@@ -363,7 +363,8 @@ def test_defop_setattr_class() -> None:
     class MyClass:
         my_op: ClassVar[Operation]
 
-    @defop
+    @defop  # type: ignore
+    @staticmethod
     def my_op(x: int) -> int:
         raise NotHandled
 
@@ -372,11 +373,10 @@ def test_defop_setattr_class() -> None:
     tm = MyClass.my_op(5)
     assert isinstance(tm, Term)
     assert isinstance(tm.op, Operation)
-    assert tm.op is my_op
+    assert tm.op is MyClass.my_op
     assert tm.args == (5,)
 
-    with pytest.raises(TypeError):
-        MyClass().my_op(5)
+    MyClass().my_op(5)
 
 
 def test_defop_classmethod():

@@ -454,12 +454,32 @@ class Operation[**Q, V]:
     def __str__(self):
         return self.__name__
 
-    def __get__(self, instance, owner):
-        if instance is not None:
-            # This is an instance-level operation, so we need to bind the instance
+    def __set_name__[T](self, owner: type[T], name: str) -> None:
+        if issubclass(owner, Term):
+            return None
+
+        assert not hasattr(self, "_name_on_instance"), "should only be called once"
+        self._name_on_instance = f"__instanceop_{name}"
+
+        @functools.cached_property  # type: ignore
+        def _instanceop(__instance: T):
+            from effectful.ops.semantics import fvsof
+
+            if isinstance(__instance, Term) or fvsof(__instance):
+                return types.MethodType(self, __instance)
+            else:
+                return self.define(types.MethodType(self, __instance))
+
+        assert isinstance(_instanceop, functools.cached_property)
+        _instanceop.__set_name__(owner, self._name_on_instance)
+        setattr(owner, self._name_on_instance, _instanceop)
+
+    def __get__(self, instance, owner=None):
+        if instance is not None and hasattr(self, "_name_on_instance"):
+            return getattr(instance, self._name_on_instance)
+        elif instance is not None:
             return types.MethodType(self, instance)
         else:
-            # This is a static operation, so we return the operation itself
             return self
 
     @classmethod
