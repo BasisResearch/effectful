@@ -5,10 +5,10 @@ import linecache
 import tempfile
 import textwrap
 import typing
-from mypy import api as mypy_api
 from typing import get_args, get_origin, get_type_hints
 
 import pydantic
+from mypy import api as mypy_api
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
