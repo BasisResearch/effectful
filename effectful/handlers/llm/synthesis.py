@@ -26,11 +26,12 @@ class SynthesisError(Exception):
 class SynthesizedFunction(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    The LLM provides the function name and body, while the signature
-    (parameter types and return type) is prescribed by the prompt.
+    The LLM provides the function name, parameter names, and body.
+    The parameter types and return type are prescribed by the prompt.
     """
 
     function_name: str
+    param_names: list[str]  # Names for each parameter (in order)
     body: str  # The indented function body (implementation)
 
 
@@ -202,23 +203,41 @@ def _format_type_for_annotation(t: type) -> str:
     return str(t)
 
 
-def _format_param_signature(callable_type: type) -> str:
-    """Format the parameter signature from a Callable type.
+def _get_param_types(callable_type: type) -> list[type] | None:
+    """Extract parameter types from a Callable type.
 
-    E.g., Callable[[str, int], bool] -> "arg0: str, arg1: int"
+    Returns None if the callable uses ellipsis (...) for params.
     """
     args = get_args(callable_type)
     if not args:
-        return ""
+        return []
 
     param_types = args[0]
     if param_types is ...:
+        return None
+
+    return list(param_types)
+
+
+def _format_param_signature(
+    callable_type: type, param_names: list[str] | None = None
+) -> str:
+    """Format the parameter signature from a Callable type.
+
+    E.g., Callable[[str, int], bool] with names ["text", "count"]
+    -> "text: str, count: int"
+    """
+    param_types = _get_param_types(callable_type)
+    if param_types is None:
         return "*args, **kwargs"
+    if not param_types:
+        return ""
 
     params = []
     for i, param_type in enumerate(param_types):
         type_str = _format_type_for_annotation(param_type)
-        params.append(f"arg{i}: {type_str}")
+        name = param_names[i] if param_names and i < len(param_names) else f"arg{i}"
+        params.append(f"{name}: {type_str}")
 
     return ", ".join(params)
 
@@ -306,8 +325,8 @@ class ProgramSynthesis(ObjectInterpretation):
         Returns:
             The synthesized callable function
         """
-        # Build the function with prescribed signature
-        param_sig = _format_param_signature(callable_type)
+        # Build the function with prescribed types and LLM-provided names
+        param_sig = _format_param_signature(callable_type, result.param_names)
         return_type = _format_return_type(callable_type)
         func_name = result.function_name
 
@@ -364,9 +383,19 @@ class ProgramSynthesis(ObjectInterpretation):
         type_sources = collect_type_sources(ret_type)
         type_context = format_type_context(type_sources)
 
-        # Build the prescribed signature
-        param_sig = _format_param_signature(ret_type)
+        # Get parameter types and return type for the prompt
+        param_types = _get_param_types(ret_type)
         return_type_str = _format_return_type(ret_type)
+
+        # Format parameter types for display
+        if param_types is None:
+            param_types_str = "*args, **kwargs"
+        elif not param_types:
+            param_types_str = "(no parameters)"
+        else:
+            param_types_str = ", ".join(
+                _format_type_for_annotation(t) for t in param_types
+            )
 
         # Build the type definitions section if there are custom types
         type_defs_section = ""
@@ -384,17 +413,16 @@ The following types are available:
 
         **Specification:** {template.__prompt_template__}
 
-        **Required signature:**
-        ```python
-        def <function_name>({param_sig}) -> {return_type_str}:
-            <body>
-        ```
+        **Required types:**
+        - Parameter types (in order): {param_types_str}
+        - Return type: {return_type_str}
         {type_defs_section}
         **Instructions:**
         1. Choose a descriptive function name.
-        2. Implement only the function body.
-        3. The parameter types and return type are fixed as shown above.
-        4. Do not redefine any of the provided types.
+        2. Choose descriptive parameter names (one for each parameter type).
+        3. Implement the function body.
+        4. The parameter types and return type are fixed as shown above.
+        5. Do not redefine any of the provided types.
         """).strip()
 
         # Use structured output - the LLM returns JSON with function_name and body
