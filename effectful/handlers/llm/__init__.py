@@ -1,9 +1,6 @@
-import dataclasses
-import functools
 import inspect
 from collections.abc import Callable, Iterable
 
-from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
 
 
@@ -13,13 +10,18 @@ class Template[**P, T](Operation[P, T]):
 
     def __init__(
         self,
-        body: Callable[P, T],
-        __prompt_template__: str,
+        signature: inspect.Signature,
+        name: str,
+        prompt_template: str,
         tools: tuple[Operation, ...],
     ):
-        self.__prompt_template__ = __prompt_template__
+        self.__prompt_template__ = prompt_template
         self.tools = tools
-        super().__init__(inspect.signature(body), body.__name__, body)
+
+        def default(*args, **kwargs):
+            raise NotHandled
+
+        super().__init__(signature, name, default)
 
     @classmethod
     def define(cls, _func=None, *, tools: Iterable[Operation] = (), **kwargs):
@@ -27,7 +29,9 @@ class Template[**P, T](Operation[P, T]):
             if not body.__doc__:
                 raise ValueError("Expected a docstring on body")
 
-            return cls(body, body.__doc__, tuple(tools))
+            return cls(
+                inspect.signature(body), body.__name__, body.__doc__, tuple(tools)
+            )
 
         if _func is None:
             return decorator

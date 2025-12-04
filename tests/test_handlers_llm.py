@@ -20,7 +20,7 @@ class MockLLMProvider[T](ObjectInterpretation):
         """
         self.prompt_responses = prompt_responses
 
-    @implements(Template.apply)
+    @implements(Template.apply)  # type: ignore[arg-type]
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -46,7 +46,7 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         """
         self.response = response
 
-    @implements(Template.apply)
+    @implements(Template.apply)  # type: ignore[arg-type]
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

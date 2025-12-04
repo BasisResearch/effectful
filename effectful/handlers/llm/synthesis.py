@@ -1,7 +1,5 @@
 import ast
 import collections.abc
-import dataclasses
-import functools
 import linecache
 import re
 import textwrap
@@ -62,8 +60,8 @@ class ProgramSynthesis(ObjectInterpretation):
 
         return gs[last_decl.name]
 
-    @implements(Template.apply)
-    def _call(self, template, *args, **kwargs) -> None:
+    @implements(Template.apply)  # type: ignore[arg-type]
+    def _call[**P, T](self, template: Template[P, T], *args, **kwargs) -> T:
         ret_type = template.__signature__.return_annotation
         origin = typing.get_origin(ret_type)
         ret_type = ret_type if origin is None else origin
@@ -86,13 +84,10 @@ class ProgramSynthesis(ObjectInterpretation):
         </instructions>
         """).strip()
 
-        @functools.wraps(template)
-        def wrapper(*args, **kwargs):
-            pass
-
-        wrapper.__signature__ = wrapper.__signature__.replace(return_annotation=str)
-        wrapper.__doc__ = prompt_ext
-
-        response = fwd(Template.define(wrapper, tools=template.tools), *args, **kwargs)
+        sig = template.__signature__.replace(return_annotation=str)
+        fresh_template: Template[P, str] = Template(
+            sig, template.__name__, prompt_ext, tools=template.tools
+        )
+        response = fresh_template(*args, **kwargs)
         functional = self._parse_and_eval(ret_type, response)
         return functional
