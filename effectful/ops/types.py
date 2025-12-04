@@ -510,14 +510,14 @@ class Operation[**Q, V]:
 def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
-    Handling :func:`apply` changes the evaluation strategy of terms.
+    Handling :func:`Operation.__apply__` changes the evaluation strategy of terms.
 
     **Example usage**:
 
-    >>> @defop
+    >>> @Operation.define
     ... def add(x: int, y: int) -> int:
     ...     return x + y
-    >>> @defop
+    >>> @Operation.define
     ... def mul(x: int, y: int) -> int:
     ...     return x * y
 
@@ -526,10 +526,11 @@ def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) ->
     >>> mul(add(1, 2), 3)
     9
 
-    By installing an :func:`apply` handler, we capture the term instead:
+    By installing an :func:`Operation.__apply__` handler, we capture the term instead:
 
     >>> from effectful.ops.syntax import defdata
-    >>> with handler({apply: defdata}):
+    >>> from effectful.ops.semantics import handler
+    >>> with handler({Operation.__apply__: defdata}):
     ...     term = mul(add(1, 2), 3)
     >>> print(str(term))
     mul(add(1, 2), 3)
