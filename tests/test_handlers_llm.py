@@ -1,7 +1,17 @@
+import inspect
+import textwrap
 from collections.abc import Callable
+from dataclasses import dataclass
+
+import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import (
+    ProgramSynthesis,
+    SynthesisError,
+    collect_type_sources,
+    format_type_context,
+)
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -78,6 +88,18 @@ def count_char(char: str) -> Callable[[str], int]:
     raise NotImplementedError
 
 
+@dataclass
+class Person:
+    name: str
+    age: int
+
+
+@Template.define
+def make_greeter(style: str) -> Callable[[Person], str]:
+    """Create a greeting function for a person with the given style."""
+    raise NotImplementedError
+
+
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -115,3 +137,90 @@ def count_occurrences(s):
         assert callable(count_a)
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
+
+
+def test_collect_type_sources():
+    """Test the format_type_context function."""
+    type_sources = collect_type_sources(Person)
+    assert type_sources == {Person: inspect.getsource(Person)}
+
+
+def test_format_type_context():
+    """Test the format_type_context function."""
+    type_sources = {Person: inspect.getsource(Person)}
+    print(format_type_context(type_sources))
+    print(textwrap.dedent(inspect.getsource(Person)).strip())
+    assert (
+        format_type_context(type_sources)
+        == textwrap.dedent(inspect.getsource(Person)).strip()
+    )
+
+
+def test_count_char_with_program_synthesis_type_check():
+    """Test the count_char template with program synthesis and type checking."""
+    mock_code = """<code>
+def count_occurrences(s: str) -> int:
+    return s.count('a')
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+        count_a = count_char("a")
+        assert callable(count_a)
+        assert count_a("banana") == 3
+        assert count_a("cherry") == 0
+
+
+def test_program_synthesis_type_check_catches_wrong_return_type():
+    """Test that type checking catches functions with wrong return type."""
+    # Invalid code: returns None instead of int
+    mock_code = """<code>
+def count_occurrences(s: str) -> None:
+    pass
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    with pytest.raises(SynthesisError, match="Type check failed"):
+        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+            count_char("a")
+
+
+def test_program_synthesis_type_check_catches_wrong_param_type():
+    """Test that type checking catches functions with wrong parameter type."""
+    # Invalid code: takes int instead of str
+    mock_code = """<code>
+def count_occurrences(s: int) -> int:
+    return 42
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    with pytest.raises(SynthesisError, match="Type check failed"):
+        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+            count_char("a")
+
+
+def test_make_greeter_with_program_synthesis_custom_type_check():
+    """Test program synthesis with custom type (Person) in the signature."""
+    mock_code = """<code>
+def greet(person: Person) -> str:
+    return f"Hello, {person.name}!"
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+        greeter = make_greeter("formal")
+        assert callable(greeter)
+
+
+def test_make_greeter_with_program_synthesis_custom_type_check_error():
+    """Test that type checking catches wrong custom type in parameter."""
+    # Invalid code: takes str instead of Person
+    mock_code = """<code>
+def greet(person: str) -> str:
+    return f"Hello, {person}!"
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    with pytest.raises(SynthesisError, match="Type check failed"):
+        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+            make_greeter("formal")
