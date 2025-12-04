@@ -66,6 +66,7 @@ import numbers
 import operator
 import types
 import typing
+from dataclasses import dataclass
 
 try:
     from typing import _collect_type_parameters as _freetypevars  # type: ignore
@@ -91,6 +92,16 @@ TypeExpression = TypeVariable | TypeConstant | TypeApplication
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
+
+
+@dataclass
+class Box[T]:
+    """Boxed types. Prevents confusion between types computed by __type_rule__
+    and values.
+
+    """
+
+    value: T
 
 
 @typing.overload
@@ -582,7 +593,7 @@ def _(typ: typing.ForwardRef):
 
 
 @functools.singledispatch
-def nested_type(value) -> TypeExpression:
+def nested_type(value) -> Box[TypeExpression]:
     """
     Infer the type of a value, handling nested collections with generic parameters.
 
@@ -618,87 +629,87 @@ def nested_type(value) -> TypeExpression:
         >>> from effectful.internals.unification import nested_type
 
         # Basic types are returned as their type
-        >>> nested_type(42)
+        >>> nested_type(42).value
         <class 'int'>
-        >>> nested_type("hello")
+        >>> nested_type("hello").value
         <class 'str'>
-        >>> nested_type(3.14)
+        >>> nested_type(3.14).value
         <class 'float'>
-        >>> nested_type(True)
+        >>> nested_type(True).value
         <class 'bool'>
 
-        # Type objects pass through unchanged
-        >>> nested_type(int)
+        # Boxed type objects pass through unchanged
+        >>> nested_type(Box(int)).value
         <class 'int'>
-        >>> nested_type(str)
+        >>> nested_type(Box(str)).value
         <class 'str'>
-        >>> nested_type(list)
+        >>> nested_type(Box(list)).value
         <class 'list'>
 
         # Empty collections return their base type
-        >>> nested_type([])
+        >>> nested_type([]).value
         <class 'list'>
-        >>> nested_type({})
+        >>> nested_type({}).value
         <class 'dict'>
-        >>> nested_type(set())
+        >>> nested_type(set()).value
         <class 'set'>
 
         # Sequences become Sequence[element_type]
-        >>> nested_type([1, 2, 3])
+        >>> nested_type([1, 2, 3]).value
         collections.abc.MutableSequence[int]
-        >>> nested_type(["a", "b", "c"])
+        >>> nested_type(["a", "b", "c"]).value
         collections.abc.MutableSequence[str]
 
         # Tuples preserve exact structure
-        >>> nested_type((1, "hello", 3.14))
+        >>> nested_type((1, "hello", 3.14)).value
         tuple[int, str, float]
-        >>> nested_type(())
+        >>> nested_type(()).value
         <class 'tuple'>
-        >>> nested_type((1,))
+        >>> nested_type((1,)).value
         tuple[int]
 
         # Sets become Set[element_type]
-        >>> nested_type({1, 2, 3})
+        >>> nested_type({1, 2, 3}).value
         collections.abc.MutableSet[int]
-        >>> nested_type({"a", "b"})
+        >>> nested_type({"a", "b"}).value
         collections.abc.MutableSet[str]
 
         # Mappings become Mapping[key_type, value_type]
-        >>> nested_type({"key": "value"})
+        >>> nested_type({"key": "value"}).value
         collections.abc.MutableMapping[str, str]
-        >>> nested_type({1: "one", 2: "two"})
+        >>> nested_type({1: "one", 2: "two"}).value
         collections.abc.MutableMapping[int, str]
 
         # Strings and bytes are NOT treated as sequences
-        >>> nested_type("hello")
+        >>> nested_type("hello").value
         <class 'str'>
-        >>> nested_type(b"bytes")
+        >>> nested_type(b"bytes").value
         <class 'bytes'>
 
         # Annotated functions return types derived from their annotations
         >>> def annotated_func(x: int) -> str:
         ...     return str(x)
-        >>> nested_type(annotated_func)
+        >>> nested_type(annotated_func).value
         collections.abc.Callable[[int], str]
 
         # Unannotated functions/callables return their type
         >>> def f(): pass
-        >>> nested_type(f)
+        >>> nested_type(f).value
         <class 'function'>
-        >>> nested_type(lambda x: x)
+        >>> nested_type(lambda x: x).value
         <class 'function'>
 
         # Generic aliases and union types pass through
-        >>> nested_type(list[int])
+        >>> nested_type(Box(list[int])).value
         list[int]
-        >>> nested_type(int | str)
+        >>> nested_type(Box(int | str)).value
         int | str
     """
-    return type(value)
+    return Box(type(value))
 
 
 @nested_type.register
-def _(value: TypeExpression):
+def _(value: Box):
     return value
 
 
@@ -709,23 +720,23 @@ def _(value: effectful.ops.types.Term):
 
 @nested_type.register
 def _(value: effectful.ops.types.Operation):
-    typ = nested_type.dispatch(collections.abc.Callable)(value)
+    typ = nested_type.dispatch(collections.abc.Callable)(value).value
     (arg_types, return_type) = typing.get_args(typ)
-    return effectful.ops.types.Operation[arg_types, return_type]  # type: ignore
+    return Box(effectful.ops.types.Operation[arg_types, return_type])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Callable):
     if typing.get_overloads(value):
-        return type(value)
+        return Box(type(value))
 
     try:
         sig = inspect.signature(value)
     except ValueError:
-        return type(value)
+        return Box(type(value))
 
     if sig.return_annotation is inspect.Signature.empty:
-        return type(value)
+        return Box(type(value))
     elif any(
         p.annotation is inspect.Parameter.empty
         or p.kind
@@ -736,60 +747,65 @@ def _(value: collections.abc.Callable):
         }
         for p in sig.parameters.values()
     ):
-        return collections.abc.Callable[..., sig.return_annotation]
+        return Box(collections.abc.Callable[..., sig.return_annotation])
     else:
-        return collections.abc.Callable[
-            [p.annotation for p in sig.parameters.values()], sig.return_annotation
-        ]
+        return Box(
+            collections.abc.Callable[
+                [p.annotation for p in sig.parameters.values()], sig.return_annotation
+            ]
+        )
 
 
 @nested_type.register
 def _(value: collections.abc.Mapping):
     if value and isinstance(value, effectful.ops.types.Interpretation):
-        return effectful.ops.types.Interpretation
+        return Box(effectful.ops.types.Interpretation)
 
     if len(value) == 0:
-        return type(value)
+        return Box(type(value))
     elif len(value) == 1:
-        ktyp = nested_type(next(iter(value.keys())))
-        vtyp = nested_type(next(iter(value.values())))
-        return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
+        ktyp = nested_type(next(iter(value.keys()))).value
+        vtyp = nested_type(next(iter(value.values()))).value
+        return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
     else:
-        ktyp = functools.reduce(operator.or_, map(nested_type, value.keys()))
-        vtyp = functools.reduce(operator.or_, map(nested_type, value.values()))
+        ktyp = functools.reduce(
+            operator.or_, [nested_type(x).value for x in value.keys()]
+        )
+        vtyp = functools.reduce(
+            operator.or_, [nested_type(x).value for x in value.values()]
+        )
         if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
-            return type(value)
+            return Box(type(value))
         else:
-            return canonicalize(type(value))[ktyp, vtyp]  # type: ignore
+            return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Collection):
     if len(value) == 0:
-        return type(value)
+        return Box(type(value))
     elif len(value) == 1:
-        vtyp = nested_type(next(iter(value)))
-        return canonicalize(type(value))[vtyp]  # type: ignore
+        vtyp = nested_type(next(iter(value))).value
+        return Box(canonicalize(type(value))[vtyp])  # type: ignore
     else:
-        valtyp = functools.reduce(operator.or_, map(nested_type, value))
+        valtyp = functools.reduce(operator.or_, [nested_type(x).value for x in value])
         if isinstance(valtyp, UnionType):
-            return type(value)
+            return Box(type(value))
         else:
-            return canonicalize(type(value))[valtyp]  # type: ignore
+            return Box(canonicalize(type(value))[valtyp])  # type: ignore
 
 
 @nested_type.register
 def _(value: tuple):
-    return (
-        nested_type.dispatch(collections.abc.Sequence)(value)
-        if type(value) != tuple or len(value) == 0
-        else tuple[tuple(nested_type(item) for item in value)]  # type: ignore
-    )
+    if type(value) != tuple or len(value) == 0:
+        return nested_type.dispatch(collections.abc.Sequence)(value)
+    else:
+        return Box(tuple[tuple(nested_type(item).value for item in value)])  # type: ignore
 
 
 @nested_type.register
 def _(value: str | bytes | range | None):
-    return type(value)
+    return Box(type(value))
 
 
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "effectful"
-version = "0.2.2"
+version = "0.2.3"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
 license = "Apache-2.0"
@@ -45,18 +45,19 @@ llm = [
   "pillow",
   "pydantic",
 ]
+prettyprinter = ["prettyprinter"]
 docs = [
-    "effectful[torch,pyro,jax,numpyro]",
+    "effectful[torch,pyro,jax,numpyro,prettyprinter]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
     "sphinx_autodoc_typehints",
-    "pypandoc",
+    "pypandoc_binary<1.16",
 ]
 test = [
-    "effectful[torch,pyro,jax,numpyro,docs]",
+    "effectful[torch,pyro,jax,numpyro,docs,prettyprinter]",
     "pytest",
     "pytest-cov",
     "pytest-xdist",
