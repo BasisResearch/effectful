@@ -695,29 +695,20 @@ def _[**P, T](t: Callable[P, T], *, name: str | None = None) -> Operation[P, T]:
     return defop(func, name=name)
 
 
-class _ClassMethodOpDescriptor(classmethod):
-    def __set_name__(self, owner, name):
-        assert not hasattr(self, "_name_on_owner"), "should only be called once"
-        self._name_on_owner = f"_descriptorop_{name}"
-
-    def __get__(self, instance, owner: type | None = None):
-        owner = owner if owner is not None else type(instance)
-        try:
-            return owner.__dict__[self._name_on_owner]
-        except KeyError:
-            bound_op = defop(super().__get__(instance, owner))
-            setattr(owner, self._name_on_owner, bound_op)
-            return bound_op
-
-
 @defop.register(classmethod)
-def _[**P, S, T](t: "classmethod[S, P, T]", **kwargs):  # type: ignore
-    return _ClassMethodOpDescriptor(t.__func__)
+def _[**P, S, T](  # type: ignore
+    t: classmethod, *, name: str | None = None
+) -> Operation[Concatenate[type[S], P], T]:
+    raise NotImplementedError("classmethod operations are not yet supported")
 
 
 @defop.register(staticmethod)
-def _[**P, T](t: "staticmethod[P, T]", **kwargs):
-    return staticmethod(defop(t.__func__, **kwargs))
+class _StaticMethodOperation[**P, S, T](_BaseOperation[P, T]):
+    def __init__(self, default: staticmethod, **kwargs):
+        super().__init__(default=default.__func__, **kwargs)
+
+    def __get__(self, instance: S, owner: type[S] | None = None) -> Callable[P, T]:
+        return self
 
 
 @defop.register(property)
@@ -744,12 +735,15 @@ class _PropertyOperation[S, T](_BaseOperation[[S], T]):
 
 @defop.register(functools.singledispatchmethod)
 class _SingleDispatchMethodOperation[**P, S, T](_BaseOperation[Concatenate[S, P], T]):
-    _default: Callable[Concatenate[S, P], T]
+    _registry: Callable[Concatenate[S, P], T]
 
     def __init__(self, default: functools.singledispatchmethod, **kwargs):  # type: ignore
+        if isinstance(default.func, classmethod):
+            raise NotImplementedError("Operations as classmethod are not yet supported")
+
         @functools.wraps(default.func)
         def _wrapper(obj: S, *args: P.args, **kwargs: P.kwargs) -> T:
-            return default.__get__(obj, type(obj))(*args, **kwargs)
+            return default.__get__(obj)(*args, **kwargs)
 
         self._descriptor: functools.singledispatchmethod = default
         super().__init__(_wrapper, **kwargs)
