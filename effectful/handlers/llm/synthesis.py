@@ -9,6 +9,7 @@ from typing import get_args, get_origin, get_type_hints
 
 import pydantic
 from mypy import api as mypy_api
+from pydantic import Field
 
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
@@ -30,9 +31,11 @@ class SynthesizedFunction(pydantic.BaseModel):
     The parameter types and return type are prescribed by the prompt.
     """
 
-    function_name: str
-    param_names: list[str]  # Names for each parameter (in order)
-    body: str  # The indented function body (implementation)
+    function_name: str = Field(..., description="The name of the function")
+    param_names: list[str] = Field(
+        ..., description="The names of the parameters (in order)"
+    )
+    body: str = Field(..., description="The indented function body (implementation)")
 
 
 def collect_referenced_types(t: type, seen: set[type] | None = None) -> set[type]:
