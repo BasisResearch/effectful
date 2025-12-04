@@ -454,6 +454,11 @@ class Operation[**Q, V]:
                         and default_result.op is self
                         and isinstance(self.__get__(default_result.args[0]), Operation)
                     ):
+                        # Given a term cls_op(instance, *args, **kwargs),
+                        #   such that instance_op = cls_op.__get__(instance),
+                        #   rewrite to a new term instance_op(*args, **kwargs)
+                        #   so that the instance-specific operation reappears
+                        #   in the final term and is therefore visible to evaluate()
                         return defdata(
                             self.__get__(default_result.args[0]),
                             *default_result.args[1:],
