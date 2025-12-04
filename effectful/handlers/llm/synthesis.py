@@ -5,6 +5,7 @@ import linecache
 import tempfile
 import textwrap
 import typing
+from collections.abc import Callable
 from typing import get_args, get_origin, get_type_hints
 
 import pydantic
@@ -371,7 +372,7 @@ class ProgramSynthesis(ObjectInterpretation):
         return gs[func_name]
 
     @implements(Template.__call__)
-    def _call(self, template, *args, **kwargs) -> None:
+    def _call(self, template, *args, **kwargs) -> Callable:
         ret_type = template.__signature__.return_annotation
         origin = typing.get_origin(ret_type)
         ret_type_origin = ret_type if origin is None else origin
