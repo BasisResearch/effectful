@@ -15,7 +15,7 @@ from effectful.ops.types import (
     Term,
 )
 
-apply = Operation.apply
+apply = Operation.__apply__
 
 
 @defop

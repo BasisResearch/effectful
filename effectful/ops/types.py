@@ -76,7 +76,7 @@ class Operation[**Q, V]:
     __signature__: inspect.Signature
     __name__: str
     __default__: Callable[Q, V]
-    apply: typing.ClassVar["Operation"]
+    __apply__: typing.ClassVar["Operation"]
 
     def __init__(
         self, signature: inspect.Signature, name: str, default: Callable[Q, V]
@@ -483,31 +483,31 @@ class Operation[**Q, V]:
         self_handler = intp.get(self)
         if self_handler is not None:
             return self_handler(*args, **kwargs)
-        elif args and isinstance(args[0], Operation) and self is args[0].apply:
+        elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
             # Prevent infinite recursion when calling self.apply directly
             return self.__default__(*args, **kwargs)
         else:
-            return self.apply(self, *args, **kwargs)
+            return self.__apply__(self, *args, **kwargs)
 
     def __init_subclass__(cls, **kwargs) -> None:
-        assert "apply" not in cls.__dict__ or cls is Operation, (
+        assert "__apply__" not in cls.__dict__ or cls is Operation, (
             "Cannot manually override apply"
         )
-        assert isinstance(cls.apply, Operation)
+        assert isinstance(cls.__apply__, Operation)
 
-        cls.apply = cls.apply.define(
+        cls.__apply__ = cls.__apply__.define(
             staticmethod(
-                functools.wraps(cls.apply)(
+                functools.wraps(cls.__apply__)(
                     functools.partial(
                         lambda app, op, *args, **kwargs: app(op, *args, **kwargs),
-                        cls.apply,
+                        cls.__apply__,
                     )
                 )
             )
         )
 
 
-def apply[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`apply` changes the evaluation strategy of terms.
@@ -538,8 +538,8 @@ def apply[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
     return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
-Operation.apply = Operation.define(staticmethod(apply))
-del apply
+Operation.__apply__ = Operation.define(staticmethod(__apply__))
+del __apply__
 
 
 if typing.TYPE_CHECKING:

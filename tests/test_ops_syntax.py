@@ -902,9 +902,9 @@ def test_operation_subclass():
     class OtherOperation(Operation):
         pass
 
-    assert isinstance(TestOperation.apply, Operation)
-    assert isinstance(OtherOperation.apply, Operation)
-    assert TestOperation.apply != OtherOperation.apply
+    assert isinstance(TestOperation.__apply__, Operation)
+    assert isinstance(OtherOperation.__apply__, Operation)
+    assert TestOperation.__apply__ != OtherOperation.__apply__
 
     @TestOperation.define
     def my_func(a, b):
@@ -931,10 +931,10 @@ def test_operation_subclass():
         assert my_func(3, 4) == "<op handler>"
 
     # Handling the class apply works
-    with handler({TestOperation.apply: _test_operation_apply}):
+    with handler({TestOperation.__apply__: _test_operation_apply}):
         assert my_func(3, 4) == "<TestOperation.apply handler>"
 
-    with handler({OtherOperation.apply: _other_operation_apply}):
+    with handler({OtherOperation.__apply__: _other_operation_apply}):
         assert my_func(3, 4) == "<default handler>"
 
     # Handling global apply works
@@ -942,11 +942,11 @@ def test_operation_subclass():
         assert my_func(3, 4) == "<apply handler>"
 
     # Handling the operation takes precedence over the class apply
-    with handler({TestOperation.apply: _test_operation_apply, my_func: _my_func}):
+    with handler({TestOperation.__apply__: _test_operation_apply, my_func: _my_func}):
         assert my_func(3, 4) == "<op handler>"
 
     # Handling the class apply takes precedence over the global apply
-    with handler({apply: _apply, TestOperation.apply: _test_operation_apply}):
+    with handler({apply: _apply, TestOperation.__apply__: _test_operation_apply}):
         assert my_func(3, 4) == "<TestOperation.apply handler>"
 
     # Handling the operation takes precedence over the global apply
@@ -955,7 +955,11 @@ def test_operation_subclass():
 
     # Handling the operation takes precedence over the class apply and the global apply
     with handler(
-        {apply: _apply, my_func: _my_func, TestOperation.apply: _test_operation_apply}
+        {
+            apply: _apply,
+            my_func: _my_func,
+            TestOperation.__apply__: _test_operation_apply,
+        }
     ):
         assert my_func(3, 4) == "<op handler>"
 
@@ -981,14 +985,18 @@ def test_operation_subclass_inheritance():
         assert base_op(2) == "handled base_op: 2"
 
     with handler(
-        {SubOperation.apply: lambda op, x, **kwargs: f"handled SubOperation: {op} {x}"}
+        {
+            SubOperation.__apply__: lambda op,
+            x,
+            **kwargs: f"handled SubOperation: {op} {x}"
+        }
     ):
         assert sub_op(3) == f"handled SubOperation: {sub_op} 3"
         assert base_op(4) == "base_op: 4"
 
     with handler(
         {
-            BaseOperation.apply: lambda op,
+            BaseOperation.__apply__: lambda op,
             x,
             **kwargs: f"handled BaseOperation: {op} {x}"
         }
@@ -998,10 +1006,10 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            SubOperation.apply: lambda op,
+            SubOperation.__apply__: lambda op,
             x,
             **kwargs: f"handled SubOperation: {op} {x}",
-            BaseOperation.apply: lambda op,
+            BaseOperation.__apply__: lambda op,
             x,
             **kwargs: f"handled BaseOperation: {op} {x}",
         }
