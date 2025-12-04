@@ -100,12 +100,13 @@ class ProgramSynthesis(ObjectInterpretation):
         try:
             code_obj = compile(source_code, filename, "exec")
             exec(code_obj, gs)
-            if self.type_check:
-                self.verify_callable_signature(gs[last_decl.name], t)
-                # TODO: even more static analysis and type checking, adding type guards, etc.
+
         except Exception as exc:
             raise SynthesisError(f"evaluation failed: {exc}", content) from exc
 
+        if self.type_check:
+            self.verify_callable_signature(gs[last_decl.name], t)
+            # TODO: even more static analysis and type checking, adding type guards, etc.
         return gs[last_decl.name]
 
     @implements(Template.__call__)
