@@ -1,3 +1,4 @@
+import collections
 import collections.abc
 import dataclasses
 import inspect
@@ -57,17 +58,17 @@ def collect_referenced_types(t: type, seen: set[type] | None = None) -> set[type
 
     types: set[type] = set()
 
-    # Handle generic types (e.g., Callable[[X], Y], list[X], Optional[X])
+    # Handle generic types (e.g., Callable[[X], Y], list[X], dict[str, Item])
     origin = get_origin(t)
     if origin is not None:
         for arg in get_args(t):
-            if isinstance(arg, type):
-                types.update(collect_referenced_types(arg, seen))
-            elif isinstance(arg, list):
-                # Handle Callable[[P1, P2], R] where args is a list
+            if isinstance(arg, list):
+                # Handle Callable[[P1, P2], R] where first arg is a list of param types
                 for inner_arg in arg:
-                    if isinstance(inner_arg, type):
-                        types.update(collect_referenced_types(inner_arg, seen))
+                    types.update(collect_referenced_types(inner_arg, seen))
+            elif arg is not ...:
+                # Recursively process all type arguments (including generic aliases)
+                types.update(collect_referenced_types(arg, seen))
         return types
 
     # Skip non-types, already-seen types, and builtins
@@ -360,7 +361,6 @@ class ProgramSynthesis(ObjectInterpretation):
         for typ in referenced_types:
             module = inspect.getmodule(typ)
             if module is not None:
-                # Import the type from its module - this brings in all dependencies
                 gs[typ.__name__] = typ
 
         try:
