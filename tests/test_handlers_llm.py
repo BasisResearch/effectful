@@ -1,7 +1,18 @@
+import inspect
+import textwrap
 from collections.abc import Callable
+from dataclasses import dataclass
+
+import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import (
+    ProgramSynthesis,
+    SynthesisError,
+    SynthesizedFunction,
+    collect_type_sources,
+    format_type_context,
+)
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -78,6 +89,18 @@ def count_char(char: str) -> Callable[[str], int]:
     raise NotImplementedError
 
 
+@dataclass
+class Person:
+    name: str
+    age: int
+
+
+@Template.define
+def make_greeter(style: str) -> Callable[[Person], str]:
+    """Create a greeting function for a person with the given style."""
+    raise NotImplementedError
+
+
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -104,14 +127,128 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    mock_code = """<code>
-def count_occurrences(s):
-    return s.count('a')
-</code>"""
-    mock_provider = SingleResponseLLMProvider(mock_code)
+    # Structured response: LLM provides function name, param names, and body
+    mock_response = SynthesizedFunction(
+        function_name="count_occurrences",
+        param_names=["text"],
+        body="    return text.count('a')",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")
         assert callable(count_a)
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
+
+
+def test_collect_type_sources():
+    """Test the collect_type_sources function."""
+    type_sources = collect_type_sources(Person)
+    assert type_sources == {Person: inspect.getsource(Person)}
+
+
+def test_format_type_context():
+    """Test the format_type_context function."""
+    type_sources = {Person: inspect.getsource(Person)}
+    assert (
+        format_type_context(type_sources)
+        == textwrap.dedent(inspect.getsource(Person)).strip()
+    )
+
+
+def test_count_char_with_typed_body():
+    """Test program synthesis constructs function with correct prescribed types."""
+    # The body uses the LLM-provided parameter name
+    mock_response = SynthesizedFunction(
+        function_name="count_chars",
+        param_names=["s"],
+        body="    return s.count('x')",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    with handler(mock_provider), handler(ProgramSynthesis()):
+        count_x = count_char("x")
+        assert callable(count_x)
+        # Verify the function works
+        assert count_x("xylophone") == 1
+        assert count_x("xxx") == 3
+
+
+def test_make_greeter_with_program_synthesis():
+    """Test program synthesis with custom type (Person) in the signature."""
+    mock_response = SynthesizedFunction(
+        function_name="greet_person",
+        param_names=["person"],
+        body='    return f"Hello, {person.name}!"',
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    with handler(mock_provider), handler(ProgramSynthesis()):
+        greeter = make_greeter("formal")
+        assert callable(greeter)
+        # Test the generated function works with the custom type
+        person = Person(name="Alice", age=30)
+        assert greeter(person) == "Hello, Alice!"
+
+
+def test_program_synthesis_invalid_body():
+    """Test that synthesis fails when body has syntax errors."""
+    mock_response = SynthesizedFunction(
+        function_name="bad_func",
+        param_names=["x"],
+        body="    return this is not valid python",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    with pytest.raises(SynthesisError, match="evaluation failed"):
+        with handler(mock_provider), handler(ProgramSynthesis()):
+            count_char("a")
+
+
+def test_program_synthesis_runtime_error():
+    """Test that synthesis fails when body raises runtime error on compile."""
+    mock_response = SynthesizedFunction(
+        function_name="bad_func",
+        param_names=["x"],
+        body="    return undefined_variable",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    # This should compile fine but fail at runtime when called
+    with handler(mock_provider), handler(ProgramSynthesis()):
+        func = count_char("a")
+        # The function is created, but calling it will fail
+        with pytest.raises(NameError):
+            func("test")
+
+
+def test_program_synthesis_with_type_check():
+    """Test program synthesis with optional mypy type checking enabled."""
+    mock_response = SynthesizedFunction(
+        function_name="count_chars",
+        param_names=["text"],
+        body="    return text.count('a')",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    # With type_check=True, mypy verifies the generated code
+    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+        count_a = count_char("a")
+        assert callable(count_a)
+        assert count_a("banana") == 3
+
+
+def test_program_synthesis_type_check_catches_body_errors():
+    """Test that type checking catches type errors in the function body."""
+    # Body returns wrong type (str instead of int)
+    mock_response = SynthesizedFunction(
+        function_name="bad_return",
+        param_names=["text"],
+        body='    return "not an int"',
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    with pytest.raises(SynthesisError, match="Type check failed"):
+        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+            count_char("a")
