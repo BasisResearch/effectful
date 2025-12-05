@@ -402,13 +402,15 @@ class ProgramSynthesis(ObjectInterpretation):
             )
 
         # Build the type definitions section if there are custom types
+        # Escape curly braces in type source code to avoid format string issues
         type_defs_section = ""
         if type_context:
+            escaped_type_context = type_context.replace("{", "{{").replace("}", "}}")
             type_defs_section = f"""
 The following types are available:
 
 ```python
-{type_context}
+{escaped_type_context}
 ```
 """
 
