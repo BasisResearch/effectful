@@ -306,11 +306,7 @@ def test_defop_method():
 
     assert isinstance(term, Term)
     assert isinstance(term.op, Operation)
-    assert term.op.__name__ == "my_method"
-    assert term.args == (
-        instance,
-        5,
-    )
+    assert term.args == (5,)
     assert term.kwargs == {}
 
     # Ensure the operation is unique
@@ -363,7 +359,8 @@ def test_defop_setattr_class() -> None:
     class MyClass:
         my_op: ClassVar[Operation]
 
-    @defop
+    @defop  # type: ignore
+    @staticmethod
     def my_op(x: int) -> int:
         raise NotHandled
 
@@ -372,11 +369,10 @@ def test_defop_setattr_class() -> None:
     tm = MyClass.my_op(5)
     assert isinstance(tm, Term)
     assert isinstance(tm.op, Operation)
-    assert tm.op is my_op
+    assert tm.op is MyClass.my_op
     assert tm.args == (5,)
 
-    with pytest.raises(TypeError):
-        MyClass().my_op(5)
+    MyClass().my_op(5)
 
 
 def test_defop_classmethod():
@@ -480,10 +476,7 @@ def test_defop_singledispatchmethod():
 
     assert isinstance(term_float, Term)
     assert term_float.op.__name__ == "my_singledispatch"
-    assert term_float.args == (
-        instance,
-        1.5,
-    )
+    assert term_float.args == (1.5,)
     assert term_float.kwargs == {}
 
     # Test that the method can be called with a handler
@@ -909,9 +902,9 @@ def test_operation_subclass():
     class OtherOperation(Operation):
         pass
 
-    assert isinstance(TestOperation.apply, Operation)
-    assert isinstance(OtherOperation.apply, Operation)
-    assert TestOperation.apply != OtherOperation.apply
+    assert isinstance(TestOperation.__apply__, Operation)
+    assert isinstance(OtherOperation.__apply__, Operation)
+    assert TestOperation.__apply__ != OtherOperation.__apply__
 
     @TestOperation.define
     def my_func(a, b):
@@ -938,10 +931,10 @@ def test_operation_subclass():
         assert my_func(3, 4) == "<op handler>"
 
     # Handling the class apply works
-    with handler({TestOperation.apply: _test_operation_apply}):
+    with handler({TestOperation.__apply__: _test_operation_apply}):
         assert my_func(3, 4) == "<TestOperation.apply handler>"
 
-    with handler({OtherOperation.apply: _other_operation_apply}):
+    with handler({OtherOperation.__apply__: _other_operation_apply}):
         assert my_func(3, 4) == "<default handler>"
 
     # Handling global apply works
@@ -949,11 +942,11 @@ def test_operation_subclass():
         assert my_func(3, 4) == "<apply handler>"
 
     # Handling the operation takes precedence over the class apply
-    with handler({TestOperation.apply: _test_operation_apply, my_func: _my_func}):
+    with handler({TestOperation.__apply__: _test_operation_apply, my_func: _my_func}):
         assert my_func(3, 4) == "<op handler>"
 
     # Handling the class apply takes precedence over the global apply
-    with handler({apply: _apply, TestOperation.apply: _test_operation_apply}):
+    with handler({apply: _apply, TestOperation.__apply__: _test_operation_apply}):
         assert my_func(3, 4) == "<TestOperation.apply handler>"
 
     # Handling the operation takes precedence over the global apply
@@ -962,6 +955,112 @@ def test_operation_subclass():
 
     # Handling the operation takes precedence over the class apply and the global apply
     with handler(
-        {apply: _apply, my_func: _my_func, TestOperation.apply: _test_operation_apply}
+        {
+            apply: _apply,
+            my_func: _my_func,
+            TestOperation.__apply__: _test_operation_apply,
+        }
     ):
         assert my_func(3, 4) == "<op handler>"
+
+
+def test_operation_subclass_inheritance():
+    class BaseOperation(Operation):
+        pass
+
+    class SubOperation(BaseOperation):
+        pass
+
+    @BaseOperation.define
+    def base_op(x):
+        return f"base_op: {x}"
+
+    @SubOperation.define
+    def sub_op(x):
+        return f"sub_op: {x}"
+
+    assert base_op(1) == "base_op: 1"
+
+    with handler({base_op: lambda x: f"handled base_op: {x}"}):
+        assert base_op(2) == "handled base_op: 2"
+
+    with handler(
+        {
+            SubOperation.__apply__: lambda op,
+            x,
+            **kwargs: f"handled SubOperation: {op} {x}"
+        }
+    ):
+        assert sub_op(3) == f"handled SubOperation: {sub_op} 3"
+        assert base_op(4) == "base_op: 4"
+
+    with handler(
+        {
+            BaseOperation.__apply__: lambda op,
+            x,
+            **kwargs: f"handled BaseOperation: {op} {x}"
+        }
+    ):
+        assert sub_op(4) == f"handled BaseOperation: {sub_op} 4"
+        assert base_op(5) == f"handled BaseOperation: {base_op} 5"
+
+    with handler(
+        {
+            SubOperation.__apply__: lambda op,
+            x,
+            **kwargs: f"handled SubOperation: {op} {x}",
+            BaseOperation.__apply__: lambda op,
+            x,
+            **kwargs: f"handled BaseOperation: {op} {x}",
+        }
+    ):
+        assert sub_op(6) == f"handled SubOperation: {sub_op} 6"
+        assert base_op(7) == f"handled BaseOperation: {base_op} 7"
+
+
+def test_operation_instances():
+    """Test that defop on methods creates instance-level Operations.
+
+    When defop is used on a method, accessing it on an instance should
+    dynamically create a new instance-level Operation that is bound to
+    that instance. The default behavior of an unhandled instance-level
+    Operation should be to call the class-level Operation.
+    """
+
+    class Foo[T]:
+        @defop
+        def bar(self, x: T) -> T:
+            raise NotHandled
+
+    foo1, foo2 = Foo(), Foo()
+
+    # All of Foo.bar, foo1.bar, foo2.bar should be Operations
+    assert isinstance(Foo.bar, Operation)
+    assert isinstance(foo1.bar, Operation)
+    assert isinstance(foo2.bar, Operation)
+
+    # Instance-level operations are created once per instance (cached)
+    assert foo1.bar is foo1.bar
+    assert foo2.bar is foo2.bar
+
+    # Class-level and instance-level operations are distinct
+    assert Foo.bar is not foo1.bar
+    assert Foo.bar is not foo2.bar
+    assert foo1.bar is not foo2.bar
+
+    # Default behavior: unhandled instance-level operation calls class-level operation
+    def Foo_bar_impl(self, x):
+        return f"Foo.bar({self}, {x})"
+
+    def foo1_bar_impl(x):
+        return f"foo1.bar({x})"
+
+    with handler({Foo.bar: Foo_bar_impl}):
+        # foo1.bar is handled separately, does not call Foo.bar
+        with handler({foo1.bar: foo1_bar_impl}):
+            assert foo1.bar(42) == "foo1.bar(42)"
+            # foo2.bar is unhandled, so it should call Foo.bar
+            assert foo2.bar(42) == f"Foo.bar({foo2}, 42)"
+
+        # Without the inner handler, foo1.bar should also call Foo.bar
+        assert foo1.bar(42) == f"Foo.bar({foo1}, 42)"

@@ -76,6 +76,7 @@ class Operation[**Q, V]:
     __signature__: inspect.Signature
     __name__: str
     __default__: Callable[Q, V]
+    __apply__: typing.ClassVar["Operation"]
 
     def __init__(
         self, signature: inspect.Signature, name: str, default: Callable[Q, V]
@@ -422,60 +423,124 @@ class Operation[**Q, V]:
 
         return result_sig
 
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
-        from effectful.ops.semantics import apply
-
-        intp = get_interpretation()
-
-        self_handler = intp.get(self)
-        if self_handler is not None:
-            return self_handler(*args, **kwargs)
-
-        class_apply_handler = intp.get(type(self).apply)
-        if class_apply_handler is not None:
-            return class_apply_handler(self, *args, **kwargs)
-
-        global_apply_handler = intp.get(apply)
-        if global_apply_handler is not None:
-            return global_apply_handler(self, *args, **kwargs)
-
-        # Use type(self) instead of self because we do not want a bound method
-        class_apply = type(self).apply
-
-        # In Operation, cls.apply is a classmethod. In subclasses, it is an operation.
-        if isinstance(class_apply, Operation):
-            return class_apply.__default_rule__(self, *args, **kwargs)  # type: ignore[return-value]
-        return class_apply(self, *args, **kwargs)  # type: ignore[return-value]
-
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
 
     def __str__(self):
         return self.__name__
 
-    def __get__(self, instance, owner):
-        if instance is not None:
-            # This is an instance-level operation, so we need to bind the instance
+    def __set_name__[T](self, owner: type[T], name: str) -> None:
+        if not issubclass(owner, Term):
+            assert not hasattr(self, "_name_on_instance"), "should only be called once"
+            self._name_on_instance: str = f"__instanceop_{name}"
+
+    def __get__[T](self, instance: T | None, owner: type[T] | None = None):
+        if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
+            from effectful.ops.semantics import fvsof
+
+            if self._name_on_instance in instance.__dict__:
+                return instance.__dict__[self._name_on_instance]
+            elif isinstance(instance, Term) or fvsof(instance):
+                return types.MethodType(self, instance)
+            else:
+
+                @functools.wraps(self)
+                def _instance_op(instance, *args, **kwargs):
+                    from effectful.ops.syntax import defdata
+
+                    default_result = self(instance, *args, **kwargs)
+                    if (
+                        isinstance(default_result, Term)
+                        and default_result.op is self
+                        and isinstance(self.__get__(default_result.args[0]), Operation)
+                    ):
+                        # Given a term cls_op(instance, *args, **kwargs),
+                        #   such that instance_op = cls_op.__get__(instance),
+                        #   rewrite to a new term instance_op(*args, **kwargs)
+                        #   so that the instance-specific operation reappears
+                        #   in the final term and is therefore visible to evaluate()
+                        return defdata(
+                            self.__get__(default_result.args[0]),
+                            *default_result.args[1:],
+                            **default_result.kwargs,
+                        )
+                    else:
+                        return default_result
+
+                instance_op = self.define(types.MethodType(_instance_op, instance))
+                instance.__dict__[self._name_on_instance] = instance_op
+                return instance_op
+        elif instance is not None:
             return types.MethodType(self, instance)
         else:
-            # This is a static operation, so we return the operation itself
             return self
 
-    @classmethod
-    def apply[**A, B](
-        cls, op: "Operation[A, B]", *args: A.args, **kwargs: A.kwargs
-    ) -> "Expr[B]":
-        """Apply an operation to arguments.
+    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+        from effectful.internals.runtime import get_interpretation
 
-        In subclasses of Operation, `apply` is an operation that may be handled.
+        intp = get_interpretation()
 
-        """
-        return op.__default_rule__(*args, **kwargs)
+        self_handler = intp.get(self)
+        if self_handler is not None:
+            return self_handler(*args, **kwargs)
+        elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
+            # Prevent infinite recursion when calling self.apply directly
+            return self.__default__(*args, **kwargs)
+        else:
+            return self.__apply__(self, *args, **kwargs)
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        cls.apply = cls.define(cls.apply, name=f"{cls.__name__}_apply")
+    def __init_subclass__(cls, **kwargs) -> None:
+        assert "__apply__" not in cls.__dict__ or cls is Operation, (
+            "Cannot manually override apply"
+        )
+        assert isinstance(cls.__apply__, Operation)
+
+        cls.__apply__ = cls.__apply__.define(
+            staticmethod(
+                functools.wraps(cls.__apply__)(
+                    functools.partial(
+                        lambda app, op, *args, **kwargs: app(op, *args, **kwargs),
+                        cls.__apply__,
+                    )
+                )
+            )
+        )
+
+
+def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+    """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
+
+    Handling :func:`Operation.__apply__` changes the evaluation strategy of terms.
+
+    **Example usage**:
+
+    >>> @Operation.define
+    ... def add(x: int, y: int) -> int:
+    ...     return x + y
+    >>> @Operation.define
+    ... def mul(x: int, y: int) -> int:
+    ...     return x * y
+
+    ``add`` and ``mul`` have default rules, so this term evaluates:
+
+    >>> mul(add(1, 2), 3)
+    9
+
+    By installing an :func:`Operation.__apply__` handler, we capture the term instead:
+
+    >>> from effectful.ops.syntax import defdata
+    >>> from effectful.ops.semantics import handler
+    >>> with handler({Operation.__apply__: defdata}):
+    ...     term = mul(add(1, 2), 3)
+    >>> print(str(term))
+    mul(add(1, 2), 3)
+
+    """
+    return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
+
+
+Operation.__apply__ = Operation.define(staticmethod(__apply__))
+del __apply__
 
 
 if typing.TYPE_CHECKING:
