@@ -5,7 +5,7 @@ import io
 import logging
 import string
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
 import litellm
@@ -88,22 +88,6 @@ def _(values: Sequence) -> OpenAIMessageContent:
         return [_pil_image_to_openai_image_param(value) for value in values]
     else:
         return [{"type": "text", "text": str(values)}]
-
-
-def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
-    tools = {}
-    for op in ops:
-        name = op.__name__
-
-        # Ensure tool names are unique. Operation names may not be.
-        if name in tools:
-            suffix = 0
-            while f"{name}_{suffix}" in tools:
-                suffix += 1
-            name = f"{name}_{suffix}"
-
-        tools[name] = Tool.of_operation(op, name)
-    return tools
 
 
 class _OpenAIPromptFormatter(string.Formatter):
@@ -248,7 +232,7 @@ class LLMLoggingHandler(ObjectInterpretation):
 def _parameter_model(
     params: Mapping[str, inspect.Parameter],
 ) -> type[pydantic.BaseModel]:
-    param_types = {
+    param_types: dict[str, Any] = {
         n: str if p.annotation is inspect.Parameter.empty else p.annotation
         for (n, p) in params.items()
     }
@@ -279,7 +263,7 @@ def _call_tool_with_json_args(
 
     ret_ty = tool.__signature__.return_annotation
     ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
-    ret_formatter = format_value.dispatch(ret_ty_origin)
+    ret_formatter = format_value.dispatch(ret_ty_origin)  # type: ignore[attr-defined]
     try:
         args = parameter_model.model_validate_json(json_str_args)
         result = tool_call(
@@ -287,7 +271,7 @@ def _call_tool_with_json_args(
             tool,
             **{field: getattr(args, field) for field in parameter_model.model_fields},
         )
-        return ret_formatter(result)  # type: ignore
+        return ret_formatter(result)
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 

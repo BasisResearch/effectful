@@ -1,22 +1,26 @@
 import inspect
+import typing
 from collections.abc import Callable, Iterable
 
 from effectful.ops.types import NotHandled, Operation
 
 
-class Tool[**P, T](Operation[P, T]): ...
+class Tool[**P, T](Operation[P, T]):
+    @classmethod
+    def define(cls, *args, **kwargs) -> "Tool[P, T]":
+        return typing.cast(Tool[P, T], super().define(*args, **kwargs))
 
 
 class Template[**P, T](Operation[P, T]):
     __prompt_template__: str
-    tools: tuple[Operation, ...]
+    tools: tuple[Tool, ...]
 
     def __init__(
         self,
         signature: inspect.Signature,
         name: str,
         prompt_template: str,
-        tools: tuple[Operation, ...],
+        tools: tuple[Tool, ...],
     ):
         self.__prompt_template__ = prompt_template
         self.tools = tools
