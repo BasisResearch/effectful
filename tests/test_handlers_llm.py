@@ -1,7 +1,9 @@
 from collections.abc import Callable
 
+import pytest
+
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -115,3 +117,26 @@ def count_occurrences(s):
         assert callable(count_a)
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
+
+
+def test_count_char_with_program_synthesis_type_check():
+    """Test the count_char template with program synthesis and type checking."""
+    mock_code = """<code>
+def count_occurrences(s: str) -> int:
+    return s.count('a')
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
+
+    mock_error = """<code>def count_occurrences(s: str) -> None:
+    return None</code>"""
+    mock_error_provider = SingleResponseLLMProvider(mock_error)
+
+    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+        count_a = count_char("a")
+        assert callable(count_a)
+        assert count_a("banana") == 3
+        assert count_a("cherry") == 0
+
+    with pytest.raises(SynthesisError):
+        with handler(mock_error_provider), handler(ProgramSynthesis(type_check=True)):
+            count_a = count_char("a")
