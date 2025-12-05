@@ -367,7 +367,9 @@ class ProgramSynthesis(ObjectInterpretation):
             code_obj = compile(source_code, filename, "exec")
             exec(code_obj, gs)
         except Exception as exc:
-            raise SynthesisError(f"evaluation failed: {exc!r}, source code: {source_code}", code) from exc
+            raise SynthesisError(
+                f"evaluation failed: {exc!r}, source code: {source_code}", code
+            ) from exc
 
         return gs[func_name]
 
