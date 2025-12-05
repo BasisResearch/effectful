@@ -258,9 +258,8 @@ def _parameter_model(
 
 
 def _function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
-    response_format = litellm.utils.type_to_response_format_param(
-        tool.__signature__.parameters
-    )
+    parameter_model = _parameter_model(tool.__signature__.parameters)
+    response_format = litellm.utils.type_to_response_format_param(parameter_model)
     assert response_format is not None
     return {
         "type": "function",
@@ -277,17 +276,18 @@ def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
 ) -> OpenAIMessageContent:
     parameter_model = _parameter_model(tool.__signature__.parameters)
+
+    ret_ty = tool.__signature__.return_annotation
+    ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
+    ret_formatter = format_value.dispatch(ret_ty_origin)
     try:
         args = parameter_model.model_validate_json(json_str_args)
         result = tool_call(
             template,
-            tool.operation,
+            tool,
             **{field: getattr(args, field) for field in parameter_model.model_fields},
         )
-
-        ret_ty = tool.__signature__.return_annotation
-        ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
-        return format_value.dispatch(ret_ty_origin)(result)  # type: ignore
+        return ret_formatter(result)  # type: ignore
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 

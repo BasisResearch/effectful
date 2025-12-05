@@ -322,7 +322,7 @@ class TestToolCalling:
     @pytest.mark.parametrize(
         "model_name",
         [
-            pytest.param("gpt-5-nano", marks=requires_openai),
+            pytest.param("gpt-4o-mini", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
