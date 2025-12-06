@@ -297,6 +297,41 @@ class LLMLoggingHandler(ObjectInterpretation):
         return result
 
 
+class RetryLLMHandler(ObjectInterpretation):
+    """Retries LLM requests if they fail.
+    If the request fails, the error is logged and the prompt is updated to include the error.
+    If the request fails after the maximum number of retries, an exception is raised.
+    Args:
+        max_retries: The maximum number of retries.
+        add_error_feedback: Whether to add error feedback to the prompt.
+    """
+
+    def __init__(self, max_retries: int = 3, add_error_feedback: bool = False):
+        self.max_retries = max_retries
+        self.add_error_feedback = add_error_feedback
+
+    @implements(Template.__call__)
+    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
+        max_retries = self.max_retries
+        while max_retries > 0:
+            try:
+                return fwd()
+            except Exception as exn:
+                max_retries -= 1
+                if max_retries == 0:
+                    raise exn
+                if self.add_error_feedback:
+                    prompt_ext = f"Retry generating the following prompt: {template.__prompt_template__}\nError from previous generation: {exn}"
+                    return fwd(
+                        dataclasses.replace(template, __prompt_template__=prompt_ext),
+                        *args,
+                        **kwargs,
+                    )
+                else:
+                    return fwd(template, *args, **kwargs)
+        raise Exception("Max retries reached")
+
+
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
 ) -> OpenAIMessageContent:
