@@ -392,11 +392,22 @@ def format_model_input[**P, T](
     """Format a template applied to arguments into a sequence of input
     messages.
 
+    Lexical context items can be referenced in the prompt template using
+    {name} syntax. For functions/classes, the source code is inserted.
+    For other values, the repr is inserted.
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
+
+    format_args = {}
+
+    for name, (source, obj) in template.lexical_context.items():
+        format_args[name] = source
+
+    format_args.update(bound_args.arguments)
+
     prompt = _OpenAIPromptFormatter().format_as_messages(
-        template.__prompt_template__, **bound_args.arguments
+        template.__prompt_template__, **format_args
     )
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
