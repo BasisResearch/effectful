@@ -402,7 +402,11 @@ def format_model_input[**P, T](
     format_args = {}
 
     for name, (source, obj) in template.lexical_context.items():
-        format_args[name] = source
+        # If object is a dataclass, we want to insert the repr of the instance
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            format_args[name] = repr(obj)
+        else:  # type, function, callable, etc.
+            format_args[name] = source
 
     format_args.update(bound_args.arguments)
 
