@@ -1,18 +1,10 @@
-import inspect
-import textwrap
 from collections.abc import Callable
-from dataclasses import dataclass
 
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.synthesis import (
-    ProgramSynthesis,
-    SynthesisError,
-    SynthesizedFunction,
-    collect_type_sources,
-    format_type_context,
-)
+from effectful.handlers.llm.providers import RetryLLMHandler
+from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -89,18 +81,6 @@ def count_char(char: str) -> Callable[[str], int]:
     raise NotImplementedError
 
 
-@dataclass
-class Person:
-    name: str
-    age: int
-
-
-@Template.define
-def make_greeter(style: str) -> Callable[[Person], str]:
-    """Create a greeting function for a person with the given style."""
-    raise NotImplementedError
-
-
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -127,13 +107,11 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # Structured response: LLM provides function name, param names, and body
-    mock_response = SynthesizedFunction(
-        function_name="count_occurrences",
-        param_names=["text"],
-        body="    return text.count('a')",
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
+    mock_code = """<code>
+def count_occurrences(s):
+    return s.count('a')
+</code>"""
+    mock_provider = SingleResponseLLMProvider(mock_code)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")
@@ -142,113 +120,110 @@ def test_count_char_with_program_synthesis():
         assert count_a("cherry") == 0
 
 
-def test_collect_type_sources():
-    """Test the collect_type_sources function."""
-    type_sources = collect_type_sources(Person)
-    assert type_sources == {Person: inspect.getsource(Person)}
+class FailingThenSucceedingProvider[T](ObjectInterpretation):
+    """Mock provider that fails a specified number of times before succeeding."""
+
+    def __init__(self, fail_count: int, success_response: T, exception: Exception):
+        """Initialize the provider.
+
+        Args:
+            fail_count: Number of times to fail before succeeding
+            success_response: Response to return after failures
+            exception: Exception to raise during failures
+        """
+        self.fail_count = fail_count
+        self.success_response = success_response
+        self.exception = exception
+        self.call_count = 0
+
+    @implements(Template.__call__)
+    def _call[**P](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise self.exception
+        return self.success_response
 
 
-def test_format_type_context():
-    """Test the format_type_context function."""
-    type_sources = {Person: inspect.getsource(Person)}
-    assert (
-        format_type_context(type_sources)
-        == textwrap.dedent(inspect.getsource(Person)).strip()
+def test_retry_handler_succeeds_after_failures():
+    """Test that RetryLLMHandler retries and eventually succeeds."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=2,
+        success_response="Success after retries!",
+        exception=ValueError("Temporary failure"),
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    with handler(provider), handler(retry_handler):
+        result = limerick("test")
+        assert result == "Success after retries!"
+        assert provider.call_count == 3  # 2 failures + 1 success
+
+
+def test_retry_handler_exhausts_retries():
+    """Test that RetryLLMHandler raises after max retries exhausted."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=5,  # More failures than retries
+        success_response="Never reached",
+        exception=ValueError("Persistent failure"),
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    with pytest.raises(ValueError, match="Persistent failure"):
+        with handler(provider), handler(retry_handler):
+            limerick("test")
+
+    assert provider.call_count == 3  # Should have tried 3 times
+
+
+def test_retry_handler_only_catches_specified_exception():
+    """Test that RetryLLMHandler only catches the specified exception class."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=1,
+        success_response="Success",
+        exception=TypeError("Wrong type"),  # Different exception type
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    # TypeError should not be caught, should propagate immediately
+    with pytest.raises(TypeError, match="Wrong type"):
+        with handler(provider), handler(retry_handler):
+            limerick("test")
+
+    assert provider.call_count == 1  # Should have only tried once
+
+
+def test_retry_handler_with_error_feedback():
+    """Test that RetryLLMHandler includes error feedback when enabled."""
+    call_prompts: list[str] = []
+
+    class PromptCapturingProvider(ObjectInterpretation):
+        """Provider that captures prompts and fails once."""
+
+        def __init__(self):
+            self.call_count = 0
+
+        @implements(Template.__call__)
+        def _call(self, template: Template, *args, **kwargs):
+            self.call_count += 1
+            call_prompts.append(template.__prompt_template__)
+            if self.call_count == 1:
+                raise ValueError("First attempt failed")
+            return "Success on retry"
+
+    provider = PromptCapturingProvider()
+    retry_handler = RetryLLMHandler(
+        max_retries=2, add_error_feedback=True, exception_cls=ValueError
     )
 
+    with handler(provider), handler(retry_handler):
+        result = limerick("test")
+        assert result == "Success on retry"
 
-def test_count_char_with_typed_body():
-    """Test program synthesis constructs function with correct prescribed types."""
-    # The body uses the LLM-provided parameter name
-    mock_response = SynthesizedFunction(
-        function_name="count_chars",
-        param_names=["s"],
-        body="    return s.count('x')",
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    with handler(mock_provider), handler(ProgramSynthesis()):
-        count_x = count_char("x")
-        assert callable(count_x)
-        # Verify the function works
-        assert count_x("xylophone") == 1
-        assert count_x("xxx") == 3
-
-
-def test_make_greeter_with_program_synthesis():
-    """Test program synthesis with custom type (Person) in the signature."""
-    mock_response = SynthesizedFunction(
-        function_name="greet_person",
-        param_names=["person"],
-        body='    return f"Hello, {person.name}!"',
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    with handler(mock_provider), handler(ProgramSynthesis()):
-        greeter = make_greeter("formal")
-        assert callable(greeter)
-        # Test the generated function works with the custom type
-        person = Person(name="Alice", age=30)
-        assert greeter(person) == "Hello, Alice!"
-
-
-def test_program_synthesis_invalid_body():
-    """Test that synthesis fails when body has syntax errors."""
-    mock_response = SynthesizedFunction(
-        function_name="bad_func",
-        param_names=["x"],
-        body="    return this is not valid python",
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    with pytest.raises(SynthesisError, match="evaluation failed"):
-        with handler(mock_provider), handler(ProgramSynthesis()):
-            count_char("a")
-
-
-def test_program_synthesis_runtime_error():
-    """Test that synthesis fails when body raises runtime error on compile."""
-    mock_response = SynthesizedFunction(
-        function_name="bad_func",
-        param_names=["x"],
-        body="    return undefined_variable",
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    # This should compile fine but fail at runtime when called
-    with handler(mock_provider), handler(ProgramSynthesis()):
-        func = count_char("a")
-        # The function is created, but calling it will fail
-        with pytest.raises(NameError):
-            func("test")
-
-
-def test_program_synthesis_with_type_check():
-    """Test program synthesis with optional mypy type checking enabled."""
-    mock_response = SynthesizedFunction(
-        function_name="count_chars",
-        param_names=["text"],
-        body="    return text.count('a')",
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    # With type_check=True, mypy verifies the generated code
-    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
-        count_a = count_char("a")
-        assert callable(count_a)
-        assert count_a("banana") == 3
-
-
-def test_program_synthesis_type_check_catches_body_errors():
-    """Test that type checking catches type errors in the function body."""
-    # Body returns wrong type (str instead of int)
-    mock_response = SynthesizedFunction(
-        function_name="bad_return",
-        param_names=["text"],
-        body='    return "not an int"',
-    )
-    mock_provider = SingleResponseLLMProvider(mock_response)
-
-    with pytest.raises(SynthesisError, match="Type check failed"):
-        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
-            count_char("a")
+    assert len(call_prompts) == 2
+    # First call has original prompt
+    assert "Write a limerick on the theme of {theme}." in call_prompts[0]
+    # Second call should include error feedback with traceback
+    assert "Retry generating" in call_prompts[1]
+    assert "First attempt failed" in call_prompts[1]
