@@ -312,7 +312,7 @@ class RetryLLMHandler(ObjectInterpretation):
         self,
         max_retries: int = 3,
         add_error_feedback: bool = False,
-        exception_cls: type = Exception,
+        exception_cls: type[BaseException] = Exception,
     ):
         self.max_retries = max_retries
         self.add_error_feedback = add_error_feedback
