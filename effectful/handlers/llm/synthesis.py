@@ -37,7 +37,10 @@ class SynthesizedFunction(pydantic.BaseModel):
     param_names: list[str] = Field(
         ..., description="The names of the parameters (in order)"
     )
-    body: str = Field(..., description="The indented function body (implementation)")
+    body: str = Field(
+        ...,
+        description="The indented function body including the return statement",
+    )
 
 
 def collect_referenced_types(t: type, seen: set[type] | None = None) -> set[type]:
@@ -428,7 +431,7 @@ The following types are available:
         **Instructions:**
         1. Choose a descriptive function name.
         2. Choose descriptive parameter names (one for each parameter type).
-        3. Implement the function body.
+        3. Implement the function body with a return statement that returns the correct type.
         4. The parameter types and return type are fixed as shown above.
         5. Do not redefine any of the provided types.
         """).strip()
