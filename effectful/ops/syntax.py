@@ -630,6 +630,11 @@ class DataclassTermMeta(type(_BaseTerm)):  # type: ignore
             self._kwargs = kwargs
 
         ns["__init__"] = __init__
+
+        field_names = {f.name for f in dataclasses.fields(base_dt)}
+        for op in ["op", "args", "kwargs"]:
+            assert op not in field_names, f"Dataclass can not contain field {op}"
+
         ns["op"] = property(lambda self: self._op)
         ns["args"] = property(lambda self: self._args)
         ns["kwargs"] = property(lambda self: self._kwargs)
