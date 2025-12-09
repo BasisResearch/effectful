@@ -14,6 +14,7 @@ import pytest
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
+    DataclassTermMeta,
     Scoped,
     _CustomSingleDispatchCallable,
     defdata,
@@ -1064,3 +1065,31 @@ def test_operation_instances():
 
         # Without the inner handler, foo1.bar should also call Foo.bar
         assert foo1.bar(42) == f"Foo.bar({foo1}, 42)"
+
+
+def test_operation_dataclass():
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: int
+
+    @defdata.register(Point)
+    class PointTerm(Term[Point], Point, metaclass=DataclassTermMeta):
+        pass
+
+    @defop
+    def random_point() -> Point:
+        raise NotHandled
+
+    def client():
+        p1 = random_point()
+        p2 = random_point()
+        return p1.x + p2.x
+
+    t = client()
+    assert isinstance(t, Term)
+    with handler({random_point: lambda: Point(1, 2)}):
+        res = client()
+        assert res == 2
+        res = evaluate(t)
+        assert res == 2

@@ -597,6 +597,46 @@ class _BaseTerm[T](Term[T]):
         return self._kwargs
 
 
+class DataclassTermMeta(type(_BaseTerm)):  # type: ignore
+    def __new__(mcls, name, bases, ns):
+        base_dt = None
+        for b in bases:
+            if dataclasses.is_dataclass(b):
+                base_dt = b
+                break
+
+        if base_dt is None:
+            raise TypeError("No dataclass base found")
+
+        for f in dataclasses.fields(base_dt):
+            attr = f.name
+            field_type = f.type
+
+            def make_getter(a, return_type):
+                def getter(self) -> return_type:
+                    if isinstance(self, Term):
+                        raise NotHandled
+                    return self.__dict__[a]
+
+                return getter
+
+            g = make_getter(attr, field_type)
+            g.__name__ = attr
+            ns[attr] = property(defop(g))
+
+        def __init__(self, op, *args, **kwargs):
+            self._op = op
+            self._args = args
+            self._kwargs = kwargs
+
+        ns["__init__"] = __init__
+        ns["op"] = property(lambda self: self._op)
+        ns["args"] = property(lambda self: self._args)
+        ns["kwargs"] = property(lambda self: self._kwargs)
+
+        return super().__new__(mcls, name, bases, ns)
+
+
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
     @defop
