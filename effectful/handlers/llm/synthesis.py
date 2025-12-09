@@ -29,8 +29,8 @@ class SynthesisError(Exception):
 class SynthesizedModule(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    The LLM provides a complete Python module and the name of the
-    entry-point function to return.
+    The LLM provides a complete Python module and the name of the main function.
+    We extract the function, re-format it with prescribed types, and verify with mypy.
     """
 
     function_name: str = Field(
@@ -260,6 +260,80 @@ def _format_return_type(callable_type: type) -> str:
     return _format_type_for_annotation(return_type)
 
 
+def _types_match(expected: type, actual: type) -> bool:
+    """Check if two types match, handling cross-module generic types.
+
+    This is needed because `list[__main__.Product]` != `list[Product]` even
+    when they refer to the same class, due to how generic aliases are compared.
+
+    Also handles cases where LLM uses bare type (list) instead of generic (list[X]).
+
+    Args:
+        expected: The expected type (from caller's context)
+        actual: The actual type (from exec'd code)
+
+    Returns:
+        True if the types are structurally equivalent
+    """
+    # Direct equality check (covers most cases)
+    if expected == actual:
+        return True
+
+    # Same class by identity
+    if expected is actual:
+        return True
+
+    # For generic types, compare origin and args recursively
+    expected_origin = get_origin(expected)
+    actual_origin = get_origin(actual)
+
+    # Handle case where one is generic and one is bare type
+    # e.g., list[Product] vs list - accept if origins match
+    if expected_origin is not None and actual_origin is None:
+        # expected is generic (list[X]), actual is bare (list)
+        # Accept if actual is the origin of expected
+        if actual is expected_origin:
+            return True
+        # Also check by name for cross-module cases
+        if isinstance(actual, type) and hasattr(expected_origin, "__name__"):
+            if actual.__name__ == expected_origin.__name__:
+                return True
+
+    if actual_origin is not None and expected_origin is None:
+        # actual is generic (list[X]), expected is bare (list)
+        if expected is actual_origin:
+            return True
+        if isinstance(expected, type) and hasattr(actual_origin, "__name__"):
+            if expected.__name__ == actual_origin.__name__:
+                return True
+
+    if expected_origin is not None and actual_origin is not None:
+        # Both are generic - origins must match
+        if expected_origin is not actual_origin:
+            # Check by name for cross-module cases
+            if not (
+                hasattr(expected_origin, "__name__")
+                and hasattr(actual_origin, "__name__")
+                and expected_origin.__name__ == actual_origin.__name__
+            ):
+                return False
+
+        # Compare type arguments recursively
+        expected_args = get_args(expected)
+        actual_args = get_args(actual)
+
+        if len(expected_args) != len(actual_args):
+            return False
+
+        return all(_types_match(e, a) for e, a in zip(expected_args, actual_args))
+
+    # For non-generic types, compare by name (handles cross-module cases)
+    if isinstance(expected, type) and isinstance(actual, type):
+        return expected.__name__ == actual.__name__
+
+    return False
+
+
 def run_mypy_check(
     code: str,
     referenced_types: set[type],
@@ -322,28 +396,88 @@ class ProgramSynthesis(ObjectInterpretation):
         result: SynthesizedModule,
         callable_type: type,
         referenced_types: set[type],
-        lexical_functions: dict[str, tuple[str, typing.Callable]] | None = None,
+        lexical_context: dict[str, tuple[str, typing.Any]] | None = None,
     ) -> typing.Callable:
         """Build and execute a function from the synthesized module.
+
+        Extracts the function from LLM's module, re-formats with prescribed signature,
+        and optionally verifies with mypy.
 
         Args:
             result: The structured output from the LLM containing module code
             callable_type: The expected Callable type (e.g., Callable[[str], int])
             referenced_types: Set of types referenced in the signature
-            lexical_functions: Dict of lexical functions available in scope
+            lexical_context: Dict of lexical context (functions/types) available in scope
 
         Returns:
             The synthesized callable function
         """
+        import ast
+
         func_name = result.function_name
-        module_code = textwrap.dedent(result.module_code).strip()
+        original_module_code = textwrap.dedent(result.module_code).strip()
+
+        # Parse the module to extract function body and helpers
+        try:
+            tree = ast.parse(original_module_code)
+        except SyntaxError as exc:
+            raise SynthesisError(
+                f"Syntax error in generated code: {exc}", original_module_code
+            ) from exc
+
+        # Find the target function and separate helpers
+        target_func_node = None
+        helper_nodes = []
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == func_name:
+                target_func_node = node
+            else:
+                helper_nodes.append(node)
+
+        if target_func_node is None:
+            raise SynthesisError(
+                f"Function '{func_name}' not found in generated module.",
+                original_module_code,
+            )
+
+        # Extract function body using AST - the body starts at first statement's line
+        all_lines = original_module_code.splitlines()
+
+        # The body starts at the first statement in the function
+        if target_func_node.body:
+            body_start_line = target_func_node.body[0].lineno - 1
+            body_end_line = target_func_node.end_lineno
+            body_lines = all_lines[body_start_line:body_end_line]
+            body = "\n".join(body_lines)
+        else:
+            # Empty function body (just pass or docstring)
+            body = "    pass"
+
+        # Get parameter names from the original function
+        param_names = [arg.arg for arg in target_func_node.args.args]
+
+        # Build helper code from non-function-def nodes
+        helper_code = ""
+        if helper_nodes:
+            helper_parts = []
+            for node in helper_nodes:
+                start = node.lineno - 1
+                end = node.end_lineno
+                helper_parts.append("\n".join(all_lines[start:end]))
+            helper_code = "\n\n".join(helper_parts) + "\n\n"
+
+        # Construct the function with PRESCRIBED types and extracted param names
+        param_sig = _format_param_signature(callable_type, param_names)
+        return_type = _format_return_type(callable_type)
+        func_code = f"def {func_name}({param_sig}) -> {return_type}:\n{body}"
+        module_code = helper_code + func_code
 
         # Register in linecache for better tracebacks
         lines = module_code.splitlines(keepends=True)
         filename = f"<generated-{hash(module_code)}>"
         linecache.cache[filename] = (len(module_code), None, lines, filename)
 
-        # Optional mypy type checking
+        # Optional mypy type checking - now with guaranteed correct signature
         if self.type_check:
             success, error_msg = run_mypy_check(module_code, referenced_types)
             if not success:
@@ -356,10 +490,10 @@ class ProgramSynthesis(ObjectInterpretation):
             if module is not None:
                 gs[typ.__name__] = typ
 
-        # Add lexical functions from the template's captured context
-        if lexical_functions:
-            for name, (_, func) in lexical_functions.items():
-                gs[name] = func
+        # Add lexical context (functions and types) from the template's captured context
+        if lexical_context:
+            for name, (_, obj) in lexical_context.items():
+                gs[name] = obj
 
         try:
             code_obj = compile(module_code, filename, "exec")
@@ -369,25 +503,14 @@ class ProgramSynthesis(ObjectInterpretation):
                 f"evaluation failed: {exc!r}, source code: {module_code}", module_code
             ) from exc
 
-        # Find and validate the function
         if func_name not in gs:
             raise SynthesisError(
-                f"Function '{func_name}' not found in generated module. "
+                f"Function '{func_name}' not found after execution. "
                 f"Available names: {[k for k in gs.keys() if not k.startswith('_')]}",
                 module_code,
             )
 
-        func = gs[func_name]
-        if not callable(func):
-            raise SynthesisError(
-                f"'{func_name}' is not callable (got {type(func).__name__})",
-                module_code,
-            )
-
-        # Verify the function signature matches the expected type
-        self._verify_signature(func, callable_type, module_code)
-
-        return func
+        return gs[func_name]
 
     def _verify_signature(
         self, func: typing.Callable, callable_type: type, code: str
@@ -429,9 +552,8 @@ class ProgramSynthesis(ObjectInterpretation):
                     raise SynthesisError(
                         f"Parameter '{param.name}' missing type annotation", code
                     )
-                # Note: We do a simple equality check here. For more complex type
-                # compatibility, we'd need a proper type checker.
-                if actual_type != expected_type:
+                # Use structural comparison to handle cross-module generic types
+                if not _types_match(expected_type, actual_type):
                     raise SynthesisError(
                         f"Parameter '{param.name}' type mismatch: "
                         f"expected {expected_type}, got {actual_type}",
@@ -439,7 +561,9 @@ class ProgramSynthesis(ObjectInterpretation):
                     )
 
         # Check return type
-        expected_return_type = get_args(callable_type)[-1] if get_args(callable_type) else None
+        expected_return_type = (
+            get_args(callable_type)[-1] if get_args(callable_type) else None
+        )
         if expected_return_type is not None:
             actual_return_type = hints.get("return")
             if actual_return_type is None:
@@ -448,7 +572,8 @@ class ProgramSynthesis(ObjectInterpretation):
                     f"Expected: {_format_type_for_annotation(expected_return_type)}",
                     code,
                 )
-            if actual_return_type != expected_return_type:
+            # Use structural comparison to handle cross-module generic types
+            if not _types_match(expected_return_type, actual_return_type):
                 raise SynthesisError(
                     f"Return type mismatch: expected {_format_type_for_annotation(expected_return_type)}, "
                     f"got {_format_type_for_annotation(actual_return_type)}",
@@ -471,9 +596,11 @@ class ProgramSynthesis(ObjectInterpretation):
         type_sources = collect_type_sources(ret_type)
         type_context = format_type_context(type_sources)
 
-        # Get lexical functions from the template's captured context
-        lexical_functions = getattr(template, "lexical_functions", {})
-        lexical_context = template.get_lexical_context_source() if lexical_functions else ""
+        # Get lexical context (functions and types) from the template's captured context
+        lexical_context = getattr(template, "lexical_context", {})
+        lexical_context_source = (
+            template.get_lexical_context_source() if lexical_context else ""
+        )
 
         # Get parameter types and return type for the prompt
         param_types = _get_param_types(ret_type)
@@ -502,12 +629,14 @@ The following types are available:
 ```
 """
 
-        # Build the helper functions section if there are lexical functions
-        helper_functions_section = ""
-        if lexical_context:
-            escaped_lexical_context = lexical_context.replace("{", "{{").replace("}", "}}")
-            helper_functions_section = f"""
-The following helper functions are available for you to use:
+        # Build the lexical context section (helper functions and types)
+        lexical_context_section = ""
+        if lexical_context_source:
+            escaped_lexical_context = lexical_context_source.replace("{", "{{").replace(
+                "}", "}}"
+            )
+            lexical_context_section = f"""
+The following helper functions and types are available for you to use:
 
 ```python
 {escaped_lexical_context}
@@ -522,7 +651,7 @@ The following helper functions are available for you to use:
         **Required signature for the main function:**
         - Parameter types (in order): {param_types_str}
         - Return type: {return_type_str}
-        {type_defs_section}{helper_functions_section}
+        {type_defs_section}{lexical_context_section}
         **Instructions:**
         1. Write a complete Python module with the main function and any helper functions/classes you need.
         2. Choose a descriptive name for the main function.
@@ -531,7 +660,7 @@ The following helper functions are available for you to use:
         5. Do not redefine any of the provided types - they are already imported.
         6. Do not include import statements - all necessary types and helpers are pre-imported.
         7. You may define additional helper functions, classes, or constants in the module.
-        8. You may use any of the helper functions provided above.
+        8. You may use any of the helper functions and types provided above.
         """).strip()
 
         # Use structured output - the LLM returns JSON with function_name and module_code
@@ -549,5 +678,5 @@ The following helper functions are available for you to use:
 
         # Build and return the function using imports instead of source injection
         return self._build_function(
-            response, ret_type, referenced_types, lexical_functions
+            response, ret_type, referenced_types, lexical_context
         )

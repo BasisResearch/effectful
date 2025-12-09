@@ -127,7 +127,7 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # Structured response: LLM provides function name and full module code
+    # LLM provides full module, we extract and re-format with prescribed types
     mock_response = SynthesizedModule(
         function_name="count_occurrences",
         module_code="""
@@ -161,11 +161,11 @@ def test_format_type_context():
 
 def test_count_char_with_typed_body():
     """Test program synthesis constructs function with correct prescribed types."""
-    # The module uses the LLM-provided parameter name
+    # LLM can use any types, we re-format with prescribed types
     mock_response = SynthesizedModule(
         function_name="count_chars",
         module_code="""
-def count_chars(s: str) -> int:
+def count_chars(s):  # LLM might not use correct types
     return s.count('x')
 """,
     )
@@ -209,7 +209,7 @@ def bad_func(x: str) -> int:
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
-    with pytest.raises(SynthesisError, match="evaluation failed"):
+    with pytest.raises(SynthesisError, match="Syntax error"):
         with handler(mock_provider), handler(ProgramSynthesis()):
             count_char("a")
 
@@ -253,7 +253,7 @@ def count_chars(text: str) -> int:
 
 def test_program_synthesis_type_check_catches_body_errors():
     """Test that type checking catches type errors in the function body."""
-    # Module returns wrong type (str instead of int)
+    # Body returns wrong type (str instead of int) - mypy will catch this
     mock_response = SynthesizedModule(
         function_name="bad_return",
         module_code="""
@@ -288,7 +288,8 @@ def test_program_synthesis_with_lexical_function():
     mock_response = SynthesizedModule(
         function_name="count_and_double",
         module_code="""
-def count_and_double(text: str) -> int:
+def count_and_double(text):
+    # Uses double_count from lexical scope
     return double_count(text, 'a')
 """,
     )

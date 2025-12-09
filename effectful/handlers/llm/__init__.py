@@ -11,6 +11,7 @@ from effectful.ops.types import NotHandled, Operation
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 def _collect_lexical_context(frame) -> dict[str, tuple[str, Any]]:
     """Collect all symbols from the caller's lexical context.
 
@@ -28,25 +29,48 @@ def _collect_lexical_context(frame) -> dict[str, tuple[str, Any]]:
 =======
 def _collect_lexical_functions(frame) -> dict[str, tuple[str, types.FunctionType]]:
     """Collect functions from the caller's lexical context.
+=======
+def _collect_lexical_context(frame) -> dict[str, tuple[str, Any]]:
+    """Collect functions and types from the caller's lexical context.
+>>>>>>> 297e9e7 (Function signature reformatting)
 
-    Returns a dict mapping function names to (source_code, function_object) tuples.
+    Returns a dict mapping names to (source_code, object) tuples.
+    Captures both functions and classes defined in the current module.
     """
     lexical_context = {**frame.f_globals, **frame.f_locals}
     current_module_name = frame.f_globals.get("__name__", "__main__")
 
-    collected: dict[str, tuple[str, types.FunctionType]] = {}
+    collected: dict[str, tuple[str, Any]] = {}
     for name, obj in lexical_context.items():
-        if (
-            isinstance(obj, types.FunctionType)
-            and getattr(obj, "__module__", None) == current_module_name
-        ):
-            try:
-                source = textwrap.dedent(inspect.getsource(obj)).strip()
-            except OSError:
-                # Fallback for functions without source (e.g., defined in REPL)
+        # Skip private/dunder names
+        if name.startswith("_"):
+            continue
+
+        # Check if it's a function or class from the current module
+        is_function = isinstance(obj, types.FunctionType)
+        is_class = isinstance(obj, type)
+
+        if not (is_function or is_class):
+            continue
+
+        if getattr(obj, "__module__", None) != current_module_name:
+            continue
+
+        try:
+            source = textwrap.dedent(inspect.getsource(obj)).strip()
+        except OSError:
+            # Fallback for objects without source (e.g., defined in REPL)
+            if is_function:
                 source = f"# <function {obj.__name__} from {obj.__module__}>\n# {obj.__doc__ or 'No docstring'}"
+<<<<<<< HEAD
 >>>>>>> 5c2d51c (Collecting lexical context)
             collected[name] = (source, obj)
+=======
+            else:
+                source = f"# <class {obj.__name__} from {obj.__module__}>\n# {obj.__doc__ or 'No docstring'}"
+
+        collected[name] = (source, obj)
+>>>>>>> 297e9e7 (Function signature reformatting)
 
     return collected
 
@@ -108,12 +132,35 @@ class Template[**P, T]:
     __prompt_template__: str
     tools: tuple[Operation, ...]
 <<<<<<< HEAD
+<<<<<<< HEAD
     lexical_context: dict[str, tuple[str, Any]] = dataclasses.field(
 =======
     lexical_functions: dict[str, tuple[str, types.FunctionType]] = dataclasses.field(
 >>>>>>> 5c2d51c (Collecting lexical context)
+=======
+    lexical_context: dict[str, tuple[str, Any]] = dataclasses.field(
+>>>>>>> 297e9e7 (Function signature reformatting)
         default_factory=dict
     )
+
+    # Backwards compatibility alias
+    @property
+    def lexical_functions(self) -> dict[str, tuple[str, types.FunctionType]]:
+        """Get only the functions from lexical context (backwards compatibility)."""
+        return {
+            name: (source, obj)
+            for name, (source, obj) in self.lexical_context.items()
+            if isinstance(obj, types.FunctionType)
+        }
+
+    @property
+    def lexical_types(self) -> dict[str, tuple[str, type]]:
+        """Get only the types/classes from lexical context."""
+        return {
+            name: (source, obj)
+            for name, (source, obj) in self.lexical_context.items()
+            if isinstance(obj, type)
+        }
 
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -127,16 +174,31 @@ class Template[**P, T]:
 
     def get_lexical_context_source(self) -> str:
 <<<<<<< HEAD
+<<<<<<< HEAD
         """Return the source code of all captured lexical symbols."""
         return "\n\n".join(source for source, _ in self.lexical_context.values())
 =======
         """Return the source code of all captured lexical functions."""
         return "\n\n".join(source for source, _ in self.lexical_functions.values())
+=======
+        """Return the source code of all captured lexical symbols."""
+        return "\n\n".join(source for source, _ in self.lexical_context.values())
+>>>>>>> 297e9e7 (Function signature reformatting)
 
     def get_lexical_function(self, name: str) -> types.FunctionType | None:
         """Get a captured lexical function by name."""
-        if name in self.lexical_functions:
-            return self.lexical_functions[name][1]
+        if name in self.lexical_context:
+            obj = self.lexical_context[name][1]
+            if isinstance(obj, types.FunctionType):
+                return obj
+        return None
+
+    def get_lexical_type(self, name: str) -> type | None:
+        """Get a captured lexical type by name."""
+        if name in self.lexical_context:
+            obj = self.lexical_context[name][1]
+            if isinstance(obj, type):
+                return obj
         return None
 >>>>>>> 5c2d51c (Collecting lexical context)
 
@@ -149,10 +211,14 @@ class Template[**P, T]:
         assert caller_frame is not None
 
 <<<<<<< HEAD
+<<<<<<< HEAD
         lexical_ctx = _collect_lexical_context(caller_frame)
 =======
         lexical_funcs = _collect_lexical_functions(caller_frame)
 >>>>>>> 5c2d51c (Collecting lexical context)
+=======
+        lexical_ctx = _collect_lexical_context(caller_frame)
+>>>>>>> 297e9e7 (Function signature reformatting)
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
@@ -163,10 +229,14 @@ class Template[**P, T]:
                 __prompt_template__=body.__doc__,
                 tools=tuple(tools),
 <<<<<<< HEAD
+<<<<<<< HEAD
                 lexical_context=lexical_ctx,
 =======
                 lexical_functions=lexical_funcs,
 >>>>>>> 5c2d51c (Collecting lexical context)
+=======
+                lexical_context=lexical_ctx,
+>>>>>>> 297e9e7 (Function signature reformatting)
             )
 
         if _func is None:
