@@ -1,4 +1,3 @@
-import ast
 import collections
 import collections.abc
 import dataclasses
@@ -27,20 +26,28 @@ class SynthesisError(Exception):
         self.code = code
 
 
-class SynthesizedModule(pydantic.BaseModel):
+class SynthesizedFunction(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    The LLM provides a complete Python module and the name of the main function.
-    We extract the function, re-format it with prescribed types, and verify with mypy.
+    LLM provides helper code freely, but main function structure is constrained.
+    We reconstruct the main function with prescribed types from the signature.
     """
 
+    helper_code: str = Field(
+        default="",
+        description="Optional helper functions, classes, or constants (no imports needed), will be executed before the main function",
+    )
     function_name: str = Field(
         ...,
-        description="The name of the main function that satisfies the specification",
+        description="The name of the main function",
     )
-    module_code: str = Field(
+    param_names: list[str] = Field(
         ...,
-        description="Complete Python module code including the function and any helpers",
+        description="Parameter names in order (must match number of parameter types)",
+    )
+    body: str = Field(
+        ...,
+        description="The indented function body including return statement",
     )
 
 
@@ -212,17 +219,16 @@ class ProgramSynthesis(ObjectInterpretation):
 
     def _build_function(
         self,
-        result: SynthesizedModule,
+        result: SynthesizedFunction,
         callable_type: type,
         lexical_context: dict[str, tuple[str, Any]],
     ) -> typing.Callable:
-        """Build and execute a function from the synthesized module.
+        """Build and execute a function from the structured synthesis result.
 
-        Extracts the function from LLM's module, re-formats with prescribed signature,
-        and optionally verifies with mypy.
+        Combines helper code with a reconstructed main function using prescribed types.
 
         Args:
-            result: The structured output from the LLM containing module code
+            result: The structured output from the LLM
             callable_type: The expected Callable type (e.g., Callable[[str], int])
             lexical_context: Dict of lexical context (functions/types) available in scope
 
@@ -230,62 +236,21 @@ class ProgramSynthesis(ObjectInterpretation):
             The synthesized callable function
         """
         func_name = result.function_name
-        original_module_code = textwrap.dedent(result.module_code).strip()
 
-        # Parse the module to extract function body and helpers
-        try:
-            tree = ast.parse(original_module_code)
-        except SyntaxError as exc:
-            raise SynthesisError(
-                f"Syntax error in generated code: {exc}", original_module_code
-            ) from exc
+        # Ensure body is properly indented
+        body = result.body
+        if body and not body.startswith("    ") and not body.startswith("\t"):
+            body = textwrap.indent(body, "    ")
 
-        # Find the target function and separate helpers
-        target_func_node = None
-        helper_nodes = []
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name == func_name:
-                target_func_node = node
-            else:
-                helper_nodes.append(node)
-
-        if target_func_node is None:
-            raise SynthesisError(
-                f"Function '{func_name}' not found in generated module.",
-                original_module_code,
-            )
-
-        # Extract function body using AST - the body starts at first statement's line
-        all_lines = original_module_code.splitlines()
-
-        # The body starts at the first statement in the function
-        if target_func_node.body:
-            body_start_line = target_func_node.body[0].lineno - 1
-            body_end_line = target_func_node.end_lineno
-            body_lines = all_lines[body_start_line:body_end_line]
-            body = "\n".join(body_lines)
-        else:
-            # Empty function body (just pass or docstring)
-            body = "    pass"
-
-        # Get parameter names from the original function
-        param_names = [arg.arg for arg in target_func_node.args.args]
-
-        # Build helper code from non-function-def nodes
-        helper_code = ""
-        if helper_nodes:
-            helper_parts = []
-            for node in helper_nodes:
-                start = node.lineno - 1
-                end = node.end_lineno
-                helper_parts.append("\n".join(all_lines[start:end]))
-            helper_code = "\n\n".join(helper_parts) + "\n\n"
-
-        # Construct the function with PRESCRIBED types and extracted param names
-        param_sig = _format_param_signature(callable_type, param_names)
+        param_sig = _format_param_signature(callable_type, result.param_names)
         return_type = _format_return_type(callable_type)
         func_code = f"def {func_name}({param_sig}) -> {return_type}:\n{body}"
-        module_code = helper_code + func_code
+
+        helper_code = textwrap.dedent(result.helper_code).strip()
+        if helper_code:
+            module_code = helper_code + "\n\n" + func_code
+        else:
+            module_code = func_code
 
         # Register in linecache for better tracebacks
         lines = module_code.splitlines(keepends=True)
@@ -306,10 +271,12 @@ class ProgramSynthesis(ObjectInterpretation):
         try:
             code_obj = compile(module_code, filename, "exec")
             exec(code_obj, gs)
-        except Exception as exc:
+        except SyntaxError as exc:
             raise SynthesisError(
-                f"evaluation failed: {exc!r}, source code: {module_code}", module_code
+                f"Syntax error in generated code: {exc}", module_code
             ) from exc
+        except Exception as exc:
+            raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
 
         if func_name not in gs:
             raise SynthesisError(
@@ -360,32 +327,29 @@ The following types, functions, and values are available:
 """
 
         prompt_ext = textwrap.dedent(f"""
-        Implement a Python module containing a function with the following specification.
+        Implement a Python function with the following specification.
 
         **Specification:** {template.__prompt_template__}
 
-        **Required signature for the main function:**
+        **Required signature:**
         - Parameter types (in order): {param_types_str}
         - Return type: {return_type_str}
         {context_section}
         **Instructions:**
-        1. Write a complete Python module with the main function and any helper functions/classes you need.
-        2. Choose a descriptive name for the main function.
-        3. Choose descriptive parameter names (one for each parameter type).
-        4. The main function's parameter types and return type must match exactly as specified above.
-        5. Do not redefine any of the provided types - they are already imported.
-        6. Do not include import statements - all necessary types and helpers are pre-imported.
-        7. You may define additional helper functions, classes, or constants in the module.
-        8. You may use any of the helper functions and types from the context above.
+        1. Choose a descriptive function name.
+        2. Choose descriptive parameter names (one for each parameter type).
+        3. Implement the function body with a return statement.
+        4. If needed, include helper functions/classes/constants in helper_code.
+        5. Do not redefine provided types - they are already available.
+        6. Do not include import statements.
         """).strip()
 
-        # Use structured output - the LLM returns JSON with function_name and module_code
-        response: SynthesizedModule = fwd(
+        response: SynthesizedFunction = fwd(
             dataclasses.replace(
                 template,
                 __prompt_template__=prompt_ext,
                 __signature__=template.__signature__.replace(
-                    return_annotation=SynthesizedModule
+                    return_annotation=SynthesizedFunction
                 ),
             ),
             *args,
