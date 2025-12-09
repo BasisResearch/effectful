@@ -1,3 +1,4 @@
+import ast
 import collections
 import collections.abc
 import dataclasses
@@ -7,7 +8,7 @@ import tempfile
 import textwrap
 import typing
 from collections.abc import Callable
-from typing import get_args, get_origin, get_type_hints
+from typing import Any, get_args, get_origin
 
 import pydantic
 from mypy import api as mypy_api
@@ -43,128 +44,20 @@ class SynthesizedModule(pydantic.BaseModel):
     )
 
 
-def collect_referenced_types(t: type, seen: set[type] | None = None) -> set[type]:
-    """Collect all non-builtin types referenced in a type annotation.
+def _get_imports_from_lexical_context(
+    lexical_context: dict[str, tuple[str, Any]],
+) -> list[str]:
+    """Generate import statements for types in the lexical context.
 
-    Walks through a type annotation (including generic types like
-    Callable[[Person], Order]) and collects all user-defined types.
-
-    Args:
-        t: The type to analyze
-        seen: Set of already-processed types (to avoid infinite recursion)
-
-    Returns:
-        A set of non-builtin types referenced in the annotation
-    """
-    if seen is None:
-        seen = set()
-
-    types: set[type] = set()
-
-    # Handle generic types (e.g., Callable[[X], Y], list[X], dict[str, Item])
-    origin = get_origin(t)
-    if origin is not None:
-        for arg in get_args(t):
-            if isinstance(arg, list):
-                # Handle Callable[[P1, P2], R] where first arg is a list of param types
-                for inner_arg in arg:
-                    types.update(collect_referenced_types(inner_arg, seen))
-            elif arg is not ...:
-                # Recursively process all type arguments (including generic aliases)
-                types.update(collect_referenced_types(arg, seen))
-        return types
-
-    # Skip non-types, already-seen types, and builtins
-    if not isinstance(t, type) or t in seen:
-        return types
-    if t.__module__ == "builtins":
-        return types
-
-    seen.add(t)
-    types.add(t)
-
-    # Recursively process type hints from annotations
-    try:
-        hints = get_type_hints(t)
-        for hint in hints.values():
-            types.update(collect_referenced_types(hint, seen))
-    except Exception:
-        pass
-
-    # For dataclasses, also check field types
-    if dataclasses.is_dataclass(t):
-        for field in dataclasses.fields(t):
-            field_type = field.type
-            if isinstance(field_type, type):
-                types.update(collect_referenced_types(field_type, seen))
-            elif not isinstance(field_type, str):
-                types.update(collect_referenced_types(field_type, seen))
-
-    # Check base classes (excluding object)
-    for base in t.__bases__:
-        if base is not object:
-            types.update(collect_referenced_types(base, seen))
-
-    return types
-
-
-def get_type_imports(types: set[type]) -> list[str]:
-    """Get import statements for a set of types using inspect.getmodule.
-
-    Args:
-        types: Set of types to generate imports for
-
-    Returns:
-        List of import statement strings
+    Only generates imports for types/classes that have a proper module.
     """
     imports = []
-    for t in types:
-        module = inspect.getmodule(t)
-        if module is None or module.__name__ == "builtins":
-            continue
-        imports.append(f"from {module.__name__} import {t.__name__}")
+    for name, (_, obj) in lexical_context.items():
+        if isinstance(obj, type):
+            module = inspect.getmodule(obj)
+            if module is not None and module.__name__ not in ("builtins", "__main__"):
+                imports.append(f"from {module.__name__} import {name}")
     return imports
-
-
-def collect_type_sources(t: type) -> dict[type, str]:
-    """Collect source code for all types referenced in a type annotation.
-
-    Args:
-        t: The type to analyze
-
-    Returns:
-        A dict mapping types to their source code strings
-    """
-    types = collect_referenced_types(t)
-    sources: dict[type, str] = {}
-    for typ in types:
-        try:
-            sources[typ] = inspect.getsource(typ)
-        except (OSError, TypeError):
-            # Can't get source (built-in, C extension, dynamically created, etc.)
-            pass
-    return sources
-
-
-def format_type_context(sources: dict[type, str]) -> str:
-    """Format collected type sources into a context string for the prompt.
-
-    Args:
-        sources: Dict mapping types to their source code
-
-    Returns:
-        A formatted string containing all type definitions
-    """
-    if not sources:
-        return ""
-
-    parts = []
-    for source in sources.values():
-        # Clean up the source (dedent if needed)
-        cleaned = textwrap.dedent(source).strip()
-        parts.append(cleaned)
-
-    return "\n\n".join(parts)
 
 
 def _format_type_for_annotation(t: type) -> str:
@@ -260,95 +153,21 @@ def _format_return_type(callable_type: type) -> str:
     return _format_type_for_annotation(return_type)
 
 
-def _types_match(expected: type, actual: type) -> bool:
-    """Check if two types match, handling cross-module generic types.
-
-    This is needed because `list[__main__.Product]` != `list[Product]` even
-    when they refer to the same class, due to how generic aliases are compared.
-
-    Also handles cases where LLM uses bare type (list) instead of generic (list[X]).
-
-    Args:
-        expected: The expected type (from caller's context)
-        actual: The actual type (from exec'd code)
-
-    Returns:
-        True if the types are structurally equivalent
-    """
-    # Direct equality check (covers most cases)
-    if expected == actual:
-        return True
-
-    # Same class by identity
-    if expected is actual:
-        return True
-
-    # For generic types, compare origin and args recursively
-    expected_origin = get_origin(expected)
-    actual_origin = get_origin(actual)
-
-    # Handle case where one is generic and one is bare type
-    # e.g., list[Product] vs list - accept if origins match
-    if expected_origin is not None and actual_origin is None:
-        # expected is generic (list[X]), actual is bare (list)
-        # Accept if actual is the origin of expected
-        if actual is expected_origin:
-            return True
-        # Also check by name for cross-module cases
-        if isinstance(actual, type) and hasattr(expected_origin, "__name__"):
-            if actual.__name__ == expected_origin.__name__:
-                return True
-
-    if actual_origin is not None and expected_origin is None:
-        # actual is generic (list[X]), expected is bare (list)
-        if expected is actual_origin:
-            return True
-        if isinstance(expected, type) and hasattr(actual_origin, "__name__"):
-            if expected.__name__ == actual_origin.__name__:
-                return True
-
-    if expected_origin is not None and actual_origin is not None:
-        # Both are generic - origins must match
-        if expected_origin is not actual_origin:
-            # Check by name for cross-module cases
-            if not (
-                hasattr(expected_origin, "__name__")
-                and hasattr(actual_origin, "__name__")
-                and expected_origin.__name__ == actual_origin.__name__
-            ):
-                return False
-
-        # Compare type arguments recursively
-        expected_args = get_args(expected)
-        actual_args = get_args(actual)
-
-        if len(expected_args) != len(actual_args):
-            return False
-
-        return all(_types_match(e, a) for e, a in zip(expected_args, actual_args))
-
-    # For non-generic types, compare by name (handles cross-module cases)
-    if isinstance(expected, type) and isinstance(actual, type):
-        return expected.__name__ == actual.__name__
-
-    return False
-
-
 def run_mypy_check(
     code: str,
-    referenced_types: set[type],
+    lexical_context: dict[str, tuple[str, Any]],
 ) -> tuple[bool, str]:
     """Run mypy on generated code to verify type correctness.
 
     Args:
         code: The generated function code
-        referenced_types: Set of types referenced in the signature
+        lexical_context: Lexical context containing types for imports
 
     Returns:
         A tuple of (success: bool, error_message: str)
     """
-    source_parts = get_type_imports(referenced_types)
-    source_parts.append(textwrap.dedent(code).strip())
+    imports = _get_imports_from_lexical_context(lexical_context)
+    source_parts = imports + [textwrap.dedent(code).strip()]
 
     full_source = "\n".join(source_parts)
 
@@ -395,8 +214,7 @@ class ProgramSynthesis(ObjectInterpretation):
         self,
         result: SynthesizedModule,
         callable_type: type,
-        referenced_types: set[type],
-        lexical_context: dict[str, tuple[str, typing.Any]] | None = None,
+        lexical_context: dict[str, tuple[str, Any]],
     ) -> typing.Callable:
         """Build and execute a function from the synthesized module.
 
@@ -406,14 +224,11 @@ class ProgramSynthesis(ObjectInterpretation):
         Args:
             result: The structured output from the LLM containing module code
             callable_type: The expected Callable type (e.g., Callable[[str], int])
-            referenced_types: Set of types referenced in the signature
             lexical_context: Dict of lexical context (functions/types) available in scope
 
         Returns:
             The synthesized callable function
         """
-        import ast
-
         func_name = result.function_name
         original_module_code = textwrap.dedent(result.module_code).strip()
 
@@ -477,23 +292,16 @@ class ProgramSynthesis(ObjectInterpretation):
         filename = f"<generated-{hash(module_code)}>"
         linecache.cache[filename] = (len(module_code), None, lines, filename)
 
-        # Optional mypy type checking - now with guaranteed correct signature
+        # Optional mypy type checking - uses lexical context for imports
         if self.type_check:
-            success, error_msg = run_mypy_check(module_code, referenced_types)
+            success, error_msg = run_mypy_check(module_code, lexical_context)
             if not success:
                 raise SynthesisError(f"Type check failed:\n{error_msg}", module_code)
 
-        # Build globals dict by importing types from their original modules
+        # Build globals dict from lexical context (all functions, types, etc.)
         gs: dict = {}
-        for typ in referenced_types:
-            module = inspect.getmodule(typ)
-            if module is not None:
-                gs[typ.__name__] = typ
-
-        # Add lexical context (functions and types) from the template's captured context
-        if lexical_context:
-            for name, (_, obj) in lexical_context.items():
-                gs[name] = obj
+        for name, (_, obj) in lexical_context.items():
+            gs[name] = obj
 
         try:
             code_obj = compile(module_code, filename, "exec")
@@ -512,74 +320,6 @@ class ProgramSynthesis(ObjectInterpretation):
 
         return gs[func_name]
 
-    def _verify_signature(
-        self, func: typing.Callable, callable_type: type, code: str
-    ) -> None:
-        """Verify that the function signature matches the expected Callable type.
-
-        Args:
-            func: The synthesized function
-            callable_type: The expected Callable type
-            code: The source code (for error messages)
-
-        Raises:
-            SynthesisError: If the signature doesn't match
-        """
-        expected_param_types = _get_param_types(callable_type)
-
-        sig = inspect.signature(func)
-        actual_params = list(sig.parameters.values())
-
-        # Check parameter count (skip if Callable[..., R])
-        if expected_param_types is not None:
-            if len(actual_params) != len(expected_param_types):
-                raise SynthesisError(
-                    f"Parameter count mismatch: expected {len(expected_param_types)}, "
-                    f"got {len(actual_params)}",
-                    code,
-                )
-
-        # Get type hints for the function
-        hints = typing.get_type_hints(func)
-
-        # Check parameter types (skip if Callable[..., R])
-        if expected_param_types is not None:
-            for i, (param, expected_type) in enumerate(
-                zip(actual_params, expected_param_types)
-            ):
-                actual_type = hints.get(param.name)
-                if actual_type is None:
-                    raise SynthesisError(
-                        f"Parameter '{param.name}' missing type annotation", code
-                    )
-                # Use structural comparison to handle cross-module generic types
-                if not _types_match(expected_type, actual_type):
-                    raise SynthesisError(
-                        f"Parameter '{param.name}' type mismatch: "
-                        f"expected {expected_type}, got {actual_type}",
-                        code,
-                    )
-
-        # Check return type
-        expected_return_type = (
-            get_args(callable_type)[-1] if get_args(callable_type) else None
-        )
-        if expected_return_type is not None:
-            actual_return_type = hints.get("return")
-            if actual_return_type is None:
-                raise SynthesisError(
-                    f"Function missing return type annotation. "
-                    f"Expected: {_format_type_for_annotation(expected_return_type)}",
-                    code,
-                )
-            # Use structural comparison to handle cross-module generic types
-            if not _types_match(expected_return_type, actual_return_type):
-                raise SynthesisError(
-                    f"Return type mismatch: expected {_format_type_for_annotation(expected_return_type)}, "
-                    f"got {_format_type_for_annotation(actual_return_type)}",
-                    code,
-                )
-
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
         ret_type = template.__signature__.return_annotation
@@ -589,18 +329,8 @@ class ProgramSynthesis(ObjectInterpretation):
         if not (issubclass(ret_type_origin, collections.abc.Callable)):  # type: ignore[arg-type]
             return fwd()
 
-        # Collect all types referenced in the signature
-        referenced_types = collect_referenced_types(ret_type)
-
-        # Get type sources for the prompt (to show LLM the type definitions)
-        type_sources = collect_type_sources(ret_type)
-        type_context = format_type_context(type_sources)
-
-        # Get lexical context (functions and types) from the template's captured context
+        # Get lexical context - contains all functions, types, and values from definition site
         lexical_context = getattr(template, "lexical_context", {})
-        lexical_context_source = (
-            template.get_lexical_context_source() if lexical_context else ""
-        )
 
         # Get parameter types and return type for the prompt
         param_types = _get_param_types(ret_type)
@@ -616,30 +346,16 @@ class ProgramSynthesis(ObjectInterpretation):
                 _format_type_for_annotation(t) for t in param_types
             )
 
-        # Build the type definitions section if there are custom types
-        # Escape curly braces in type source code to avoid format string issues
-        type_defs_section = ""
-        if type_context:
-            escaped_type_context = type_context.replace("{", "{{").replace("}", "}}")
-            type_defs_section = f"""
-The following types are available:
+        # Include the full lexical context - all functions, types, values available to synthesized code
+        context_section = ""
+        if lexical_context:
+            context_source = template.get_lexical_context_source()
+            escaped_context = context_source.replace("{", "{{").replace("}", "}}")
+            context_section = f"""
+The following types, functions, and values are available:
 
 ```python
-{escaped_type_context}
-```
-"""
-
-        # Build the lexical context section (helper functions and types)
-        lexical_context_section = ""
-        if lexical_context_source:
-            escaped_lexical_context = lexical_context_source.replace("{", "{{").replace(
-                "}", "}}"
-            )
-            lexical_context_section = f"""
-The following helper functions and types are available for you to use:
-
-```python
-{escaped_lexical_context}
+{escaped_context}
 ```
 """
 
@@ -651,7 +367,7 @@ The following helper functions and types are available for you to use:
         **Required signature for the main function:**
         - Parameter types (in order): {param_types_str}
         - Return type: {return_type_str}
-        {type_defs_section}{lexical_context_section}
+        {context_section}
         **Instructions:**
         1. Write a complete Python module with the main function and any helper functions/classes you need.
         2. Choose a descriptive name for the main function.
@@ -660,7 +376,7 @@ The following helper functions and types are available for you to use:
         5. Do not redefine any of the provided types - they are already imported.
         6. Do not include import statements - all necessary types and helpers are pre-imported.
         7. You may define additional helper functions, classes, or constants in the module.
-        8. You may use any of the helper functions and types provided above.
+        8. You may use any of the helper functions and types from the context above.
         """).strip()
 
         # Use structured output - the LLM returns JSON with function_name and module_code
@@ -676,7 +392,5 @@ The following helper functions and types are available for you to use:
             **kwargs,
         )
 
-        # Build and return the function using imports instead of source injection
-        return self._build_function(
-            response, ret_type, referenced_types, lexical_context
-        )
+        # Build and return the function using lexical context for exec globals
+        return self._build_function(response, ret_type, lexical_context)

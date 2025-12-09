@@ -1,5 +1,3 @@
-import inspect
-import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -10,8 +8,6 @@ from effectful.handlers.llm.synthesis import (
     ProgramSynthesis,
     SynthesisError,
     SynthesizedModule,
-    collect_type_sources,
-    format_type_context,
 )
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -142,21 +138,6 @@ def count_occurrences(text: str) -> int:
         assert callable(count_a)
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
-
-
-def test_collect_type_sources():
-    """Test the collect_type_sources function."""
-    type_sources = collect_type_sources(Person)
-    assert type_sources == {Person: inspect.getsource(Person)}
-
-
-def test_format_type_context():
-    """Test the format_type_context function."""
-    type_sources = {Person: inspect.getsource(Person)}
-    assert (
-        format_type_context(type_sources)
-        == textwrap.dedent(inspect.getsource(Person)).strip()
-    )
 
 
 def test_count_char_with_typed_body():
@@ -307,7 +288,7 @@ def count_and_double(text):
 def test_program_synthesis_lexical_function_in_prompt():
     """Test that lexical functions are included in the template's context."""
     # Verify the template captured the lexical function
-    assert "double_count" in make_double_counter.lexical_functions
-    source, func = make_double_counter.lexical_functions["double_count"]
+    assert "double_count" in make_double_counter.lexical_context
+    source, func = make_double_counter.lexical_context["double_count"]
     assert "Count occurrences of a character and double it" in source
     assert func is double_count
