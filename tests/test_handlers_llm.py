@@ -9,7 +9,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.synthesis import (
     ProgramSynthesis,
     SynthesisError,
-    SynthesizedFunction,
+    SynthesizedModule,
     collect_type_sources,
     format_type_context,
 )
@@ -127,11 +127,13 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # Structured response: LLM provides function name, param names, and body
-    mock_response = SynthesizedFunction(
+    # Structured response: LLM provides function name and full module code
+    mock_response = SynthesizedModule(
         function_name="count_occurrences",
-        param_names=["text"],
-        body="    return text.count('a')",
+        module_code="""
+def count_occurrences(text: str) -> int:
+    return text.count('a')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -159,11 +161,13 @@ def test_format_type_context():
 
 def test_count_char_with_typed_body():
     """Test program synthesis constructs function with correct prescribed types."""
-    # The body uses the LLM-provided parameter name
-    mock_response = SynthesizedFunction(
+    # The module uses the LLM-provided parameter name
+    mock_response = SynthesizedModule(
         function_name="count_chars",
-        param_names=["s"],
-        body="    return s.count('x')",
+        module_code="""
+def count_chars(s: str) -> int:
+    return s.count('x')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -177,10 +181,12 @@ def test_count_char_with_typed_body():
 
 def test_make_greeter_with_program_synthesis():
     """Test program synthesis with custom type (Person) in the signature."""
-    mock_response = SynthesizedFunction(
+    mock_response = SynthesizedModule(
         function_name="greet_person",
-        param_names=["person"],
-        body='    return f"Hello, {person.name}!"',
+        module_code="""
+def greet_person(person: Person) -> str:
+    return f"Hello, {person.name}!"
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -193,11 +199,13 @@ def test_make_greeter_with_program_synthesis():
 
 
 def test_program_synthesis_invalid_body():
-    """Test that synthesis fails when body has syntax errors."""
-    mock_response = SynthesizedFunction(
+    """Test that synthesis fails when module has syntax errors."""
+    mock_response = SynthesizedModule(
         function_name="bad_func",
-        param_names=["x"],
-        body="    return this is not valid python",
+        module_code="""
+def bad_func(x: str) -> int:
+    return this is not valid python
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -207,11 +215,13 @@ def test_program_synthesis_invalid_body():
 
 
 def test_program_synthesis_runtime_error():
-    """Test that synthesis fails when body raises runtime error on compile."""
-    mock_response = SynthesizedFunction(
+    """Test that synthesis fails when module raises runtime error when called."""
+    mock_response = SynthesizedModule(
         function_name="bad_func",
-        param_names=["x"],
-        body="    return undefined_variable",
+        module_code="""
+def bad_func(x: str) -> int:
+    return undefined_variable
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -225,10 +235,12 @@ def test_program_synthesis_runtime_error():
 
 def test_program_synthesis_with_type_check():
     """Test program synthesis with optional mypy type checking enabled."""
-    mock_response = SynthesizedFunction(
+    mock_response = SynthesizedModule(
         function_name="count_chars",
-        param_names=["text"],
-        body="    return text.count('a')",
+        module_code="""
+def count_chars(text: str) -> int:
+    return text.count('a')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -241,14 +253,60 @@ def test_program_synthesis_with_type_check():
 
 def test_program_synthesis_type_check_catches_body_errors():
     """Test that type checking catches type errors in the function body."""
-    # Body returns wrong type (str instead of int)
-    mock_response = SynthesizedFunction(
+    # Module returns wrong type (str instead of int)
+    mock_response = SynthesizedModule(
         function_name="bad_return",
-        param_names=["text"],
-        body='    return "not an int"',
+        module_code="""
+def bad_return(text: str) -> int:
+    return "not an int"
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with pytest.raises(SynthesisError, match="Type check failed"):
         with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
             count_char("a")
+
+
+# Helper function for lexical scope test - defined at module level
+def double_count(text: str, char: str) -> int:
+    """Count occurrences of a character and double it."""
+    return text.count(char) * 2
+
+
+# Template that captures the lexical function above
+@Template.define
+def make_double_counter(char: str) -> Callable[[str], int]:
+    """Create a function that counts occurrences of '{char}' and doubles the result.
+    Use the double_count helper function."""
+    raise NotImplementedError
+
+
+def test_program_synthesis_with_lexical_function():
+    """Test that synthesized code can use functions from the lexical scope."""
+    # The synthesized code uses the double_count helper from lexical scope
+    mock_response = SynthesizedModule(
+        function_name="count_and_double",
+        module_code="""
+def count_and_double(text: str) -> int:
+    return double_count(text, 'a')
+""",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
+
+    with handler(mock_provider), handler(ProgramSynthesis()):
+        counter = make_double_counter("a")
+        assert callable(counter)
+        # "banana" has 3 'a's, doubled = 6
+        assert counter("banana") == 6
+        # "cherry" has 0 'a's, doubled = 0
+        assert counter("cherry") == 0
+
+
+def test_program_synthesis_lexical_function_in_prompt():
+    """Test that lexical functions are included in the template's context."""
+    # Verify the template captured the lexical function
+    assert "double_count" in make_double_counter.lexical_functions
+    source, func = make_double_counter.lexical_functions["double_count"]
+    assert "Count occurrences of a character and double it" in source
+    assert func is double_count

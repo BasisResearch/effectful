@@ -26,18 +26,21 @@ class SynthesisError(Exception):
         self.code = code
 
 
-class SynthesizedFunction(pydantic.BaseModel):
+class SynthesizedModule(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    The LLM provides the function name, parameter names, and body.
-    The parameter types and return type are prescribed by the prompt.
+    The LLM provides a complete Python module and the name of the
+    entry-point function to return.
     """
 
-    function_name: str = Field(..., description="The name of the function")
-    param_names: list[str] = Field(
-        ..., description="The names of the parameters (in order)"
+    function_name: str = Field(
+        ...,
+        description="The name of the main function that satisfies the specification",
     )
-    body: str = Field(..., description="The indented function body (implementation)")
+    module_code: str = Field(
+        ...,
+        description="Complete Python module code including the function and any helpers",
+    )
 
 
 def collect_referenced_types(t: type, seen: set[type] | None = None) -> set[type]:
@@ -316,45 +319,35 @@ class ProgramSynthesis(ObjectInterpretation):
 
     def _build_function(
         self,
-        result: SynthesizedFunction,
+        result: SynthesizedModule,
         callable_type: type,
         referenced_types: set[type],
+        lexical_functions: dict[str, tuple[str, typing.Callable]] | None = None,
     ) -> typing.Callable:
-        """Build and execute a function from the structured synthesis result.
+        """Build and execute a function from the synthesized module.
 
         Args:
-            result: The structured output from the LLM
+            result: The structured output from the LLM containing module code
             callable_type: The expected Callable type (e.g., Callable[[str], int])
             referenced_types: Set of types referenced in the signature
+            lexical_functions: Dict of lexical functions available in scope
 
         Returns:
             The synthesized callable function
         """
-        # Build the function with prescribed types and LLM-provided names
-        param_sig = _format_param_signature(callable_type, result.param_names)
-        return_type = _format_return_type(callable_type)
         func_name = result.function_name
-
-        # Ensure body is properly indented
-        body = result.body
-        if not body.startswith("    ") and not body.startswith("\t"):
-            # Indent the body if not already indented
-            body = textwrap.indent(body, "    ")
-
-        # Construct the full function code
-        code = f"def {func_name}({param_sig}) -> {return_type}:\n{body}"
+        module_code = textwrap.dedent(result.module_code).strip()
 
         # Register in linecache for better tracebacks
-        source_code = code
-        lines = code.splitlines(keepends=True)
-        filename = f"<generated-{hash(code)}>"
-        linecache.cache[filename] = (len(source_code), None, lines, filename)
+        lines = module_code.splitlines(keepends=True)
+        filename = f"<generated-{hash(module_code)}>"
+        linecache.cache[filename] = (len(module_code), None, lines, filename)
 
         # Optional mypy type checking
         if self.type_check:
-            success, error_msg = run_mypy_check(code, referenced_types)
+            success, error_msg = run_mypy_check(module_code, referenced_types)
             if not success:
-                raise SynthesisError(f"Type check failed:\n{error_msg}", code)
+                raise SynthesisError(f"Type check failed:\n{error_msg}", module_code)
 
         # Build globals dict by importing types from their original modules
         gs: dict = {}
@@ -363,15 +356,104 @@ class ProgramSynthesis(ObjectInterpretation):
             if module is not None:
                 gs[typ.__name__] = typ
 
+        # Add lexical functions from the template's captured context
+        if lexical_functions:
+            for name, (_, func) in lexical_functions.items():
+                gs[name] = func
+
         try:
-            code_obj = compile(source_code, filename, "exec")
+            code_obj = compile(module_code, filename, "exec")
             exec(code_obj, gs)
         except Exception as exc:
             raise SynthesisError(
-                f"evaluation failed: {exc!r}, source code: {source_code}", code
+                f"evaluation failed: {exc!r}, source code: {module_code}", module_code
             ) from exc
 
-        return gs[func_name]
+        # Find and validate the function
+        if func_name not in gs:
+            raise SynthesisError(
+                f"Function '{func_name}' not found in generated module. "
+                f"Available names: {[k for k in gs.keys() if not k.startswith('_')]}",
+                module_code,
+            )
+
+        func = gs[func_name]
+        if not callable(func):
+            raise SynthesisError(
+                f"'{func_name}' is not callable (got {type(func).__name__})",
+                module_code,
+            )
+
+        # Verify the function signature matches the expected type
+        self._verify_signature(func, callable_type, module_code)
+
+        return func
+
+    def _verify_signature(
+        self, func: typing.Callable, callable_type: type, code: str
+    ) -> None:
+        """Verify that the function signature matches the expected Callable type.
+
+        Args:
+            func: The synthesized function
+            callable_type: The expected Callable type
+            code: The source code (for error messages)
+
+        Raises:
+            SynthesisError: If the signature doesn't match
+        """
+        expected_param_types = _get_param_types(callable_type)
+
+        sig = inspect.signature(func)
+        actual_params = list(sig.parameters.values())
+
+        # Check parameter count (skip if Callable[..., R])
+        if expected_param_types is not None:
+            if len(actual_params) != len(expected_param_types):
+                raise SynthesisError(
+                    f"Parameter count mismatch: expected {len(expected_param_types)}, "
+                    f"got {len(actual_params)}",
+                    code,
+                )
+
+        # Get type hints for the function
+        hints = typing.get_type_hints(func)
+
+        # Check parameter types (skip if Callable[..., R])
+        if expected_param_types is not None:
+            for i, (param, expected_type) in enumerate(
+                zip(actual_params, expected_param_types)
+            ):
+                actual_type = hints.get(param.name)
+                if actual_type is None:
+                    raise SynthesisError(
+                        f"Parameter '{param.name}' missing type annotation", code
+                    )
+                # Note: We do a simple equality check here. For more complex type
+                # compatibility, we'd need a proper type checker.
+                if actual_type != expected_type:
+                    raise SynthesisError(
+                        f"Parameter '{param.name}' type mismatch: "
+                        f"expected {expected_type}, got {actual_type}",
+                        code,
+                    )
+
+        # Check return type
+        expected_return_type = get_args(callable_type)[-1] if get_args(callable_type) else None
+        if expected_return_type is not None:
+            actual_return_type = hints.get("return")
+            if actual_return_type is None:
+                raise SynthesisError(
+                    f"Function missing return type annotation. "
+                    f"Expected: {_format_type_for_annotation(expected_return_type)}",
+                    code,
+                )
+            if actual_return_type != expected_return_type:
+                raise SynthesisError(
+                    f"Return type mismatch: expected {_format_type_for_annotation(expected_return_type)}, "
+                    f"got {_format_type_for_annotation(actual_return_type)}",
+                    code,
+                )
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -388,6 +470,10 @@ class ProgramSynthesis(ObjectInterpretation):
         # Get type sources for the prompt (to show LLM the type definitions)
         type_sources = collect_type_sources(ret_type)
         type_context = format_type_context(type_sources)
+
+        # Get lexical functions from the template's captured context
+        lexical_functions = getattr(template, "lexical_functions", {})
+        lexical_context = template.get_lexical_context_source() if lexical_functions else ""
 
         # Get parameter types and return type for the prompt
         param_types = _get_param_types(ret_type)
@@ -416,30 +502,45 @@ The following types are available:
 ```
 """
 
+        # Build the helper functions section if there are lexical functions
+        helper_functions_section = ""
+        if lexical_context:
+            escaped_lexical_context = lexical_context.replace("{", "{{").replace("}", "}}")
+            helper_functions_section = f"""
+The following helper functions are available for you to use:
+
+```python
+{escaped_lexical_context}
+```
+"""
+
         prompt_ext = textwrap.dedent(f"""
-        Implement a Python function with the following specification.
+        Implement a Python module containing a function with the following specification.
 
         **Specification:** {template.__prompt_template__}
 
-        **Required types:**
+        **Required signature for the main function:**
         - Parameter types (in order): {param_types_str}
         - Return type: {return_type_str}
-        {type_defs_section}
+        {type_defs_section}{helper_functions_section}
         **Instructions:**
-        1. Choose a descriptive function name.
-        2. Choose descriptive parameter names (one for each parameter type).
-        3. Implement the function body.
-        4. The parameter types and return type are fixed as shown above.
-        5. Do not redefine any of the provided types.
+        1. Write a complete Python module with the main function and any helper functions/classes you need.
+        2. Choose a descriptive name for the main function.
+        3. Choose descriptive parameter names (one for each parameter type).
+        4. The main function's parameter types and return type must match exactly as specified above.
+        5. Do not redefine any of the provided types - they are already imported.
+        6. Do not include import statements - all necessary types and helpers are pre-imported.
+        7. You may define additional helper functions, classes, or constants in the module.
+        8. You may use any of the helper functions provided above.
         """).strip()
 
-        # Use structured output - the LLM returns JSON with function_name and body
-        response: SynthesizedFunction = fwd(
+        # Use structured output - the LLM returns JSON with function_name and module_code
+        response: SynthesizedModule = fwd(
             dataclasses.replace(
                 template,
                 __prompt_template__=prompt_ext,
                 __signature__=template.__signature__.replace(
-                    return_annotation=SynthesizedFunction
+                    return_annotation=SynthesizedModule
                 ),
             ),
             *args,
@@ -447,4 +548,6 @@ The following types are available:
         )
 
         # Build and return the function using imports instead of source injection
-        return self._build_function(response, ret_type, referenced_types)
+        return self._build_function(
+            response, ret_type, referenced_types, lexical_functions
+        )
