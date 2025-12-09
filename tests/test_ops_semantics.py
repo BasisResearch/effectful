@@ -17,7 +17,14 @@ from effectful.ops.semantics import (
     runner,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    Scoped,
+    defdata,
+    deffn,
+    defop,
+    implements,
+)
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -539,6 +546,43 @@ def test_evaluate():
 
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
+
+
+def test_evaluate_dataclass():
+    from dataclasses import dataclass
+
+    @dataclass
+    class Foo:
+        x: float = 0
+
+    @defdata.register(Foo)
+    class FooTerm(Term[Foo], Foo):
+        def __init__(self, op, *args, **kwargs):
+            self._op = op
+            self._args = args
+            self._kwargs = kwargs
+
+        op = property(lambda self: self._op)
+        args = property(lambda self: self._args)
+        kwargs = property(lambda self: self._kwargs)
+
+        @property
+        @defop
+        def x(self):
+            if isinstance(self, Term):
+                raise NotHandled
+            return self.__dict__["x"]
+
+    @defop
+    def foo_op() -> Foo:
+        raise NotHandled
+
+    assert isinstance(foo_op(), FooTerm)
+    assert isinstance(foo_op().x, Term)
+    assert isinstance(evaluate(foo_op()), FooTerm)
+    assert isinstance(evaluate(foo_op()).x, Term)
+    with handler({foo_op: lambda: Foo(1)}):
+        assert foo_op().x == 1
 
 
 def test_ctxof():

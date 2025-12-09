@@ -231,6 +231,13 @@ def evaluate[T](
     if intp is not None:
         return interpreter(intp)(evaluate)(expr)
 
+    return __dispatch(type(expr))(expr)
+
+
+@evaluate.register(object)
+@evaluate.register(str)
+@evaluate.register(bytes)
+def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return typing.cast(
             T,
@@ -243,13 +250,6 @@ def evaluate[T](
             ),
         )
 
-    return __dispatch(type(expr))(expr)
-
-
-@evaluate.register(object)
-@evaluate.register(str)
-@evaluate.register(bytes)
-def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
