@@ -5,7 +5,9 @@ import inspect
 import io
 import logging
 import string
+import textwrap
 import traceback
+import types
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
@@ -90,6 +92,32 @@ def _(values: Sequence) -> OpenAIMessageContent:
         return [_pil_image_to_openai_image_param(value) for value in values]
     else:
         return [{"type": "text", "text": str(values)}]
+
+
+@format_value.register(types.FunctionType)  # type: ignore
+def _(obj: types.FunctionType) -> OpenAIMessageContent:
+    try:
+        source = textwrap.dedent(inspect.getsource(obj)).strip()
+    except (OSError, TypeError):
+        doc = obj.__doc__ or "No docstring"
+        source = f"# <function {obj.__name__}>\n# {doc}"
+    return [{"type": "text", "text": source}]
+
+
+@format_value.register(type)  # type: ignore
+def _(obj: type) -> OpenAIMessageContent:
+    try:
+        source = textwrap.dedent(inspect.getsource(obj)).strip()
+    except (OSError, TypeError):
+        doc = obj.__doc__ or "No docstring"
+        source = f"# <class {obj.__name__}>\n# {doc}"
+    return [{"type": "text", "text": source}]
+
+
+@format_value.register(types.ModuleType)  # type: ignore
+def _(obj: types.ModuleType) -> OpenAIMessageContent:
+    # Return empty for modules (skip in lexical context)
+    return []
 
 
 @dataclasses.dataclass
@@ -447,14 +475,10 @@ def format_model_input[**P, T](
 
     format_args = {}
 
-    for name, (source, obj) in template.lexical_context.items():
-        # If object is a dataclass, we want to insert the repr of the instance
-        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-            format_args[name] = repr(obj)
-        elif isinstance(obj, (int, float, str, bytes, bool, tuple, list, set, dict)):
-            format_args[name] = repr(obj)
-        else:  # type, function, callable, etc.
-            format_args[name] = source
+    for name, obj in template.lexical_context.items():
+        content = format_value(obj)
+        if content and isinstance(content, list) and content[0].get("type") == "text":
+            format_args[name] = content[0]["text"]
 
     format_args.update(bound_args.arguments)
 
