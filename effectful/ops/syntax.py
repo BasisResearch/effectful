@@ -597,7 +597,22 @@ class _BaseTerm[T](Term[T]):
         return self._kwargs
 
 
-class DataclassTermMeta(type(_BaseTerm)):  # type: ignore
+def register_dataclass(cls: type):
+    """
+    Registers a dataclass to effectful.
+
+    """
+    name = cls.__name__
+
+    term_name = f"_{name}Term"
+    bases = (Term, cls)
+    term_cls = _DataclassTermMeta(term_name, bases, {})
+
+    defdata.register(cls)(term_cls)
+    return cls
+
+
+class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
     def __new__(mcls, name, bases, ns):
         base_dt = None
         for b in bases:

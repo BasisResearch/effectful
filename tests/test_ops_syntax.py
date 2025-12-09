@@ -14,7 +14,6 @@ import pytest
 from docs.source.lambda_ import App, Lam, Let, eager_mixed
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
-    DataclassTermMeta,
     Scoped,
     _CustomSingleDispatchCallable,
     defdata,
@@ -23,6 +22,7 @@ from effectful.ops.syntax import (
     defstream,
     iter_,
     next_,
+    register_dataclass,
     syntactic_eq,
     trace,
 )
@@ -1068,14 +1068,11 @@ def test_operation_instances():
 
 
 def test_operation_dataclass():
+    @register_dataclass
     @dataclasses.dataclass
     class Point:
         x: int
         y: int
-
-    @defdata.register(Point)
-    class PointTerm(Term[Point], Point, metaclass=DataclassTermMeta):
-        pass
 
     @defop
     def random_point() -> Point:
