@@ -22,15 +22,6 @@ def _collect_lexical_context(frame) -> dict[str, tuple[str, Any]]:
 
     collected: dict[str, tuple[str, Any]] = {}
     for name, obj in lexical_context.items():
-        # Skip private/dunder names
-        if name.startswith("_"):
-            continue
-
-        # Skip modules
-        if isinstance(obj, types.ModuleType):
-            continue
-
-        # Get source/repr for the object
         source = _get_source_for_object(obj, name)
         if source is not None:
             collected[name] = (source, obj)
