@@ -5,6 +5,7 @@ import inspect
 import io
 import logging
 import string
+import traceback
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any, get_type_hints
@@ -304,11 +305,18 @@ class RetryLLMHandler(ObjectInterpretation):
     Args:
         max_retries: The maximum number of retries.
         add_error_feedback: Whether to add error feedback to the prompt.
+        exception_cls: The exception class to raise if the maximum number of retries is reached.
     """
 
-    def __init__(self, max_retries: int = 3, add_error_feedback: bool = False):
+    def __init__(
+        self,
+        max_retries: int = 3,
+        add_error_feedback: bool = False,
+        exception_cls: type = Exception,
+    ):
         self.max_retries = max_retries
         self.add_error_feedback = add_error_feedback
+        self.exception_cls = exception_cls
 
     @implements(Template.__call__)
     def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
@@ -316,12 +324,17 @@ class RetryLLMHandler(ObjectInterpretation):
         while max_retries > 0:
             try:
                 return fwd()
-            except Exception as exn:
+            except self.exception_cls as exn:
                 max_retries -= 1
                 if max_retries == 0:
                     raise exn
                 if self.add_error_feedback:
-                    prompt_ext = f"Retry generating the following prompt: {template.__prompt_template__}\nError from previous generation: {exn}"
+                    # Capture the full traceback for better error context
+                    tb = traceback.format_exc()
+                    prompt_ext = (
+                        f"Retry generating the following prompt: {template.__prompt_template__}\n\n"
+                        f"Error from previous generation:\n```\n{tb}```"
+                    )
                     return fwd(
                         dataclasses.replace(template, __prompt_template__=prompt_ext),
                         *args,
