@@ -123,17 +123,22 @@ def count_occurrences(s):
 class FailingThenSucceedingProvider[T](ObjectInterpretation):
     """Mock provider that fails a specified number of times before succeeding."""
 
-    def __init__(self, fail_count: int, success_response: T, exception: Exception):
+    def __init__(
+        self,
+        fail_count: int,
+        success_response: T,
+        exception_factory: Callable[[], Exception],
+    ):
         """Initialize the provider.
 
         Args:
             fail_count: Number of times to fail before succeeding
             success_response: Response to return after failures
-            exception: Exception to raise during failures
+            exception_factory: Factory function that creates exceptions to raise
         """
         self.fail_count = fail_count
         self.success_response = success_response
-        self.exception = exception
+        self.exception_factory = exception_factory
         self.call_count = 0
 
     @implements(Template.__call__)
@@ -142,7 +147,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
     ) -> T:
         self.call_count += 1
         if self.call_count <= self.fail_count:
-            raise self.exception
+            raise self.exception_factory()
         return self.success_response
 
 
@@ -151,7 +156,7 @@ def test_retry_handler_succeeds_after_failures():
     provider = FailingThenSucceedingProvider(
         fail_count=2,
         success_response="Success after retries!",
-        exception=ValueError("Temporary failure"),
+        exception_factory=lambda: ValueError("Temporary failure"),
     )
     retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
 
@@ -166,7 +171,7 @@ def test_retry_handler_exhausts_retries():
     provider = FailingThenSucceedingProvider(
         fail_count=5,  # More failures than retries
         success_response="Never reached",
-        exception=ValueError("Persistent failure"),
+        exception_factory=lambda: ValueError("Persistent failure"),
     )
     retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
 
@@ -182,7 +187,7 @@ def test_retry_handler_only_catches_specified_exception():
     provider = FailingThenSucceedingProvider(
         fail_count=1,
         success_response="Success",
-        exception=TypeError("Wrong type"),  # Different exception type
+        exception_factory=lambda: TypeError("Wrong type"),  # Different exception type
     )
     retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
 

@@ -321,9 +321,10 @@ class RetryLLMHandler(ObjectInterpretation):
     @implements(Template.__call__)
     def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
         max_retries = self.max_retries
+        current_template = template
         while max_retries > 0:
             try:
-                return fwd()
+                return fwd(current_template, *args, **kwargs)
             except self.exception_cls as exn:
                 max_retries -= 1
                 if max_retries == 0:
@@ -335,13 +336,10 @@ class RetryLLMHandler(ObjectInterpretation):
                         f"Retry generating the following prompt: {template.__prompt_template__}\n\n"
                         f"Error from previous generation:\n```\n{tb}```"
                     )
-                    return fwd(
-                        dataclasses.replace(template, __prompt_template__=prompt_ext),
-                        *args,
-                        **kwargs,
+                    current_template = dataclasses.replace(
+                        template, __prompt_template__=prompt_ext
                     )
-                else:
-                    return fwd(template, *args, **kwargs)
+                # Continue the loop to retry
         raise Exception("Max retries reached")
 
 
