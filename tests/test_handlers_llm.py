@@ -1,9 +1,16 @@
+import json
 from collections.abc import Callable
+from typing import Any
 
 import pytest
+from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import RetryLLMHandler
+from effectful.handlers.llm.providers import (
+    LiteLLMProvider,
+    RetryLLMHandler,
+    completion,
+)
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -38,7 +45,7 @@ class MockLLMProvider[T](ObjectInterpretation):
         return response
 
 
-class SingleResponseLLMProvider[T](ObjectInterpretation):
+class SingleResponseLLMProvider[T](LiteLLMProvider):
     """Simplified mock provider that returns a single response for any prompt."""
 
     def __init__(self, response: T):
@@ -47,12 +54,17 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         Args:
             response: The response to return for any template call
         """
-        self.response = response
+        if not isinstance(response, str):
+            response_str = json.dumps({"value": response})
+        else:
+            response_str = response
 
-    @implements(Template.__call__)
-    def _call[**P](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
+        self.response: ModelResponse = ModelResponse(
+            choices=[{"message": {"content": response_str}}]
+        )
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs) -> Any:
         return self.response
 
 

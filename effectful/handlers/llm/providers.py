@@ -13,6 +13,8 @@ from typing import Any, get_type_hints
 import litellm
 import pydantic
 
+from effectful.ops.syntax import _CustomSingleDispatchCallable
+
 try:
     from PIL import Image
 except ImportError:
@@ -31,7 +33,7 @@ from litellm.types.utils import ModelResponse
 from effectful.handlers.llm import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Operation
+from effectful.ops.types import NotHandled, Operation
 
 
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
@@ -406,6 +408,34 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             )
 
 
+@defop
+@_CustomSingleDispatchCallable
+def decode_result[T](
+    __dispatch: Callable[[type], Callable[..., T]], ret_type: type[T], result_str: str
+) -> T:
+    base_type = typing.get_origin(ret_type) or ret_type
+    return __dispatch(base_type)(ret_type, result_str)
+
+
+@decode_result.register(object)  # type: ignore
+def _decode_object[T](ret_type: type[T], result_str: str) -> T:
+    Result = _pydantic_model_from_type(ret_type)
+    result = Result.model_validate_json(result_str)
+    assert isinstance(result, Result)
+    return result.value
+
+
+@decode_result.register(str)  # type: ignore
+def _decode_str(ret_type: type[str], result_str: str) -> str:
+    return result_str
+
+
+@decode_result.register(Callable)  # type: ignore
+@defop
+def decode_callable[T](ret_type: type[T], result_str: str) -> Callable[..., T]:
+    raise NotHandled
+
+
 # Note: typing template as Template[P, T] causes term conversion to fail due to
 # unification limitations.
 @defop
@@ -425,10 +455,7 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
     if ret_type == str:
         return result_str  # type: ignore[return-value]
 
-    Result = _pydantic_model_from_type(ret_type)
-    result = Result.model_validate_json(result_str)
-    assert isinstance(result, Result)
-    return result.value
+    return decode_result(ret_type, result_str)
 
 
 @defop
