@@ -42,6 +42,7 @@ jax = ["jax", "dm-tree"]
 numpyro = ["numpyro>=0.19", "dm-tree"]
 llm = [
   "litellm",
+  "mypy",
   "pillow",
   "pydantic",
 ]
