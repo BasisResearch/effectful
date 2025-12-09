@@ -7,7 +7,7 @@ import tempfile
 import textwrap
 import typing
 from collections.abc import Callable
-from typing import Any, get_args, get_origin
+from typing import Any
 
 import pydantic
 from mypy import api as mypy_api
@@ -29,25 +29,17 @@ class SynthesisError(Exception):
 class SynthesizedFunction(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    LLM provides helper code freely, but main function structure is constrained.
-    We reconstruct the main function with prescribed types from the signature.
+    LLM provides a complete module and the name of the main function.
+    We add a type assertion to verify the function matches the expected signature.
     """
 
-    helper_code: str = Field(
-        default="",
-        description="Optional helper functions, classes, or constants (no imports needed), will be executed before the main function",
-    )
     function_name: str = Field(
         ...,
-        description="The name of the main function",
+        description="The name of the main function that satisfies the specification",
     )
-    param_names: list[str] = Field(
+    module_code: str = Field(
         ...,
-        description="Parameter names in order (must match number of parameter types)",
-    )
-    body: str = Field(
-        ...,
-        description="The indented function body including return statement",
+        description="Complete Python module code (no imports needed)",
     )
 
 
@@ -67,99 +59,6 @@ def _get_imports_from_lexical_context(
     return imports
 
 
-def _format_type_for_annotation(t: type) -> str:
-    """Format a type for use in a type annotation string.
-
-    Handles Callable types from collections.abc and typing module.
-    """
-    origin = get_origin(t)
-
-    if origin is not None:
-        # handle generic types like Callable[[X], Y], list[X], etc.
-        args = get_args(t)
-
-        # get the origin name - handle collections.abc.Callable -> Callable
-        if hasattr(origin, "__name__"):
-            origin_name = origin.__name__
-        else:
-            origin_name = str(origin).split(".")[-1]
-
-        if origin_name == "Callable" and args:
-            # Format as Callable[[P1, P2], R]
-            param_types = args[0]
-            return_type = args[-1]
-
-            if param_types is ...:
-                params_str = "..."
-            else:
-                params_str = (
-                    "["
-                    + ", ".join(_format_type_for_annotation(p) for p in param_types)
-                    + "]"
-                )
-
-            ret_str = _format_type_for_annotation(return_type)
-            return f"Callable[{params_str}, {ret_str}]"
-        else:
-            # Generic type like list[X], dict[K, V]
-            args_str = ", ".join(_format_type_for_annotation(a) for a in args)
-            return f"{origin_name}[{args_str}]"
-
-    # Simple type
-    if hasattr(t, "__name__"):
-        return t.__name__
-    return str(t)
-
-
-def _get_param_types(callable_type: type) -> list[type] | None:
-    """Extract parameter types from a Callable type.
-
-    Returns None if the callable uses ellipsis (...) for params.
-    """
-    args = get_args(callable_type)
-    if not args:
-        return []
-
-    param_types = args[0]
-    if param_types is ...:
-        return None
-
-    return list(param_types)
-
-
-def _format_param_signature(
-    callable_type: type, param_names: list[str] | None = None
-) -> str:
-    """Format the parameter signature from a Callable type.
-
-    E.g., Callable[[str, int], bool] with names ["text", "count"]
-    -> "text: str, count: int"
-    """
-    param_types = _get_param_types(callable_type)
-    if param_types is None:
-        return "*args, **kwargs"
-    if not param_types:
-        return ""
-
-    params = []
-    for i, param_type in enumerate(param_types):
-        type_str = _format_type_for_annotation(param_type)
-        name = param_names[i] if param_names and i < len(param_names) else f"arg{i}"
-        params.append(f"{name}: {type_str}")
-
-    return ", ".join(params)
-
-
-def _format_return_type(callable_type: type) -> str:
-    """Extract and format the return type from a Callable type."""
-    args = get_args(callable_type)
-    if not args:
-        return "Any"
-
-    return_type = args[-1]
-    return _format_type_for_annotation(return_type)
-
-
 def run_mypy_check(
     code: str,
     lexical_context: dict[str, tuple[str, Any]],
@@ -173,7 +72,9 @@ def run_mypy_check(
     Returns:
         A tuple of (success: bool, error_message: str)
     """
-    imports = _get_imports_from_lexical_context(lexical_context)
+    # Always include collections.abc for Callable type assertions
+    imports = ["import collections.abc"]
+    imports.extend(_get_imports_from_lexical_context(lexical_context))
     source_parts = imports + [textwrap.dedent(code).strip()]
 
     full_source = "\n".join(source_parts)
@@ -223,9 +124,10 @@ class ProgramSynthesis(ObjectInterpretation):
         callable_type: type,
         lexical_context: dict[str, tuple[str, Any]],
     ) -> typing.Callable:
-        """Build and execute a function from the structured synthesis result.
+        """Build and execute a function from the synthesized module.
 
-        Combines helper code with a reconstructed main function using prescribed types.
+        Executes the LLM's module code as-is and optionally verifies
+        the function matches the expected type using a type assertion.
 
         Args:
             result: The structured output from the LLM
@@ -236,30 +138,20 @@ class ProgramSynthesis(ObjectInterpretation):
             The synthesized callable function
         """
         func_name = result.function_name
+        module_code = textwrap.dedent(result.module_code).strip()
 
-        # Ensure body is properly indented
-        body = result.body
-        if body and not body.startswith("    ") and not body.startswith("\t"):
-            body = textwrap.indent(body, "    ")
-
-        param_sig = _format_param_signature(callable_type, result.param_names)
-        return_type = _format_return_type(callable_type)
-        func_code = f"def {func_name}({param_sig}) -> {return_type}:\n{body}"
-
-        helper_code = textwrap.dedent(result.helper_code).strip()
-        if helper_code:
-            module_code = helper_code + "\n\n" + func_code
-        else:
-            module_code = func_code
+        # Add type assertion for mypy checking (use repr for the type)
+        type_assertion = f"\n\n_: {repr(callable_type)} = {func_name}"
+        code_with_assertion = module_code + type_assertion
 
         # Register in linecache for better tracebacks
         lines = module_code.splitlines(keepends=True)
         filename = f"<generated-{hash(module_code)}>"
         linecache.cache[filename] = (len(module_code), None, lines, filename)
 
-        # Optional mypy type checking - uses lexical context for imports
+        # Optional mypy type checking with type assertion
         if self.type_check:
-            success, error_msg = run_mypy_check(module_code, lexical_context)
+            success, error_msg = run_mypy_check(code_with_assertion, lexical_context)
             if not success:
                 raise SynthesisError(f"Type check failed:\n{error_msg}", module_code)
 
@@ -299,20 +191,6 @@ class ProgramSynthesis(ObjectInterpretation):
         # Get lexical context - contains all functions, types, and values from definition site
         lexical_context = getattr(template, "lexical_context", {})
 
-        # Get parameter types and return type for the prompt
-        param_types = _get_param_types(ret_type)
-        return_type_str = _format_return_type(ret_type)
-
-        # Format parameter types for display
-        if param_types is None:
-            param_types_str = "*args, **kwargs"
-        elif not param_types:
-            param_types_str = "(no parameters)"
-        else:
-            param_types_str = ", ".join(
-                _format_type_for_annotation(t) for t in param_types
-            )
-
         # Include the full lexical context - all functions, types, values available to synthesized code
         context_section = ""
         if lexical_context:
@@ -331,17 +209,14 @@ The following types, functions, and values are available:
 
         **Specification:** {template.__prompt_template__}
 
-        **Required signature:**
-        - Parameter types (in order): {param_types_str}
-        - Return type: {return_type_str}
+        **Required signature:** {repr(ret_type)}
         {context_section}
         **Instructions:**
-        1. Choose a descriptive function name.
-        2. Choose descriptive parameter names (one for each parameter type).
-        3. Implement the function body with a return statement.
-        4. If needed, include helper functions/classes/constants in helper_code.
-        5. Do not redefine provided types - they are already available.
-        6. Do not include import statements.
+        1. Write a complete Python module with the function.
+        2. Choose descriptive function and parameter names.
+        3. You may include helper functions/classes/constants.
+        4. Do not redefine provided types - they are already available.
+        5. Do not include import statements.
         """).strip()
 
         response: SynthesizedFunction = fwd(

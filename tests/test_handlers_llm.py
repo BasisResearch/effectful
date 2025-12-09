@@ -125,8 +125,10 @@ def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
     mock_response = SynthesizedFunction(
         function_name="count_occurrences",
-        param_names=["text"],
-        body="    return text.count('a')",
+        module_code="""
+def count_occurrences(text: str) -> int:
+    return text.count('a')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -137,19 +139,20 @@ def test_count_char_with_program_synthesis():
         assert count_a("cherry") == 0
 
 
-def test_count_char_with_typed_body():
-    """Test program synthesis constructs function with correct prescribed types."""
+def test_count_char_with_untyped_function():
+    """Test program synthesis works even when LLM omits type annotations."""
     mock_response = SynthesizedFunction(
         function_name="count_chars",
-        param_names=["s"],
-        body="    return s.count('x')",
+        module_code="""
+def count_chars(s):
+    return s.count('x')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_x = count_char("x")
         assert callable(count_x)
-        # Verify the function works
         assert count_x("xylophone") == 1
         assert count_x("xxx") == 3
 
@@ -158,25 +161,28 @@ def test_make_greeter_with_program_synthesis():
     """Test program synthesis with custom type (Person) in the signature."""
     mock_response = SynthesizedFunction(
         function_name="greet_person",
-        param_names=["person"],
-        body='    return f"Hello, {person.name}!"',
+        module_code="""
+def greet_person(person: Person) -> str:
+    return f"Hello, {person.name}!"
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         greeter = make_greeter("formal")
         assert callable(greeter)
-        # Test the generated function works with the custom type
         person = Person(name="Alice", age=30)
         assert greeter(person) == "Hello, Alice!"
 
 
-def test_program_synthesis_invalid_body():
-    """Test that synthesis fails when body has syntax errors."""
+def test_program_synthesis_invalid_code():
+    """Test that synthesis fails when module has syntax errors."""
     mock_response = SynthesizedFunction(
         function_name="bad_func",
-        param_names=["x"],
-        body="    return this is not valid python",
+        module_code="""
+def bad_func(x):
+    return this is not valid python
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -186,45 +192,48 @@ def test_program_synthesis_invalid_body():
 
 
 def test_program_synthesis_runtime_error():
-    """Test that synthesis fails when body raises runtime error when called."""
+    """Test that runtime errors propagate when calling the function."""
     mock_response = SynthesizedFunction(
         function_name="bad_func",
-        param_names=["x"],
-        body="    return undefined_variable",
+        module_code="""
+def bad_func(x):
+    return undefined_variable
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
-    # This should compile fine but fail at runtime when called
     with handler(mock_provider), handler(ProgramSynthesis()):
         func = count_char("a")
-        # The function is created, but calling it will fail
         with pytest.raises(NameError):
             func("test")
 
 
 def test_program_synthesis_with_type_check():
-    """Test program synthesis with optional mypy type checking enabled."""
+    """Test program synthesis with mypy type checking via type assertion."""
     mock_response = SynthesizedFunction(
         function_name="count_chars",
-        param_names=["text"],
-        body="    return text.count('a')",
+        module_code="""
+def count_chars(text: str) -> int:
+    return text.count('a')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
-    # With type_check=True, mypy verifies the generated code
     with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
         count_a = count_char("a")
         assert callable(count_a)
         assert count_a("banana") == 3
 
 
-def test_program_synthesis_type_check_catches_body_errors():
-    """Test that type checking catches type errors in the function body."""
-    # Body returns wrong type (str instead of int) - mypy will catch this
+def test_program_synthesis_type_check_catches_signature_mismatch():
+    """Test that type checking catches when function signature doesn't match."""
+    # Function returns str but expected int - type assertion will fail
     mock_response = SynthesizedFunction(
         function_name="bad_return",
-        param_names=["text"],
-        body='    return "not an int"',
+        module_code="""
+def bad_return(text: str) -> str:
+    return "not an int"
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
@@ -249,49 +258,46 @@ def make_double_counter(char: str) -> Callable[[str], int]:
 
 def test_program_synthesis_with_lexical_function():
     """Test that synthesized code can use functions from the lexical scope."""
-    # The synthesized code uses the double_count helper from lexical scope
     mock_response = SynthesizedFunction(
         function_name="count_and_double",
-        param_names=["text"],
-        body="    return double_count(text, 'a')",
+        module_code="""
+def count_and_double(text: str) -> int:
+    return double_count(text, 'a')
+""",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         counter = make_double_counter("a")
         assert callable(counter)
-        # "banana" has 3 'a's, doubled = 6
-        assert counter("banana") == 6
-        # "cherry" has 0 'a's, doubled = 0
+        assert counter("banana") == 6  # 3 'a's doubled
         assert counter("cherry") == 0
 
 
 def test_program_synthesis_lexical_function_in_prompt():
     """Test that lexical functions are included in the template's context."""
-    # Verify the template captured the lexical function
     assert "double_count" in make_double_counter.lexical_context
     source, func = make_double_counter.lexical_context["double_count"]
     assert "Count occurrences of a character and double it" in source
     assert func is double_count
 
 
-def test_program_synthesis_with_helper_code():
-    """Test that helper_code is included and executed before the main function."""
+def test_program_synthesis_with_helper_in_module():
+    """Test that module can include helper functions."""
     mock_response = SynthesizedFunction(
-        helper_code="""
+        function_name="count_and_triple",
+        module_code="""
 def multiply_by_three(n: int) -> int:
     return n * 3
+
+def count_and_triple(text: str) -> int:
+    return multiply_by_three(text.count('a'))
 """,
-        function_name="count_and_triple",
-        param_names=["text"],
-        body="    return multiply_by_three(text.count('a'))",
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         counter = count_char("a")
         assert callable(counter)
-        # "banana" has 3 'a's, tripled = 9
-        assert counter("banana") == 9
-        # "aardvark" has 3 'a's, tripled = 9
+        assert counter("banana") == 9  # 3 'a's tripled
         assert counter("aardvark") == 9
