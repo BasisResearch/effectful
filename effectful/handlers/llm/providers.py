@@ -405,6 +405,8 @@ def format_model_input[**P, T](
         # If object is a dataclass, we want to insert the repr of the instance
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
             format_args[name] = repr(obj)
+        elif isinstance(obj, (int, float, str, bytes, bool, tuple, list, set, dict)):
+            format_args[name] = repr(obj)
         else:  # type, function, callable, etc.
             format_args[name] = source
 
