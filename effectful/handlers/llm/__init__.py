@@ -47,7 +47,7 @@ def _get_source_for_object(obj: Any, name: str) -> str | None:
     if isinstance(obj, types.FunctionType):
         try:
             return textwrap.dedent(inspect.getsource(obj)).strip()
-        except OSError:
+        except (OSError, TypeError):
             # Fallback for functions without source (e.g., defined in REPL)
             doc = obj.__doc__ or "No docstring"
             return f"# <function {obj.__name__}>\n# {doc}"
@@ -56,8 +56,7 @@ def _get_source_for_object(obj: Any, name: str) -> str | None:
     if isinstance(obj, type):
         try:
             return textwrap.dedent(inspect.getsource(obj)).strip()
-        except OSError:
-            # Fallback for classes without source
+        except (OSError, TypeError):
             doc = obj.__doc__ or "No docstring"
             return f"# <class {obj.__name__}>\n# {doc}"
 
@@ -70,7 +69,7 @@ def _get_source_for_object(obj: Any, name: str) -> str | None:
         obj_type = type(obj)
         try:
             return textwrap.dedent(inspect.getsource(obj_type)).strip()
-        except OSError:
+        except (OSError, TypeError):
             doc = getattr(obj, "__doc__", None) or "No docstring"
             return f"# <callable {name}: {obj_type.__name__}>\n# {doc}"
 
