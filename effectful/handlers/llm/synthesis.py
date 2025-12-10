@@ -55,7 +55,9 @@ class ProgramSynthesis(ObjectInterpretation):
         )  # type: ignore
 
     @implements(decode_callable)
-    def _parse_and_eval[T](self, t: type[T], content: str) -> T:
+    def _decode_callable[T](
+        self, _ret_type: type[T], content: str
+    ) -> typing.Callable[..., T]:
         pattern = r"<code>(.*?)</code>"
         code_content = re.search(pattern, content, re.DOTALL)
         if code_content is None:
