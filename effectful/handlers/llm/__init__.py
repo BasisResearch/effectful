@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import functools
 import inspect
@@ -21,7 +23,7 @@ class Template[**P, T]:
     )
 
     @property
-    def tools(self) -> tuple["Operation | Template", ...]:
+    def tools(self) -> tuple[Operation | Template, ...]:
         """Operations and Templates from lexical context, available as tools."""
         return tuple(
             obj

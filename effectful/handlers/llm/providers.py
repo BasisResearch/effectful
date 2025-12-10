@@ -123,7 +123,7 @@ def _(obj: types.ModuleType) -> OpenAIMessageContent:
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    callable: "Operation[P, T] | Template[P, T]"
+    callable: Operation[P, T] | Template[P, T]
     name: str
     description: str
 
@@ -139,7 +139,7 @@ class Tool[**P, T]:
         return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
 
     @classmethod
-    def of(cls, obj: "Operation[P, T] | Template[P, T]", name: str):
+    def of(cls, obj: Operation[P, T] | Template[P, T], name: str):
         """Create a Tool from an Operation or Template."""
         if isinstance(obj, Template):
             sig = obj.__signature__
@@ -189,7 +189,7 @@ class Tool[**P, T]:
 
 
 def _tools_of_operations(
-    ops: "Iterable[Operation | Template]",
+    ops: Iterable[Operation | Template],
 ) -> Mapping[str, Tool]:
     tools = {}
     for op in ops:
@@ -257,7 +257,7 @@ def completion(*args, **kwargs) -> Any:
 # Note: attempting to type the tool arguments causes type-checker failures
 @defop
 def tool_call[T](
-    template: Template, tool: "Operation[..., T] | Template[..., T]", *args, **kwargs
+    template: Template, tool: Operation[..., T] | Template[..., T], *args, **kwargs
 ) -> T:
     """Perform a model-initiated tool call (can be an Operation or another Template)."""
     return tool(*args, **kwargs)
