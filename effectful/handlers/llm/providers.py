@@ -1,5 +1,4 @@
 import base64
-import dataclasses
 import functools
 import inspect
 import io
@@ -7,8 +6,8 @@ import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from typing import Any, get_type_hints
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from typing import Any
 
 import litellm
 import pydantic
@@ -28,7 +27,7 @@ from litellm import (
 )
 from litellm.types.utils import ModelResponse
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Template, Tool
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -90,73 +89,6 @@ def _(values: Sequence) -> OpenAIMessageContent:
         return [_pil_image_to_openai_image_param(value) for value in values]
     else:
         return [{"type": "text", "text": str(values)}]
-
-
-@dataclasses.dataclass
-class Tool[**P, T]:
-    parameter_model: type[pydantic.BaseModel]
-    operation: Operation[P, T]
-    name: str
-
-    def serialise_return_value(self, value) -> OpenAIMessageContent:
-        """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
-        sig = inspect.signature(self.operation)
-        ret_ty = sig.return_annotation
-        ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
-
-        return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
-
-    @classmethod
-    def of_operation(cls, op: Operation[P, T], name: str):
-        sig = inspect.signature(op)
-        hints = get_type_hints(op)
-        fields = {
-            param_name: hints.get(param_name, str) for param_name in sig.parameters
-        }
-
-        parameter_model = pydantic.create_model(
-            "Params", __config__={"extra": "forbid"}, **fields
-        )
-
-        return cls(
-            parameter_model=parameter_model,
-            operation=op,
-            name=name,
-        )
-
-    @property
-    def function_definition(self) -> OpenAIChatCompletionToolParam:
-        response_format = litellm.utils.type_to_response_format_param(
-            self.parameter_model
-        )
-        assert response_format is not None
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.operation.__doc__ or "",
-                "parameters": response_format["json_schema"][
-                    "schema"
-                ],  # extract the schema
-                "strict": True,
-            },
-        }
-
-
-def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
-    tools = {}
-    for op in ops:
-        name = op.__name__
-
-        # Ensure tool names are unique. Operation names may not be.
-        if name in tools:
-            suffix = 0
-            while f"{name}_{suffix}" in tools:
-                suffix += 1
-            name = f"{name}_{suffix}"
-
-        tools[name] = Tool.of_operation(op, name)
-    return tools
 
 
 class _OpenAIPromptFormatter(string.Formatter):
@@ -343,20 +275,49 @@ class RetryLLMHandler(ObjectInterpretation):
         raise Exception("Max retries reached")
 
 
+def _parameter_model(
+    params: Mapping[str, inspect.Parameter],
+) -> type[pydantic.BaseModel]:
+    param_types: dict[str, Any] = {
+        n: str if p.annotation is inspect.Parameter.empty else p.annotation
+        for (n, p) in params.items()
+    }
+    return pydantic.create_model(
+        "Params", __config__={"extra": "forbid"}, **param_types
+    )
+
+
+def _function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
+    parameter_model = _parameter_model(tool.__signature__.parameters)
+    response_format = litellm.utils.type_to_response_format_param(parameter_model)
+    assert response_format is not None
+    return {
+        "type": "function",
+        "function": {
+            "name": f"{tool.__name__}_{id(tool)}",
+            "description": tool.__default__.__doc__ or "",
+            "parameters": response_format["json_schema"]["schema"],
+            "strict": True,
+        },
+    }
+
+
 def _call_tool_with_json_args(
     template: Template, tool: Tool, json_str_args: str
 ) -> OpenAIMessageContent:
+    parameter_model = _parameter_model(tool.__signature__.parameters)
+
+    ret_ty = tool.__signature__.return_annotation
+    ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
+    ret_formatter = format_value.dispatch(ret_ty_origin)  # type: ignore[attr-defined]
     try:
-        args = tool.parameter_model.model_validate_json(json_str_args)
+        args = parameter_model.model_validate_json(json_str_args)
         result = tool_call(
             template,
-            tool.operation,
-            **{
-                field: getattr(args, field)
-                for field in tool.parameter_model.model_fields
-            },
+            tool,
+            **{field: getattr(args, field) for field in parameter_model.model_fields},
         )
-        return tool.serialise_return_value(result)
+        return ret_formatter(result)
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})
 
@@ -373,8 +334,13 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     """
     ret_type = template.__signature__.return_annotation
 
-    tools = _tools_of_operations(template.tools)
-    tool_schemas = [t.function_definition for t in tools.values()]
+    tool_schemas = []
+    tools_by_name = {}
+    for t in template.tools:
+        schema = _function_definition(t)
+        tool_schemas.append(schema)
+        tools_by_name[schema["function"]["name"]] = t
+
     response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
@@ -394,7 +360,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
         for tool_call in message.tool_calls:
             function = tool_call.function
             function_name = typing.cast(str, function.name)
-            tool = tools[function_name]
+            tool = tools_by_name[function_name]
             tool_result = _call_tool_with_json_args(template, tool, function.arguments)
             model_input.append(
                 {
@@ -465,7 +431,7 @@ class LiteLLMProvider(ObjectInterpretation):
     def _completion(self, *args, **kwargs):
         return fwd(self.model_name, *args, **(self.config | kwargs))
 
-    @implements(Template.__call__)
+    @implements(Template.apply)  # type: ignore[arg-type]
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

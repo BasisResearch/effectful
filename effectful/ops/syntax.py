@@ -894,6 +894,8 @@ def implements[**P, V](op: Operation[P, V]):
     the given method as the implementation of the given :class:`Operation`.
 
     """
+    if not isinstance(op, Operation):
+        raise TypeError("Not an operation", op)
     return _ImplementedOperation(op)
 
 

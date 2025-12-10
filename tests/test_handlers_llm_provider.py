@@ -16,7 +16,7 @@ from PIL import Image
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.providers import (
     LiteLLMProvider,
     LLMLoggingHandler,
@@ -24,7 +24,7 @@ from effectful.handlers.llm.providers import (
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
 # Check for API keys
@@ -276,7 +276,7 @@ class PoemQuality(str, Enum):
     BAD = "BAD"
 
 
-@defop
+@Tool.define
 def evaluate_poem_tool(poem: Poem, explanation: str) -> PoemQuality:
     """Evaluate the quality of a poem.
 
@@ -322,7 +322,7 @@ class TestToolCalling:
     @pytest.mark.parametrize(
         "model_name",
         [
-            pytest.param("gpt-5-nano", marks=requires_openai),
+            pytest.param("gpt-4o-mini", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
