@@ -307,7 +307,7 @@ class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
         return quality
 
 
-@Template.define(tools=[evaluate_poem_tool])
+@Template.define  # evaluate_poem_tool auto-captured from lexical scope
 def generate_good_poem(topic: str) -> Poem:
     """Generate a good poem about {topic} returning your result following
     the provided json schema. Use the provided tools to evaluate the quality

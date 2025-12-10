@@ -463,27 +463,16 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
 def format_model_input[**P, T](
     template: Template[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> list[Any]:
-    """Format a template applied to arguments into a sequence of input
-    messages.
+    """Format a template applied to arguments into a sequence of input messages.
 
-    Lexical context items can be referenced in the prompt template using
-    {name} syntax. For functions/classes, the source code is inserted.
-    For other values, the repr is inserted.
+    Only bound function arguments are available for {name} substitution in
+    the prompt template. The lexical context provides tools, not prompt values.
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
 
-    format_args = {}
-
-    for name, obj in template.lexical_context.items():
-        content = format_value(obj)
-        if content and isinstance(content, list) and content[0].get("type") == "text":
-            format_args[name] = content[0]["text"]
-
-    format_args.update(bound_args.arguments)
-
     prompt = _OpenAIPromptFormatter().format_as_messages(
-        template.__prompt_template__, **format_args
+        template.__prompt_template__, **bound_args.arguments
     )
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
