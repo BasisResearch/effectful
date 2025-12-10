@@ -5,7 +5,7 @@ import pytest
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
@@ -60,25 +60,25 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
 @Template.define
 def limerick(theme: str) -> str:
     """Write a limerick on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def haiku(theme: str) -> str:
     """Write a haiku on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define()
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def count_char(char: str) -> Callable[[str], int]:
     """Write a function which takes a string and counts the occurrances of '{char}'."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 # Unit tests
@@ -241,18 +241,18 @@ def test_template_captures_other_templates_in_lexical_context():
     @Template.define
     def story_with_moral(topic: str) -> str:
         """Write a story about {topic} with a moral lesson."""
-        raise NotImplementedError
+        raise NotHandled
 
     @Template.define
     def story_funny(topic: str) -> str:
         """Write a funny story about {topic}."""
-        raise NotImplementedError
+        raise NotHandled
 
     # Main orchestrator template has access to sub-templates
     @Template.define
     def write_story(topic: str, style: str) -> str:
         """Write a story about {topic} in style {style}."""
-        raise NotImplementedError
+        raise NotHandled
 
     # Sub-templates should be captured in orchestrator's lexical context
     assert "story_with_moral" in write_story.lexical_context
@@ -271,12 +271,12 @@ def test_template_composition_with_chained_calls():
     @Template.define
     def generate_topic() -> str:
         """Generate an interesting topic for a story."""
-        raise NotImplementedError
+        raise NotHandled
 
     @Template.define
     def write_story(topic: str) -> str:
         """Write a short story about {topic}."""
-        raise NotImplementedError
+        raise NotHandled
 
     # Verify generate_topic is in write_story's lexical context
     assert "generate_topic" in write_story.lexical_context
