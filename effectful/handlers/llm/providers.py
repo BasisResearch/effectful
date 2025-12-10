@@ -4,6 +4,7 @@ import inspect
 import io
 import logging
 import string
+import traceback
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
@@ -227,6 +228,51 @@ class LLMLoggingHandler(ObjectInterpretation):
             },
         )
         return result
+
+
+class RetryLLMHandler(ObjectInterpretation):
+    """Retries LLM requests if they fail.
+    If the request fails, the error is logged and the prompt is updated to include the error.
+    If the request fails after the maximum number of retries, an exception is raised.
+    Args:
+        max_retries: The maximum number of retries.
+        add_error_feedback: Whether to add error feedback to the prompt.
+        exception_cls: The exception class to raise if the maximum number of retries is reached.
+    """
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        add_error_feedback: bool = False,
+        exception_cls: type[BaseException] = Exception,
+    ):
+        self.max_retries = max_retries
+        self.add_error_feedback = add_error_feedback
+        self.exception_cls = exception_cls
+
+    @implements(Template.__call__)
+    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
+        max_retries = self.max_retries
+        current_template = template
+        while max_retries > 0:
+            try:
+                return fwd(current_template, *args, **kwargs)
+            except self.exception_cls as exn:
+                max_retries -= 1
+                if max_retries == 0:
+                    raise exn
+                if self.add_error_feedback:
+                    # Capture the full traceback for better error context
+                    tb = traceback.format_exc()
+                    prompt_ext = (
+                        f"Retry generating the following prompt: {template.__prompt_template__}\n\n"
+                        f"Error from previous generation:\n```\n{tb}```"
+                    )
+                    current_template = dataclasses.replace(
+                        template, __prompt_template__=prompt_ext
+                    )
+                # Continue the loop to retry
+        raise Exception("Max retries reached")
 
 
 def _parameter_model(
