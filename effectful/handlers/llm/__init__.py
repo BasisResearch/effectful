@@ -41,7 +41,7 @@ class Template[**P, T]:
 
     @classmethod
     def define(cls, _func=None):
-        frame: types.FrameType = inspect.currentframe().f_back  # type: ignore[union-attr]
+        frame: types.FrameType = inspect.currentframe().f_back
         caller_module = frame.f_globals.get("__name__", "")
         caller_scope = ChainMap(frame.f_locals, frame.f_globals)
         lexical_ctx: weakref.WeakValueDictionary[str, Any] = (
