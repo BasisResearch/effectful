@@ -18,7 +18,19 @@ from effectful.handlers.llm.sampling import KAheadSampler
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
-type Step = tuple[int, int]
+type Move = tuple[int, int]
+
+
+class Step(ABC):
+    @property
+    @abstractmethod
+    def start(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def end(self) -> int:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -34,12 +46,12 @@ class GameState:
 
     @classmethod
     def new(cls, size: int) -> "GameState":
-        towers = [[] for _ in range(size)]
+        towers: list[list[int]] = [[] for _ in range(size)]
         towers[0] = list(reversed(range(size)))
-        towers = tuple(tuple(tower) for tower in towers)
-        return cls(size, towers)
+        state: tuple[tuple[int, ...], ...] = tuple(tuple(tower) for tower in towers)
+        return cls(size, state)
 
-    def visualise_image(self) -> Image:
+    def visualise_image(self) -> Image.Image:
         "Uses python graphics libraries to visualise the state of the hanoi game."
         tower_width = 150
         disk_height = 30
@@ -100,7 +112,7 @@ class GameState:
         img = self.visualise_image()
         img.show()
 
-    def apply(self, step: Step) -> Optional["GameState"]:
+    def apply(self, step: Move) -> Optional["GameState"]:
         """
         Given a tower `start` and a target tower `end` moves the topmost disk to the end tower.
         """
@@ -134,7 +146,7 @@ class GameState:
             for i in range(len(self.towers[-1]) - 1)
         )
 
-    def valid_steps(self) -> list[Step]:
+    def valid_steps(self) -> list[Move]:
         steps = []
         for i, tower_i in enumerate(self.towers):
             for j, tower_j in enumerate(self.towers):
@@ -146,18 +158,6 @@ class GameState:
                 if len(tower_j) == 0 or tower_i[-1] < tower_j[-1]:
                     steps.append((i, j))
         return steps
-
-
-class Step(ABC):
-    @property
-    @abstractmethod
-    def start(self) -> int:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def end(self) -> int:
-        raise NotImplementedError
 
 
 def build_validated_model(game_state: GameState) -> type[Step]:
@@ -188,14 +188,14 @@ def build_validated_model(game_state: GameState) -> type[Step]:
         def __hash__(self):
             return hash((self.start, self.end))
 
-    return StepModel
+    return StepModel  # type: ignore
 
 
-def predict_next_step(game_state: GameState) -> Step:
+def predict_next_step(game_state: GameState) -> Move:
     ValidStep = build_validated_model(game_state)
 
     @Template.define
-    def predict_next_step_inner(game_state) -> ValidStep:
+    def predict_next_step_inner(game_state) -> ValidStep:  # type: ignore
         """
         Given the state of the game of towers of Hanoi as follows:
 
