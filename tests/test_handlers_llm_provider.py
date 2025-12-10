@@ -20,7 +20,6 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import (
     LiteLLMProvider,
     LLMLoggingHandler,
-    ToolDepthHandler,
     completion,
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
@@ -308,7 +307,7 @@ class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
         return quality
 
 
-@Template.define(tools=[evaluate_poem_tool])  # explicit tools - only evaluate_poem_tool
+@Template.define(tools=[evaluate_poem_tool])
 def generate_good_poem(topic: str) -> Poem:
     """Generate a good poem about {topic} returning your result following
     the provided json schema. Use the provided tools to evaluate the quality
@@ -332,7 +331,6 @@ class TestToolCalling:
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
             handler(LiteLLMProvider(model_name=model_name)),
-            handler(ToolDepthHandler(max_depth=2)),
             handler(LimitLLMCallsHandler(max_calls=6)),
             handler(poem_eval_ctx),
         ):
