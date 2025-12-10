@@ -139,7 +139,7 @@ class Tool[**P, T]:
         return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
 
     @classmethod
-    def of(cls, obj: Operation[P, T] | Template[P, T], name: str):
+    def define(cls, obj: Operation[P, T] | Template[P, T]):
         """Create a Tool from an Operation or Template."""
         if isinstance(obj, Template):
             sig = obj.__signature__
@@ -165,7 +165,7 @@ class Tool[**P, T]:
         return cls(
             parameter_model=parameter_model,
             callable=obj,
-            name=name,
+            name=obj.__name__,
             description=description,
         )
 
