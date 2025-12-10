@@ -123,24 +123,40 @@ def _(obj: types.ModuleType) -> OpenAIMessageContent:
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
-    operation: Operation[P, T]
+    callable: "Operation[P, T] | Template[P, T]"
     name: str
+    description: str
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
-        sig = inspect.signature(self.operation)
+        if isinstance(self.callable, Template):
+            sig = self.callable.__signature__
+        else:
+            sig = inspect.signature(self.callable)
         ret_ty = sig.return_annotation
         ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
 
         return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
 
     @classmethod
-    def of_operation(cls, op: Operation[P, T], name: str):
-        sig = inspect.signature(op)
-        hints = get_type_hints(op)
-        fields = {
-            param_name: hints.get(param_name, str) for param_name in sig.parameters
-        }
+    def of(cls, obj: "Operation[P, T] | Template[P, T]", name: str):
+        """Create a Tool from an Operation or Template."""
+        if isinstance(obj, Template):
+            sig = obj.__signature__
+            description = obj.__prompt_template__
+            # Get type hints from signature annotations directly
+            fields = {
+                param_name: param.annotation
+                for param_name, param in sig.parameters.items()
+                if param.annotation != inspect.Parameter.empty
+            }
+        else:
+            sig = inspect.signature(obj)
+            description = obj.__doc__ or ""
+            hints = get_type_hints(obj)
+            fields = {
+                param_name: hints.get(param_name, str) for param_name in sig.parameters
+            }
 
         parameter_model = pydantic.create_model(
             "Params", __config__={"extra": "forbid"}, **fields
@@ -148,8 +164,9 @@ class Tool[**P, T]:
 
         return cls(
             parameter_model=parameter_model,
-            operation=op,
+            callable=obj,
             name=name,
+            description=description,
         )
 
     @property
@@ -162,7 +179,7 @@ class Tool[**P, T]:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.operation.__doc__ or "",
+                "description": self.description,
                 "parameters": response_format["json_schema"][
                     "schema"
                 ],  # extract the schema
@@ -171,19 +188,21 @@ class Tool[**P, T]:
         }
 
 
-def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
+def _tools_of_operations(
+    ops: "Iterable[Operation | Template]",
+) -> Mapping[str, Tool]:
     tools = {}
     for op in ops:
         name = op.__name__
 
-        # Ensure tool names are unique. Operation names may not be.
+        # Ensure tool names are unique. Names may not be unique across ops.
         if name in tools:
             suffix = 0
             while f"{name}_{suffix}" in tools:
                 suffix += 1
             name = f"{name}_{suffix}"
 
-        tools[name] = Tool.of_operation(op, name)
+        tools[name] = Tool.of(op, name)
     return tools
 
 
@@ -237,8 +256,10 @@ def completion(*args, **kwargs) -> Any:
 
 # Note: attempting to type the tool arguments causes type-checker failures
 @defop
-def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
-    """Perform a model-initiated tool call."""
+def tool_call[T](
+    template: Template, tool: "Operation[..., T] | Template[..., T]", *args, **kwargs
+) -> T:
+    """Perform a model-initiated tool call (can be an Operation or another Template)."""
     return tool(*args, **kwargs)
 
 
@@ -376,14 +397,11 @@ def _call_tool_with_json_args(
 ) -> OpenAIMessageContent:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
-        result = tool_call(
-            template,
-            tool.operation,
-            **{
-                field: getattr(args, field)
-                for field in tool.parameter_model.model_fields
-            },
-        )
+        kwargs = {
+            field: getattr(args, field) for field in tool.parameter_model.model_fields
+        }
+        # Call the tool - works for both Operations and Templates
+        result = tool_call(template, tool.callable, **kwargs)
         return tool.serialise_return_value(result)
     except Exception as exn:
         return str({"status": "failure", "exception": str(exn)})

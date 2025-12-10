@@ -13,17 +13,20 @@ from effectful.ops.types import NotHandled, Operation
 
 @dataclasses.dataclass(frozen=True)
 class Template[**P, T]:
-    __signature__: inspect.Signature
     __prompt_template__: str
+    __signature__: inspect.Signature
+    __name__: str = ""
     lexical_context: Mapping[str, Any] = dataclasses.field(
         default_factory=weakref.WeakValueDictionary
     )
 
     @property
-    def tools(self) -> tuple[Operation, ...]:
-        """Operations from lexical context, available as tools for LLM calls."""
+    def tools(self) -> tuple["Operation | Template", ...]:
+        """Operations and Templates from lexical context, available as tools."""
         return tuple(
-            obj for obj in self.lexical_context.values() if isinstance(obj, Operation)
+            obj
+            for obj in self.lexical_context.values()
+            if isinstance(obj, (Operation, Template))
         )
 
     @defop
@@ -47,22 +50,23 @@ class Template[**P, T]:
         for name, obj in caller_scope.items():
             if name.startswith("_"):
                 continue
-            if not isinstance(obj, (Template, Operation)):
-                continue
-            # Only capture Operations/Templates defined in the same module as caller
-            # This filters out imported library operations (completion, tool_call, etc.)
-            obj_module = getattr(obj, "__module__", None)
-            if obj_module != caller_module:
-                continue
-            lexical_ctx[name] = obj
+            # Capture Templates (always user-defined)
+            if isinstance(obj, Template):
+                lexical_ctx[name] = obj
+            # Capture Operations only if defined in same module (filters out library ops)
+            elif isinstance(obj, Operation):
+                obj_module = getattr(obj, "__module__", None)
+                if obj_module == caller_module:
+                    lexical_ctx[name] = obj
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
                 raise ValueError("Expected a docstring on body")
 
             return cls(
-                __signature__=inspect.signature(body),
                 __prompt_template__=body.__doc__,
+                __signature__=inspect.signature(body),
+                __name__=body.__name__,
                 lexical_context=lexical_ctx,
             )
 

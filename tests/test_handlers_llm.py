@@ -232,3 +232,67 @@ def test_retry_handler_with_error_feedback():
     # Second call should include error feedback with traceback
     assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
+
+
+def test_template_captures_other_templates_in_lexical_context():
+    """Test that Templates defined in lexical scope are captured (orchestrator pattern)."""
+
+    # Define sub-templates first
+    @Template.define
+    def story_with_moral(topic: str) -> str:
+        """Write a story about {topic} with a moral lesson."""
+        raise NotImplementedError
+
+    @Template.define
+    def story_funny(topic: str) -> str:
+        """Write a funny story about {topic}."""
+        raise NotImplementedError
+
+    # Main orchestrator template has access to sub-templates
+    @Template.define
+    def write_story(topic: str, style: str) -> str:
+        """Write a story about {topic} in style {style}."""
+        raise NotImplementedError
+
+    # Sub-templates should be captured in orchestrator's lexical context
+    assert "story_with_moral" in write_story.lexical_context
+    assert "story_funny" in write_story.lexical_context
+    assert write_story.lexical_context["story_with_moral"] is story_with_moral
+    assert write_story.lexical_context["story_funny"] is story_funny
+
+    # Templates in lexical context are now exposed as callable tools
+    assert story_with_moral in write_story.tools
+    assert story_funny in write_story.tools
+
+
+def test_template_composition_with_chained_calls():
+    """Test calling one template and passing result to another."""
+
+    @Template.define
+    def generate_topic() -> str:
+        """Generate an interesting topic for a story."""
+        raise NotImplementedError
+
+    @Template.define
+    def write_story(topic: str) -> str:
+        """Write a short story about {topic}."""
+        raise NotImplementedError
+
+    # Verify generate_topic is in write_story's lexical context
+    assert "generate_topic" in write_story.lexical_context
+
+    # Test chained template calls
+    mock_provider = SingleResponseLLMProvider("A magical forest")
+
+    with handler(mock_provider):
+        topic = generate_topic()
+        assert topic == "A magical forest"
+
+    # Now use that topic in the next template
+    mock_provider2 = SingleResponseLLMProvider(
+        "Once upon a time in a magical forest..."
+    )
+
+    with handler(mock_provider2):
+        story = write_story(topic)
+        assert story == "Once upon a time in a magical forest..."
