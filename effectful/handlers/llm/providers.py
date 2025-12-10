@@ -10,7 +10,7 @@ import traceback
 import types
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from typing import Any, get_type_hints
+from typing import Any
 
 import litellm
 import pydantic
@@ -94,7 +94,7 @@ def _(values: Sequence) -> OpenAIMessageContent:
         return [{"type": "text", "text": str(values)}]
 
 
-@format_value.register(types.FunctionType)  # type: ignore
+@format_value.register  # type: ignore
 def _(obj: types.FunctionType) -> OpenAIMessageContent:
     try:
         source = textwrap.dedent(inspect.getsource(obj)).strip()
@@ -104,7 +104,7 @@ def _(obj: types.FunctionType) -> OpenAIMessageContent:
     return [{"type": "text", "text": source}]
 
 
-@format_value.register(type)  # type: ignore
+@format_value.register  # type: ignore
 def _(obj: type) -> OpenAIMessageContent:
     try:
         source = textwrap.dedent(inspect.getsource(obj)).strip()
@@ -114,7 +114,7 @@ def _(obj: type) -> OpenAIMessageContent:
     return [{"type": "text", "text": source}]
 
 
-@format_value.register(types.ModuleType)  # type: ignore
+@format_value.register  # type: ignore
 def _(obj: types.ModuleType) -> OpenAIMessageContent:
     # Return empty for modules (skip in lexical context)
     return []
@@ -139,7 +139,9 @@ class Tool[**P, T]:
     def define(cls, obj: Operation[P, T] | Template[P, T]):
         """Create a Tool from an Operation or Template."""
         sig = inspect.signature(obj)
-        description = obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        description = (
+            obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        )
         fields = {
             p.name: p.annotation
             for p in sig.parameters.values()
