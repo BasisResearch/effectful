@@ -514,9 +514,10 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     # Check if we're beyond the max tool depth - if so, disable tools
     current_depth = get_tool_depth()
     max_depth = get_max_tool_depth()
+    tools: Mapping[str, Tool[Any, Any]]
     if current_depth >= max_depth:
         tools = {}
-        tool_schemas = []
+        tool_schemas: list[OpenAIChatCompletionToolParam] = []
     else:
         tools = _tools_of_operations(template.tools)
         tool_schemas = [t.function_definition for t in tools.values()]

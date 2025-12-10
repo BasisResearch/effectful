@@ -89,7 +89,7 @@ class Template[**P, T]:
         if tools == "auto":
             explicit_tools: tuple[Any, ...] = ("__auto__",)
         elif tools is not None:
-            explicit_tools = tuple(tools)  # type: ignore
+            explicit_tools = tuple(tools)
         else:
             explicit_tools = ()  # no tools by default
 
