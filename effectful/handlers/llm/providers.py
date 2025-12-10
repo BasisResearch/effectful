@@ -9,6 +9,7 @@ import textwrap
 import traceback
 import types
 import typing
+import warnings
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import Any
 
@@ -99,6 +100,13 @@ def _(obj: types.FunctionType) -> OpenAIMessageContent:
     try:
         source = textwrap.dedent(inspect.getsource(obj)).strip()
     except (OSError, TypeError):
+        # OSError: source file not found (built-in, interactive, dynamically generated)
+        # TypeError: object type cannot have source code
+        if not obj.__doc__:
+            warnings.warn(
+                f"Function '{obj.__name__}' has no source and no docstring",
+                stacklevel=2,
+            )
         doc = obj.__doc__ or "No docstring"
         source = f"# <function {obj.__name__}>\n# {doc}"
     return [{"type": "text", "text": source}]
@@ -109,6 +117,13 @@ def _(obj: type) -> OpenAIMessageContent:
     try:
         source = textwrap.dedent(inspect.getsource(obj)).strip()
     except (OSError, TypeError):
+        # OSError: source file not found (built-in, interactive, dynamically generated)
+        # TypeError: object type cannot have source code
+        if not obj.__doc__:
+            warnings.warn(
+                f"Class '{obj.__name__}' has no source and no docstring",
+                stacklevel=2,
+            )
         doc = obj.__doc__ or "No docstring"
         source = f"# <class {obj.__name__}>\n# {doc}"
     return [{"type": "text", "text": source}]
