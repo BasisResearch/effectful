@@ -3,6 +3,7 @@ import dataclasses
 import functools
 import inspect
 import io
+import json
 import logging
 import numbers
 import string
@@ -442,11 +443,11 @@ def _pydantic_model_from_named_tuple_type(typ: type) -> type:
         names = [str(i) for i in range(len(args))]
         types = list(args)
 
-    fields = {n: t for n, t in zip(names, types)}
+    fields = {n: pydantic_model_from_type(t) for n, t in zip(names, types)}
     return pydantic.create_model(
         getattr(typ, "__name__", "TupleModel"),
         __config__=pydantic.ConfigDict(extra="forbid"),
-        **fields,
+        **fields,  # type: ignore
     )
 
 
@@ -495,13 +496,30 @@ def _decode_tuple[T](ret_type: type[T], result_str: str) -> T:
         __config__={"extra": "forbid"},
     )
     result = Result.model_validate_json(result_str)
-    tuple_elts = result.value.dict()  # type: ignore
+    tuple_elts = result.value.model_dump()  # type: ignore
 
     # if named tuple, instantiate the type again with the retrieved values
     if issubclass(ret_type, tuple) and hasattr(ret_type, "_fields"):
-        return ret_type(**tuple_elts)
+        names = list(ret_type._fields)  # type: ignore
+        hints = get_type_hints(ret_type)
+        types = [hints.get(n, object) for n in names]
+        return ret_type(
+            **{
+                k: decode_result(
+                    hints.get(k, object), json.dumps({"value": tuple_elts[k]})
+                )
+                for k in tuple_elts
+            }
+        )
     else:
-        return tuple([*tuple_elts.values()])  # type: ignore
+        types = getattr(ret_type, "__args__", None)  # type: ignore
+        assert types, "tuple must specify field types"
+        return tuple(
+            [
+                decode_result(ty, json.dumps({"value": vl}))
+                for vl, ty in zip(tuple_elts.values(), types)
+            ]
+        )  # type: ignore
 
 
 @decode_result.register(Callable)  # type: ignore

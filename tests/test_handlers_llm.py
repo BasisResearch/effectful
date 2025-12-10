@@ -340,6 +340,12 @@ def generate_point_tuple() -> PointTuple:
     raise NotImplementedError
 
 
+@Template.define
+def generate_complex_tuple() -> tuple[PointDict, PointTuple]:
+    """Generate a pair of an int and a bool."""
+    raise NotImplementedError
+
+
 class TestBaseTypeDecoding:
     """Tests for decoding various base types from mocked LLM responses using golden values."""
 
@@ -409,6 +415,22 @@ class TestBaseTypeDecoding:
             assert result[0] == 5
             assert result[1] == False
             assert isinstance(result, tuple)
+
+    def test_complex_tuple(self):
+        raw_response = '{"value":{"0":{"x":1,"y":0},"1":{"x":0,"y":1}}}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_complex_tuple()
+            assert isinstance(result, tuple)
+            assert len(result) == 2
+            assert isinstance(result[0], dict)
+            assert result[0]["x"] == 1
+            assert result[0]["y"] == 0
+
+            assert isinstance(result[1], tuple)
+            assert result[1].x == 0
+            assert result[1].y == 1
 
     def test_namedtuple(self):
         """Test decoding NamedTuple value."""
