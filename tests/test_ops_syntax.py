@@ -22,7 +22,6 @@ from effectful.ops.syntax import (
     defstream,
     iter_,
     next_,
-    register_dataclass,
     syntactic_eq,
     trace,
 )
@@ -1068,7 +1067,6 @@ def test_operation_instances():
 
 
 def test_operation_dataclass():
-    @register_dataclass
     @dataclasses.dataclass
     class Point:
         x: int
@@ -1090,3 +1088,7 @@ def test_operation_dataclass():
         assert res == 2
         res = evaluate(t)
         assert res == 2
+
+    t1 = client()
+    t2 = client()
+    assert type(t1) == type(t2), "dataclasses are wrapped in the same type"

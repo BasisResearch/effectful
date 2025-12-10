@@ -563,7 +563,34 @@ def defdata[T](
     return _unpack(result, cast)
 
 
+def _construct_dataclass_term[T](
+    cls: type[T], op: Operation[..., T], *args: Expr, **kwargs: Expr
+) -> Term[T]:
+    """
+    Constructs a term wrapping an operation that returns a dataclass.
+    """
+    assert cls not in defdata._registry.registry.keys(), (
+        "Use defdata(op, *args, **kwargs) to construct terms of this type."
+    )
+    name = cls.__name__
+    term_name = f"_{name}Term"
+    bases = (Term, cls)
+    term_cls = _DataclassTermMeta(term_name, bases, {})
+
+    defdata.register(cls)(term_cls)
+    return term_cls(op, *args, **kwargs)
+
+
 @defdata.register(object)
+def __dispatch_defdata_object[T](op: Operation[..., T], *args: Expr, **kwargs: Expr):
+    ret_ty = op.__signature__.return_annotation
+    ty = typing.get_origin(ret_ty) or ret_ty
+    if dataclasses.is_dataclass(ty):
+        return _construct_dataclass_term(ret_ty, op, *args, **kwargs)
+    else:
+        return _BaseTerm(op, *args, **kwargs)
+
+
 class _BaseTerm[T](Term[T]):
     _op: Operation[..., T]
     _args: collections.abc.Sequence[Expr]
@@ -597,21 +624,6 @@ class _BaseTerm[T](Term[T]):
         return self._kwargs
 
 
-def register_dataclass(cls: type):
-    """
-    Registers a dataclass to effectful.
-
-    """
-    name = cls.__name__
-
-    term_name = f"_{name}Term"
-    bases = (Term, cls)
-    term_cls = _DataclassTermMeta(term_name, bases, {})
-
-    defdata.register(cls)(term_cls)
-    return cls
-
-
 class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
     def __new__(mcls, name, bases, ns):
         base_dt = None
@@ -627,8 +639,8 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
             attr = f.name
             field_type = f.type
 
-            def make_getter(a, return_type):
-                def getter(self) -> return_type:
+            def make_getter(a, return_type: type):
+                def getter(self) -> return_type:  # type: ignore
                     if isinstance(self, Term):
                         raise NotHandled
                     return self.__dict__[a]
