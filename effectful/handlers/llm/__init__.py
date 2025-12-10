@@ -17,7 +17,7 @@ from effectful.ops.types import NotHandled, Operation
 class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
-    __name__: str = ""
+    __name__: str
     lexical_context: Mapping[str, Any] = dataclasses.field(
         default_factory=weakref.WeakValueDictionary
     )
