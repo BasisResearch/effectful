@@ -331,7 +331,7 @@ class TestToolCalling:
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
             handler(LiteLLMProvider(model_name=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=6)),
+            handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):
             poem = generate_good_poem("Python")
