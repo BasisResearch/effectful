@@ -425,17 +425,38 @@ def pydantic_model_from_type(
 
 
 @pydantic_model_from_type.register(object)
-def _pydantic_model_from_object_type(typ: type[object]) -> type:
+def _pydantic_model_from_object_type(typ: type) -> type:
     return typ
 
 
+@pydantic_model_from_type.register(tuple)
+def _pydantic_model_from_named_tuple_type(typ: type) -> type:
+    # check if NamedTuple
+    if issubclass(typ, tuple) and hasattr(typ, "_fields"):
+        names = list(typ._fields)
+        hints = get_type_hints(typ)
+        types = [hints.get(n, object) for n in names]
+    else:
+        args = getattr(typ, "__args__", None)
+        assert args, "tuple must specify field types"
+        names = [str(i) for i in range(len(args))]
+        types = list(args)
+
+    fields = {n: t for n, t in zip(names, types)}
+    return pydantic.create_model(
+        getattr(typ, "__name__", "TupleModel"),
+        __config__=pydantic.ConfigDict(extra="forbid"),
+        **fields,
+    )
+
+
 @pydantic_model_from_type.register(bool)
-def _pydantic_model_from_bool_type(typ: type[bool]) -> type:
+def _pydantic_model_from_bool_type(typ: type) -> type:
     return bool
 
 
 @pydantic_model_from_type.register(int)
-def _pydantic_model_from_int_type(_typ: type[int]) -> type:
+def _pydantic_model_from_int_type(_typ: type) -> type:
     return int
 
 
@@ -466,6 +487,23 @@ def _decode_object[T](ret_type: type[T], result_str: str) -> T:
     return result.value  # type: ignore
 
 
+@decode_result.register(tuple)  # type: ignore
+def _decode_tuple[T](ret_type: type[T], result_str: str) -> T:
+    Result = pydantic.create_model(
+        "Response",
+        value=pydantic_model_from_type(ret_type),
+        __config__={"extra": "forbid"},
+    )
+    result = Result.model_validate_json(result_str)
+    tuple_elts = result.value.dict()  # type: ignore
+
+    # if named tuple, instantiate the type again with the retrieved values
+    if issubclass(ret_type, tuple) and hasattr(ret_type, "_fields"):
+        return ret_type(**tuple_elts)
+    else:
+        return tuple([*tuple_elts.values()])  # type: ignore
+
+
 @decode_result.register(Callable)  # type: ignore
 @defop
 def decode_callable[T](ret_type: type[T], result_str: str) -> Callable[..., T]:
@@ -490,7 +528,7 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
     ret_type = template.__signature__.return_annotation
     if ret_type == str:
         return result_str  # type: ignore[return-value]
-
+    print(result_str)
     return decode_result(ret_type, result_str)
 
 

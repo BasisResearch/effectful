@@ -7,7 +7,6 @@ from typing import Any, NamedTuple, TypedDict
 
 import pytest
 from litellm.types.utils import ModelResponse
-from PIL import Image
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import (
@@ -268,11 +267,6 @@ def test_retry_handler_with_error_feedback():
     assert "First attempt failed" in call_prompts[1]
 
 
-# ============================================================================
-# Tests for various base types with mocked responses using golden values
-# ============================================================================
-
-
 class Color(str, Enum):
     """Color enum for testing."""
 
@@ -317,12 +311,6 @@ def generate_bool_value() -> bool:
 
 
 @Template.define
-def generate_image_value() -> Image.Image:
-    """Generate an image value."""
-    raise NotImplementedError
-
-
-@Template.define
 def generate_color_enum() -> Color:
     """Generate a Color enum value."""
     raise NotImplementedError
@@ -337,6 +325,12 @@ def generate_person() -> Person:
 @Template.define
 def generate_point_dict() -> PointDict:
     """Generate a PointDict TypedDict."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_plain_tuple() -> tuple[int, bool]:
+    """Generate a pair of an int and a bool."""
     raise NotImplementedError
 
 
@@ -374,7 +368,6 @@ class TestBaseTypeDecoding:
         """Test decoding enum.Enum value."""
         raw_response = '{"value": "red"}'
         mock_provider = RawStringLLMProvider(raw_response)
-        breakpoint()
 
         with handler(mock_provider):
             result = generate_color_enum()
@@ -405,6 +398,17 @@ class TestBaseTypeDecoding:
             assert result["y"] == 10
             # TypedDict is just a dict at runtime
             assert type(result) is dict
+
+    def test_plain_tuple(self):
+        """Test decoding plain tuple value."""
+        raw_response = '{\n  "value": {\n    "0": 5,\n    "1": false\n  }\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_plain_tuple()
+            assert result[0] == 5
+            assert result[1] == False
+            assert isinstance(result, tuple)
 
     def test_namedtuple(self):
         """Test decoding NamedTuple value."""
