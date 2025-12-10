@@ -4,6 +4,7 @@ import functools
 import inspect
 import io
 import logging
+import numbers
 import string
 import traceback
 import typing
@@ -363,10 +364,6 @@ def _call_tool_with_json_args(
         return str({"status": "failure", "exception": str(exn)})
 
 
-def _pydantic_model_from_type(typ: type):
-    return pydantic.create_model("Response", value=typ, __config__={"extra": "forbid"})
-
-
 @defop
 def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
     """Produce a complete model response for an input message sequence. This may
@@ -377,7 +374,15 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
     tools = _tools_of_operations(template.tools)
     tool_schemas = [t.function_definition for t in tools.values()]
-    response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
+    response_format = (
+        pydantic.create_model(
+            "Response",
+            value=pydantic_model_from_type(ret_type),
+            __config__={"extra": "forbid"},
+        )
+        if ret_type != str
+        else None
+    )
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
@@ -408,6 +413,38 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             )
 
 
+@_CustomSingleDispatchCallable
+def pydantic_model_from_type(
+    __dispatch: Callable[[type], Callable[..., type]], typ: type
+) -> type:
+    """
+    Converts a python type into a representation that can be decoded.
+    """
+    ret_ty = typing.get_origin(typ) or typ
+    return __dispatch(ret_ty)(typ)
+
+
+@pydantic_model_from_type.register(object)
+def _pydantic_model_from_object_type(typ: type[object]) -> type:
+    return typ
+
+
+@pydantic_model_from_type.register(bool)
+def _pydantic_model_from_bool_type(typ: type[bool]) -> type:
+    return bool
+
+
+@pydantic_model_from_type.register(int)
+def _pydantic_model_from_int_type(_typ: type[int]) -> type:
+    return int
+
+
+@pydantic_model_from_type.register(numbers.Number)
+def _pydantic_model_from_number_type(_typ: type) -> type:
+    # float is the most general pydantic encodable representation
+    return float
+
+
 @defop
 @_CustomSingleDispatchCallable
 def decode_result[T](
@@ -419,15 +456,14 @@ def decode_result[T](
 
 @decode_result.register(object)  # type: ignore
 def _decode_object[T](ret_type: type[T], result_str: str) -> T:
-    Result = _pydantic_model_from_type(ret_type)
+    Result = pydantic.create_model(
+        "Response",
+        value=pydantic_model_from_type(ret_type),
+        __config__={"extra": "forbid"},
+    )
     result = Result.model_validate_json(result_str)
     assert isinstance(result, Result)
-    return result.value
-
-
-@decode_result.register(str)  # type: ignore
-def _decode_str(ret_type: type[str], result_str: str) -> str:
-    return result_str
+    return result.value  # type: ignore
 
 
 @decode_result.register(Callable)  # type: ignore

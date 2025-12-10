@@ -1,9 +1,13 @@
 import json
+import numbers
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, NamedTuple, TypedDict
 
 import pytest
 from litellm.types.utils import ModelResponse
+from PIL import Image
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import (
@@ -61,6 +65,24 @@ class SingleResponseLLMProvider[T](LiteLLMProvider):
 
         self.response: ModelResponse = ModelResponse(
             choices=[{"message": {"content": response_str}}]
+        )
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs) -> Any:
+        return self.response
+
+
+class RawStringLLMProvider(LiteLLMProvider):
+    """Mock provider that returns a raw JSON string response (as returned by LLM)."""
+
+    def __init__(self, raw_json_string: str):
+        """Initialize with a raw JSON string response.
+
+        Args:
+            raw_json_string: The raw JSON string response from LLM (before decoding)
+        """
+        self.response: ModelResponse = ModelResponse(
+            choices=[{"message": {"content": raw_json_string}}]
         )
 
     @implements(completion)
@@ -244,3 +266,154 @@ def test_retry_handler_with_error_feedback():
     # Second call should include error feedback with traceback
     assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
+
+
+# ============================================================================
+# Tests for various base types with mocked responses using golden values
+# ============================================================================
+
+
+class Color(str, Enum):
+    """Color enum for testing."""
+
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+
+@dataclass
+class Person:
+    """Person dataclass for testing."""
+
+    name: str
+    age: int
+    height: float
+
+
+class PointDict(TypedDict):
+    """Point TypedDict for testing."""
+
+    x: int
+    y: int
+
+
+class PointTuple(NamedTuple):
+    """Point NamedTuple for testing."""
+
+    x: int
+    y: int
+
+
+@Template.define
+def generate_number_value() -> numbers.Number:
+    """Generate a number value."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_bool_value() -> bool:
+    """Generate a boolean value."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_image_value() -> Image.Image:
+    """Generate an image value."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_color_enum() -> Color:
+    """Generate a Color enum value."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_person() -> Person:
+    """Generate a Person dataclass."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_point_dict() -> PointDict:
+    """Generate a PointDict TypedDict."""
+    raise NotImplementedError
+
+
+@Template.define
+def generate_point_tuple() -> PointTuple:
+    """Generate a PointTuple NamedTuple."""
+    raise NotImplementedError
+
+
+class TestBaseTypeDecoding:
+    """Tests for decoding various base types from mocked LLM responses using golden values."""
+
+    def test_numbers_number(self):
+        """Test decoding numbers.Number with float value."""
+        raw_response = '{\n  "value": 42.0\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_number_value()
+            assert isinstance(result, numbers.Number)
+            assert result == 42.0
+            assert isinstance(result, float)
+
+    def test_bool_true(self):
+        """Test decoding bool with True value."""
+        raw_response = '{\n  "value": true\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_bool_value()
+            assert isinstance(result, bool)
+            assert result is True
+
+    def test_enum_enum(self):
+        """Test decoding enum.Enum value."""
+        raw_response = '{"value": "red"}'
+        mock_provider = RawStringLLMProvider(raw_response)
+        breakpoint()
+
+        with handler(mock_provider):
+            result = generate_color_enum()
+            assert isinstance(result, Color)
+            assert result == Color.RED
+
+    def test_dataclass(self):
+        """Test decoding dataclass value."""
+        raw_response = '{\n  "value": {\n    "name": "John Doe",\n    "age": 30,\n    "height": 5.9\n  }\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_person()
+            assert isinstance(result, Person)
+            assert result.name == "John Doe"
+            assert result.age == 30
+            assert result.height == 5.9
+
+    def test_typeddict(self):
+        """Test decoding TypedDict value."""
+        raw_response = '{\n  "value": {\n    "x": 5,\n    "y": 10\n  }\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_point_dict()
+            assert isinstance(result, dict)
+            assert result["x"] == 5
+            assert result["y"] == 10
+            # TypedDict is just a dict at runtime
+            assert type(result) is dict
+
+    def test_namedtuple(self):
+        """Test decoding NamedTuple value."""
+        raw_response = '{\n  "value": {\n    "x": 5,\n    "y": 10\n  }\n}'
+        mock_provider = RawStringLLMProvider(raw_response)
+
+        with handler(mock_provider):
+            result = generate_point_tuple()
+            assert isinstance(result, PointTuple)
+            assert result.x == 5
+            assert result.y == 10
+            assert isinstance(result, tuple)
