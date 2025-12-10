@@ -626,14 +626,17 @@ class _BaseTerm[T](Term[T]):
 
 class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
     def __new__(mcls, name, bases, ns):
-        base_dt = None
-        for b in bases:
-            if dataclasses.is_dataclass(b):
-                base_dt = b
-                break
+        assert len(bases) == 2, (
+            "_DataclassTermMeta subclasses must inherit from two classes exactly"
+        )
+        assert bases[0] == Term, (
+            "expected _DataclassTermMeta subclass to inherit from Term"
+        )
+        assert dataclasses.is_dataclass(bases[1]), (
+            "_DataclassTermMeta must inherit from a dataclass"
+        )
 
-        if base_dt is None:
-            raise TypeError("No dataclass base found")
+        base_dt = bases[1]
 
         for f in dataclasses.fields(base_dt):
             attr = f.name
