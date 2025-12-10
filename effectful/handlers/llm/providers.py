@@ -129,10 +129,7 @@ class Tool[**P, T]:
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
-        if isinstance(self.callable, Template):
-            sig = self.callable.__signature__
-        else:
-            sig = inspect.signature(self.callable)
+        sig = inspect.signature(self.callable)
         ret_ty = sig.return_annotation
         ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
 
@@ -141,22 +138,13 @@ class Tool[**P, T]:
     @classmethod
     def define(cls, obj: Operation[P, T] | Template[P, T]):
         """Create a Tool from an Operation or Template."""
-        if isinstance(obj, Template):
-            sig = obj.__signature__
-            description = obj.__prompt_template__
-            # Get type hints from signature annotations directly
-            fields = {
-                param_name: param.annotation
-                for param_name, param in sig.parameters.items()
-                if param.annotation != inspect.Parameter.empty
-            }
-        else:
-            sig = inspect.signature(obj)
-            description = obj.__doc__ or ""
-            hints = get_type_hints(obj)
-            fields = {
-                param_name: hints.get(param_name, str) for param_name in sig.parameters
-            }
+        sig = inspect.signature(obj)
+        description = obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        fields = {
+            p.name: p.annotation
+            for p in sig.parameters.values()
+            if p.annotation != inspect.Parameter.empty
+        }
 
         parameter_model = pydantic.create_model(
             "Params", __config__={"extra": "forbid"}, **fields
@@ -202,7 +190,7 @@ def _tools_of_operations(
                 suffix += 1
             name = f"{name}_{suffix}"
 
-        tools[name] = Tool.of(op, name)
+        tools[name] = Tool.define(op)
     return tools
 
 
