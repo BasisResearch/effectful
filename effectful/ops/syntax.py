@@ -652,7 +652,7 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
 
             g = make_getter(attr, field_type)
             g.__name__ = attr
-            ns[attr] = property(defop(g))
+            ns[attr] = property(defop(g, name=attr))
 
         def __init__(self, op, *args, **kwargs):
             self._op = op
