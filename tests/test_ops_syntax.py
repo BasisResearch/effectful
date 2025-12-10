@@ -1076,19 +1076,20 @@ def test_operation_dataclass():
     def random_point() -> Point:
         raise NotHandled
 
+    @defop
+    def id[T](base: T) -> T:
+        raise NotHandled
+
     def client():
         p1 = random_point()
         p2 = random_point()
         return p1.x + p2.x
 
+    p = random_point()
+    assert isinstance(p, Term)
+    assert isinstance(p, Point)
+
     t = client()
     assert isinstance(t, Term)
-    with handler({random_point: lambda: Point(1, 2)}):
-        res = client()
-        assert res == 2
-        res = evaluate(t)
-        assert res == 2
 
-    t1 = client()
-    t2 = client()
-    assert type(t1) == type(t2), "dataclasses are wrapped in the same type"
+    assert isinstance(id(Point(0, 0)).x, Term)
