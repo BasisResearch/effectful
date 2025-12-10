@@ -135,12 +135,38 @@ def _(obj: types.ModuleType) -> OpenAIMessageContent:
     return []
 
 
+# Mapping from internal types to JSON-schema-compatible types
+_SCHEMA_TYPE_MAP: dict[type, type] = {
+    Image.Image: str,  # Images represented as base64 strings in JSON
+}
+
+
+@functools.singledispatch
+def parse_value(value: Any, target_type: type) -> Any:
+    """Parse a JSON-compatible value into its internal Python type."""
+    return value
+
+
+@parse_value.register(str)
+def _(value: str, target_type: type) -> Any:
+    """Parse string values - may decode to Image if target is Image.Image."""
+    if target_type == Image.Image:
+        # Decode base64 string to Image
+        import base64
+
+        image_data = base64.b64decode(value)
+        return Image.open(io.BytesIO(image_data))
+    return value
+
+
 @dataclasses.dataclass
 class Tool[**P, T]:
     parameter_model: type[pydantic.BaseModel]
     callable: Operation[P, T] | Template[P, T]
     name: str
     description: str
+    # Original signature for type conversion
+    _original_signature: inspect.Signature = dataclasses.field(repr=False)
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
@@ -157,8 +183,9 @@ class Tool[**P, T]:
         description = (
             obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
         )
+        # Map internal types to JSON-schema-compatible types
         fields = {
-            p.name: p.annotation
+            p.name: _SCHEMA_TYPE_MAP.get(p.annotation, p.annotation)
             for p in sig.parameters.values()
             if p.annotation != inspect.Parameter.empty
         }
@@ -172,6 +199,7 @@ class Tool[**P, T]:
             callable=obj,
             name=obj.__name__,
             description=description,
+            _original_signature=sig,
         )
 
     @property
@@ -266,6 +294,61 @@ def tool_call[T](
 ) -> T:
     """Perform a model-initiated tool call (can be an Operation or another Template)."""
     return tool(*args, **kwargs)
+
+
+@defop
+def get_tool_depth() -> int:
+    """Get the current tool call depth. Level 0 = initial template call."""
+    return 0
+
+
+@defop
+def get_max_tool_depth() -> int:
+    """Get the maximum allowed tool call depth.
+
+    Default is 0 (no tool calls). Use ToolDepthHandler to enable:
+        handler(ToolDepthHandler(max_depth=1))  # allow 1 level
+    """
+    return 1
+
+
+class ToolDepthHandler(ObjectInterpretation):
+    """Handler to control tool call depth, preventing infinite recursion.
+
+    Use this to override the default max_tool_depth from the provider:
+        handler(ToolDepthHandler(max_depth=2))
+    """
+
+    max_depth: int
+    _current_depth: int
+
+    def __init__(self, max_depth: int = 1):
+        self.max_depth = max_depth
+        self._current_depth = 0
+
+    @implements(get_tool_depth)
+    def _get_tool_depth(self) -> int:
+        return self._current_depth
+
+    @implements(get_max_tool_depth)
+    def _get_max_tool_depth(self) -> int:
+        return self.max_depth
+
+    @implements(tool_call)
+    def _tool_call[T](
+        self,
+        template: Template,
+        tool: Operation[..., T] | Template[..., T],
+        *args,
+        **kwargs,
+    ) -> T:
+        """Execute tool call with incremented depth."""
+        old_depth = self._current_depth
+        self._current_depth += 1
+        try:
+            return fwd()
+        finally:
+            self._current_depth = old_depth
 
 
 class CacheLLMRequestHandler(ObjectInterpretation):
@@ -402,9 +485,13 @@ def _call_tool_with_json_args(
 ) -> OpenAIMessageContent:
     try:
         args = tool.parameter_model.model_validate_json(json_str_args)
-        kwargs = {
-            field: getattr(args, field) for field in tool.parameter_model.model_fields
-        }
+        # Convert JSON-compatible values to internal types
+        kwargs = {}
+        for field in tool.parameter_model.model_fields:
+            value = getattr(args, field)
+            # Get the original type from the signature
+            original_type = tool._original_signature.parameters[field].annotation
+            kwargs[field] = parse_value(value, original_type)
         # Call the tool - works for both Operations and Templates
         result = tool_call(template, tool.callable, **kwargs)
         return tool.serialise_return_value(result)
@@ -424,8 +511,15 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     """
     ret_type = template.__signature__.return_annotation
 
-    tools = _tools_of_operations(template.tools)
-    tool_schemas = [t.function_definition for t in tools.values()]
+    # Check if we're beyond the max tool depth - if so, disable tools
+    current_depth = get_tool_depth()
+    max_depth = get_max_tool_depth()
+    if current_depth >= max_depth:
+        tools = {}
+        tool_schemas = []
+    else:
+        tools = _tools_of_operations(template.tools)
+        tool_schemas = [t.function_definition for t in tools.values()]
     response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
@@ -505,7 +599,16 @@ def format_model_input[**P, T](
 
 
 class LiteLLMProvider(ObjectInterpretation):
-    """Implements templates using the LiteLLM API."""
+    """Implements templates using the LiteLLM API.
+
+    Args:
+        model_name: The LLM model to use (default: "gpt-4o")
+        **config: Additional parameters passed to litellm.completion
+
+    Note: Use with ToolDepthHandler to limit tool call recursion:
+        handler(LiteLLMProvider(...))
+        handler(ToolDepthHandler(max_depth=1))
+    """
 
     model_name: str
     config: dict[str, Any]

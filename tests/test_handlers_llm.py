@@ -81,6 +81,19 @@ def count_char(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+# Mutually recursive templates (module-level for live globals)
+@Template.define(tools="auto")
+def mutual_a() -> str:
+    """Use mutual_a and mutual_b as tools to do task A."""
+    raise NotHandled
+
+
+@Template.define(tools="auto")
+def mutual_b() -> str:
+    """Use mutual_a and mutual_b as tools to do task B."""
+    raise NotHandled
+
+
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -248,19 +261,20 @@ def test_template_captures_other_templates_in_lexical_context():
         """Write a funny story about {topic}."""
         raise NotHandled
 
-    # Main orchestrator template has access to sub-templates
-    @Template.define
+    # Main orchestrator template has access to sub-templates (using tools="auto")
+    @Template.define(tools="auto")
     def write_story(topic: str, style: str) -> str:
         """Write a story about {topic} in style {style}."""
         raise NotHandled
 
-    # Sub-templates should be captured in orchestrator's lexical context
-    assert "story_with_moral" in write_story.lexical_context
-    assert "story_funny" in write_story.lexical_context
-    assert write_story.lexical_context["story_with_moral"] is story_with_moral
-    assert write_story.lexical_context["story_funny"] is story_funny
+    # lexical_context is a NamedTuple of (globals_, locals_) MappingProxyTypes
+    # Sub-templates should be in locals (function-scoped)
+    assert "story_with_moral" in write_story.lexical_context.locals_
+    assert "story_funny" in write_story.lexical_context.locals_
+    assert write_story.lexical_context.locals_["story_with_moral"] is story_with_moral
+    assert write_story.lexical_context.locals_["story_funny"] is story_funny
 
-    # Templates in lexical context are now exposed as callable tools
+    # With tools="auto", templates in lexical context are exposed as callable tools
     assert story_with_moral in write_story.tools
     assert story_funny in write_story.tools
 
@@ -278,8 +292,8 @@ def test_template_composition_with_chained_calls():
         """Write a short story about {topic}."""
         raise NotHandled
 
-    # Verify generate_topic is in write_story's lexical context
-    assert "generate_topic" in write_story.lexical_context
+    # Verify generate_topic is in write_story's lexical context (locals)
+    assert "generate_topic" in write_story.lexical_context.locals_
 
     # Test chained template calls
     mock_provider = SingleResponseLLMProvider("A magical forest")
@@ -296,3 +310,19 @@ def test_template_composition_with_chained_calls():
     with handler(mock_provider2):
         story = write_story(topic)
         assert story == "Once upon a time in a magical forest..."
+
+
+def test_mutually_recursive_templates():
+    """Test that module-level templates can see each other (mutual recursion)."""
+    # Both mutual_a and mutual_b should see each other via live globals
+    assert "mutual_a" in mutual_a.lexical_context.globals_
+    assert "mutual_b" in mutual_a.lexical_context.globals_
+    assert "mutual_a" in mutual_b.lexical_context.globals_
+    assert "mutual_b" in mutual_b.lexical_context.globals_
+
+    # They should also be in each other's tools
+    assert mutual_a in mutual_b.tools
+    assert mutual_b in mutual_a.tools
+    # And themselves (self-recursion)
+    assert mutual_a in mutual_a.tools
+    assert mutual_b in mutual_b.tools
