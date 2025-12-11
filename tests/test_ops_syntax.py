@@ -1093,3 +1093,15 @@ def test_operation_dataclass():
     assert isinstance(t, Term)
 
     assert isinstance(id(Point(0, 0)).x, Term)
+
+
+def test_operation_dataclass_generic():
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+    @defop
+    def id[T](base: T) -> T:
+        raise NotHandled
+
+    assert isinstance(id(A(0)).x, Term)
