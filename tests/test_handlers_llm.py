@@ -82,13 +82,13 @@ def count_char(char: str) -> Callable[[str], int]:
 
 
 # Mutually recursive templates (module-level for live globals)
-@Template.define(tools="auto")
+@Template.define
 def mutual_a() -> str:
     """Use mutual_a and mutual_b as tools to do task A."""
     raise NotHandled
 
 
-@Template.define(tools="auto")
+@Template.define
 def mutual_b() -> str:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
@@ -261,20 +261,20 @@ def test_template_captures_other_templates_in_lexical_context():
         """Write a funny story about {topic}."""
         raise NotHandled
 
-    # Main orchestrator template has access to sub-templates (using tools="auto")
-    @Template.define(tools="auto")
+    # Main orchestrator template has access to sub-templates
+    @Template.define
     def write_story(topic: str, style: str) -> str:
         """Write a story about {topic} in style {style}."""
         raise NotHandled
 
-    # lexical_context is a NamedTuple of (globals_, locals_) MappingProxyTypes
-    # Sub-templates should be in locals (function-scoped)
-    assert "story_with_moral" in write_story.lexical_context.locals_
-    assert "story_funny" in write_story.lexical_context.locals_
-    assert write_story.lexical_context.locals_["story_with_moral"] is story_with_moral
-    assert write_story.lexical_context.locals_["story_funny"] is story_funny
+    # lexical_context is a ChainMap(locals, globals) - locals shadow globals
+    # Sub-templates should be visible in lexical context
+    assert "story_with_moral" in write_story.lexical_context
+    assert "story_funny" in write_story.lexical_context
+    assert write_story.lexical_context["story_with_moral"] is story_with_moral
+    assert write_story.lexical_context["story_funny"] is story_funny
 
-    # With tools="auto", templates in lexical context are exposed as callable tools
+    # Templates in lexical context are exposed as callable tools
     assert story_with_moral in write_story.tools
     assert story_funny in write_story.tools
 
@@ -292,8 +292,8 @@ def test_template_composition_with_chained_calls():
         """Write a short story about {topic}."""
         raise NotHandled
 
-    # Verify generate_topic is in write_story's lexical context (locals)
-    assert "generate_topic" in write_story.lexical_context.locals_
+    # Verify generate_topic is in write_story's lexical context
+    assert "generate_topic" in write_story.lexical_context
 
     # Test chained template calls
     mock_provider = SingleResponseLLMProvider("A magical forest")
@@ -314,11 +314,11 @@ def test_template_composition_with_chained_calls():
 
 def test_mutually_recursive_templates():
     """Test that module-level templates can see each other (mutual recursion)."""
-    # Both mutual_a and mutual_b should see each other via live globals
-    assert "mutual_a" in mutual_a.lexical_context.globals_
-    assert "mutual_b" in mutual_a.lexical_context.globals_
-    assert "mutual_a" in mutual_b.lexical_context.globals_
-    assert "mutual_b" in mutual_b.lexical_context.globals_
+    # Both mutual_a and mutual_b should see each other via ChainMap (globals visible)
+    assert "mutual_a" in mutual_a.lexical_context
+    assert "mutual_b" in mutual_a.lexical_context
+    assert "mutual_a" in mutual_b.lexical_context
+    assert "mutual_b" in mutual_b.lexical_context
 
     # They should also be in each other's tools
     assert mutual_a in mutual_b.tools
@@ -326,3 +326,35 @@ def test_mutually_recursive_templates():
     # And themselves (self-recursion)
     assert mutual_a in mutual_a.tools
     assert mutual_b in mutual_b.tools
+
+
+# Module-level variable for shadowing test
+shadow_test_value = "global"
+
+
+def test_lexical_context_shadowing():
+    """Test that local variables shadow global variables in lexical context."""
+    # Local shadows global
+    shadow_test_value = "local"  # noqa: F841 - intentional shadowing
+
+    @Template.define
+    def template_with_shadowed_var() -> str:
+        """Test template."""
+        raise NotHandled
+
+    # The lexical context should see the LOCAL value, not global
+    assert "shadow_test_value" in template_with_shadowed_var.lexical_context
+    assert template_with_shadowed_var.lexical_context["shadow_test_value"] == shadow_test_value
+
+
+def test_lexical_context_sees_globals_when_no_local():
+    """Test that globals are visible when there's no local shadow."""
+
+    @Template.define
+    def template_sees_global() -> str:
+        """Test template."""
+        raise NotHandled
+
+    # Should see the global value (no local shadow in this scope)
+    assert "shadow_test_value" in template_sees_global.lexical_context
+    assert template_sees_global.lexical_context["shadow_test_value"] == "global"

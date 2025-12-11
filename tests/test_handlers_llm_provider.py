@@ -307,11 +307,13 @@ class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
         return quality
 
 
-@Template.define(tools=[evaluate_poem_tool])
+@Template.define
 def generate_good_poem(topic: str) -> Poem:
     """Generate a good poem about {topic} returning your result following
     the provided json schema. Use the provided tools to evaluate the quality
     and you MUST make sure it is a good poem.
+
+    Do not use any tools for your reponse
     """
     raise NotHandled
 
