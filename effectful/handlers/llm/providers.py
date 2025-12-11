@@ -1,4 +1,5 @@
 import base64
+import dataclasses
 import functools
 import inspect
 import io
@@ -250,29 +251,27 @@ class RetryLLMHandler(ObjectInterpretation):
         self.add_error_feedback = add_error_feedback
         self.exception_cls = exception_cls
 
-    @implements(Template.__call__)
+    @implements(Template.apply)
     def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
-        max_retries = self.max_retries
-        current_template = template
-        while max_retries > 0:
+        prompt_ext = template.__prompt_template__
+        for _ in range(self.max_retries - 1):
+
+            @functools.wraps(template)
+            def wrapper(*args, **kwargs):
+                raise NotImplementedError
+
+            wrapper.__doc__ = prompt_ext
+            template_ext = Template.define(wrapper, tools=template.tools)
+
             try:
-                return fwd(current_template, *args, **kwargs)
+                return fwd(template_ext, *args, **kwargs)
             except self.exception_cls as exn:
-                max_retries -= 1
-                if max_retries == 0:
-                    raise exn
                 if self.add_error_feedback:
                     # Capture the full traceback for better error context
                     tb = traceback.format_exc()
-                    prompt_ext = (
-                        f"Retry generating the following prompt: {template.__prompt_template__}\n\n"
-                        f"Error from previous generation:\n```\n{tb}```"
-                    )
-                    current_template = dataclasses.replace(
-                        template, __prompt_template__=prompt_ext
-                    )
-                # Continue the loop to retry
-        raise Exception("Max retries reached")
+                    prompt_ext += f"\nError from previous generation:\n```\n{tb}```"
+
+        return fwd(template_ext, *args, **kwargs)
 
 
 def _parameter_model(

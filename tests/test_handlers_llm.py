@@ -141,7 +141,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         self.exception_factory = exception_factory
         self.call_count = 0
 
-    @implements(Template.__call__)
+    @implements(Template.apply)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -209,7 +209,7 @@ def test_retry_handler_with_error_feedback():
         def __init__(self):
             self.call_count = 0
 
-        @implements(Template.__call__)
+        @implements(Template.apply)
         def _call(self, template: Template, *args, **kwargs):
             self.call_count += 1
             call_prompts.append(template.__prompt_template__)

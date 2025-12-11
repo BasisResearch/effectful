@@ -8,7 +8,7 @@ from effectful.ops.types import NotHandled, Operation
 class Tool[**P, T](Operation[P, T]):
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
-        return typing.cast(Tool[P, T], super().define(*args, **kwargs))
+        return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
 class Template[**P, T](Operation[P, T]):
