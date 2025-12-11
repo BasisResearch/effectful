@@ -526,7 +526,7 @@ def defdata[T](
         assert isinstance(op, Operation)
         full_type = typ()
         dispatch_type = _simple_type(full_type.value)
-        return __dispatch(dispatch_type)(op, *args, **kwargs)
+        return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
 
     analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
 
@@ -578,15 +578,16 @@ def _construct_dataclass_term[T](
     term_cls = _DataclassTermMeta(term_name, bases, {})
 
     defdata.register(cls)(term_cls)
-    return term_cls(op, *args, **kwargs)
+    return term_cls(cls, op, *args, **kwargs)
 
 
 @defdata.register(object)
-def __dispatch_defdata_object[T](op: Operation[..., T], *args: Expr, **kwargs: Expr):
-    ret_ty = op.__signature__.return_annotation
-    ty = typing.get_origin(ret_ty) or ret_ty
+def __dispatch_defdata_object[T](
+    ty: type[T], op: Operation[..., T], *args: Expr, **kwargs: Expr
+):
+    ty = typing.get_origin(ty) or ty
     if dataclasses.is_dataclass(ty):
-        return _construct_dataclass_term(ret_ty, op, *args, **kwargs)
+        return _construct_dataclass_term(ty, op, *args, **kwargs)
     else:
         return _BaseTerm(op, *args, **kwargs)
 
@@ -652,9 +653,9 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
 
             g = make_getter(attr, field_type)
             g.__name__ = attr
-            ns[attr] = property(defop(g, name=attr))
+            ns[attr] = property(defop(g, name=f"{name}.{attr}"))
 
-        def __init__(self, op, *args, **kwargs):
+        def __init__(self, ty, op, *args, **kwargs):
             self._op = op
             self._args = args
             self._kwargs = kwargs
@@ -674,6 +675,9 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
 
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
+    def __init__(self, ty, op, *args, **kwargs):
+        super().__init__(op, *args, *kwargs)
+
     @defop
     def __call__(
         self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
@@ -762,6 +766,9 @@ def defstream[S, T, A, B](
 
 @defdata.register(collections.abc.Iterable)
 class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
+    def __init__(self, ty, op, *args, **kwargs):
+        super().__init__(op, *args, **kwargs)
+
     @defop
     def __iter__(self: collections.abc.Iterable[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
@@ -975,6 +982,9 @@ def implements[**P, V](op: Operation[P, V]):
 @defdata.register(numbers.Number)
 @functools.total_ordering
 class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
+    def __init__(self, ty, op, *args, **kwargs):
+        super().__init__(op, *args, **kwargs)
+
     def __hash__(self):
         return id(self)
 
