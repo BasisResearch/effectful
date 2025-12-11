@@ -433,7 +433,7 @@ def _pydantic_model_from_object_type(typ: type) -> type:
 @pydantic_model_from_type.register(tuple)
 def _pydantic_model_from_named_tuple_type(typ: type) -> type:
     # check if NamedTuple
-    if issubclass(typ, tuple) and hasattr(typ, "_fields"):
+    if isinstance(typ, type) and issubclass(typ, tuple) and hasattr(typ, "_fields"):
         names = list(typ._fields)
         hints = get_type_hints(typ)
         types = [hints.get(n, object) for n in names]
@@ -499,7 +499,11 @@ def _decode_tuple[T](ret_type: type[T], result_str: str) -> T:
     tuple_elts = result.value.model_dump()  # type: ignore
 
     # if named tuple, instantiate the type again with the retrieved values
-    if issubclass(ret_type, tuple) and hasattr(ret_type, "_fields"):
+    if (
+        isinstance(ret_type, type)
+        and issubclass(ret_type, tuple)
+        and hasattr(ret_type, "_fields")
+    ):
         names = list(ret_type._fields)  # type: ignore
         hints = get_type_hints(ret_type)
         types = [hints.get(n, object) for n in names]
