@@ -471,6 +471,7 @@ def defdata[T](
       class _CallableTerm[**P, T](Term[collections.abc.Callable[P, T]]):
           def __init__(
               self,
+              ty: type,
               op: Operation[..., T],
               *args: Expr,
               **kwargs: Expr,
@@ -676,7 +677,7 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
     def __init__(self, ty, op, *args, **kwargs):
-        super().__init__(op, *args, *kwargs)
+        super().__init__(op, *args, **kwargs)
 
     @defop
     def __call__(

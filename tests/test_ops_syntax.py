@@ -217,6 +217,20 @@ def test_term_str():
     assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
+def test_deffn_keyword_args():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    term = deffn(2 * x() + y(), x, y=y)
+
+    assert isinstance(term, Term)
+    assert term.op is deffn
+
+    result = term(3, y=4)
+    assert result == 10
+
+    result2 = term(5)
+    assert isinstance(result2, Term)
+
+
 def test_defdata_renaming():
     @defop
     def Let[S, T, A, B](
