@@ -617,3 +617,120 @@ def test_type_to_encodable_type_nested_dataclass():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+def test_type_to_encodable_type_pydantic_model():
+    class Point(pydantic.BaseModel):
+        x: int
+        y: int
+
+    encodable = type_to_encodable_type(Point)
+    point = Point(x=10, y=20)
+    encoded = encodable.encode(point)
+    decoded = encodable.decode(encoded)
+    assert decoded == point
+    assert isinstance(decoded, Point)
+    assert decoded.x == 10
+    assert decoded.y == 20
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.x == 10
+    assert model_instance.value.y == 20
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == point
+    assert isinstance(decoded_from_model, Point)
+
+
+def test_type_to_encodable_type_pydantic_model_with_str():
+    class Person(pydantic.BaseModel):
+        name: str
+        age: int
+
+    encodable = type_to_encodable_type(Person)
+    person = Person(name="Alice", age=30)
+    encoded = encodable.encode(person)
+    decoded = encodable.decode(encoded)
+    assert decoded == person
+    assert isinstance(decoded, Person)
+    assert decoded.name == "Alice"
+    assert decoded.age == 30
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.name == "Alice"
+    assert model_instance.value.age == 30
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == person
+    assert isinstance(decoded_from_model, Person)
+
+
+def test_type_to_encodable_type_pydantic_model_with_list():
+    class Container(pydantic.BaseModel):
+        items: list[int]
+        name: str
+
+    encodable = type_to_encodable_type(Container)
+    container = Container(items=[1, 2, 3], name="test")
+    encoded = encodable.encode(container)
+    decoded = encodable.decode(encoded)
+    assert decoded == container
+    assert isinstance(decoded, Container)
+    assert decoded.items == [1, 2, 3]
+    assert decoded.name == "test"
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.items == [1, 2, 3]
+    assert model_instance.value.name == "test"
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == container
+    assert isinstance(decoded_from_model, Container)
+
+
+def test_type_to_encodable_type_nested_pydantic_model():
+    class Address(pydantic.BaseModel):
+        street: str
+        city: str
+
+    class Person(pydantic.BaseModel):
+        name: str
+        age: int
+        address: Address
+
+    encodable = type_to_encodable_type(Person)
+    address = Address(street="123 Main St", city="New York")
+    person = Person(name="Bob", age=25, address=address)
+
+    encoded = encodable.encode(person)
+    assert isinstance(encoded, pydantic.BaseModel)
+    assert hasattr(encoded, "name")
+    assert hasattr(encoded, "age")
+    assert hasattr(encoded, "address")
+    assert isinstance(encoded.address, pydantic.BaseModel)
+    assert encoded.address.street == "123 Main St"
+    assert encoded.address.city == "New York"
+
+    decoded = encodable.decode(encoded)
+    assert isinstance(decoded, Person)
+    assert isinstance(decoded.address, Address)
+    assert decoded.name == "Bob"
+    assert decoded.age == 25
+    assert decoded.address.street == "123 Main St"
+    assert decoded.address.city == "New York"
+
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.name == "Bob"
+    assert model_instance.value.age == 25
+    assert model_instance.value.address.street == "123 Main St"
+    assert model_instance.value.address.city == "New York"
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == person
+    assert isinstance(decoded_from_model, Person)
+    assert isinstance(decoded_from_model.address, Address)
