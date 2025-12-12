@@ -102,6 +102,9 @@ class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
         return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
 
+U = typing.TypeVar("U", bound=pydantic.BaseModel)
+
+
 def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
     """Handle dataclass encoding/decoding with recursive field encoding."""
     if not (isinstance(ty, type) and dataclasses.is_dataclass(ty)):
@@ -114,7 +117,9 @@ def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
     encoded_field_types: dict[str, typing.Any] = {}
 
     for field in fields:
-        field_encoder = type_to_encodable_type(field.type)  # type: ignore
+        field_encoder = type_to_encodable_type(
+            typing.cast(type[typing.Any], field.type)
+        )
         field_encoders[field.name] = field_encoder
 
         # Determine if field is required or has a default
@@ -133,13 +138,16 @@ def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
 
     # Create a dynamic pydantic model for the encoded type
     model_name = f"{ty.__name__}Encoded"
-    EncodedModel = pydantic.create_model(model_name, **encoded_field_types)
 
-    class DataclassEncodable(_Encodable[T, EncodedModel]):  # type: ignore
-        t = EncodedModel
+    EncodedModel: type[pydantic.BaseModel] = pydantic.create_model(
+        model_name, **encoded_field_types
+    )
+
+    class DataclassEncodable(_Encodable[T, typing.Any]):
+        t: type[typing.Any] = EncodedModel
 
         @classmethod
-        def encode(cls, t: T) -> EncodedModel:  # type: ignore
+        def encode(cls, t: T) -> typing.Any:
             if not isinstance(t, ty):
                 raise TypeError(f"Expected {ty}, got {type(t)}")
 
@@ -152,7 +160,7 @@ def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
             return EncodedModel(**result)
 
         @classmethod
-        def decode(cls, vl: EncodedModel | dict[str, typing.Any]) -> T:  # type: ignore
+        def decode(cls, vl: typing.Any) -> T:
             # Handle both pydantic model instance and dict
             if isinstance(vl, dict):
                 # Validate dict and convert to model
@@ -184,13 +192,14 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
     # Create encoders for each element type
     element_encoders = [type_to_encodable_type(arg) for arg in args]
 
-    encoded_ty: type = tuple[*(encoder.t for encoder in element_encoders)]  # type: ignore
+    # Build tuple type from element encoder types (runtime-created, use Any)
+    encoded_ty: type[typing.Any] = typing.cast(type[typing.Any], tuple)
 
-    class TupleEncodable(_Encodable[T, encoded_ty]):  # type: ignore
-        t = encoded_ty
+    class TupleEncodable(_Encodable[T, typing.Any]):
+        t: type[typing.Any] = encoded_ty
 
         @classmethod
-        def encode(cls, t: T) -> encoded_ty:  # type: ignore
+        def encode(cls, t: T) -> typing.Any:
             if not isinstance(t, tuple):
                 raise TypeError(f"Expected tuple, got {type(t)}")
             if len(t) != len(element_encoders):
@@ -200,12 +209,12 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
             return tuple([enc.encode(elem) for enc, elem in zip(element_encoders, t)])
 
         @classmethod
-        def decode(cls, t: encoded_ty) -> T:  # type: ignore
+        def decode(cls, t: typing.Any) -> T:
             if len(t) != len(element_encoders):
                 raise ValueError(
                     f"tuple length {len(t)} does not match expected length {len(element_encoders)}"
                 )
-            decoded_elements = [  # type: ignore
+            decoded_elements: list[typing.Any] = [
                 enc.decode(elem) for enc, elem in zip(element_encoders, t)
             ]
             return typing.cast(T, tuple(decoded_elements))
@@ -223,23 +232,25 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
 
     # Get the element type (first type argument)
     element_ty = args[0]
-    element_encoder: Encodable[T] = type_to_encodable_type(element_ty)
+    element_encoder = type_to_encodable_type(element_ty)
 
-    # Build the encoded type (list of encoded element type)
-    encoded_ty: type = list[element_encoder.t]  # type: ignore
+    # Build the encoded type (list of encoded element type) - runtime-created, use Any
+    encoded_ty: type[typing.Any] = typing.cast(type[typing.Any], list)
 
-    class ListEncodable(_Encodable[T, encoded_ty]):  # type: ignore
-        t = encoded_ty
+    class ListEncodable(_Encodable[T, typing.Any]):
+        t: type[typing.Any] = encoded_ty
 
         @classmethod
-        def encode(cls, t: T) -> encoded_ty:  # type: ignore
+        def encode(cls, t: T) -> typing.Any:
             if not isinstance(t, list):
                 raise TypeError(f"Expected list, got {type(t)}")
             return [element_encoder.encode(elem) for elem in t]
 
         @classmethod
-        def decode(cls, t: encoded_ty) -> T:  # type: ignore
-            decoded_elements = [element_encoder.decode(elem) for elem in t]  # type: ignore
+        def decode(cls, t: typing.Any) -> T:
+            decoded_elements: list[typing.Any] = [
+                element_encoder.decode(elem) for elem in t
+            ]
             return typing.cast(T, decoded_elements)
 
     return typing.cast(Encodable[T], ListEncodable())
