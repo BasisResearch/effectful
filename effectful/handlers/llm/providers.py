@@ -74,7 +74,11 @@ def serialize(value: Any) -> OpenAIMessageContent:
 
 @serialize.register(dict)  # type: ignore
 def _(value: dict) -> OpenAIMessageContent:
-    if "url" in value and isinstance(value["url"], str):
+    if (
+        "url" in value
+        and isinstance(value["url"], str)
+        and value["url"].startswith("data:image/")
+    ):
         return [
             {
                 "type": "image_url",
