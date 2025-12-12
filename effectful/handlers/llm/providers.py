@@ -7,11 +7,13 @@ import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from typing import Any, get_type_hints
 
 import litellm
 import pydantic
+
+from effectful.handlers.llm.encoding import type_to_encodable_type
 
 try:
     from PIL import Image
@@ -19,7 +21,6 @@ except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
 from litellm import (
-    ChatCompletionImageObject,
     Choices,
     Message,
     OpenAIChatCompletionToolParam,
@@ -44,84 +45,89 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-def _pil_image_to_openai_image_param(
-    pil_image: Image.Image,
-) -> ChatCompletionImageObject:
-    return {
-        "type": "image_url",
-        "image_url": {
-            "detail": "auto",
-            "url": _pil_image_to_base64_data_uri(pil_image),
-        },
-    }
-
-
-@defop
-@functools.singledispatch
-def format_value(value: Any) -> OpenAIMessageContent:
-    """Convert a Python value to internal message part representation.
-
-    This function can be extended by registering handlers for
-    different types using @format_value.register.
-
-    Returns a OpenAIMessageContent - either a string or a list of OpenAIMessageContentListBlock.
-    """
-    return [{"type": "text", "text": str(value)}]
-
-
-@format_value.register(Image.Image)  # type: ignore
-def _(value: Image.Image) -> OpenAIMessageContent:
-    return [_pil_image_to_openai_image_param(value)]
-
-
-@format_value.register(str)  # type: ignore
-def _(value: str) -> OpenAIMessageContent:
-    return [{"type": "text", "text": value}]
-
-
-@format_value.register(bytes)  # type: ignore
-def _(value: bytes) -> OpenAIMessageContent:
-    return [{"type": "text", "text": str(value)}]
-
-
-@format_value.register(Sequence)  # type: ignore
-def _(values: Sequence) -> OpenAIMessageContent:
-    if all(isinstance(value, Image.Image) for value in values):
-        return [_pil_image_to_openai_image_param(value) for value in values]
-    else:
-        return [{"type": "text", "text": str(values)}]
-
-
 @dataclasses.dataclass
 class Tool[**P, T]:
-    parameter_model: type[pydantic.BaseModel]
     operation: Operation[P, T]
     name: str
+    parameter_annotations: dict[str, type]
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
         sig = inspect.signature(self.operation)
-        ret_ty = sig.return_annotation
-        ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
+        encoded_ty = type_to_encodable_type(sig.return_annotation)
+        encoded_value = encoded_ty.encode(value)
+        return encoded_ty.serialize(encoded_value)
 
-        return format_value.dispatch(ret_ty_origin)(value)  # type: ignore
+    @functools.cached_property
+    def parameter_model(self) -> type[pydantic.BaseModel]:
+        fields = {
+            param_name: type_to_encodable_type(param_type).t
+            for param_name, param_type in self.parameter_annotations.items()
+        }
+        parameter_model = pydantic.create_model(
+            "Params",
+            __config__={"extra": "forbid"},
+            **fields,  # type: ignore
+        )
+        return parameter_model
+
+    def call_with_json_args(
+        self, template: Template, json_str: str
+    ) -> OpenAIMessageContent:
+        """Implements a roundtrip call to a python function. Input is a json string representing an LLM tool call request parameters. The output is the serialised response to the model."""
+        try:
+            op = self.operation
+            # build dict of raw encodable types U
+            raw_args = self.parameter_model.model_validate_json(json_str)
+
+            # use encoders to decode Us to python types T
+            params: dict[str, Any] = {
+                param_name: type_to_encodable_type(
+                    self.parameter_annotations[param_name]
+                ).decode(getattr(raw_args, param_name))
+                for param_name in raw_args.model_fields_set
+            }
+
+            # call tool with python types
+            result = tool_call(
+                template,
+                self.operation,
+                **params,
+            )
+            # serialize back to U using encoder for return type
+            sig = inspect.signature(op)
+            encoded_ty = type_to_encodable_type(sig.return_annotation)
+            encoded_value = encoded_ty.encode(result)
+            # serialise back to Json
+            return encoded_ty.serialize(encoded_value)
+        except Exception as exn:
+            return str({"status": "failure", "exception": str(exn)})
 
     @classmethod
     def of_operation(cls, op: Operation[P, T], name: str):
         sig = inspect.signature(op)
         hints = get_type_hints(op)
-        fields = {
-            param_name: hints.get(param_name, str) for param_name in sig.parameters
-        }
+        parameter_annotations: dict[str, type] = {}
 
-        parameter_model = pydantic.create_model(
-            "Params", __config__={"extra": "forbid"}, **fields
-        )
+        for param_name, param in sig.parameters.items():
+            # Check if parameter annotation is missing (inspect.Parameter.empty)
+            if param.annotation is inspect.Parameter.empty:
+                raise TypeError(
+                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    "does not have a type annotation"
+                )
+            # get_type_hints might not include the parameter if annotation is invalid
+            if param_name not in hints:
+                raise TypeError(
+                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    "does not have a valid type annotation"
+                )
+            parameter_annotations[param_name] = hints[param_name]
 
         return cls(
-            parameter_model=parameter_model,
             operation=op,
             name=name,
+            parameter_annotations=parameter_annotations,
         )
 
     @property
@@ -177,23 +183,21 @@ class _OpenAIPromptFormatter(string.Formatter):
 
             if field_name is not None:
                 obj, _ = self.get_field(field_name, args, kwargs)
-                obj = self.convert_field(obj, conversion)
-
-                if isinstance(obj, Image.Image):
-                    assert not format_spec, (
-                        "image template parameters cannot have format specifiers"
-                    )
-                    push_current_text()
-                    prompt_parts.append(
-                        {
-                            "type": "image_url",
-                            "image_url": _pil_image_to_base64_data_uri(obj),
-                        }
-                    )
-                else:
+                part = self.convert_field(obj, conversion)
+                # special casing for text
+                if (
+                    isinstance(part, list)
+                    and len(part) == 1
+                    and part[0]["type"] == "text"
+                ):
                     current_text += self.format_field(
-                        obj, format_spec if format_spec else ""
+                        part[0]["text"], format_spec if format_spec else ""
                     )
+                elif isinstance(part, list):
+                    push_current_text()
+                    prompt_parts.extend(part)
+                else:
+                    prompt_parts.append(part)
 
         push_current_text()
         return prompt_parts
@@ -343,24 +347,6 @@ class RetryLLMHandler(ObjectInterpretation):
         raise Exception("Max retries reached")
 
 
-def _call_tool_with_json_args(
-    template: Template, tool: Tool, json_str_args: str
-) -> OpenAIMessageContent:
-    try:
-        args = tool.parameter_model.model_validate_json(json_str_args)
-        result = tool_call(
-            template,
-            tool.operation,
-            **{
-                field: getattr(args, field)
-                for field in tool.parameter_model.model_fields
-            },
-        )
-        return tool.serialise_return_value(result)
-    except Exception as exn:
-        return str({"status": "failure", "exception": str(exn)})
-
-
 def _pydantic_model_from_type(typ: type):
     return pydantic.create_model("Response", value=typ, __config__={"extra": "forbid"})
 
@@ -375,13 +361,19 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
     tools = _tools_of_operations(template.tools)
     tool_schemas = [t.function_definition for t in tools.values()]
-    response_format = _pydantic_model_from_type(ret_type) if ret_type != str else None
+    response_encoding_type: type | None = type_to_encodable_type(ret_type).t
+    if response_encoding_type == str:
+        response_encoding_type = None
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
         response: ModelResponse = completion(
             messages=model_input,
-            response_format=response_format,
+            response_format=pydantic.create_model(
+                "Response", value=response_encoding_type, __config__={"extra": "forbid"}
+            )
+            if response_encoding_type
+            else None,
             tools=tool_schemas,
         )
 
@@ -395,7 +387,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             function = tool_call.function
             function_name = typing.cast(str, function.name)
             tool = tools[function_name]
-            tool_result = _call_tool_with_json_args(template, tool, function.arguments)
+            tool_result = tool.call_with_json_args(template, function.arguments)
             model_input.append(
                 {
                     "role": "tool",
@@ -406,13 +398,9 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             )
 
 
-# Note: typing template as Template[P, T] causes term conversion to fail due to
-# unification limitations.
-@defop
 def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
     """Decode an LLM response into an instance of the template return type. This
     operation should raise if the output cannot be decoded.
-
     """
     assert isinstance(template, Template)
     choice: Choices = typing.cast(Choices, response.choices[0])
@@ -422,13 +410,18 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
     assert result_str
 
     ret_type = template.__signature__.return_annotation
-    if ret_type == str:
-        return result_str  # type: ignore[return-value]
+    encodable_ty = type_to_encodable_type(ret_type)
 
-    Result = _pydantic_model_from_type(ret_type)
-    result = Result.model_validate_json(result_str)
-    assert isinstance(result, Result)
-    return result.value
+    if encodable_ty.t == str:
+        # if encoding as a type, value is just directly what the llm returned
+        value = result_str
+    else:
+        Result = pydantic.create_model("Result", value=encodable_ty.t)
+        result = Result.model_validate_json(result_str)
+        assert isinstance(result, Result)
+        value = result.value  # type: ignore
+
+    return encodable_ty.decode(value)  # type: ignore
 
 
 @defop
@@ -441,8 +434,17 @@ def format_model_input[**P, T](
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
+    # encode arguments
+    arguments = {}
+    for param in bound_args.arguments:
+        encoder = type_to_encodable_type(
+            template.__signature__.parameters[param].annotation
+        )
+        encoded = encoder.encode(bound_args.arguments[param])
+        arguments[param] = encoder.serialize(encoded)
+
     prompt = _OpenAIPromptFormatter().format_as_messages(
-        template.__prompt_template__, **bound_args.arguments
+        template.__prompt_template__, **arguments
     )
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
