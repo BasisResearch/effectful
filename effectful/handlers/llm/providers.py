@@ -107,6 +107,7 @@ def _(values: Sequence) -> OpenAIMessageContent:
 class Tool[**P, T]:
     operation: Operation[P, T]
     name: str
+    parameter_annotations: dict[str, type]
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
@@ -117,12 +118,9 @@ class Tool[**P, T]:
 
     @functools.cached_property
     def parameter_model(self) -> type[pydantic.BaseModel]:
-        op = self.operation
-        sig = inspect.signature(op)
-        hints = get_type_hints(op)
         fields = {
-            param_name: type_to_encodable_type(hints.get(param_name, str)).t
-            for param_name in sig.parameters
+            param_name: type_to_encodable_type(param_type).t
+            for param_name, param_type in self.parameter_annotations.items()
         }
         parameter_model = pydantic.create_model(
             "Params",
@@ -140,14 +138,11 @@ class Tool[**P, T]:
             # build dict of raw encodable types U
             raw_args = self.parameter_model.model_validate_json(json_str)
 
-            sig = inspect.signature(op)
-            hints = get_type_hints(op)
-
             # use encoders to decode Us to python types T
-            params = {
-                param_name: type_to_encodable_type(hints.get(param_name, str)).decode(
-                    getattr(raw_args, param_name)
-                )
+            params: dict[str, Any] = {
+                param_name: type_to_encodable_type(
+                    self.parameter_annotations[param_name]
+                ).decode(getattr(raw_args, param_name))
                 for param_name in raw_args.model_fields_set
             }
 
@@ -158,6 +153,7 @@ class Tool[**P, T]:
                 **params,
             )
             # serialize back to U using encoder for return type
+            sig = inspect.signature(op)
             encoded_ty = type_to_encodable_type(sig.return_annotation)
             encoded_value = encoded_ty.encode(result)
             # serialise back to Json
@@ -167,9 +163,29 @@ class Tool[**P, T]:
 
     @classmethod
     def of_operation(cls, op: Operation[P, T], name: str):
+        sig = inspect.signature(op)
+        hints = get_type_hints(op)
+        parameter_annotations: dict[str, type] = {}
+
+        for param_name, param in sig.parameters.items():
+            # Check if parameter annotation is missing (inspect.Parameter.empty)
+            if param.annotation is inspect.Parameter.empty:
+                raise TypeError(
+                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    "does not have a type annotation"
+                )
+            # get_type_hints might not include the parameter if annotation is invalid
+            if param_name not in hints:
+                raise TypeError(
+                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    "does not have a valid type annotation"
+                )
+            parameter_annotations[param_name] = hints[param_name]
+
         return cls(
             operation=op,
             name=name,
+            parameter_annotations=parameter_annotations,
         )
 
     @property
