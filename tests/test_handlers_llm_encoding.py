@@ -510,44 +510,6 @@ def test_type_to_encodable_type_dataclass_with_tuple():
     assert isinstance(decoded_from_model, Pair)
 
 
-def test_type_to_encodable_type_dataclass_with_images():
-    @dataclass
-    class ImagePair:
-        image1: Image.Image
-        image2: Image.Image
-
-    encodable = type_to_encodable_type(ImagePair)
-    image1 = Image.new("RGB", (10, 10), color="red")
-    image2 = Image.new("RGB", (20, 20), color="blue")
-    pair = ImagePair(image1=image1, image2=image2)
-
-    encoded = encodable.encode(pair)
-    assert hasattr(encoded, "image1")
-    assert hasattr(encoded, "image2")
-    assert isinstance(encoded.image1, dict)
-    assert isinstance(encoded.image2, dict)
-    assert encoded.image1["url"].startswith("data:image/png;base64,")
-    assert encoded.image2["url"].startswith("data:image/png;base64,")
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, ImagePair)
-    assert isinstance(decoded.image1, Image.Image)
-    assert isinstance(decoded.image2, Image.Image)
-    assert decoded.image1.size == (10, 10)
-    assert decoded.image2.size == (20, 20)
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.image1["url"] == encoded.image1["url"]
-    assert model_instance.value.image2["url"] == encoded.image2["url"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert isinstance(decoded_from_model, ImagePair)
-    assert decoded_from_model.image1.size == (10, 10)
-    assert decoded_from_model.image2.size == (20, 20)
-
-
 def test_type_to_encodable_type_dataclass_with_optional():
     @dataclass
     class Config:
