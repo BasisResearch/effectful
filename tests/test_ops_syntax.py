@@ -217,6 +217,20 @@ def test_term_str():
     assert str(deffn(x1() + x2(), x1)) == "deffn(__add__(x(), x!1()), x)"
 
 
+def test_deffn_keyword_args():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    term = deffn(2 * x() + y(), x, y=y)
+
+    assert isinstance(term, Term)
+    assert term.op is deffn
+
+    result = term(3, y=4)
+    assert result == 10
+
+    result2 = term(5)
+    assert isinstance(result2, Term)
+
+
 def test_defdata_renaming():
     @defop
     def Let[S, T, A, B](
@@ -1064,3 +1078,44 @@ def test_operation_instances():
 
         # Without the inner handler, foo1.bar should also call Foo.bar
         assert foo1.bar(42) == f"Foo.bar({foo1}, 42)"
+
+
+def test_operation_dataclass():
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: int
+
+    @defop
+    def random_point() -> Point:
+        raise NotHandled
+
+    @defop
+    def id[T](base: T) -> T:
+        raise NotHandled
+
+    def client():
+        p1 = random_point()
+        p2 = random_point()
+        return p1.x + p2.x
+
+    p = random_point()
+    assert isinstance(p, Term)
+    assert isinstance(p, Point)
+
+    t = client()
+    assert isinstance(t, Term)
+
+    assert isinstance(id(Point(0, 0)).x, Term)
+
+
+def test_operation_dataclass_generic():
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+    @defop
+    def id[T](base: T) -> T:
+        raise NotHandled
+
+    assert isinstance(id(A(0)).x, Term)
