@@ -1,5 +1,4 @@
 import base64
-import dataclasses
 import io
 import typing
 from abc import ABC, abstractmethod
@@ -8,7 +7,6 @@ from collections.abc import Callable
 import pydantic
 from litellm import ChatCompletionImageUrlObject
 from PIL import Image
-from pydantic import Field
 
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 
@@ -53,13 +51,6 @@ def type_to_encodable_type[T](
 
 
 @type_to_encodable_type.register(object)
-def _type_encodable_type_object[T](ty: type[T]) -> Encodable[T]:
-    # Check if it's a dataclass and redirect to dataclass handler
-    if isinstance(ty, type) and dataclasses.is_dataclass(ty):
-        return _type_encodable_type_dataclass(ty)
-    return _type_encodable_type_base(ty)
-
-
 @type_to_encodable_type.register(str)
 @type_to_encodable_type.register(int)
 @type_to_encodable_type.register(bool)
@@ -103,82 +94,6 @@ class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
 
 
 U = typing.TypeVar("U", bound=pydantic.BaseModel)
-
-
-def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
-    """Handle dataclass encoding/decoding with recursive field encoding."""
-    if not (isinstance(ty, type) and dataclasses.is_dataclass(ty)):
-        raise TypeError(f"Expected dataclass, got {ty}")
-
-    fields = dataclasses.fields(ty)
-
-    # Create encoders for each field type
-    field_encoders: dict[str, Encodable] = {}
-    encoded_field_types: dict[str, typing.Any] = {}
-
-    for field in fields:
-        field_encoder = type_to_encodable_type(
-            typing.cast(type[typing.Any], field.type)
-        )
-        field_encoders[field.name] = field_encoder
-
-        # Determine if field is required or has a default
-        if field.default != dataclasses.MISSING:
-            # Field has a default value
-            encoded_field_types[field.name] = (field_encoder.t, field.default)
-        elif field.default_factory != dataclasses.MISSING:
-            # Field has a default factory
-            encoded_field_types[field.name] = (
-                field_encoder.t,
-                Field(default_factory=field.default_factory),
-            )
-        else:
-            # Required field
-            encoded_field_types[field.name] = (field_encoder.t, ...)
-
-    # Create a dynamic pydantic model for the encoded type
-    model_name = f"{ty.__name__}Encoded"
-
-    EncodedModel: type[pydantic.BaseModel] = pydantic.create_model(
-        model_name, **encoded_field_types
-    )
-
-    class DataclassEncodable(_Encodable[T, typing.Any]):
-        t: type[typing.Any] = EncodedModel
-
-        @classmethod
-        def encode(cls, t: T) -> typing.Any:
-            if not isinstance(t, ty):
-                raise TypeError(f"Expected {ty}, got {type(t)}")
-
-            result: dict[str, typing.Any] = {}
-            for field in fields:
-                field_value = getattr(t, field.name)
-                field_encoder = field_encoders[field.name]
-                result[field.name] = field_encoder.encode(field_value)
-
-            return EncodedModel(**result)
-
-        @classmethod
-        def decode(cls, vl: typing.Any) -> T:
-            # Handle both pydantic model instance and dict
-            if isinstance(vl, dict):
-                # Validate dict and convert to model
-                validated = EncodedModel.model_validate(vl)
-            else:
-                validated = vl
-
-            decoded_fields: dict[str, typing.Any] = {}
-
-            for field in fields:
-                # Get value from validated model
-                field_value = getattr(validated, field.name)
-                field_encoder = field_encoders[field.name]
-                decoded_fields[field.name] = field_encoder.decode(field_value)
-
-            return typing.cast(T, ty(**decoded_fields))
-
-    return typing.cast(Encodable[T], DataclassEncodable())
 
 
 @type_to_encodable_type.register(tuple)
