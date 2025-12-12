@@ -379,6 +379,42 @@ def test_image_input():
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
 
 
+@defop
+def get_images_tool(count: int) -> list[Image.Image]:
+    """Get a list of images.
+
+    Parameters:
+    - count: Number of images to return
+    """
+    raise NotHandled
+
+
+class ImageListInterpretation(ObjectInterpretation):
+    """Provides an interpretation for `get_images_tool` that returns a list of images."""
+
+    @implements(get_images_tool)
+    def _get_images_tool(self, count: int) -> list[Image.Image]:
+        return [smiley_face() for _ in range(count)]
+
+
+@Template.define(tools=[get_images_tool])
+def describe_images() -> str:
+    """Use the provided tool to get images and describe what you see."""
+    raise NotHandled
+
+
+@requires_openai
+def test_tool_returns_list_of_images():
+    """Test that LLM can handle tools that return lists of images."""
+    with (
+        handler(LiteLLMProvider(model_name="gpt-4o")),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(ImageListInterpretation()),
+    ):
+        print(describe_images())
+        assert any("smile" in describe_images() for _ in range(3))
+
+
 class BookReview(BaseModel):
     """A book review with rating and summary."""
 
