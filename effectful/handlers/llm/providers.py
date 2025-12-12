@@ -246,7 +246,6 @@ class _OpenAIPromptFormatter(string.Formatter):
             if field_name is not None:
                 obj, _ = self.get_field(field_name, args, kwargs)
                 obj = self.convert_field(obj, conversion)
-                # TODO(kg): should this use the serialize mechanism?
                 part = serialize(obj)
                 # special casing for text
                 if (
