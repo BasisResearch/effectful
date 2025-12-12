@@ -55,7 +55,7 @@ def type_to_encodable_type[T](
 @type_to_encodable_type.register(object)
 def _type_encodable_type_object[T](ty: type[T]) -> Encodable[T]:
     # Check if it's a dataclass and redirect to dataclass handler
-    if dataclasses.is_dataclass(ty):
+    if isinstance(ty, type) and dataclasses.is_dataclass(ty):
         return _type_encodable_type_dataclass(ty)
     return _type_encodable_type_base(ty)
 
@@ -104,7 +104,7 @@ class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
 
 def _type_encodable_type_dataclass[T](ty: type[T]) -> Encodable[T]:
     """Handle dataclass encoding/decoding with recursive field encoding."""
-    if not dataclasses.is_dataclass(ty):
+    if not (isinstance(ty, type) and dataclasses.is_dataclass(ty)):
         raise TypeError(f"Expected dataclass, got {ty}")
 
     fields = dataclasses.fields(ty)
