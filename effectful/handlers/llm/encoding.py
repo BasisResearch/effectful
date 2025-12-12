@@ -58,11 +58,6 @@ def type_to_encodable_type[T](
 
 
 @type_to_encodable_type.register(object)
-@type_to_encodable_type.register(str)
-@type_to_encodable_type.register(int)
-@type_to_encodable_type.register(bool)
-@type_to_encodable_type.register(float)
-@type_to_encodable_type.register(complex)
 def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
     class BaseEncodable(_Encodable[T, T]):
         t: type[T] = ty
