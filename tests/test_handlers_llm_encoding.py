@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import NamedTuple, TypedDict
 
 import pydantic
@@ -426,7 +426,7 @@ def test_type_to_encodable_type_dataclass():
     assert decoded.y == 20
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.x == 10
     assert model_instance.value.y == 20
     # Decode from model
@@ -451,7 +451,7 @@ def test_type_to_encodable_type_dataclass_with_str():
     assert decoded.age == 30
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.name == "Alice"
     assert model_instance.value.age == 30
     # Decode from model
@@ -476,7 +476,7 @@ def test_type_to_encodable_type_dataclass_with_list():
     assert decoded.name == "test"
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.items == [1, 2, 3]
     assert model_instance.value.name == "test"
     # Decode from model
@@ -501,7 +501,7 @@ def test_type_to_encodable_type_dataclass_with_tuple():
     assert decoded.count == 2
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.values == (42, "hello")
     assert model_instance.value.count == 2
     # Decode from model
@@ -536,7 +536,7 @@ def test_type_to_encodable_type_dataclass_with_optional():
 
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.host == "localhost"
     assert model_instance.value.port == 8080
     assert model_instance.value.timeout == 5.0
@@ -562,11 +562,11 @@ def test_type_to_encodable_type_nested_dataclass():
     person = Person(name="Bob", age=25, address=address)
 
     encoded = encodable.encode(person)
-    assert isinstance(encoded, pydantic.BaseModel)
+    assert isinstance(encoded, Person)
     assert hasattr(encoded, "name")
     assert hasattr(encoded, "age")
     assert hasattr(encoded, "address")
-    assert isinstance(encoded.address, pydantic.BaseModel)
+    assert isinstance(encoded.address, Address)
     assert encoded.address.street == "123 Main St"
     assert encoded.address.city == "New York"
 
@@ -580,7 +580,7 @@ def test_type_to_encodable_type_nested_dataclass():
 
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    model_instance = Model.model_validate({"value": asdict(encoded)})
     assert model_instance.value.name == "Bob"
     assert model_instance.value.age == 25
     assert model_instance.value.address.street == "123 Main St"
