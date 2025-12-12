@@ -67,14 +67,14 @@ def _type_encodable_type_object[T](ty: type[T]) -> Encodable[T]:
 @type_to_encodable_type.register(str)
 def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
     class BaseEncodable(_Encodable[T, T]):
-        t = ty
+        t: type[T] = ty
 
         @classmethod
-        def encode(cls, vl):
+        def encode(cls, vl: T) -> T:
             return vl
 
         @classmethod
-        def decode(cls, vl: t) -> T:  # type: ignore
+        def decode(cls, vl: T) -> T:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
