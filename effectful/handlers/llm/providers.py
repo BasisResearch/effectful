@@ -115,7 +115,7 @@ class Tool[**P, T]:
         encoded_value = encoded_ty.encode(value)
         return serialize.dispatch(encoded_ty.t)(encoded_value)  # type: ignore
 
-    @property
+    @functools.cached_property
     def parameter_model(self) -> type[pydantic.BaseModel]:
         op = self.operation
         sig = inspect.signature(op)
