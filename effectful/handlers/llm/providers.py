@@ -7,7 +7,7 @@ import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from typing import Any, get_type_hints
 
 import litellm
@@ -21,8 +21,6 @@ except ImportError:
     raise ImportError("'pillow' is required to use effectful.handlers.providers")
 
 from litellm import (
-    ChatCompletionImageObject,
-    ChatCompletionImageUrlObject,
     Choices,
     Message,
     OpenAIChatCompletionToolParam,
@@ -47,66 +45,6 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-def _pil_image_to_openai_image_param(
-    pil_image: Image.Image,
-) -> ChatCompletionImageObject:
-    return {
-        "type": "image_url",
-        "image_url": {
-            "detail": "auto",
-            "url": _pil_image_to_base64_data_uri(pil_image),
-        },
-    }
-
-
-@defop
-@functools.singledispatch
-def serialize(value: Any) -> OpenAIMessageContent:
-    """Convert a Python value to internal message part representation.
-
-    This function can be extended by registering handlers for
-    different types using @serialize.register.
-
-    Returns a OpenAIMessageContent - either a string or a list of OpenAIMessageContentListBlock.
-    """
-    return [{"type": "text", "text": str(value)}]
-
-
-@serialize.register(dict)  # type: ignore
-def _(value: dict) -> OpenAIMessageContent:
-    if (
-        "url" in value
-        and isinstance(value["url"], str)
-        and value["url"].startswith("data:image/")
-    ):
-        return [
-            {
-                "type": "image_url",
-                "image_url": typing.cast(ChatCompletionImageUrlObject, value),
-            }
-        ]
-    else:
-        return [{"type": "text", "text": str(value)}]
-
-
-@serialize.register(str)  # type: ignore
-def _(value: str) -> OpenAIMessageContent:
-    return [{"type": "text", "text": value}]
-
-
-@serialize.register(bytes)  # type: ignore
-def _(value: bytes) -> OpenAIMessageContent:
-    return [{"type": "text", "text": str(value)}]
-
-
-@serialize.register(Sequence)  # type: ignore
-def _(values: Sequence) -> OpenAIMessageContent:
-    if all(isinstance(value, Image.Image) for value in values):
-        return [_pil_image_to_openai_image_param(value) for value in values]
-    else:
-        return [{"type": "text", "text": str(values)}]
-
-
 @dataclasses.dataclass
 class Tool[**P, T]:
     operation: Operation[P, T]
@@ -118,7 +56,7 @@ class Tool[**P, T]:
         sig = inspect.signature(self.operation)
         encoded_ty = type_to_encodable_type(sig.return_annotation)
         encoded_value = encoded_ty.encode(value)
-        return serialize.dispatch(encoded_ty.t)(encoded_value)  # type: ignore
+        return encoded_ty.serialize(encoded_value)
 
     @functools.cached_property
     def parameter_model(self) -> type[pydantic.BaseModel]:
@@ -161,7 +99,7 @@ class Tool[**P, T]:
             encoded_ty = type_to_encodable_type(sig.return_annotation)
             encoded_value = encoded_ty.encode(result)
             # serialise back to Json
-            return serialize.dispatch(encoded_ty.t)(encoded_value)  # type: ignore
+            return encoded_ty.serialize(encoded_value)
         except Exception as exn:
             return str({"status": "failure", "exception": str(exn)})
 
@@ -245,8 +183,7 @@ class _OpenAIPromptFormatter(string.Formatter):
 
             if field_name is not None:
                 obj, _ = self.get_field(field_name, args, kwargs)
-                obj = self.convert_field(obj, conversion)
-                part = serialize(obj)
+                part = self.convert_field(obj, conversion)
                 # special casing for text
                 if (
                     isinstance(part, list)
@@ -256,12 +193,11 @@ class _OpenAIPromptFormatter(string.Formatter):
                     current_text += self.format_field(
                         part[0]["text"], format_spec if format_spec else ""
                     )
-                else:
-                    assert not format_spec, (
-                        "non-text serialized template parameters cannot have format specifiers"
-                    )
+                elif isinstance(part, list):
                     push_current_text()
                     prompt_parts.extend(part)
+                else:
+                    prompt_parts.append(part)
 
         push_current_text()
         return prompt_parts
@@ -499,12 +435,14 @@ def format_model_input[**P, T](
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
     # encode arguments
-    arguments = {
-        param: type_to_encodable_type(
+    arguments = {}
+    for param in bound_args.arguments:
+        encoder = type_to_encodable_type(
             template.__signature__.parameters[param].annotation
-        ).encode(bound_args.arguments[param])
-        for param in bound_args.arguments
-    }
+        )
+        encoded = encoder.encode(bound_args.arguments[param])
+        arguments[param] = encoder.serialize(encoded)
+
     prompt = _OpenAIPromptFormatter().format_as_messages(
         template.__prompt_template__, **arguments
     )

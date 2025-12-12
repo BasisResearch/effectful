@@ -5,7 +5,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 
 import pydantic
-from litellm import ChatCompletionImageUrlObject
+from litellm import (
+    ChatCompletionImageUrlObject,
+    OpenAIMessageContentListBlock,
+)
 from PIL import Image
 
 from effectful.ops.syntax import _CustomSingleDispatchCallable
@@ -29,13 +32,17 @@ class _Encodable[T, U](ABC):
 
     @classmethod
     @abstractmethod
-    def encode(cls, t: T) -> U:
+    def encode(cls, vl: T) -> U:
         pass
 
     @classmethod
     @abstractmethod
-    def decode(cls, t: U) -> T:
+    def decode(cls, vl: U) -> T:
         pass
+
+    @classmethod
+    def serialize(cls, value: U) -> list[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": str(value)}]
 
 
 class Encodable[T](_Encodable[T, type]):
@@ -71,6 +78,28 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
     return typing.cast(Encodable[T], BaseEncodable())
 
 
+@type_to_encodable_type.register(pydantic.BaseModel)
+def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
+    ty: type[T],
+) -> Encodable[T]:
+    class EncodablePydanticBaseModel(_Encodable[T, T]):
+        t: type[T] = ty
+
+        @classmethod
+        def decode(cls, vl: T) -> T:
+            return vl
+
+        @classmethod
+        def encode(cls, vl: T) -> T:
+            return vl
+
+        @classmethod
+        def serialize(cls, vl: T) -> list[OpenAIMessageContentListBlock]:
+            return [{"type": "text", "text": vl.model_dump_json()}]
+
+    return typing.cast(Encodable[T], EncodablePydanticBaseModel())
+
+
 @type_to_encodable_type.register(Image.Image)
 class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
     t = ChatCompletionImageUrlObject
@@ -92,6 +121,12 @@ class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
         data = image_url.split(",")[1]
         return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
+    @classmethod
+    def serialize(
+        cls, value: ChatCompletionImageUrlObject
+    ) -> list[OpenAIMessageContentListBlock]:
+        return [{"type": "image_url", "image_url": value}]
+
 
 U = typing.TypeVar("U", bound=pydantic.BaseModel)
 
@@ -107,8 +142,13 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
     # Create encoders for each element type
     element_encoders = [type_to_encodable_type(arg) for arg in args]
 
-    # Build tuple type from element encoder types (runtime-created, use Any)
-    encoded_ty: type[typing.Any] = typing.cast(type[typing.Any], tuple)
+    # Check if any element type is Image.Image
+    has_image = any(arg is Image.Image for arg in args)
+
+    encoded_ty: type[typing.Any] = typing.cast(
+        type[typing.Any],
+        tuple[*(enc.t for enc in element_encoders)],  # type: ignore
+    )
 
     class TupleEncodable(_Encodable[T, typing.Any]):
         t: type[typing.Any] = encoded_ty
@@ -134,6 +174,23 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
             ]
             return typing.cast(T, tuple(decoded_elements))
 
+        @classmethod
+        def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+            if has_image:
+                # If tuple contains images, serialize each element and flatten the results
+                result: list[OpenAIMessageContentListBlock] = []
+                if not isinstance(value, tuple):
+                    raise TypeError(f"Expected tuple, got {type(value)}")
+                if len(value) != len(element_encoders):
+                    raise ValueError(
+                        f"Tuple length {len(value)} does not match expected length {len(element_encoders)}"
+                    )
+                for enc, elem in zip(element_encoders, value):
+                    result.extend(enc.serialize(elem))
+                return result
+            else:
+                return super().serialize(value)
+
     return typing.cast(Encodable[T], TupleEncodable())
 
 
@@ -149,8 +206,14 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
     element_ty = args[0]
     element_encoder = type_to_encodable_type(element_ty)
 
+    # Check if element type is Image.Image
+    has_image = element_ty is Image.Image
+
     # Build the encoded type (list of encoded element type) - runtime-created, use Any
-    encoded_ty: type[typing.Any] = typing.cast(type[typing.Any], list)
+    encoded_ty: type[typing.Any] = typing.cast(
+        type[typing.Any],
+        list[element_encoder.t],  # type: ignore
+    )
 
     class ListEncodable(_Encodable[T, typing.Any]):
         t: type[typing.Any] = encoded_ty
@@ -167,5 +230,18 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
                 element_encoder.decode(elem) for elem in t
             ]
             return typing.cast(T, decoded_elements)
+
+        @classmethod
+        def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+            if has_image:
+                # If list contains images, serialize each element and flatten the results
+                result: list[OpenAIMessageContentListBlock] = []
+                if not isinstance(value, list):
+                    raise TypeError(f"Expected list, got {type(value)}")
+                for elem in value:
+                    result.extend(element_encoder.serialize(elem))
+                return result
+            else:
+                return super().serialize(value)
 
     return typing.cast(Encodable[T], ListEncodable())
