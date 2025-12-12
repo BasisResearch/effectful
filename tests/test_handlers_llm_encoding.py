@@ -1,4 +1,5 @@
 import numbers
+from dataclasses import dataclass
 from typing import NamedTuple, TypedDict
 
 import pydantic
@@ -396,3 +397,223 @@ def test_type_to_encodable_type_list_of_images():
     assert decoded_roundtrip[1].size == original[1].size
     assert decoded_roundtrip[0].mode == original[0].mode
     assert decoded_roundtrip[1].mode == original[1].mode
+
+
+def test_type_to_encodable_type_dataclass():
+    @dataclass
+    class Point:
+        x: int
+        y: int
+
+    encodable = type_to_encodable_type(Point)
+    point = Point(10, 20)
+    encoded = encodable.encode(point)
+    decoded = encodable.decode(encoded)
+    assert decoded == point
+    assert isinstance(decoded, Point)
+    assert decoded.x == 10
+    assert decoded.y == 20
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.x == 10
+    assert model_instance.value.y == 20
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == point
+    assert isinstance(decoded_from_model, Point)
+
+
+def test_type_to_encodable_type_dataclass_with_str():
+    @dataclass
+    class Person:
+        name: str
+        age: int
+
+    encodable = type_to_encodable_type(Person)
+    person = Person("Alice", 30)
+    encoded = encodable.encode(person)
+    decoded = encodable.decode(encoded)
+    assert decoded == person
+    assert isinstance(decoded, Person)
+    assert decoded.name == "Alice"
+    assert decoded.age == 30
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.name == "Alice"
+    assert model_instance.value.age == 30
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == person
+    assert isinstance(decoded_from_model, Person)
+
+
+def test_type_to_encodable_type_dataclass_with_list():
+    @dataclass
+    class Container:
+        items: list[int]
+        name: str
+
+    encodable = type_to_encodable_type(Container)
+    container = Container(items=[1, 2, 3], name="test")
+    encoded = encodable.encode(container)
+    decoded = encodable.decode(encoded)
+    assert decoded == container
+    assert isinstance(decoded, Container)
+    assert decoded.items == [1, 2, 3]
+    assert decoded.name == "test"
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.items == [1, 2, 3]
+    assert model_instance.value.name == "test"
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == container
+    assert isinstance(decoded_from_model, Container)
+
+
+def test_type_to_encodable_type_dataclass_with_tuple():
+    @dataclass
+    class Pair:
+        values: tuple[int, str]
+        count: int
+
+    encodable = type_to_encodable_type(Pair)
+    pair = Pair(values=(42, "hello"), count=2)
+    encoded = encodable.encode(pair)
+    decoded = encodable.decode(encoded)
+    assert decoded == pair
+    assert isinstance(decoded, Pair)
+    assert decoded.values == (42, "hello")
+    assert decoded.count == 2
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.values == (42, "hello")
+    assert model_instance.value.count == 2
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == pair
+    assert isinstance(decoded_from_model, Pair)
+
+
+def test_type_to_encodable_type_dataclass_with_images():
+    @dataclass
+    class ImagePair:
+        image1: Image.Image
+        image2: Image.Image
+
+    encodable = type_to_encodable_type(ImagePair)
+    image1 = Image.new("RGB", (10, 10), color="red")
+    image2 = Image.new("RGB", (20, 20), color="blue")
+    pair = ImagePair(image1=image1, image2=image2)
+
+    encoded = encodable.encode(pair)
+    assert hasattr(encoded, "image1")
+    assert hasattr(encoded, "image2")
+    assert isinstance(encoded.image1, dict)
+    assert isinstance(encoded.image2, dict)
+    assert encoded.image1["url"].startswith("data:image/png;base64,")
+    assert encoded.image2["url"].startswith("data:image/png;base64,")
+
+    decoded = encodable.decode(encoded)
+    assert isinstance(decoded, ImagePair)
+    assert isinstance(decoded.image1, Image.Image)
+    assert isinstance(decoded.image2, Image.Image)
+    assert decoded.image1.size == (10, 10)
+    assert decoded.image2.size == (20, 20)
+
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.image1["url"] == encoded.image1["url"]
+    assert model_instance.value.image2["url"] == encoded.image2["url"]
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert isinstance(decoded_from_model, ImagePair)
+    assert decoded_from_model.image1.size == (10, 10)
+    assert decoded_from_model.image2.size == (20, 20)
+
+
+def test_type_to_encodable_type_dataclass_with_optional():
+    @dataclass
+    class Config:
+        host: str
+        port: int
+        timeout: float | None = None
+
+    encodable = type_to_encodable_type(Config)
+    config = Config(host="localhost", port=8080, timeout=5.0)
+    encoded = encodable.encode(config)
+    decoded = encodable.decode(encoded)
+    assert decoded == config
+    assert isinstance(decoded, Config)
+    assert decoded.host == "localhost"
+    assert decoded.port == 8080
+    assert decoded.timeout == 5.0
+
+    # Test with None value
+    config_none = Config(host="localhost", port=8080, timeout=None)
+    encoded_none = encodable.encode(config_none)
+    decoded_none = encodable.decode(encoded_none)
+    assert decoded_none == config_none
+    assert decoded_none.timeout is None
+
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.host == "localhost"
+    assert model_instance.value.port == 8080
+    assert model_instance.value.timeout == 5.0
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == config
+
+
+def test_type_to_encodable_type_nested_dataclass():
+    @dataclass
+    class Address:
+        street: str
+        city: str
+
+    @dataclass
+    class Person:
+        name: str
+        age: int
+        address: Address
+
+    encodable = type_to_encodable_type(Person)
+    address = Address(street="123 Main St", city="New York")
+    person = Person(name="Bob", age=25, address=address)
+
+    encoded = encodable.encode(person)
+    assert isinstance(encoded, pydantic.BaseModel)
+    assert hasattr(encoded, "name")
+    assert hasattr(encoded, "age")
+    assert hasattr(encoded, "address")
+    assert isinstance(encoded.address, pydantic.BaseModel)
+    assert encoded.address.street == "123 Main St"
+    assert encoded.address.city == "New York"
+
+    decoded = encodable.decode(encoded)
+    assert isinstance(decoded, Person)
+    assert isinstance(decoded.address, Address)
+    assert decoded.name == "Bob"
+    assert decoded.age == 25
+    assert decoded.address.street == "123 Main St"
+    assert decoded.address.city == "New York"
+
+    # Test with pydantic model validation
+    Model = pydantic.create_model("Model", value=encodable.t)
+    model_instance = Model.model_validate({"value": encoded.model_dump()})
+    assert model_instance.value.name == "Bob"
+    assert model_instance.value.age == 25
+    assert model_instance.value.address.street == "123 Main St"
+    assert model_instance.value.address.city == "New York"
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == person
+    assert isinstance(decoded_from_model, Person)
+    assert isinstance(decoded_from_model.address, Address)
