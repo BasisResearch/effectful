@@ -27,6 +27,9 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
 class _Encodable[T, U](ABC):
     t: type[U]
 
+    def __init__(self, *args, **kwargs):
+        pass
+
     @classmethod
     @abstractmethod
     def encode(cls, t: T) -> U:
@@ -81,9 +84,6 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
 class EncodableNumber(_Encodable[numbers.Number, float]):
     t = float
 
-    def __init__(self, _):
-        pass
-
     @classmethod
     def encode(cls, vl: numbers.Number) -> t:  # type: ignore
         return float(vl)  # type: ignore
@@ -96,9 +96,6 @@ class EncodableNumber(_Encodable[numbers.Number, float]):
 @type_to_encodable_type.register(Image.Image)
 class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
     t = ChatCompletionImageUrlObject
-
-    def __init__(self, _):
-        pass
 
     @classmethod
     def encode(cls, image: Image.Image) -> ChatCompletionImageUrlObject:
