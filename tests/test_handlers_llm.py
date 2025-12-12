@@ -5,7 +5,7 @@ import pytest
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
@@ -60,25 +60,38 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
 @Template.define
 def limerick(theme: str) -> str:
     """Write a limerick on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def haiku(theme: str) -> str:
     """Write a haiku on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define()
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def count_char(char: str) -> Callable[[str], int]:
     """Write a function which takes a string and counts the occurrances of '{char}'."""
-    raise NotImplementedError
+    raise NotHandled
+
+
+# Mutually recursive templates (module-level for live globals)
+@Template.define(tools="auto")
+def mutual_a() -> str:
+    """Use mutual_a and mutual_b as tools to do task A."""
+    raise NotHandled
+
+
+@Template.define(tools="auto")
+def mutual_b() -> str:
+    """Use mutual_a and mutual_b as tools to do task B."""
+    raise NotHandled
 
 
 # Unit tests
@@ -232,3 +245,84 @@ def test_retry_handler_with_error_feedback():
     # Second call should include error feedback with traceback
     assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
+
+
+def test_template_captures_other_templates_in_lexical_context():
+    """Test that Templates defined in lexical scope are captured (orchestrator pattern)."""
+
+    # Define sub-templates first
+    @Template.define
+    def story_with_moral(topic: str) -> str:
+        """Write a story about {topic} with a moral lesson."""
+        raise NotHandled
+
+    @Template.define
+    def story_funny(topic: str) -> str:
+        """Write a funny story about {topic}."""
+        raise NotHandled
+
+    # Main orchestrator template has access to sub-templates (using tools="auto")
+    @Template.define(tools="auto")
+    def write_story(topic: str, style: str) -> str:
+        """Write a story about {topic} in style {style}."""
+        raise NotHandled
+
+    # lexical_context is a NamedTuple of (globals_, locals_) MappingProxyTypes
+    # Sub-templates should be in locals (function-scoped)
+    assert "story_with_moral" in write_story.lexical_context.locals_
+    assert "story_funny" in write_story.lexical_context.locals_
+    assert write_story.lexical_context.locals_["story_with_moral"] is story_with_moral
+    assert write_story.lexical_context.locals_["story_funny"] is story_funny
+
+    # With tools="auto", templates in lexical context are exposed as callable tools
+    assert story_with_moral in write_story.tools
+    assert story_funny in write_story.tools
+
+
+def test_template_composition_with_chained_calls():
+    """Test calling one template and passing result to another."""
+
+    @Template.define
+    def generate_topic() -> str:
+        """Generate an interesting topic for a story."""
+        raise NotHandled
+
+    @Template.define
+    def write_story(topic: str) -> str:
+        """Write a short story about {topic}."""
+        raise NotHandled
+
+    # Verify generate_topic is in write_story's lexical context (locals)
+    assert "generate_topic" in write_story.lexical_context.locals_
+
+    # Test chained template calls
+    mock_provider = SingleResponseLLMProvider("A magical forest")
+
+    with handler(mock_provider):
+        topic = generate_topic()
+        assert topic == "A magical forest"
+
+    # Now use that topic in the next template
+    mock_provider2 = SingleResponseLLMProvider(
+        "Once upon a time in a magical forest..."
+    )
+
+    with handler(mock_provider2):
+        story = write_story(topic)
+        assert story == "Once upon a time in a magical forest..."
+
+
+def test_mutually_recursive_templates():
+    """Test that module-level templates can see each other (mutual recursion)."""
+    # Both mutual_a and mutual_b should see each other via live globals
+    assert "mutual_a" in mutual_a.lexical_context.globals_
+    assert "mutual_b" in mutual_a.lexical_context.globals_
+    assert "mutual_a" in mutual_b.lexical_context.globals_
+    assert "mutual_b" in mutual_b.lexical_context.globals_
+
+    # They should also be in each other's tools
+    assert mutual_a in mutual_b.tools
+    assert mutual_b in mutual_a.tools
+    # And themselves (self-recursion)
+    assert mutual_a in mutual_a.tools
+    assert mutual_b in mutual_b.tools
