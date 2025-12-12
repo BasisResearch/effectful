@@ -1,4 +1,3 @@
-import numbers
 from dataclasses import dataclass
 from typing import NamedTuple, TypedDict
 
@@ -276,11 +275,23 @@ def test_type_to_encodable_type_typeddict_optional():
     assert isinstance(decoded.value, dict)
 
 
-def test_type_to_encodable_type_number_float():
-    encodable = type_to_encodable_type(numbers.Number)
+def test_type_to_encodable_type_complex():
+    encodable = type_to_encodable_type(complex)
+    value = 3 + 4j
+    encoded = encodable.encode(value)
+    decoded = encodable.decode(encoded)
+    assert decoded == value
+    assert isinstance(decoded, complex)
+    assert decoded.real == 3.0
+    assert decoded.imag == 4.0
+    # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.t)
-    decoded = Model.model_validate({"value": 3.14})
-    assert decoded.value == 3.14
+    model_instance = Model.model_validate({"value": encoded})
+    assert model_instance.value == encoded
+    # Decode from model
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == value
+    assert isinstance(decoded_from_model, complex)
 
 
 def test_type_to_encodable_type_tuple_of_images():

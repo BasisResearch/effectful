@@ -1,7 +1,6 @@
 import base64
 import dataclasses
 import io
-import numbers
 import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -61,10 +60,11 @@ def _type_encodable_type_object[T](ty: type[T]) -> Encodable[T]:
     return _type_encodable_type_base(ty)
 
 
-@type_to_encodable_type.register(int)
-@type_to_encodable_type.register(float)
-@type_to_encodable_type.register(bool)
 @type_to_encodable_type.register(str)
+@type_to_encodable_type.register(int)
+@type_to_encodable_type.register(bool)
+@type_to_encodable_type.register(float)
+@type_to_encodable_type.register(complex)
 def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
     class BaseEncodable(_Encodable[T, T]):
         t: type[T] = ty
@@ -78,19 +78,6 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
-
-
-@type_to_encodable_type.register(numbers.Number)
-class EncodableNumber(_Encodable[numbers.Number, float]):
-    t = float
-
-    @classmethod
-    def encode(cls, vl: numbers.Number) -> t:  # type: ignore
-        return float(vl)  # type: ignore
-
-    @classmethod
-    def decode(cls, vl: t) -> numbers.Number:  # type: ignore
-        return vl
 
 
 @type_to_encodable_type.register(Image.Image)
