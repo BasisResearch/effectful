@@ -31,8 +31,8 @@ def _evaluate_lexical_context(expr: LexicalContext, **kwargs) -> LexicalContext:
 class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
-    __name__: str
     __context__: Mapping[str, Any]
+    __name__: str 
 
     @staticmethod
     def _get_excluded_operations() -> frozenset[Operation]:
@@ -99,7 +99,7 @@ class Template[**P, T]:
             frame.f_locals
         )
         # LexicalContext: locals first (shadow globals), then globals
-        context = LexicalContext(locals_proxy, globals_proxy)
+        context = LexicalContext(locals_proxy, globals_proxy)  # type: ignore[arg-type]
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
