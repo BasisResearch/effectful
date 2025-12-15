@@ -4,6 +4,7 @@ This module is separate to avoid lexical context pollution from other templates.
 """
 
 import os
+from dataclasses import dataclass
 
 import pytest
 from pydantic import BaseModel, Field
@@ -31,6 +32,7 @@ requires_anthropic = pytest.mark.skipif(
 )
 
 
+@dataclass
 class LimitLLMCallsHandler(ObjectInterpretation):
     """Handler that limits the number of LLM calls."""
 
@@ -124,4 +126,3 @@ class TestPydanticBaseModelToolCalls:
         # Verify the tool was called at least once
         assert book_rec_ctx.recommendation_count >= 1
         assert len(book_rec_ctx.recommendation_results) >= 1
-

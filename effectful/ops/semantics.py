@@ -3,7 +3,6 @@ import contextlib
 import dataclasses
 import types
 import typing
-from collections import ChainMap
 from collections.abc import Callable
 from typing import Any
 
@@ -246,8 +245,6 @@ def _evaluate_defaultdict(expr, **kwargs):
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
     return type(expr)(dict(evaluate(tuple(expr.items()))))
-
-
 
 
 @evaluate.register(collections.abc.Mapping)

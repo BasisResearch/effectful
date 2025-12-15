@@ -4,11 +4,12 @@ This module is separate to avoid lexical context pollution from other templates.
 """
 
 import os
+from dataclasses import dataclass
 from enum import Enum
 
 import pytest
 from pydantic import Field
-from pydantic.dataclasses import dataclass
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import (
@@ -33,6 +34,7 @@ requires_anthropic = pytest.mark.skipif(
 )
 
 
+@dataclass
 class LimitLLMCallsHandler(ObjectInterpretation):
     """Handler that limits the number of LLM calls."""
 
@@ -49,7 +51,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
         return fwd()
 
 
-@dataclass
+@pydantic_dataclass
 class Poem:
     """A poem with content and form."""
 
@@ -133,4 +135,3 @@ class TestToolCalling:
         # Verify the tool was called at least once
         assert poem_eval_ctx.evaluation_count >= 1
         assert len(poem_eval_ctx.evaluation_results) >= 1
-

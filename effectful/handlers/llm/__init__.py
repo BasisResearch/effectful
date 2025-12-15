@@ -8,8 +8,23 @@ from collections import ChainMap
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from effectful.ops.semantics import evaluate
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
+
+
+class LexicalContext(ChainMap):
+    """ChainMap subclass for Template lexical scope.
+
+    This avoids recursive evaluation of circular Template references.
+    """
+
+    pass
+
+
+@evaluate.register(LexicalContext)
+def _evaluate_lexical_context(expr: LexicalContext, **kwargs) -> LexicalContext:
+    return expr
 
 
 @dataclasses.dataclass(frozen=True)
@@ -17,8 +32,8 @@ class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
     __name__: str
-    lexical_context: ChainMap[str, Any] = dataclasses.field(
-        default_factory=lambda: ChainMap(
+    lexical_context: LexicalContext = dataclasses.field(
+        default_factory=lambda: LexicalContext(
             types.MappingProxyType({}), types.MappingProxyType({})
         ),  # type: ignore
         repr=False,
@@ -88,8 +103,8 @@ class Template[**P, T]:
         locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
             frame.f_locals
         )
-        # ChainMap: locals first (shadow globals), then globals
-        lexical_context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)
+        # LexicalContext: locals first (shadow globals), then globals
+        lexical_context = LexicalContext(locals_proxy, globals_proxy)
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
