@@ -253,12 +253,12 @@ def test_template_captures_other_templates_in_lexical_context():
     # Define sub-templates first
     @Template.define
     def story_with_moral(topic: str) -> str:
-        """Write a story about {topic} with a moral lesson."""
+        """Write a story about {topic} with a moral lesson. Do not use any tools at all for this."""
         raise NotHandled
 
     @Template.define
     def story_funny(topic: str) -> str:
-        """Write a funny story about {topic}."""
+        """Write a funny story about {topic}. Do not use any tools at all for this."""
         raise NotHandled
 
     # Main orchestrator template has access to sub-templates
@@ -284,7 +284,7 @@ def test_template_composition_with_chained_calls():
 
     @Template.define
     def generate_topic() -> str:
-        """Generate an interesting topic for a story."""
+        """Generate an interesting topic for a story. Do not try to use any tools for this beside from write_story."""
         raise NotHandled
 
     @Template.define

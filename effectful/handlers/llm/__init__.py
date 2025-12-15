@@ -22,6 +22,11 @@ class Template[**P, T]:
         repr=False,
     )
 
+    # Modules whose Operations should be excluded from auto-capture as tools
+    _EXCLUDED_MODULES = frozenset({
+        "effectful.handlers.llm.providers",
+    })
+
     @property
     def tools(self) -> tuple[Operation | Template, ...]:
         """Operations and Templates available as tools. Auto-capture from lexical context.
@@ -30,6 +35,9 @@ class Template[**P, T]:
         # ChainMap.items() respects shadowing (locals shadow globals)
         for name, obj in self.lexical_context.items():
             if name.startswith("_") or obj in result:
+                continue
+            # Exclude internal operations from providers module
+            if hasattr(obj, "__module__") and obj.__module__ in self._EXCLUDED_MODULES:
                 continue
             if isinstance(obj, Operation):
                 result.append(obj)

@@ -3,6 +3,7 @@ import contextlib
 import dataclasses
 import types
 import typing
+from collections import ChainMap
 from collections.abc import Callable
 from typing import Any
 
@@ -245,6 +246,13 @@ def _evaluate_defaultdict(expr, **kwargs):
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
     return type(expr)(dict(evaluate(tuple(expr.items()))))
+
+
+@evaluate.register(ChainMap)
+def _evaluate_chainmap(expr: ChainMap, **kwargs) -> ChainMap:
+    # ChainMap is used for lexical scope lookups and should not be evaluated
+    # recursively - this avoids circular reference issues with Templates
+    return expr
 
 
 @evaluate.register(collections.abc.Mapping)
