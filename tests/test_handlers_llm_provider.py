@@ -1,5 +1,4 @@
 """Tests for LLM handlers and providers.
-
 This module tests the functionality from build/main.py and build/llm.py,
 breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
 ProgramSynthesis, and sampling strategies.
@@ -102,19 +101,19 @@ class MovieClassification:
 
 @Template.define
 def classify_genre(plot: str) -> MovieClassification:
-    """Classify the movie genre based on this plot: {plot}"""
+    """Classify the movie genre based on this plot: {plot}. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def simple_prompt(topic: str) -> str:
-    """Write a short sentence about {topic}."""
+    """Write a short sentence about {topic}. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def generate_number(max_value: int) -> int:
-    """Generate a random number between 1 and {max_value}. Return only the number."""
+    """Generate a random number between 1 and {max_value}. Return only the number. Do not use any tools."""
     raise NotImplementedError
 
 

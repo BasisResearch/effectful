@@ -22,24 +22,34 @@ class Template[**P, T]:
         repr=False,
     )
 
-    # Modules whose Operations should be excluded from auto-capture as tools
-    _EXCLUDED_MODULES = frozenset({
-        "effectful.handlers.llm.providers",
-    })
+    @staticmethod
+    def _get_excluded_operations() -> frozenset[Operation]:
+        """Get the set of internal operations to exclude from auto-capture."""
+        from effectful.handlers.llm import providers
+        from effectful.ops import semantics
+
+        excluded: set[Operation] = set()
+        for module in (providers, semantics):
+            for name in dir(module):
+                obj = getattr(module, name)
+                if isinstance(obj, Operation):
+                    excluded.add(obj)
+        return frozenset(excluded)
 
     @property
     def tools(self) -> tuple[Operation | Template, ...]:
         """Operations and Templates available as tools. Auto-capture from lexical context.
         """
+        excluded_ops = self._get_excluded_operations()
         result: list[Operation | Template] = []
         # ChainMap.items() respects shadowing (locals shadow globals)
         for name, obj in self.lexical_context.items():
             if name.startswith("_") or obj in result:
                 continue
-            # Exclude internal operations from providers module
-            if hasattr(obj, "__module__") and obj.__module__ in self._EXCLUDED_MODULES:
-                continue
             if isinstance(obj, Operation):
+                # Exclude internal operations from providers and semantics modules
+                if obj in excluded_ops:
+                    continue
                 result.append(obj)
             elif isinstance(obj, Template):
                 result.append(obj)

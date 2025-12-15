@@ -110,7 +110,7 @@ class Tool[**P, T]:
         Returns None if the object cannot be converted to a tool (e.g., missing type annotations).
         """
         sig = inspect.signature(obj)
-        tool_name = name or obj.__name__
+        tool_name = obj.__name__
 
         description = obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
 
@@ -132,7 +132,7 @@ class Tool[**P, T]:
             # get_type_hints might not include the parameter if annotation is invalid
             if param_name not in hints:
                 raise TypeError(
-                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    f"Parameter '{param_name}' in '{obj.__name__}' "
                     "does not have a valid type annotation"
                 )
             parameter_annotations[param_name] = hints[param_name]
@@ -168,16 +168,9 @@ def _tools_of_operations(
 ) -> Mapping[str, Tool]:
     tools = {}
     for op in ops:
-        name = op.__name__
-
-        # Ensure tool names are unique. Names may not be unique across ops.
-        if name in tools:
-            suffix = 0
-            while f"{name}_{suffix}" in tools:
-                suffix += 1
-            name = f"{name}_{suffix}"
-
-        tools[name] = Tool.define(op, name)
+        tool = Tool.define(op)
+        # NOTE: Because lexical handling is already guaranteeing unique names, we can just use the tool's name directly.
+        tools[tool.name] = tool
     return tools
 
 
