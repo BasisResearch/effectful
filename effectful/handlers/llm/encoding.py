@@ -24,7 +24,7 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-class _Encodable[T, U](ABC):
+class EncodableAs[T, U](ABC):
     t: type[U]
 
     def __init__(self, *args, **kwargs):
@@ -45,7 +45,7 @@ class _Encodable[T, U](ABC):
         return [{"type": "text", "text": str(value)}]
 
 
-class Encodable[T](_Encodable[T, type]):
+class Encodable[T](EncodableAs[T, type]):
     t = type
 
 
@@ -59,7 +59,7 @@ def type_to_encodable_type[T](
 
 @type_to_encodable_type.register(object)
 def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
-    class BaseEncodable(_Encodable[T, T]):
+    class BaseEncodable(EncodableAs[T, T]):
         t: type[T] = ty
 
         @classmethod
@@ -77,7 +77,7 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
 def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
     ty: type[T],
 ) -> Encodable[T]:
-    class EncodablePydanticBaseModel(_Encodable[T, T]):
+    class EncodablePydanticBaseModel(EncodableAs[T, T]):
         t: type[T] = ty
 
         @classmethod
@@ -96,7 +96,7 @@ def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
 
 
 @type_to_encodable_type.register(Image.Image)
-class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
+class EncodableImage(EncodableAs[Image.Image, ChatCompletionImageUrlObject]):
     t = ChatCompletionImageUrlObject
 
     @classmethod
@@ -142,7 +142,7 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
         tuple[*(enc.t for enc in element_encoders)],  # type: ignore
     )
 
-    class TupleEncodable(_Encodable[T, typing.Any]):
+    class TupleEncodable(EncodableAs[T, typing.Any]):
         t: type[typing.Any] = encoded_ty
 
         @classmethod
@@ -207,7 +207,7 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
         list[element_encoder.t],  # type: ignore
     )
 
-    class ListEncodable(_Encodable[T, typing.Any]):
+    class ListEncodable(EncodableAs[T, typing.Any]):
         t: type[typing.Any] = encoded_ty
 
         @classmethod
