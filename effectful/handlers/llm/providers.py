@@ -47,13 +47,14 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
 
 @dataclasses.dataclass
 class Tool[**P, T]:
-    operation: Operation[P, T]
+    callable: Operation[P, T] | Template[P, T]
     name: str
     parameter_annotations: dict[str, type]
+    description: str
 
     def serialise_return_value(self, value) -> OpenAIMessageContent:
         """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
-        sig = inspect.signature(self.operation)
+        sig = inspect.signature(self.callable)
         encoded_ty = type_to_encodable_type(sig.return_annotation)
         encoded_value = encoded_ty.encode(value)
         return encoded_ty.serialize(encoded_value)
@@ -76,7 +77,6 @@ class Tool[**P, T]:
     ) -> OpenAIMessageContent:
         """Implements a roundtrip call to a python function. Input is a json string representing an LLM tool call request parameters. The output is the serialised response to the model."""
         try:
-            op = self.operation
             # build dict of raw encodable types U
             raw_args = self.parameter_model.model_validate_json(json_str)
 
@@ -91,11 +91,11 @@ class Tool[**P, T]:
             # call tool with python types
             result = tool_call(
                 template,
-                self.operation,
+                self.callable,
                 **params,
             )
             # serialize back to U using encoder for return type
-            sig = inspect.signature(op)
+            sig = inspect.signature(self.callable)
             encoded_ty = type_to_encodable_type(sig.return_annotation)
             encoded_value = encoded_ty.encode(result)
             # serialise back to Json
@@ -104,30 +104,49 @@ class Tool[**P, T]:
             return str({"status": "failure", "exception": str(exn)})
 
     @classmethod
-    def of_operation(cls, op: Operation[P, T], name: str):
-        sig = inspect.signature(op)
-        hints = get_type_hints(op)
-        parameter_annotations: dict[str, type] = {}
+    def define(cls, obj: Operation[P, T] | Template[P, T]):
+        """Create a Tool from an Operation or Template.
 
+        Returns None if the object cannot be converted to a tool (e.g., missing type annotations).
+        """
+        sig = inspect.signature(obj)
+        tool_name = obj.__name__
+
+        description = (
+            obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        )
+
+        # Try to get type hints, fall back to signature annotations if that fails
+        try:
+            hints = get_type_hints(obj)
+        except Exception:
+            hints = {
+                p.name: p.annotation
+                for p in sig.parameters.values()
+                if p.annotation is not inspect.Parameter.empty
+            }
+
+        parameter_annotations: dict[str, type] = {}
         for param_name, param in sig.parameters.items():
-            # Check if parameter annotation is missing (inspect.Parameter.empty)
+            # Skip parameters without type annotations
             if param.annotation is inspect.Parameter.empty:
                 raise TypeError(
-                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    f"Parameter '{param_name}' in '{obj.__name__}' "
                     "does not have a type annotation"
                 )
             # get_type_hints might not include the parameter if annotation is invalid
             if param_name not in hints:
                 raise TypeError(
-                    f"Parameter '{param_name}' in operation '{op.__name__}' "
+                    f"Parameter '{param_name}' in '{obj.__name__}' "
                     "does not have a valid type annotation"
                 )
             parameter_annotations[param_name] = hints[param_name]
 
         return cls(
-            operation=op,
-            name=name,
+            callable=obj,
+            name=tool_name,
             parameter_annotations=parameter_annotations,
+            description=description,
         )
 
     @property
@@ -140,7 +159,7 @@ class Tool[**P, T]:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.operation.__doc__ or "",
+                "description": self.description,
                 "parameters": response_format["json_schema"][
                     "schema"
                 ],  # extract the schema
@@ -149,19 +168,14 @@ class Tool[**P, T]:
         }
 
 
-def _tools_of_operations(ops: Iterable[Operation]) -> Mapping[str, Tool]:
+def _tools_of_operations(
+    ops: Iterable[Operation | Template],
+) -> Mapping[str, Tool]:
     tools = {}
     for op in ops:
-        name = op.__name__
-
-        # Ensure tool names are unique. Operation names may not be.
-        if name in tools:
-            suffix = 0
-            while f"{name}_{suffix}" in tools:
-                suffix += 1
-            name = f"{name}_{suffix}"
-
-        tools[name] = Tool.of_operation(op, name)
+        tool = Tool.define(op)
+        # NOTE: Because lexical handling is already guaranteeing unique names, we can just use the tool's name directly.
+        tools[tool.name] = tool
     return tools
 
 
@@ -213,8 +227,10 @@ def completion(*args, **kwargs) -> Any:
 
 # Note: attempting to type the tool arguments causes type-checker failures
 @defop
-def tool_call[T](template: Template, tool: Operation[..., T], *args, **kwargs) -> T:
-    """Perform a model-initiated tool call."""
+def tool_call[T](
+    template: Template, tool: Operation[..., T] | Template[..., T], *args, **kwargs
+) -> T:
+    """Perform a model-initiated tool call (can be an Operation or another Template)."""
     return tool(*args, **kwargs)
 
 
