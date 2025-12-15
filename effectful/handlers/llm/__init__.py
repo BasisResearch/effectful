@@ -32,7 +32,7 @@ class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
     __context__: Mapping[str, Any]
-    __name__: str 
+    __name__: str
 
     @staticmethod
     def _get_excluded_operations() -> frozenset[Operation]:
