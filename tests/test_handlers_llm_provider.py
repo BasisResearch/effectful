@@ -120,6 +120,7 @@ def generate_number(max_value: int) -> int:
 @Template.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
+    Do not use any tools.
 
     Return as a code block with the last definition being the function.
     """
@@ -366,7 +367,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image:
+    """Return a description of the following image. Do not use any tools.
     {image}"""
     raise NotHandled
 
@@ -390,7 +391,7 @@ class BookReview(BaseModel):
 
 @Template.define
 def review_book(plot: str) -> BookReview:
-    """Review a book based on this plot: {plot}"""
+    """Review a book based on this plot: {plot}. Do not use any tools."""
     raise NotImplementedError
 
 
