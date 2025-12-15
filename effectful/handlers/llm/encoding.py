@@ -123,9 +123,6 @@ class EncodableImage(_Encodable[Image.Image, ChatCompletionImageUrlObject]):
         return [{"type": "image_url", "image_url": value}]
 
 
-U = typing.TypeVar("U", bound=pydantic.BaseModel)
-
-
 @type_to_encodable_type.register(tuple)
 def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
     args = typing.get_args(ty)
