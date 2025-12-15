@@ -5,7 +5,7 @@ import functools
 import inspect
 import types
 from collections import ChainMap
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from effectful.ops.semantics import evaluate
@@ -32,12 +32,7 @@ class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
     __name__: str
-    lexical_context: LexicalContext = dataclasses.field(
-        default_factory=lambda: LexicalContext(
-            types.MappingProxyType({}), types.MappingProxyType({})
-        ),  # type: ignore
-        repr=False,
-    )
+    __context__: Mapping[str, Any]
 
     @staticmethod
     def _get_excluded_operations() -> frozenset[Operation]:
@@ -59,7 +54,7 @@ class Template[**P, T]:
         excluded_ops = self._get_excluded_operations()
         result: list[Operation | Template] = []
         # ChainMap.items() respects shadowing (locals shadow globals)
-        for name, obj in self.lexical_context.items():
+        for name, obj in self.__context__.items():
             if name.startswith("_") or obj in result:
                 continue
             if isinstance(obj, Operation):
@@ -104,7 +99,7 @@ class Template[**P, T]:
             frame.f_locals
         )
         # LexicalContext: locals first (shadow globals), then globals
-        lexical_context = LexicalContext(locals_proxy, globals_proxy)
+        context = LexicalContext(locals_proxy, globals_proxy)
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
@@ -114,7 +109,7 @@ class Template[**P, T]:
                 __prompt_template__=body.__doc__,
                 __signature__=inspect.signature(body),
                 __name__=body.__name__,
-                lexical_context=lexical_context,
+                __context__=context,
             )
 
         if _func is None:

@@ -267,12 +267,12 @@ def test_template_captures_other_templates_in_lexical_context():
         """Write a story about {topic} in style {style}."""
         raise NotHandled
 
-    # lexical_context is a ChainMap(locals, globals) - locals shadow globals
+    # __context__ is a ChainMap(locals, globals) - locals shadow globals
     # Sub-templates should be visible in lexical context
-    assert "story_with_moral" in write_story.lexical_context
-    assert "story_funny" in write_story.lexical_context
-    assert write_story.lexical_context["story_with_moral"] is story_with_moral
-    assert write_story.lexical_context["story_funny"] is story_funny
+    assert "story_with_moral" in write_story.__context__
+    assert "story_funny" in write_story.__context__
+    assert write_story.__context__["story_with_moral"] is story_with_moral
+    assert write_story.__context__["story_funny"] is story_funny
 
     # Templates in lexical context are exposed as callable tools
     assert story_with_moral in write_story.tools
@@ -293,7 +293,7 @@ def test_template_composition_with_chained_calls():
         raise NotHandled
 
     # Verify generate_topic is in write_story's lexical context
-    assert "generate_topic" in write_story.lexical_context
+    assert "generate_topic" in write_story.__context__
 
     # Test chained template calls
     mock_provider = SingleResponseLLMProvider("A magical forest")
@@ -315,10 +315,10 @@ def test_template_composition_with_chained_calls():
 def test_mutually_recursive_templates():
     """Test that module-level templates can see each other (mutual recursion)."""
     # Both mutual_a and mutual_b should see each other via ChainMap (globals visible)
-    assert "mutual_a" in mutual_a.lexical_context
-    assert "mutual_b" in mutual_a.lexical_context
-    assert "mutual_a" in mutual_b.lexical_context
-    assert "mutual_b" in mutual_b.lexical_context
+    assert "mutual_a" in mutual_a.__context__
+    assert "mutual_b" in mutual_a.__context__
+    assert "mutual_a" in mutual_b.__context__
+    assert "mutual_b" in mutual_b.__context__
 
     # They should also be in each other's tools
     assert mutual_a in mutual_b.tools
@@ -343,10 +343,9 @@ def test_lexical_context_shadowing():
         raise NotHandled
 
     # The lexical context should see the LOCAL value, not global
-    assert "shadow_test_value" in template_with_shadowed_var.lexical_context
+    assert "shadow_test_value" in template_with_shadowed_var.__context__
     assert (
-        template_with_shadowed_var.lexical_context["shadow_test_value"]
-        == shadow_test_value
+        template_with_shadowed_var.__context__["shadow_test_value"] == shadow_test_value
     )
 
 
@@ -359,5 +358,5 @@ def test_lexical_context_sees_globals_when_no_local():
         raise NotHandled
 
     # Should see the global value (no local shadow in this scope)
-    assert "shadow_test_value" in template_sees_global.lexical_context
-    assert template_sees_global.lexical_context["shadow_test_value"] == "global"
+    assert "shadow_test_value" in template_sees_global.__context__
+    assert template_sees_global.__context__["shadow_test_value"] == "global"
