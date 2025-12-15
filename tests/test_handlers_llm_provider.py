@@ -310,10 +310,8 @@ class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
 @Template.define
 def generate_good_poem(topic: str) -> Poem:
     """Generate a good poem about {topic} returning your result following
-    the provided json schema. Use the provided tools to evaluate the quality
-    and you MUST make sure it is a good poem.
-
-    Do not use any tools for your reponse
+    the provided json schema. Use ONLY the evaluate_poem_tool to evaluate the quality
+    and you MUST make sure it is a good poem. Do not use any other tools.
     """
     raise NotHandled
 
@@ -478,7 +476,7 @@ class LoggingBookRecommendationInterpretation(ObjectInterpretation):
 @Template.define(tools=[recommend_book_tool])
 def get_book_recommendation(user_preference: str) -> BookRecommendation:
     """Get a book recommendation based on user preference: {user_preference}.
-    Use the provided tools to make a recommendation.
+    Use ONLY the recommend_book_tool to make a recommendation. Do not use any other tools.
     """
     raise NotHandled
 
