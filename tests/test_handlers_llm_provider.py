@@ -107,7 +107,7 @@ def classify_genre(plot: str) -> MovieClassification:
 
 @Template.define
 def simple_prompt(topic: str) -> str:
-    """Write a short sentence about {topic}. Do not use any tools."""
+    """Write a short sentence about {topic}. You MUST respond directly without using any tools."""
     raise NotImplementedError
 
 
