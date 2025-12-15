@@ -1,90 +1,70 @@
+from __future__ import annotations
+
 import dataclasses
 import functools
 import inspect
-import textwrap
 import types
-from collections.abc import Callable, Iterable
+from collections import ChainMap
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from effectful.ops.semantics import evaluate
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
 
 
-def _collect_lexical_context(frame) -> dict[str, tuple[str, Any]]:
-    """Collect all symbols from the caller's lexical context.
+class LexicalContext(ChainMap):
+    """ChainMap subclass for Template lexical scope.
 
-    Returns a dict mapping names to (source_code/repr, object) tuples.
-    Captures everything except:
-    - Private/dunder names (starting with _)
-    - Modules
+    This avoids recursive evaluation of circular Template references.
     """
-    lexical_context = {**frame.f_globals, **frame.f_locals}
 
-    collected: dict[str, tuple[str, Any]] = {}
-    for name, obj in lexical_context.items():
-        source = _get_source_for_object(obj, name)
-        if source is not None:
-            collected[name] = (source, obj)
-
-    return collected
+    pass
 
 
-def _get_source_for_object(obj: Any, name: str) -> str | None:
-    """Get source code or representation for an object.
-
-    Returns a string representation suitable for including in a prompt.
-    """
-    # For functions, try to get source
-    if isinstance(obj, types.FunctionType):
-        try:
-            return textwrap.dedent(inspect.getsource(obj)).strip()
-        except (OSError, TypeError):
-            # Fallback for functions without source (e.g., defined in REPL)
-            doc = obj.__doc__ or "No docstring"
-            return f"# <function {obj.__name__}>\n# {doc}"
-
-    # For classes/types
-    if isinstance(obj, type):
-        try:
-            return textwrap.dedent(inspect.getsource(obj)).strip()
-        except (OSError, TypeError):
-            doc = obj.__doc__ or "No docstring"
-            return f"# <class {obj.__name__}>\n# {doc}"
-
-    # For generic aliases (list[int], Callable[[str], int], etc.)
-    if hasattr(obj, "__origin__"):
-        return f"{name} = {obj}"
-
-    # For callable instances (objects with __call__)
-    if callable(obj):
-        obj_type = type(obj)
-        try:
-            return textwrap.dedent(inspect.getsource(obj_type)).strip()
-        except (OSError, TypeError):
-            doc = getattr(obj, "__doc__", None) or "No docstring"
-            return f"# <callable {name}: {obj_type.__name__}>\n# {doc}"
-
-    # For dataclass instances, show the instance
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return f"{name} = {obj!r}"
-
-    try:
-        repr_str = repr(obj)
-        if len(repr_str) > 500:
-            return f"{name} = <{type(obj).__name__}>"
-        return f"{name} = {repr_str}"
-    except Exception:
-        return f"{name} = <{type(obj).__name__}>"
+@evaluate.register(LexicalContext)
+def _evaluate_lexical_context(expr: LexicalContext, **kwargs) -> LexicalContext:
+    return expr
 
 
 @dataclasses.dataclass(frozen=True)
 class Template[**P, T]:
-    __signature__: inspect.Signature
     __prompt_template__: str
-    tools: tuple[Operation, ...]
-    lexical_context: dict[str, tuple[str, Any]] = dataclasses.field(
-        default_factory=dict
-    )
+    __signature__: inspect.Signature
+    __context__: Mapping[str, Any]
+    __name__: str
+
+    @staticmethod
+    def _get_excluded_operations() -> frozenset[Operation]:
+        """Get the set of internal operations to exclude from auto-capture."""
+        from effectful.handlers.llm import providers
+        from effectful.ops import semantics
+
+        excluded: set[Operation] = set()
+        for module in (providers, semantics):
+            for name in dir(module):
+                obj = getattr(module, name)
+                if isinstance(obj, Operation):
+                    excluded.add(obj)
+        return frozenset(excluded)
+
+    @property
+    def tools(self) -> tuple[Operation | Template, ...]:
+        """Operations and Templates available as tools. Auto-capture from lexical context."""
+        excluded_ops = self._get_excluded_operations()
+        result: list[Operation | Template] = []
+        # ChainMap.items() respects shadowing (locals shadow globals)
+        for name, obj in self.__context__.items():
+            if name.startswith("_") or obj in result:
+                continue
+            if isinstance(obj, Operation):
+                # Exclude internal operations from providers and semantics modules
+                if obj in excluded_ops:
+                    continue
+                result.append(obj)
+            elif isinstance(obj, Template):
+                result.append(obj)
+        return tuple(result)
 
     @defop
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -96,29 +76,40 @@ class Template[**P, T]:
         else:
             return self
 
-    def get_lexical_context_source(self) -> str:
-        """Return the source code of all captured lexical symbols."""
-        return "\n\n".join(source for source, _ in self.lexical_context.values())
-
     @classmethod
-    def define(cls, _func=None, *, tools: Iterable[Operation] = ()):
-        # Capture caller's frame to collect lexical context
-        caller_frame = inspect.currentframe()
-        assert caller_frame is not None
-        caller_frame = caller_frame.f_back
-        assert caller_frame is not None
+    def define(
+        cls,
+        _func=None,
+        *,
+        tools: Iterable[Operation | Template] | str | None = None,
+    ):
+        """Define a prompt template.
 
-        lexical_ctx = _collect_lexical_context(caller_frame)
+        Args:
+            tools: Tools to expose to the LLM:
+                   - None (default): no tools
+                   - "auto": auto-capture from lexical scope
+                   - list: explicit list of Operations/Templates
+        """
+        frame: types.FrameType = inspect.currentframe().f_back  # type: ignore
+        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_globals
+        )
+        locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_locals
+        )
+        # LexicalContext: locals first (shadow globals), then globals
+        context = LexicalContext(locals_proxy, globals_proxy)  # type: ignore[arg-type]
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:
                 raise ValueError("Expected a docstring on body")
 
             return cls(
-                __signature__=inspect.signature(body),
                 __prompt_template__=body.__doc__,
-                tools=tuple(tools),
-                lexical_context=lexical_ctx,
+                __signature__=inspect.signature(body),
+                __name__=body.__name__,
+                __context__=context,
             )
 
         if _func is None:
