@@ -13,7 +13,7 @@ from enum import Enum
 
 import pytest
 from PIL import Image
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Template
@@ -379,3 +379,134 @@ def test_image_input():
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
+
+
+class BookReview(BaseModel):
+    """A book review with rating and summary."""
+
+    title: str = Field(..., description="title of the book")
+    rating: int = Field(..., description="rating from 1 to 5", ge=1, le=5)
+    summary: str = Field(..., description="brief summary of the review")
+
+
+@Template.define
+def review_book(plot: str) -> BookReview:
+    """Review a book based on this plot: {plot}"""
+    raise NotImplementedError
+
+
+class TestPydanticBaseModelReturn:
+    @requires_openai
+    def test_pydantic_basemodel_return(self):
+        plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
+
+        with (
+            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            review = review_book(plot)
+
+            assert isinstance(review, BookReview)
+            assert isinstance(review.title, str)
+            assert len(review.title) > 0
+            assert isinstance(review.rating, int)
+            assert 1 <= review.rating <= 5
+            assert isinstance(review.summary, str)
+            assert len(review.summary) > 0
+
+
+class BookRecommendation(BaseModel):
+    """A book recommendation with details."""
+
+    title: str = Field(..., description="title of the recommended book")
+    reason: str = Field(..., description="reason for the recommendation")
+
+
+@defop
+def recommend_book_tool(genre: str, explanation: str) -> BookRecommendation:
+    """Recommend a book based on genre preference.
+
+    Parameters:
+    - genre: The genre of book to recommend
+    - explanation: Natural language explanation of the recommendation
+    """
+    raise NotHandled
+
+
+class LoggingBookRecommendationInterpretation(ObjectInterpretation):
+    """Provides an interpretation for `recommend_book_tool` that tracks recommendations."""
+
+    recommendation_count: int = 0
+    recommendation_results: list[dict] = []
+
+    @implements(recommend_book_tool)
+    def _recommend_book_tool(self, genre: str, explanation: str) -> BookRecommendation:
+        self.recommendation_count += 1
+
+        # Simple heuristic: recommend based on genre
+        recommendations = {
+            "fantasy": BookRecommendation(
+                title="The Lord of the Rings", reason="Classic fantasy epic"
+            ),
+            "sci-fi": BookRecommendation(
+                title="Dune", reason="Epic science fiction masterpiece"
+            ),
+            "mystery": BookRecommendation(
+                title="The Hound of the Baskervilles",
+                reason="Classic mystery novel",
+            ),
+        }
+
+        recommendation = recommendations.get(
+            genre.lower(),
+            BookRecommendation(
+                title="1984", reason="Thought-provoking dystopian novel"
+            ),
+        )
+
+        self.recommendation_results.append(
+            {
+                "genre": genre,
+                "explanation": explanation,
+                "recommendation": recommendation,
+            }
+        )
+
+        return recommendation
+
+
+@Template.define(tools=[recommend_book_tool])
+def get_book_recommendation(user_preference: str) -> BookRecommendation:
+    """Get a book recommendation based on user preference: {user_preference}.
+    Use the provided tools to make a recommendation.
+    """
+    raise NotHandled
+
+
+class TestPydanticBaseModelToolCalls:
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            pytest.param("gpt-5-nano", marks=requires_openai),
+            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
+        ],
+    )
+    def test_pydantic_basemodel_tool_calling(self, model_name):
+        """Test that templates with tools work with Pydantic BaseModel."""
+        book_rec_ctx = LoggingBookRecommendationInterpretation()
+        with (
+            handler(LiteLLMProvider(model_name=model_name)),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+            handler(book_rec_ctx),
+        ):
+            recommendation = get_book_recommendation("I love fantasy novels")
+
+            assert isinstance(recommendation, BookRecommendation)
+            assert isinstance(recommendation.title, str)
+            assert len(recommendation.title) > 0
+            assert isinstance(recommendation.reason, str)
+            assert len(recommendation.reason) > 0
+
+        # Verify the tool was called at least once
+        assert book_rec_ctx.recommendation_count >= 1
+        assert len(book_rec_ctx.recommendation_results) >= 1
