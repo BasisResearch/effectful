@@ -18,7 +18,9 @@ class Template[**P, T]:
     __signature__: inspect.Signature
     __name__: str
     lexical_context: ChainMap[str, Any] = dataclasses.field(
-        default_factory=lambda: ChainMap(types.MappingProxyType({}), types.MappingProxyType({})), # type: ignore
+        default_factory=lambda: ChainMap(
+            types.MappingProxyType({}), types.MappingProxyType({})
+        ),  # type: ignore
         repr=False,
     )
 
@@ -38,8 +40,7 @@ class Template[**P, T]:
 
     @property
     def tools(self) -> tuple[Operation | Template, ...]:
-        """Operations and Templates available as tools. Auto-capture from lexical context.
-        """
+        """Operations and Templates available as tools. Auto-capture from lexical context."""
         excluded_ops = self._get_excluded_operations()
         result: list[Operation | Template] = []
         # ChainMap.items() respects shadowing (locals shadow globals)
@@ -81,11 +82,14 @@ class Template[**P, T]:
                    - list: explicit list of Operations/Templates
         """
         frame: types.FrameType = inspect.currentframe().f_back  # type: ignore
-        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(frame.f_globals)
-        locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(frame.f_locals)
+        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_globals
+        )
+        locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_locals
+        )
         # ChainMap: locals first (shadow globals), then globals
         lexical_context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)
-
 
         def decorator(body: Callable[P, T]):
             if not body.__doc__:

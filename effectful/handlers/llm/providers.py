@@ -106,20 +106,25 @@ class Tool[**P, T]:
     @classmethod
     def define(cls, obj: Operation[P, T] | Template[P, T]):
         """Create a Tool from an Operation or Template.
-        
+
         Returns None if the object cannot be converted to a tool (e.g., missing type annotations).
         """
         sig = inspect.signature(obj)
         tool_name = obj.__name__
 
-        description = obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        description = (
+            obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
+        )
 
         # Try to get type hints, fall back to signature annotations if that fails
         try:
             hints = get_type_hints(obj)
         except Exception:
-            hints = {p.name: p.annotation for p in sig.parameters.values()
-                     if p.annotation is not inspect.Parameter.empty}
+            hints = {
+                p.name: p.annotation
+                for p in sig.parameters.values()
+                if p.annotation is not inspect.Parameter.empty
+            }
 
         parameter_annotations: dict[str, type] = {}
         for param_name, param in sig.parameters.items():

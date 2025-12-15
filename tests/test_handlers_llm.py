@@ -344,7 +344,10 @@ def test_lexical_context_shadowing():
 
     # The lexical context should see the LOCAL value, not global
     assert "shadow_test_value" in template_with_shadowed_var.lexical_context
-    assert template_with_shadowed_var.lexical_context["shadow_test_value"] == shadow_test_value
+    assert (
+        template_with_shadowed_var.lexical_context["shadow_test_value"]
+        == shadow_test_value
+    )
 
 
 def test_lexical_context_sees_globals_when_no_local():
