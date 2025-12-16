@@ -393,15 +393,24 @@ The following types, functions, and values are available:
 
         **Specification:** {template.__prompt_template__}
 
-        **Required signature:** {repr(ret_type)}
+        **Required function signature:** {repr(ret_type)}
         {context_section}
-        **Instructions:**
-        1. Write a complete Python module with the function.
-        2. The main function MUST have the exact signature shown above.
-        3. Do NOT create a factory function - implement the function directly.
+        **Critical Instructions:**
+        1. The function you write MUST have EXACTLY this signature: {repr(ret_type)}
+        2. Any values mentioned in the specification (like specific characters or strings) should be hardcoded directly in the function body, NOT as parameters.
+        3. Do NOT create a wrapper or factory function. Write the function directly.
         4. You may include helper functions/classes/constants.
         5. Do not redefine provided types - they are already available.
         6. Do not include import statements.
+        
+        Example: If asked to "count occurrences of 'a'" with signature Callable[[str], int], write:
+        def count_a(text: str) -> int:
+            return text.count('a')
+        NOT:
+        def make_counter(char: str) -> Callable[[str], int]:
+            def inner(text: str) -> int:
+                return text.count(char)
+            return inner
         """).strip()
 
         response: SynthesizedFunction = fwd(
