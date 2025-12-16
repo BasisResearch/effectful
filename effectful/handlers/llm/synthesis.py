@@ -104,7 +104,12 @@ class SynthesizedFunction(
                 module_code,
             )
 
-        return exec_globals[func_name]
+        func = exec_globals[func_name]
+        # Attach source code to the function for later retrieval
+        # (inspect.getsource won't work on dynamically generated functions)
+        func.__source__ = module_code
+        func.__synthesized__ = vl
+        return func
 
     @classmethod
     def serialize(cls, vl: SynthesizedFunction) -> list[OpenAIMessageContentListBlock]:
