@@ -125,4 +125,3 @@ class TestProgramSynthesis:
             assert hasattr(count_func, "__synthesized__")
             assert isinstance(count_func.__synthesized__, SynthesizedFunction)
             assert count_func.__synthesized__.function_name == count_func.__name__
-
