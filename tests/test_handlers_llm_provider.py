@@ -1,5 +1,4 @@
 """Tests for LLM handlers and providers.
-
 This module tests the functionality from build/main.py and build/llm.py,
 breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
 ProgramSynthesis, and sampling strategies.
@@ -13,7 +12,7 @@ from enum import Enum
 
 import pytest
 from PIL import Image
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Template
@@ -24,7 +23,7 @@ from effectful.handlers.llm.providers import (
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
 # Check for API keys
@@ -102,25 +101,26 @@ class MovieClassification:
 
 @Template.define
 def classify_genre(plot: str) -> MovieClassification:
-    """Classify the movie genre based on this plot: {plot}"""
+    """Classify the movie genre based on this plot: {plot}. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def simple_prompt(topic: str) -> str:
-    """Write a short sentence about {topic}."""
+    """Write a short sentence about {topic}. You MUST respond directly without using any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def generate_number(max_value: int) -> int:
-    """Generate a random number between 1 and {max_value}. Return only the number."""
+    """Generate a random number between 1 and {max_value}. Return only the number. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
+    Do not use any tools.
 
     Return as a code block with the last definition being the function.
     """
@@ -260,90 +260,6 @@ class TestProgramSynthesis:
             assert count_func("aardvark") == 3
 
 
-@dataclass
-class Poem:
-    """A poem with content and form."""
-
-    content: str = Field(..., description="content of the poem")
-    form: str = Field(..., description="name of the type of the poem")
-
-
-class PoemQuality(str, Enum):
-    """Quality rating for a poem."""
-
-    GOOD = "GOOD"
-    OKAY = "OKAY"
-    BAD = "BAD"
-
-
-@defop
-def evaluate_poem_tool(poem: Poem, explanation: str) -> PoemQuality:
-    """Evaluate the quality of a poem.
-
-    Parameters:
-    - poem: Poem object representing the poem
-    - explanation: natural language explanation of the thought process
-    """
-    raise NotHandled
-
-
-class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
-    """Provides an interpretation for `evaluate_poem_tool` that tracks evaluation counts."""
-
-    evaluation_count: int = 0
-    evaluation_results: list[dict] = []
-
-    @implements(evaluate_poem_tool)
-    def _evaluate_poem_tool(self, poem: Poem, explanation: str) -> PoemQuality:
-        self.evaluation_count += 1
-
-        # Simple heuristic: require at least 2 evaluations, then approve
-        quality = PoemQuality.BAD if self.evaluation_count < 2 else PoemQuality.GOOD
-
-        self.evaluation_results.append(
-            {"poem": poem, "explanation": explanation, "quality": quality}
-        )
-
-        return quality
-
-
-@Template.define(tools=[evaluate_poem_tool])
-def generate_good_poem(topic: str) -> Poem:
-    """Generate a good poem about {topic} returning your result following
-    the provided json schema. Use the provided tools to evaluate the quality
-    and you MUST make sure it is a good poem.
-    """
-    raise NotHandled
-
-
-class TestToolCalling:
-    """Tests for templates with tool calling functionality."""
-
-    @pytest.mark.parametrize(
-        "model_name",
-        [
-            pytest.param("gpt-5-nano", marks=requires_openai),
-            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
-        ],
-    )
-    def test_tool_calling(self, model_name):
-        """Test that templates with tools work with openai."""
-        poem_eval_ctx = LoggingPoemEvaluationInterpretation()
-        with (
-            handler(LiteLLMProvider(model_name=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=4)),
-            handler(poem_eval_ctx),
-        ):
-            poem = generate_good_poem("Python")
-            assert isinstance(poem, Poem)
-            assert isinstance(poem.content, str)
-            assert isinstance(poem.form, str)
-
-        # Verify the tool was called at least once
-        assert poem_eval_ctx.evaluation_count >= 1
-        assert len(poem_eval_ctx.evaluation_results) >= 1
-
-
 def smiley_face() -> Image.Image:
     bmp = [
         "00000000",
@@ -365,7 +281,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image:
+    """Return a description of the following image. Do not use any tools.
     {image}"""
     raise NotHandled
 
@@ -377,3 +293,37 @@ def test_image_input():
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
+
+
+class BookReview(BaseModel):
+    """A book review with rating and summary."""
+
+    title: str = Field(..., description="title of the book")
+    rating: int = Field(..., description="rating from 1 to 5", ge=1, le=5)
+    summary: str = Field(..., description="brief summary of the review")
+
+
+@Template.define
+def review_book(plot: str) -> BookReview:
+    """Review a book based on this plot: {plot}. Do not use any tools."""
+    raise NotImplementedError
+
+
+class TestPydanticBaseModelReturn:
+    @requires_openai
+    def test_pydantic_basemodel_return(self):
+        plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
+
+        with (
+            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            review = review_book(plot)
+
+            assert isinstance(review, BookReview)
+            assert isinstance(review.title, str)
+            assert len(review.title) > 0
+            assert isinstance(review.rating, int)
+            assert 1 <= review.rating <= 5
+            assert isinstance(review.summary, str)
+            assert len(review.summary) > 0

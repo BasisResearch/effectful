@@ -323,7 +323,7 @@ def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tenso
 
 
 @defdata.register(torch.Tensor)
-def _embed_tensor(op, *args, **kwargs):
+def _embed_tensor(ty, op, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)

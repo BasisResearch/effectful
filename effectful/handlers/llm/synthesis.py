@@ -2,18 +2,17 @@ import collections
 import collections.abc
 import dataclasses
 import inspect
-import linecache
 import tempfile
 import textwrap
+import types
 import typing
 from collections.abc import Callable
-from typing import Any
 
 import pydantic
 from mypy import api as mypy_api
 from pydantic import Field
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import LexicalContext, Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -44,14 +43,14 @@ class SynthesizedFunction(pydantic.BaseModel):
 
 
 def _get_imports_from_lexical_context(
-    lexical_context: dict[str, tuple[str, Any]],
+    lexical_context: LexicalContext,
 ) -> list[str]:
     """Generate import statements for types in the lexical context.
 
     Only generates imports for types/classes that have a proper module.
     """
     imports = []
-    for name, (_, obj) in lexical_context.items():
+    for name, obj in lexical_context.items():
         if isinstance(obj, type):
             module = inspect.getmodule(obj)
             if module is not None and module.__name__ not in ("builtins", "__main__"):
@@ -59,9 +58,83 @@ def _get_imports_from_lexical_context(
     return imports
 
 
+def get_lexical_context_source(template: Template) -> str:
+    """Generate Python source code representations of items in the lexical context.
+
+    This provides the LLM with information about types, functions, and values
+    that are available for use in synthesized code.
+
+    Args:
+        template: The template whose lexical context to examine
+
+    Returns:
+        A string containing Python source code or type signatures
+    """
+    from effectful.ops.types import Operation
+
+    sources: list[str] = []
+    seen_names: set[str] = set()
+
+    for name, obj in template.__context__.items():
+        # Skip private/dunder names and duplicates
+        if name.startswith("_") or name in seen_names:
+            continue
+        seen_names.add(name)
+
+        # Skip modules and common builtins
+        if isinstance(obj, types.ModuleType):
+            continue
+
+        source = None
+
+        # Try to get source for classes (including dataclasses)
+        if isinstance(obj, type):
+            try:
+                source = inspect.getsource(obj)
+            except (OSError, TypeError):
+                # Fall back to showing class signature
+                source = f"class {name}: ..."
+
+        # Handle functions
+        elif callable(obj) and not isinstance(obj, (Operation, Template)):
+            try:
+                source = inspect.getsource(obj)
+            except (OSError, TypeError):
+                # Fall back to showing function signature
+                try:
+                    sig = inspect.signature(obj)
+                    source = f"def {name}{sig}: ..."
+                except (ValueError, TypeError):
+                    source = f"def {name}(...): ..."
+
+        # Handle Operations - show as function signatures
+        elif isinstance(obj, Operation):
+            try:
+                sig = inspect.signature(obj)
+                doc = obj.__doc__ or ""
+                first_line = doc.split("\n")[0].strip() if doc else ""
+                source = f"def {name}{sig}: ...  # {first_line}" if first_line else f"def {name}{sig}: ..."
+            except (ValueError, TypeError):
+                source = f"def {name}(...): ..."
+
+        # Handle Templates - show as function signatures
+        elif isinstance(obj, Template):
+            try:
+                sig = obj.__signature__
+                doc = obj.__prompt_template__.split("\n")[0].strip()
+                source = f"def {name}{sig}: ...  # {doc}" if doc else f"def {name}{sig}: ..."
+            except (ValueError, TypeError, AttributeError):
+                source = f"def {name}(...): ..."
+
+        if source:
+            sources.append(textwrap.dedent(source).strip())
+
+    return "\n\n".join(sources)
+
+
 def run_mypy_check(
     code: str,
-    lexical_context: dict[str, tuple[str, Any]],
+    lexical_context: LexicalContext,
 ) -> tuple[bool, str]:
     """Run mypy on generated code to verify type correctness.
 
@@ -122,8 +195,8 @@ class ProgramSynthesis(ObjectInterpretation):
         self,
         result: SynthesizedFunction,
         callable_type: type,
-        lexical_context: dict[str, tuple[str, Any]],
-    ) -> typing.Callable:
+        lexical_context: LexicalContext,
+    ) -> Callable:
         """Build and execute a function from the synthesized module.
 
         Executes the LLM's module code as-is and optionally verifies
@@ -140,29 +213,11 @@ class ProgramSynthesis(ObjectInterpretation):
         func_name = result.function_name
         module_code = textwrap.dedent(result.module_code).strip()
 
-        # Add type assertion for mypy checking (use repr for the type)
-        type_assertion = f"\n\n_: {repr(callable_type)} = {func_name}"
-        code_with_assertion = module_code + type_assertion
-
-        # Register in linecache for better tracebacks
-        lines = module_code.splitlines(keepends=True)
-        filename = f"<generated-{hash(module_code)}>"
-        linecache.cache[filename] = (len(module_code), None, lines, filename)
-
-        # Optional mypy type checking with type assertion
-        if self.type_check:
-            success, error_msg = run_mypy_check(code_with_assertion, lexical_context)
-            if not success:
-                raise SynthesisError(f"Type check failed:\n{error_msg}", module_code)
-
-        # Build globals dict from lexical context (all functions, types, etc.)
-        gs: dict = {}
-        for name, (_, obj) in lexical_context.items():
-            gs[name] = obj
-
+        # Create a new dictionary for the exec globals
+        exec_globals = dict(lexical_context)
         try:
-            code_obj = compile(module_code, filename, "exec")
-            exec(code_obj, gs)
+            code_obj = compile(module_code, "<generated>", "exec")
+            exec(code_obj, exec_globals)
         except SyntaxError as exc:
             raise SynthesisError(
                 f"Syntax error in generated code: {exc}", module_code
@@ -170,14 +225,14 @@ class ProgramSynthesis(ObjectInterpretation):
         except Exception as exc:
             raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
 
-        if func_name not in gs:
+        if func_name not in lexical_context:
             raise SynthesisError(
                 f"Function '{func_name}' not found after execution. "
-                f"Available names: {[k for k in gs.keys() if not k.startswith('_')]}",
+                f"Available names: {[k for k in exec_globals.keys() if not k.startswith('_')]}",
                 module_code,
             )
 
-        return gs[func_name]
+        return exec_globals[func_name]
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -188,15 +243,10 @@ class ProgramSynthesis(ObjectInterpretation):
         if not (issubclass(ret_type_origin, collections.abc.Callable)):  # type: ignore[arg-type]
             return fwd()
 
-        # Get lexical context - contains all functions, types, and values from definition site
-        lexical_context = getattr(template, "lexical_context", {})
-
         # Include the full lexical context - all functions, types, values available to synthesized code
-        context_section = ""
-        if lexical_context:
-            context_source = template.get_lexical_context_source()
-            escaped_context = context_source.replace("{", "{{").replace("}", "}}")
-            context_section = f"""
+        context_source = get_lexical_context_source(template)
+        escaped_context = context_source.replace("{", "{{").replace("}", "}}")
+        context_section = f"""
 The following types, functions, and values are available:
 
 ```python
@@ -232,4 +282,4 @@ The following types, functions, and values are available:
         )
 
         # Build and return the function using lexical context for exec globals
-        return self._build_function(response, ret_type, lexical_context)
+        return self._build_function(response, ret_type, template.__context__)

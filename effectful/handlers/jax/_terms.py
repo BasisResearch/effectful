@@ -58,7 +58,7 @@ class _IndexUpdateRef:
 
 
 @defdata.register(jax.Array)
-def _embed_array(op, *args, **kwargs):
+def _embed_array(ty, op, *args, **kwargs):
     if (
         op is jax_getitem
         and not isinstance(args[0], Term)

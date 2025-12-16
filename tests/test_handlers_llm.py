@@ -3,13 +3,21 @@ from dataclasses import dataclass
 
 import pytest
 
+import pytest
+
 from effectful.handlers.llm import Template
+<<<<<<< HEAD
 from effectful.handlers.llm.synthesis import (
     ProgramSynthesis,
     SynthesisError,
     SynthesizedFunction,
 )
 from effectful.ops.semantics import handler
+=======
+from effectful.handlers.llm.providers import RetryLLMHandler
+from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.ops.semantics import NotHandled, handler
+>>>>>>> 931d5071d3f386a224cf46c103ca1905fa3c12df
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
@@ -64,25 +72,38 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
 @Template.define
 def limerick(theme: str) -> str:
     """Write a limerick on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def haiku(theme: str) -> str:
     """Write a haiku on the theme of {theme}."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define()
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
-    raise NotImplementedError
+    raise NotHandled
 
 
 @Template.define
 def count_char(char: str) -> Callable[[str], int]:
     """Write a function which takes a string and counts the occurrances of '{char}'."""
-    raise NotImplementedError
+    raise NotHandled
+
+
+# Mutually recursive templates (module-level for live globals)
+@Template.define
+def mutual_a() -> str:
+    """Use mutual_a and mutual_b as tools to do task A."""
+    raise NotHandled
+
+
+@Template.define
+def mutual_b() -> str:
+    """Use mutual_a and mutual_b as tools to do task B."""
+    raise NotHandled
 
 
 @dataclass
@@ -139,6 +160,7 @@ def count_occurrences(text: str) -> int:
         assert count_a("cherry") == 0
 
 
+<<<<<<< HEAD
 def test_count_char_with_untyped_function():
     """Test program synthesis works even when LLM omits type annotations."""
     mock_response = SynthesizedFunction(
@@ -301,3 +323,232 @@ def count_and_triple(text: str) -> int:
         assert callable(counter)
         assert counter("banana") == 9  # 3 'a's tripled
         assert counter("aardvark") == 9
+=======
+class FailingThenSucceedingProvider[T](ObjectInterpretation):
+    """Mock provider that fails a specified number of times before succeeding."""
+
+    def __init__(
+        self,
+        fail_count: int,
+        success_response: T,
+        exception_factory: Callable[[], Exception],
+    ):
+        """Initialize the provider.
+
+        Args:
+            fail_count: Number of times to fail before succeeding
+            success_response: Response to return after failures
+            exception_factory: Factory function that creates exceptions to raise
+        """
+        self.fail_count = fail_count
+        self.success_response = success_response
+        self.exception_factory = exception_factory
+        self.call_count = 0
+
+    @implements(Template.__call__)
+    def _call[**P](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise self.exception_factory()
+        return self.success_response
+
+
+def test_retry_handler_succeeds_after_failures():
+    """Test that RetryLLMHandler retries and eventually succeeds."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=2,
+        success_response="Success after retries!",
+        exception_factory=lambda: ValueError("Temporary failure"),
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    with handler(provider), handler(retry_handler):
+        result = limerick("test")
+        assert result == "Success after retries!"
+        assert provider.call_count == 3  # 2 failures + 1 success
+
+
+def test_retry_handler_exhausts_retries():
+    """Test that RetryLLMHandler raises after max retries exhausted."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=5,  # More failures than retries
+        success_response="Never reached",
+        exception_factory=lambda: ValueError("Persistent failure"),
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    with pytest.raises(ValueError, match="Persistent failure"):
+        with handler(provider), handler(retry_handler):
+            limerick("test")
+
+    assert provider.call_count == 3  # Should have tried 3 times
+
+
+def test_retry_handler_only_catches_specified_exception():
+    """Test that RetryLLMHandler only catches the specified exception class."""
+    provider = FailingThenSucceedingProvider(
+        fail_count=1,
+        success_response="Success",
+        exception_factory=lambda: TypeError("Wrong type"),  # Different exception type
+    )
+    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+
+    # TypeError should not be caught, should propagate immediately
+    with pytest.raises(TypeError, match="Wrong type"):
+        with handler(provider), handler(retry_handler):
+            limerick("test")
+
+    assert provider.call_count == 1  # Should have only tried once
+
+
+def test_retry_handler_with_error_feedback():
+    """Test that RetryLLMHandler includes error feedback when enabled."""
+    call_prompts: list[str] = []
+
+    class PromptCapturingProvider(ObjectInterpretation):
+        """Provider that captures prompts and fails once."""
+
+        def __init__(self):
+            self.call_count = 0
+
+        @implements(Template.__call__)
+        def _call(self, template: Template, *args, **kwargs):
+            self.call_count += 1
+            call_prompts.append(template.__prompt_template__)
+            if self.call_count == 1:
+                raise ValueError("First attempt failed")
+            return "Success on retry"
+
+    provider = PromptCapturingProvider()
+    retry_handler = RetryLLMHandler(
+        max_retries=2, add_error_feedback=True, exception_cls=ValueError
+    )
+
+    with handler(provider), handler(retry_handler):
+        result = limerick("test")
+        assert result == "Success on retry"
+
+    assert len(call_prompts) == 2
+    # First call has original prompt
+    assert "Write a limerick on the theme of {theme}." in call_prompts[0]
+    # Second call should include error feedback with traceback
+    assert "Retry generating" in call_prompts[1]
+    assert "First attempt failed" in call_prompts[1]
+
+
+def test_template_captures_other_templates_in_lexical_context():
+    """Test that Templates defined in lexical scope are captured (orchestrator pattern)."""
+
+    # Define sub-templates first
+    @Template.define
+    def story_with_moral(topic: str) -> str:
+        """Write a story about {topic} with a moral lesson. Do not use any tools at all for this."""
+        raise NotHandled
+
+    @Template.define
+    def story_funny(topic: str) -> str:
+        """Write a funny story about {topic}. Do not use any tools at all for this."""
+        raise NotHandled
+
+    # Main orchestrator template has access to sub-templates
+    @Template.define
+    def write_story(topic: str, style: str) -> str:
+        """Write a story about {topic} in style {style}."""
+        raise NotHandled
+
+    # __context__ is a ChainMap(locals, globals) - locals shadow globals
+    # Sub-templates should be visible in lexical context
+    assert "story_with_moral" in write_story.__context__
+    assert "story_funny" in write_story.__context__
+    assert write_story.__context__["story_with_moral"] is story_with_moral
+    assert write_story.__context__["story_funny"] is story_funny
+
+    # Templates in lexical context are exposed as callable tools
+    assert story_with_moral in write_story.tools
+    assert story_funny in write_story.tools
+
+
+def test_template_composition_with_chained_calls():
+    """Test calling one template and passing result to another."""
+
+    @Template.define
+    def generate_topic() -> str:
+        """Generate an interesting topic for a story. Do not try to use any tools for this beside from write_story."""
+        raise NotHandled
+
+    @Template.define
+    def write_story(topic: str) -> str:
+        """Write a short story about {topic}."""
+        raise NotHandled
+
+    # Verify generate_topic is in write_story's lexical context
+    assert "generate_topic" in write_story.__context__
+
+    # Test chained template calls
+    mock_provider = SingleResponseLLMProvider("A magical forest")
+
+    with handler(mock_provider):
+        topic = generate_topic()
+        assert topic == "A magical forest"
+
+    # Now use that topic in the next template
+    mock_provider2 = SingleResponseLLMProvider(
+        "Once upon a time in a magical forest..."
+    )
+
+    with handler(mock_provider2):
+        story = write_story(topic)
+        assert story == "Once upon a time in a magical forest..."
+
+
+def test_mutually_recursive_templates():
+    """Test that module-level templates can see each other (mutual recursion)."""
+    # Both mutual_a and mutual_b should see each other via ChainMap (globals visible)
+    assert "mutual_a" in mutual_a.__context__
+    assert "mutual_b" in mutual_a.__context__
+    assert "mutual_a" in mutual_b.__context__
+    assert "mutual_b" in mutual_b.__context__
+
+    # They should also be in each other's tools
+    assert mutual_a in mutual_b.tools
+    assert mutual_b in mutual_a.tools
+    # And themselves (self-recursion)
+    assert mutual_a in mutual_a.tools
+    assert mutual_b in mutual_b.tools
+
+
+# Module-level variable for shadowing test
+shadow_test_value = "global"
+
+
+def test_lexical_context_shadowing():
+    """Test that local variables shadow global variables in lexical context."""
+    # Local shadows global
+    shadow_test_value = "local"  # noqa: F841 - intentional shadowing
+
+    @Template.define
+    def template_with_shadowed_var() -> str:
+        """Test template."""
+        raise NotHandled
+
+    # The lexical context should see the LOCAL value, not global
+    assert "shadow_test_value" in template_with_shadowed_var.__context__
+    assert (
+        template_with_shadowed_var.__context__["shadow_test_value"] == shadow_test_value
+    )
+
+
+def test_lexical_context_sees_globals_when_no_local():
+    """Test that globals are visible when there's no local shadow."""
+
+    @Template.define
+    def template_sees_global() -> str:
+        """Test template."""
+        raise NotHandled
+
+    # Should see the global value (no local shadow in this scope)
+    assert "shadow_test_value" in template_sees_global.__context__
+    assert template_sees_global.__context__["shadow_test_value"] == "global"
+>>>>>>> 931d5071d3f386a224cf46c103ca1905fa3c12df
