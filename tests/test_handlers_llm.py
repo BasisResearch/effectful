@@ -3,22 +3,16 @@ from dataclasses import dataclass
 
 import pytest
 
-import pytest
-
 from effectful.handlers.llm import Template
-<<<<<<< HEAD
+from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import (
     ProgramSynthesis,
     SynthesisError,
     SynthesizedFunction,
 )
 from effectful.ops.semantics import handler
-=======
-from effectful.handlers.llm.providers import RetryLLMHandler
-from effectful.handlers.llm.synthesis import ProgramSynthesis
-from effectful.ops.semantics import NotHandled, handler
->>>>>>> 931d5071d3f386a224cf46c103ca1905fa3c12df
 from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import NotHandled
 
 
 class MockLLMProvider[T](ObjectInterpretation):
@@ -66,6 +60,37 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         return self.response
+
+
+class FailingThenSucceedingProvider[T](ObjectInterpretation):
+    """Mock provider that fails a specified number of times before succeeding."""
+
+    def __init__(
+        self,
+        fail_count: int,
+        success_response: T,
+        exception_factory: Callable[[], Exception],
+    ):
+        """Initialize the provider.
+
+        Args:
+            fail_count: Number of times to fail before succeeding
+            success_response: Response to return after failures
+            exception_factory: Factory function that creates exceptions to raise
+        """
+        self.fail_count = fail_count
+        self.success_response = success_response
+        self.exception_factory = exception_factory
+        self.call_count = 0
+
+    @implements(Template.__call__)
+    def _call[**P](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise self.exception_factory()
+        return self.success_response
 
 
 # Test templates from the notebook examples
@@ -118,6 +143,24 @@ def make_greeter(style: str) -> Callable[[Person], str]:
     raise NotImplementedError
 
 
+# Helper function for lexical scope test - defined at module level
+def double_count(text: str, char: str) -> int:
+    """Count occurrences of a character and double it."""
+    return text.count(char) * 2
+
+
+# Template that captures the lexical function above
+@Template.define
+def make_double_counter(char: str) -> Callable[[str], int]:
+    """Create a function that counts occurrences of '{char}' and doubles the result.
+    Use the double_count helper function."""
+    raise NotImplementedError
+
+
+# Module-level variable for shadowing test
+shadow_test_value = "global"
+
+
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -160,7 +203,6 @@ def count_occurrences(text: str) -> int:
         assert count_a("cherry") == 0
 
 
-<<<<<<< HEAD
 def test_count_char_with_untyped_function():
     """Test program synthesis works even when LLM omits type annotations."""
     mock_response = SynthesizedFunction(
@@ -264,20 +306,6 @@ def bad_return(text: str) -> str:
             count_char("a")
 
 
-# Helper function for lexical scope test - defined at module level
-def double_count(text: str, char: str) -> int:
-    """Count occurrences of a character and double it."""
-    return text.count(char) * 2
-
-
-# Template that captures the lexical function above
-@Template.define
-def make_double_counter(char: str) -> Callable[[str], int]:
-    """Create a function that counts occurrences of '{char}' and doubles the result.
-    Use the double_count helper function."""
-    raise NotImplementedError
-
-
 def test_program_synthesis_with_lexical_function():
     """Test that synthesized code can use functions from the lexical scope."""
     mock_response = SynthesizedFunction(
@@ -296,11 +324,10 @@ def count_and_double(text: str) -> int:
         assert counter("cherry") == 0
 
 
-def test_program_synthesis_lexical_function_in_prompt():
+def test_program_synthesis_lexical_function_in_context():
     """Test that lexical functions are included in the template's context."""
-    assert "double_count" in make_double_counter.lexical_context
-    source, func = make_double_counter.lexical_context["double_count"]
-    assert "Count occurrences of a character and double it" in source
+    assert "double_count" in make_double_counter.__context__
+    func = make_double_counter.__context__["double_count"]
     assert func is double_count
 
 
@@ -323,36 +350,6 @@ def count_and_triple(text: str) -> int:
         assert callable(counter)
         assert counter("banana") == 9  # 3 'a's tripled
         assert counter("aardvark") == 9
-=======
-class FailingThenSucceedingProvider[T](ObjectInterpretation):
-    """Mock provider that fails a specified number of times before succeeding."""
-
-    def __init__(
-        self,
-        fail_count: int,
-        success_response: T,
-        exception_factory: Callable[[], Exception],
-    ):
-        """Initialize the provider.
-
-        Args:
-            fail_count: Number of times to fail before succeeding
-            success_response: Response to return after failures
-            exception_factory: Factory function that creates exceptions to raise
-        """
-        self.fail_count = fail_count
-        self.success_response = success_response
-        self.exception_factory = exception_factory
-        self.call_count = 0
-
-    @implements(Template.__call__)
-    def _call[**P](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        self.call_count += 1
-        if self.call_count <= self.fail_count:
-            raise self.exception_factory()
-        return self.success_response
 
 
 def test_retry_handler_succeeds_after_failures():
@@ -519,10 +516,6 @@ def test_mutually_recursive_templates():
     assert mutual_b in mutual_b.tools
 
 
-# Module-level variable for shadowing test
-shadow_test_value = "global"
-
-
 def test_lexical_context_shadowing():
     """Test that local variables shadow global variables in lexical context."""
     # Local shadows global
@@ -551,4 +544,3 @@ def test_lexical_context_sees_globals_when_no_local():
     # Should see the global value (no local shadow in this scope)
     assert "shadow_test_value" in template_sees_global.__context__
     assert template_sees_global.__context__["shadow_test_value"] == "global"
->>>>>>> 931d5071d3f386a224cf46c103ca1905fa3c12df

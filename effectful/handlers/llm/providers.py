@@ -446,10 +446,6 @@ def format_model_input[**P, T](
 ) -> list[Any]:
     """Format a template applied to arguments into a sequence of input
     messages.
-
-    Lexical context items can be referenced in the prompt template using
-    {name} syntax. For functions/classes, the source code is inserted.
-    For other values, the repr is inserted.
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()

@@ -113,7 +113,11 @@ def get_lexical_context_source(template: Template) -> str:
                 sig = inspect.signature(obj)
                 doc = obj.__doc__ or ""
                 first_line = doc.split("\n")[0].strip() if doc else ""
-                source = f"def {name}{sig}: ...  # {first_line}" if first_line else f"def {name}{sig}: ..."
+                source = (
+                    f"def {name}{sig}: ...  # {first_line}"
+                    if first_line
+                    else f"def {name}{sig}: ..."
+                )
             except (ValueError, TypeError):
                 source = f"def {name}(...): ..."
 
@@ -122,7 +126,9 @@ def get_lexical_context_source(template: Template) -> str:
             try:
                 sig = obj.__signature__
                 doc = obj.__prompt_template__.split("\n")[0].strip()
-                source = f"def {name}{sig}: ...  # {doc}" if doc else f"def {name}{sig}: ..."
+                source = (
+                    f"def {name}{sig}: ...  # {doc}" if doc else f"def {name}{sig}: ..."
+                )
             except (ValueError, TypeError, AttributeError):
                 source = f"def {name}(...): ..."
 
