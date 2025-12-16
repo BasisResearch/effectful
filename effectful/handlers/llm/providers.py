@@ -180,6 +180,14 @@ def _tools_of_operations(
 
 
 class _OpenAIPromptFormatter(string.Formatter):
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> Any:
+        try:
+            return super().get_field(field_name, args, kwargs)
+        except KeyError as e:
+            raise KeyError(
+                f"key `{field_name}` in prompt not found in runtime context."
+            ) from e
+
     def format_as_messages(
         self, format_str: str, /, *args, **kwargs
     ) -> OpenAIMessageContent:
