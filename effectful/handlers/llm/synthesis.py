@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import collections
 import collections.abc
 import dataclasses
@@ -93,8 +91,6 @@ class EncodableSynthesizedFunction(
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
-        # Create a unique filename and register source with linecache
-        # This allows inspect.getsource() to work on the generated function
         cls._decode_counter += 1
         filename = f"<synthesized:{func_name}:{cls._decode_counter}>"
         lines = module_code.splitlines(keepends=True)
@@ -109,7 +105,10 @@ class EncodableSynthesizedFunction(
         )
 
         # Start with provided context or empty dict
-        exec_globals: dict[str, typing.Any] = dict(context) if context else {}
+        # Include collections module for type hints in synthesized code
+        exec_globals: dict[str, typing.Any] = {"collections": collections}
+        if context:
+            exec_globals.update(context)
 
         try:
             code_obj = compile(module_code, filename, "exec")
@@ -352,14 +351,7 @@ class ProgramSynthesis(ObjectInterpretation):
         ret_type_origin = ret_type if origin is None else origin
 
         # Check if return type is Callable - handle both class and typing special forms
-        # Also handle string annotations (from __future__ import annotations)
-        if isinstance(ret_type_origin, str):
-            is_callable = "Callable" in ret_type_origin
-        else:
-            is_callable = ret_type_origin is collections.abc.Callable or (
-                isinstance(ret_type_origin, type)
-                and issubclass(ret_type_origin, collections.abc.Callable)
-            )
+        is_callable = ret_type_origin is collections.abc.Callable
         if not is_callable:
             return fwd()
 
@@ -404,21 +396,15 @@ The following types, functions, and values are available:
         # Build the function using lexical context for exec globals
         synthesized_func = self._build_function(response, ret_type, template.__context__)
         
-        # Check if the synthesized function should be called with template args
-        # or if it's already the result (matches the return type directly)
         try:
             synth_sig = inspect.signature(synthesized_func)
             template_sig = template.__signature__
             
-            # If synthesized function has same parameter names as template,
-            # it's a factory function - call it with the args
             synth_params = set(synth_sig.parameters.keys())
             template_params = set(template_sig.parameters.keys())
             
             if synth_params == template_params:
-                # Factory function - call it to get the actual callable
                 result = synthesized_func(*args, **kwargs)
-                # Copy synthesis metadata to the result if it's callable
                 if callable(result):
                     if hasattr(synthesized_func, "__source__"):
                         result.__source__ = synthesized_func.__source__
@@ -428,5 +414,4 @@ The following types, functions, and values are available:
         except (ValueError, TypeError):
             pass
         
-        # Otherwise, the synthesized function IS the result
         return synthesized_func

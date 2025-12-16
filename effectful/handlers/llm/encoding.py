@@ -53,9 +53,6 @@ class Encodable[T](EncodableAs[T, type]):
 def type_to_encodable_type[T](
     __dispatch: Callable[[type[T]], Callable[..., Encodable[T]]], ty: type[T]
 ) -> Encodable[T]:
-    # Handle string annotation "str" from `from __future__ import annotations`
-    if ty == "str":
-        return _type_encodable_type_str(str)
     origin_ty = typing.get_origin(ty) or ty
     return __dispatch(origin_ty)(ty)
 

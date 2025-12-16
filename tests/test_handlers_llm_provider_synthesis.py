@@ -1,7 +1,5 @@
 """Tests for LLM program synthesis functionality."""
 
-from __future__ import annotations
-
 import functools
 import inspect
 import os
