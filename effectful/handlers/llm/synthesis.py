@@ -260,22 +260,31 @@ def _get_imports_from_lexical_context(
 def run_mypy_check(
     code: str,
     lexical_context: LexicalContext,
+    function_name: str | None = None,
+    expected_type: type | None = None,
 ) -> tuple[bool, str]:
     """Run mypy on generated code to verify type correctness.
 
     Args:
         code: The generated function code
         lexical_context: Lexical context containing types for imports
+        function_name: Name of the function to type-check
+        expected_type: Expected Callable type (e.g., Callable[[str], int])
 
     Returns:
         A tuple of (success: bool, error_message: str)
     """
-    # Always include collections.abc for Callable type assertions
-    imports = ["import collections.abc"]
+    imports = ["from typing import Callable", "import collections.abc"]
     imports.extend(_get_imports_from_lexical_context(lexical_context))
-    source_parts = imports + [textwrap.dedent(code).strip()]
 
-    full_source = "\n".join(source_parts)
+    # Build full module with the generated code
+    module_parts = imports + ["", textwrap.dedent(code).strip()]
+
+    # Add type assertion if expected_type is provided
+    if function_name and expected_type:
+        module_parts.append(f"_: {repr(expected_type)} = {function_name}")
+
+    full_source = "\n".join(module_parts)
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete_on_close=False
@@ -336,7 +345,12 @@ class ProgramSynthesis(ObjectInterpretation):
             The synthesized callable function
         """
         if self.type_check:
-            success, error_msg = run_mypy_check(result.module_code, lexical_context)
+            success, error_msg = run_mypy_check(
+                result.module_code,
+                lexical_context,
+                function_name=result.function_name,
+                expected_type=callable_type,
+            )
             if not success:
                 raise SynthesisError(
                     f"Type check failed:\n{error_msg}", result.module_code
