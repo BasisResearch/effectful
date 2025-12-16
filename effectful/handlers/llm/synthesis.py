@@ -4,6 +4,7 @@ import collections
 import collections.abc
 import dataclasses
 import inspect
+import linecache
 import tempfile
 import textwrap
 import types
@@ -76,6 +77,9 @@ class EncodableSynthesizedFunction(
             function_name=func_name, module_code=textwrap.dedent(source).strip()
         )
 
+    # Counter for unique filenames
+    _decode_counter: typing.ClassVar[int] = 0
+
     @classmethod
     def decode(
         cls, vl: SynthesizedFunction, context: LexicalContext | None = None
@@ -89,11 +93,26 @@ class EncodableSynthesizedFunction(
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
+        # Create a unique filename and register source with linecache
+        # This allows inspect.getsource() to work on the generated function
+        cls._decode_counter += 1
+        filename = f"<synthesized:{func_name}:{cls._decode_counter}>"
+        lines = module_code.splitlines(keepends=True)
+        # Ensure last line has newline for linecache
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        linecache.cache[filename] = (
+            len(module_code),
+            None,
+            lines,
+            filename,
+        )
+
         # Start with provided context or empty dict
         exec_globals: dict[str, typing.Any] = dict(context) if context else {}
 
         try:
-            code_obj = compile(module_code, "<synthesized>", "exec")
+            code_obj = compile(module_code, filename, "exec")
             exec(code_obj, exec_globals)
         except SyntaxError as exc:
             raise SynthesisError(
@@ -110,8 +129,7 @@ class EncodableSynthesizedFunction(
             )
 
         func = exec_globals[func_name]
-        # Attach source code to the function for later retrieval
-        # (inspect.getsource won't work on dynamically generated functions)
+        # Also attach source code directly for convenience
         func.__source__ = module_code
         func.__synthesized__ = vl
         return func
