@@ -29,15 +29,10 @@ class SynthesisError(Exception):
         self.code = code
 
 
-@type_to_encodable_type.register(collections.abc.Callable)
-class SynthesizedFunction(
-    pydantic.BaseModel,
-    EncodableAs[Callable, "SynthesizedFunction"],
-):
+class SynthesizedFunction(pydantic.BaseModel):
     """Structured output for function synthesis.
 
-    Encodes a Callable to a serializable representation (function name + module code).
-    Decodes by executing the module code and returning the named function.
+    Pydantic model representing synthesized code with function name and module code.
     """
 
     function_name: str = Field(
@@ -49,6 +44,15 @@ class SynthesizedFunction(
         description="Complete Python module code (no imports needed)",
     )
 
+
+@type_to_encodable_type.register(collections.abc.Callable)
+class EncodableSynthesizedFunction(
+    EncodableAs[Callable, SynthesizedFunction],
+):
+    """Encodes Callable to SynthesizedFunction and vice versa."""
+
+    t = SynthesizedFunction
+
     @classmethod
     def encode(
         cls, vl: Callable, context: LexicalContext | None = None
@@ -56,7 +60,6 @@ class SynthesizedFunction(
         """Encode a Callable to a SynthesizedFunction.
 
         Extracts the function name and source code.
-        Optionally captures lexical context from the function's globals.
         """
         func_name = vl.__name__
         try:
@@ -69,7 +72,9 @@ class SynthesizedFunction(
             except (ValueError, TypeError):
                 source = f"def {func_name}(...):\n    pass  # Source unavailable"
 
-        return cls(function_name=func_name, module_code=textwrap.dedent(source).strip())
+        return SynthesizedFunction(
+            function_name=func_name, module_code=textwrap.dedent(source).strip()
+        )
 
     @classmethod
     def decode(
@@ -114,9 +119,6 @@ class SynthesizedFunction(
     @classmethod
     def serialize(cls, vl: SynthesizedFunction) -> list[OpenAIMessageContentListBlock]:
         return [{"type": "text", "text": vl.model_dump_json()}]
-
-
-SynthesizedFunction.t = SynthesizedFunction
 
 
 @type_to_encodable_type.register(LexicalContext)
@@ -305,7 +307,7 @@ class ProgramSynthesis(ObjectInterpretation):
     ) -> Callable:
         """Build and execute a function from the synthesized module.
 
-        Uses SynthesizedFunction.decode with the template's lexical context.
+        Uses EncodableSynthesizedFunction.decode with the template's lexical context.
         Optionally runs mypy type checking if enabled.
 
         Args:
@@ -323,7 +325,7 @@ class ProgramSynthesis(ObjectInterpretation):
                     f"Type check failed:\n{error_msg}", result.module_code
                 )
 
-        return SynthesizedFunction.decode(result, context=lexical_context)
+        return EncodableSynthesizedFunction.decode(result, context=lexical_context)
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
