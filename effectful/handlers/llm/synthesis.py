@@ -328,7 +328,6 @@ class ProgramSynthesis(ObjectInterpretation):
     def _build_function(
         self,
         result: SynthesizedFunction,
-        callable_type: type,
         lexical_context: LexicalContext,
     ) -> Callable:
         """Build and execute a function from the synthesized module.
@@ -338,25 +337,34 @@ class ProgramSynthesis(ObjectInterpretation):
 
         Args:
             result: The structured output from the LLM
-            callable_type: The expected Callable type (e.g., Callable[[str], int])
             lexical_context: Dict of lexical context (functions/types) available in scope
 
         Returns:
             The synthesized callable function
         """
-        if self.type_check:
-            success, error_msg = run_mypy_check(
-                result.module_code,
-                lexical_context,
-                function_name=result.function_name,
-                expected_type=callable_type,
-            )
-            if not success:
-                raise SynthesisError(
-                    f"Type check failed:\n{error_msg}", result.module_code
-                )
-
         return EncodableSynthesizedFunction.decode(result, context=lexical_context)
+
+    def _run_type_check(
+        self,
+        result: SynthesizedFunction,
+        expected_type: type | None,
+        lexical_context: LexicalContext,
+    ) -> None:
+        """Run mypy type checking on the synthesized code.
+
+        Args:
+            result: The structured output from the LLM
+            expected_type: The expected Callable type, or None to skip type assertion
+            lexical_context: Dict of lexical context for imports
+        """
+        success, error_msg = run_mypy_check(
+            result.module_code,
+            lexical_context,
+            function_name=result.function_name if expected_type else None,
+            expected_type=expected_type,
+        )
+        if not success:
+            raise SynthesisError(f"Type check failed:\n{error_msg}", result.module_code)
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -392,14 +400,24 @@ The following types, functions, and values are available:
 
         **Specification:** {template.__prompt_template__}
 
-        **Required signature:** {repr(ret_type)}
+        **Required function signature:** {repr(ret_type)}
         {context_section}
-        **Instructions:**
-        1. Write a complete Python module with the function.
-        2. Choose descriptive function and parameter names.
-        3. You may include helper functions/classes/constants.
-        4. Do not redefine provided types - they are already available.
-        5. Do not include import statements.
+        **Critical Instructions:**
+        1. The function you write MUST have EXACTLY this signature: {repr(ret_type)}
+        2. Any values mentioned in the specification (like specific characters or strings) should be hardcoded directly in the function body, NOT as parameters.
+        3. Do NOT create a wrapper or factory function. Write the function directly.
+        4. You may include helper functions/classes/constants.
+        5. Do not redefine provided types - they are already available.
+        6. Do not include import statements.
+        
+        Example: If asked to "count occurrences of 'a'" with signature Callable[[str], int], write:
+        def count_a(text: str) -> int:
+            return text.count('a')
+        NOT:
+        def make_counter(char: str) -> Callable[[str], int]:
+            def inner(text: str) -> int:
+                return text.count(char)
+            return inner
         """).strip()
 
         response: SynthesizedFunction = fwd(
@@ -415,26 +433,10 @@ The following types, functions, and values are available:
         )
 
         # Build the function using lexical context for exec globals
-        synthesized_func = self._build_function(
-            response, ret_type, template.__context__
-        )
+        synthesized_func = self._build_function(response, template.__context__)
 
-        try:
-            synth_sig = inspect.signature(synthesized_func)
-            template_sig = template.__signature__
-
-            synth_params = set(synth_sig.parameters.keys())
-            template_params = set(template_sig.parameters.keys())
-
-            if synth_params == template_params:
-                result = synthesized_func(*args, **kwargs)
-                if callable(result):
-                    if hasattr(synthesized_func, "__source__"):
-                        result.__source__ = synthesized_func.__source__
-                    if hasattr(synthesized_func, "__synthesized__"):
-                        result.__synthesized__ = synthesized_func.__synthesized__
-                return result
-        except (ValueError, TypeError):
-            pass
+        # Run type check if enabled
+        if self.type_check:
+            self._run_type_check(response, ret_type, template.__context__)
 
         return synthesized_func
