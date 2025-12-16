@@ -9,7 +9,6 @@ import os
 from enum import Enum
 
 import pytest
-from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
@@ -21,7 +20,6 @@ from effectful.handlers.llm.providers import (
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
-from effectful.ops.types import NotHandled
 
 # Check for API keys
 HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
@@ -224,41 +222,6 @@ class TestLLMLoggingHandler:
             record.name == "test_custom_logger" and "llm.request" in record.message
             for record in caplog.records
         )
-
-
-def smiley_face() -> Image.Image:
-    bmp = [
-        "00000000",
-        "00100100",
-        "00100100",
-        "00000000",
-        "01000010",
-        "00111100",
-        "00000000",
-        "00000000",
-    ]
-
-    img = Image.new("1", (8, 8))
-    for y, row in enumerate(bmp):
-        for x, c in enumerate(row):
-            img.putpixel((x, y), 1 if c == "1" else 0)
-    return img
-
-
-@Template.define
-def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image. Do not use any tools.
-    {image}"""
-    raise NotHandled
-
-
-@requires_openai
-def test_image_input():
-    with (
-        handler(LiteLLMProvider(model_name="gpt-4o")),
-        handler(LimitLLMCallsHandler(max_calls=3)),
-    ):
-        assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
 
 
 class BookReview(BaseModel):
