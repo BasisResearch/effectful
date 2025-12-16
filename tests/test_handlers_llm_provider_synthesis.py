@@ -75,7 +75,7 @@ class TestProgramSynthesis:
         """Test ProgramSynthesis handler generates executable code."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
+            handler(ProgramSynthesis(type_check=True)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("a")
@@ -92,7 +92,7 @@ class TestProgramSynthesis:
         """Test that inspect.getsource() works on synthesized functions."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
+            handler(ProgramSynthesis(type_check=True)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("x")
@@ -115,7 +115,7 @@ class TestProgramSynthesis:
 
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
+            handler(ProgramSynthesis(type_check=True)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("z")
@@ -126,3 +126,38 @@ class TestProgramSynthesis:
             assert "def" in count_func.__synthesized__.module_code
             # The function should work correctly
             assert count_func("pizza") == 2  # two 'z's in "pizza"
+
+    def test_immutable_context(self):
+        """Test that synthesis does not pollute the original lexical context."""
+        from effectful.handlers.llm import LexicalContext
+        from effectful.handlers.llm.synthesis import (
+            EncodableSynthesizedFunction,
+            SynthesizedFunction,
+        )
+
+        # Create a context with known contents
+        original_context = LexicalContext({"helper": lambda x: x * 2})
+        original_keys = set(original_context.keys())
+
+        # Synthesize a function that defines new names
+        synth = SynthesizedFunction(
+            function_name="my_func",
+            module_code="""
+def internal_helper(x):
+    return x + 1
+
+def my_func(n):
+    return internal_helper(n) * 2
+""",
+        )
+
+        # Decode with the context
+        func = EncodableSynthesizedFunction.decode(synth, context=original_context)
+
+        # Verify the function works
+        assert func(5) == 12  # (5 + 1) * 2
+
+        # Verify original context was NOT polluted with new definitions
+        assert set(original_context.keys()) == original_keys
+        assert "my_func" not in original_context
+        assert "internal_helper" not in original_context
