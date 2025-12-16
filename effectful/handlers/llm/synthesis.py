@@ -49,8 +49,6 @@ class SynthesizedFunction(
         description="Complete Python module code (no imports needed)",
     )
 
-    t: typing.ClassVar[type[SynthesizedFunction]]
-
     @classmethod
     def encode(
         cls, vl: Callable, context: LexicalContext | None = None
@@ -126,7 +124,7 @@ class EncodableLexicalContext(
     decode: Executes source code to reconstruct a lexical context.
     """
 
-    t: typing.ClassVar[type[str]] = str
+    t = str
 
     @classmethod
     def encode(cls, context: LexicalContext) -> str:
