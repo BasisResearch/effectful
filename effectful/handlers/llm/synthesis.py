@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import collections
 import collections.abc
 import dataclasses
@@ -9,10 +11,12 @@ import typing
 from collections.abc import Callable
 
 import pydantic
+from litellm import OpenAIMessageContentListBlock
 from mypy import api as mypy_api
 from pydantic import Field
 
 from effectful.handlers.llm import LexicalContext, Template
+from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -25,11 +29,15 @@ class SynthesisError(Exception):
         self.code = code
 
 
-class SynthesizedFunction(pydantic.BaseModel):
+@type_to_encodable_type.register(collections.abc.Callable)
+class SynthesizedFunction(
+    pydantic.BaseModel,
+    EncodableAs[Callable, "SynthesizedFunction"],
+):
     """Structured output for function synthesis.
 
-    LLM provides a complete module and the name of the main function.
-    We add a type assertion to verify the function matches the expected signature.
+    Encodes a Callable to a serializable representation (function name + module code).
+    Decodes by executing the module code and returning the named function.
     """
 
     function_name: str = Field(
@@ -40,6 +48,175 @@ class SynthesizedFunction(pydantic.BaseModel):
         ...,
         description="Complete Python module code (no imports needed)",
     )
+
+    t: typing.ClassVar[type[SynthesizedFunction]]
+
+    @classmethod
+    def encode(
+        cls, vl: Callable, context: LexicalContext | None = None
+    ) -> SynthesizedFunction:
+        """Encode a Callable to a SynthesizedFunction.
+
+        Extracts the function name and source code.
+        Optionally captures lexical context from the function's globals.
+        """
+        func_name = vl.__name__
+        try:
+            source = inspect.getsource(vl)
+        except (OSError, TypeError):
+            # If we can't get source, create a minimal representation
+            try:
+                sig = inspect.signature(vl)
+                source = f"def {func_name}{sig}:\n    pass  # Source unavailable"
+            except (ValueError, TypeError):
+                source = f"def {func_name}(...):\n    pass  # Source unavailable"
+
+        return cls(function_name=func_name, module_code=textwrap.dedent(source).strip())
+
+    @classmethod
+    def decode(
+        cls, vl: SynthesizedFunction, context: LexicalContext | None = None
+    ) -> Callable:
+        """Decode a SynthesizedFunction to a Callable.
+
+        Executes the module code and returns the named function.
+        The module code becomes the function's lexical context,
+        optionally augmented with provided context.
+        """
+        func_name = vl.function_name
+        module_code = textwrap.dedent(vl.module_code).strip()
+
+        # Start with provided context or empty dict
+        exec_globals: dict[str, typing.Any] = dict(context) if context else {}
+
+        try:
+            code_obj = compile(module_code, "<synthesized>", "exec")
+            exec(code_obj, exec_globals)
+        except SyntaxError as exc:
+            raise SynthesisError(
+                f"Syntax error in generated code: {exc}", module_code
+            ) from exc
+        except Exception as exc:
+            raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
+
+        if func_name not in exec_globals:
+            raise SynthesisError(
+                f"Function '{func_name}' not found after execution. "
+                f"Available names: {[k for k in exec_globals.keys() if not k.startswith('_')]}",
+                module_code,
+            )
+
+        return exec_globals[func_name]
+
+    @classmethod
+    def serialize(cls, vl: SynthesizedFunction) -> list[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": vl.model_dump_json()}]
+
+
+SynthesizedFunction.t = SynthesizedFunction
+
+
+@type_to_encodable_type.register(LexicalContext)
+class EncodableLexicalContext(
+    EncodableAs[LexicalContext, str],
+):
+    """Encodes LexicalContext to Python source code representation.
+
+    encode: Extracts source code/signatures for types, functions, and values.
+    decode: Executes source code to reconstruct a lexical context.
+    """
+
+    t: typing.ClassVar[type[str]] = str
+
+    @classmethod
+    def encode(cls, context: LexicalContext) -> str:
+        """Generate Python source code representations of items in the lexical context."""
+        from effectful.ops.types import Operation
+
+        sources: list[str] = []
+        seen_names: set[str] = set()
+
+        for name, obj in context.items():
+            # Skip private/dunder names and duplicates
+            if name.startswith("_") or name in seen_names:
+                continue
+            seen_names.add(name)
+
+            # Skip modules and common builtins
+            if isinstance(obj, types.ModuleType):
+                continue
+
+            source = None
+
+            # Try to get source for classes (including dataclasses)
+            if isinstance(obj, type):
+                try:
+                    source = inspect.getsource(obj)
+                except (OSError, TypeError):
+                    # Fall back to showing class signature
+                    source = f"class {name}: ..."
+
+            # Handle functions
+            elif callable(obj) and not isinstance(obj, (Operation, Template)):
+                try:
+                    source = inspect.getsource(obj)
+                except (OSError, TypeError):
+                    # Fall back to showing function signature
+                    try:
+                        sig = inspect.signature(obj)
+                        source = f"def {name}{sig}: ..."
+                    except (ValueError, TypeError):
+                        source = f"def {name}(...): ..."
+
+            # Handle Operations - show as function signatures
+            elif isinstance(obj, Operation):
+                try:
+                    sig = inspect.signature(obj)
+                    doc = obj.__doc__ or ""
+                    first_line = doc.split("\n")[0].strip() if doc else ""
+                    source = (
+                        f"def {name}{sig}: ...  # {first_line}"
+                        if first_line
+                        else f"def {name}{sig}: ..."
+                    )
+                except (ValueError, TypeError):
+                    source = f"def {name}(...): ..."
+
+            # Handle Templates - show as function signatures
+            elif isinstance(obj, Template):
+                try:
+                    sig = obj.__signature__
+                    doc = obj.__prompt_template__.split("\n")[0].strip()
+                    source = (
+                        f"def {name}{sig}: ...  # {doc}"
+                        if doc
+                        else f"def {name}{sig}: ..."
+                    )
+                except (ValueError, TypeError, AttributeError):
+                    source = f"def {name}(...): ..."
+
+            if source:
+                sources.append(textwrap.dedent(source).strip())
+
+        return "\n\n".join(sources)
+
+    @classmethod
+    def decode(cls, source: str) -> LexicalContext:
+        """Execute source code to reconstruct a lexical context."""
+        exec_globals: dict[str, typing.Any] = {}
+        try:
+            code_obj = compile(source, "<lexical_context>", "exec")
+            exec(code_obj, exec_globals)
+        except SyntaxError:
+            # Source may be stubs/signatures that can't be executed
+            pass
+        except Exception:
+            pass
+        return LexicalContext(exec_globals)
+
+    @classmethod
+    def serialize(cls, source: str) -> list[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": source}]
 
 
 def _get_imports_from_lexical_context(
@@ -56,86 +233,6 @@ def _get_imports_from_lexical_context(
             if module is not None and module.__name__ not in ("builtins", "__main__"):
                 imports.append(f"from {module.__name__} import {name}")
     return imports
-
-
-def get_lexical_context_source(template: Template) -> str:
-    """Generate Python source code representations of items in the lexical context.
-
-    This provides the LLM with information about types, functions, and values
-    that are available for use in synthesized code.
-
-    Args:
-        template: The template whose lexical context to examine
-
-    Returns:
-        A string containing Python source code or type signatures
-    """
-    from effectful.ops.types import Operation
-
-    sources: list[str] = []
-    seen_names: set[str] = set()
-
-    for name, obj in template.__context__.items():
-        # Skip private/dunder names and duplicates
-        if name.startswith("_") or name in seen_names:
-            continue
-        seen_names.add(name)
-
-        # Skip modules and common builtins
-        if isinstance(obj, types.ModuleType):
-            continue
-
-        source = None
-
-        # Try to get source for classes (including dataclasses)
-        if isinstance(obj, type):
-            try:
-                source = inspect.getsource(obj)
-            except (OSError, TypeError):
-                # Fall back to showing class signature
-                source = f"class {name}: ..."
-
-        # Handle functions
-        elif callable(obj) and not isinstance(obj, (Operation, Template)):
-            try:
-                source = inspect.getsource(obj)
-            except (OSError, TypeError):
-                # Fall back to showing function signature
-                try:
-                    sig = inspect.signature(obj)
-                    source = f"def {name}{sig}: ..."
-                except (ValueError, TypeError):
-                    source = f"def {name}(...): ..."
-
-        # Handle Operations - show as function signatures
-        elif isinstance(obj, Operation):
-            try:
-                sig = inspect.signature(obj)
-                doc = obj.__doc__ or ""
-                first_line = doc.split("\n")[0].strip() if doc else ""
-                source = (
-                    f"def {name}{sig}: ...  # {first_line}"
-                    if first_line
-                    else f"def {name}{sig}: ..."
-                )
-            except (ValueError, TypeError):
-                source = f"def {name}(...): ..."
-
-        # Handle Templates - show as function signatures
-        elif isinstance(obj, Template):
-            try:
-                sig = obj.__signature__
-                doc = obj.__prompt_template__.split("\n")[0].strip()
-                source = (
-                    f"def {name}{sig}: ...  # {doc}" if doc else f"def {name}{sig}: ..."
-                )
-            except (ValueError, TypeError, AttributeError):
-                source = f"def {name}(...): ..."
-
-        if source:
-            sources.append(textwrap.dedent(source).strip())
-
-    return "\n\n".join(sources)
 
 
 def run_mypy_check(
@@ -205,8 +302,8 @@ class ProgramSynthesis(ObjectInterpretation):
     ) -> Callable:
         """Build and execute a function from the synthesized module.
 
-        Executes the LLM's module code as-is and optionally verifies
-        the function matches the expected type using a type assertion.
+        Uses SynthesizedFunction.decode with the template's lexical context.
+        Optionally runs mypy type checking if enabled.
 
         Args:
             result: The structured output from the LLM
@@ -216,29 +313,14 @@ class ProgramSynthesis(ObjectInterpretation):
         Returns:
             The synthesized callable function
         """
-        func_name = result.function_name
-        module_code = textwrap.dedent(result.module_code).strip()
+        if self.type_check:
+            success, error_msg = run_mypy_check(result.module_code, lexical_context)
+            if not success:
+                raise SynthesisError(
+                    f"Type check failed:\n{error_msg}", result.module_code
+                )
 
-        # Create a new dictionary for the exec globals
-        exec_globals = dict(lexical_context)
-        try:
-            code_obj = compile(module_code, "<generated>", "exec")
-            exec(code_obj, exec_globals)
-        except SyntaxError as exc:
-            raise SynthesisError(
-                f"Syntax error in generated code: {exc}", module_code
-            ) from exc
-        except Exception as exc:
-            raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
-
-        if func_name not in lexical_context:
-            raise SynthesisError(
-                f"Function '{func_name}' not found after execution. "
-                f"Available names: {[k for k in exec_globals.keys() if not k.startswith('_')]}",
-                module_code,
-            )
-
-        return exec_globals[func_name]
+        return SynthesizedFunction.decode(result, context=lexical_context)
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -250,7 +332,7 @@ class ProgramSynthesis(ObjectInterpretation):
             return fwd()
 
         # Include the full lexical context - all functions, types, values available to synthesized code
-        context_source = get_lexical_context_source(template)
+        context_source = EncodableLexicalContext.encode(template.__context__)
         escaped_context = context_source.replace("{", "{{").replace("}", "}}")
         context_section = f"""
 The following types, functions, and values are available:
