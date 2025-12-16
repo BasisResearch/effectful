@@ -394,15 +394,17 @@ The following types, functions, and values are available:
         )
 
         # Build the function using lexical context for exec globals
-        synthesized_func = self._build_function(response, ret_type, template.__context__)
-        
+        synthesized_func = self._build_function(
+            response, ret_type, template.__context__
+        )
+
         try:
             synth_sig = inspect.signature(synthesized_func)
             template_sig = template.__signature__
-            
+
             synth_params = set(synth_sig.parameters.keys())
             template_params = set(template_sig.parameters.keys())
-            
+
             if synth_params == template_params:
                 result = synthesized_func(*args, **kwargs)
                 if callable(result):
@@ -413,5 +415,5 @@ The following types, functions, and values are available:
                 return result
         except (ValueError, TypeError):
             pass
-        
+
         return synthesized_func

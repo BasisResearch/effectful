@@ -102,7 +102,7 @@ class TestProgramSynthesis:
             assert isinstance(source, str)
             assert len(source) > 0
             assert "def" in source
-            
+
             # __source__ attribute should also be available with full module code
             assert hasattr(count_func, "__source__")
             assert "def" in count_func.__source__
