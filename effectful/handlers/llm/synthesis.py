@@ -364,9 +364,7 @@ class ProgramSynthesis(ObjectInterpretation):
             expected_type=expected_type,
         )
         if not success:
-            raise SynthesisError(
-                f"Type check failed:\n{error_msg}", result.module_code
-            )
+            raise SynthesisError(f"Type check failed:\n{error_msg}", result.module_code)
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -424,6 +422,5 @@ The following types, functions, and values are available:
         # Run type check if enabled
         if self.type_check:
             self._run_type_check(response, ret_type, template.__context__)
-
 
         return synthesized_func

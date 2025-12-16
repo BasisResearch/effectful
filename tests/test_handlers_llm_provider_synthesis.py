@@ -59,7 +59,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
 @Template.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
-    Do not use any tools.
+    Do not use any tools and implement this function directly.
 
     Return as a code block with the last definition being the function.
     """
