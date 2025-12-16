@@ -71,4 +71,3 @@ def test_image_input():
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()).lower() for _ in range(3))
-
