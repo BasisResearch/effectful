@@ -350,9 +350,8 @@ class ProgramSynthesis(ObjectInterpretation):
         origin = typing.get_origin(ret_type)
         ret_type_origin = ret_type if origin is None else origin
 
-        # Check if return type is Callable - handle both class and typing special forms
-        is_callable = ret_type_origin is collections.abc.Callable
-        if not is_callable:
+        # Check if return type is Callable
+        if ret_type_origin is not collections.abc.Callable:
             return fwd()
 
         # Include the full lexical context - all functions, types, values available to synthesized code
@@ -366,6 +365,14 @@ The following types, functions, and values are available:
 ```
 """
 
+        return self._handle_callable_synthesis(
+            template, ret_type, context_section, *args, **kwargs
+        )
+
+    def _handle_callable_synthesis(
+        self, template, ret_type, context_section: str, *args, **kwargs
+    ) -> Callable:
+        """Handle synthesis of Callable return types."""
         prompt_ext = textwrap.dedent(f"""
         Implement a Python function with the following specification.
 
