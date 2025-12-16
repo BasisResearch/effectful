@@ -351,7 +351,16 @@ class ProgramSynthesis(ObjectInterpretation):
         origin = typing.get_origin(ret_type)
         ret_type_origin = ret_type if origin is None else origin
 
-        if not (issubclass(ret_type_origin, collections.abc.Callable)):  # type: ignore[arg-type]
+        # Check if return type is Callable - handle both class and typing special forms
+        # Also handle string annotations (from __future__ import annotations)
+        if isinstance(ret_type_origin, str):
+            is_callable = "Callable" in ret_type_origin
+        else:
+            is_callable = ret_type_origin is collections.abc.Callable or (
+                isinstance(ret_type_origin, type)
+                and issubclass(ret_type_origin, collections.abc.Callable)
+            )
+        if not is_callable:
             return fwd()
 
         # Include the full lexical context - all functions, types, values available to synthesized code
@@ -392,5 +401,32 @@ The following types, functions, and values are available:
             **kwargs,
         )
 
-        # Build and return the function using lexical context for exec globals
-        return self._build_function(response, ret_type, template.__context__)
+        # Build the function using lexical context for exec globals
+        synthesized_func = self._build_function(response, ret_type, template.__context__)
+        
+        # Check if the synthesized function should be called with template args
+        # or if it's already the result (matches the return type directly)
+        try:
+            synth_sig = inspect.signature(synthesized_func)
+            template_sig = template.__signature__
+            
+            # If synthesized function has same parameter names as template,
+            # it's a factory function - call it with the args
+            synth_params = set(synth_sig.parameters.keys())
+            template_params = set(template_sig.parameters.keys())
+            
+            if synth_params == template_params:
+                # Factory function - call it to get the actual callable
+                result = synthesized_func(*args, **kwargs)
+                # Copy synthesis metadata to the result if it's callable
+                if callable(result):
+                    if hasattr(synthesized_func, "__source__"):
+                        result.__source__ = synthesized_func.__source__
+                    if hasattr(synthesized_func, "__synthesized__"):
+                        result.__synthesized__ = synthesized_func.__synthesized__
+                return result
+        except (ValueError, TypeError):
+            pass
+        
+        # Otherwise, the synthesized function IS the result
+        return synthesized_func

@@ -53,6 +53,9 @@ class Encodable[T](EncodableAs[T, type]):
 def type_to_encodable_type[T](
     __dispatch: Callable[[type[T]], Callable[..., Encodable[T]]], ty: type[T]
 ) -> Encodable[T]:
+    # Handle string annotation "str" from `from __future__ import annotations`
+    if ty == "str":
+        return _type_encodable_type_str(str)
     origin_ty = typing.get_origin(ty) or ty
     return __dispatch(origin_ty)(ty)
 
@@ -71,6 +74,12 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
+
+
+# NOTE: Register str explicitly to avoid WeakKeyDictionary cache issues with singledispatch
+@type_to_encodable_type.register(str)
+def _type_encodable_type_str[T](ty: type[T]) -> Encodable[T]:
+    return _type_encodable_type_base(ty)
 
 
 @type_to_encodable_type.register(pydantic.BaseModel)
