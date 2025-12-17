@@ -118,7 +118,23 @@ class EncodableSynthesizedType(
         g.setdefault("__package__", module_name.rpartition(".")[0])
 
         try:
-            code_obj = compile(module_code, filename, "exec")
+            # NOTE: Parse and inject __firstlineno__ into class bodies for Python 3.13+ compatibility
+            # inspect.getsource() looks for __firstlineno__ in vars(cls), which requires it to be in the class's __dict__.
+            # We inject it via AST before execution.
+            tree = ast.parse(module_code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    # Create: __firstlineno__ = <lineno>
+                    assign = ast.Assign(
+                        targets=[ast.Name(id="__firstlineno__", ctx=ast.Store())],
+                        value=ast.Constant(value=node.lineno),
+                        lineno=node.lineno,
+                        col_offset=0,
+                    )
+                    ast.fix_missing_locations(assign)
+                    node.body.insert(0, assign)
+            ast.fix_missing_locations(tree)
+            code_obj = compile(tree, filename, "exec")
             exec(code_obj, g, g)
         except SyntaxError as exc:
             raise SynthesisError(
@@ -141,20 +157,6 @@ class EncodableSynthesizedType(
                 f"'{type_name}' is not a type, got {type(synthesized_type).__name__}",
                 module_code,
             )
-
-        # NOTE: Set __firstlineno__ for Python 3.13+ compatibility
-        # Python 3.13's exec() should set this automatically, but we set it manually as a fallback
-        if not hasattr(synthesized_type, "__firstlineno__"):
-            firstlineno = 1
-            try:
-                tree = ast.parse(module_code)
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.ClassDef) and node.name == type_name:
-                        firstlineno = node.lineno
-                        break
-            except SyntaxError:
-                pass
-            synthesized_type.__firstlineno__ = firstlineno  # type: ignore[attr-defined]
 
         # Attach source code directly for convenience
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
