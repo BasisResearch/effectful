@@ -1,8 +1,6 @@
 """Tests for LLM type/class synthesis functionality."""
 
-import ast
 import inspect
-import linecache
 import logging
 import sys
 
