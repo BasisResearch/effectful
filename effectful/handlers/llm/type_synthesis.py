@@ -3,6 +3,7 @@
 import ast
 import collections
 import collections.abc
+import ctypes
 import dataclasses
 import inspect
 import linecache
@@ -10,6 +11,17 @@ import sys
 import textwrap
 import types
 import typing
+
+
+class _PyMappingProxyObject(ctypes.Structure):
+    """Internal ctypes structure to access the underlying dict of a mappingproxy."""
+
+    _fields_ = [
+        ("ob_refcnt", ctypes.c_ssize_t),
+        ("ob_type", ctypes.py_object),
+        ("mapping", ctypes.py_object),
+    ]
+
 
 import pydantic
 from litellm import OpenAIMessageContentListBlock
@@ -158,10 +170,28 @@ class EncodableSynthesizedType(
                 module_code,
             )
 
-        # Attach source code directly for convenience
+        # Attach source code and module name
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
         synthesized_type.__synthesized__ = vl  # type: ignore[attr-defined]
         synthesized_type.__module__ = module_name
+
+        # NOTE: Set __firstlineno__ AFTER __module__ assignment!
+        # In Python 3.13, setting __module__ clears __firstlineno__ from vars().
+        # We use ctypes to directly inject it into __dict__ for inspect.getsource().
+        if "__firstlineno__" not in vars(synthesized_type):
+            firstlineno = next(
+                (
+                    n.lineno
+                    for n in ast.walk(ast.parse(module_code))
+                    if isinstance(n, ast.ClassDef) and n.name == type_name
+                ),
+                1,
+            )
+            inner_dict = _PyMappingProxyObject.from_address(
+                id(vars(synthesized_type))
+            ).mapping
+            inner_dict["__firstlineno__"] = firstlineno
+
         return synthesized_type
 
     @classmethod
