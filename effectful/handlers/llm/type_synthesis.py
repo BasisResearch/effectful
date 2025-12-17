@@ -148,7 +148,7 @@ class EncodableSynthesizedType(
             tree = ast.parse(module_code)
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef) and node.name == type_name:
-                    synthesized_type.__firstlineno__ = node.lineno  # type: ignore[attr-defined]
+                    synthesized_type.__firstlineno__ = node.lineno
                     break
         except SyntaxError:
             pass
