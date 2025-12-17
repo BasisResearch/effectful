@@ -5,7 +5,9 @@ import collections.abc
 import dataclasses
 import inspect
 import linecache
+import sys
 import textwrap
+import types
 import typing
 
 import pydantic
@@ -76,12 +78,20 @@ class EncodableSynthesizedType(
         optionally augmented with provided context.
         """
         type_name = vl.type_name
-        module_code = textwrap.dedent(vl.module_code).strip()
+        module_code = textwrap.dedent(vl.module_code).strip() + "\n"
 
         # Create a unique filename and register source with linecache
         # This allows inspect.getsource() to work on the generated class
         cls._decode_counter += 1
-        filename = f"<synthesized_type:{type_name}:{cls._decode_counter}>"
+        # NOTE: adding source to class is more tricky
+        # because for function	func.__code__.co_filename (set by compile(..., filename, "exec")) is set automatically
+        # We have to do this manually for class (set module name) for inspect.getsource() to work
+        module_name = (
+            f"_llm_effectful_synthesized_types.{type_name}.{cls._decode_counter}"
+        )
+        filename = f"<synthesized_type:{module_name}>"
+
+        # Register source for inspect/linecache
         lines = module_code.splitlines(keepends=True)
         # Ensure last line has newline for linecache
         if lines and not lines[-1].endswith("\n"):
@@ -93,15 +103,22 @@ class EncodableSynthesizedType(
             filename,
         )
 
-        # Start with provided context or empty dict
-        # Include collections module for type hints in synthesized code
-        exec_globals: dict[str, typing.Any] = {"collections": collections}
+        # Create a real module and put it to sys.modules
+        mod = types.ModuleType(module_name)
+        mod.__file__ = filename
+        sys.modules[module_name] = mod  # type: ignore[attr-defined]
+
+        # globals = module.__dict__ + context
+        g = mod.__dict__
+        g.update({"collections": collections})
         if context:
-            exec_globals.update(context)
+            g.update(context)
+        g.update({"__name__": module_name, "__file__": filename})
+        g.setdefault("__package__", module_name.rpartition(".")[0])
 
         try:
             code_obj = compile(module_code, filename, "exec")
-            exec(code_obj, exec_globals)
+            exec(code_obj, g, g)
         except SyntaxError as exc:
             raise SynthesisError(
                 f"Syntax error in generated code: {exc}", module_code
@@ -109,14 +126,14 @@ class EncodableSynthesizedType(
         except Exception as exc:
             raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
 
-        if type_name not in exec_globals:
+        if type_name not in g:
             raise SynthesisError(
                 f"Type '{type_name}' not found after execution. "
-                f"Available names: {[k for k in exec_globals.keys() if not k.startswith('_')]}",
+                f"Available names: {[k for k in g.keys() if not k.startswith('_')]}",
                 module_code,
             )
 
-        synthesized_type = exec_globals[type_name]
+        synthesized_type = g[type_name]
 
         if not isinstance(synthesized_type, type):
             raise SynthesisError(
@@ -127,6 +144,7 @@ class EncodableSynthesizedType(
         # Attach source code directly for convenience
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
         synthesized_type.__synthesized__ = vl  # type: ignore[attr-defined]
+        synthesized_type.__module__ = module_name
         return synthesized_type
 
     @classmethod

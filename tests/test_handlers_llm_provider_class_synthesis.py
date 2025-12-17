@@ -1,9 +1,15 @@
 """Tests for LLM type/class synthesis functionality."""
 
+import ast
+import inspect
+import linecache
+import logging
+import sys
+
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import LiteLLMProvider
+from effectful.handlers.llm.providers import LiteLLMProvider, LLMLoggingHandler
 from effectful.handlers.llm.synthesis import SynthesisError
 from effectful.handlers.llm.type_synthesis import TypeSynthesis
 from effectful.ops.semantics import handler
@@ -68,16 +74,24 @@ class TestTypeSynthesis:
     @retry_on_error(error=SynthesisError, n=3)
     def test_synthesized_type_has_source(self):
         """Test that synthesized types have __source__ attribute."""
+        logger = logging.getLogger("effectful.llm")
+        logger.setLevel(logging.INFO)
+        log_handler = logging.StreamHandler(sys.stdout)
+        log_handler.setFormatter(logging.Formatter("%(levelname)s %(payload)s"))
+        logger.addHandler(log_handler)
+        llm_logger = LLMLoggingHandler(logger=logger)
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
             handler(TypeSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
+            handler(llm_logger),
         ):
             CatClass = create_animal("a cat that meows and prowls")
 
-            assert hasattr(CatClass, "__source__")
-            assert "class" in CatClass.__source__
+            source = inspect.getsource(CatClass)
             assert hasattr(CatClass, "__synthesized__")
+            assert hasattr(CatClass, "__source__")
+            assert source == CatClass.__source__
 
     def test_type_synthesis_requires_base_in_context(self):
         """Test that type synthesis fails if base type is not in lexical context."""
