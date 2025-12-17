@@ -1,23 +1,24 @@
+import functools
 import heapq
 import random
 import typing
+from collections.abc import Callable
 from dataclasses import dataclass
 from pprint import pprint
-from typing import Callable
 
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
 @defop
-def sample[T](choices: list[T]) -> T:
+def choose[T](choices: list[T]) -> T:
     result = random.choice(choices)
-    print(f"sample({choices}) = {result}")
+    print(f"choose({choices}) = {result}")
     return result
 
 
 @defop
-def factor(value: float) -> None:
+def score(value: float) -> None:
     pass
 
 
@@ -29,7 +30,7 @@ class ReplayIntp(ObjectInterpretation):
         self.trace = trace
         self.step = 0
 
-    @implements(sample)
+    @implements(choose)
     def _(self, *args, **kwargs):
         if self.step < len(self.trace):
             result = self.trace[self.step][1]
@@ -42,27 +43,27 @@ class TraceIntp(ObjectInterpretation):
     def __init__(self):
         self.trace = []
 
-    @implements(sample)
+    @implements(choose)
     def _(self, *args, **kwargs):
         result = fwd()
         self.trace.append(((args, kwargs), result))
         return result
 
 
-class FactorIntp(ObjectInterpretation):
+class ScoreIntp(ObjectInterpretation):
     def __init__(self):
         self.score = 0.0
 
-    @implements(factor)
+    @implements(score)
     def _(self, value):
         self.score += value
 
 
-class SampleOnceIntp(ObjectInterpretation):
+class ChooseOnceIntp(ObjectInterpretation):
     def __init__(self):
         self.is_first_call = True
 
-    @implements(sample)
+    @implements(choose)
     def _(self, *args, **kwargs):
         if not self.is_first_call:
             raise Suspend
@@ -83,50 +84,59 @@ class BeamCandidate[S, T]:
     def __lt__(self, other: "BeamCandidate[S, T]") -> bool:
         return self.score < other.score
 
-    def expand(self, model_fn: Callable[[], T]) -> typing.Self:
+    def expand[**P](
+        self, model_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> typing.Self:
         in_progress = False
         result = None
-        factor_intp = FactorIntp()
+        score_intp = ScoreIntp()
         trace_intp = TraceIntp()
         with (
-            handler(factor_intp),
-            handler(SampleOnceIntp()),
+            handler(score_intp),
+            handler(ChooseOnceIntp()),
             handler(ReplayIntp(self.trace)),
             handler(trace_intp),
         ):
             try:
-                result = model_fn()
+                result = model_fn(*args, **kwargs)
             except Suspend:
                 in_progress = True
 
-        return BeamCandidate(trace_intp.trace, factor_intp.score, in_progress, result)
+        return BeamCandidate(trace_intp.trace, score_intp.score, in_progress, result)
 
 
-def beam_search[S, T](model_fn: Callable[[], T], beam_width=3) -> BeamCandidate[S, T]:
-    beam = [BeamCandidate([], 0.0, True, None)]
+def beam_search[**P, S, T](
+    model_fn: Callable[P, T], beam_width=3
+) -> Callable[P, BeamCandidate[S, T]]:
+    @functools.wraps(model_fn)
+    def wrapper(*args, **kwargs):
+        beam = [BeamCandidate([], 0.0, True, None)]
 
-    while True:
-        expandable = [c for c in beam if c.in_progress] * beam_width
-        if not expandable:
-            return beam
+        while True:
+            expandable = [c for c in beam if c.in_progress] * beam_width
+            if not expandable:
+                return beam
 
-        new_candidates = [c.expand(model_fn) for c in expandable]
+            new_candidates = [c.expand(model_fn, *args, **kwargs) for c in expandable]
 
-        for c in new_candidates:
-            heapq.heappushpop(beam, c) if len(beam) >= beam_width else heapq.heappush(
-                beam, c
-            )
+            for c in new_candidates:
+                heapq.heappushpop(beam, c) if len(
+                    beam
+                ) >= beam_width else heapq.heappush(beam, c)
 
-
-def model():
-    s1 = sample(range(100))
-    factor(s1)
-    s2 = sample(range(-100, 100))
-    factor(s2)
-    s3 = sample(range(-100, 100))
-    factor(s3)
-    return s3
+    return wrapper
 
 
-result = beam_search(model)
-pprint(result)
+if __name__ == "__main__":
+
+    def model():
+        s1 = choose(range(100))
+        score(s1)
+        s2 = choose(range(-100, 100))
+        score(s2)
+        s3 = choose(range(-100, 100))
+        score(s3)
+        return s3
+
+    result = beam_search(model)()
+    pprint(result)
