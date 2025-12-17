@@ -1,7 +1,7 @@
 import collections.abc
 import operator
 import types
-from typing import Annotated, Tuple, Union, cast, overload
+from typing import Annotated, cast, overload
 
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler
 from effectful.ops.syntax import Scoped, defop
