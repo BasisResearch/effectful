@@ -1,5 +1,6 @@
 import functools
-from typing import Annotated, Callable
+from collections.abc import Callable
+from typing import Annotated
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import Scoped, defdata, defop, syntactic_eq
