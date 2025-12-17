@@ -128,6 +128,8 @@ class Tool[**P, T]:
 
         parameter_annotations: dict[str, type] = {}
         for param_name, param in sig.parameters.items():
+            if param_name == "self":
+                continue
             # Skip parameters without type annotations
             if param.annotation is inspect.Parameter.empty:
                 raise TypeError(
