@@ -373,7 +373,7 @@ def block[**P](
                 return op(*args, **kwargs)
         return fwd()
 
-    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
+    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that
