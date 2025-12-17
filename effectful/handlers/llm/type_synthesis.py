@@ -142,16 +142,19 @@ class EncodableSynthesizedType(
                 module_code,
             )
 
-        # Find the line number of the class definition for Python 3.13+ compatibility
-        # (inspect.getsource looks for __firstlineno__ on classes)
-        try:
-            tree = ast.parse(module_code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef) and node.name == type_name:
-                    synthesized_type.__firstlineno__ = node.lineno  # type: ignore[attr-defined]
-                    break
-        except SyntaxError:
-            pass
+        # NOTE: Set __firstlineno__ for Python 3.13+ compatibility
+        # Python 3.13's exec() should set this automatically, but we set it manually as a fallback
+        if not hasattr(synthesized_type, "__firstlineno__"):
+            firstlineno = 1
+            try:
+                tree = ast.parse(module_code)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef) and node.name == type_name:
+                        firstlineno = node.lineno
+                        break
+            except SyntaxError:
+                pass
+            synthesized_type.__firstlineno__ = firstlineno  # type: ignore[attr-defined]
 
         # Attach source code directly for convenience
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
