@@ -1,5 +1,6 @@
 """Type/class synthesis for LLM-generated code."""
 
+import ast
 import collections
 import collections.abc
 import dataclasses
@@ -140,6 +141,17 @@ class EncodableSynthesizedType(
                 f"'{type_name}' is not a type, got {type(synthesized_type).__name__}",
                 module_code,
             )
+
+        # Find the line number of the class definition for Python 3.13+ compatibility
+        # (inspect.getsource looks for __firstlineno__ on classes)
+        try:
+            tree = ast.parse(module_code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and node.name == type_name:
+                    synthesized_type.__firstlineno__ = node.lineno  # type: ignore[attr-defined]
+                    break
+        except SyntaxError:
+            pass
 
         # Attach source code directly for convenience
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
