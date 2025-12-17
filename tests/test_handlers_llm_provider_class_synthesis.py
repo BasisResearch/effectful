@@ -1,58 +1,19 @@
 """Tests for LLM type/class synthesis functionality."""
 
-import functools
-import os
-
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import LiteLLMProvider, completion
+from effectful.handlers.llm.providers import LiteLLMProvider
 from effectful.handlers.llm.synthesis import SynthesisError
 from effectful.handlers.llm.type_synthesis import TypeSynthesis
-from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
-# Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
+from .test_handlers_llm_provider import (
+    LimitLLMCallsHandler,
+    requires_openai,
+    retry_on_error,
 )
-
-
-def retry_on_error(error: type[Exception], n: int):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            for i in range(n):
-                try:
-                    return func(*args, **kwargs)
-                except error as e:
-                    if i < n - 1:
-                        continue
-                    raise e
-
-        return wrapper
-
-    return decorator
-
-
-class LimitLLMCallsHandler(ObjectInterpretation):
-    max_calls: int
-    no_calls: int = 0
-
-    def __init__(self, max_calls: int):
-        self.max_calls = max_calls
-
-    @implements(completion)
-    def _completion(self, *args, **kwargs):
-        if self.no_calls >= self.max_calls:
-            raise RuntimeError(
-                f"Test used too many requests (max_calls = {self.max_calls})"
-            )
-        self.no_calls += 1
-        return fwd()
 
 
 # Base class for type synthesis tests
