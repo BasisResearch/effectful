@@ -107,7 +107,7 @@ class EncodableSynthesizedType(
         # Create a real module and put it to sys.modules
         mod = types.ModuleType(module_name)
         mod.__file__ = filename
-        sys.modules[module_name] = mod  # type: ignore[attr-defined]
+        sys.modules[module_name] = mod
 
         # globals = module.__dict__ + context
         g = mod.__dict__
