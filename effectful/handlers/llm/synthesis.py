@@ -8,6 +8,7 @@ import textwrap
 import types
 import typing
 from collections.abc import Callable
+from typing import Any
 
 import pydantic
 from litellm import OpenAIMessageContentListBlock
@@ -18,6 +19,7 @@ from effectful.handlers.llm import LexicalContext, Template
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Operation
 
 
 class SynthesisError(Exception):
@@ -138,6 +140,92 @@ class EncodableSynthesizedFunction(
         return [{"type": "text", "text": vl.model_dump_json()}]
 
 
+# Source representation encoders for LexicalContext items
+# These encode objects to their Python source code representation (as strings)
+
+
+@type_to_encodable_type.register(type)
+def _type_to_encodable_type_class[T](ty: type[T]) -> EncodableAs[type, str]:
+    """Encoder for class/type objects - produces source code string."""
+
+    class EncodableClass(EncodableAs[type, str]):
+        t = str
+
+        @classmethod
+        def encode(cls, obj: type) -> str:
+            try:
+                return inspect.getsource(obj)
+            except (OSError, TypeError):
+                return f"class {obj.__name__}: ..."
+
+        @classmethod
+        def decode(cls, source: str) -> type:
+            exec_globals: dict[str, Any] = {}
+            exec(compile(source, "<class>", "exec"), exec_globals)
+            # Find the first class defined
+            for v in exec_globals.values():
+                if isinstance(v, type):
+                    return v
+            raise ValueError("No class found in source")
+
+    return typing.cast(EncodableAs[type, str], EncodableClass())
+
+
+@type_to_encodable_type.register(Operation)
+def _type_to_encodable_type_operation[T](ty: type[T]) -> EncodableAs[Operation, str]:
+    """Encoder for Operation objects - produces signature string."""
+
+    class EncodableOperation(EncodableAs[Operation, str]):
+        t = str
+
+        @classmethod
+        def encode(cls, obj: Operation) -> str:
+            try:
+                sig = inspect.signature(obj)
+                doc = obj.__doc__ or ""
+                first_line = doc.split("\n")[0].strip() if doc else ""
+                return (
+                    f"def {obj.__name__}{sig}: ...  # {first_line}"
+                    if first_line
+                    else f"def {obj.__name__}{sig}: ..."
+                )
+            except (ValueError, TypeError):
+                return f"def {obj.__name__}(...): ..."
+
+        @classmethod
+        def decode(cls, source: str) -> Operation:
+            raise NotImplementedError("Cannot decode Operation from source")
+
+    return typing.cast(EncodableAs[Operation, str], EncodableOperation())
+
+
+@type_to_encodable_type.register(Template)
+def _type_to_encodable_type_template[T](ty: type[T]) -> EncodableAs[Template, str]:
+    """Encoder for Template objects - produces signature string."""
+
+    class EncodableTemplate(EncodableAs[Template, str]):
+        t = str
+
+        @classmethod
+        def encode(cls, obj: Template) -> str:
+            try:
+                sig = obj.__signature__
+                doc = obj.__prompt_template__.split("\n")[0].strip()
+                return (
+                    f"def {obj.__name__}{sig}: ...  # {doc}"
+                    if doc
+                    else f"def {obj.__name__}{sig}: ..."
+                )
+            except (ValueError, TypeError, AttributeError):
+                return f"def {obj.__name__}(...): ..."
+
+        @classmethod
+        def decode(cls, source: str) -> Template:
+            raise NotImplementedError("Cannot decode Template from source")
+
+    return typing.cast(EncodableAs[Template, str], EncodableTemplate())
+
+
 @type_to_encodable_type.register(LexicalContext)
 class EncodableLexicalContext(
     EncodableAs[LexicalContext, str],
@@ -153,8 +241,6 @@ class EncodableLexicalContext(
     @classmethod
     def encode(cls, context: LexicalContext) -> str:
         """Generate Python source code representations of items in the lexical context."""
-        from effectful.ops.types import Operation
-
         sources: list[str] = []
         seen_names: set[str] = set()
 
@@ -164,61 +250,24 @@ class EncodableLexicalContext(
                 continue
             seen_names.add(name)
 
-            # Skip modules and common builtins
+            # Skip modules
             if isinstance(obj, types.ModuleType):
                 continue
 
-            source = None
-
-            # Try to get source for classes (including dataclasses)
-            if isinstance(obj, type):
-                try:
-                    source = inspect.getsource(obj)
-                except (OSError, TypeError):
-                    # Fall back to showing class signature
-                    source = f"class {name}: ..."
-
-            # Handle functions
-            elif callable(obj) and not isinstance(obj, (Operation, Template)):
-                try:
-                    source = inspect.getsource(obj)
-                except (OSError, TypeError):
-                    # Fall back to showing function signature
-                    try:
-                        sig = inspect.signature(obj)
-                        source = f"def {name}{sig}: ..."
-                    except (ValueError, TypeError):
-                        source = f"def {name}(...): ..."
-
-            # Handle Operations - show as function signatures
-            elif isinstance(obj, Operation):
-                try:
-                    sig = inspect.signature(obj)
-                    doc = obj.__doc__ or ""
-                    first_line = doc.split("\n")[0].strip() if doc else ""
-                    source = (
-                        f"def {name}{sig}: ...  # {first_line}"
-                        if first_line
-                        else f"def {name}{sig}: ..."
-                    )
-                except (ValueError, TypeError):
-                    source = f"def {name}(...): ..."
-
-            # Handle Templates - show as function signatures
-            elif isinstance(obj, Template):
-                try:
-                    sig = obj.__signature__
-                    doc = obj.__prompt_template__.split("\n")[0].strip()
-                    source = (
-                        f"def {name}{sig}: ...  # {doc}"
-                        if doc
-                        else f"def {name}{sig}: ..."
-                    )
-                except (ValueError, TypeError, AttributeError):
-                    source = f"def {name}(...): ..."
-
-            if source:
-                sources.append(textwrap.dedent(source).strip())
+            # Use type_to_encodable_type to get encoder for this object's type
+            try:
+                encoder = type_to_encodable_type(type(obj))
+                # Include if encoder produces strings (source repr) or SynthesizedFunction
+                if encoder.t is str:
+                    source = encoder.encode(obj)
+                    sources.append(textwrap.dedent(source).strip())
+                elif encoder.t is SynthesizedFunction:
+                    synth = encoder.encode(obj)
+                    # Extract module code from SynthesizedFunction
+                    sources.append(textwrap.dedent(synth.module_code).strip())
+            except (TypeError, NotImplementedError, AttributeError, OSError):
+                # No encoder for this type or encoding failed, skip it
+                pass
 
         return "\n\n".join(sources)
 
