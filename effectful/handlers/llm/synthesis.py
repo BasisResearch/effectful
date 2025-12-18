@@ -50,7 +50,7 @@ class ProgramSynthesis(ObjectInterpretation):
         # register into linecache
         linecache.cache[filename] = (len(source_code), None, lines, filename)
 
-        # TODO: assert callable type compatibility
+        # TODO: support injecting lexical context for synthesized code
         gs: dict = {}
         try:
             code_obj = compile(source_code, filename, "exec")

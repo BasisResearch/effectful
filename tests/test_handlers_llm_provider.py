@@ -1,5 +1,4 @@
 """Tests for LLM handlers and providers.
-
 This module tests the functionality from build/main.py and build/llm.py,
 breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
 ProgramSynthesis, and sampling strategies.
@@ -13,7 +12,7 @@ from enum import Enum
 
 import pytest
 from PIL import Image
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Template, Tool
@@ -102,25 +101,26 @@ class MovieClassification:
 
 @Template.define
 def classify_genre(plot: str) -> MovieClassification:
-    """Classify the movie genre based on this plot: {plot}"""
+    """Classify the movie genre based on this plot: {plot}. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def simple_prompt(topic: str) -> str:
-    """Write a short sentence about {topic}."""
+    """Write a short sentence about {topic}. You MUST respond directly without using any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def generate_number(max_value: int) -> int:
-    """Generate a random number between 1 and {max_value}. Return only the number."""
+    """Generate a random number between 1 and {max_value}. Return only the number. Do not use any tools."""
     raise NotImplementedError
 
 
 @Template.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
+    Do not use any tools.
 
     Return as a code block with the last definition being the function.
     """
@@ -365,7 +365,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image:
+    """Return a description of the following image. Do not use any tools.
     {image}"""
     raise NotHandled
 
@@ -377,3 +377,37 @@ def test_image_input():
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
+
+
+class BookReview(BaseModel):
+    """A book review with rating and summary."""
+
+    title: str = Field(..., description="title of the book")
+    rating: int = Field(..., description="rating from 1 to 5", ge=1, le=5)
+    summary: str = Field(..., description="brief summary of the review")
+
+
+@Template.define
+def review_book(plot: str) -> BookReview:
+    """Review a book based on this plot: {plot}. Do not use any tools."""
+    raise NotImplementedError
+
+
+class TestPydanticBaseModelReturn:
+    @requires_openai
+    def test_pydantic_basemodel_return(self):
+        plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
+
+        with (
+            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            review = review_book(plot)
+
+            assert isinstance(review, BookReview)
+            assert isinstance(review.title, str)
+            assert len(review.title) > 0
+            assert isinstance(review.rating, int)
+            assert 1 <= review.rating <= 5
+            assert isinstance(review.summary, str)
+            assert len(review.summary) > 0
