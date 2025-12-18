@@ -89,9 +89,7 @@ class BeamCandidate[S, T]:
     def __lt__(self, other: "BeamCandidate[S, T]") -> bool:
         return self.score < other.score
 
-    def expand[**P](
-        self, model_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> typing.Self:
+    def expand[**P](self, model_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs):
         in_progress = False
         result = None
         score_intp = ScoreIntp()
@@ -143,5 +141,5 @@ if __name__ == "__main__":
         score(s3)
         return s3
 
-    result = beam_search(model)()
+    result: BeamCandidate = beam_search(model)()
     pprint(result)
