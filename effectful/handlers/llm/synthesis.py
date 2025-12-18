@@ -226,68 +226,41 @@ def _type_to_encodable_type_template[T](ty: type[T]) -> EncodableAs[Template, st
     return typing.cast(EncodableAs[Template, str], EncodableTemplate())
 
 
-@type_to_encodable_type.register(LexicalContext)
-class EncodableLexicalContext(
-    EncodableAs[LexicalContext, str],
-):
-    """Encodes LexicalContext to Python source code representation.
+def lexical_context_to_source(context: LexicalContext) -> str:
+    """Convert a LexicalContext to Python source code representation.
 
-    encode: Extracts source code/signatures for types, functions, and values.
-    decode: Executes source code to reconstruct a lexical context.
+    Generates source code/signatures for types, functions, Operations, and Templates
+    in the lexical context, suitable for including in LLM prompts.
     """
+    sources: list[str] = []
+    seen_names: set[str] = set()
 
-    t = str
+    for name, obj in context.items():
+        # Skip private/dunder names and duplicates
+        if name.startswith("_") or name in seen_names:
+            continue
+        seen_names.add(name)
 
-    @classmethod
-    def encode(cls, context: LexicalContext) -> str:
-        """Generate Python source code representations of items in the lexical context."""
-        sources: list[str] = []
-        seen_names: set[str] = set()
+        # Skip modules
+        if isinstance(obj, types.ModuleType):
+            continue
 
-        for name, obj in context.items():
-            # Skip private/dunder names and duplicates
-            if name.startswith("_") or name in seen_names:
-                continue
-            seen_names.add(name)
-
-            # Skip modules
-            if isinstance(obj, types.ModuleType):
-                continue
-
-            # Use type_to_encodable_type to get encoder for this object's type
-            try:
-                encoder = type_to_encodable_type(type(obj))
-                # Include if encoder produces strings (source repr) or SynthesizedFunction
-                if encoder.t is str:
-                    source = encoder.encode(obj)
-                    sources.append(textwrap.dedent(source).strip())
-                elif encoder.t is SynthesizedFunction:
-                    synth = encoder.encode(obj)
-                    # Extract module code from SynthesizedFunction
-                    sources.append(textwrap.dedent(synth.module_code).strip())
-            except (TypeError, NotImplementedError, AttributeError, OSError):
-                # No encoder for this type or encoding failed, skip it
-                pass
-
-        return "\n\n".join(sources)
-
-    @classmethod
-    def decode(cls, source: str) -> LexicalContext:
-        """Execute source code to reconstruct a lexical context."""
-        exec_globals: dict[str, typing.Any] = {}
+        # Use type_to_encodable_type to get encoder for this object's type
         try:
-            code_obj = compile(source, "<lexical_context>", "exec")
-            exec(code_obj, exec_globals)
-        except SyntaxError:
-            # Source may be stubs/signatures that can't be executed
+            encoder = type_to_encodable_type(type(obj))
+            # Include if encoder produces strings (source repr) or SynthesizedFunction
+            if encoder.t is str:
+                source = encoder.encode(obj)
+                sources.append(textwrap.dedent(source).strip())
+            elif encoder.t is SynthesizedFunction:
+                synth = encoder.encode(obj)
+                # Extract module code from SynthesizedFunction
+                sources.append(textwrap.dedent(synth.module_code).strip())
+        except (TypeError, NotImplementedError, AttributeError, OSError):
+            # No encoder for this type or encoding failed, skip it
             pass
-        except Exception:
-            pass
-        return LexicalContext(exec_globals)
 
-    @classmethod
-    def serialize(cls, source: str) -> list[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": source}]
+    return "\n\n".join(sources)
 
 
 def _get_imports_from_lexical_context(
@@ -427,7 +400,7 @@ class ProgramSynthesis(ObjectInterpretation):
             return fwd()
 
         # Include the full lexical context - all functions, types, values available to synthesized code
-        context_source = EncodableLexicalContext.encode(template.__context__)
+        context_source = lexical_context_to_source(template.__context__)
         escaped_context = context_source.replace("{", "{{").replace("}", "}}")
         context_section = f"""
 The following types, functions, and values are available:
