@@ -1,3 +1,8 @@
+"""This example demonstrates a beam search over a program that uses a `choose`
+effect for nondeterminism and `score` effect to weigh its choices.
+
+"""
+
 import functools
 import heapq
 import random
