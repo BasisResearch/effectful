@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import (
     LiteLLMProvider,
     LLMLoggingHandler,
