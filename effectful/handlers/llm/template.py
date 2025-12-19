@@ -66,15 +66,15 @@ class Tool[**P, T](Operation[P, T]):
         response_format = litellm.utils.type_to_response_format_param(
             self.parameter_model
         )
+        description = self.__default__.__doc__
         assert response_format is not None
+        assert description is not None
         return {
             "type": "function",
             "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": response_format["json_schema"][
-                    "schema"
-                ],  # extract the schema
+                "name": self.__name__,
+                "description": description,
+                "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
             },
         }
@@ -92,13 +92,13 @@ class Tool[**P, T](Operation[P, T]):
             # use encoders to decode Us to python types T
             params: dict[str, Any] = {
                 param_name: type_to_encodable_type(
-                    self.parameter_annotations[param_name]
+                    self.__signature__.parameters[param_name].annotation
                 ).decode(getattr(raw_args, param_name))
                 for param_name in raw_args.model_fields_set
             }
 
             # call tool with python types
-            result = self(**params)
+            result = self(**params)  # type: ignore[call-arg]
 
             # serialize back to U using encoder for return type
             sig = self.__signature__
@@ -128,37 +128,26 @@ class Template[**P, T](Tool[P, T]):
     def __prompt_template__(self):
         return self.__default__.__doc__
 
-    @staticmethod
-    def _get_excluded_operations() -> frozenset[Operation]:
-        """Get the set of internal operations to exclude from auto-capture."""
-        from effectful.handlers.llm import providers
-        from effectful.ops import semantics
-
-        excluded: set[Operation] = set()
-        for module in (providers, semantics):
-            for name in dir(module):
-                obj = getattr(module, name)
-                if isinstance(obj, Operation):
-                    excluded.add(obj)
-        return frozenset(excluded)
-
     @property
     def tools(self) -> tuple[Tool, ...]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
-        result = (
-            set(
-                obj
-                for (name, obj) in self.__context__.items()
-                if not name.startswith("_") and isinstance(obj, Tool)
-            )
-            - self._get_excluded_operations()
+        result = set(
+            obj
+            for (name, obj) in self.__context__.items()
+            if not name.startswith("_") and isinstance(obj, Tool)
         )
         return tuple(result)
 
     @classmethod
-    def define(cls, _func=None, **kwargs) -> "Template[P, T]":
-        """Define a prompt template."""
+    def define[**Q, V](cls, func: Callable[Q, V]) -> "Template[Q, V]":
+        """Define a prompt template.
 
+        `define` takes a function, and can be used as a decorator. The
+        function's docstring should be a prompt, which may be templated in the
+        function arguments. The prompt will be provided with any instances of
+        `Tool` that exist in the lexical context as callable tools.
+
+        """
         current_frame = inspect.currentframe()
         parent_frame = current_frame.f_back if current_frame else None
         if parent_frame:
@@ -170,9 +159,33 @@ class Template[**P, T](Tool[P, T]):
         else:
             context = LexicalContext()
 
-        def decorator(body: Callable[P, T]):
-            return cls(inspect.signature(body), body.__name__, body, context)
+        return typing.cast(
+            Template[Q, V],
+            cls(
+                inspect.signature(func),
+                func.__name__,
+                typing.cast(Callable[P, T], func),
+                context,
+            ),
+        )
 
-        if _func is None:
-            return decorator
-        return decorator(_func)
+    def replace(
+        self,
+        signature: inspect.Signature | None = None,
+        prompt_template: str | None = None,
+        name: str | None = None,
+    ) -> "Template":
+        signature = signature or self.__signature__
+        prompt_template = prompt_template or self.__prompt_template__
+        name = name or self.__name__
+
+        if prompt_template:
+
+            def default(*args, **kwargs):
+                raise NotImplementedError
+
+            default.__doc__ = prompt_template
+        else:
+            default = self.__default__
+
+        return Template(signature, name, default, self.__context__)

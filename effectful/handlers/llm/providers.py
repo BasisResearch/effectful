@@ -131,7 +131,7 @@ class LLMLoggingHandler(ObjectInterpretation):
         )
         return response
 
-    @implements(Tool.apply)
+    @implements(Tool.__apply__)
     def _log_tool_call(self, tool: Operation, *args, **kwargs) -> Any:
         """Log the tool call and result."""
 
@@ -164,17 +164,11 @@ class RetryLLMHandler(ObjectInterpretation):
         self.add_error_feedback = add_error_feedback
         self.exception_cls = exception_cls
 
-    @implements(Template.apply)
+    @implements(Template.__apply__)
     def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
         prompt_ext = template.__prompt_template__
         for _ in range(self.max_retries - 1):
-
-            @functools.wraps(template)
-            def wrapper(*args, **kwargs):
-                raise NotImplementedError
-
-            wrapper.__doc__ = prompt_ext
-            template_ext = Template.define(wrapper, tools=template.tools)
+            template_ext = Template.replace(template, prompt_template=prompt_ext)
 
             try:
                 return fwd(template_ext, *args, **kwargs)
@@ -221,9 +215,10 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
         for tool_call in message.tool_calls:
             function = tool_call.function
-            function_name = typing.cast(str, function.name)
+            function_name = function.name
+            assert function_name is not None
             tool = tools[function_name]
-            tool_result = tool.call_with_json_args(template, function.arguments)
+            tool_result = tool.call_with_json_args(function.arguments)
             model_input.append(
                 {
                     "role": "tool",
@@ -303,7 +298,7 @@ class LiteLLMProvider(ObjectInterpretation):
     def _completion(self, *args, **kwargs):
         return fwd(self.model_name, *args, **(self.config | kwargs))
 
-    @implements(Template.apply)  # type: ignore[arg-type]
+    @implements(Template.__apply__)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

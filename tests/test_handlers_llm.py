@@ -23,7 +23,7 @@ class MockLLMProvider[T](ObjectInterpretation):
         """
         self.prompt_responses = prompt_responses
 
-    @implements(Template.apply)  # type: ignore[arg-type]
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -49,7 +49,7 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         """
         self.response = response
 
-    @implements(Template.apply)  # type: ignore[arg-type]
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -69,7 +69,7 @@ def haiku(theme: str) -> str:
     raise NotHandled
 
 
-@Template.define()
+@Template.define
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
     raise NotHandled
@@ -154,7 +154,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         self.exception_factory = exception_factory
         self.call_count = 0
 
-    @implements(Template.apply)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -222,7 +222,7 @@ def test_retry_handler_with_error_feedback():
         def __init__(self):
             self.call_count = 0
 
-        @implements(Template.apply)
+        @implements(Template.__apply__)
         def _call(self, template: Template, *args, **kwargs):
             self.call_count += 1
             call_prompts.append(template.__prompt_template__)

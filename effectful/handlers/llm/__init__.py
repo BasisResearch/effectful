@@ -1,3 +1,3 @@
-from .templates import Template, Tool
+from .template import Template, Tool
 
 __all__ = ["Template", "Tool"]
