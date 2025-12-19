@@ -1,27 +1,17 @@
-import base64
-import dataclasses
 import functools
 import inspect
-import io
 import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from typing import Any, get_type_hints
+from collections.abc import Callable, Hashable
+from typing import Any
 
 import litellm
 import pydantic
-
-try:
-    from PIL import Image
-except ImportError:
-    raise ImportError("'pillow' is required to use effectful.handlers.providers")
-
 from litellm import (
     Choices,
     Message,
-    OpenAIChatCompletionToolParam,
     OpenAIMessageContent,
     OpenAIMessageContentListBlock,
 )
@@ -32,147 +22,6 @@ from effectful.handlers.llm.encoding import type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
-
-
-def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
-    buf = io.BytesIO()
-    pil_image.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
-    return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
-
-
-@dataclasses.dataclass
-class Tool[**P, T]:
-    callable: Operation[P, T] | Template[P, T]
-    name: str
-    parameter_annotations: dict[str, type]
-    description: str
-
-    @functools.cached_property
-    def parameter_model(self) -> type[pydantic.BaseModel]:
-        fields = {
-            param_name: type_to_encodable_type(param_type).t
-            for param_name, param_type in self.parameter_annotations.items()
-        }
-        parameter_model = pydantic.create_model(
-            "Params",
-            __config__={"extra": "forbid"},
-            **fields,  # type: ignore
-        )
-        return parameter_model
-
-    def call_with_json_args(
-        self, template: Template, json_str: str
-    ) -> OpenAIMessageContent:
-        """Implements a roundtrip call to a python function. Input is a json
-        string representing an LLM tool call request parameters. The output is
-        the serialised response to the model.
-
-        """
-        try:
-            # build dict of raw encodable types U
-            raw_args = self.parameter_model.model_validate_json(json_str)
-
-            # use encoders to decode Us to python types T
-            params: dict[str, Any] = {
-                param_name: type_to_encodable_type(
-                    self.parameter_annotations[param_name]
-                ).decode(getattr(raw_args, param_name))
-                for param_name in raw_args.model_fields_set
-            }
-
-            # call tool with python types
-            result = tool_call(
-                template,
-                self.callable,
-                **params,
-            )
-            # serialize back to U using encoder for return type
-            sig = inspect.signature(self.callable)
-            encoded_ty = type_to_encodable_type(sig.return_annotation)
-            encoded_value = encoded_ty.encode(result)
-            # serialise back to Json
-            return encoded_ty.serialize(encoded_value)
-        except Exception as exn:
-            return str({"status": "failure", "exception": str(exn)})
-
-    @classmethod
-    def define(cls, obj: Operation[P, T] | Template[P, T]):
-        """Create a Tool from an Operation or Template.
-
-        Returns None if the object cannot be converted to a tool (e.g., missing type annotations).
-        """
-        sig = inspect.signature(obj)
-        tool_name = obj.__name__
-
-        description = (
-            obj.__prompt_template__ if isinstance(obj, Template) else obj.__doc__ or ""
-        )
-
-        # Try to get type hints, fall back to signature annotations if that fails
-        try:
-            hints = get_type_hints(obj)
-        except Exception:
-            hints = {
-                p.name: p.annotation
-                for p in sig.parameters.values()
-                if p.annotation is not inspect.Parameter.empty
-            }
-
-        parameter_annotations: dict[str, type] = {}
-        for param_name, param in sig.parameters.items():
-            # Skip parameters without type annotations
-            if param.annotation is inspect.Parameter.empty:
-                raise TypeError(
-                    f"Parameter '{param_name}' in '{obj.__name__}' "
-                    "does not have a type annotation"
-                )
-            # get_type_hints might not include the parameter if annotation is invalid
-            if param_name not in hints:
-                raise TypeError(
-                    f"Parameter '{param_name}' in '{obj.__name__}' "
-                    "does not have a valid type annotation"
-                )
-            parameter_annotations[param_name] = hints[param_name]
-
-        return cls(
-            callable=obj,
-            name=tool_name,
-            parameter_annotations=parameter_annotations,
-            description=description,
-        )
-
-    @property
-    def function_definition(self) -> OpenAIChatCompletionToolParam:
-        response_format = litellm.utils.type_to_response_format_param(
-            self.parameter_model
-        )
-        assert response_format is not None
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": response_format["json_schema"][
-                    "schema"
-                ],  # extract the schema
-                "strict": True,
-            },
-        }
-
-
-def _tools_of_operations(
-    ops: Iterable[Operation | Template],
-) -> Mapping[str, Tool]:
-    tools = {}
-    for op in ops:
-        tool = Tool.define(op)
-        # NOTE: Because lexical handling is already guaranteeing unique names, we can just use the tool's name directly.
-        tools[tool.name] = tool
-    return tools
 
 
 class _OpenAIPromptFormatter(string.Formatter):
@@ -213,21 +62,16 @@ class _OpenAIPromptFormatter(string.Formatter):
         return prompt_parts
 
 
-# Emitted for model request/response rounds so handlers can observe/log requests.
 @defop
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> Any:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd()."""
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+
+    This effect is emitted for model request/response rounds so handlers can
+    observe/log requests.
+
+    """
     return litellm.completion(*args, **kwargs)
-
-
-# Note: attempting to type the tool arguments causes type-checker failures
-@defop
-def tool_call[T](
-    template: Template, tool: Operation[..., T] | Template[..., T], *args, **kwargs
-) -> T:
-    """Perform a model-initiated tool call (can be an Operation or another Template)."""
-    return tool(*args, **kwargs)
 
 
 class CacheLLMRequestHandler(ObjectInterpretation):
@@ -283,33 +127,19 @@ class LLMLoggingHandler(ObjectInterpretation):
         response = fwd()
         self.logger.info(
             "llm.request",
-            extra={
-                "payload": {
-                    "args": args,
-                    "kwargs": kwargs,
-                    "response": response,
-                }
-            },
+            extra={"payload": {"args": args, "kwargs": kwargs, "response": response}},
         )
         return response
 
-    @implements(tool_call)
-    def _log_tool_call(
-        self, template: Template, tool: Operation, *args, **kwargs
-    ) -> Any:
+    @implements(Tool.apply)
+    def _log_tool_call(self, tool: Operation, *args, **kwargs) -> Any:
         """Log the tool call and result."""
 
         tool_name = tool.__name__
         result = fwd()
         self.logger.info(
             "llm.tool_call",
-            extra={
-                "payload": {
-                    "tool": tool_name,
-                    "args": args,
-                    "kwargs": kwargs,
-                }
-            },
+            extra={"payload": {"tool": tool_name, "args": args, "kwargs": kwargs}},
         )
         return result
 
@@ -348,64 +178,13 @@ class RetryLLMHandler(ObjectInterpretation):
 
             try:
                 return fwd(template_ext, *args, **kwargs)
-            except self.exception_cls as exn:
+            except self.exception_cls:
                 if self.add_error_feedback:
                     # Capture the full traceback for better error context
                     tb = traceback.format_exc()
                     prompt_ext += f"\nError from previous generation:\n```\n{tb}```"
 
         return fwd(template_ext, *args, **kwargs)
-
-
-def _parameter_model(
-    params: Mapping[str, inspect.Parameter],
-) -> type[pydantic.BaseModel]:
-    param_types: dict[str, Any] = {
-        n: str if p.annotation is inspect.Parameter.empty else p.annotation
-        for (n, p) in params.items()
-    }
-    return pydantic.create_model(
-        "Params", __config__={"extra": "forbid"}, **param_types
-    )
-
-
-def _function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
-    parameter_model = _parameter_model(tool.__signature__.parameters)
-    response_format = litellm.utils.type_to_response_format_param(parameter_model)
-    assert response_format is not None
-    return {
-        "type": "function",
-        "function": {
-            "name": f"{tool.__name__}_{id(tool)}",
-            "description": tool.__default__.__doc__ or "",
-            "parameters": response_format["json_schema"]["schema"],
-            "strict": True,
-        },
-    }
-
-
-def _call_tool_with_json_args(
-    template: Template, tool: Tool, json_str_args: str
-) -> OpenAIMessageContent:
-    parameter_model = _parameter_model(tool.__signature__.parameters)
-
-    ret_ty = tool.__signature__.return_annotation
-    ret_ty_origin = typing.get_origin(ret_ty) or ret_ty
-    ret_formatter = format_value.dispatch(ret_ty_origin)  # type: ignore[attr-defined]
-    try:
-        args = parameter_model.model_validate_json(json_str_args)
-        result = tool_call(
-            template,
-            tool,
-            **{field: getattr(args, field) for field in parameter_model.model_fields},
-        )
-        return ret_formatter(result)
-    except Exception as exn:
-        return str({"status": "failure", "exception": str(exn)})
-
-
-def _pydantic_model_from_type(typ: type):
-    return pydantic.create_model("Response", value=typ, __config__={"extra": "forbid"})
 
 
 @defop
@@ -416,7 +195,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     """
     ret_type = template.__signature__.return_annotation
 
-    tools = _tools_of_operations(template.tools)
+    tools = {t.__name__: t for t in template.tools}
     tool_schemas = [t.function_definition for t in tools.values()]
     response_encoding_type: type | None = type_to_encodable_type(ret_type).t
     if response_encoding_type == str:
