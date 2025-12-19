@@ -1142,4 +1142,4 @@ def test_defop_forward_ref():
     class B: ...
 
     with pytest.raises(NameError):
-        term2 = local_forward_ref_op()
+        local_forward_ref_op()
