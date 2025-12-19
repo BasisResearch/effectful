@@ -11,13 +11,13 @@ import pytest
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.providers import (
     LiteLLMProvider,
     completion,
 )
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
 # Check for API keys
@@ -67,7 +67,7 @@ class PoemQuality(str, Enum):
     BAD = "BAD"
 
 
-@defop
+@Tool.define
 def evaluate_poem_tool(poem: Poem, explanation: str) -> PoemQuality:
     """Evaluate the quality of a poem.
 
