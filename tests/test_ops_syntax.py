@@ -1134,3 +1134,12 @@ def test_defop_forward_ref():
     term = forward_ref_op()
     assert term.op == forward_ref_op
     assert typeof(term) is A
+
+    @defop
+    def local_forward_ref_op() -> "B":
+        raise NotHandled
+
+    class B: ...
+
+    with pytest.raises(NameError):
+        term2 = local_forward_ref_op()
