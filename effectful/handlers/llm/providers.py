@@ -13,8 +13,6 @@ from typing import Any, get_type_hints
 import litellm
 import pydantic
 
-from effectful.handlers.llm.encoding import type_to_encodable_type
-
 try:
     from PIL import Image
 except ImportError:
@@ -30,6 +28,7 @@ from litellm import (
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm.encoding import type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -52,13 +51,6 @@ class Tool[**P, T]:
     parameter_annotations: dict[str, type]
     description: str
 
-    def serialise_return_value(self, value) -> OpenAIMessageContent:
-        """Serializes a value returned by the function into a json format suitable for the OpenAI API."""
-        sig = inspect.signature(self.callable)
-        encoded_ty = type_to_encodable_type(sig.return_annotation)
-        encoded_value = encoded_ty.encode(value)
-        return encoded_ty.serialize(encoded_value)
-
     @functools.cached_property
     def parameter_model(self) -> type[pydantic.BaseModel]:
         fields = {
@@ -75,7 +67,11 @@ class Tool[**P, T]:
     def call_with_json_args(
         self, template: Template, json_str: str
     ) -> OpenAIMessageContent:
-        """Implements a roundtrip call to a python function. Input is a json string representing an LLM tool call request parameters. The output is the serialised response to the model."""
+        """Implements a roundtrip call to a python function. Input is a json
+        string representing an LLM tool call request parameters. The output is
+        the serialised response to the model.
+
+        """
         try:
             # build dict of raw encodable types U
             raw_args = self.parameter_model.model_validate_json(json_str)
