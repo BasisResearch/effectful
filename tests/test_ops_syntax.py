@@ -1119,3 +1119,18 @@ def test_operation_dataclass_generic():
         raise NotHandled
 
     assert isinstance(id(A(0)).x, Term)
+
+
+# Forward references in types only work on module-level definitions.
+@defop
+def forward_ref_op() -> "A":
+    raise NotHandled
+
+
+class A: ...
+
+
+def test_defop_forward_ref():
+    term = forward_ref_op()
+    assert term.op == forward_ref_op
+    assert typeof(term) is A
