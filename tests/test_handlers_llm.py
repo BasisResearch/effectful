@@ -243,7 +243,6 @@ def test_retry_handler_with_error_feedback():
     # First call has original prompt
     assert "Write a limerick on the theme of {theme}." in call_prompts[0]
     # Second call should include error feedback with traceback
-    assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
 
 

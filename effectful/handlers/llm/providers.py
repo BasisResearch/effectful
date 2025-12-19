@@ -178,6 +178,7 @@ class RetryLLMHandler(ObjectInterpretation):
                     tb = traceback.format_exc()
                     prompt_ext += f"\nError from previous generation:\n```\n{tb}```"
 
+        template_ext = Template.replace(template, prompt_template=prompt_ext)
         return fwd(template_ext, *args, **kwargs)
 
 
