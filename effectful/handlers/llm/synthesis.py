@@ -230,38 +230,88 @@ def _type_to_encodable_type_template[T](ty: type[T]) -> EncodableAs[Template, st
     return typing.cast(EncodableAs[Template, str], EncodableTemplate())
 
 
-def lexical_context_to_source(context: LexicalContext) -> str:
+def _get_class_signature(cls: type) -> str:
+    """Get a signature-only representation of a class (no method bodies)."""
+    lines = [f"class {cls.__name__}:"]
+    has_members = False
+
+    # Get method signatures (skip private/dunder except __init__)
+    for name in dir(cls):
+        if name.startswith("_") and name != "__init__":
+            continue
+        try:
+            attr = getattr(cls, name)
+            if callable(attr) and not isinstance(attr, type):
+                sig = inspect.signature(attr)
+                doc = attr.__doc__
+                first_line = doc.split("\n")[0].strip() if doc else ""
+                if first_line:
+                    lines.append(f"    def {name}{sig}: ...  # {first_line}")
+                else:
+                    lines.append(f"    def {name}{sig}: ...")
+                has_members = True
+        except (ValueError, TypeError):
+            continue
+
+    if not has_members:
+        lines.append("    ...")
+
+    return "\n".join(lines)
+
+
+def lexical_context_to_source(
+    context: LexicalContext, include_body: bool = False
+) -> str:
     """Convert a LexicalContext to Python source code representation.
 
     Generates source code/signatures for types, functions, Operations, and Templates
     in the lexical context, suitable for including in LLM prompts.
+
+    Args:
+        context: The lexical context to convert.
+        include_body: If True, include full source code. If False (default),
+                      include only signatures with docstrings.
     """
     sources: list[str] = []
     seen_names: set[str] = set()
 
     for name, obj in context.items():
-        # Skip private/dunder names and duplicates
         if name.startswith("_") or name in seen_names:
             continue
         seen_names.add(name)
 
-        # Skip modules
         if isinstance(obj, types.ModuleType):
             continue
 
-        # Use type_to_encodable_type to get encoder for this object's type
+        if isinstance(obj, type) and not include_body:
+            sources.append(_get_class_signature(obj))
+            continue
+
+        if callable(obj) and not isinstance(obj, type) and not include_body:
+            if not isinstance(obj, (Operation, Template)):
+                try:
+                    sig = inspect.signature(obj)
+                    sources.append(f"def {name}{sig}: ...")
+                except (ValueError, TypeError):
+                    sources.append(f"def {name}(...): ...")
+                continue
+
         try:
             encoder = type_to_encodable_type(type(obj))
-            # Include if encoder produces strings (source repr) or SynthesizedFunction
             if encoder.t is str:
                 source = encoder.encode(obj)
                 sources.append(textwrap.dedent(source).strip())
             elif encoder.t is SynthesizedFunction:
-                synth = encoder.encode(obj)
-                # Extract module code from SynthesizedFunction
-                sources.append(textwrap.dedent(synth.module_code).strip())
+                if include_body:
+                    synth = encoder.encode(obj)
+                    sources.append(textwrap.dedent(synth.module_code).strip())
+                else:
+                    try:
+                        sig = inspect.signature(obj)
+                        sources.append(f"def {name}{sig}: ...")
+                    except (ValueError, TypeError):
+                        sources.append(f"def {name}(...): ...")
         except (TypeError, NotImplementedError, AttributeError, OSError):
-            # No encoder for this type or encoding failed, skip it
             pass
 
     return "\n\n".join(sources)
@@ -339,7 +389,14 @@ def run_mypy_check(
 class ProgramSynthesis(ObjectInterpretation):
     """Provides a `template` handler to instruct the LLM to generate code of the
     right form and with the right type.
+
+    Args:
+        include_body: If True, include full source code of context items in prompts.
+                      If False (default), include only signatures with docstrings.
     """
+
+    def __init__(self, include_body: bool = False):
+        self.include_body = include_body
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -352,8 +409,10 @@ class ProgramSynthesis(ObjectInterpretation):
         if not is_callable:
             return fwd()
 
-        # Include the full lexical context - all functions, types, values available to synthesized code
-        context_source = lexical_context_to_source(template.__context__)
+        # Include lexical context - signatures only by default, full source if include_body=True
+        context_source = lexical_context_to_source(
+            template.__context__, include_body=self.include_body
+        )
         escaped_context = context_source.replace("{", "{{").replace("}", "}}")
         context_section = f"""
 The following types, functions, and values are available:
