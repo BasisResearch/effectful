@@ -82,15 +82,18 @@ class EncodableSynthesizedFunction(
     _decode_counter: typing.ClassVar[int] = 0
 
     @classmethod
-    def decode(
-        cls, vl: SynthesizedFunction, context: LexicalContext | None = None
-    ) -> Callable:
+    def decode(cls, vl: SynthesizedFunction, template: typing.Any = None) -> Callable:
         """Decode a SynthesizedFunction to a Callable.
 
         Executes the module code and returns the named function.
         The module code becomes the function's lexical context,
-        optionally augmented with provided context.
+        optionally augmented with the template's context.
         """
+        # Extract lexical context from template if provided
+        context: LexicalContext | None = None
+        if template is not None and hasattr(template, "__context__"):
+            ctx = template.__context__
+            context = ctx if isinstance(ctx, LexicalContext) else LexicalContext(ctx)
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
@@ -160,7 +163,7 @@ def _type_to_encodable_type_class[T](ty: type[T]) -> EncodableAs[type, str]:
                 return f"class {obj.__name__}: ..."
 
         @classmethod
-        def decode(cls, source: str) -> type:
+        def decode(cls, source: str, template: typing.Any = None) -> type:
             exec_globals: dict[str, Any] = {}
             exec(compile(source, "<class>", "exec"), exec_globals)
             # Find the first class defined
@@ -194,7 +197,7 @@ def _type_to_encodable_type_operation[T](ty: type[T]) -> EncodableAs[Operation, 
                 return f"def {obj.__name__}(...): ..."
 
         @classmethod
-        def decode(cls, source: str) -> Operation:
+        def decode(cls, source: str, template: typing.Any = None) -> Operation:
             raise NotImplementedError("Cannot decode Operation from source")
 
     return typing.cast(EncodableAs[Operation, str], EncodableOperation())
@@ -221,7 +224,7 @@ def _type_to_encodable_type_template[T](ty: type[T]) -> EncodableAs[Template, st
                 return f"def {obj.__name__}(...): ..."
 
         @classmethod
-        def decode(cls, source: str) -> Template:
+        def decode(cls, source: str, template: typing.Any = None) -> Template:
             raise NotImplementedError("Cannot decode Template from source")
 
     return typing.cast(EncodableAs[Template, str], EncodableTemplate())
@@ -385,22 +388,14 @@ The following types, functions, and values are available:
             return inner
         """).strip()
 
-        response: SynthesizedFunction = fwd(
-            dataclasses.replace(
-                template,
-                __prompt_template__=prompt_ext,
-                __signature__=template.__signature__.replace(
-                    return_annotation=SynthesizedFunction
-                ),
-            ),
+        # NOTE: Only modify the prompt, keep original return type
+        # decode_response will use EncodableSynthesizedFunction.decode with template context
+        # type_check will be called by LiteLLMProvider with original template
+        return fwd(
+            dataclasses.replace(template, __prompt_template__=prompt_ext),
             *args,
             **kwargs,
         )
-
-        synthesized_func = EncodableSynthesizedFunction.decode(
-            response, context=template.__context__
-        )
-        return type_check(synthesized_func, template)
 
 
 class CallableTypeCheckHandler(ObjectInterpretation):

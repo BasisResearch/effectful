@@ -4,7 +4,8 @@ from dataclasses import dataclass
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import RetryLLMHandler
+from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.providers import RetryLLMHandler, type_check
 from effectful.handlers.llm.synthesis import (
     CallableTypeCheckHandler,
     ProgramSynthesis,
@@ -46,7 +47,11 @@ class MockLLMProvider[T](ObjectInterpretation):
 
 
 class SingleResponseLLMProvider[T](ObjectInterpretation):
-    """Simplified mock provider that returns a single response for any prompt."""
+    """Simplified mock provider that returns a single response for any prompt.
+
+    Mimics real LLM provider behavior: decodes response using type_to_encodable_type
+    and calls type_check on the result.
+    """
 
     def __init__(self, response: T):
         """Initialize with a single response string.
@@ -60,7 +65,12 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        return self.response
+        # Decode using the encoding layer (like real LiteLLMProvider.decode_response)
+        ret_type = template.__signature__.return_annotation
+        encoder = type_to_encodable_type(ret_type)
+        decoded = encoder.decode(self.response, template=template)
+        # Call type_check (like real LiteLLMProvider._call)
+        return type_check(decoded, template)
 
 
 class FailingThenSucceedingProvider[T](ObjectInterpretation):

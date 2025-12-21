@@ -454,7 +454,7 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
         assert isinstance(result, Result)
         value = result.value  # type: ignore
 
-    return encodable_ty.decode(value)  # type: ignore
+    return encodable_ty.decode(value, template=template)  # type: ignore
 
 
 @defop
