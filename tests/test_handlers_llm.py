@@ -284,7 +284,11 @@ def count_chars(text: str) -> int:
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
-    with handler(mock_provider), handler(ProgramSynthesis()), handler(CallableTypeCheckHandler()):
+    with (
+        handler(mock_provider),
+        handler(ProgramSynthesis()),
+        handler(CallableTypeCheckHandler()),
+    ):
         count_a = count_char("a")
         assert callable(count_a)
         assert count_a("banana") == 3
@@ -303,8 +307,10 @@ def bad_return(text: str) -> str:
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with pytest.raises(SynthesisError, match="Type check failed"):
-        with handler(mock_provider), handler(ProgramSynthesis()), handler(
-            CallableTypeCheckHandler()
+        with (
+            handler(mock_provider),
+            handler(ProgramSynthesis()),
+            handler(CallableTypeCheckHandler()),
         ):
             count_char("a")
 

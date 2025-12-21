@@ -338,7 +338,6 @@ class ProgramSynthesis(ObjectInterpretation):
     right form and with the right type.
     """
 
-
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
         ret_type = template.__signature__.return_annotation
@@ -398,8 +397,11 @@ The following types, functions, and values are available:
             **kwargs,
         )
 
-        synthesized_func = EncodableSynthesizedFunction.decode(response, context=template.__context__)
+        synthesized_func = EncodableSynthesizedFunction.decode(
+            response, context=template.__context__
+        )
         return type_check(synthesized_func, template)
+
 
 class CallableTypeCheckHandler(ObjectInterpretation):
     """Type check handler for Callable types using mypy.
@@ -427,7 +429,9 @@ class CallableTypeCheckHandler(ObjectInterpretation):
 
         # Run mypy type check
         context = template.__context__
-        lexical_context = context if isinstance(context, LexicalContext) else LexicalContext({})
+        lexical_context = (
+            context if isinstance(context, LexicalContext) else LexicalContext({})
+        )
         success, error_msg = run_mypy_check(
             synth.module_code,
             lexical_context,
