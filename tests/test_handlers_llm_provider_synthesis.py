@@ -5,7 +5,11 @@ from collections.abc import Callable
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import LiteLLMProvider
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
+from effectful.handlers.llm.synthesis import (
+    CallableTypeCheckHandler,
+    ProgramSynthesis,
+    SynthesisError,
+)
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
@@ -35,7 +39,8 @@ class TestProgramSynthesis:
         """Test ProgramSynthesis handler generates executable code."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
+            handler(CallableTypeCheckHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("a")
@@ -52,7 +57,8 @@ class TestProgramSynthesis:
         """Test that inspect.getsource() works on synthesized functions."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
+            handler(CallableTypeCheckHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("x")
@@ -75,7 +81,8 @@ class TestProgramSynthesis:
 
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
+            handler(CallableTypeCheckHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("z")

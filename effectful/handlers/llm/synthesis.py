@@ -17,6 +17,7 @@ from pydantic import Field
 
 from effectful.handlers.llm import LexicalContext, Template
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
+from effectful.handlers.llm.providers import type_check
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -337,56 +338,6 @@ class ProgramSynthesis(ObjectInterpretation):
     right form and with the right type.
     """
 
-    def __init__(self, type_check: bool = False):
-        """Initialize the program synthesis handler.
-
-        Args:
-            type_check: Whether to run mypy to verify the generated code.
-                        Even with constrained decoding, this can catch errors
-                        in the function body implementation.
-        """
-        self.type_check = type_check
-
-    def _build_function(
-        self,
-        result: SynthesizedFunction,
-        lexical_context: LexicalContext,
-    ) -> Callable:
-        """Build and execute a function from the synthesized module.
-
-        Uses EncodableSynthesizedFunction.decode with the template's lexical context.
-        Optionally runs mypy type checking if enabled.
-
-        Args:
-            result: The structured output from the LLM
-            lexical_context: Dict of lexical context (functions/types) available in scope
-
-        Returns:
-            The synthesized callable function
-        """
-        return EncodableSynthesizedFunction.decode(result, context=lexical_context)
-
-    def _run_type_check(
-        self,
-        result: SynthesizedFunction,
-        expected_type: type | None,
-        lexical_context: LexicalContext,
-    ) -> None:
-        """Run mypy type checking on the synthesized code.
-
-        Args:
-            result: The structured output from the LLM
-            expected_type: The expected Callable type, or None to skip type assertion
-            lexical_context: Dict of lexical context for imports
-        """
-        success, error_msg = run_mypy_check(
-            result.module_code,
-            lexical_context,
-            function_name=result.function_name if expected_type else None,
-            expected_type=expected_type,
-        )
-        if not success:
-            raise SynthesisError(f"Type check failed:\n{error_msg}", result.module_code)
 
     @implements(Template.__call__)
     def _call(self, template, *args, **kwargs) -> Callable:
@@ -447,11 +398,43 @@ The following types, functions, and values are available:
             **kwargs,
         )
 
-        # Build the function using lexical context for exec globals
-        synthesized_func = self._build_function(response, template.__context__)
+        synthesized_func = EncodableSynthesizedFunction.decode(response, context=template.__context__)
+        return type_check(synthesized_func, template)
 
-        # Run type check if enabled
-        if self.type_check:
-            self._run_type_check(response, ret_type, template.__context__)
+class CallableTypeCheckHandler(ObjectInterpretation):
+    """Type check handler for Callable types using mypy.
 
-        return synthesized_func
+    Intercepts the type_check operation when the expected type is a Callable,
+    and runs mypy to validate the synthesized function's type signature.
+    """
+
+    @implements(type_check)
+    def _type_check_callable(self, value: Callable, template: Template) -> Callable:
+        """Run mypy type checking on Callable values."""
+        expected_type = template.__signature__.return_annotation
+        origin = typing.get_origin(expected_type)
+        type_origin = expected_type if origin is None else origin
+
+        # Only handle Callable types
+        if type_origin is not collections.abc.Callable:
+            return fwd()
+
+        # Get the synthesized function's source code
+        synth: SynthesizedFunction | None = getattr(value, "__synthesized__", None)
+        if synth is None:
+            # Not a synthesized function, skip type checking
+            return fwd()
+
+        # Run mypy type check
+        context = template.__context__
+        lexical_context = context if isinstance(context, LexicalContext) else LexicalContext({})
+        success, error_msg = run_mypy_check(
+            synth.module_code,
+            lexical_context,
+            function_name=synth.function_name,
+            expected_type=expected_type,
+        )
+        if not success:
+            raise SynthesisError(f"Type check failed:\n{error_msg}", synth.module_code)
+
+        return value

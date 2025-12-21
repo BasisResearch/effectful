@@ -6,6 +6,7 @@ import pytest
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import (
+    CallableTypeCheckHandler,
     ProgramSynthesis,
     SynthesisError,
     SynthesizedFunction,
@@ -273,7 +274,7 @@ def bad_func(x):
 
 
 def test_program_synthesis_with_type_check():
-    """Test program synthesis with mypy type checking via type assertion."""
+    """Test program synthesis with mypy type checking via AutoTypeCheck + CallableTypeCheckHandler."""
     mock_response = SynthesizedFunction(
         function_name="count_chars",
         module_code="""
@@ -283,14 +284,14 @@ def count_chars(text: str) -> int:
     )
     mock_provider = SingleResponseLLMProvider(mock_response)
 
-    with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+    with handler(mock_provider), handler(ProgramSynthesis()), handler(CallableTypeCheckHandler()):
         count_a = count_char("a")
         assert callable(count_a)
         assert count_a("banana") == 3
 
 
 def test_program_synthesis_type_check_catches_signature_mismatch():
-    """Test that type checking catches when function signature doesn't match."""
+    """Test that CallableTypeCheckHandler catches when function signature doesn't match."""
     # Function returns str but expected int - type assertion will fail
     mock_response = SynthesizedFunction(
         function_name="bad_return",
@@ -302,7 +303,9 @@ def bad_return(text: str) -> str:
     mock_provider = SingleResponseLLMProvider(mock_response)
 
     with pytest.raises(SynthesisError, match="Type check failed"):
-        with handler(mock_provider), handler(ProgramSynthesis(type_check=True)):
+        with handler(mock_provider), handler(ProgramSynthesis()), handler(
+            CallableTypeCheckHandler()
+        ):
             count_char("a")
 
 
