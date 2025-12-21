@@ -79,12 +79,6 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
     return typing.cast(Encodable[T], BaseEncodable())
 
 
-# NOTE: Register str explicitly to avoid WeakKeyDictionary cache issues with singledispatch
-@type_to_encodable_type.register(str)
-def _type_encodable_type_str[T](ty: type[T]) -> Encodable[T]:
-    return _type_encodable_type_base(ty)
-
-
 @type_to_encodable_type.register(pydantic.BaseModel)
 def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
     ty: type[T],

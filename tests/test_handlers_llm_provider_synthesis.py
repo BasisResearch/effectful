@@ -118,8 +118,12 @@ def my_func(n):
 """,
         )
 
-        # Decode with the context
-        func = EncodableSynthesizedFunction.decode(synth, context=original_context)
+        # Create a mock template with __context__ attribute
+        class MockTemplate:
+            __context__ = original_context
+
+        # Decode with the context via template
+        func = EncodableSynthesizedFunction.decode(synth, template=MockTemplate())
 
         # Verify the function works
         assert func(5) == 12  # (5 + 1) * 2
