@@ -299,11 +299,11 @@ def lexical_context_to_source(
         try:
             encoder = type_to_encodable_type(type(obj))
             if encoder.t is str:
-                source = encoder.encode(obj)
+                source = typing.cast(str, encoder.encode(obj))
                 sources.append(textwrap.dedent(source).strip())
             elif encoder.t is SynthesizedFunction:
                 if include_body:
-                    synth = encoder.encode(obj)
+                    synth = typing.cast(SynthesizedFunction, encoder.encode(obj))
                     sources.append(textwrap.dedent(synth.module_code).strip())
                 else:
                     try:

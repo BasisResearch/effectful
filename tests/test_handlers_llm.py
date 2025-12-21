@@ -1,3 +1,4 @@
+import typing
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -68,7 +69,9 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         # Decode using the encoding layer (like real LiteLLMProvider.decode_response)
         ret_type = template.__signature__.return_annotation
         encoder = type_to_encodable_type(ret_type)
-        decoded = encoder.decode(self.response, template=template)
+        decoded = encoder.decode(
+            typing.cast(typing.Any, self.response), template=template
+        )
         # Call type_check (like real LiteLLMProvider._call)
         return type_check(decoded, template)
 
