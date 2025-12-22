@@ -234,6 +234,23 @@ def tool_call[T](
     return tool(*args, **kwargs)
 
 
+@defop
+def type_check[T](value: T, template: Template) -> T:
+    """Validate that a value conforms to the template's expected return type.
+
+    Default behavior is pass-through (no validation).
+    Handlers can intercept this to perform type checking (e.g., mypy for Callables).
+
+    Args:
+        value: The value to validate
+        template: The template providing expected type and context
+
+    Returns:
+        The value unchanged if validation passes
+    """
+    return value
+
+
 class CacheLLMRequestHandler(ObjectInterpretation):
     """Caches LLM requests."""
 
@@ -437,7 +454,7 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
         assert isinstance(result, Result)
         value = result.value  # type: ignore
 
-    return encodable_ty.decode(value)  # type: ignore
+    return encodable_ty.decode(value, template=template)  # type: ignore
 
 
 @defop
@@ -446,7 +463,6 @@ def format_model_input[**P, T](
 ) -> list[Any]:
     """Format a template applied to arguments into a sequence of input
     messages.
-
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
@@ -489,4 +505,6 @@ class LiteLLMProvider(ObjectInterpretation):
     ) -> T:
         model_input = format_model_input(template, *args, **kwargs)
         resp = compute_response(template, model_input)
-        return decode_response(template, resp)
+        result = decode_response(template, resp)
+        # Validate the result against the expected return type
+        return type_check(result, template)
