@@ -65,7 +65,7 @@ class Template[**P, T](Tool[P, T]):
 
         context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)  # type: ignore[arg-type]
 
-        op = super().define(*args, **kwargs)
+        op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
         return typing.cast(Template[Q, V], op)
 
