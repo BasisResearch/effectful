@@ -6,7 +6,6 @@ effect for nondeterminism and `score` effect to weigh its choices.
 import functools
 import heapq
 import random
-import typing
 from collections.abc import Callable
 from dataclasses import dataclass
 from pprint import pprint
