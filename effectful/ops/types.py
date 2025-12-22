@@ -73,17 +73,12 @@ class Operation[**Q, V]:
 
     """
 
-    __signature__: inspect.Signature
     __name__: str
     __default__: Callable[Q, V]
     __apply__: typing.ClassVar["Operation"]
 
-    def __init__(
-        self, signature: inspect.Signature, name: str, default: Callable[Q, V]
-    ):
+    def __init__(self, name: str, default: Callable[Q, V]):
         functools.update_wrapper(self, default)
-
-        self.__signature__ = signature
         self.__name__ = name
         self.__default__ = default
 
@@ -252,7 +247,7 @@ class Operation[**Q, V]:
             op = cls.define(func, name=name)
         else:
             name = name or t.__name__
-            op = cls(inspect.signature(t), name, t)  # type: ignore[arg-type]
+            op = cls(name, t)  # type: ignore[arg-type]
 
         return op  # type: ignore[return-value]
 
@@ -323,6 +318,21 @@ class Operation[**Q, V]:
         op.dispatch = default._registry.dispatch  # type: ignore[attr-defined]
         op.register = default._registry.register  # type: ignore[attr-defined]
         return op
+
+    @functools.cached_property
+    def __signature__(self):
+        annots = typing.get_type_hints(self.__default__, include_extras=True)
+        sig = inspect.signature(self.__default__)
+
+        updated_params = [
+            p.replace(annotation=annots[p.name]) if p.name in annots else p
+            for p in sig.parameters.values()
+        ]
+        updated_ret = annots.get("return", sig.return_annotation)
+        updated_sig = sig.replace(
+            parameters=updated_params, return_annotation=updated_ret
+        )
+        return updated_sig
 
     @typing.final
     def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
