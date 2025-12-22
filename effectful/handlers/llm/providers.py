@@ -198,6 +198,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
     # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
     while True:
+        breakpoint()
         response: ModelResponse = completion(
             messages=model_input,
             response_format=pydantic.create_model(
