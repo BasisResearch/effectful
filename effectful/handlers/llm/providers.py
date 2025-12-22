@@ -12,6 +12,7 @@ import pydantic
 from litellm import (
     Choices,
     Message,
+    OpenAIChatCompletionToolParam,
     OpenAIMessageContent,
     OpenAIMessageContentListBlock,
 )
@@ -182,6 +183,69 @@ class RetryLLMHandler(ObjectInterpretation):
         return fwd(template_ext, *args, **kwargs)
 
 
+def parameter_model(tool: Tool) -> type[pydantic.BaseModel]:
+    fields = {
+        name: type_to_encodable_type(param.annotation).t
+        for name, param in tool.__signature__.parameters.items()
+    }
+    parameter_model = pydantic.create_model(
+        "Params",
+        __config__={"extra": "forbid"},
+        **fields,  # type: ignore
+    )
+    return parameter_model
+
+
+def function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
+    param_model = parameter_model(tool)
+    response_format = litellm.utils.type_to_response_format_param(param_model)
+    description = tool.__default__.__doc__
+    assert response_format is not None
+    assert description is not None
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.__name__,
+            "description": description,
+            "parameters": response_format["json_schema"]["schema"],
+            "strict": True,
+        },
+    }
+
+
+def call_with_json_args(tool: Tool, json_str: str) -> OpenAIMessageContent:
+    """Implements a roundtrip call to a python function. Input is a json
+    string representing an LLM tool call request parameters. The output is
+    the serialised response to the model.
+
+    """
+    sig = tool.__signature__
+    param_model = parameter_model(tool)
+    try:
+        # build dict of raw encodable types U
+        raw_args = param_model.model_validate_json(json_str)
+
+        # use encoders to decode Us to python types T
+        params: dict[str, Any] = {
+            param_name: type_to_encodable_type(
+                sig.parameters[param_name].annotation
+            ).decode(getattr(raw_args, param_name))
+            for param_name in raw_args.model_fields_set
+        }
+
+        # call tool with python types
+        result = tool(**params)
+
+        # serialize back to U using encoder for return type
+        encoded_ty = type_to_encodable_type(sig.return_annotation)
+        encoded_value = encoded_ty.encode(result)
+
+        # serialise back to Json
+        return encoded_ty.serialize(encoded_value)
+    except Exception as exn:
+        return str({"status": "failure", "exception": str(exn)})
+
+
 @defop
 def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
     """Produce a complete model response for an input message sequence. This may
@@ -191,7 +255,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     ret_type = template.__signature__.return_annotation
 
     tools = {t.__name__: t for t in template.tools}
-    tool_schemas = [t.function_definition for t in tools.values()]
+    tool_schemas = [function_definition(t) for t in tools.values()]
     response_encoding_type: type | None = type_to_encodable_type(ret_type).t
     if response_encoding_type == str:
         response_encoding_type = None
@@ -220,7 +284,7 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             function_name = function.name
             assert function_name is not None
             tool = tools[function_name]
-            tool_result = tool.call_with_json_args(function.arguments)
+            tool_result = call_with_json_args(tool, function.arguments)
             model_input.append(
                 {
                     "role": "tool",
