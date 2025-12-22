@@ -2,13 +2,14 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
+from threading import local
 
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, Operation
 
 
 @dataclasses.dataclass
-class Runtime[S, T]:
+class Runtime[S, T](local):
     interpretation: "Interpretation[S, T]"
 
 

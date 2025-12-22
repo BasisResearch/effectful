@@ -12,7 +12,7 @@ done
 ruff check $SRC
 ruff format --diff $SRC
 
-nbqa mypy docs
+nbqa 'mypy --no-incremental' docs
 nbqa 'ruff check' docs
 nbqa 'ruff format --diff' docs
 
