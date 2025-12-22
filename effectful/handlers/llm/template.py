@@ -31,16 +31,6 @@ class Tool[**P, T](Operation[P, T]):
 class Template[**P, T](Tool[P, T]):
     __context__: Mapping[str, Any]
 
-    def __init__(
-        self,
-        signature: inspect.Signature,
-        name: str,
-        default: Callable[P, T],
-        context: Mapping[str, Any],
-    ):
-        super().__init__(signature, name, default)
-        self.__context__ = context
-
     @property
     def __prompt_template__(self):
         return self.__default__.__doc__
@@ -54,7 +44,9 @@ class Template[**P, T](Tool[P, T]):
         return tuple(result)
 
     @classmethod
-    def define[**Q, V](cls, func: Callable[Q, V]) -> "Template[Q, V]":
+    def define[**Q, V](
+        cls, default: Callable[Q, V], *args, **kwargs
+    ) -> "Template[Q, V]":
         """Define a prompt template.
 
         `define` takes a function, and can be used as a decorator. The
@@ -73,15 +65,9 @@ class Template[**P, T](Tool[P, T]):
 
         context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)  # type: ignore[arg-type]
 
-        return typing.cast(
-            Template[Q, V],
-            cls(
-                inspect.signature(func),
-                func.__name__,
-                typing.cast(Callable[P, T], func),
-                context,
-            ),
-        )
+        op = super().define(*args, **kwargs)
+        op.__context__ = context  # type: ignore[attr-defined]
+        return typing.cast(Template[Q, V], op)
 
     def replace(
         self,
@@ -102,4 +88,6 @@ class Template[**P, T](Tool[P, T]):
         else:
             default = self.__default__
 
-        return Template(signature, name, default, self.__context__)
+        op = Template(signature, name, default)
+        op.__context__ = self.__context__
+        return op
