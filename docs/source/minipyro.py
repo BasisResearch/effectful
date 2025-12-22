@@ -14,10 +14,12 @@ allows effectful-minipyro to be run against `pyroapi`'s test suite.
 """
 
 import random
+from collections import OrderedDict
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Concatenate, NamedTuple, Optional, OrderedDict, Union
+from typing import Concatenate, NamedTuple
 from weakref import ref
 
 import numpy as np
@@ -40,7 +42,6 @@ from effectful.ops.semantics import coproduct, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
-
 # Poutine has a notion of 'messages', which are dictionaries
 # that are passed between handlers (or 'Messengers') in order
 # to facilitate coordination and composition using "magic" slots.
@@ -56,7 +57,7 @@ class SampleMsg:
     name: str
     val: Tensor
     dist: Distribution
-    obs: Optional[Tensor]
+    obs: Tensor | None
 
 
 @dataclass
@@ -65,7 +66,7 @@ class ParamMsg:
     val: Tensor
 
 
-Message = Union[ParamMsg, SampleMsg]
+Message = ParamMsg | SampleMsg
 Trace = OrderedDict[str, Message]
 
 
@@ -87,16 +88,16 @@ class Seed(NamedTuple):
 
 
 @defop
-def sample(name: str, dist: Distribution, obs: Optional[Tensor] = None) -> Tensor:
+def sample(name: str, dist: Distribution, obs: Tensor | None = None) -> Tensor:
     raise RuntimeError("No default implementation of sample")
 
 
 @defop
 def param(
     var_name: str,
-    initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
-    constraint: Optional[Constraint] = None,
-    event_dim: Optional[int] = None,
+    initial_value: Tensor | Callable[[], Tensor] | None = None,
+    constraint: Constraint | None = None,
+    event_dim: int | None = None,
 ) -> Tensor:
     raise RuntimeError("No default implementation of param")
 
@@ -123,7 +124,7 @@ def get_rng_seed() -> Seed:
 
 
 @defop
-def set_rng_seed(seed: Union[int, Seed]):
+def set_rng_seed(seed: int | Seed):
     raise RuntimeError("No default implementation of get_rng_seed")
 
 
@@ -165,9 +166,9 @@ class Tracer(ObjectInterpretation):
     def param(
         self,
         var_name: str,
-        initial_value: Optional[Union[Tensor, Callable[[], Tensor]]] = None,
-        constraint: Optional[Constraint] = None,
-        event_dim: Optional[int] = None,
+        initial_value: Tensor | Callable[[], Tensor] | None = None,
+        constraint: Constraint | None = None,
+        event_dim: int | None = None,
     ) -> Tensor:
         # Similar to `Tracer.sample`
 
@@ -227,7 +228,7 @@ class NativeSeed(ObjectInterpretation):
         )
 
     @implements(set_rng_seed)
-    def set_rng_seed(self, seed: Union[int, Seed]):
+    def set_rng_seed(self, seed: int | Seed):
         if isinstance(seed, int):
             manual_seed(seed)
             random.seed(seed)
@@ -276,9 +277,9 @@ class NativeParam(ObjectInterpretation):
     def param(
         self,
         name: str,
-        initial_value: Union[Tensor, None, Callable[[], Tensor]] = None,
+        initial_value: Tensor | None | Callable[[], Tensor] = None,
         constraint: Constraint = distributions.constraints.real,
-        event_dim: Optional[int] = None,
+        event_dim: int | None = None,
     ) -> Tensor:
         if event_dim is not None:
             raise RuntimeError("minipyro.plate does not support the event_dim arg")
@@ -321,7 +322,7 @@ class Plate(ObjectInterpretation):
     An `Interpretation` which automatically broadcasts the `sample` `Operation`
     """
 
-    def __init__(self, name: str, size: int, dim: Optional[int]):
+    def __init__(self, name: str, size: int, dim: int | None):
         if dim is None:
             raise ValueError("mini-pyro requires the `dim` argument to `plate`")
 
@@ -342,7 +343,7 @@ class Plate(ObjectInterpretation):
 
 
 # Helper for using `Plate` as a `handler`
-def plate(name: str, size: int, dim: Optional[int] = None):
+def plate(name: str, size: int, dim: int | None = None):
     return handler(Plate(name, size, dim))
 
 
@@ -354,7 +355,7 @@ default_runner = coproduct(NativeSeed(), NativeParam())
 
 
 def block[**P](
-    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True
+    hide_fn: Callable[Concatenate[Operation, object, P], bool] = lambda *_, **__: True,
 ):
     """
     Block is a helper for masking out a subset of calls to either
@@ -372,7 +373,7 @@ def block[**P](
                 return op(*args, **kwargs)
         return fwd()
 
-    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})  # type: ignore
+    return handler({sample: partial(blocking, sample), param: partial(blocking, param)})
 
 
 # This is a thin wrapper around the `torch.optim.Adam` class that
