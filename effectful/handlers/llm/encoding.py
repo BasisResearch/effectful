@@ -38,7 +38,6 @@ class EncodableAs[T, U](ABC):
     @classmethod
     @abstractmethod
     def decode(cls, vl: U) -> T:
-        """Decode an encoded value back to the original type."""
         pass
 
     @classmethod
@@ -108,9 +107,7 @@ class EncodableImage(EncodableAs[Image.Image, ChatCompletionImageUrlObject]):
         }
 
     @classmethod
-    def decode(
-        cls, image: ChatCompletionImageUrlObject, template: typing.Any = None
-    ) -> Image.Image:
+    def decode(cls, image: ChatCompletionImageUrlObject) -> Image.Image:
         image_url = image["url"]
         if not image_url.startswith("data:image/"):
             raise RuntimeError(
