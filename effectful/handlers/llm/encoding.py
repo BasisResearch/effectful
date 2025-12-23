@@ -37,13 +37,8 @@ class EncodableAs[T, U](ABC):
 
     @classmethod
     @abstractmethod
-    def decode(cls, vl: U, template: typing.Any = None) -> T:
-        """Decode an encoded value back to the original type.
-
-        Args:
-            vl: The encoded value
-            template: Optional Template providing context (e.g., lexical scope)
-        """
+    def decode(cls, vl: U) -> T:
+        """Decode an encoded value back to the original type."""
         pass
 
     @classmethod
@@ -73,7 +68,7 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
             return vl
 
         @classmethod
-        def decode(cls, vl: T, template: typing.Any = None) -> T:
+        def decode(cls, vl: T) -> T:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
@@ -87,7 +82,7 @@ def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
         t: type[T] = ty
 
         @classmethod
-        def decode(cls, vl: T, template: typing.Any = None) -> T:
+        def decode(cls, vl: T) -> T:
             return vl
 
         @classmethod
@@ -164,14 +159,13 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
             return tuple([enc.encode(elem) for enc, elem in zip(element_encoders, t)])
 
         @classmethod
-        def decode(cls, t: typing.Any, template: typing.Any = None) -> T:
+        def decode(cls, t: typing.Any) -> T:
             if len(t) != len(element_encoders):
                 raise ValueError(
                     f"tuple length {len(t)} does not match expected length {len(element_encoders)}"
                 )
             decoded_elements: list[typing.Any] = [
-                enc.decode(elem, template=template)
-                for enc, elem in zip(element_encoders, t)
+                enc.decode(elem) for enc, elem in zip(element_encoders, t)
             ]
             return typing.cast(T, tuple(decoded_elements))
 
@@ -226,9 +220,9 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
             return [element_encoder.encode(elem) for elem in t]
 
         @classmethod
-        def decode(cls, t: typing.Any, template: typing.Any = None) -> T:
+        def decode(cls, t: typing.Any) -> T:
             decoded_elements: list[typing.Any] = [
-                element_encoder.decode(elem, template=template) for elem in t
+                element_encoder.decode(elem) for elem in t
             ]
             return typing.cast(T, decoded_elements)
 

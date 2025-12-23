@@ -1,3 +1,4 @@
+import collections
 import collections.abc
 import dataclasses
 import inspect
@@ -7,11 +8,15 @@ import typing
 from collections.abc import Callable
 
 import pydantic
+from litellm.types.utils import ModelResponse
 from pydantic import Field
 
 from effectful.handlers.llm import LexicalContext, Template
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
-from effectful.handlers.llm.providers import OpenAIMessageContentListBlock
+from effectful.handlers.llm.providers import (
+    OpenAIMessageContentListBlock,
+    decode_response,
+)
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -75,18 +80,13 @@ class EncodableSynthesizedFunction(
     _decode_counter: typing.ClassVar[int] = 0
 
     @classmethod
-    def decode(cls, vl: SynthesizedFunction, template: typing.Any = None) -> Callable:
+    def decode(cls, vl: SynthesizedFunction) -> Callable:
         """Decode a SynthesizedFunction to a Callable.
 
         Executes the module code and returns the named function.
-        The module code becomes the function's lexical context,
-        optionally augmented with the template's context.
+        Uses _decode_context attribute on vl if present (set by ProgramSynthesis).
         """
-        # Extract lexical context from template if provided
-        context: LexicalContext | None = None
-        if template is not None and hasattr(template, "__context__"):
-            ctx = template.__context__
-            context = ctx if isinstance(ctx, LexicalContext) else LexicalContext(ctx)
+        context: LexicalContext | None = getattr(vl, "_decode_context", None)
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
@@ -176,3 +176,22 @@ class ProgramSynthesis(ObjectInterpretation):
             *args,
             **kwargs,
         )
+
+    @implements(decode_response)
+    def _decode_response(self, template: Template, response: ModelResponse) -> Callable:
+        """Decode a synthesized function response with lexical context."""
+        ret_type = template.__signature__.return_annotation
+        origin = typing.get_origin(ret_type)
+        ret_type_origin = ret_type if origin is None else origin
+
+        # Only handle Callable return types
+        if ret_type_origin is not collections.abc.Callable:
+            return fwd()
+
+        # Parse JSON and attach context to the value for decode() to use
+        choice = response.choices[0]
+        result_str = choice.message.content or ""
+        Result = pydantic.create_model("Result", value=(SynthesizedFunction, ...))
+        synth = Result.model_validate_json(result_str).value
+        object.__setattr__(synth, "_decode_context", template.__context__)
+        return EncodableSynthesizedFunction.decode(synth)
