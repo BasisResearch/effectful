@@ -189,9 +189,9 @@ class ProgramSynthesis(ObjectInterpretation):
             return fwd()
 
         # Parse JSON and attach context to the value for decode() to use
-        choice = response.choices[0]
-        result_str = choice.message.content or ""
+        choice = typing.cast(typing.Any, response.choices[0])
+        result_str: str = choice.message.content or ""
         Result = pydantic.create_model("Result", value=(SynthesizedFunction, ...))
-        synth = Result.model_validate_json(result_str).value
+        synth: SynthesizedFunction = Result.model_validate_json(result_str).value  # type: ignore[attr-defined]
         object.__setattr__(synth, "_decode_context", template.__context__)
         return EncodableSynthesizedFunction.decode(synth)

@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 
 import pytest
@@ -5,7 +6,7 @@ from litellm.types.utils import Choices, Message, ModelResponse
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler, decode_response
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesizedFunction
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -39,48 +40,33 @@ class MockLLMProvider[T](ObjectInterpretation):
         return response
 
 
-class SingleResponseLLMProvider[T](ObjectInterpretation):
-    """Simplified mock provider that returns a single response for any prompt.
+class SingleResponseLLMProvider(ObjectInterpretation):
+    """Simplified mock provider that returns a single string response.
 
     Simulates LiteLLMProvider behavior by creating a ModelResponse and calling
     decode_response, allowing handlers like ProgramSynthesis to intercept.
     """
 
-    def __init__(self, response: T):
-        """Initialize with a single response.
-
-        Args:
-            response: The response value (will be converted to string for Message)
-        """
+    def __init__(self, response: str):
+        """Initialize with a response string (as LLM would return)."""
         self.response = response
 
     @implements(Template.__call__)
-    def _call[**P](
+    def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        # Convert response to string for Message.content (like real LLM)
-        # For structured output, wrap in {"value": ...} JSON format
-        if isinstance(self.response, str):
-            content = self.response
-        else:
-            import json
-
-            content = json.dumps({"value": self.response})
-
-        # Create a mock ModelResponse like LiteLLMProvider would
         mock_response = ModelResponse(
             id="mock",
             choices=[
                 Choices(
                     finish_reason="stop",
                     index=0,
-                    message=Message(content=content, role="assistant"),
+                    message=Message(content=self.response, role="assistant"),
                 )
             ],
             created=0,
             model="mock",
         )
-        # Call decode_response to let handlers intercept
         return decode_response(template, mock_response)
 
 
@@ -138,7 +124,7 @@ def test_limerick():
 
 def test_primes_decode_int():
     """Test the primes template correctly decodes integer response."""
-    mock_provider = SingleResponseLLMProvider(61)
+    mock_provider = SingleResponseLLMProvider('{"value": 61}')
 
     with handler(mock_provider):
         result = primes(6)
@@ -148,14 +134,14 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # Use JSON format matching SynthesizedFunction schema (constrained decoding)
-    mock_response = """{
-        "value": {
-            "function_name": "count_occurrences",
-            "module_code": "def count_occurrences(s):\\n    return s.count('a')"
-        }
-    }"""
-    mock_provider = SingleResponseLLMProvider(mock_response)
+    # JSON format as LLM would return with constrained decoding
+    mock_response = SynthesizedFunction(
+        function_name="count_occurrences",
+        module_code="def count_occurrences(s):\n    return s.count('a')",
+    )
+    mock_provider = SingleResponseLLMProvider(
+        json.dumps({"value": mock_response.model_dump()})
+    )
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")
