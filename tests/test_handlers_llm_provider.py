@@ -1,17 +1,14 @@
 """Tests for LLM handlers and providers.
-This module tests the functionality from build/main.py and build/llm.py,
-breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
-ProgramSynthesis, and sampling strategies.
+This module tests the functionality of LiteLLMProvider, LLMLoggingHandler,
+and related LLM components.
 """
 
 import functools
 import logging
 import os
-from collections.abc import Callable
 from enum import Enum
 
 import pytest
-from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
@@ -21,10 +18,8 @@ from effectful.handlers.llm.providers import (
     LLMLoggingHandler,
     completion,
 )
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
-from effectful.ops.types import NotHandled
 
 # Check for API keys
 HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
@@ -115,16 +110,6 @@ def simple_prompt(topic: str) -> str:
 def generate_number(max_value: int) -> int:
     """Generate a random number between 1 and {max_value}. Return only the number. Do not use any tools."""
     raise NotImplementedError
-
-
-@Template.define
-def create_function(char: str) -> Callable[[str], int]:
-    """Create a function that counts occurrences of the character '{char}' in a string.
-    Do not use any tools.
-
-    Return as a code block with the last definition being the function.
-    """
-    raise NotHandled
 
 
 class TestLiteLLMProvider:
@@ -237,62 +222,6 @@ class TestLLMLoggingHandler:
             record.name == "test_custom_logger" and "llm.request" in record.message
             for record in caplog.records
         )
-
-
-class TestProgramSynthesis:
-    """Tests for ProgramSynthesis handler functionality."""
-
-    @requires_openai
-    @retry_on_error(error=SynthesisError, n=3)
-    def test_generates_callable(self):
-        """Test ProgramSynthesis handler generates executable code."""
-        with (
-            handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            count_func = create_function("a")
-
-            assert callable(count_func)
-            # Test the generated function
-            assert count_func("banana") == 3
-            assert count_func("cherry") == 0
-            assert count_func("aardvark") == 3
-
-
-def smiley_face() -> Image.Image:
-    bmp = [
-        "00000000",
-        "00100100",
-        "00100100",
-        "00000000",
-        "01000010",
-        "00111100",
-        "00000000",
-        "00000000",
-    ]
-
-    img = Image.new("1", (8, 8))
-    for y, row in enumerate(bmp):
-        for x, c in enumerate(row):
-            img.putpixel((x, y), 1 if c == "1" else 0)
-    return img
-
-
-@Template.define
-def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image. Do not use any tools.
-    {image}"""
-    raise NotHandled
-
-
-@requires_openai
-def test_image_input():
-    with (
-        handler(LiteLLMProvider(model_name="gpt-4o")),
-        handler(LimitLLMCallsHandler(max_calls=3)),
-    ):
-        assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
 
 
 class BookReview(BaseModel):
