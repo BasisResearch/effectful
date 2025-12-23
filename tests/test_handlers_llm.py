@@ -6,7 +6,7 @@ from litellm.types.utils import Choices, Message, ModelResponse
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler, decode_response
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesizedFunction
+from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -40,28 +40,39 @@ class MockLLMProvider[T](ObjectInterpretation):
         return response
 
 
-class SingleResponseLLMProvider(ObjectInterpretation):
-    """Simplified mock provider that returns a single string response.
+class SingleResponseLLMProvider[T](ObjectInterpretation):
+    """Simplified mock provider that returns a single response.
 
     Simulates LiteLLMProvider behavior by creating a ModelResponse and calling
-    decode_response, allowing handlers like ProgramSynthesis to intercept.
+    decode_response. Automatically wraps response in {"value": ...} for non-string types.
     """
 
-    def __init__(self, response: str):
-        """Initialize with a response string (as LLM would return)."""
+    def __init__(self, response: T):
+        """Initialize with a response value."""
         self.response = response
 
     @implements(Template.__call__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
+    def _call[**P, R](
+        self, template: Template[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        from effectful.handlers.llm.encoding import type_to_encodable_type
+
+        ret_type = template.__signature__.return_annotation
+        encodable_ty = type_to_encodable_type(ret_type)
+
+        # For str types, use raw value; otherwise wrap in {"value": ...}
+        if encodable_ty.t == str:
+            content = str(self.response)
+        else:
+            content = json.dumps({"value": self.response})
+
         mock_response = ModelResponse(
             id="mock",
             choices=[
                 Choices(
                     finish_reason="stop",
                     index=0,
-                    message=Message(content=self.response, role="assistant"),
+                    message=Message(content=content, role="assistant"),
                 )
             ],
             created=0,
@@ -124,7 +135,7 @@ def test_limerick():
 
 def test_primes_decode_int():
     """Test the primes template correctly decodes integer response."""
-    mock_provider = SingleResponseLLMProvider('{"value": 61}')
+    mock_provider = SingleResponseLLMProvider(61)
 
     with handler(mock_provider):
         result = primes(6)
@@ -134,13 +145,11 @@ def test_primes_decode_int():
 
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    # JSON format as LLM would return with constrained decoding
-    mock_response = SynthesizedFunction(
-        function_name="count_occurrences",
-        module_code="def count_occurrences(s):\n    return s.count('a')",
-    )
     mock_provider = SingleResponseLLMProvider(
-        json.dumps({"value": mock_response.model_dump()})
+        {
+            "function_name": "count_occurrences",
+            "module_code": "def count_occurrences(s):\n    return s.count('a')",
+        }
     )
 
     with handler(mock_provider), handler(ProgramSynthesis()):
