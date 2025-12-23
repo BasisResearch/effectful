@@ -16,7 +16,8 @@ class Tool[**P, T](Operation[P, T]):
             raise ValueError("Tools must have docstrings.")
 
         for param_name, param in signature.parameters.items():
-            if param.annotation is inspect.Parameter.empty:
+            # allow self to be unannotated
+            if param_name != "self" and param.annotation is inspect.Parameter.empty:
                 raise ValueError(
                     f"Parameter '{param_name}' of '{default.__name__}' has no type annotation"
                 )
