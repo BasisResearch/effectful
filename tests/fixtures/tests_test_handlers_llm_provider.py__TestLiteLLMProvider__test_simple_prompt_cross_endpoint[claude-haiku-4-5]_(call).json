@@ -1,0 +1,42 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Testing is the process of verifying that software or systems work correctly and meet their intended requirements.",
+        "function_call": null,
+        "provider_specific_fields": {
+          "citations": null,
+          "thinking_blocks": null
+        },
+        "role": "assistant",
+        "tool_calls": null
+      }
+    }
+  ],
+  "created": 1766782936,
+  "id": "chatcmpl-0e8b6344-688d-43d8-9ba6-b8e8572fd9c8",
+  "model": "claude-haiku-4-5-20251001",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+  "usage": {
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "completion_tokens": 22,
+    "completion_tokens_details": null,
+    "prompt_tokens": 1145,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cache_creation_token_details": {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0
+      },
+      "cache_creation_tokens": 0,
+      "cached_tokens": 0,
+      "image_tokens": null,
+      "text_tokens": null
+    },
+    "total_tokens": 1167
+  }
+}
