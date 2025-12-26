@@ -2,7 +2,7 @@ import inspect
 import types
 import typing
 from collections import ChainMap
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from typing import Any
 
 from effectful.ops.types import NotHandled, Operation
@@ -31,9 +31,11 @@ class Tool[**P, T](Operation[P, T]):
 
 class Template[**P, T](Tool[P, T]):
     __context__: Mapping[str, Any]
+    __grandparent_context__: ChainMap[str, Any] | None
 
     @property
     def __prompt_template__(self) -> str:
+        assert self.__default__.__doc__ is not None
         return self.__default__.__doc__
 
     @property
@@ -46,7 +48,7 @@ class Template[**P, T](Tool[P, T]):
         }
         return result
 
-    def __get__[T](self, instance: T | None, owner: type[T] | None = None):
+    def __get__[S](self, instance: S | None, owner: type[S] | None = None):
         if hasattr(self, "_name_on_instance") and hasattr(
             instance, self._name_on_instance
         ):
@@ -63,7 +65,10 @@ class Template[**P, T](Tool[P, T]):
             if isinstance(v, Tool):
                 self_context[k] = v
 
-        context = self.__grandparent_context__.new_child(self_context)
+        context: MutableMapping[str, Any] = self_context
+        if self.__grandparent_context__ is not None:
+            context = self.__grandparent_context__.new_child(context)
+
         result.__context__ = context
         return result
 
@@ -72,13 +77,17 @@ class Template[**P, T](Tool[P, T]):
         """Return the lexical context of a stack frame. `offset` is the number
         of frames to travel up the stack.
 
+        Returns None if no such frame exists.
+
         """
         frame = inspect.currentframe()
+        if frame is None:
+            return None
 
         for _ in range(offset + 1):  # include this function's frame
+            frame = frame.f_back
             if frame is None:
                 return None
-            frame = frame.f_back
 
         globals_proxy = types.MappingProxyType(frame.f_globals)
         locals_proxy = types.MappingProxyType(frame.f_locals)

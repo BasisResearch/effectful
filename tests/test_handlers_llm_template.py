@@ -1,17 +1,11 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 
-import pytest
-
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.providers import RetryLLMHandler
-from effectful.handlers.llm.synthesis import ProgramSynthesis
-from effectful.ops.semantics import NotHandled, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.semantics import NotHandled
 
 
 def test_template_method():
-    local_variable = None
+    local_variable = None  # noqa: F841
 
     @dataclass
     class A:
