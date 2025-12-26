@@ -8,7 +8,7 @@ import string
 import traceback
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping
-from typing import Any, get_type_hints
+from typing import Any
 
 import litellm
 import pydantic
@@ -117,17 +117,20 @@ class Tool[**P, T]:
         )
 
         # Try to get type hints, fall back to signature annotations if that fails
-        try:
-            hints = get_type_hints(obj)
-        except Exception:
-            hints = {
-                p.name: p.annotation
-                for p in sig.parameters.values()
-                if p.annotation is not inspect.Parameter.empty
-            }
+        hints = {
+            p.name: p.annotation
+            for p in sig.parameters.values()
+            if p.annotation is not inspect.Parameter.empty
+        }
 
         parameter_annotations: dict[str, type] = {}
-        for param_name, param in sig.parameters.items():
+        params: list[tuple[str, inspect.Parameter]] = list(sig.parameters.items())
+
+        # if method, skip first parameter
+        if len(params) > 0 and params[0][1].name == "self":
+            params = params[1:]
+
+        for param_name, param in params:
             # Skip parameters without type annotations
             if param.annotation is inspect.Parameter.empty:
                 raise TypeError(
