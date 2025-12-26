@@ -740,6 +740,13 @@ def test_arithmetic_5():
         assert syntactic_eq(Let(x, x() + 3, Let(x, x() + 4, x() + y())), x() + y() + 7)
 
 
+def test_arithmetic_6():
+    assert isinstance(defop(int)() > 1, Term)
+    assert isinstance(defop(int)() < 1, Term)
+    assert isinstance(defop(int)() >= 1, Term)
+    assert isinstance(defop(int)() <= 1, Term)
+
+
 def test_defun_1():
     x, y = defop(int), defop(int)
 

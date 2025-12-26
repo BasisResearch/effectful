@@ -981,7 +981,6 @@ def implements[**P, V](op: Operation[P, V]):
 
 
 @defdata.register(numbers.Number)
-@functools.total_ordering
 class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __init__(self, ty, op, *args, **kwargs):
         super().__init__(op, *args, **kwargs)
@@ -1111,6 +1110,27 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __lt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__lt__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __gt__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__gt__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __le__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__le__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __ge__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__ge__(other)
         else:
             raise NotHandled
 
