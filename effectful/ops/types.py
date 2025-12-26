@@ -62,7 +62,6 @@ class _ClassMethodOpDescriptor(classmethod):
             return bound_op
 
 
-@functools.total_ordering
 class Operation[**Q, V]:
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -96,6 +95,21 @@ class Operation[**Q, V]:
         if not isinstance(other, Operation):
             return NotImplemented
         return id(self) < id(other)
+
+    def __gt__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) > id(other)
+
+    def __le__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) <= id(other)
+
+    def __ge__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) >= id(other)
 
     def __hash__(self):
         return hash(self.__default__)
