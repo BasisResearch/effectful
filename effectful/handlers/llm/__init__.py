@@ -32,6 +32,7 @@ class Template[**P, T]:
     __prompt_template__: str
     __signature__: inspect.Signature
     __context__: Mapping[str, Any]
+    is_recursive: bool
     __name__: str
 
     @staticmethod
@@ -56,6 +57,8 @@ class Template[**P, T]:
         # ChainMap.items() respects shadowing (locals shadow globals)
         for name, obj in self.__context__.items():
             if name.startswith("_") or obj in result:
+                continue
+            if obj is self and not self.is_recursive:
                 continue
             if isinstance(obj, Operation):
                 # Exclude internal operations from providers and semantics modules
@@ -82,6 +85,7 @@ class Template[**P, T]:
         _func=None,
         *,
         tools: Iterable[Operation | Template] | str | None = None,
+        recursive: bool = False,
     ):
         """Define a prompt template.
 
@@ -90,6 +94,7 @@ class Template[**P, T]:
                    - None (default): no tools
                    - "auto": auto-capture from lexical scope
                    - list: explicit list of Operations/Templates
+            recursive: whether the template is allowed to be directly recursive (disabled by default)
         """
         frame: types.FrameType = inspect.currentframe().f_back  # type: ignore
         globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
@@ -110,6 +115,7 @@ class Template[**P, T]:
                 __signature__=inspect.signature(body),
                 __name__=body.__name__,
                 __context__=context,
+                is_recursive=recursive,
             )
 
         if _func is None:
