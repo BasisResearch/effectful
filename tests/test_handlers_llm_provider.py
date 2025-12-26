@@ -5,12 +5,15 @@ ProgramSynthesis, and sampling strategies.
 """
 
 import functools
+import json
 import logging
 import os
 from collections.abc import Callable
 from enum import Enum
+from pathlib import Path
 
 import pytest
+from litellm.files.main import ModelResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
@@ -26,6 +29,8 @@ from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+
 # Check for API keys
 HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
 HAS_ANTHROPIC_KEY = (
@@ -40,8 +45,11 @@ requires_anthropic = pytest.mark.skipif(
     not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
 )
 
+IN_CI = os.getenv("GITHUB_ACTIONS") == "true"
 
 # ============================================================================
+
+
 # Test Fixtures and Mock Data
 # ============================================================================
 def retry_on_error(error: type[Exception], n: int):
@@ -59,6 +67,25 @@ def retry_on_error(error: type[Exception], n: int):
         return wrapper
 
     return decorator
+
+
+class ReplayLiteLLMProvider(LiteLLMProvider):
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        test_id = os.getenv("PYTEST_CURRENT_TEST", "unknown")
+        test_id = test_id.replace(" ", "_").replace("::", "__").replace("/", "_")
+        path = FIXTURE_DIR / f"{test_id}.json"
+        if IN_CI:
+            if not path.exists():
+                raise RuntimeError(f"Missing replay fixture: {path}")
+            with path.open() as f:
+                result = ModelResponse.model_validate(json.load(f))
+                return result
+        result = fwd(self.model_name, *args, **(self.config | kwargs))
+        path.parent.mkdir(exist_ok=True, parents=True)
+        with path.open("w") as f:
+            json.dump(result.model_dump(), f, indent=2, sort_keys=True)
+        return result
 
 
 class LimitLLMCallsHandler(ObjectInterpretation):
@@ -135,7 +162,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_multiple_models(self, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
-            handler(LiteLLMProvider(model_name=model_name)),
+            handler(ReplayLiteLLMProvider(model_name=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -150,9 +177,9 @@ class TestLiteLLMProvider:
         ],
     )
     def test_simple_prompt_cross_endpoint(self, model_name):
-        """Test that LiteLLMProvider works across different API endpoints."""
+        """Test that ReplayLiteLLMProvider works across different API endpoints."""
         with (
-            handler(LiteLLMProvider(model_name=model_name)),
+            handler(ReplayLiteLLMProvider(model_name=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -161,11 +188,11 @@ class TestLiteLLMProvider:
 
     @requires_openai
     def test_structured_output(self):
-        """Test LiteLLMProvider with structured Pydantic output."""
+        """Test ReplayLiteLLMProvider with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -178,9 +205,9 @@ class TestLiteLLMProvider:
 
     @requires_openai
     def test_integer_return_type(self):
-        """Test LiteLLMProvider with integer return type."""
+        """Test ReplayLiteLLMProvider with integer return type."""
         with (
-            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -190,10 +217,10 @@ class TestLiteLLMProvider:
 
     @requires_openai
     def test_with_config_params(self):
-        """Test LiteLLMProvider accepts and uses additional configuration parameters."""
+        """Test ReplayLiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
-            handler(LiteLLMProvider(model_name="gpt-4o-mini", temperature=0.1)),
+            handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini", temperature=0.1)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
@@ -208,8 +235,8 @@ class TestLLMLoggingHandler:
         """Test that LLMLoggingHandler properly logs LLM requests."""
         with caplog.at_level(logging.INFO):
             with (
+                handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
                 handler(LLMLoggingHandler()),
-                handler(LiteLLMProvider(model_name="gpt-4o-mini")),
                 handler(LimitLLMCallsHandler(max_calls=1)),
             ):
                 result = simple_prompt("testing")
@@ -225,8 +252,8 @@ class TestLLMLoggingHandler:
 
         with caplog.at_level(logging.INFO, logger="test_custom_logger"):
             with (
+                handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
                 handler(LLMLoggingHandler(logger=custom_logger)),
-                handler(LiteLLMProvider(model_name="gpt-4o-mini")),
                 handler(LimitLLMCallsHandler(max_calls=1)),
             ):
                 result = simple_prompt("testing")
@@ -247,7 +274,7 @@ class TestProgramSynthesis:
     def test_generates_callable(self):
         """Test ProgramSynthesis handler generates executable code."""
         with (
-            handler(LiteLLMProvider(model_name="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
             handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -289,7 +316,7 @@ def categorise_image(image: Image.Image) -> str:
 @requires_openai
 def test_image_input():
     with (
-        handler(LiteLLMProvider(model_name="gpt-4o")),
+        handler(ReplayLiteLLMProvider(model_name="gpt-4o")),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -315,7 +342,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(LiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)

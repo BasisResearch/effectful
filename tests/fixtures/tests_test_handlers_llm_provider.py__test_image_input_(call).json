@@ -1,0 +1,44 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "annotations": [],
+        "content": "The image shows a simple black and white pixelated smiley face, with two rectangular eyes and a wide rectangular mouth.",
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "role": "assistant",
+        "tool_calls": null
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "created": 1766782962,
+  "id": "chatcmpl-Cr9FKyfTjxRDcGYybyRpISIyKpGuq",
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "service_tier": "default",
+  "system_fingerprint": "fp_a0e9480a2f",
+  "usage": {
+    "completion_tokens": 25,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "image_tokens": null,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null
+    },
+    "prompt_tokens": 567,
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "image_tokens": null,
+      "text_tokens": null
+    },
+    "total_tokens": 592
+  }
+}
