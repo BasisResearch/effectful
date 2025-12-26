@@ -82,13 +82,13 @@ def count_char(char: str) -> Callable[[str], int]:
 
 
 # Mutually recursive templates (module-level for live globals)
-@Template.define
+@Template.define(recursive=True)
 def mutual_a() -> str:
     """Use mutual_a and mutual_b as tools to do task A."""
     raise NotHandled
 
 
-@Template.define
+@Template.define(recursive=True)
 def mutual_b() -> str:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
