@@ -23,7 +23,7 @@ def test_template_method():
 
     a = A(0)
     assert isinstance(a.f, Template)
-    assert "random" in a.f.__context__
+    assert "random" in a.f.tools
     assert "f" in a.f.__context__
     assert "local_variable" in a.f.__context__
     assert a.f.__context__["random"]() == 4
@@ -39,3 +39,33 @@ def test_template_method():
     assert "random" in b.f.__context__
     assert "reverse" in b.f.__context__
     assert "local_variable" in b.f.__context__
+
+
+def test_template_method_nested_class():
+    local_variable = "test"  # noqa: F841
+
+    @dataclass
+    class A:
+        x: int
+
+        @Tool.define
+        @staticmethod
+        def random() -> int:
+            """Returns a random number, chosen by fair dice roll."""
+            return 4
+
+        @dataclass
+        class B:
+            y: bool
+
+            @Template.define
+            def f(self) -> int:
+                """What is the number after {self.x}?"""
+                raise NotHandled
+
+    a = A.B(True)
+    assert isinstance(a.f, Template)
+    assert "random" in a.f.__context__
+    assert "f" in a.f.__context__
+    assert "local_variable" in a.f.__context__
+    assert a.f.__context__["random"]() == 4

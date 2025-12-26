@@ -23,8 +23,7 @@ class Tool[**P, T](Operation[P, T]):
 
 
 class Template[**P, T](Tool[P, T]):
-    __context__: Mapping[str, Any]
-    __grandparent_context__: ChainMap[str, Any] | None
+    __context__: ChainMap[str, Any]
 
     @property
     def __prompt_template__(self) -> str:
@@ -58,34 +57,8 @@ class Template[**P, T](Tool[P, T]):
             if isinstance(v, Tool):
                 self_context[k] = v
 
-        context: MutableMapping[str, Any] = self_context
-        if self.__grandparent_context__ is not None:
-            context = self.__grandparent_context__.new_child(context)
-
-        result.__context__ = context
+        result.__context__ = self.__context__.new_child(self_context)
         return result
-
-    @staticmethod
-    def _frame_context(offset: int) -> ChainMap[str, Any] | None:
-        """Return the lexical context of a stack frame. `offset` is the number
-        of frames to travel up the stack.
-
-        Returns None if no such frame exists.
-
-        """
-        frame = inspect.currentframe()
-        if frame is None:
-            return None
-
-        for _ in range(offset + 1):  # include this function's frame
-            frame = frame.f_back
-            if frame is None:
-                return None
-
-        globals_proxy = types.MappingProxyType(frame.f_globals)
-        locals_proxy = types.MappingProxyType(frame.f_locals)
-        context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)  # type: ignore[arg-type]
-        return context
 
     @classmethod
     def define[**Q, V](
@@ -99,11 +72,33 @@ class Template[**P, T](Tool[P, T]):
         `Tool` that exist in the lexical context as callable tools.
 
         """
-        context = Template._frame_context(1)
-        gp_context = Template._frame_context(2)
+        frame = inspect.currentframe()
+        assert frame is not None
+        frame = frame.f_back
+        assert frame is not None
+
+        # Check if we're in a class definition by looking for __qualname__
+        qualname = frame.f_locals.get("__qualname__")
+        n_frames = qualname.count(".") if qualname is not None else 1
+
+        contexts = []
+        for offset in range(n_frames):
+            assert frame is not None
+            locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+                frame.f_locals
+            )
+            globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+                frame.f_globals
+            )
+            contexts.append(locals_proxy)
+            frame = frame.f_back
+        contexts.append(globals_proxy)
+        context: ChainMap[str, Any] = ChainMap(
+            *typing.cast(list[MutableMapping[str, Any]], contexts)
+        )
+
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
-        op.__grandparent_context__ = gp_context  # type: ignore[attr-defined]
         return typing.cast(Template[Q, V], op)
 
     def replace(
