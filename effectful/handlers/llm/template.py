@@ -33,16 +33,57 @@ class Template[**P, T](Tool[P, T]):
     __context__: Mapping[str, Any]
 
     @property
-    def __prompt_template__(self):
+    def __prompt_template__(self) -> str:
         return self.__default__.__doc__
 
     @property
-    def tools(self) -> tuple[Tool, ...]:
+    def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
-        result = set(
-            obj for (name, obj) in self.__context__.items() if isinstance(obj, Tool)
-        )
-        return tuple(result)
+        result = {
+            name: obj
+            for (name, obj) in self.__context__.items()
+            if isinstance(obj, Tool)
+        }
+        return result
+
+    def __get__[T](self, instance: T | None, owner: type[T] | None = None):
+        if hasattr(self, "_name_on_instance") and hasattr(
+            instance, self._name_on_instance
+        ):
+            return getattr(instance, self._name_on_instance)
+
+        result = super().__get__(instance, owner)
+
+        self_context = {}
+        for k in instance.__dir__():
+            if k.startswith("_"):
+                continue
+
+            v = getattr(instance, k)
+            if isinstance(v, Tool):
+                self_context[k] = v
+
+        context = self.__grandparent_context__.new_child(self_context)
+        result.__context__ = context
+        return result
+
+    @staticmethod
+    def _frame_context(offset: int) -> ChainMap[str, Any] | None:
+        """Return the lexical context of a stack frame. `offset` is the number
+        of frames to travel up the stack.
+
+        """
+        frame = inspect.currentframe()
+
+        for _ in range(offset + 1):  # include this function's frame
+            if frame is None:
+                return None
+            frame = frame.f_back
+
+        globals_proxy = types.MappingProxyType(frame.f_globals)
+        locals_proxy = types.MappingProxyType(frame.f_locals)
+        context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)  # type: ignore[arg-type]
+        return context
 
     @classmethod
     def define[**Q, V](
@@ -56,18 +97,11 @@ class Template[**P, T](Tool[P, T]):
         `Tool` that exist in the lexical context as callable tools.
 
         """
-        current_frame = inspect.currentframe()
-        assert current_frame is not None
-        parent_frame = current_frame.f_back
-        assert parent_frame is not None
-
-        globals_proxy = types.MappingProxyType(parent_frame.f_globals)
-        locals_proxy = types.MappingProxyType(parent_frame.f_locals)
-
-        context: ChainMap[str, Any] = ChainMap(locals_proxy, globals_proxy)  # type: ignore[arg-type]
-
+        context = Template._frame_context(1)
+        gp_context = Template._frame_context(2)
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+        op.__grandparent_context__ = gp_context  # type: ignore[attr-defined]
         return typing.cast(Template[Q, V], op)
 
     def replace(

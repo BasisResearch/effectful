@@ -1,8 +1,9 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import pytest
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.ops.semantics import NotHandled, handler
@@ -274,8 +275,8 @@ def test_template_captures_other_templates_in_lexical_context():
     assert write_story.__context__["story_funny"] is story_funny
 
     # Templates in lexical context are exposed as callable tools
-    assert story_with_moral in write_story.tools
-    assert story_funny in write_story.tools
+    assert story_with_moral in write_story.tools.values()
+    assert story_funny in write_story.tools.values()
 
 
 def test_template_composition_with_chained_calls():
@@ -320,11 +321,11 @@ def test_mutually_recursive_templates():
     assert "mutual_b" in mutual_b.__context__
 
     # They should also be in each other's tools
-    assert mutual_a in mutual_b.tools
-    assert mutual_b in mutual_a.tools
+    assert mutual_a in mutual_b.tools.values()
+    assert mutual_b in mutual_a.tools.values()
     # And themselves (self-recursion)
-    assert mutual_a in mutual_a.tools
-    assert mutual_b in mutual_b.tools
+    assert mutual_a in mutual_a.tools.values()
+    assert mutual_b in mutual_b.tools.values()
 
 
 # Module-level variable for shadowing test

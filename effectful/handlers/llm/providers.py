@@ -253,8 +253,8 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
 
     """
     ret_type = template.__signature__.return_annotation
+    tools = template.tools
 
-    tools = {t.__name__: t for t in template.tools}
     tool_schemas = [function_definition(t) for t in tools.values()]
     response_encoding_type: type | None = type_to_encodable_type(ret_type).t
     if response_encoding_type == str:
