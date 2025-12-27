@@ -50,9 +50,6 @@ class Template[**P, T](Tool[P, T]):
 
         self_context = {}
         for k in instance.__dir__():
-            if k.startswith("_"):
-                continue
-
             v = getattr(instance, k)
             if isinstance(v, Tool):
                 self_context[k] = v
