@@ -174,7 +174,7 @@ def test_template_formatting_simple():
 
 @pytest.mark.xfail
 def test_template_formatting_scoped():
-    feet_per_mile = 5280
+    feet_per_mile = 5280  # noqa: F841
 
     @Template.define
     def convert(feet: int) -> float:

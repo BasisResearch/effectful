@@ -43,10 +43,11 @@ class Template[**P, T](Tool[P, T]):
 
         for name, obj in self.__context__.items():
             # Collect tools in context
-            if isinstance(obj, Tool) or (
-                isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool)
-            ):
+            if isinstance(obj, Tool):
                 result[name] = obj
+
+            if isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
+                result[name] = obj.__func__
 
             # Collect tools as methods on any bound instances
             if isinstance(obj, _BoundInstance):
