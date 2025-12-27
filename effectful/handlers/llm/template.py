@@ -76,7 +76,13 @@ class Template[**P, T](Tool[P, T]):
 
         # Check if we're in a class definition by looking for __qualname__
         qualname = frame.f_locals.get("__qualname__")
-        n_frames = qualname.count(".") if qualname is not None else 1
+        n_frames = 1
+        if qualname is not None:
+            name_components = qualname.split(".")
+            for name in reversed(name_components):
+                if name == "<locals>":
+                    break
+                n_frames += 1
 
         contexts = []
         for offset in range(n_frames):
@@ -89,6 +95,7 @@ class Template[**P, T](Tool[P, T]):
             )
             contexts.append(locals_proxy)
             frame = frame.f_back
+
         contexts.append(globals_proxy)
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)

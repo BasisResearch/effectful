@@ -105,6 +105,8 @@ def generate_good_poem(topic: str) -> Poem:
     You MUST use the evaluate_poem_tool to check poem quality.
     Keep iterating until evaluate_poem_tool returns GOOD.
     Return your final poem as JSON with 'content' and 'form' fields.
+
+    Do not call the 'generate_good_poem' tool.
     """
     raise NotHandled
 
