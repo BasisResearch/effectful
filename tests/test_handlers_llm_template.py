@@ -25,9 +25,9 @@ def test_template_method():
     a = A(0)
     assert isinstance(a.f, Template)
     assert "random" in a.f.tools
-    assert "f" in a.f.__context__
-    assert "local_variable" in a.f.__context__
-    assert a.f.__context__["random"]() == 4
+    assert "f" in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert a.f.tools["random"]() == 4
 
     class B(A):
         @Tool.define
@@ -37,9 +37,9 @@ def test_template_method():
 
     b = B(1)
     assert isinstance(b.f, Template)
-    assert "random" in b.f.__context__
-    assert "reverse" in b.f.__context__
-    assert "local_variable" in b.f.__context__
+    assert "random" in b.f.tools
+    assert "reverse" in b.f.tools
+    assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
 
 
 def test_template_method_nested_class():
@@ -67,10 +67,10 @@ def test_template_method_nested_class():
 
     a = A.B(True)
     assert isinstance(a.f, Template)
-    assert "random" in a.f.__context__
-    assert "f" in a.f.__context__
-    assert "local_variable" in a.f.__context__
-    assert a.f.__context__["random"]() == 4
+    assert "random" in a.f.tools
+    assert "f" in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert a.f.tools["random"]() == 4
 
 
 class A:

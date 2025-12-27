@@ -3,9 +3,10 @@ import types
 import typing
 from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
+from dataclasses import dataclass
 from typing import Any
 
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.types import INSTANCE_OP_PREFIX, NotHandled, Operation
 
 
 class Tool[**P, T](Operation[P, T]):
@@ -22,6 +23,11 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
+@dataclass
+class _BoundInstance[T]:
+    instance: T
+
+
 class Template[**P, T](Tool[P, T]):
     __context__: ChainMap[str, Any]
 
@@ -33,11 +39,24 @@ class Template[**P, T](Tool[P, T]):
     @property
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
-        result = {
-            name: obj
-            for (name, obj) in self.__context__.items()
-            if isinstance(obj, Tool)
-        }
+        result = {}
+
+        for name, obj in self.__context__.items():
+            # Collect tools in context
+            if isinstance(obj, Tool) or (
+                isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool)
+            ):
+                result[name] = obj
+
+            # Collect tools as methods on any bound instances
+            if isinstance(obj, _BoundInstance):
+                for instance_name in obj.instance.__dir__():
+                    if instance_name.startswith(INSTANCE_OP_PREFIX):
+                        continue
+                    instance_obj = getattr(obj.instance, instance_name)
+                    if isinstance(instance_obj, Tool):
+                        result[instance_name] = instance_obj
+
         return result
 
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
@@ -47,13 +66,8 @@ class Template[**P, T](Tool[P, T]):
             return getattr(instance, self._name_on_instance)
 
         result = super().__get__(instance, owner)
-
-        self_context = {}
-        for k in instance.__dir__():
-            v = getattr(instance, k)
-            if isinstance(v, Tool):
-                self_context[k] = v
-
+        self_param_name = list(self.__signature__.parameters.keys())[0]
+        self_context = {self_param_name: _BoundInstance(instance)}
         result.__context__ = self.__context__.new_child(self_context)
         return result
 
