@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 
+import pytest
+
 from effectful.handlers.llm import Template, Tool
-from effectful.ops.semantics import NotHandled
+from effectful.handlers.llm.providers import format_model_input
+from effectful.ops.semantics import NotHandled, handler
+from effectful.ops.syntax import ObjectInterpretation, implements
 
 
 def test_template_method():
@@ -19,7 +23,7 @@ def test_template_method():
 
         @Template.define
         def f(self) -> int:
-            """What is the number after {self.x}?"""
+            """What is the number after 3?"""
             raise NotHandled
 
     a = A(0)
@@ -62,7 +66,7 @@ def test_template_method_nested_class():
 
             @Template.define
             def f(self) -> int:
-                """What is the number after {self.x}?"""
+                """What is the number after 3?"""
                 raise NotHandled
 
     a = A.B(True)
@@ -139,3 +143,64 @@ def test_template_method_scoping():
         assert isinstance(t, Template)
         assert "shown" in t.__context__
         assert "hidden" not in t.__context__
+
+
+class TemplateStringIntp(ObjectInterpretation):
+    """Returns the result of template formatting as a string. Only supports
+    templates that produce string prompts.
+
+    """
+
+    @implements(Template.__apply__)
+    def _[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        model_input = format_model_input(template, *args, **kwargs)
+        template_result = model_input[0]["content"]
+        assert len(template_result) == 1
+        return template_result[0]["text"]
+
+
+def test_template_formatting_simple():
+    @Template.define
+    @staticmethod
+    def rhyme(a: str, b: str) -> str:
+        """The {a} sat in the {b}."""
+        raise NotHandled
+
+    with handler(TemplateStringIntp()):
+        assert rhyme("cat", "hat") == "The cat sat in the hat."
+
+
+@pytest.mark.xfail
+def test_template_formatting_scoped():
+    feet_per_mile = 5280
+
+    @Template.define
+    def convert(feet: int) -> float:
+        """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
+        raise NotHandled
+
+    with handler(TemplateStringIntp()):
+        assert (
+            convert(7920)
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        )
+
+
+@pytest.mark.xfail
+def test_template_formatting_method():
+    @dataclass
+    class User:
+        name: str
+
+        @Template.define
+        def greet(self, day: str) -> float:
+            """Greet the user '{self.name}' and wish them a good {day}."""
+            raise NotHandled
+
+    with handler(TemplateStringIntp()):
+        user = User("Bob")
+        assert (
+            user.greet("Monday") == "Greet the user 'Bob' and wish them a good Monday."
+        )
