@@ -9,13 +9,10 @@ from dataclasses import dataclass
 import pytest
 from pydantic import BaseModel, Field
 
-from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import (
-    LiteLLMProvider,
-    completion,
-)
+from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm.providers import LiteLLMProvider, completion
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
 # Check for API keys
@@ -56,7 +53,7 @@ class BookRecommendation(BaseModel):
     reason: str = Field(..., description="Why this book is recommended")
 
 
-@defop
+@Tool.define
 def recommend_book_tool(genre: str, mood: str) -> BookRecommendation:
     """Recommend a book based on genre and mood.
 
