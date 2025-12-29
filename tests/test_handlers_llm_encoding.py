@@ -6,6 +6,17 @@ import pytest
 from PIL import Image
 
 from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.ops.types import Operation, Term
+
+
+def test_type_to_encodable_type_term():
+    with pytest.raises(ValueError):
+        type_to_encodable_type(Term)
+
+
+def test_type_to_encodable_type_operation():
+    with pytest.raises(ValueError):
+        type_to_encodable_type(Operation)
 
 
 def test_type_to_encodable_type_str():
