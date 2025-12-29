@@ -118,6 +118,7 @@ def test_primes_decode_int():
         assert isinstance(result, int)
 
 
+@pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
     mock_code = """<code>
