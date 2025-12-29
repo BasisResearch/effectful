@@ -345,14 +345,7 @@ class Operation[**Q, V]:
         If no default rule is supplied, the free rule is used instead.
         """
         try:
-            try:
-                return self.__default__(*args, **kwargs)
-            except NotImplementedError:
-                warnings.warn(
-                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                    DeprecationWarning,
-                )
-                raise NotHandled
+            return self.__default__(*args, **kwargs)
         except NotHandled:
             from effectful.ops.syntax import defdata
 
