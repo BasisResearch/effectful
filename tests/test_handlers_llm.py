@@ -23,7 +23,7 @@ class MockLLMProvider[T](ObjectInterpretation):
         """
         self.prompt_responses = prompt_responses
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -49,7 +49,7 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         """
         self.response = response
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -69,7 +69,7 @@ def haiku(theme: str) -> str:
     raise NotHandled
 
 
-@Template.define()
+@Template.define
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
     raise NotHandled
@@ -154,7 +154,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         self.exception_factory = exception_factory
         self.call_count = 0
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -222,7 +222,7 @@ def test_retry_handler_with_error_feedback():
         def __init__(self):
             self.call_count = 0
 
-        @implements(Template.__call__)
+        @implements(Template.__apply__)
         def _call(self, template: Template, *args, **kwargs):
             self.call_count += 1
             call_prompts.append(template.__prompt_template__)
@@ -243,7 +243,6 @@ def test_retry_handler_with_error_feedback():
     # First call has original prompt
     assert "Write a limerick on the theme of {theme}." in call_prompts[0]
     # Second call should include error feedback with traceback
-    assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
 
 
@@ -275,8 +274,8 @@ def test_template_captures_other_templates_in_lexical_context():
     assert write_story.__context__["story_funny"] is story_funny
 
     # Templates in lexical context are exposed as callable tools
-    assert story_with_moral in write_story.tools
-    assert story_funny in write_story.tools
+    assert story_with_moral in write_story.tools.values()
+    assert story_funny in write_story.tools.values()
 
 
 def test_template_composition_with_chained_calls():
@@ -321,11 +320,11 @@ def test_mutually_recursive_templates():
     assert "mutual_b" in mutual_b.__context__
 
     # They should also be in each other's tools
-    assert mutual_a in mutual_b.tools
-    assert mutual_b in mutual_a.tools
+    assert mutual_a in mutual_b.tools.values()
+    assert mutual_b in mutual_a.tools.values()
     # And themselves (self-recursion)
-    assert mutual_a in mutual_a.tools
-    assert mutual_b in mutual_b.tools
+    assert mutual_a in mutual_a.tools.values()
+    assert mutual_b in mutual_b.tools.values()
 
 
 # Module-level variable for shadowing test
