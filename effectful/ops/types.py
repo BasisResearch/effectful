@@ -4,7 +4,6 @@ import functools
 import inspect
 import types
 import typing
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
