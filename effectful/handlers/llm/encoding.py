@@ -12,6 +12,7 @@ from litellm import (
 from PIL import Image
 
 from effectful.ops.syntax import _CustomSingleDispatchCallable
+from effectful.ops.types import Operation, Term
 
 
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
@@ -71,6 +72,16 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
+
+
+@type_to_encodable_type.register(Term)
+def _type_encodable_type_term[T: Term](ty: type[T]) -> Encodable[T]:
+    raise TypeError("Terms cannot be encoded or decoded in general.")
+
+
+@type_to_encodable_type.register(Operation)
+def _type_encodable_type_operation[T: Operation](ty: type[T]) -> Encodable[T]:
+    raise TypeError("Operations cannot be encoded or decoded in general.")
 
 
 @type_to_encodable_type.register(pydantic.BaseModel)
