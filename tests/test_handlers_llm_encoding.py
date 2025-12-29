@@ -10,12 +10,12 @@ from effectful.ops.types import Operation, Term
 
 
 def test_type_to_encodable_type_term():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         type_to_encodable_type(Term)
 
 
 def test_type_to_encodable_type_operation():
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         type_to_encodable_type(Operation)
 
 

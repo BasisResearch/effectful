@@ -76,12 +76,12 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
 
 @type_to_encodable_type.register(Term)
 def _type_encodable_type_term[T: Term](ty: type[T]) -> Encodable[T]:
-    raise ValueError("Terms cannot be encoded or decoded in general.")
+    raise TypeError("Terms cannot be encoded or decoded in general.")
 
 
 @type_to_encodable_type.register(Operation)
 def _type_encodable_type_operation[T: Operation](ty: type[T]) -> Encodable[T]:
-    raise ValueError("Operations cannot be encoded or decoded in general.")
+    raise TypeError("Operations cannot be encoded or decoded in general.")
 
 
 @type_to_encodable_type.register(pydantic.BaseModel)
