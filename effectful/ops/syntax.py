@@ -5,7 +5,6 @@ import inspect
 import numbers
 import operator
 import typing
-import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
 
