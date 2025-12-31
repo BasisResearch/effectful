@@ -4,9 +4,25 @@ import typing
 from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
-from effectful.ops.types import INSTANCE_OP_PREFIX, NotHandled, Operation
+from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Operation
+
+
+class _IsRecursiveAnnotation(Annotation):
+    @classmethod
+    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        return sig
+
+
+IsRecursive = _IsRecursiveAnnotation()
+
+
+def _is_recursive_signature(sig: inspect.Signature):
+    if typing.get_origin(sig.return_annotation) is not Annotated:
+        return False
+    annotations = typing.get_args(sig.return_annotation)
+    return any(annotation is IsRecursive for annotation in annotations)
 
 
 class Tool[**P, T](Operation[P, T]):
@@ -40,8 +56,11 @@ class Template[**P, T](Tool[P, T]):
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
         result = {}
+        is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
+            if obj is self and not is_recursive:
+                continue
             # Collect tools in context
             if isinstance(obj, Tool):
                 result[name] = obj
