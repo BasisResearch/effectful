@@ -60,6 +60,33 @@ def _is_recursive_signature(sig: inspect.Signature):
 
 
 class Tool[**P, T](Operation[P, T]):
+    """A :class:`Tool` is a function that may be called by a :class:`Template`.
+
+    **Example usage:**
+
+    Templates may call any tool that is in their lexical scope.
+    In the following example, the LLM suggests a vacation destination using the :code:`cities` and :code:`weather` tools.::
+
+        @Tool.define
+        def cities() -> list[str]:
+            \"\"\"Return a list of cities that can be passed to `weather`.\"\"\"
+            return ["Chicago", "New York", "Barcelona"]
+
+        @Tool.define
+        def weather(city: str) -> str:
+            \"\"\"Given a city name, return a description of the weather in that city.\"\"\"
+            status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
+            return status.get(city, "unknown")
+
+        @Template.define  # cities and weather auto-captured from lexical scope
+        def vacation() -> str:
+            \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
+            raise NotHandled
+
+    Class methods may be used as templates, in which case any other methods decorated with :func:`Tool.define` will be provided as tools.
+
+    """
+
     def __init__(
         self, signature: inspect.Signature, name: str, default: Callable[P, T]
     ):
@@ -70,6 +97,11 @@ class Tool[**P, T](Operation[P, T]):
 
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
+        """Define a tool.
+
+        See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Tool.define`.
+
+        """
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
@@ -79,6 +111,63 @@ class _BoundInstance[T]:
 
 
 class Template[**P, T](Tool[P, T]):
+    """A :class:`Template` is a function that is implemented by a large language model.
+
+    **Constructing Templates:**
+
+    Templates are constructed by calling :func:`Template.define`.
+    `Template.define` should be used as a decorator on a function or method.
+    The function must be fully type-annotated and have a docstring.
+    The body of the function must contain only :code:`raise NotHandled`.
+    See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Template.define`.
+
+    The template docstring is a `format string <https://docs.python.org/3/library/string.html#format-string-syntax>`__, which may refer to the template arguments.
+    When the template is called, the arguments and docstring are formatted into a prompt for the LLM and the LLM's response is returned.
+
+    The following template writes limericks on a given theme:
+
+    >>> @Template.define
+    ... def limerick(theme: str) -> str:
+    ...     \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
+    ...     raise NotHandled
+
+    **Structured output:**
+
+    Templates may return types that are not strings.
+    The output from the LLM is then decoded before being returned to the user.
+
+    For example, this template returns integers:
+
+    >>> @Template.define
+    ... def primes(first_digit: int) -> int:
+    ...     \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
+    ...     raise NotHandled
+
+    Structured generation is used to constrain the LLM to return values that can be decoded without error.
+
+    Templates can return complex data structures, such as dataclasses:
+
+    >>> @dataclasses.dataclass
+    ... class KnockKnockJoke:
+    ...     whos_there: str
+    ...     punchline: str
+
+    >>> @Template.define
+    ... def write_joke(theme: str) -> KnockKnockJoke:
+    ...     \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
+    ...     raise NotHandled
+
+    Many common Python data types are decodable without additional effort.
+    To register a decoder for a custom type, see :func:`effectful.handlers.llm.encoding.type_to_encodable_type`.
+
+    **Using tools:**
+
+    Instances of :class:`Tool` that are in the lexical scope of a :class:`Template` may be called by the LLM during template completion.
+    Templates are themselves tools which enables the construction of complex agent workflows.
+    When a method is defined as a template, other methods on the class that are decorated with :func:`Tool.define` or :func:`Template.define` are provided to the template as tools.
+
+    """
+
     __context__: ChainMap[str, Any]
 
     @property
@@ -131,10 +220,11 @@ class Template[**P, T](Tool[P, T]):
     ) -> "Template[Q, V]":
         """Define a prompt template.
 
-        `define` takes a function, and can be used as a decorator. The
-        function's docstring should be a prompt, which may be templated in the
-        function arguments. The prompt will be provided with any instances of
-        `Tool` that exist in the lexical context as callable tools.
+        :func:`define` takes a function and can be used as a decorator.
+        The function's docstring should be a prompt, which may be templated in the function arguments.
+        The prompt will be provided with any instances of :class:`Tool` that exist in the lexical context as callable tools.
+
+        See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Template.define`.
 
         """
         frame = inspect.currentframe()
