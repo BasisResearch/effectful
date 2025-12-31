@@ -5,7 +5,7 @@
       "index": 0,
       "message": {
         "annotations": [],
-        "content": "{\"value\": {\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop battling an evil group in a high-stakes skyscraper confrontation, emphasizing high-intensity action sequences, chases, and combat typical of action films. There is little to no emphasis on comedy, romance, horror, sci-fi, or dramatic storytelling beyond the surface conflict.\"}}",
+        "content": "The image appears to depict a simple, pixelated smiley face with two rectangular eyes and a wide, curved mouth, giving a cheerful expression.",
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
@@ -16,29 +16,29 @@
       "provider_specific_fields": {}
     }
   ],
-  "created": 1766782936,
-  "id": "chatcmpl-Cr9EuDzsc89tzsrm8l5ClAFfPt3ve",
-  "model": "gpt-5-nano-2025-08-07",
+  "created": 1767182821,
+  "id": "chatcmpl-CspGfBSEI7umvGbclbA4o1OsXZsil",
+  "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
   "service_tier": "default",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_deacdd5f6f",
   "usage": {
-    "completion_tokens": 664,
+    "completion_tokens": 30,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "image_tokens": null,
-      "reasoning_tokens": 576,
+      "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null
     },
-    "prompt_tokens": 541,
+    "prompt_tokens": 567,
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "image_tokens": null,
       "text_tokens": null
     },
-    "total_tokens": 1205
+    "total_tokens": 597
   }
 }

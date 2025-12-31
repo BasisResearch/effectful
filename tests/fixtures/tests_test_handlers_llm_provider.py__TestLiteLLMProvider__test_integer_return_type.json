@@ -5,7 +5,7 @@
       "index": 0,
       "message": {
         "annotations": [],
-        "content": "{\"value\":73}",
+        "content": "{\"value\":67}",
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
@@ -16,19 +16,19 @@
       "provider_specific_fields": {}
     }
   ],
-  "created": 1766782945,
-  "id": "chatcmpl-Cr9F36ZqXSbaDyhcAoJ6VUcxrLHur",
+  "created": 1767182739,
+  "id": "chatcmpl-CspFLXojfuOibqKzI1QdRgfOJtd36",
   "model": "gpt-5-nano-2025-08-07",
   "object": "chat.completion",
   "service_tier": "default",
   "system_fingerprint": null,
   "usage": {
-    "completion_tokens": 593,
+    "completion_tokens": 529,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "image_tokens": null,
-      "reasoning_tokens": 576,
+      "reasoning_tokens": 512,
       "rejected_prediction_tokens": 0,
       "text_tokens": null
     },
@@ -39,6 +39,6 @@
       "image_tokens": null,
       "text_tokens": null
     },
-    "total_tokens": 1022
+    "total_tokens": 958
   }
 }

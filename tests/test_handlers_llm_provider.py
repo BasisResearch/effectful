@@ -70,11 +70,16 @@ def retry_on_error(error: type[Exception], n: int):
 
 
 class ReplayLiteLLMProvider(LiteLLMProvider):
+    test_id: str
+
+    def __init__(self, request: pytest.FixtureRequest, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.test_id = request.node.nodeid
+        self.test_id = self.test_id.replace("/", "_").replace(":", "_")
+
     @implements(completion)
     def _completion(self, *args, **kwargs):
-        test_id = os.getenv("PYTEST_CURRENT_TEST", "unknown")
-        test_id = test_id.replace(" ", "_").replace("::", "__").replace("/", "_")
-        path = FIXTURE_DIR / f"{test_id}.json"
+        path = FIXTURE_DIR / f"{self.test_id}.json"
         if not REBUILD_FIXTURES:
             if not path.exists():
                 raise RuntimeError(f"Missing replay fixture: {path}")
@@ -159,10 +164,10 @@ class TestLiteLLMProvider:
 
     @requires_openai
     @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-5-nano"])
-    def test_simple_prompt_multiple_models(self, model_name):
+    def test_simple_prompt_multiple_models(self, request, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
-            handler(ReplayLiteLLMProvider(model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -176,10 +181,10 @@ class TestLiteLLMProvider:
             pytest.param("claude-haiku-4-5", marks=requires_anthropic),
         ],
     )
-    def test_simple_prompt_cross_endpoint(self, model_name):
+    def test_simple_prompt_cross_endpoint(self, request, model_name):
         """Test that ReplayLiteLLMProvider works across different API endpoints."""
         with (
-            handler(ReplayLiteLLMProvider(model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -187,12 +192,12 @@ class TestLiteLLMProvider:
             assert len(result) > 0
 
     @requires_openai
-    def test_structured_output(self):
-        """Test ReplayLiteLLMProvider with structured Pydantic output."""
+    def test_structured_output(self, request):
+        """Test LiteLLMProvider with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -204,10 +209,10 @@ class TestLiteLLMProvider:
             assert len(classification.explanation) > 0
 
     @requires_openai
-    def test_integer_return_type(self):
-        """Test ReplayLiteLLMProvider with integer return type."""
+    def test_integer_return_type(self, request):
+        """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -216,11 +221,15 @@ class TestLiteLLMProvider:
             assert 1 <= result <= 100
 
     @requires_openai
-    def test_with_config_params(self):
-        """Test ReplayLiteLLMProvider accepts and uses additional configuration parameters."""
+    def test_with_config_params(self, request):
+        """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
-            handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini", temperature=0.1)),
+            handler(
+                ReplayLiteLLMProvider(
+                    request, model_name="gpt-4o-mini", temperature=0.1
+                )
+            ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
@@ -231,11 +240,11 @@ class TestLLMLoggingHandler:
     """Tests for LLMLoggingHandler functionality."""
 
     @requires_openai
-    def test_logs_requests(self, caplog):
+    def test_logs_requests(self, request, caplog):
         """Test that LLMLoggingHandler properly logs LLM requests."""
         with caplog.at_level(logging.INFO):
             with (
-                handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
+                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
                 handler(LLMLoggingHandler()),
                 handler(LimitLLMCallsHandler(max_calls=1)),
             ):
@@ -246,13 +255,13 @@ class TestLLMLoggingHandler:
         assert any("llm.request" in record.message for record in caplog.records)
 
     @requires_openai
-    def test_custom_logger(self, caplog):
+    def test_custom_logger(self, request, caplog):
         """Test LLMLoggingHandler with a custom logger."""
         custom_logger = logging.getLogger("test_custom_logger")
 
         with caplog.at_level(logging.INFO, logger="test_custom_logger"):
             with (
-                handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
+                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
                 handler(LLMLoggingHandler(logger=custom_logger)),
                 handler(LimitLLMCallsHandler(max_calls=1)),
             ):
@@ -271,10 +280,10 @@ class TestProgramSynthesis:
 
     @requires_openai
     @retry_on_error(error=SynthesisError, n=3)
-    def test_generates_callable(self):
+    def test_generates_callable(self, request):
         """Test ProgramSynthesis handler generates executable code."""
         with (
-            handler(ReplayLiteLLMProvider(model_name="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
             handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -314,9 +323,9 @@ def categorise_image(image: Image.Image) -> str:
 
 
 @requires_openai
-def test_image_input():
+def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(model_name="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -338,11 +347,11 @@ def review_book(plot: str) -> BookReview:
 
 class TestPydanticBaseModelReturn:
     @requires_openai
-    def test_pydantic_basemodel_return(self):
+    def test_pydantic_basemodel_return(self, request):
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
