@@ -456,7 +456,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
         if isinstance(expr, Term):
             (args, kwargs) = jax.tree.map(_evaluate, (expr.args, expr.kwargs))
             return _partial_eval(expr)
-        if not jax.tree.leaves(expr)[-1] is expr:
+        if not jax.tree_util.treedef_is_leaf(jax.tree.structure(expr)):
             return jax.tree.map(_evaluate, expr)
         return expr
 

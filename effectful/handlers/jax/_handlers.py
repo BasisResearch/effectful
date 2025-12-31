@@ -208,11 +208,9 @@ def bind_dims[T, A, B](
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
-    if not jax.tree.leaves(value)[-1] is value:
-        return jax.tree.map(lambda v: bind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
+    if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
+        return __dispatch(typeof(value))(value, *names)
+    return jax.tree.map(lambda v: bind_dims(v, *names), value)
 
 
 @defop
@@ -223,11 +221,9 @@ def unbind_dims[T, A, B](
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
-    if not jax.tree.leaves(value)[-1] is value:
-        return jax.tree.map(lambda v: unbind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
+    if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
+        return __dispatch(typeof(value))(value, *names)
+    return jax.tree.map(lambda v: unbind_dims(v, *names), value)
 
 
 def jit(f, *args, **kwargs):
@@ -267,12 +263,7 @@ def _indexed_func_wrapper[**P, S, T](
         def index_expr(i):
             return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
 
-        if not jax.tree.leaves(ret)[-1] is ret:
-            indexed_ret = jax.tree.map(
-                lambda t, i: getitem(t, index_expr(i)), ret, indexes
-            )
-        else:
-            indexed_ret = getitem(ret, index_expr(indexes))
+        indexed_ret = jax.tree.map(lambda t, i: getitem(t, index_expr(i)), ret, indexes)
 
         return indexed_ret
 
