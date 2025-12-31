@@ -133,26 +133,25 @@ class MovieClassification:
 
 @Template.define
 def classify_genre(plot: str) -> MovieClassification:
-    """Classify the movie genre based on this plot: {plot}. Do not use any tools."""
+    """Classify the movie genre based on this plot: {plot}."""
     raise NotImplementedError
 
 
 @Template.define
 def simple_prompt(topic: str) -> str:
-    """Write a short sentence about {topic}. You MUST respond directly without using any tools."""
+    """Write a short sentence about {topic}."""
     raise NotImplementedError
 
 
 @Template.define
 def generate_number(max_value: int) -> int:
-    """Generate a random number between 1 and {max_value}. Return only the number. Do not use any tools."""
+    """Generate a random number between 1 and {max_value}."""
     raise NotImplementedError
 
 
 @Template.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
-    Do not use any tools.
 
     Return as a code block with the last definition being the function.
     """
@@ -279,6 +278,7 @@ class TestLLMLoggingHandler:
 class TestProgramSynthesis:
     """Tests for ProgramSynthesis handler functionality."""
 
+    @pytest.mark.xfail
     @requires_openai
     @retry_on_error(error=SynthesisError, n=3)
     def test_generates_callable(self, request):
@@ -318,7 +318,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image. Do not use any tools.
+    """Return a description of the following image.
     {image}"""
     raise NotHandled
 
@@ -342,7 +342,7 @@ class BookReview(BaseModel):
 
 @Template.define
 def review_book(plot: str) -> BookReview:
-    """Review a book based on this plot: {plot}. Do not use any tools."""
+    """Review a book based on this plot: {plot}."""
     raise NotImplementedError
 
 

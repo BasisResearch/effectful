@@ -1,10 +1,12 @@
 from collections.abc import Callable
+from typing import Annotated
 
 import pytest
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -83,13 +85,13 @@ def count_char(char: str) -> Callable[[str], int]:
 
 # Mutually recursive templates (module-level for live globals)
 @Template.define
-def mutual_a() -> str:
+def mutual_a() -> Annotated[str, IsRecursive]:
     """Use mutual_a and mutual_b as tools to do task A."""
     raise NotHandled
 
 
 @Template.define
-def mutual_b() -> str:
+def mutual_b() -> Annotated[str, IsRecursive]:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
 
@@ -253,12 +255,12 @@ def test_template_captures_other_templates_in_lexical_context():
     # Define sub-templates first
     @Template.define
     def story_with_moral(topic: str) -> str:
-        """Write a story about {topic} with a moral lesson. Do not use any tools at all for this."""
+        """Write a story about {topic} with a moral lesson."""
         raise NotHandled
 
     @Template.define
     def story_funny(topic: str) -> str:
-        """Write a funny story about {topic}. Do not use any tools at all for this."""
+        """Write a funny story about {topic}."""
         raise NotHandled
 
     # Main orchestrator template has access to sub-templates
@@ -284,7 +286,7 @@ def test_template_composition_with_chained_calls():
 
     @Template.define
     def generate_topic() -> str:
-        """Generate an interesting topic for a story. Do not try to use any tools for this beside from write_story."""
+        """Generate an interesting topic for a story."""
         raise NotHandled
 
     @Template.define

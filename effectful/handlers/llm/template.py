@@ -4,9 +4,59 @@ import typing
 from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
-from effectful.ops.types import INSTANCE_OP_PREFIX, NotHandled, Operation
+from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Operation
+
+
+class _IsRecursiveAnnotation(Annotation):
+    """
+    A special type annotation for return types in the signature of a
+    :class:`Template` that indicates it may make recursive calls.
+
+    .. warning::
+
+        :class:`IsRecursive` annotations are only defined to ascribe
+        return annotations, and if used in a parameter will raise a
+        :class:`TypeError` at tool construction time.
+
+
+
+    **Example usage**:
+
+    We illustrate the use of :class:`IsRecursive` below:
+
+    >>> from typing import Annotated
+    >>> from effectful.handlers.llm import Template
+    >>> from effectful.handlers.llm.template import IsRecursive
+
+    >>>
+    @Template.define
+    def factorial(n: int) -> Annotated[int, IsRecursive]:
+       \"""Compute the n factorial for n={n}. Can call itself (`factorial`) recursively, but must be on smaller arguments.\"""
+       raise NotHandled
+    """
+
+    @classmethod
+    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        for name, ty in sig.parameters.items():
+            if not ty or not typing.get_origin(ty) is Annotated:
+                continue
+            if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
+                raise TypeError(
+                    f"Illegal annotation {ty} for parameter {name}, IsRecursive must only be used to annotate return types."
+                )
+        return sig
+
+
+IsRecursive = _IsRecursiveAnnotation()
+
+
+def _is_recursive_signature(sig: inspect.Signature):
+    if typing.get_origin(sig.return_annotation) is not Annotated:
+        return False
+    annotations = typing.get_args(sig.return_annotation)
+    return any(annotation is IsRecursive for annotation in annotations)
 
 
 class Tool[**P, T](Operation[P, T]):
@@ -15,7 +65,7 @@ class Tool[**P, T](Operation[P, T]):
     ):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
-
+        signature = IsRecursive.infer_annotations(signature)
         super().__init__(signature, name, default)
 
     @classmethod
@@ -40,8 +90,11 @@ class Template[**P, T](Tool[P, T]):
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
         result = {}
+        is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
+            if obj is self and not is_recursive:
+                continue
             # Collect tools in context
             if isinstance(obj, Tool):
                 result[name] = obj
