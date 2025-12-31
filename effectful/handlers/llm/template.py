@@ -39,6 +39,13 @@ class _IsRecursiveAnnotation(Annotation):
 
     @classmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        for name, ty in sig.parameters.items():
+            if not ty or not typing.get_origin(ty) is Annotated:
+                continue
+            if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
+                raise TypeError(
+                    f"Illegal annotation {ty} for parameter {name}, IsRecursive must only be used to annotate return types."
+                )
         return sig
 
 
