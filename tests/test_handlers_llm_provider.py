@@ -45,7 +45,7 @@ requires_anthropic = pytest.mark.skipif(
     not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
 )
 
-IN_CI = os.getenv("GITHUB_ACTIONS") == "true"
+REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
 # ============================================================================
 
@@ -75,7 +75,7 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
         test_id = os.getenv("PYTEST_CURRENT_TEST", "unknown")
         test_id = test_id.replace(" ", "_").replace("::", "__").replace("/", "_")
         path = FIXTURE_DIR / f"{test_id}.json"
-        if IN_CI:
+        if not REBUILD_FIXTURES:
             if not path.exists():
                 raise RuntimeError(f"Missing replay fixture: {path}")
             with path.open() as f:
