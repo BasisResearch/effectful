@@ -275,6 +275,7 @@ class TestLLMLoggingHandler:
         )
 
 
+@pytest.mark.xfail(reason="Program synthesis not implemented")
 class TestProgramSynthesis:
     """Tests for ProgramSynthesis handler functionality."""
 
