@@ -10,6 +10,33 @@ from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Oper
 
 
 class _IsRecursiveAnnotation(Annotation):
+    """
+    A special type annotation for return types in the signature of a
+    :class:`Template` that indicates it may make recursive calls.
+
+    .. warning::
+
+        :class:`IsRecursive` annotations are only defined to ascribe
+        return annotations, and if used in a parameter will raise a
+        :class:`TypeError` at tool construction time.
+
+
+
+    **Example usage**:
+
+    We illustrate the use of :class:`IsRecursive` below:
+
+    >>> from typing import Annotated
+    >>> from effectful.handlers.llm import Template
+    >>> from effectful.handlers.llm.template import IsRecursive
+
+    >>>
+    @Template.define
+    def factorial(n: int) -> Annotated[int, IsRecursive]:
+       \"""Compute the n factorial for n={n}. Can call itself (`factorial`) recursively, but must be on smaller arguments.\"""
+       raise NotHandled
+    """
+
     @classmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
         return sig
