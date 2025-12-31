@@ -147,6 +147,7 @@ class Template[**P, T](Tool[P, T]):
 
     Templates can return complex data structures, such as dataclasses:
 
+    >>> import dataclasses
     >>> @dataclasses.dataclass
     ... class KnockKnockJoke:
     ...     whos_there: str
