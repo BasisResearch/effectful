@@ -58,7 +58,7 @@ class Tool[**P, T](Operation[P, T]):
     ):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
-
+        signature = IsRecursive.infer_annotations(signature)
         super().__init__(signature, name, default)
 
     @classmethod
