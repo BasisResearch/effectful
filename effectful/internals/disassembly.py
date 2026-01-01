@@ -146,16 +146,12 @@ class BranchState(typing.NamedTuple):
 
 class BranchIdentifier(ast.NodeVisitor):
     branching: collections.abc.MutableMapping[str, BranchState]
+    filter_lengths: list[int]
 
     def __init__(self):
         self.branching = {}
+        self.filter_lengths = []
         super().__init__()
-
-    @classmethod
-    def analyze(cls, node: ast.expr) -> collections.abc.Mapping[str, BranchState]:
-        instance = cls()
-        instance.visit(node)
-        return instance.branching
 
     def visit_IfExp(self, node: ast.IfExp):
         if isinstance(node.body, Skipped):
@@ -166,7 +162,11 @@ class BranchIdentifier(ast.NodeVisitor):
             self.branching[node.orelse.id] = BranchState(
                 testval=True, value=copy.deepcopy(node.body)
             )
-        self.generic_visit(node)
+        return self.generic_visit(node)
+
+    def visit_comprehension(self, node: ast.comprehension):
+        self.filter_lengths.append(len(node.ifs))
+        return self.generic_visit(node)
 
 
 @dataclass(frozen=True)
@@ -364,21 +364,33 @@ JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN
 
 
 def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
-    left_branches = BranchIdentifier.analyze(left)
-    right_branches = BranchIdentifier.analyze(right)
-    common_keys = set(left_branches.keys()) & set(right_branches.keys())
-    assert common_keys, "No common branches to merge"
-    assert (
-        sum(
-            1
-            for k in common_keys
-            if left_branches[k].testval != right_branches[k].testval
-        )
-        == 1
-    )
+    """
+    Merge two expression ASTs obtained from two branches of symbolic execution.
+    """
+    if isinstance(left, ast.Constant) and left.value is None:
+        return copy.deepcopy(right)
+    elif isinstance(right, ast.Constant) and right.value is None:
+        return copy.deepcopy(left)
+
+    assert type(left) == type(right)
+    assert any(isinstance(n, ast.IfExp | ast.comprehension) for n in ast.walk(left))
+    assert any(isinstance(n, ast.IfExp | ast.comprehension) for n in ast.walk(right))
+
+    lb, rb = BranchIdentifier(), BranchIdentifier()
+    lb.visit(left)
+    rb.visit(right)
+    common_keys = set(lb.branching.keys()) & set(rb.branching.keys())
+    if not any(lb.branching[k].testval != rb.branching[k].testval for k in common_keys):
+        for l_len, r_len in zip(lb.filter_lengths, rb.filter_lengths):
+            if l_len > r_len:
+                return copy.deepcopy(left)
+            elif r_len > l_len:
+                return copy.deepcopy(right)
+
     for key in common_keys:
-        if left_branches[key].testval != right_branches[key].testval:
-            return ReplaceSkipped(key, right_branches[key].value).visit(left)
+        if lb.branching[key].testval != rb.branching[key].testval:
+            return ReplaceSkipped(key, rb.branching[key].value).visit(left)
+
     raise ValueError("No differing branches found to merge")
 
 
