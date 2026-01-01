@@ -1320,18 +1320,11 @@ def handle_call_kw(
     arg_count: int = instr.arg
 
     func = ensure_ast(state.stack[-arg_count - 3])
+    assert not isinstance(func, CompLambda | Null)
     kw_names = state.stack[-1]
     assert isinstance(kw_names, ast.Tuple), "Expected a tuple of keyword names"
 
     # Pop arguments, function, and keyword names
-    args = (
-        [ensure_ast(arg) for arg in state.stack[-arg_count - 2 : -1]]
-        if arg_count > 0
-        else []
-    )
-    if not isinstance(state.stack[-arg_count - 3], Null):
-        args = [ensure_ast(state.stack[-arg_count - 3])] + args
-
     keywords = []
     for i, kw in enumerate(reversed(kw_names.elts)):
         kw_name = (
@@ -1339,19 +1332,27 @@ def handle_call_kw(
         )
         if kw_name is None:
             raise TypeError("Keyword names must be strings")
-        kw_value = ensure_ast(state.stack[-1 - i])
+        kw_value = ensure_ast(state.stack[-2 - i])
         keywords.append(ast.keyword(arg=kw_name, value=kw_value))
     keywords.reverse()
 
+    args = (
+        [
+            ensure_ast(arg)
+            for arg in state.stack[-arg_count - 1 : -len(kw_names.elts) - 1]
+        ]
+        if arg_count > 0
+        else []
+    )
+    if not isinstance(state.stack[-arg_count - 2], Null):
+        args = [ensure_ast(state.stack[-arg_count - 2])] + args
+
     new_stack = state.stack[: -arg_count - 3]
-    if isinstance(func, CompLambda):
-        assert len(args) == 1 and len(keywords) == 0
-        return replace(state, stack=new_stack + [func.inline(args[0])])
-    else:
-        # Create function call AST
-        call_node = ast.Call(func=func, args=args, keywords=keywords)
-        new_stack = new_stack + [call_node]
-        return replace(state, stack=new_stack)
+
+    # Create function call AST
+    call_node = ast.Call(func=func, args=args, keywords=keywords)
+    new_stack = new_stack + [call_node]
+    return replace(state, stack=new_stack)
 
 
 @register_handler("MAKE_FUNCTION", version=PythonVersion.PY_312)

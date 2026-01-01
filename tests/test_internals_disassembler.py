@@ -2,8 +2,7 @@ import ast
 import collections.abc
 import copy
 import dis
-from types import GeneratorType
-from typing import Any
+import typing
 
 import pytest
 
@@ -17,7 +16,7 @@ from effectful.internals.disassembly import (
 
 def compile_and_eval(
     node: ast.expr | ast.Expression, globals_dict: dict | None = None
-) -> Any:
+) -> typing.Any:
     """Compile an AST node and evaluate it."""
     if globals_dict is None:
         globals_dict = {}
@@ -34,7 +33,7 @@ def compile_and_eval(
     return eval(code, globals_dict)
 
 
-def materialize(genexpr: GeneratorType) -> list:
+def materialize[T](genexpr: collections.abc.Generator[T, None, None]) -> list[T]:
     """Materialize a nested generator expression to a nested list."""
 
     def _materialize(genexpr):
@@ -55,7 +54,9 @@ def materialize(genexpr: GeneratorType) -> list:
 
 
 def assert_ast_equivalent(
-    genexpr: GeneratorType, reconstructed_ast: ast.AST, globals_dict: dict | None = None
+    genexpr: collections.abc.Generator[typing.Any, None, None],
+    reconstructed_ast: ast.AST,
+    globals_dict: dict | None = None,
 ):
     """Assert that a reconstructed AST produces the same results as the original generator."""
     # Check AST structure
