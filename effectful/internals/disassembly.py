@@ -121,6 +121,54 @@ class ReplacePlaceholder(ast.NodeTransformer):
             return self.generic_visit(node)
 
 
+class ReplaceSkipped(ast.NodeTransformer):
+    id: str
+    replacement: ast.expr
+
+    def __init__(self, id: str, replacement: ast.expr):
+        self.id = id
+        self.replacement = copy.deepcopy(replacement)
+        super().__init__()
+
+    def visit_IfExp(self, node: ast.IfExp):
+        if isinstance(node.body, Skipped) and node.body.id == self.id:
+            return ast.IfExp(test=node.test, body=self.replacement, orelse=node.orelse)
+        elif isinstance(node.orelse, Skipped) and node.orelse.id == self.id:
+            return ast.IfExp(test=node.test, body=node.body, orelse=self.replacement)
+        else:
+            return self.generic_visit(node)
+
+
+class BranchState(typing.NamedTuple):
+    testval: bool
+    value: ast.expr
+
+
+class BranchIdentifier(ast.NodeVisitor):
+    branching: collections.abc.MutableMapping[str, BranchState]
+
+    def __init__(self):
+        self.branching = {}
+        super().__init__()
+
+    @classmethod
+    def analyze(cls, node: ast.expr) -> collections.abc.Mapping[str, BranchState]:
+        instance = cls()
+        instance.visit(node)
+        return instance.branching
+
+    def visit_IfExp(self, node: ast.IfExp):
+        if isinstance(node.body, Skipped):
+            self.branching[node.body.id] = BranchState(
+                testval=False, value=copy.deepcopy(node.orelse)
+            )
+        elif isinstance(node.orelse, Skipped):
+            self.branching[node.orelse.id] = BranchState(
+                testval=True, value=copy.deepcopy(node.body)
+            )
+        self.generic_visit(node)
+
+
 @dataclass(frozen=True)
 class ReconstructionState:
     """State maintained during AST reconstruction from bytecode.
@@ -315,6 +363,25 @@ RETURN_OPS = {"RETURN_VALUE", "RETURN_CONST"}
 JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN_OPS
 
 
+def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
+    left_branches = BranchIdentifier.analyze(left)
+    right_branches = BranchIdentifier.analyze(right)
+    common_keys = set(left_branches.keys()) & set(right_branches.keys())
+    assert common_keys, "No common branches to merge"
+    assert (
+        sum(
+            1
+            for k in common_keys
+            if left_branches[k].testval != right_branches[k].testval
+        )
+        == 1
+    )
+    for key in common_keys:
+        if left_branches[key].testval != right_branches[key].testval:
+            return ReplaceSkipped(key, right_branches[key].value).visit(left)
+    raise ValueError("No differing branches found to merge")
+
+
 def _symbolic_exec(code: types.CodeType) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
     continuations: list[ReconstructionState] = [
@@ -342,30 +409,9 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
         results.append(state.result)
 
     assert results, "No results from symbolic execution"
-    return functools.reduce(
-        lambda a, b: _MergeBranches(a).visit(b), reversed(results[:-1]), results[-1]
-    )
-
-
-class _MergeBranches(ast.NodeTransformer):
-    def __init__(self, node_with_orelse: ast.expr):
-        self._orelses: dict[str, ast.expr] = {
-            n.body.id: n.orelse
-            for n in ast.walk(node_with_orelse)
-            if isinstance(n, ast.IfExp)
-            and isinstance(n.body, Skipped)
-            and not isinstance(n.orelse, Skipped | Placeholder)
-        }
-        assert self._orelses, "No orelse branches to merge"
-        super().__init__()
-
-    def visit_IfExp(self, node: ast.IfExp):
-        if isinstance(node.orelse, Skipped) and node.orelse.id in self._orelses:
-            return ast.IfExp(
-                test=node.test, body=node.body, orelse=self._orelses[node.orelse.id]
-            )
-        else:
-            return self.generic_visit(node)
+    result = functools.reduce(_merge_at_ifexp, results[1:], results[0])
+    assert not any(isinstance(n, Skipped) for n in ast.walk(result))
+    return result
 
 
 # ============================================================================
