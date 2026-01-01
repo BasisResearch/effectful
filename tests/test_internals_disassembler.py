@@ -569,7 +569,6 @@ def test_conditional_expressions_simple_no_comprehension(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
-@pytest.mark.xfail(reason="Nested conditional expressions not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
@@ -681,7 +680,6 @@ def test_lazy_boolean_and_chained_comparisons(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
-@pytest.mark.xfail(reason="Conditional expressions not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
