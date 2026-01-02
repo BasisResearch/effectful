@@ -352,14 +352,27 @@ def register_handler(
     return handler  # return the original handler for multiple decorator usage
 
 
-LOOP_OPS = {"FOR_ITER"}
-BRANCH_OPS = {
+LOOP_OPS: set[typing.Literal["FOR_ITER"]] = {"FOR_ITER"}
+
+BRANCH_OPS: set[
+    typing.Literal[
+        "POP_JUMP_IF_TRUE",
+        "POP_JUMP_IF_FALSE",
+        "POP_JUMP_IF_NOT_NONE",
+        "POP_JUMP_IF_NONE",
+    ]
+] = {
     "POP_JUMP_IF_TRUE",
     "POP_JUMP_IF_FALSE",
     "POP_JUMP_IF_NOT_NONE",
     "POP_JUMP_IF_NONE",
 }
-RETURN_OPS = {"RETURN_VALUE", "RETURN_CONST"}
+
+RETURN_OPS: set[typing.Literal["RETURN_VALUE", "RETURN_CONST"]] = {
+    "RETURN_VALUE",
+    "RETURN_CONST",
+}
+
 JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN_OPS
 
 
