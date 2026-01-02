@@ -1080,7 +1080,7 @@ def handle_binary_op(
 
     op = op_map.get(instr.arg)
     if op is None:
-        raise NotImplementedError(f"Unknown binary operation: {instr.arg}")
+        raise TypeError(f"Unknown binary operation: {instr.arg}")
 
     return handle_binop(op, state, instr)
 
