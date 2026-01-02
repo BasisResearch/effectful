@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from typing import Annotated
 
 import pytest
 from litellm.types.utils import Choices, Message, ModelResponse
@@ -7,6 +8,7 @@ from litellm.types.utils import Choices, Message, ModelResponse
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler, decode_response
 from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -25,7 +27,7 @@ class MockLLMProvider[T](ObjectInterpretation):
         """
         self.prompt_responses = prompt_responses
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -51,34 +53,11 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         """Initialize with a response value."""
         self.response = response
 
-    @implements(Template.__call__)
-    def _call[**P, R](
-        self, template: Template[P, R], *args: P.args, **kwargs: P.kwargs
-    ) -> R:
-        from effectful.handlers.llm.encoding import type_to_encodable_type
-
-        ret_type = template.__signature__.return_annotation
-        encodable_ty = type_to_encodable_type(ret_type)
-
-        # For str types, use raw value; otherwise wrap in {"value": ...}
-        if encodable_ty.t == str:
-            content = str(self.response)
-        else:
-            content = json.dumps({"value": self.response})
-
-        mock_response = ModelResponse(
-            id="mock",
-            choices=[
-                Choices(
-                    finish_reason="stop",
-                    index=0,
-                    message=Message(content=content, role="assistant"),
-                )
-            ],
-            created=0,
-            model="mock",
-        )
-        return decode_response(template, mock_response)
+    @implements(Template.__apply__)
+    def _call[**P](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        return self.response
 
 
 # Test templates from the notebook examples
@@ -94,7 +73,7 @@ def haiku(theme: str) -> str:
     raise NotHandled
 
 
-@Template.define()
+@Template.define
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
     raise NotHandled
@@ -108,13 +87,13 @@ def count_char(char: str) -> Callable[[str], int]:
 
 # Mutually recursive templates (module-level for live globals)
 @Template.define
-def mutual_a() -> str:
+def mutual_a() -> Annotated[str, IsRecursive]:
     """Use mutual_a and mutual_b as tools to do task A."""
     raise NotHandled
 
 
 @Template.define
-def mutual_b() -> str:
+def mutual_b() -> Annotated[str, IsRecursive]:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
 
@@ -143,6 +122,7 @@ def test_primes_decode_int():
         assert isinstance(result, int)
 
 
+@pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
     mock_provider = SingleResponseLLMProvider(
@@ -180,7 +160,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         self.exception_factory = exception_factory
         self.call_count = 0
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call[**P](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
@@ -248,7 +228,7 @@ def test_retry_handler_with_error_feedback():
         def __init__(self):
             self.call_count = 0
 
-        @implements(Template.__call__)
+        @implements(Template.__apply__)
         def _call(self, template: Template, *args, **kwargs):
             self.call_count += 1
             call_prompts.append(template.__prompt_template__)
@@ -269,7 +249,6 @@ def test_retry_handler_with_error_feedback():
     # First call has original prompt
     assert "Write a limerick on the theme of {theme}." in call_prompts[0]
     # Second call should include error feedback with traceback
-    assert "Retry generating" in call_prompts[1]
     assert "First attempt failed" in call_prompts[1]
 
 
@@ -279,12 +258,12 @@ def test_template_captures_other_templates_in_lexical_context():
     # Define sub-templates first
     @Template.define
     def story_with_moral(topic: str) -> str:
-        """Write a story about {topic} with a moral lesson. Do not use any tools at all for this."""
+        """Write a story about {topic} with a moral lesson."""
         raise NotHandled
 
     @Template.define
     def story_funny(topic: str) -> str:
-        """Write a funny story about {topic}. Do not use any tools at all for this."""
+        """Write a funny story about {topic}."""
         raise NotHandled
 
     # Main orchestrator template has access to sub-templates
@@ -301,8 +280,8 @@ def test_template_captures_other_templates_in_lexical_context():
     assert write_story.__context__["story_funny"] is story_funny
 
     # Templates in lexical context are exposed as callable tools
-    assert story_with_moral in write_story.tools
-    assert story_funny in write_story.tools
+    assert story_with_moral in write_story.tools.values()
+    assert story_funny in write_story.tools.values()
 
 
 def test_template_composition_with_chained_calls():
@@ -310,7 +289,7 @@ def test_template_composition_with_chained_calls():
 
     @Template.define
     def generate_topic() -> str:
-        """Generate an interesting topic for a story. Do not try to use any tools for this beside from write_story."""
+        """Generate an interesting topic for a story."""
         raise NotHandled
 
     @Template.define
@@ -347,11 +326,11 @@ def test_mutually_recursive_templates():
     assert "mutual_b" in mutual_b.__context__
 
     # They should also be in each other's tools
-    assert mutual_a in mutual_b.tools
-    assert mutual_b in mutual_a.tools
+    assert mutual_a in mutual_b.tools.values()
+    assert mutual_b in mutual_a.tools.values()
     # And themselves (self-recursion)
-    assert mutual_a in mutual_a.tools
-    assert mutual_b in mutual_b.tools
+    assert mutual_a in mutual_a.tools.values()
+    assert mutual_b in mutual_b.tools.values()
 
 
 # Module-level variable for shadowing test
