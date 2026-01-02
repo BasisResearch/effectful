@@ -1330,6 +1330,7 @@ def handle_call_kw(
     # CALL_KW pops function, arguments, and keyword names from stack
     assert instr.arg is not None
     arg_count: int = instr.arg
+    assert arg_count > 0, "CALL_KW requires at least one argument"
 
     func = ensure_ast(state.stack[-arg_count - 3])
     assert not isinstance(func, CompLambda | Null)
@@ -1340,33 +1341,19 @@ def handle_call_kw(
     # Pop arguments, function, and keyword names
     keywords = []
     for i, kw in enumerate(reversed(kw_names.elts)):
-        kw_name = (
-            kw.value
-            if isinstance(kw, ast.Constant) and isinstance(kw.value, str)
-            else None
-        )
-        if kw_name is None:
-            raise TypeError("Keyword names must be strings")
-        kw_value = ensure_ast(state.stack[-2 - i])
-        keywords.append(ast.keyword(arg=kw_name, value=kw_value))
+        assert isinstance(kw, ast.Constant) and isinstance(kw.value, str)
+        keywords += [ast.keyword(arg=kw.value, value=ensure_ast(state.stack[-2 - i]))]
     keywords.reverse()
 
-    args = (
-        [
-            ensure_ast(arg)
-            for arg in state.stack[-arg_count - 1 : -len(kw_names.elts) - 1]
-        ]
-        if arg_count > 0
-        else []
-    )
+    args = [
+        ensure_ast(arg) for arg in state.stack[-arg_count - 1 : -len(kw_names.elts) - 1]
+    ]
     if not isinstance(state.stack[-arg_count - 2], Null):
         args = [ensure_ast(state.stack[-arg_count - 2])] + args
 
-    new_stack = state.stack[: -arg_count - 3]
-
     # Create function call AST
     call_node = ast.Call(func=func, args=args, keywords=keywords)
-    new_stack = new_stack + [call_node]
+    new_stack = state.stack[: -arg_count - 3] + [call_node]
     return replace(state, stack=new_stack)
 
 
