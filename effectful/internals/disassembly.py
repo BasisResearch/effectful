@@ -204,35 +204,17 @@ class ReconstructionState:
 
     branches: dict[int, int] = field(default_factory=collections.Counter)
 
-    @property
+    @functools.cached_property
     def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
         """Get the bytecode instructions for the current code object."""
         return collections.OrderedDict(
             (instr.offset, instr) for instr in dis.get_instructions(self.code)
         )
 
-    @property
+    @functools.cached_property
     def next_instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
         instrs_list = list(self.instructions.values())
         return {i1.offset: i2 for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])}
-
-    @property
-    def is_filter(self) -> bool:
-        """Check if an instruction is a filter clause in a comprehension"""
-        return (
-            self.instruction.opname in BRANCH_OPS
-            and self.next_instructions[self.instruction.offset].opname
-            == "JUMP_BACKWARD"
-            and self.instructions[
-                self.next_instructions[self.instruction.offset].argval
-            ].opname
-            in LOOP_OPS
-        )
-
-    @property
-    def is_branch(self) -> bool:
-        """Check if an instruction is a branch in an if-expression"""
-        return self.instruction.opname in BRANCH_OPS and not self.is_filter
 
 
 # Python version enum for version-specific handling
@@ -424,7 +406,12 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
     while continuations:
         state = continuations.pop()
         while not state.finished:
-            if state.is_branch and not state.branches.get(state.instruction.offset, 0):
+            if (
+                state.instruction.opname in BRANCH_OPS
+                and state.next_instructions[state.instruction.offset].opname
+                != "JUMP_BACKWARD"
+                and not state.branches.get(state.instruction.offset, 0)
+            ):
                 continuations.append(
                     replace(
                         state, branches=state.branches | {state.instruction.offset: 1}
@@ -1824,7 +1811,7 @@ def _handle_pop_jump_if(
     # Pops a value from the stack and jumps if the condition is met
     condition = f_condition(ensure_ast(state.stack[-1]))
 
-    if state.is_filter:
+    if state.next_instructions[instr.offset].opname == "JUMP_BACKWARD":
         for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
             if isinstance(item, CompExp) and isinstance(
                 getattr(item, "elt", getattr(item, "key", None)), Placeholder
