@@ -1,10 +1,12 @@
+import json
 from collections.abc import Callable
 from typing import Annotated
 
 import pytest
+from litellm.types.utils import Choices, Message, ModelResponse
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import RetryLLMHandler
+from effectful.handlers.llm.providers import RetryLLMHandler, decode_response
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
@@ -41,14 +43,14 @@ class MockLLMProvider[T](ObjectInterpretation):
 
 
 class SingleResponseLLMProvider[T](ObjectInterpretation):
-    """Simplified mock provider that returns a single response for any prompt."""
+    """Simplified mock provider that returns a single response.
+
+    Simulates LiteLLMProvider behavior by creating a ModelResponse and calling
+    decode_response. Automatically wraps response in {"value": ...} for non-string types.
+    """
 
     def __init__(self, response: T):
-        """Initialize with a single response string.
-
-        Args:
-            response: The response to return for any template call
-        """
+        """Initialize with a response value."""
         self.response = response
 
     @implements(Template.__apply__)
@@ -123,11 +125,12 @@ def test_primes_decode_int():
 @pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    mock_code = """<code>
-def count_occurrences(s):
-    return s.count('a')
-</code>"""
-    mock_provider = SingleResponseLLMProvider(mock_code)
+    mock_provider = SingleResponseLLMProvider(
+        {
+            "function_name": "count_occurrences",
+            "module_code": "def count_occurrences(s):\n    return s.count('a')",
+        }
+    )
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")

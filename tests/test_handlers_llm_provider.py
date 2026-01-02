@@ -318,7 +318,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image.
+    """Return a description of the following image. You MUST NOT use any tools.
     {image}"""
     raise NotHandled
 
