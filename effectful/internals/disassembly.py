@@ -1345,9 +1345,7 @@ def handle_call_kw(
         keywords += [ast.keyword(arg=kw.value, value=ensure_ast(state.stack[-2 - i]))]
     keywords.reverse()
 
-    args = [
-        ensure_ast(arg) for arg in state.stack[-arg_count - 1 : -len(kw_names.elts) - 1]
-    ]
+    args = [ensure_ast(a) for a in state.stack[-arg_count - 1 : -len(keywords) - 1]]
     if not isinstance(state.stack[-arg_count - 2], Null):
         args = [ensure_ast(state.stack[-arg_count - 2])] + args
 
