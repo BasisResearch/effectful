@@ -1341,7 +1341,9 @@ def handle_call_kw(
     keywords = []
     for i, kw in enumerate(reversed(kw_names.elts)):
         kw_name = (
-            kw.s if isinstance(kw, ast.Constant) and isinstance(kw.s, str) else None
+            kw.value
+            if isinstance(kw, ast.Constant) and isinstance(kw.value, str)
+            else None
         )
         if kw_name is None:
             raise TypeError("Keyword names must be strings")
