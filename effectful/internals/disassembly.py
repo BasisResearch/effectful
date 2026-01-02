@@ -1334,6 +1334,7 @@ def handle_call_kw(
 
     func = ensure_ast(state.stack[-arg_count - 3])
     assert not isinstance(func, CompLambda | Null)
+
     kw_names = state.stack[-1]
     assert isinstance(kw_names, ast.Tuple), "Expected a tuple of keyword names"
     assert len(kw_names.elts) > 0, "Expected at least one keyword name"
