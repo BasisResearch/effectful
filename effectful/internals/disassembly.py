@@ -1809,17 +1809,56 @@ def _handle_pop_jump_if(
 ) -> ReconstructionState:
     # Generic handler for POP_JUMP_IF_* instructions
     # Pops a value from the stack and jumps if the condition is met
-    condition = f_condition(ensure_ast(state.stack[-1]))
+    condition: ast.expr = f_condition(ensure_ast(state.stack[-1]))
 
     if state.next_instructions[instr.offset].opname == "JUMP_BACKWARD":
         for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-            if isinstance(item, CompExp) and isinstance(
-                getattr(item, "elt", getattr(item, "key", None)), Placeholder
-            ):
-                new_result = copy.deepcopy(item)
-                new_result.generators[-1].ifs.append(condition)
+            if not isinstance(item, CompExp):
+                continue
+
+            elt: ast.expr = item.value if isinstance(item, ast.DictComp) else item.elt
+            new_result: CompExp = copy.deepcopy(item)
+
+            if isinstance(elt, Placeholder):
+                if len(new_result.generators[-1].ifs) == 0:
+                    new_result.generators[-1].ifs.append(condition)
+                elif len(new_result.generators[-1].ifs) == 1:
+                    new_result.generators[-1].ifs[0] = ast.BoolOp(
+                        op=ast.And(),
+                        values=[new_result.generators[-1].ifs[0], condition],
+                    )
+                else:
+                    raise TypeError("should only ever have one filter")
                 new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
                 return replace(state, stack=new_stack)
+            elif isinstance(elt, ast.IfExp) and any(
+                isinstance(x, Placeholder) for x in ast.walk(elt)
+            ):
+                # we've been building up an ifexp, but it's actually part of a comprehension
+                if isinstance(new_result, ast.DictComp):
+                    new_result.key, new_result.value = Placeholder(), Placeholder()
+                else:
+                    new_result.elt = Placeholder()
+
+                # combined filter is (condition if not prev_condition else prev_condition)
+                combined_condition = ReplacePlaceholder(condition).visit(
+                    copy.deepcopy(elt)
+                )
+                assert isinstance(combined_condition, ast.expr)
+                if len(new_result.generators[-1].ifs) == 0:
+                    new_result.generators[-1].ifs.append(combined_condition)
+                elif len(new_result.generators[-1].ifs) == 1:
+                    new_result.generators[-1].ifs[0] = ast.BoolOp(
+                        op=ast.And(),
+                        values=[new_result.generators[-1].ifs[0], combined_condition],
+                    )
+                else:
+                    raise TypeError("should only ever have one filter")
+                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
+                return replace(state, stack=new_stack)
+            else:
+                continue
+
         raise TypeError("No comprehension context found for filter condition")
     else:
         for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
