@@ -56,7 +56,7 @@ class Agent:
         return response
 
 
-if __name__ == "__main__" or True:
+if __name__ == "__main__":
 
     class ChatBot(Agent):
         @Template.define
