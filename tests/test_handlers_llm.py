@@ -1,12 +1,10 @@
-import json
 from collections.abc import Callable
 from typing import Annotated
 
 import pytest
-from litellm.types.utils import Choices, Message, ModelResponse
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import RetryLLMHandler, decode_response
+from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler

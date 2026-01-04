@@ -1,17 +1,18 @@
 import collections
 import collections.abc
-import dataclasses
 import inspect
 import linecache
 import textwrap
 import typing
+from collections import ChainMap
 from collections.abc import Callable
+from typing import Any
 
 import pydantic
 from litellm.types.utils import ModelResponse
 from pydantic import Field
 
-from effectful.handlers.llm import LexicalContext, Template
+from effectful.handlers.llm import Template
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.handlers.llm.providers import (
     OpenAIMessageContentListBlock,
@@ -55,7 +56,7 @@ class EncodableSynthesizedFunction(
 
     @classmethod
     def encode(
-        cls, vl: Callable, context: LexicalContext | None = None
+        cls, vl: Callable, context: ChainMap[str, Any] | None = None
     ) -> SynthesizedFunction:
         """Encode a Callable to a SynthesizedFunction.
 
@@ -86,7 +87,7 @@ class EncodableSynthesizedFunction(
         Executes the module code and returns the named function.
         Uses _decode_context attribute on vl if present (set by ProgramSynthesis).
         """
-        context: LexicalContext | None = getattr(vl, "_decode_context", None)
+        context: ChainMap[str, Any] | None = getattr(vl, "_decode_context", None)
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
@@ -142,7 +143,7 @@ class ProgramSynthesis(ObjectInterpretation):
 
     """
 
-    @implements(Template.__call__)
+    @implements(Template.__apply__)
     def _call(self, template, *args, **kwargs) -> None:
         ret_type = template.__signature__.return_annotation
         origin = typing.get_origin(ret_type)
@@ -167,11 +168,7 @@ class ProgramSynthesis(ObjectInterpretation):
         """).strip()
 
         return fwd(
-            dataclasses.replace(
-                template,
-                __prompt_template__=prompt_ext,
-                __signature__=template.__signature__,
-            ),
+            template.replace(prompt_template=prompt_ext),
             *args,
             **kwargs,
         )
