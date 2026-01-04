@@ -3,7 +3,6 @@ import collections.abc
 import inspect
 import linecache
 import textwrap
-import types
 import typing
 from collections import ChainMap
 from collections.abc import Callable
