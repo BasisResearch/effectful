@@ -432,7 +432,8 @@ class _EagerArrayTerm(_ArrayTerm):
         return len(self.shape)
 
 
-@bind_dims.register  # type: ignore
+@bind_dims.register(jax.Array)  # type: ignore
+@bind_dims.register(jax._src.core.Tracer)  # type: ignore
 def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
@@ -501,6 +502,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     return reindexed
 
 
-@unbind_dims.register  # type: ignore
+@unbind_dims.register(jax.Array)  # type: ignore
+@unbind_dims.register(jax._src.core.Tracer)  # type: ignore
 def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     return jax_getitem(t, tuple(n() for n in args))
