@@ -1752,7 +1752,6 @@ def handle_format_with_spec(
     assert len(state.stack) >= 2, "Not enough items on stack for FORMAT_WITH_SPEC"
     format_spec = ensure_ast(state.stack[-1])  # Format spec is on top
     value = state.stack[-2]  # Value is below
-    new_stack = state.stack[:-2]
 
     # Check if the value was converted
     if isinstance(value, ConvertedValue):
@@ -1774,7 +1773,7 @@ def handle_format_with_spec(
     formatted_node = ast.FormattedValue(
         value=value, conversion=conversion, format_spec=format_spec_node
     )
-    new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
+    new_stack = state.stack[:-2] + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
 
