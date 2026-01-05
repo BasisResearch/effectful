@@ -1726,7 +1726,6 @@ def handle_format_simple(
     # Pops the value and the format string from the stack
     assert len(state.stack) >= 1, "Not enough items on stack for FORMAT_SIMPLE"
     value = state.stack[-1]
-    new_stack = state.stack[:-1]
 
     # Check if the value was converted
     if isinstance(value, ConvertedValue):
@@ -1740,7 +1739,7 @@ def handle_format_simple(
     formatted_node = ast.FormattedValue(
         value=value, conversion=conversion, format_spec=None
     )
-    new_stack = new_stack + [ast.JoinedStr(values=[formatted_node])]
+    new_stack = state.stack[:-1] + [ast.JoinedStr(values=[formatted_node])]
     return replace(state, stack=new_stack)
 
 
