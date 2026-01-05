@@ -35,33 +35,41 @@ CompExp = ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
 class Placeholder(ast.Name):
     """Placeholder for AST nodes that are not yet resolved."""
 
-    def __init__(self, id=".PLACEHOLDER", ctx=ast.Load()):
+    def __init__(
+        self,
+        id: typing.Literal[".PLACEHOLDER"] = ".PLACEHOLDER",
+        ctx: ast.Load = ast.Load(),
+    ):
         super().__init__(id=id, ctx=ctx)
 
 
 class DummyIterName(ast.Name):
     """Dummy name for the iterator variable in generator expressions."""
 
-    def __init__(self, id=".0", ctx=ast.Load()):
+    def __init__(self, id: typing.Literal[".0"] = ".0", ctx: ast.Load = ast.Load()):
         super().__init__(id=id, ctx=ctx)
 
 
 class Skipped(ast.Name):
     """Placeholder for skipped branches in if-expressions."""
 
-    def __init__(self, id: str, ctx=ast.Load()):
+    def __init__(self, id: str, ctx: ast.Load = ast.Load()):
         super().__init__(id=id, ctx=ctx)
 
 
 class Null(ast.Constant):
     """Placeholder for NULL values generated in bytecode."""
 
-    def __init__(self, value=None):
+    def __init__(self, value: None = None):
         super().__init__(value=value)
 
 
 class ConvertedValue(ast.expr):
     """Wrapper for values that have been converted with CONVERT_VALUE."""
+
+    value: ast.expr
+    conversion: int
+    ast_conversion: int
 
     def __init__(self, value: ast.expr, conversion: int):
         self.value = value
@@ -108,6 +116,9 @@ class CompLambda(ast.Lambda):
 
 
 class ReplacePlaceholder(ast.NodeTransformer):
+    value: ast.expr
+    _done: bool
+
     def __init__(self, value: ast.expr):
         self.value = value
         self._done = False
