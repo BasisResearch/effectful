@@ -714,35 +714,6 @@ def handle_get_iter(
     return state
 
 
-@register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
-@register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
-def handle_jump_forward(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # JUMP_FORWARD is used to jump forward in the code
-    # In generator expressions, this is often used to skip code in conditional logic
-    return state
-
-
-@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_312)
-@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
-def handle_jump_backward(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
-    # In generator expressions, this typically indicates the end of the loop body
-    return state
-
-
-@register_handler("RESUME", version=PythonVersion.PY_312)
-@register_handler("RESUME", version=PythonVersion.PY_313)
-def handle_resume(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    # RESUME is used for resuming execution after yield/await - mostly no-op for AST reconstruction
-    return state
-
-
 @register_handler("END_FOR", version=PythonVersion.PY_312)
 def handle_end_for_312(
     state: ReconstructionState, instr: dis.Instruction
@@ -1941,12 +1912,24 @@ def handle_pop_jump_if_not_none(
     )
 
 
-@register_handler("SEND", version=PythonVersion.PY_312)
-@register_handler("SEND", version=PythonVersion.PY_313)
-def handle_send(
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
+def handle_jump_forward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    raise TypeError("SEND instruction should not appear in generator comprehensions")
+    # JUMP_FORWARD is used to jump forward in the code
+    # In generator expressions, this is often used to skip code in conditional logic
+    return state
+
+
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_312)
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
+def handle_jump_backward(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # JUMP_BACKWARD is used to jump back to the beginning of a loop (replaces JUMP_ABSOLUTE in 3.13)
+    # In generator expressions, this typically indicates the end of the loop body
+    return state
 
 
 @register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_312)
@@ -1975,6 +1958,23 @@ def handle_jump_no_interrupt(
     raise TypeError(
         "JUMP_NO_INTERRUPT instruction should not appear in generator comprehensions"
     )
+
+
+@register_handler("RESUME", version=PythonVersion.PY_312)
+@register_handler("RESUME", version=PythonVersion.PY_313)
+def handle_resume(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # RESUME is used for resuming execution after yield/await - mostly no-op for AST reconstruction
+    return state
+
+
+@register_handler("SEND", version=PythonVersion.PY_312)
+@register_handler("SEND", version=PythonVersion.PY_313)
+def handle_send(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError("SEND instruction should not appear in generator comprehensions")
 
 
 # ============================================================================
