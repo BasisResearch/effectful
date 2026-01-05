@@ -1045,7 +1045,7 @@ def handle_binary_op(
     assert instr.arg is not None
 
     # Map argument values to AST operators based on Python 3.12+ implementation
-    op_map = {
+    op_map: collections.abc.Mapping[int, ast.operator] = {
         0: ast.Add(),  # +
         1: ast.BitAnd(),  # &
         2: ast.FloorDiv(),  # //
