@@ -105,9 +105,9 @@ class EncodableSynthesizedFunction(
         )
 
         # Start with provided context or empty dict
-        # Include collections module for type hints in synthesized code
         exec_globals: dict[str, typing.Any] = {}
-        exec_globals.update(context)
+        if context is not None:
+            exec_globals.update(context)
 
         try:
             code_obj = compile(module_code, filename, "exec")
