@@ -1,3 +1,5 @@
+import inspect
+from collections import ChainMap
 from dataclasses import asdict, dataclass
 from typing import NamedTuple, TypedDict
 
@@ -5,7 +7,12 @@ import pydantic
 import pytest
 from PIL import Image
 
+from effectful.handlers.llm.encodable_type import (
+    EncodableSynthesizedType,
+    SynthesizedType,
+)
 from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.synthesis import SynthesisError
 from effectful.ops.types import Operation, Term
 
 
@@ -718,3 +725,249 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+class TestEncodableSynthesizedType:
+    """Tests for EncodableSynthesizedType encode/decode functionality."""
+
+    def test_decode_simple_class(self):
+        """Test decoding a simple class from SynthesizedType."""
+        synth = SynthesizedType(
+            type_name="Greeter",
+            module_code="""\
+class Greeter:
+    def greet(self, name: str) -> str:
+        return f"Hello, {name}!"
+""",
+        )
+
+        result = EncodableSynthesizedType.decode(synth)
+
+        assert isinstance(result, type)
+        assert result.__name__ == "Greeter"
+
+        # Test instantiation and method call
+        instance = result()
+        assert instance.greet("World") == "Hello, World!"
+
+    def test_decode_with_inheritance(self):
+        """Test decoding a class that inherits from a base class in context."""
+
+        class Animal:
+            def speak(self) -> str:
+                raise NotImplementedError
+
+        synth = SynthesizedType(
+            type_name="Dog",
+            module_code="""\
+class Dog(Animal):
+    def speak(self) -> str:
+        return "Woof!"
+""",
+        )
+
+        # Attach context with base class
+        object.__setattr__(synth, "_decode_context", ChainMap({"Animal": Animal}))
+
+        result = EncodableSynthesizedType.decode(synth)
+
+        assert isinstance(result, type)
+        assert issubclass(result, Animal)
+        assert result.__name__ == "Dog"
+
+        instance = result()
+        assert instance.speak() == "Woof!"
+
+    def test_decode_attaches_source_attribute(self):
+        """Test that decoded types have __source__ attribute."""
+        synth = SynthesizedType(
+            type_name="Simple",
+            module_code="class Simple:\n    pass",
+        )
+
+        result = EncodableSynthesizedType.decode(synth)
+
+        assert hasattr(result, "__source__")
+        assert "class Simple" in result.__source__
+
+    def test_decode_attaches_synthesized_attribute(self):
+        """Test that decoded types have __synthesized__ attribute."""
+        synth = SynthesizedType(
+            type_name="Simple",
+            module_code="class Simple:\n    pass",
+        )
+
+        result = EncodableSynthesizedType.decode(synth)
+
+        assert hasattr(result, "__synthesized__")
+        assert result.__synthesized__ is synth
+
+    def test_decode_inspect_getsource_works(self):
+        """Test that inspect.getsource() works on synthesized types."""
+        synth = SynthesizedType(
+            type_name="Documented",
+            module_code='''\
+class Documented:
+    """A documented class."""
+
+    def method(self) -> int:
+        return 42
+''',
+        )
+
+        result = EncodableSynthesizedType.decode(synth)
+        source = inspect.getsource(result)
+
+        assert "class Documented" in source
+        assert "A documented class" in source
+        assert "def method" in source
+        assert source == result.__source__
+
+    def test_decode_with_helper_in_class(self):
+        """Test decoding a class that uses a helper method."""
+        synth = SynthesizedType(
+            type_name="Counter",
+            module_code="""\
+class Counter:
+    def __init__(self):
+        self.value = 0
+
+    def _increment(self, x):
+        return x + 1
+
+    def increment(self):
+        self.value = self._increment(self.value)
+        return self.value
+""",
+        )
+
+        result = EncodableSynthesizedType.decode(synth)
+        instance = result()
+
+        assert instance.increment() == 1
+        assert instance.increment() == 2
+        assert instance.increment() == 3
+
+    def test_decode_syntax_error_raises_synthesis_error(self):
+        """Test that syntax errors raise SynthesisError."""
+        synth = SynthesizedType(
+            type_name="Broken",
+            module_code="class Broken\n    pass  # missing colon",
+        )
+
+        with pytest.raises(SynthesisError, match="Syntax error"):
+            EncodableSynthesizedType.decode(synth)
+
+    def test_decode_missing_type_raises_synthesis_error(self):
+        """Test that missing type name raises SynthesisError."""
+        synth = SynthesizedType(
+            type_name="Missing",
+            module_code="class WrongName:\n    pass",
+        )
+
+        with pytest.raises(SynthesisError, match="not found after execution"):
+            EncodableSynthesizedType.decode(synth)
+
+    def test_decode_non_type_raises_synthesis_error(self):
+        """Test that non-type result raises SynthesisError."""
+        synth = SynthesizedType(
+            type_name="NotAType",
+            module_code="NotAType = 42",
+        )
+
+        with pytest.raises(SynthesisError, match="is not a type"):
+            EncodableSynthesizedType.decode(synth)
+
+    def test_encode_simple_class(self):
+        """Test encoding a simple class to SynthesizedType."""
+
+        class MyClass:
+            def method(self) -> str:
+                return "hello"
+
+        result = EncodableSynthesizedType.encode(MyClass)
+
+        assert isinstance(result, SynthesizedType)
+        assert result.type_name == "MyClass"
+        assert "class MyClass" in result.module_code
+        assert "def method" in result.module_code
+
+    def test_encode_builtin_class_fallback(self):
+        """Test encoding a builtin class (source unavailable) uses fallback."""
+        # int is a builtin, so inspect.getsource() will fail
+        result = EncodableSynthesizedType.encode(int)
+
+        assert isinstance(result, SynthesizedType)
+        assert result.type_name == "int"
+        assert "class int" in result.module_code
+        assert "Source unavailable" in result.module_code
+
+    def test_serialize_produces_json(self):
+        """Test that serialize produces valid JSON content blocks."""
+        synth = SynthesizedType(
+            type_name="TestType",
+            module_code="class TestType:\n    pass",
+        )
+
+        result = EncodableSynthesizedType.serialize(synth)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["type"] == "text"
+        # Verify it's valid JSON
+        import json
+
+        parsed = json.loads(result[0]["text"])
+        assert parsed["type_name"] == "TestType"
+        assert "class TestType" in parsed["module_code"]
+
+    def test_decode_unique_module_names(self):
+        """Test that each decoded type gets a unique module name."""
+        synth1 = SynthesizedType(
+            type_name="Unique",
+            module_code="class Unique:\n    value = 1",
+        )
+        synth2 = SynthesizedType(
+            type_name="Unique",
+            module_code="class Unique:\n    value = 2",
+        )
+
+        result1 = EncodableSynthesizedType.decode(synth1)
+        result2 = EncodableSynthesizedType.decode(synth2)
+
+        # Both should be different types with different module names
+        assert result1 is not result2
+        assert result1.__module__ != result2.__module__
+        assert result1.value == 1
+        assert result2.value == 2
+
+    def test_decode_context_with_multiple_items(self):
+        """Test decoding with context containing multiple items."""
+
+        class BaseA:
+            pass
+
+        class BaseB:
+            pass
+
+        def helper() -> int:
+            return 100
+
+        synth = SynthesizedType(
+            type_name="Combined",
+            module_code="""\
+class Combined(BaseA, BaseB):
+    def get_value(self) -> int:
+        return helper()
+""",
+        )
+
+        context = ChainMap({"BaseA": BaseA, "BaseB": BaseB, "helper": helper})
+        object.__setattr__(synth, "_decode_context", context)
+
+        result = EncodableSynthesizedType.decode(synth)
+
+        assert issubclass(result, BaseA)
+        assert issubclass(result, BaseB)
+        instance = result()
+        assert instance.get_value() == 100
