@@ -2184,7 +2184,7 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
 # ============================================================================
 
 
-def disassemble(genexpr: Generator[object, None, None]) -> ast.Expression:
+def disassemble(genexpr: Generator[typing.Any, None, None]) -> ast.Expression:
     """
     Reconstruct an AST from a generator expression's bytecode.
 
