@@ -1940,14 +1940,6 @@ def handle_jump_backward_no_interrupt(
     )
 
 
-@register_handler("JUMP", version=PythonVersion.PY_312)
-@register_handler("JUMP", version=PythonVersion.PY_313)
-def handle_jump(
-    state: ReconstructionState, instr: dis.Instruction
-) -> ReconstructionState:
-    raise TypeError("JUMP instruction should not appear in generator comprehensions")
-
-
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_312)
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_313)
 def handle_jump_no_interrupt(
@@ -1956,6 +1948,14 @@ def handle_jump_no_interrupt(
     raise TypeError(
         "JUMP_NO_INTERRUPT instruction should not appear in generator comprehensions"
     )
+
+
+@register_handler("JUMP", version=PythonVersion.PY_312)
+@register_handler("JUMP", version=PythonVersion.PY_313)
+def handle_jump(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    raise TypeError("JUMP instruction should not appear in generator comprehensions")
 
 
 @register_handler("RESUME", version=PythonVersion.PY_312)
