@@ -35,7 +35,7 @@ beta_rules = {add: beta_add}
 commute_rules = {add: commute_add}
 assoc_rules = {add: assoc_add}
 
-eager_mixed = functools.reduce(coproduct, (beta_rules, commute_rules, assoc_rules))
+eager_mixed = functools.reduce(coproduct, (beta_rules, commute_rules, assoc_rules))  # type: ignore
 
 x = defop(int, name="x")
 y = defop(int, name="y")

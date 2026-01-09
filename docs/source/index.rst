@@ -16,6 +16,8 @@ Table of Contents
    minipyro_example
    lambda_example
    semi_ring_example
+   beam_search_example
+   agent_example
 
 .. toctree::
    :maxdepth: 2

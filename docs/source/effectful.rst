@@ -40,6 +40,27 @@ Handlers
    :undoc-members:
 
 
+LLM
+^^^
+
+.. automodule:: effectful.handlers.llm
+   :members:
+   :undoc-members:
+
+Encoding
+""""""""
+
+.. automodule:: effectful.handlers.llm.encoding
+   :members:
+   :undoc-members:
+
+Providers
+"""""""""
+      
+.. automodule:: effectful.handlers.llm.providers
+   :members:
+   :undoc-members:
+   
 Jax
 ^^^
 
