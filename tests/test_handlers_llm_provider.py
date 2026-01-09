@@ -1,7 +1,6 @@
 """Tests for LLM handlers and providers.
-This module tests the functionality from build/main.py and build/llm.py,
-breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
-ProgramSynthesis, and sampling strategies.
+This module tests the functionality of LiteLLMProvider, LLMLoggingHandler,
+and related LLM components.
 """
 
 import functools
@@ -318,7 +317,7 @@ def smiley_face() -> Image.Image:
 
 @Template.define
 def categorise_image(image: Image.Image) -> str:
-    """Return a description of the following image.
+    """Return a description of the following image. You MUST NOT use any tools.
     {image}"""
     raise NotHandled
 

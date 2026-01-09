@@ -1,11 +1,12 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated
 
 import pytest
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesizedFunction
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -41,14 +42,14 @@ class MockLLMProvider[T](ObjectInterpretation):
 
 
 class SingleResponseLLMProvider[T](ObjectInterpretation):
-    """Simplified mock provider that returns a single response for any prompt."""
+    """Simplified mock provider that returns a single response.
+
+    Simulates LiteLLMProvider behavior by creating a ModelResponse and calling
+    decode_response. Automatically wraps response in {"value": ...} for non-string types.
+    """
 
     def __init__(self, response: T):
-        """Initialize with a single response string.
-
-        Args:
-            response: The response to return for any template call
-        """
+        """Initialize with a response value."""
         self.response = response
 
     @implements(Template.__apply__)
@@ -56,6 +57,37 @@ class SingleResponseLLMProvider[T](ObjectInterpretation):
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         return self.response
+
+
+class FailingThenSucceedingProvider[T](ObjectInterpretation):
+    """Mock provider that fails a specified number of times before succeeding."""
+
+    def __init__(
+        self,
+        fail_count: int,
+        success_response: T,
+        exception_factory: Callable[[], Exception],
+    ):
+        """Initialize the provider.
+
+        Args:
+            fail_count: Number of times to fail before succeeding
+            success_response: Response to return after failures
+            exception_factory: Factory function that creates exceptions to raise
+        """
+        self.fail_count = fail_count
+        self.success_response = success_response
+        self.exception_factory = exception_factory
+        self.call_count = 0
+
+    @implements(Template.__call__)
+    def _call[**P](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise self.exception_factory()
+        return self.success_response
 
 
 # Test templates from the notebook examples
@@ -96,6 +128,36 @@ def mutual_b() -> Annotated[str, IsRecursive]:
     raise NotHandled
 
 
+@dataclass
+class Person:
+    name: str
+    age: int
+
+
+@Template.define
+def make_greeter(style: str) -> Callable[[Person], str]:
+    """Create a greeting function for a person with the given style."""
+    raise NotImplementedError
+
+
+# Helper function for lexical scope test - defined at module level
+def double_count(text: str, char: str) -> int:
+    """Count occurrences of a character and double it."""
+    return text.count(char) * 2
+
+
+# Template that captures the lexical function above
+@Template.define
+def make_double_counter(char: str) -> Callable[[str], int]:
+    """Create a function that counts occurrences of '{char}' and doubles the result.
+    Use the double_count helper function."""
+    raise NotImplementedError
+
+
+# Module-level variable for shadowing test
+shadow_test_value = "global"
+
+
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
@@ -123,11 +185,12 @@ def test_primes_decode_int():
 @pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
-    mock_code = """<code>
-def count_occurrences(s):
-    return s.count('a')
-</code>"""
-    mock_provider = SingleResponseLLMProvider(mock_code)
+    mock_provider = SingleResponseLLMProvider(
+        {
+            "function_name": "count_occurrences",
+            "module_code": "def count_occurrences(s):\n    return s.count('a')",
+        }
+    )
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")
@@ -136,36 +199,22 @@ def count_occurrences(s):
         assert count_a("cherry") == 0
 
 
-class FailingThenSucceedingProvider[T](ObjectInterpretation):
-    """Mock provider that fails a specified number of times before succeeding."""
+def test_count_char_with_untyped_function():
+    """Test program synthesis works even when LLM omits type annotations."""
+    mock_response = SynthesizedFunction(
+        function_name="count_chars",
+        module_code="""
+def count_chars(s):
+    return s.count('x')
+""",
+    )
+    mock_provider = SingleResponseLLMProvider(mock_response)
 
-    def __init__(
-        self,
-        fail_count: int,
-        success_response: T,
-        exception_factory: Callable[[], Exception],
-    ):
-        """Initialize the provider.
-
-        Args:
-            fail_count: Number of times to fail before succeeding
-            success_response: Response to return after failures
-            exception_factory: Factory function that creates exceptions to raise
-        """
-        self.fail_count = fail_count
-        self.success_response = success_response
-        self.exception_factory = exception_factory
-        self.call_count = 0
-
-    @implements(Template.__apply__)
-    def _call[**P](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        self.call_count += 1
-        if self.call_count <= self.fail_count:
-            raise self.exception_factory()
-        return self.success_response
-
+    with handler(mock_provider), handler(ProgramSynthesis()):
+        count_x = count_char("x")
+        assert callable(count_x)
+        assert count_x("xylophone") == 1
+        assert count_x("xxx") == 3
 
 def test_retry_handler_succeeds_after_failures():
     """Test that RetryLLMHandler retries and eventually succeeds."""
@@ -328,10 +377,6 @@ def test_mutually_recursive_templates():
     # And themselves (self-recursion)
     assert mutual_a in mutual_a.tools.values()
     assert mutual_b in mutual_b.tools.values()
-
-
-# Module-level variable for shadowing test
-shadow_test_value = "global"
 
 
 def test_lexical_context_shadowing():
