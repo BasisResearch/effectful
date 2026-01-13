@@ -1,11 +1,17 @@
 """Tests for LLM program synthesis functionality."""
 
 import inspect
+from collections import ChainMap
 from collections.abc import Callable
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import LiteLLMProvider
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
+from effectful.handlers.llm.synthesis import (
+    EncodableSynthesizedFunction,
+    ProgramSynthesis,
+    SynthesisError,
+    SynthesizedFunction,
+)
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
@@ -35,7 +41,7 @@ class TestProgramSynthesis:
         """Test ProgramSynthesis handler generates executable code."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("a")
@@ -52,7 +58,7 @@ class TestProgramSynthesis:
         """Test that inspect.getsource() works on synthesized functions."""
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("x")
@@ -75,7 +81,7 @@ class TestProgramSynthesis:
 
         with (
             handler(LiteLLMProvider(model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis(type_check=True)),
+            handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             count_func = create_function("z")
@@ -89,14 +95,9 @@ class TestProgramSynthesis:
 
     def test_immutable_context(self):
         """Test that synthesis does not pollute the original lexical context."""
-        from effectful.handlers.llm import LexicalContext
-        from effectful.handlers.llm.synthesis import (
-            EncodableSynthesizedFunction,
-            SynthesizedFunction,
-        )
 
         # Create a context with known contents
-        original_context = LexicalContext({"helper": lambda x: x * 2})
+        original_context: ChainMap[str, object] = ChainMap({"helper": lambda x: x * 2})
         original_keys = set(original_context.keys())
 
         # Synthesize a function that defines new names
@@ -111,8 +112,11 @@ def my_func(n):
 """,
         )
 
+        # Attach context via _decode_context attribute (as ProgramSynthesis does)
+        object.__setattr__(synth, "_decode_context", original_context)
+
         # Decode with the context
-        func = EncodableSynthesizedFunction.decode(synth, context=original_context)
+        func = EncodableSynthesizedFunction.decode(synth)
 
         # Verify the function works
         assert func(5) == 12  # (5 + 1) * 2

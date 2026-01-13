@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Operation
+from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, Operation
 
 
 class _IsRecursiveAnnotation(Annotation):

@@ -16,7 +16,11 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.handlers.llm.providers import (
     OpenAIMessageContentListBlock,
+    _OpenAIPromptFormatter,
+    completion,
+    compute_response,
     decode_response,
+    format_model_input,
 )
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -81,6 +85,29 @@ class EncodableSynthesizedFunction(
     _decode_counter: typing.ClassVar[int] = 0
 
     @classmethod
+    def _generate_imports_from_context(cls, context: ChainMap[str, Any] | None) -> str:
+        """Generate import statements for types/functions in the context."""
+        if not context:
+            return ""
+
+        imports: set[str] = set()
+        for name, obj in context.items():
+            if name.startswith("_"):
+                continue
+
+            module = getattr(obj, "__module__", None)
+            obj_name = getattr(obj, "__name__", name)
+
+            if module and module != "builtins" and module != "__main__":
+                # Use the context name if it differs from the object's name (aliased import)
+                if obj_name != name:
+                    imports.add(f"from {module} import {obj_name} as {name}")
+                else:
+                    imports.add(f"from {module} import {obj_name}")
+
+        return "\n".join(sorted(imports))
+
+    @classmethod
     def decode(cls, vl: SynthesizedFunction) -> Callable:
         """Decode a SynthesizedFunction to a Callable.
 
@@ -91,14 +118,20 @@ class EncodableSynthesizedFunction(
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
+        # Generate imports from context for display purposes
+        imports_code = cls._generate_imports_from_context(context)
+        full_module_code = (
+            f"{imports_code}\n\n{module_code}" if imports_code else module_code
+        )
+
         cls._decode_counter += 1
         filename = f"<synthesized:{func_name}:{cls._decode_counter}>"
-        lines = module_code.splitlines(keepends=True)
+        lines = full_module_code.splitlines(keepends=True)
         # Ensure last line has newline for linecache
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         linecache.cache[filename] = (
-            len(module_code),
+            len(full_module_code),
             None,
             lines,
             filename,
@@ -128,7 +161,7 @@ class EncodableSynthesizedFunction(
 
         func = exec_globals[func_name]
         # Also attach source code directly for convenience
-        func.__source__ = module_code
+        func.__source__ = full_module_code
         func.__synthesized__ = vl
         return func
 
@@ -137,35 +170,42 @@ class EncodableSynthesizedFunction(
         return [{"type": "text", "text": vl.model_dump_json()}]
 
 
+def _is_callable_return_type(template: Template) -> bool:
+    """Check if template has a Callable return type."""
+    ret_type = template.__signature__.return_annotation
+    origin = typing.get_origin(ret_type)
+    ret_type_origin = ret_type if origin is None else origin
+    return ret_type_origin is collections.abc.Callable
+
+
 class ProgramSynthesis(ObjectInterpretation):
-    """Provides a `template` handler to instruct the LLM to generate code of the
-    right form and with the right type.
+    """A program synthesis handler for Callable return types.
+
+    Intercepts format_model_input, compute_response, and decode_response
+    to customize the synthesis flow while reusing the standard template machinery.
     """
 
-    @implements(Template.__apply__)
-    def _call(self, template, *args, **kwargs) -> None:
-        """Handle synthesis of Callable return types."""
+    def _build_prompt(self, template: Template) -> str:
+        """Build the synthesis prompt for a Callable return type."""
         ret_type = template.__signature__.return_annotation
-        origin = typing.get_origin(ret_type)
-        ret_type_origin = ret_type if origin is None else origin
 
-        # Check if return type is Callable
-        if ret_type_origin is not collections.abc.Callable:
-            return fwd()
+        # Escape braces in context to avoid format field interpretation
+        context_str = str(template.__context__).replace("{", "{{").replace("}", "}}")
+        ret_type_repr = repr(ret_type).replace("{", "{{").replace("}", "}}")
 
-        prompt_ext = textwrap.dedent(f"""
+        return textwrap.dedent(f"""
         Implement a Python function with the following specification.
 
         **Specification:** {template.__prompt_template__}
 
-        **Required function signature:** {repr(ret_type)}
+        **Required function signature:** {ret_type_repr}
         The following types, functions, and values are available:
 
         ```python
-        {template.__context__}
+        {context_str}
         ```
         **Critical Instructions:**
-        1. The function you write MUST have EXACTLY this signature: {repr(ret_type)}
+        1. The function you write MUST have EXACTLY this signature: {ret_type_repr}
         2. Any values mentioned in the specification (like specific characters or strings) should be hardcoded directly in the function body, NOT as parameters.
         3. Do NOT create a wrapper or factory function. Write the function directly.
         4. You may include helper functions/classes/constants.
@@ -182,24 +222,52 @@ class ProgramSynthesis(ObjectInterpretation):
             return inner
         """).strip()
 
-        return fwd(
-            template.replace(prompt_template=prompt_ext),
-            *args,
-            **kwargs,
+    @implements(format_model_input)
+    def _format_model_input(self, template: Template, *args, **kwargs) -> list:
+        """Replace the prompt with synthesis-specific instructions."""
+        if not _is_callable_return_type(template):
+            return fwd()
+
+        prompt = self._build_prompt(template)
+
+        # Encode arguments for the prompt
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        arguments = {}
+        for param in bound_args.arguments:
+            encoder = type_to_encodable_type(
+                template.__signature__.parameters[param].annotation
+            )
+            encoded = encoder.encode(bound_args.arguments[param])
+            arguments[param] = encoder.serialize(encoded)
+
+        formatted_prompt = _OpenAIPromptFormatter().format_as_messages(
+            prompt, **arguments
+        )
+        return [{"type": "message", "content": formatted_prompt, "role": "user"}]
+
+    @implements(compute_response)
+    def _compute_response(self, template: Template, model_input: list) -> ModelResponse:
+        """Compute response with SynthesizedFunction format and no tools."""
+        if not _is_callable_return_type(template):
+            return fwd()
+
+        response_format = pydantic.create_model(
+            "Response", value=SynthesizedFunction, __config__={"extra": "forbid"}
+        )
+
+        return completion(
+            messages=model_input,
+            response_format=response_format,
+            tools=[],  # No tools for synthesis
         )
 
     @implements(decode_response)
     def _decode_response(self, template: Template, response: ModelResponse) -> Callable:
-        """Decode a synthesized function response with lexical context."""
-        ret_type = template.__signature__.return_annotation
-        origin = typing.get_origin(ret_type)
-        ret_type_origin = ret_type if origin is None else origin
-
-        # Only handle Callable return types
-        if ret_type_origin is not collections.abc.Callable:
+        """Decode the response with lexical context attached."""
+        if not _is_callable_return_type(template):
             return fwd()
 
-        # Parse JSON and attach context to the value for decode() to use
         choice = typing.cast(typing.Any, response.choices[0])
         result_str: str = choice.message.content or ""
         Result = pydantic.create_model("Result", value=(SynthesizedFunction, ...))

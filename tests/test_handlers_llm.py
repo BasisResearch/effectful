@@ -10,7 +10,7 @@ from effectful.handlers.llm.providers import (
     compute_response,
     format_model_input,
 )
-from effectful.handlers.llm.synthesis import ProgramSynthesis
+from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesizedFunction
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -219,6 +219,7 @@ def count_chars(s):
         assert callable(count_x)
         assert count_x("xylophone") == 1
         assert count_x("xxx") == 3
+
 
 def test_retry_handler_succeeds_after_failures():
     """Test that RetryLLMHandler retries and eventually succeeds."""
