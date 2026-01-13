@@ -5,8 +5,12 @@ from typing import Annotated
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import RetryLLMHandler
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesizedFunction
+from effectful.handlers.llm.providers import (
+    RetryLLMHandler,
+    compute_response,
+    format_model_input,
+)
+from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -266,23 +270,33 @@ def test_retry_handler_only_catches_specified_exception():
 
 def test_retry_handler_with_error_feedback():
     """Test that RetryLLMHandler includes error feedback when enabled."""
-    call_prompts: list[str] = []
 
-    class PromptCapturingProvider(ObjectInterpretation):
-        """Provider that captures prompts and fails once."""
+    captured_messages: list[list] = []
+
+    class MessageCapturingProvider(ObjectInterpretation):
+        """Provider that captures formatted messages and fails once."""
 
         def __init__(self):
             self.call_count = 0
 
-        @implements(Template.__apply__)
-        def _call(self, template: Template, *args, **kwargs):
+        @implements(compute_response)
+        def _capture_and_respond(self, template: Template, messages: list):
+            """Capture messages at compute_response level (after error injection)."""
             self.call_count += 1
-            call_prompts.append(template.__prompt_template__)
+            captured_messages.append(messages)
             if self.call_count == 1:
                 raise ValueError("First attempt failed")
+            # Return a mock response - not used since we return directly
+            return None
+
+        @implements(Template.__apply__)
+        def _call(self, template: Template, *args, **kwargs):
+            # Call the format/compute chain but return directly
+            messages = format_model_input(template, *args, **kwargs)
+            compute_response(template, messages)
             return "Success on retry"
 
-    provider = PromptCapturingProvider()
+    provider = MessageCapturingProvider()
     retry_handler = RetryLLMHandler(
         max_retries=2, add_error_feedback=True, exception_cls=ValueError
     )
@@ -291,11 +305,15 @@ def test_retry_handler_with_error_feedback():
         result = limerick("test")
         assert result == "Success on retry"
 
-    assert len(call_prompts) == 2
-    # First call has original prompt
-    assert "Write a limerick on the theme of {theme}." in call_prompts[0]
-    # Second call should include error feedback with traceback
-    assert "First attempt failed" in call_prompts[1]
+    assert len(captured_messages) == 2
+    # First call has original prompt only
+    first_msg_content = str(captured_messages[0])
+    assert (
+        "limerick" in first_msg_content.lower() or "theme" in first_msg_content.lower()
+    )
+    # Second call should include error feedback
+    second_msg_content = str(captured_messages[1])
+    assert "First attempt failed" in second_msg_content
 
 
 def test_template_captures_other_templates_in_lexical_context():

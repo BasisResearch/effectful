@@ -145,44 +145,6 @@ class LLMLoggingHandler(ObjectInterpretation):
         return result
 
 
-class RetryLLMHandler(ObjectInterpretation):
-    """Retries LLM requests if they fail.
-    If the request fails, the error is logged and the prompt is updated to include the error.
-    If the request fails after the maximum number of retries, an exception is raised.
-    Args:
-        max_retries: The maximum number of retries.
-        add_error_feedback: Whether to add error feedback to the prompt.
-        exception_cls: The exception class to raise if the maximum number of retries is reached.
-    """
-
-    def __init__(
-        self,
-        max_retries: int = 3,
-        add_error_feedback: bool = False,
-        exception_cls: type[BaseException] = Exception,
-    ):
-        self.max_retries = max_retries
-        self.add_error_feedback = add_error_feedback
-        self.exception_cls = exception_cls
-
-    @implements(Template.__apply__)
-    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
-        prompt_ext = template.__prompt_template__
-        for _ in range(self.max_retries - 1):
-            template_ext = Template.replace(template, prompt_template=prompt_ext)
-
-            try:
-                return fwd(template_ext, *args, **kwargs)
-            except self.exception_cls:
-                if self.add_error_feedback:
-                    # Capture the full traceback for better error context
-                    tb = traceback.format_exc()
-                    prompt_ext += f"\nError from previous generation:\n```\n{tb}```"
-
-        template_ext = Template.replace(template, prompt_template=prompt_ext)
-        return fwd(template_ext, *args, **kwargs)
-
-
 def parameter_model(tool: Tool) -> type[pydantic.BaseModel]:
     fields = {
         name: type_to_encodable_type(param.annotation).t
@@ -349,6 +311,61 @@ def format_model_input[**P, T](
     # effect of different roles on the model's response is currently unclear.
     messages = [{"type": "message", "content": prompt, "role": "user"}]
     return messages
+
+
+class RetryLLMHandler(ObjectInterpretation):
+    """Retries LLM requests if they fail.
+
+    If the request fails, the handler retries with optional error feedback injected
+    into the prompt. If the request fails after the maximum number of retries,
+    the exception is re-raised.
+
+    Args:
+        max_retries: The maximum number of retries.
+        add_error_feedback: Whether to add error feedback to the prompt on retry.
+        exception_cls: The exception class to catch and retry on.
+    """
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        add_error_feedback: bool = False,
+        exception_cls: type[BaseException] = Exception,
+    ):
+        self.max_retries = max_retries
+        self.add_error_feedback = add_error_feedback
+        self.exception_cls = exception_cls
+        self._error_feedback: str = ""
+
+    @implements(format_model_input)
+    def _inject_error_feedback(self, template: Template, *args, **kwargs) -> list[Any]:
+        """Inject accumulated error feedback into the formatted messages."""
+        messages = fwd()
+        if self._error_feedback:
+            messages = messages + [
+                {"type": "message", "content": self._error_feedback, "role": "user"}
+            ]
+        return messages
+
+    @implements(Template.__apply__)
+    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
+        """Retry template execution with error feedback injection."""
+        self._error_feedback = ""
+
+        for attempt in range(self.max_retries):
+            try:
+                return fwd()
+            except self.exception_cls:
+                if attempt == self.max_retries - 1:
+                    raise  # Last attempt, re-raise the exception
+                if self.add_error_feedback:
+                    tb = traceback.format_exc()
+                    self._error_feedback += (
+                        f"\nError from previous attempt:\n```\n{tb}```"
+                    )
+
+        # This should not be reached, but just in case
+        return fwd()
 
 
 class LiteLLMProvider(ObjectInterpretation):

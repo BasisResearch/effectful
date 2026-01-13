@@ -263,26 +263,3 @@ class Template[**P, T](Tool[P, T]):
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
         return typing.cast(Template[Q, V], op)
-
-    def replace(
-        self,
-        signature: inspect.Signature | None = None,
-        prompt_template: str | None = None,
-        name: str | None = None,
-    ) -> "Template":
-        signature = signature or self.__signature__
-        prompt_template = prompt_template or self.__prompt_template__
-        name = name or self.__name__
-
-        if prompt_template:
-
-            def default(*args, **kwargs):
-                raise NotHandled
-
-            default.__doc__ = prompt_template
-        else:
-            default = self.__default__
-
-        op = Template(signature, name, default)
-        op.__context__ = self.__context__
-        return op
