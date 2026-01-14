@@ -88,3 +88,5 @@ site/
 out
 *.matrix.gz
 /docs/source/.ipynb_checkpoints/
+*.env
+*.envrc
