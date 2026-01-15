@@ -47,7 +47,7 @@ llm = [
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
-    "effectful[torch,pyro,jax,numpyro,prettyprinter]",
+    "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
