@@ -8,15 +8,15 @@ from effectful.ops.types import Interpretation, NotHandled
 def test_simul_analysis():
     @defop
     def plus1(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def plus2(x: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     @defop
     def times(x: int, y: int) -> int:
-        raise NotImplementedError
+        raise NotHandled
 
     x, y = defop(int, name="x"), defop(int, name="y")
 

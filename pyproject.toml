@@ -36,10 +36,10 @@ Source = "https://github.com/BasisResearch/effectful"
 "Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
 
 [project.optional-dependencies]
-torch = ["torch", "dm-tree"]
-pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
-jax = ["jax", "dm-tree"]
-numpyro = ["numpyro>=0.19", "dm-tree"]
+torch = ["torch"]
+pyro = ["pyro-ppl>=1.9.1"]
+jax = ["jax"]
+numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
   "pillow",
