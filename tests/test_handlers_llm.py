@@ -4,7 +4,7 @@ from typing import Annotated
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import (
+from effectful.handlers.llm.completions import (
     RetryLLMHandler,
     compute_response,
     format_model_input,
