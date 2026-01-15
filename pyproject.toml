@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "effectful"
-version = "0.2.3"
+version = "0.3.0"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
 license = "Apache-2.0"
