@@ -61,6 +61,9 @@ class _ClassMethodOpDescriptor(classmethod):
             return bound_op
 
 
+INSTANCE_OP_PREFIX = "__instanceop"
+
+
 class Operation[**Q, V]:
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -438,7 +441,7 @@ class Operation[**Q, V]:
     def __set_name__[T](self, owner: type[T], name: str) -> None:
         if not issubclass(owner, Term):
             assert not hasattr(self, "_name_on_instance"), "should only be called once"
-            self._name_on_instance: str = f"__instanceop_{name}"
+            self._name_on_instance: str = f"{INSTANCE_OP_PREFIX}_{name}"
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
