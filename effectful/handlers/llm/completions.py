@@ -4,7 +4,7 @@ import functools
 import inspect
 import string
 import textwrap
-from typing import Any
+import typing
 
 import litellm
 import pydantic
@@ -129,7 +129,7 @@ def call_tool(
 @Operation.define
 def call_user(
     template: str,
-    env: collections.abc.Mapping[str, Any],
+    env: collections.abc.Mapping[str, typing.Any],
 ) -> Message:
     """
     Format a template applied to arguments into a user message.
@@ -163,7 +163,7 @@ def call_system(template: Template) -> collections.abc.Sequence[Message]:
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
-    config: collections.abc.Mapping[str, Any]
+    config: collections.abc.Mapping[str, typing.Any]
 
     def __init__(self, **config):
         self.config = (
@@ -216,38 +216,3 @@ class LiteLLMProvider(ObjectInterpretation):
             else response_model.model_validate_json(serialized_result).value  # type: ignore
         )
         return response_encoding_type.decode(encoded_result)
-
-
-class InstructionsHandler(ObjectInterpretation):
-    """Implements system instructions using the LiteLLM API."""
-
-    instructions: str | collections.abc.Mapping[Template, str]
-
-    def __init__(self, instructions: str | collections.abc.Mapping[Template, str]):
-        if isinstance(instructions, collections.abc.Mapping):
-            assert instructions, "Instructions mapping cannot be empty."
-            assert all(instr for instr in instructions.values()), (
-                "All instructions in the mapping must be non-empty."
-            )
-        else:
-            assert instructions, "Instructions string cannot be empty."
-        self.instructions = instructions
-
-    @implements(call_system)
-    def _system_instruction(
-        self, template: Template
-    ) -> collections.abc.Sequence[Message]:
-        if isinstance(self.instructions, str):
-            return (
-                *fwd(),
-                Message.model_validate(dict(role="system", content=self.instructions)),
-            )
-        elif template in self.instructions:
-            return (
-                *fwd(),
-                Message.model_validate(
-                    dict(role="system", content=self.instructions[template])
-                ),
-            )
-        else:
-            return fwd()
