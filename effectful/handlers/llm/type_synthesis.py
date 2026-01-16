@@ -4,13 +4,32 @@ import ast
 import collections
 import collections.abc
 import ctypes
-import dataclasses
 import inspect
 import linecache
 import sys
 import textwrap
 import types
 import typing
+from collections import ChainMap
+from typing import Any
+
+import pydantic
+from litellm import OpenAIMessageContentListBlock
+from pydantic import Field
+
+from effectful.handlers.llm import Template
+from effectful.handlers.llm.completions import InstructionHandler
+from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
+from effectful.handlers.llm.synthesis import (
+    SynthesisContextHandler,
+    SynthesisError,
+    get_synthesis_context,
+)
+from effectful.ops.semantics import fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, implements
+
+# Type alias for lexical context
+LexicalContext = ChainMap[str, Any]
 
 
 class _PyMappingProxyObject(ctypes.Structure):
@@ -21,21 +40,6 @@ class _PyMappingProxyObject(ctypes.Structure):
         ("ob_type", ctypes.py_object),
         ("mapping", ctypes.py_object),
     ]
-
-
-import pydantic
-from litellm import OpenAIMessageContentListBlock
-from pydantic import Field
-
-from effectful.handlers.llm import LexicalContext, Template
-from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
-from effectful.handlers.llm.synthesis import (
-    EncodableLexicalContext,
-    SynthesisError,
-    run_mypy_check,
-)
-from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
 
 
 class SynthesizedType(pydantic.BaseModel):
@@ -87,9 +91,11 @@ class EncodableSynthesizedType(
         """Decode a SynthesizedType to a type.
 
         Executes the module code and returns the named class.
-        The module code becomes the class's definition context,
-        optionally augmented with provided context.
+        Uses get_synthesis_context() operation for lexical context.
         """
+        # Use synthesis context operation if no explicit context provided
+        if context is None:
+            context = get_synthesis_context()
         type_name = vl.type_name
         module_code = textwrap.dedent(vl.module_code).strip() + "\n"
 
@@ -199,79 +205,73 @@ class EncodableSynthesizedType(
         return [{"type": "text", "text": vl.model_dump_json()}]
 
 
+def _is_type_return_type(template: Template) -> tuple[bool, type | None]:
+    """Check if template has a type[BaseClass] return type.
+    
+    Returns:
+        Tuple of (is_type_return, base_type). base_type is None if not a type return.
+    """
+    ret_type = template.__signature__.return_annotation
+    origin = typing.get_origin(ret_type)
+    ret_type_origin = ret_type if origin is None else origin
+    
+    if ret_type_origin is not type:
+        return False, None
+    
+    type_args = typing.get_args(ret_type)
+    if not type_args:
+        return False, None
+    
+    return True, type_args[0]
+
+
 class TypeSynthesis(ObjectInterpretation):
-    """Provides a `template` handler to instruct the LLM to generate a class/type
-    that inherits from a specified base type.
+    """A type synthesis handler for type[BaseClass] return types.
+
+    Intercepts Template.__apply__ and uses InstructionHandler to inject
+    synthesis-specific instructions, following the same pattern as ProgramSynthesis.
     """
 
-    def __init__(self, type_check: bool = False):
-        """Initialize the type synthesis handler.
+    def _build_synthesis_instruction(self, template: Template, base_type: type) -> str:
+        """Build the synthesis instruction for a type[BaseClass] return type."""
+        base_type_name = base_type.__name__
+        
+        # Escape braces in context to avoid format field interpretation
+        context_str = str(template.__context__).replace("{", "{{").replace("}", "}}")
 
-        Args:
-            type_check: Whether to run mypy to verify the generated code.
-        """
-        self.type_check = type_check
+        return textwrap.dedent(f"""
+        You are a code synthesis assistant. Generate a Python class based on the user's specification.
 
-    def _build_type(
-        self,
-        result: SynthesizedType,
-        base_type: type,
-        lexical_context: LexicalContext,
-    ) -> type:
-        """Build and execute a type from the synthesized module.
+        **Required:** The class must inherit from `{base_type_name}` and implement its interface.
+        
+        The following types, functions, and values are available in the execution context:
 
-        Uses EncodableSynthesizedType.decode with the template's lexical context.
-        Optionally runs mypy type checking if enabled.
-        Validates that the synthesized type is a subclass of base_type.
+        ```python
+        {context_str}
+        ```
+        
+        **Instructions:**
+        1. Write a complete Python module with the class definition.
+        2. Choose a descriptive class name.
+        3. The class MUST inherit from `{base_type_name}`.
+        4. Implement all required methods from the base class.
+        5. You may include helper functions/classes/constants.
+        6. Do not redefine provided types - they are already available.
+        7. Do not include import statements.
 
-        Args:
-            result: The structured output from the LLM
-            base_type: The expected base type (e.g., Animal for type[Animal])
-            lexical_context: Dict of lexical context (functions/types) available in scope
+        Respond with a JSON object containing:
+        - "type_name": the name of the class
+        - "module_code": the complete Python code (no imports needed)
+        """).strip()
 
-        Returns:
-            The synthesized type (class)
-        """
-        if self.type_check:
-            success, error_msg = run_mypy_check(result.module_code, lexical_context)
-            if not success:
-                raise SynthesisError(
-                    f"Type check failed:\n{error_msg}", result.module_code
-                )
-
-        synthesized_type = EncodableSynthesizedType.decode(
-            result, context=lexical_context
-        )
-
-        # Validate that synthesized type inherits from base_type
-        if not issubclass(synthesized_type, base_type):
-            raise SynthesisError(
-                f"Synthesized type '{synthesized_type.__name__}' does not inherit from '{base_type.__name__}'",
-                result.module_code,
-            )
-
-        return synthesized_type
-
-    @implements(Template.__call__)
-    def _call(self, template, *args, **kwargs) -> type:
-        ret_type = template.__signature__.return_annotation
-        origin = typing.get_origin(ret_type)
-        ret_type_origin = ret_type if origin is None else origin
-
-        # Check if return type is type[BaseClass]
-        if ret_type_origin is not type:
+    @implements(Template.__apply__)
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """Intercept template calls for type[BaseClass] return types and inject synthesis instructions."""
+        is_type_return, base_type = _is_type_return_type(template)
+        if not is_type_return or base_type is None:
             return fwd()
-
-        # Extract the base type from type[BaseClass]
-        type_args = typing.get_args(ret_type)
-        if not type_args:
-            raise SynthesisError(
-                "Type synthesis requires a base type, e.g., type[Animal]. "
-                "Got bare 'type' without a type parameter.",
-                None,
-            )
-
-        base_type = type_args[0]
 
         # Verify base type is in lexical context
         base_type_name = base_type.__name__
@@ -281,47 +281,10 @@ class TypeSynthesis(ObjectInterpretation):
                 None,
             )
 
-        # Include the full lexical context
-        context_source = EncodableLexicalContext.encode(template.__context__)
-        escaped_context = context_source.replace("{", "{{").replace("}", "}}")
-        context_section = f"""
-The following types, functions, and values are available:
+        # Build synthesis instruction
+        instruction = self._build_synthesis_instruction(template, base_type)
 
-```python
-{escaped_context}
-```
-"""
-
-        prompt_ext = textwrap.dedent(f"""
-        Implement a Python class with the following specification.
-
-        **Specification:** {template.__prompt_template__}
-
-        **Required:** The class must inherit from `{base_type_name}` and implement its interface.
-        {context_section}
-        **Instructions:**
-        1. Write a complete Python module with the class definition.
-        2. Choose a descriptive class name.
-        3. The class MUST inherit from `{base_type_name}`.
-        4. Implement all required methods from the base class.
-        5. You may include helper functions/classes/constants.
-        6. Do not redefine provided types - they are already available.
-        7. Do not include import statements.
-        """).strip()
-
-        response: SynthesizedType = fwd(
-            dataclasses.replace(
-                template,
-                __prompt_template__=prompt_ext,
-                __signature__=template.__signature__.replace(
-                    return_annotation=SynthesizedType
-                ),
-            ),
-            *args,
-            **kwargs,
-        )
-
-        # Build the type using lexical context for exec globals
-        synthesized_type = self._build_type(response, base_type, template.__context__)
-
-        return synthesized_type
+        # Use handlers to inject context and instructions
+        with handler(SynthesisContextHandler(template.__context__)):
+            with handler(InstructionHandler(instruction)):
+                return fwd()

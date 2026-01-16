@@ -93,21 +93,21 @@ class TestTypeSynthesis:
 
     def test_type_synthesis_requires_base_in_context(self):
         """Test that type synthesis fails if base type is not in lexical context."""
-        import dataclasses
-
-        from effectful.handlers.llm import LexicalContext
+        from collections import ChainMap
 
         # Create a template with Animal in return type but NOT in context
+        # We need to create the template in a way that doesn't capture Animal
+        # Using a class defined outside the closure
+        class Orphan:
+            pass
+
         @Template.define
-        def create_orphan() -> type[Animal]:
-            """Create an animal."""
+        def create_orphan() -> type[Orphan]:
+            """Create an Orphan subclass."""
             raise NotHandled
 
-        # Create a modified template with empty context
-        orphan_template = dataclasses.replace(
-            create_orphan,
-            __context__=LexicalContext({}),  # Empty context - no Animal
-        )
+        # Manually clear the context to remove Orphan
+        create_orphan.__context__ = ChainMap({})
 
         with pytest.raises(
             SynthesisError, match="must be in the template's lexical context"
@@ -116,4 +116,4 @@ class TestTypeSynthesis:
                 handler(LiteLLMProvider(model_name="gpt-4o-mini")),
                 handler(TypeSynthesis()),
             ):
-                orphan_template()
+                create_orphan()

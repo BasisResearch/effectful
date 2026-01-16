@@ -95,6 +95,7 @@ class TestProgramSynthesis:
 
     def test_immutable_context(self):
         """Test that synthesis does not pollute the original lexical context."""
+        from effectful.handlers.llm.synthesis import SynthesisContextHandler
 
         # Create a context with known contents
         original_context: ChainMap[str, object] = ChainMap({"helper": lambda x: x * 2})
@@ -112,11 +113,9 @@ def my_func(n):
 """,
         )
 
-        # Attach context via _decode_context attribute (as ProgramSynthesis does)
-        object.__setattr__(synth, "_decode_context", original_context)
-
-        # Decode with the context
-        func = EncodableSynthesizedFunction.decode(synth)
+        # Decode with the context using the handler
+        with handler(SynthesisContextHandler(original_context)):
+            func = EncodableSynthesizedFunction.decode(synth)
 
         # Verify the function works
         assert func(5) == 12  # (5 + 1) * 2

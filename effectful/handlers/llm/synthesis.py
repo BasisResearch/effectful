@@ -9,21 +9,32 @@ from collections.abc import Callable
 from typing import Any
 
 import pydantic
-from litellm.types.utils import ModelResponse
 from pydantic import Field
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
+    InstructionHandler,
     OpenAIMessageContentListBlock,
-    _OpenAIPromptFormatter,
-    completion,
-    compute_response,
-    decode_response,
-    format_model_input,
 )
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
-from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.semantics import fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
+
+
+@defop
+def get_synthesis_context() -> ChainMap[str, Any] | None:
+    """Get the current synthesis context for decoding synthesized code."""
+    return None
+
+class SynthesisContextHandler(ObjectInterpretation):
+    """Handler that provides the synthesis context to decode operations."""
+
+    def __init__(self, context: ChainMap[str, Any]):
+        self.context = context
+
+    @implements(get_synthesis_context)
+    def _get_context(self) -> ChainMap[str, Any] | None:
+        return self.context
 
 
 class SynthesisError(Exception):
@@ -112,9 +123,9 @@ class EncodableSynthesizedFunction(
         """Decode a SynthesizedFunction to a Callable.
 
         Executes the module code and returns the named function.
-        Uses _decode_context attribute on vl if present (set by ProgramSynthesis).
+        Uses get_synthesis_context() operation to get the lexical context.
         """
-        context: ChainMap[str, Any] | None = getattr(vl, "_decode_context", None)
+        context: ChainMap[str, Any] | None = get_synthesis_context()
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
@@ -140,7 +151,8 @@ class EncodableSynthesizedFunction(
         # Start with provided context or empty dict
         # Include collections module for type hints in synthesized code
         exec_globals: dict[str, typing.Any] = {}
-        exec_globals.update(context)
+        if context:
+            exec_globals.update(context)
 
         try:
             code_obj = compile(module_code, filename, "exec")
@@ -181,12 +193,12 @@ def _is_callable_return_type(template: Template) -> bool:
 class ProgramSynthesis(ObjectInterpretation):
     """A program synthesis handler for Callable return types.
 
-    Intercepts format_model_input, compute_response, and decode_response
-    to customize the synthesis flow while reusing the standard template machinery.
+    Intercepts Template.__apply__ and uses SynthesisInstructionHandler to inject
+    synthesis-specific instructions, following the same pattern as RetryLLMHandler.
     """
 
-    def _build_prompt(self, template: Template) -> str:
-        """Build the synthesis prompt for a Callable return type."""
+    def _build_synthesis_instruction(self, template: Template) -> str:
+        """Build the synthesis instruction for a Callable return type."""
         ret_type = template.__signature__.return_annotation
 
         # Escape braces in context to avoid format field interpretation
@@ -194,16 +206,16 @@ class ProgramSynthesis(ObjectInterpretation):
         ret_type_repr = repr(ret_type).replace("{", "{{").replace("}", "}}")
 
         return textwrap.dedent(f"""
-        Implement a Python function with the following specification.
-
-        **Specification:** {template.__prompt_template__}
+        You are a code synthesis assistant. Generate Python code based on the user's specification.
 
         **Required function signature:** {ret_type_repr}
-        The following types, functions, and values are available:
+        
+        The following types, functions, and values are available in the execution context:
 
         ```python
         {context_str}
         ```
+        
         **Critical Instructions:**
         1. The function you write MUST have EXACTLY this signature: {ret_type_repr}
         2. Any values mentioned in the specification (like specific characters or strings) should be hardcoded directly in the function body, NOT as parameters.
@@ -220,57 +232,24 @@ class ProgramSynthesis(ObjectInterpretation):
             def inner(text: str) -> int:
                 return text.count(char)
             return inner
+
+        Respond with a JSON object containing:
+        - "function_name": the name of the main function
+        - "module_code": the complete Python code (no imports needed)
         """).strip()
 
-    @implements(format_model_input)
-    def _format_model_input(self, template: Template, *args, **kwargs) -> list:
-        """Replace the prompt with synthesis-specific instructions."""
+    @implements(Template.__apply__)
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """Intercept template calls for Callable return types and inject synthesis instructions."""
         if not _is_callable_return_type(template):
             return fwd()
 
-        prompt = self._build_prompt(template)
+        # Build synthesis instruction
+        instruction = self._build_synthesis_instruction(template)
 
-        # Encode arguments for the prompt
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        arguments = {}
-        for param in bound_args.arguments:
-            encoder = type_to_encodable_type(
-                template.__signature__.parameters[param].annotation
-            )
-            encoded = encoder.encode(bound_args.arguments[param])
-            arguments[param] = encoder.serialize(encoded)
-
-        formatted_prompt = _OpenAIPromptFormatter().format_as_messages(
-            prompt, **arguments
-        )
-        return [{"type": "message", "content": formatted_prompt, "role": "user"}]
-
-    @implements(compute_response)
-    def _compute_response(self, template: Template, model_input: list) -> ModelResponse:
-        """Compute response with SynthesizedFunction format and no tools."""
-        if not _is_callable_return_type(template):
-            return fwd()
-
-        response_format = pydantic.create_model(
-            "Response", value=SynthesizedFunction, __config__={"extra": "forbid"}
-        )
-
-        return completion(
-            messages=model_input,
-            response_format=response_format,
-            tools=[],  # No tools for synthesis
-        )
-
-    @implements(decode_response)
-    def _decode_response(self, template: Template, response: ModelResponse) -> Callable:
-        """Decode the response with lexical context attached."""
-        if not _is_callable_return_type(template):
-            return fwd()
-
-        choice = typing.cast(typing.Any, response.choices[0])
-        result_str: str = choice.message.content or ""
-        Result = pydantic.create_model("Result", value=(SynthesizedFunction, ...))
-        synth: SynthesizedFunction = Result.model_validate_json(result_str).value  # type: ignore[attr-defined]
-        object.__setattr__(synth, "_decode_context", template.__context__)
-        return EncodableSynthesizedFunction.decode(synth)
+        # Use handlers to inject context and instructions
+        with handler(SynthesisContextHandler(template.__context__)):
+            with handler(InstructionHandler(instruction)):
+                return fwd()
