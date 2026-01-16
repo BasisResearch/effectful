@@ -54,10 +54,10 @@ Encoding
    :members:
    :undoc-members:
 
-Providers
-"""""""""
+Completions
+"""""""""""
       
-.. automodule:: effectful.handlers.llm.providers
+.. automodule:: effectful.handlers.llm.completions
    :members:
    :undoc-members:
    

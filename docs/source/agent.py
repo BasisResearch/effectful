@@ -1,7 +1,7 @@
 import functools
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import (
+from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     compute_response,
     format_model_input,

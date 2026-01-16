@@ -13,8 +13,7 @@ from litellm.types.utils import ModelResponse
 from pydantic import Field
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
-from effectful.handlers.llm.providers import (
+from effectful.handlers.llm.completions import (
     OpenAIMessageContentListBlock,
     _OpenAIPromptFormatter,
     completion,
@@ -22,6 +21,7 @@ from effectful.handlers.llm.providers import (
     decode_response,
     format_model_input,
 )
+from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 

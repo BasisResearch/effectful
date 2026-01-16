@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import (
+from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     LLMLoggingHandler,
     completion,
