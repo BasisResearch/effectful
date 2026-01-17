@@ -18,15 +18,12 @@ from litellm import OpenAIMessageContentListBlock
 from pydantic import Field
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import InstructionHandler
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
 from effectful.handlers.llm.synthesis import (
-    SynthesisContextHandler,
+    BaseSynthesis,
     SynthesisError,
     get_synthesis_context,
 )
-from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
 
 # Type alias for lexical context
 LexicalContext = ChainMap[str, Any]
@@ -52,9 +49,13 @@ class SynthesizedType(pydantic.BaseModel):
         ...,
         description="The name of the class that satisfies the specification",
     )
+    parent_class: str = Field(
+        ...,
+        description="The name of the parent class that this class inherits from",
+    )
     module_code: str = Field(
         ...,
-        description="Complete Python module code with the class definition (no imports needed)",
+        description="Complete Python module code with ONLY the subclass definition (do NOT redefine the parent class)",
     )
 
 
@@ -70,17 +71,23 @@ class EncodableSynthesizedType(
     def encode(cls, vl: type, context: LexicalContext | None = None) -> SynthesizedType:
         """Encode a type to a SynthesizedType.
 
-        Extracts the type name and source code.
+        Extracts the type name, parent class, and source code.
         """
         type_name = vl.__name__
+        # Get parent class (first non-object base)
+        bases = [b for b in vl.__bases__ if b is not object]
+        parent_class = bases[0].__name__ if bases else "object"
+
         try:
             source = inspect.getsource(vl)
         except (OSError, TypeError):
             # If we can't get source, create a minimal representation
-            source = f"class {type_name}: pass  # Source unavailable"
+            source = f"class {type_name}({parent_class}): pass  # Source unavailable"
 
         return SynthesizedType(
-            type_name=type_name, module_code=textwrap.dedent(source).strip()
+            type_name=type_name,
+            parent_class=parent_class,
+            module_code=textwrap.dedent(source).strip(),
         )
 
     # Counter for unique filenames
@@ -135,23 +142,58 @@ class EncodableSynthesizedType(
         g.update({"__name__": module_name, "__file__": filename})
         g.setdefault("__package__", module_name.rpartition(".")[0])
 
+        # Get the expected parent class name from the synthesized output
+        expected_parent = vl.parent_class
+
         try:
-            # NOTE: Parse and inject __firstlineno__ into class bodies for Python 3.13+ compatibility
-            # inspect.getsource() looks for __firstlineno__ in vars(cls), which requires it to be in the class's __dict__.
-            # We inject it via AST before execution.
+            # Parse and modify AST
             tree = ast.parse(module_code)
+
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
-                    # Create: __firstlineno__ = <lineno>
-                    assign = ast.Assign(
-                        targets=[ast.Name(id="__firstlineno__", ctx=ast.Store())],
-                        value=ast.Constant(value=node.lineno),
-                        lineno=node.lineno,
-                        col_offset=0,
+                    # 1. Rewrite inheritance for the target class to use parent from context
+                    if node.name == type_name:
+                        parent_node = ast.Name(
+                            id=expected_parent,
+                            ctx=ast.Load(),
+                            lineno=node.lineno,
+                            col_offset=node.col_offset,
+                            end_lineno=node.lineno,
+                            end_col_offset=node.col_offset + len(expected_parent),
+                        )
+                        node.bases = [parent_node]
+
+                    # 2. Inject __firstlineno__ for Python 3.13+ compatibility
+                    first_body_line = (
+                        node.body[0].lineno if node.body else node.lineno + 1
                     )
-                    ast.fix_missing_locations(assign)
+                    col = node.col_offset + 4
+
+                    name_node = ast.Name(
+                        id="__firstlineno__",
+                        ctx=ast.Store(),
+                        lineno=first_body_line,
+                        col_offset=col,
+                        end_lineno=first_body_line,
+                        end_col_offset=col + 14,
+                    )
+                    const_node = ast.Constant(
+                        value=node.lineno,
+                        lineno=first_body_line,
+                        col_offset=col + 17,
+                        end_lineno=first_body_line,
+                        end_col_offset=col + 18,
+                    )
+                    assign = ast.Assign(
+                        targets=[name_node],
+                        value=const_node,
+                        lineno=first_body_line,
+                        col_offset=col,
+                        end_lineno=first_body_line,
+                        end_col_offset=col + 20,
+                    )
                     node.body.insert(0, assign)
-            ast.fix_missing_locations(tree)
+
             code_obj = compile(tree, filename, "exec")
             exec(code_obj, g, g)
         except SyntaxError as exc:
@@ -207,71 +249,31 @@ class EncodableSynthesizedType(
 
 def _is_type_return_type(template: Template) -> tuple[bool, type | None]:
     """Check if template has a type[BaseClass] return type.
-    
+
     Returns:
         Tuple of (is_type_return, base_type). base_type is None if not a type return.
     """
     ret_type = template.__signature__.return_annotation
     origin = typing.get_origin(ret_type)
     ret_type_origin = ret_type if origin is None else origin
-    
+
     if ret_type_origin is not type:
         return False, None
-    
+
     type_args = typing.get_args(ret_type)
     if not type_args:
         return False, None
-    
+
     return True, type_args[0]
 
 
-class TypeSynthesis(ObjectInterpretation):
-    """A type synthesis handler for type[BaseClass] return types.
+class TypeSynthesis(BaseSynthesis):
+    """A type synthesis handler for type[BaseClass] return types."""
 
-    Intercepts Template.__apply__ and uses InstructionHandler to inject
-    synthesis-specific instructions, following the same pattern as ProgramSynthesis.
-    """
-
-    def _build_synthesis_instruction(self, template: Template, base_type: type) -> str:
-        """Build the synthesis instruction for a type[BaseClass] return type."""
-        base_type_name = base_type.__name__
-        
-        # Escape braces in context to avoid format field interpretation
-        context_str = str(template.__context__).replace("{", "{{").replace("}", "}}")
-
-        return textwrap.dedent(f"""
-        You are a code synthesis assistant. Generate a Python class based on the user's specification.
-
-        **Required:** The class must inherit from `{base_type_name}` and implement its interface.
-        
-        The following types, functions, and values are available in the execution context:
-
-        ```python
-        {context_str}
-        ```
-        
-        **Instructions:**
-        1. Write a complete Python module with the class definition.
-        2. Choose a descriptive class name.
-        3. The class MUST inherit from `{base_type_name}`.
-        4. Implement all required methods from the base class.
-        5. You may include helper functions/classes/constants.
-        6. Do not redefine provided types - they are already available.
-        7. Do not include import statements.
-
-        Respond with a JSON object containing:
-        - "type_name": the name of the class
-        - "module_code": the complete Python code (no imports needed)
-        """).strip()
-
-    @implements(Template.__apply__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        """Intercept template calls for type[BaseClass] return types and inject synthesis instructions."""
+    def _should_handle(self, template: Template) -> bool:
         is_type_return, base_type = _is_type_return_type(template)
         if not is_type_return or base_type is None:
-            return fwd()
+            return False
 
         # Verify base type is in lexical context
         base_type_name = base_type.__name__
@@ -280,11 +282,25 @@ class TypeSynthesis(ObjectInterpretation):
                 f"Base type '{base_type_name}' must be in the template's lexical context.",
                 None,
             )
+        return True
 
-        # Build synthesis instruction
-        instruction = self._build_synthesis_instruction(template, base_type)
+    def _build_synthesis_instruction(self, template: Template) -> str:
+        """Build the synthesis instruction for a type[BaseClass] return type."""
+        _, base_type = _is_type_return_type(template)
+        base_type_name = base_type.__name__  # type: ignore[union-attr]
+        context = self._get_filtered_context(template)
 
-        # Use handlers to inject context and instructions
-        with handler(SynthesisContextHandler(template.__context__)):
-            with handler(InstructionHandler(instruction)):
-                return fwd()
+        context_str = str(context).replace("{", "{{").replace("}", "}}")
+
+        return textwrap.dedent(f"""
+        Generate a Python class that inherits from `{base_type_name}`.
+
+        Available in scope: {context_str}
+
+        Write ONLY your subclass definition (do NOT redefine {base_type_name}).
+
+        Respond with JSON containing:
+        - "type_name": your class name
+        - "parent_class": "{base_type_name}"
+        - "module_code": your subclass code only
+        """).strip()

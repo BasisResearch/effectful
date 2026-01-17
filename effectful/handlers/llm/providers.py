@@ -362,7 +362,6 @@ class RetryLLMHandler(ObjectInterpretation):
         self.add_error_feedback = add_error_feedback
         self.exception_cls = exception_cls
 
-
     @implements(Template.__apply__)
     def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
         """Retry template execution with error feedback injection via scoped handlers."""

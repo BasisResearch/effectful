@@ -131,7 +131,6 @@ def make_double_counter(char: str) -> Callable[[str], int]:
 shadow_test_value = "global"
 
 
-
 # Unit tests
 def test_limerick():
     """Test the limerick template returns a string."""
