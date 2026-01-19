@@ -1,7 +1,6 @@
 import collections
 import collections.abc
 import inspect
-import linecache
 import textwrap
 import types
 import typing
@@ -84,23 +83,27 @@ def _build_symbols_context(
     return ChainMap(context)
 
 
-import pydantic
-from pydantic import Field
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import (
-    InstructionHandler,
-    OpenAIMessageContentListBlock,
-)
+from effectful.handlers.llm.completions import InstructionHandler
 from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
+from effectful.handlers.llm.synthesized import (
+    EncodableSynthesizedFunction,
+    SynthesisError,
+    SynthesizedFunction,
+    get_synthesis_context,
+)
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 
-
-@defop
-def get_synthesis_context() -> ChainMap[str, Any] | None:
-    """Get the current synthesis context for decoding synthesized code."""
-    return None
+__all__ = [
+    "BaseSynthesis",
+    "EncodableSynthesizedFunction",
+    "ProgramSynthesis",
+    "SynthesisContextHandler",
+    "SynthesisError",
+    "SynthesizedFunction",
+    "get_synthesis_context",
+]
 
 
 class SynthesisContextHandler(ObjectInterpretation):
@@ -132,157 +135,73 @@ class SynthesisContextHandler(ObjectInterpretation):
         return self.context
 
 
-class SynthesisError(Exception):
-    """Raised when program synthesis fails."""
-
-    def __init__(self, message, code=None):
-        super().__init__(message)
-        self.code = code
-
-
-class SynthesizedFunction(pydantic.BaseModel):
-    """Structured output for function synthesis.
-
-    Pydantic model representing synthesized code with function name and module code.
-    """
-
-    function_name: str = Field(
-        ...,
-        description="The name of the main function that satisfies the specification",
-    )
-    module_code: str = Field(
-        ...,
-        description="Complete Python module code (no imports needed)",
-    )
-
-
-@type_to_encodable_type.register(collections.abc.Callable)
-class EncodableSynthesizedFunction(
-    EncodableAs[Callable, SynthesizedFunction],
-):
-    """Encodes Callable to SynthesizedFunction and vice versa."""
-
-    t = SynthesizedFunction
-
-    @classmethod
-    def encode(
-        cls, vl: Callable, context: ChainMap[str, Any] | None = None
-    ) -> SynthesizedFunction:
-        """Encode a Callable to a SynthesizedFunction.
-
-        Extracts the function name and source code.
-        """
-        func_name = vl.__name__
-        try:
-            source = inspect.getsource(vl)
-        except (OSError, TypeError):
-            # If we can't get source, create a minimal representation
-            try:
-                sig = inspect.signature(vl)
-                source = f"def {func_name}{sig}:\n    pass  # Source unavailable"
-            except (ValueError, TypeError):
-                source = f"def {func_name}(...):\n    pass  # Source unavailable"
-
-        return SynthesizedFunction(
-            function_name=func_name, module_code=textwrap.dedent(source).strip()
-        )
-
-    # Counter for unique filenames
-    _decode_counter: typing.ClassVar[int] = 0
-
-    @classmethod
-    def _generate_imports_from_context(cls, context: ChainMap[str, Any] | None) -> str:
-        """Generate import statements for types/functions in the context."""
-        if not context:
-            return ""
-
-        imports: set[str] = set()
-        for name, obj in context.items():
-            if name.startswith("_"):
-                continue
-
-            module = getattr(obj, "__module__", None)
-            obj_name = getattr(obj, "__name__", name)
-
-            if module and module != "builtins" and module != "__main__":
-                # Use the context name if it differs from the object's name (aliased import)
-                if obj_name != name:
-                    imports.add(f"from {module} import {obj_name} as {name}")
-                else:
-                    imports.add(f"from {module} import {obj_name}")
-
-        return "\n".join(sorted(imports))
-
-    @classmethod
-    def decode(cls, vl: SynthesizedFunction) -> Callable:
-        """Decode a SynthesizedFunction to a Callable.
-
-        Executes the module code and returns the named function.
-        Uses get_synthesis_context() operation to get the lexical context.
-        """
-        context: ChainMap[str, Any] | None = get_synthesis_context()
-        func_name = vl.function_name
-        module_code = textwrap.dedent(vl.module_code).strip()
-
-        # Generate imports from context for display purposes
-        imports_code = cls._generate_imports_from_context(context)
-        full_module_code = (
-            f"{imports_code}\n\n{module_code}" if imports_code else module_code
-        )
-
-        cls._decode_counter += 1
-        filename = f"<synthesized:{func_name}:{cls._decode_counter}>"
-        lines = full_module_code.splitlines(keepends=True)
-        # Ensure last line has newline for linecache
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        linecache.cache[filename] = (
-            len(full_module_code),
-            None,
-            lines,
-            filename,
-        )
-
-        # Start with provided context or empty dict
-        # Include collections module for type hints in synthesized code
-        exec_globals: dict[str, typing.Any] = {}
-        if context:
-            exec_globals.update(context)
-
-        try:
-            code_obj = compile(module_code, filename, "exec")
-            exec(code_obj, exec_globals)
-        except SyntaxError as exc:
-            raise SynthesisError(
-                f"Syntax error in generated code: {exc}", module_code
-            ) from exc
-        except Exception as exc:
-            raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
-
-        if func_name not in exec_globals:
-            raise SynthesisError(
-                f"Function '{func_name}' not found after execution. "
-                f"Available names: {[k for k in exec_globals.keys() if not k.startswith('_')]}",
-                module_code,
-            )
-
-        func = exec_globals[func_name]
-        # Also attach source code directly for convenience
-        func.__source__ = full_module_code
-        func.__synthesized__ = vl
-        return func
-
-    @classmethod
-    def serialize(cls, vl: SynthesizedFunction) -> list[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": vl.model_dump_json()}]
-
-
 def _is_callable_return_type(template: Template) -> bool:
     """Check if template has a Callable return type."""
     ret_type = template.__signature__.return_annotation
     origin = typing.get_origin(ret_type)
     ret_type_origin = ret_type if origin is None else origin
     return ret_type_origin is collections.abc.Callable
+
+
+def _get_context_source(context: ChainMap[str, Any]) -> str:
+    """Extract source code for types and callables in the context.
+
+    Uses encodable types (EncodableSynthesizedFunction/Type) when available
+    to provide rich source for custom symbols.
+    """
+    sources: list[str] = []
+    seen_names: set[str] = set()
+
+    def _encode_with_context(encodable: EncodableAs[Any, Any], obj: Any) -> Any:
+        try:
+            return encodable.encode(obj, context=context)
+        except TypeError:
+            return encodable.encode(obj)
+
+    for name, obj in context.items():
+        if name.startswith("_"):
+            continue
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+
+        module = getattr(obj, "__module__", None)
+        if module and (module == "builtins" or module.startswith("collections")):
+            continue
+
+        try:
+            if isinstance(obj, type):
+                encodable = type_to_encodable_type(type)
+                synthesized = _encode_with_context(encodable, obj)
+                if hasattr(synthesized, "module_code"):
+                    sources.append(textwrap.dedent(synthesized.module_code).strip())
+                    continue
+                source = inspect.getsource(obj)
+                sources.append(textwrap.dedent(source).strip())
+            elif callable(obj) and not isinstance(obj, type):
+                # Skip non-function callables (e.g., pytest MarkDecorator)
+                if not hasattr(obj, "__name__") or not inspect.isroutine(obj):
+                    continue
+                encodable = type_to_encodable_type(collections.abc.Callable)
+                synthesized = _encode_with_context(encodable, obj)
+                if hasattr(synthesized, "module_code"):
+                    sources.append(textwrap.dedent(synthesized.module_code).strip())
+                    continue
+                source = inspect.getsource(obj)
+                sources.append(textwrap.dedent(source).strip())
+        except (OSError, TypeError, AttributeError):
+            if isinstance(obj, type):
+                sources.append(f"# {name}: class (source unavailable)")
+            elif callable(obj):
+                try:
+                    sig = inspect.signature(obj)
+                    sources.append(f"# {name}{sig} (source unavailable)")
+                except (ValueError, TypeError):
+                    sources.append(f"# {name}: callable (source unavailable)")
+
+    return (
+        "\n\n".join(sources) if sources else "# No custom types or functions available"
+    )
 
 
 class BaseSynthesis(ObjectInterpretation):
@@ -342,7 +261,7 @@ class ProgramSynthesis(BaseSynthesis):
         ret_type = template.__signature__.return_annotation
         context = self._get_filtered_context(template)
 
-        context_str = str(context).replace("{", "{{").replace("}", "}}")
+        context_str = _get_context_source(context).replace("{", "{{").replace("}", "}}")
         ret_type_repr = repr(ret_type).replace("{", "{{").replace("}", "}}")
 
         return textwrap.dedent(f"""

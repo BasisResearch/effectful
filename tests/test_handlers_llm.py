@@ -202,6 +202,37 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         return self.success_response
 
 
+class CaptureMessages(ObjectInterpretation):
+    """Capture formatted model input messages for inspection."""
+
+    def __init__(self):
+        self.messages: list[dict[str, object]] | None = None
+
+    @implements(Template.__apply__)
+    def _call[**P](
+        self, template: Template[P, object], *args: P.args, **kwargs: P.kwargs
+    ) -> object:
+        self.messages = format_model_input(template, *args, **kwargs)
+        return self.messages
+
+
+def _extract_message_text(messages: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts.append(
+                "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            )
+        else:
+            parts.append(str(content))
+    return "\n".join(parts)
+
+
 def test_retry_handler_succeeds_after_failures():
     """Test that RetryLLMHandler retries and eventually succeeds."""
     provider = FailingThenSucceedingProvider(
@@ -248,6 +279,29 @@ def test_retry_handler_only_catches_specified_exception():
             limerick("test")
 
     assert provider.call_count == 1  # Should have only tried once
+
+
+def test_synthesis_prompt_includes_custom_type_source():
+    """ProgramSynthesis should include custom type source in the prompt."""
+
+    class Widget:
+        def ping(self) -> str:
+            return "pong"
+
+    @Template.define
+    def make_widget_fn(multiplier: int) -> Callable[[Widget], str]:
+        """Create a function that uses Widget with multiplier {multiplier}."""
+        raise NotHandled
+
+    capture = CaptureMessages()
+
+    with handler(capture), handler(ProgramSynthesis(symbols=[Widget])):
+        _ = make_widget_fn(3)
+
+    assert capture.messages is not None
+    prompt_text = _extract_message_text(capture.messages)
+    assert "class Widget" in prompt_text
+    assert "def ping" in prompt_text
 
 
 def test_retry_handler_with_error_feedback():
