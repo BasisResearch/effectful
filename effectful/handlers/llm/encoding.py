@@ -42,6 +42,11 @@ class EncodableAs[T, U](ABC):
         pass
 
     @classmethod
+    def encoding_instructions(cls) -> str | None:
+        """Optional instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
+        return None
+
+    @classmethod
     def serialize(cls, value: U) -> list[OpenAIMessageContentListBlock]:
         return [{"type": "text", "text": str(value)}]
 
