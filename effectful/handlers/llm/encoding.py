@@ -2,7 +2,8 @@ import base64
 import io
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import pydantic
 from litellm import (
@@ -33,12 +34,12 @@ class EncodableAs[T, U](ABC):
 
     @classmethod
     @abstractmethod
-    def encode(cls, vl: T) -> U:
+    def encode(cls, vl: T, env: Mapping[str, Any]) -> U:
         pass
 
     @classmethod
     @abstractmethod
-    def decode(cls, vl: U) -> T:
+    def decode(cls, vl: U, env: Mapping[str, Any]) -> T:
         pass
 
     @classmethod
@@ -64,11 +65,11 @@ def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
         t: type[T] = ty
 
         @classmethod
-        def encode(cls, vl: T) -> T:
+        def encode(cls, vl: T, env: Mapping[str, Any]) -> T:
             return vl
 
         @classmethod
-        def decode(cls, vl: T) -> T:
+        def decode(cls, vl: T, env: Mapping[str, Any]) -> T:
             return vl
 
     return typing.cast(Encodable[T], BaseEncodable())
@@ -92,16 +93,16 @@ def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
         t: type[T] = ty
 
         @classmethod
-        def decode(cls, vl: T) -> T:
+        def decode(cls, vl: T, env: Mapping[str, Any]) -> T:
             return vl
 
         @classmethod
-        def encode(cls, vl: T) -> T:
+        def encode(cls, vl: T, env: Mapping[str, Any]) -> T:
             return vl
 
         @classmethod
-        def serialize(cls, vl: T) -> list[OpenAIMessageContentListBlock]:
-            return [{"type": "text", "text": vl.model_dump_json()}]
+        def serialize(cls, value: T) -> list[OpenAIMessageContentListBlock]:
+            return [{"type": "text", "text": value.model_dump_json()}]
 
     return typing.cast(Encodable[T], EncodablePydanticBaseModel())
 
@@ -111,14 +112,18 @@ class EncodableImage(EncodableAs[Image.Image, ChatCompletionImageUrlObject]):
     t = ChatCompletionImageUrlObject
 
     @classmethod
-    def encode(cls, image: Image.Image) -> ChatCompletionImageUrlObject:
+    def encode(
+        cls, image: Image.Image, env: Mapping[str, Any]
+    ) -> ChatCompletionImageUrlObject:
         return {
             "detail": "auto",
             "url": _pil_image_to_base64_data_uri(image),
         }
 
     @classmethod
-    def decode(cls, image: ChatCompletionImageUrlObject) -> Image.Image:
+    def decode(
+        cls, image: ChatCompletionImageUrlObject, env: Mapping[str, Any]
+    ) -> Image.Image:
         image_url = image["url"]
         if not image_url.startswith("data:image/"):
             raise RuntimeError(
@@ -157,23 +162,25 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
         t: type[typing.Any] = encoded_ty
 
         @classmethod
-        def encode(cls, t: T) -> typing.Any:
+        def encode(cls, t: T, env: typing.Mapping[str, Any]) -> typing.Any:
             if not isinstance(t, tuple):
                 raise TypeError(f"Expected tuple, got {type(t)}")
             if len(t) != len(element_encoders):
                 raise ValueError(
                     f"Tuple length {len(t)} does not match expected length {len(element_encoders)}"
                 )
-            return tuple([enc.encode(elem) for enc, elem in zip(element_encoders, t)])
+            return tuple(
+                [enc.encode(elem, env) for enc, elem in zip(element_encoders, t)]
+            )
 
         @classmethod
-        def decode(cls, t: typing.Any) -> T:
+        def decode(cls, t: typing.Any, env: Mapping[str, Any]) -> T:
             if len(t) != len(element_encoders):
                 raise ValueError(
                     f"tuple length {len(t)} does not match expected length {len(element_encoders)}"
                 )
             decoded_elements: list[typing.Any] = [
-                enc.decode(elem) for enc, elem in zip(element_encoders, t)
+                enc.decode(elem, env) for enc, elem in zip(element_encoders, t)
             ]
             return typing.cast(T, tuple(decoded_elements))
 
@@ -222,15 +229,15 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
         t: type[typing.Any] = encoded_ty
 
         @classmethod
-        def encode(cls, t: T) -> typing.Any:
+        def encode(cls, t: T, env: Mapping[str, Any]) -> typing.Any:
             if not isinstance(t, list):
                 raise TypeError(f"Expected list, got {type(t)}")
-            return [element_encoder.encode(elem) for elem in t]
+            return [element_encoder.encode(elem, env) for elem in t]
 
         @classmethod
-        def decode(cls, t: typing.Any) -> T:
+        def decode(cls, t: typing.Any, env: Mapping[str, Any]) -> T:
             decoded_elements: list[typing.Any] = [
-                element_encoder.decode(elem) for elem in t
+                element_encoder.decode(elem, env) for elem in t
             ]
             return typing.cast(T, decoded_elements)
 

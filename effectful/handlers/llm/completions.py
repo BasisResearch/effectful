@@ -5,7 +5,7 @@ import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 from typing import Any
 
 import litellm
@@ -176,7 +176,9 @@ def function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
     }
 
 
-def call_with_json_args(tool: Tool, json_str: str) -> OpenAIMessageContent:
+def call_with_json_args(
+    tool: Tool, context: Mapping[str, Any], json_str: str
+) -> OpenAIMessageContent:
     """Implements a roundtrip call to a python function. Input is a json
     string representing an LLM tool call request parameters. The output is
     the serialised response to the model.
@@ -192,7 +194,7 @@ def call_with_json_args(tool: Tool, json_str: str) -> OpenAIMessageContent:
         params: dict[str, Any] = {
             param_name: type_to_encodable_type(
                 sig.parameters[param_name].annotation
-            ).decode(getattr(raw_args, param_name))
+            ).decode(getattr(raw_args, param_name), context)
             for param_name in raw_args.model_fields_set
         }
 
@@ -201,7 +203,7 @@ def call_with_json_args(tool: Tool, json_str: str) -> OpenAIMessageContent:
 
         # serialize back to U using encoder for return type
         encoded_ty = type_to_encodable_type(sig.return_annotation)
-        encoded_value = encoded_ty.encode(result)
+        encoded_value = encoded_ty.encode(result, context)
 
         # serialise back to Json
         return encoded_ty.serialize(encoded_value)
@@ -246,7 +248,9 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             function_name = function.name
             assert function_name is not None
             tool = tools[function_name]
-            tool_result = call_with_json_args(tool, function.arguments)
+            tool_result = call_with_json_args(
+                tool, template.__context__, function.arguments
+            )
             model_input.append(
                 {
                     "role": "tool",
@@ -280,7 +284,7 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
         assert isinstance(result, Result)
         value = result.value  # type: ignore
 
-    return encodable_ty.decode(value)  # type: ignore
+    return encodable_ty.decode(value, template.__context__)  # type: ignore
 
 
 @defop
@@ -299,7 +303,7 @@ def format_model_input[**P, T](
         encoder = type_to_encodable_type(
             template.__signature__.parameters[param].annotation
         )
-        encoded = encoder.encode(bound_args.arguments[param])
+        encoded = encoder.encode(bound_args.arguments[param], template.__context__)
         arguments[param] = encoder.serialize(encoded)
 
     prompt = _OpenAIPromptFormatter().format_as_messages(
