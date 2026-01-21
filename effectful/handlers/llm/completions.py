@@ -11,6 +11,7 @@ from typing import Any
 import litellm
 import pydantic
 from litellm import (
+    ChatCompletionTextObject,
     Choices,
     Message,
     OpenAIChatCompletionToolParam,
@@ -29,7 +30,7 @@ from effectful.ops.types import Operation
 class _OpenAIPromptFormatter(string.Formatter):
     def format_as_messages(
         self, format_str: str, /, *args, **kwargs
-    ) -> OpenAIMessageContent:
+    ) -> list[OpenAIMessageContentListBlock]:
         prompt_parts: list[OpenAIMessageContentListBlock] = []
         current_text = ""
 
@@ -305,6 +306,19 @@ def format_model_input[**P, T](
     prompt = _OpenAIPromptFormatter().format_as_messages(
         template.__prompt_template__, **arguments
     )
+
+    # install prefix if the return type has a return annotation
+    ret_type = template.__signature__.return_annotation
+    origin = typing.get_origin(ret_type)
+    ret_type = ret_type if origin is None else origin
+    ret_type_encoder = type_to_encodable_type(ret_type)
+    prompt_prefix = ret_type_encoder.encoding_instructions()
+
+    if prompt_prefix:
+        prefix: list[ChatCompletionTextObject] = [
+            {"type": "text", "text": prompt_prefix}
+        ]
+        prompt = prefix + prompt
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
