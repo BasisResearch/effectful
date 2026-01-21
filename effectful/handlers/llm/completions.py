@@ -257,12 +257,9 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
             )
 
 
-@defop
 def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
-    """Decode an LLM response into an instance of the template return type.
-
-    This is an operation that can be handled to customize decoding behavior.
-    The default implementation uses the encoder's decode method.
+    """Decode an LLM response into an instance of the template return type. This
+    operation should raise if the output cannot be decoded.
     """
     assert isinstance(template, Template)
     choice: Choices = typing.cast(Choices, response.choices[0])

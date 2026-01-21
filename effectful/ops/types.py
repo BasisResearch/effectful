@@ -4,7 +4,6 @@ import functools
 import inspect
 import types
 import typing
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
@@ -65,7 +64,6 @@ class _ClassMethodOpDescriptor(classmethod):
 INSTANCE_OP_PREFIX = "__instanceop"
 
 
-@functools.total_ordering
 class Operation[**Q, V]:
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -99,6 +97,21 @@ class Operation[**Q, V]:
         if not isinstance(other, Operation):
             return NotImplemented
         return id(self) < id(other)
+
+    def __gt__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) > id(other)
+
+    def __le__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) <= id(other)
+
+    def __ge__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) >= id(other)
 
     def __hash__(self):
         return hash(self.__default__)
@@ -334,14 +347,7 @@ class Operation[**Q, V]:
         If no default rule is supplied, the free rule is used instead.
         """
         try:
-            try:
-                return self.__default__(*args, **kwargs)
-            except NotImplementedError:
-                warnings.warn(
-                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                    DeprecationWarning,
-                )
-                raise NotHandled
+            return self.__default__(*args, **kwargs)
         except NotHandled:
             from effectful.ops.syntax import defdata
 

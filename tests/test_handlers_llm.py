@@ -68,8 +68,6 @@ class SingleResponseLLMProvider[T](LiteLLMProvider):
         choice = Choices(index=0, message=message, finish_reason="stop")
         return ModelResponse(model="mock", choices=[choice])
 
-    # Uses LiteLLMProvider._call to go through format/compute/decode pipeline
-
 
 # Test templates from the notebook examples
 @Template.define
@@ -147,37 +145,6 @@ def test_count_char_with_program_synthesis():
         assert callable(count_a), f"count_a is not callable: {count_a}"
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
-
-
-class CaptureMessages(ObjectInterpretation):
-    """Capture formatted model input messages for inspection."""
-
-    def __init__(self):
-        self.messages: list[dict[str, object]] | None = None
-
-    @implements(Template.__apply__)
-    def _call[**P](
-        self, template: Template[P, object], *args: P.args, **kwargs: P.kwargs
-    ) -> object:
-        self.messages = format_model_input(template, *args, **kwargs)
-        return self.messages
-
-
-def _extract_message_text(messages: list[dict[str, object]]) -> str:
-    parts: list[str] = []
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            parts.append(
-                "".join(
-                    block.get("text", "")
-                    for block in content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
-            )
-        else:
-            parts.append(str(content))
-    return "\n".join(parts)
 
 
 class FailingThenSucceedingProvider[T](ObjectInterpretation):

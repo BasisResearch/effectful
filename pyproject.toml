@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "effectful"
-version = "0.2.3"
+version = "0.3.0"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
 license = "Apache-2.0"
@@ -36,10 +36,10 @@ Source = "https://github.com/BasisResearch/effectful"
 "Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
 
 [project.optional-dependencies]
-torch = ["torch", "dm-tree"]
-pyro = ["pyro-ppl>=1.9.1", "dm-tree"]
-jax = ["jax", "dm-tree"]
-numpyro = ["numpyro>=0.19", "dm-tree"]
+torch = ["torch"]
+pyro = ["pyro-ppl>=1.9.1"]
+jax = ["jax"]
+numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
   "pillow",
@@ -47,7 +47,7 @@ llm = [
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
-    "effectful[torch,pyro,jax,numpyro,prettyprinter]",
+    "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
