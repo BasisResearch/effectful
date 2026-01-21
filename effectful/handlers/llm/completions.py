@@ -289,6 +289,7 @@ def format_model_input[**P, T](
 ) -> list[Any]:
     """Format a template applied to arguments into a sequence of input
     messages.
+
     """
     bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
