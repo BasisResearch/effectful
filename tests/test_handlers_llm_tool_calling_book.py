@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.providers import LiteLLMProvider, completion
+from effectful.handlers.llm.completions import LiteLLMProvider, completion
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

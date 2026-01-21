@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.providers import format_model_input
+from effectful.handlers.llm.completions import format_model_input
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
