@@ -1,11 +1,16 @@
+import json
 from collections.abc import Callable
 from typing import Annotated
 
 import pytest
+from litellm import Choices, Message
+from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
+    LiteLLMProvider,
     RetryLLMHandler,
+    completion,
     compute_response,
     format_model_input,
 )
@@ -44,22 +49,26 @@ class MockLLMProvider[T](ObjectInterpretation):
         return response
 
 
-class SingleResponseLLMProvider[T](ObjectInterpretation):
-    """Simplified mock provider that returns a single response.
-
-    Simulates LiteLLMProvider behavior by creating a ModelResponse and calling
-    decode_response. Automatically wraps response in {"value": ...} for non-string types.
-    """
+class SingleResponseLLMProvider[T](LiteLLMProvider):
+    """Mock provider that reuses LiteLLMProvider and overrides completion."""
 
     def __init__(self, response: T):
         """Initialize with a response value."""
+        super().__init__(model_name="mock")
         self.response = response
 
-    @implements(Template.__apply__)
-    def _call[**P](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        return self.response
+    @implements(completion)
+    def _completion(self, *args, **kwargs) -> ModelResponse:
+        result = (
+            self.response
+            if isinstance(self.response, str)
+            else json.dumps({"value": self.response})
+        )
+        message = Message(role="assistant", content=result)
+        choice = Choices(index=0, message=message, finish_reason="stop")
+        return ModelResponse(model="mock", choices=[choice])
+
+    # Uses LiteLLMProvider._call to go through format/compute/decode pipeline
 
 
 # Test templates from the notebook examples
@@ -124,7 +133,6 @@ def test_primes_decode_int():
         assert isinstance(result, int)
 
 
-@pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
     mock_provider = SingleResponseLLMProvider(
@@ -136,9 +144,40 @@ def test_count_char_with_program_synthesis():
 
     with handler(mock_provider), handler(ProgramSynthesis()):
         count_a = count_char("a")
-        assert callable(count_a)
+        assert callable(count_a), f"count_a is not callable: {count_a}"
         assert count_a("banana") == 3
         assert count_a("cherry") == 0
+
+
+class CaptureMessages(ObjectInterpretation):
+    """Capture formatted model input messages for inspection."""
+
+    def __init__(self):
+        self.messages: list[dict[str, object]] | None = None
+
+    @implements(Template.__apply__)
+    def _call[**P](
+        self, template: Template[P, object], *args: P.args, **kwargs: P.kwargs
+    ) -> object:
+        self.messages = format_model_input(template, *args, **kwargs)
+        return self.messages
+
+
+def _extract_message_text(messages: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts.append(
+                "".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            )
+        else:
+            parts.append(str(content))
+    return "\n".join(parts)
 
 
 class FailingThenSucceedingProvider[T](ObjectInterpretation):

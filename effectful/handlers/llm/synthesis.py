@@ -9,17 +9,22 @@ from collections.abc import Callable
 from typing import Any
 
 import pydantic
-from litellm.types.utils import ModelResponse
 from pydantic import Field
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
-from effectful.handlers.llm.providers import (
+from effectful.handlers.llm.completions import (
+    InstructionHandler,
     OpenAIMessageContentListBlock,
-    decode_response,
 )
-from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.handlers.llm.encoding import EncodableAs, type_to_encodable_type
+from effectful.ops.semantics import NotHandled, fwd, handler
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
+
+
+@defop
+def get_synthesis_context() -> ChainMap[str, Any] | None:
+    """Get the current synthesis context for decoding synthesized code."""
+    raise NotHandled
 
 
 class SynthesisError(Exception):
@@ -85,9 +90,8 @@ class EncodableSynthesizedFunction(
         """Decode a SynthesizedFunction to a Callable.
 
         Executes the module code and returns the named function.
-        Uses _decode_context attribute on vl if present (set by ProgramSynthesis).
         """
-        context: ChainMap[str, Any] | None = getattr(vl, "_decode_context", None)
+        context: ChainMap[str, Any] | None = get_synthesis_context()
         func_name = vl.function_name
         module_code = textwrap.dedent(vl.module_code).strip()
 
@@ -153,9 +157,8 @@ class ProgramSynthesis(ObjectInterpretation):
             return fwd()
 
         prompt_ext = textwrap.dedent(f"""
-        Generate a Python function satisfying the following specification and type signature.
+        Given the specification above, generate a Python function satisfying the following specification and type signature.
         
-        <specification>{template.__prompt_template__}</specification>
         <signature>{str(ret_type)}</signature>
 
         <instructions>
@@ -167,27 +170,8 @@ class ProgramSynthesis(ObjectInterpretation):
         </instructions>
         """).strip()
 
-        return fwd(
-            template.replace(prompt_template=prompt_ext),
-            *args,
-            **kwargs,
-        )
-
-    @implements(decode_response)
-    def _decode_response(self, template: Template, response: ModelResponse) -> Callable:
-        """Decode a synthesized function response with lexical context."""
-        ret_type = template.__signature__.return_annotation
-        origin = typing.get_origin(ret_type)
-        ret_type_origin = ret_type if origin is None else origin
-
-        # Only handle Callable return types
-        if ret_type_origin is not collections.abc.Callable:
+        with (
+            handler(InstructionHandler(prompt_ext)),
+            handler({get_synthesis_context: lambda: template.__context__}),
+        ):
             return fwd()
-
-        # Parse JSON and attach context to the value for decode() to use
-        choice = typing.cast(typing.Any, response.choices[0])
-        result_str: str = choice.message.content or ""
-        Result = pydantic.create_model("Result", value=(SynthesizedFunction, ...))
-        synth: SynthesizedFunction = Result.model_validate_json(result_str).value  # type: ignore[attr-defined]
-        object.__setattr__(synth, "_decode_context", template.__context__)
-        return EncodableSynthesizedFunction.decode(synth)
