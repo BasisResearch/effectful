@@ -244,17 +244,13 @@ class EncodableSynthesizedType(
     _decode_counter: typing.ClassVar[int] = 0
 
     @classmethod
-    def decode(
-        cls, vl: SynthesizedType, context: ChainMap[str, Any] | None = None
-    ) -> type:
+    def decode(cls, vl: SynthesizedType) -> type:
         """Decode a SynthesizedType to a type.
 
         Executes the module code and returns the named class.
         Uses get_synthesis_context() operation for lexical context.
         """
-        # Use synthesis context operation if no explicit context provided
-        if context is None:
-            context = get_synthesis_context()
+        context: ChainMap[str, Any] | None = get_synthesis_context()
         type_name = vl.type_name
         module_code = textwrap.dedent(vl.module_code).strip() + "\n"
 
