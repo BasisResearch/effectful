@@ -178,7 +178,7 @@ def test_retry_handler_succeeds_after_failures():
         success_response="Success after retries!",
         exception_factory=lambda: ValueError("Temporary failure"),
     )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+    retry_handler = RetryLLMHandler(num_retries=3, exception_cls=ValueError)
 
     with handler(provider), handler(retry_handler):
         result = limerick("test")
@@ -193,7 +193,7 @@ def test_retry_handler_exhausts_retries():
         success_response="Never reached",
         exception_factory=lambda: ValueError("Persistent failure"),
     )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+    retry_handler = RetryLLMHandler(num_retries=3, exception_cls=ValueError)
 
     with pytest.raises(ValueError, match="Persistent failure"):
         with handler(provider), handler(retry_handler):
@@ -209,7 +209,7 @@ def test_retry_handler_only_catches_specified_exception():
         success_response="Success",
         exception_factory=lambda: TypeError("Wrong type"),  # Different exception type
     )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
+    retry_handler = RetryLLMHandler(num_retries=3, exception_cls=ValueError)
 
     # TypeError should not be caught, should propagate immediately
     with pytest.raises(TypeError, match="Wrong type"):
@@ -249,7 +249,7 @@ def test_retry_handler_with_error_feedback():
 
     provider = MessageCapturingProvider()
     retry_handler = RetryLLMHandler(
-        max_retries=2, add_error_feedback=True, exception_cls=ValueError
+        num_retries=2, add_error_feedback=True, exception_cls=ValueError
     )
 
     with handler(provider), handler(retry_handler):
