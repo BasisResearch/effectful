@@ -1,8 +1,16 @@
 """Comprehensive tests for the meta-circular interpreter."""
 
 import ast
+import builtins
+import collections
+import collections.abc
 import dataclasses
 import inspect
+import linecache
+import pathlib
+import sys
+import types
+import typing
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -13,6 +21,7 @@ from effectful.internals.meta_eval import (
     EvaluatorState,
     InterpreterError,
     ReturnException,
+    ScopeDirectives,
     eval_expr,
     eval_expr_generator,
     eval_module,
@@ -36,13 +45,6 @@ def test_meta_circular_evaluation():
     module = ast.parse(source_text)
 
     # Add builtins and other necessary modules to allowed modules
-    import builtins
-    import collections
-    import linecache
-    import pathlib
-    import sys
-    import types
-    import typing
 
     allowed_modules = {
         "builtins": builtins,
@@ -96,13 +98,6 @@ def test_meta_circular_evaluation_2_levels():
     source_text = meta_eval_path.read_text()
 
     # Setup allowed modules and state configuration
-    import builtins
-    import collections
-    import linecache
-    import pathlib
-    import sys
-    import types
-    import typing
 
     allowed_modules = {
         "builtins": builtins,
@@ -1745,7 +1740,6 @@ def test_eval_stmt_classdef():
 
 def test_eval_stmt_import():
     """Test import statements."""
-    import sys
 
     state = EvaluatorState.fresh(allowed_modules={"sys": sys})
 
@@ -1756,7 +1750,6 @@ def test_eval_stmt_import():
 
 def test_eval_stmt_import_from():
     """Test from import statements."""
-    import collections
 
     state = EvaluatorState.fresh(allowed_modules={"collections": collections})
 
@@ -1916,6 +1909,59 @@ def test_eval_stmt_with():
     assert result == 42
 
 
+def test_eval_stmt_with_return_calls_exit_without_exception():
+    """Ensure __exit__ sees normal exit even when returning."""
+    code = """
+log = []
+
+class CM:
+    def __enter__(self):
+        log.append("enter")
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        log.append(exc_type)
+        return False
+
+def func():
+    with CM():
+        return "ok"
+
+result = func()
+"""
+    module = ast.parse(code)
+    state = EvaluatorState.fresh()
+    eval_module(module, state)
+
+    assert state.bindings["result"] == "ok"
+    assert state.bindings["log"] == ["enter", None]
+
+
+def test_eval_stmt_with_break_calls_exit_without_exception():
+    """Ensure __exit__ sees normal exit when break is used."""
+    code = """
+log = []
+
+class CM:
+    def __enter__(self):
+        log.append("enter")
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        log.append(exc_type)
+        return False
+
+for i in range(3):
+    with CM():
+        if i == 1:
+            break
+    log.append(i)
+"""
+    module = ast.parse(code)
+    state = EvaluatorState.fresh()
+    eval_module(module, state)
+
+    assert state.bindings["log"] == ["enter", None, 0, "enter", None]
+
+
 # -------------------------
 # eval_stmt tests - Global and nonlocal
 # -------------------------
@@ -1927,8 +1973,6 @@ def test_eval_stmt_global():
     state.push_scope()
 
     # Set up scope directives (normally done in function)
-    from effectful.internals.meta_eval import ScopeDirectives
-
     state.scope_directives.append(ScopeDirectives(set(), set()))
 
     node = ast.Global(names=["x"])
@@ -1941,9 +1985,6 @@ def test_eval_stmt_nonlocal():
     """Test nonlocal statements."""
     state = EvaluatorState.fresh()
     state.push_scope()
-
-    # Set up scope directives (normally done in function)
-    from effectful.internals.meta_eval import ScopeDirectives
 
     state.scope_directives.append(ScopeDirectives(set(), set()))
 
@@ -2016,6 +2057,78 @@ def test_eval_stmt_generator_return():
 
     assert isinstance(final, ReturnException)
     assert final.value == 42
+
+
+def test_eval_stmt_generator_while_else():
+    """Test while/else execution in generator context."""
+    state = EvaluatorState.fresh()
+
+    node = ast.While(
+        test=ast.Constant(value=False),
+        body=[
+            ast.Assign(
+                targets=[ast.Name(id="x", ctx=ast.Store())], value=ast.Constant(value=0)
+            )
+        ],
+        orelse=[
+            ast.Assign(
+                targets=[ast.Name(id="x", ctx=ast.Store())],
+                value=ast.Constant(value=1),
+            )
+        ],
+    )
+
+    gen = eval_stmt_generator(node, state)
+    try:
+        next(gen)
+        pytest.fail("Generator should be exhausted")
+    except StopIteration as e:
+        result = e.value
+
+    assert state.bindings["x"] == 1
+    assert result == 1
+
+
+def test_eval_stmt_generator_try_except_scope():
+    """Test that except blocks run in the outer scope in generator context."""
+    state = EvaluatorState.fresh()
+    state.bindings["ValueError"] = ValueError
+
+    node = ast.Try(
+        body=[
+            ast.Raise(
+                exc=ast.Call(
+                    func=ast.Name(id="ValueError", ctx=ast.Load()),
+                    args=[ast.Constant(value="boom")],
+                    keywords=[],
+                ),
+                cause=None,
+            )
+        ],
+        handlers=[
+            ast.ExceptHandler(
+                type=ast.Name(id="ValueError", ctx=ast.Load()),
+                name=None,
+                body=[
+                    ast.Assign(
+                        targets=[ast.Name(id="handled", ctx=ast.Store())],
+                        value=ast.Constant(value=True),
+                    )
+                ],
+            )
+        ],
+        orelse=[],
+        finalbody=[],
+    )
+
+    gen = eval_stmt_generator(node, state)
+    try:
+        next(gen)
+        pytest.fail("Generator should be exhausted")
+    except StopIteration:
+        pass
+
+    assert state.bindings["handled"] is True
 
 
 # -------------------------
@@ -4239,7 +4352,6 @@ def _compare_generators(py_gen: Generator, meta_gen: Generator, key: str) -> Non
 
 def _compare_with_python(code: str) -> None:
     """Compare meta-circular interpreter results with Python's builtin exec."""
-    import builtins
 
     # Run in Python
     py_ns: dict[str, Any] = {}
@@ -4301,18 +4413,16 @@ def _compare_with_python(code: str) -> None:
             if callable(meta_val):
                 # Generate test inputs based on function signature
                 try:
-                    import inspect as insp
-
-                    sig = insp.signature(py_val)
+                    sig = inspect.signature(py_val)
                     param_count = len(
                         [
                             p
                             for p in sig.parameters.values()
-                            if p.default is insp.Parameter.empty
+                            if p.default is inspect.Parameter.empty
                             and p.kind
                             not in (
-                                insp.Parameter.VAR_POSITIONAL,
-                                insp.Parameter.VAR_KEYWORD,
+                                inspect.Parameter.VAR_POSITIONAL,
+                                inspect.Parameter.VAR_KEYWORD,
                             )
                         ]
                     )

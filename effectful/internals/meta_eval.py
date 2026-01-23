@@ -1655,6 +1655,7 @@ def eval_stmt_generator(
         case ast.While(test=t, body=body, orelse=orelse):
             it = 0
             out = None
+            broke = False
             while True:
                 test_val = yield from eval_expr_generator(t, state)
                 if not test_val:
@@ -1669,10 +1670,11 @@ def eval_stmt_generator(
                             return result
                         out = result
                 except BreakException:
+                    broke = True
                     break
                 except ContinueException:
                     continue
-            else:
+            if not broke:
                 for s in orelse:
                     result = yield from eval_stmt_generator(s, state)
                     if isinstance(result, ReturnException):
@@ -1761,19 +1763,15 @@ def eval_stmt_generator(
                         # Push exception onto stack for bare raise support
                         state.exception_stack.append(e)
                         try:
-                            state.push_scope()
-                            try:
-                                if h.name:
-                                    assign_target(
-                                        ast.Name(id=h.name, ctx=ast.Store()), e, state
-                                    )
-                                for s in h.body:
-                                    result = yield from eval_stmt_generator(s, state)
-                                    if isinstance(result, ReturnException):
-                                        return result
-                                    out = result
-                            finally:
-                                state.pop_scope()
+                            if h.name:
+                                assign_target(
+                                    ast.Name(id=h.name, ctx=ast.Store()), e, state
+                                )
+                            for s in h.body:
+                                result = yield from eval_stmt_generator(s, state)
+                                if isinstance(result, ReturnException):
+                                    return result
+                                out = result
                         finally:
                             # Pop exception from stack when exiting handler
                             if state.exception_stack and state.exception_stack[-1] is e:
@@ -1819,8 +1817,11 @@ def eval_stmt_generator(
 
         case ast.With(items=items, body=body, type_comment=_):
             entered = []
-            caught_exc: BaseException | None = None
             out = None
+            pending_return: ReturnException | None = None
+            pending_break: BreakException | None = None
+            pending_continue: ContinueException | None = None
+            caught_exc: BaseException | None = None
             try:
                 for item in items:
                     ctx = yield from eval_expr_generator(item.context_expr, state)
@@ -1831,11 +1832,13 @@ def eval_stmt_generator(
                 for s in body:
                     result = yield from eval_stmt_generator(s, state)
                     if isinstance(result, ReturnException):
-                        # Handle return in finally
-                        for ctx_inner in reversed(entered):
-                            ctx_inner.__exit__(None, None, None)
-                        return result
+                        pending_return = result
+                        break
                     out = result
+            except BreakException as e:
+                pending_break = e
+            except ContinueException as e:
+                pending_continue = e
             except BaseException as e:
                 caught_exc = e
             finally:
@@ -1852,6 +1855,12 @@ def eval_stmt_generator(
                 # Re-raise if not suppressed
                 if caught_exc is not None and not suppressed:
                     raise caught_exc
+            if pending_break is not None:
+                raise pending_break
+            if pending_continue is not None:
+                raise pending_continue
+            if pending_return is not None:
+                return pending_return
             return out
 
         case ast.Delete(targets=targets):
@@ -1914,7 +1923,7 @@ def eval_match_pattern_generator(
     elif isinstance(pattern, ast.MatchClass):
         # Match against a class with attributes
         # Resolve the class name
-        cls = eval_expr(pattern.cls, state)
+        cls = yield from eval_expr_generator(pattern.cls, state)
         if not isinstance(value, cls):
             return False
         # Match positional patterns using __match_args__ if available
@@ -1942,7 +1951,9 @@ def eval_match_pattern_generator(
                 if not hasattr(value, attr_name):
                     return False
                 attr_value = getattr(value, attr_name)
-                if not eval_match_pattern(pat, attr_value, state):
+                if not (
+                    yield from eval_match_pattern_generator(pat, attr_value, state)
+                ):
                     return False
 
         return True
@@ -2223,6 +2234,10 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
         case ast.With(items=items, body=body, type_comment=_):
             entered = []
             caught_exc: BaseException | None = None
+            pending_return: ReturnException | None = None
+            pending_break: BreakException | None = None
+            pending_continue: ContinueException | None = None
+            out = None
             try:
                 for item in items:
                     ctx = eval_expr(item.context_expr, state)
@@ -2230,9 +2245,14 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
                     entered.append(ctx)
                     if item.optional_vars is not None:
                         assign_target(item.optional_vars, val, state)
-                out = None
                 for s in body:
                     out = eval_stmt(s, state)
+            except ReturnException as r:
+                pending_return = r
+            except BreakException as e:
+                pending_break = e
+            except ContinueException as e:
+                pending_continue = e
             except BaseException as e:
                 caught_exc = e
             finally:
@@ -2249,6 +2269,12 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
                 # Re-raise if not suppressed
                 if caught_exc is not None and not suppressed:
                     raise caught_exc
+            if pending_break is not None:
+                raise pending_break
+            if pending_continue is not None:
+                raise pending_continue
+            if pending_return is not None:
+                raise pending_return
             return out
 
         case ast.Delete(targets=targets):
