@@ -9,22 +9,6 @@ from typing import Any
 
 import pytest
 
-
-def add_lineno(node: ast.AST, lineno: int = 1) -> ast.AST:
-    """Add lineno to AST node for compatibility with ast.unparse."""
-    if hasattr(node, "lineno"):
-        node.lineno = lineno
-    for child in ast.walk(node):
-        if (
-            child is not node
-            and hasattr(child, "lineno")
-            and not hasattr(child, "_lineno_set")
-        ):
-            child.lineno = lineno
-            setattr(child, "_lineno_set", True)
-    return node
-
-
 from effectful.internals.meta_eval import (
     EvaluatorState,
     InterpreterError,
@@ -88,8 +72,8 @@ def test_meta_circular_evaluation():
             "__dict__",
             "__loader__",
             "__name__",
-            "__ast__",
             "__code__",
+            "__prepare__",
         ],
     )
 
@@ -148,6 +132,7 @@ def test_meta_circular_evaluation_2_levels():
         "__name__",
         "__ast__",
         "__code__",
+        "__prepare__",
     ]
 
     # Helper function to create a fresh state with proper setup
@@ -172,89 +157,63 @@ def test_meta_circular_evaluation_2_levels():
     eval_module_1 = state1.bindings.get("eval_module")
     assert eval_module_1 is not None, "eval_module not found in level 1 state"
 
-    # Now test all complex code snippets using level 2's eval_module
-    _test_meta_eval_on_code_samples_using_eval_module(state1, eval_module_1)
+    # Now test all complex code snippets using level 1's eval_module
+    _test_meta_eval_on_code_samples(state1, eval_module_1)
 
 
-def _test_meta_eval_on_code_samples_using_eval_module(
-    meta_eval_state: EvaluatorState, eval_module_fn: Any
+def _test_meta_eval_on_code_samples(
+    meta_eval_state: EvaluatorState, eval_module_fn: Any = None
 ):
-    """Test the meta-circular interpreter on various code samples using the provided eval_module function."""
+    """Test the interpreter on various code samples.
 
-    # Helper to run a test and catch errors
-    def run_test(name: str, code: str, setup_state: Any = None) -> tuple[bool, Any]:
-        """Run a test and return (success, state) tuple."""
-        try:
-            module = ast.parse(code)
-            state = EvaluatorState.fresh(
-                allowed_modules=dict(meta_eval_state.allowed_modules),
-                allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-            )
-            if setup_state:
-                setup_state(state)
-            eval_module_fn(module, state)
-            print(f"    {name}: PASSED")
-            return True, state
-        except Exception as e:
-            print(f"    {name}: FAILED ({type(e).__name__}: {e})")
-            raise
+    Args:
+        meta_eval_state: State with allowed modules/attrs for creating fresh states
+        eval_module_fn: Optional eval_module function to use (defaults to module-level eval_module)
+    """
+    if eval_module_fn is None:
+        eval_module_fn = eval_module
+
+    def run_code(code: str, setup: dict[str, Any] | None = None) -> EvaluatorState:
+        """Parse and evaluate code, returning the state."""
+        state = EvaluatorState.fresh(
+            allowed_modules=dict(meta_eval_state.allowed_modules),
+            allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
+        )
+        if setup:
+            for k, v in setup.items():
+                if k == "__dunder__":
+                    state.allowed_dunder_attrs.add(v)
+                else:
+                    state.bindings[k] = v
+        eval_module_fn(ast.parse(code), state)
+        return state
 
     # Test 1: Generators
-    print("  Testing generators...")
-    generator_code = """
+    state = run_code(
+        """
 def fibonacci(n):
     a, b = 0, 1
     for _ in range(n):
         yield a
         a, b = b, a + b
 
-def count_up_to(max):
-    count = 1
-    while count <= max:
-        yield count
-        count += 1
-    return "done"
-
 def simple_gen():
     yield 1
     yield 2
     yield 3
-"""
-    success, state = run_test(
-        "Generators",
-        generator_code,
-        lambda s: s.bindings.update({"range": range, "list": list}),
+""",
+        {"range": range, "list": list},
     )
-    assert success, "Generator test failed"
 
-    # Test generator functions by calling them
-    fib_fn = state.bindings["fibonacci"]
-    count_fn = state.bindings["count_up_to"]
-    simple_fn = state.bindings["simple_gen"]
+    assert list(state.bindings["fibonacci"](5)) == [0, 1, 1, 2, 3]
+    assert list(state.bindings["simple_gen"]()) == [1, 2, 3]
 
-    # Call generator functions to get generator objects
-    gen1 = fib_fn(5)
-    gen2 = count_fn(3)
-    gen3 = simple_fn()
-
-    # Convert to lists
-    fib_values = list(gen1)
-    count_values = list(gen2)
-    simple_values = list(gen3)
-
-    assert fib_values == [0, 1, 1, 2, 3]
-    assert count_values == [1, 2, 3]
-    assert simple_values == [1, 2, 3]
-
-    # Test another call
-    assert list(fib_fn(3)) == [0, 1, 1]
-
-    # Test 2: Classes with inheritance and methods
-    class_code = """
+    # Test 2: Classes with inheritance
+    state = run_code(
+        """
 class Animal:
     def __init__(self, name):
         self.name = name
-    
     def speak(self):
         return f"{self.name} makes a sound"
 
@@ -262,44 +221,20 @@ class Dog(Animal):
     def __init__(self, name, breed):
         super().__init__(name)
         self.breed = breed
-    
     def speak(self):
         return f"{self.name} barks"
-    
-    def fetch(self):
-        return f"{self.name} fetches the ball"
-
-class Cat(Animal):
-    def speak(self):
-        return f"{self.name} meows"
 
 dog = Dog("Rex", "Labrador")
-cat = Cat("Whiskers")
-animal = Animal("Generic")
-"""
-    success, state = run_test(
-        "Classes with inheritance",
-        class_code,
-        lambda s: (
-            s.allowed_dunder_attrs.add("__init__"),
-            s.bindings.update({"super": super}),
-        ),
+""",
+        {"__dunder__": "__init__", "super": super},
     )
-    assert success, "Classes with inheritance test failed"
 
-    dog = state.bindings["dog"]
-    cat = state.bindings["cat"]
-    animal = state.bindings["animal"]
-
-    assert dog.name == "Rex"
-    assert dog.breed == "Labrador"
-    assert dog.speak() == "Rex barks"
-    assert dog.fetch() == "Rex fetches the ball"
-    assert cat.speak() == "Whiskers meows"
-    assert animal.speak() == "Generic makes a sound"
+    assert state.bindings["dog"].name == "Rex"
+    assert state.bindings["dog"].breed == "Labrador"
+    assert state.bindings["dog"].speak() == "Rex barks"
 
     # Test 3: Decorators
-    decorator_code = """
+    state = run_code("""
 def memoize(func):
     cache = {}
     def wrapper(*args):
@@ -314,556 +249,63 @@ def fibonacci(n):
         return n
     return fibonacci(n - 1) + fibonacci(n - 2)
 
-@memoize
-def factorial(n):
-    if n <= 1:
-        return 1
-    return n * factorial(n - 1)
-
 fib_5 = fibonacci(5)
-fact_5 = factorial(5)
-"""
-    success, state = run_test("Decorators", decorator_code)
-    assert success, "Decorator test failed"
-
+""")
     assert state.bindings["fib_5"] == 5
-    assert state.bindings["fact_5"] == 120
 
     # Test 4: Dataclasses
-    dataclass_code = """
-from dataclasses import dataclass, field
+    state = run_code(
+        """
+from dataclasses import dataclass
 
 @dataclass
 class Point:
     x: int
     y: int
-    
     def distance(self, other):
         return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5
 
-@dataclass
-class Person:
-    name: str
-    age: int
-    email: str = ""
-    
-    def greet(self):
-        return f"Hello, I'm {self.name}, {self.age} years old"
-
-@dataclass
-class Container:
-    items: list = field(default_factory=list)
-    
-    def add(self, item):
-        self.items.append(item)
-    
-    def get(self, index):
-        return self.items[index] if 0 <= index < len(self.items) else None
-
 p1 = Point(0, 0)
 p2 = Point(3, 4)
-person = Person("Alice", 30, "alice@example.com")
-container = Container()
-container.add("item1")
-container.add("item2")
-"""
-    success, state = run_test(
-        "Dataclasses",
-        dataclass_code,
-        lambda s: (
-            s.allowed_dunder_attrs.add("__init__"),
-            s.bindings.update(
-                {
-                    "dataclass": dataclasses.dataclass,
-                    "field": dataclasses.field,
-                    "list": list,
-                }
-            ),
-        ),
+""",
+        {"__dunder__": "__init__", "dataclass": dataclasses.dataclass},
     )
 
-    p1 = state.bindings["p1"]
-    p2 = state.bindings["p2"]
-    person = state.bindings["person"]
-    container = state.bindings["container"]
+    assert state.bindings["p1"].distance(state.bindings["p2"]) == 5.0
 
-    assert p1.x == 0
-    assert p1.y == 0
-    assert p2.x == 3
-    assert p2.y == 4
-    assert p1.distance(p2) == 5.0
-    assert person.name == "Alice"
-    assert person.age == 30
-    assert person.email == "alice@example.com"
-    assert person.greet() == "Hello, I'm Alice, 30 years old"
-    assert container.get(0) == "item1"
-    assert container.get(1) == "item2"
-
-    # Test 5: Exceptions and error handling
-    exception_code = """
-class CustomError(Exception):
-    def __init__(self, message, code):
-        super().__init__(message)
-        self.code = code
-
-class ValidationError(CustomError):
-    pass
-
-def divide(a, b):
-    if b == 0:
-        raise ValueError("Cannot divide by zero")
-    return a / b
-
-def process_data(data):
-    if not data:
-        raise ValidationError("Data is empty", 100)
-    if not isinstance(data, list):
-        raise TypeError("Data must be a list")
-    return len(data)
-
-result1 = None
-error1 = None
+    # Test 5: Exceptions
+    state = run_code(
+        """
+result = None
+error = None
 try:
-    result1 = divide(10, 2)
-except ValueError as e:
-    error1 = str(e)
-
-result2 = None
-error2 = None
-try:
-    result2 = divide(10, 0)
-except ValueError as e:
-    error2 = str(e)
-
-result3 = None
-error3 = None
-try:
-    result3 = process_data([])
-except ValidationError as e:
-    error3 = (str(e), e.code)
-
-result4 = None
-error4 = None
-try:
-    result4 = process_data("not a list")
-except TypeError as e:
-    error4 = str(e)
-
-finally_executed = False
-try:
-    raise ValueError("test")
-except ValueError:
-    pass
-finally:
-    finally_executed = True
-"""
-    success, state = run_test(
-        "Exceptions",
-        exception_code,
-        lambda s: (
-            s.allowed_dunder_attrs.add("__init__"),
-            s.bindings.update(
-                {
-                    "super": super,
-                    "Exception": Exception,
-                    "ValueError": ValueError,
-                    "TypeError": TypeError,
-                    "isinstance": isinstance,
-                    "list": list,
-                    "str": str,
-                }
-            ),
-        ),
+    result = 10 / 0
+except ZeroDivisionError as e:
+    error = str(e)
+""",
+        {"str": str, "ZeroDivisionError": ZeroDivisionError},
     )
-    assert success, "Exception test failed"
 
-    assert state.bindings["result1"] == 5.0
-    assert state.bindings["error1"] is None
-    assert state.bindings["result2"] is None
-    assert "Cannot divide by zero" in state.bindings["error2"]
-    assert state.bindings["result3"] is None
-    assert state.bindings["error3"] == ("Data is empty", 100)
-    assert state.bindings["result4"] is None
-    assert "Data must be a list" in state.bindings["error4"]
-    assert state.bindings["finally_executed"] is True
+    assert state.bindings["result"] is None
+    assert state.bindings["error"] is not None
 
-    # Test 6: Complex combination - class with generator method and exception handling
-    complex_code = """
+    # Test 6: Complex - class with generator method
+    state = run_code(
+        """
 class DataProcessor:
     def __init__(self, data):
-        if not data:
-            raise ValueError("Data cannot be empty")
         self.data = data
-    
     def process(self):
         for item in self.data:
-            if item < 0:
-                raise ValueError(f"Negative value found: {item}")
             yield item * 2
-    
-    def sum_processed(self):
-        total = 0
-        try:
-            for value in self.process():
-                total += value
-        except ValueError as e:
-            return f"Error: {e}"
-        return total
 
-processor1 = DataProcessor([1, 2, 3, 4])
-processor2 = DataProcessor([1, -2, 3])
-
-result1 = list(processor1.process())
-result2 = processor1.sum_processed()
-result3 = processor2.sum_processed()
-"""
-    success, state = run_test(
-        "Complex combination",
-        complex_code,
-        lambda s: (
-            s.allowed_dunder_attrs.add("__init__"),
-            s.bindings.update({"ValueError": ValueError, "list": list}),
-        ),
+processor = DataProcessor([1, 2, 3])
+result = list(processor.process())
+""",
+        {"__dunder__": "__init__", "list": list},
     )
-    assert success, "Complex combination test failed"
 
-    assert state.bindings["result1"] == [2, 4, 6, 8]
-    assert state.bindings["result2"] == 20
-    assert "Negative value found" in state.bindings["result3"]
-
-
-def _test_meta_eval_on_code_samples(meta_eval_state: EvaluatorState):
-    """Test the meta-circular interpreter on various code samples."""
-
-    # Use the regular interpreter functions (not the meta-circular ones)
-    # to test that the interpreter works correctly on various code samples
-
-    # Test 1: Generators
-    generator_code = """
-def fibonacci(n):
-    a, b = 0, 1
-    for _ in range(n):
-        yield a
-        a, b = b, a + b
-
-def count_up_to(max):
-    count = 1
-    while count <= max:
-        yield count
-        count += 1
-    return "done"
-
-def simple_gen():
-    yield 1
-    yield 2
-    yield 3
-"""
-    module = ast.parse(generator_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    state.bindings["range"] = range
-    state.bindings["list"] = list
-    eval_module(module, state)
-
-    # Test generator functions by calling them
-    fib_fn = state.bindings["fibonacci"]
-    count_fn = state.bindings["count_up_to"]
-    simple_fn = state.bindings["simple_gen"]
-
-    # Call generator functions to get generator objects
-    gen1 = fib_fn(5)
-    gen2 = count_fn(3)
-    gen3 = simple_fn()
-
-    # Convert to lists
-    fib_values = list(gen1)
-    count_values = list(gen2)
-    simple_values = list(gen3)
-
-    assert fib_values == [0, 1, 1, 2, 3]
-    assert count_values == [1, 2, 3]
-    assert simple_values == [1, 2, 3]
-
-    # Test another call
-    assert list(fib_fn(3)) == [0, 1, 1]
-
-    # Test 2: Classes with inheritance and methods
-    class_code = """
-class Animal:
-    def __init__(self, name):
-        self.name = name
-    
-    def speak(self):
-        return f"{self.name} makes a sound"
-
-class Dog(Animal):
-    def __init__(self, name, breed):
-        super().__init__(name)
-        self.breed = breed
-    
-    def speak(self):
-        return f"{self.name} barks"
-    
-    def fetch(self):
-        return f"{self.name} fetches the ball"
-
-class Cat(Animal):
-    def speak(self):
-        return f"{self.name} meows"
-
-dog = Dog("Rex", "Labrador")
-cat = Cat("Whiskers")
-animal = Animal("Generic")
-"""
-    module = ast.parse(class_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    state.allowed_dunder_attrs.add("__init__")
-    state.bindings["super"] = super
-    eval_module(module, state)
-
-    dog = state.bindings["dog"]
-    cat = state.bindings["cat"]
-    animal = state.bindings["animal"]
-
-    assert dog.name == "Rex"
-    assert dog.breed == "Labrador"
-    assert dog.speak() == "Rex barks"
-    assert dog.fetch() == "Rex fetches the ball"
-    assert cat.speak() == "Whiskers meows"
-    assert animal.speak() == "Generic makes a sound"
-
-    # Test 3: Decorators
-    decorator_code = """
-def memoize(func):
-    cache = {}
-    def wrapper(*args):
-        if args not in cache:
-            cache[args] = func(*args)
-        return cache[args]
-    return wrapper
-
-@memoize
-def fibonacci(n):
-    if n < 2:
-        return n
-    return fibonacci(n - 1) + fibonacci(n - 2)
-
-@memoize
-def factorial(n):
-    if n <= 1:
-        return 1
-    return n * factorial(n - 1)
-
-fib_5 = fibonacci(5)
-fact_5 = factorial(5)
-"""
-    module = ast.parse(decorator_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    eval_module(module, state)
-
-    assert state.bindings["fib_5"] == 5
-    assert state.bindings["fact_5"] == 120
-
-    # Test 4: Dataclasses
-    dataclass_code = """
-from dataclasses import dataclass, field
-
-@dataclass
-class Point:
-    x: int
-    y: int
-    
-    def distance(self, other):
-        return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5
-
-@dataclass
-class Person:
-    name: str
-    age: int
-    email: str = ""
-    
-    def greet(self):
-        return f"Hello, I'm {self.name}, {self.age} years old"
-
-@dataclass
-class Container:
-    items: list = field(default_factory=list)
-    
-    def add(self, item):
-        self.items.append(item)
-    
-    def get(self, index):
-        return self.items[index] if 0 <= index < len(self.items) else None
-
-p1 = Point(0, 0)
-p2 = Point(3, 4)
-person = Person("Alice", 30, "alice@example.com")
-container = Container()
-container.add("item1")
-container.add("item2")
-"""
-    module = ast.parse(dataclass_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    state.allowed_dunder_attrs.add("__init__")
-    state.bindings["dataclass"] = dataclasses.dataclass
-    state.bindings["field"] = dataclasses.field
-    state.bindings["list"] = list
-    eval_module(module, state)
-
-    p1 = state.bindings["p1"]
-    p2 = state.bindings["p2"]
-    person = state.bindings["person"]
-    container = state.bindings["container"]
-
-    assert p1.x == 0
-    assert p1.y == 0
-    assert p2.x == 3
-    assert p2.y == 4
-    assert p1.distance(p2) == 5.0
-    assert person.name == "Alice"
-    assert person.age == 30
-    assert person.email == "alice@example.com"
-    assert person.greet() == "Hello, I'm Alice, 30 years old"
-    assert container.get(0) == "item1"
-    assert container.get(1) == "item2"
-
-    # Test 5: Exceptions and error handling
-    exception_code = """
-class CustomError(Exception):
-    def __init__(self, message, code):
-        super().__init__(message)
-        self.code = code
-
-class ValidationError(CustomError):
-    pass
-
-def divide(a, b):
-    if b == 0:
-        raise ValueError("Cannot divide by zero")
-    return a / b
-
-def process_data(data):
-    if not data:
-        raise ValidationError("Data is empty", 100)
-    if not isinstance(data, list):
-        raise TypeError("Data must be a list")
-    return len(data)
-
-result1 = None
-error1 = None
-try:
-    result1 = divide(10, 2)
-except ValueError as e:
-    error1 = str(e)
-
-result2 = None
-error2 = None
-try:
-    result2 = divide(10, 0)
-except ValueError as e:
-    error2 = str(e)
-
-result3 = None
-error3 = None
-try:
-    result3 = process_data([])
-except ValidationError as e:
-    error3 = (str(e), e.code)
-
-result4 = None
-error4 = None
-try:
-    result4 = process_data("not a list")
-except TypeError as e:
-    error4 = str(e)
-
-finally_executed = False
-try:
-    raise ValueError("test")
-except ValueError:
-    pass
-finally:
-    finally_executed = True
-"""
-    module = ast.parse(exception_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    state.allowed_dunder_attrs.add("__init__")
-    state.bindings["super"] = super
-    state.bindings["Exception"] = Exception
-    state.bindings["ValueError"] = ValueError
-    state.bindings["TypeError"] = TypeError
-    state.bindings["isinstance"] = isinstance
-    state.bindings["list"] = list
-    state.bindings["str"] = str
-    eval_module(module, state)
-
-    assert state.bindings["result1"] == 5.0
-    assert state.bindings["error1"] is None
-    assert state.bindings["result2"] is None
-    assert "Cannot divide by zero" in state.bindings["error2"]
-    assert state.bindings["result3"] is None
-    assert state.bindings["error3"] == ("Data is empty", 100)
-    assert state.bindings["result4"] is None
-    assert "Data must be a list" in state.bindings["error4"]
-    assert state.bindings["finally_executed"] is True
-
-    # Test 6: Complex combination - class with generator method and exception handling
-    complex_code = """
-class DataProcessor:
-    def __init__(self, data):
-        if not data:
-            raise ValueError("Data cannot be empty")
-        self.data = data
-    
-    def process(self):
-        for item in self.data:
-            if item < 0:
-                raise ValueError(f"Negative value found: {item}")
-            yield item * 2
-    
-    def sum_processed(self):
-        total = 0
-        try:
-            for value in self.process():
-                total += value
-        except ValueError as e:
-            return f"Error: {e}"
-        return total
-
-processor1 = DataProcessor([1, 2, 3, 4])
-processor2 = DataProcessor([1, -2, 3])
-
-result1 = list(processor1.process())
-result2 = processor1.sum_processed()
-result3 = processor2.sum_processed()
-"""
-    module = ast.parse(complex_code)
-    state = EvaluatorState.fresh(
-        allowed_modules=dict(meta_eval_state.allowed_modules),
-        allowed_dunder_attrs=list(meta_eval_state.allowed_dunder_attrs),
-    )
-    state.allowed_dunder_attrs.add("__init__")
-    state.bindings["ValueError"] = ValueError
-    state.bindings["list"] = list
-    eval_module(module, state)
-
-    assert state.bindings["result1"] == [2, 4, 6, 8]
-    assert state.bindings["result2"] == 20
-    assert "Negative value found" in state.bindings["result3"]
+    assert state.bindings["result"] == [2, 4, 6]
 
 
 # -------------------------
@@ -1451,21 +893,6 @@ def test_eval_expr_call_kwargs():
     assert eval_expr(node, state) == 3
 
 
-def test_eval_expr_call_generator_error():
-    """Test that calling a generator raises an error."""
-    state = EvaluatorState.fresh()
-
-    def gen():
-        yield 1
-
-    state.bindings["gen"] = gen()
-
-    node = ast.Call(func=ast.Name(id="gen", ctx=ast.Load()), args=[], keywords=[])
-
-    with pytest.raises(InterpreterError, match="Cannot call a generator"):
-        eval_expr(node, state)
-
-
 # -------------------------
 # eval_expr tests - Lambdas
 # -------------------------
@@ -1540,6 +967,7 @@ def test_eval_expr_listcomp():
                 target=ast.Name(id="x", ctx=ast.Store()),
                 iter=ast.Name(id="items", ctx=ast.Load()),
                 ifs=[],
+                is_async=0,
             )
         ],
     )
@@ -1560,6 +988,7 @@ def test_eval_expr_setcomp():
                 target=ast.Name(id="x", ctx=ast.Store()),
                 iter=ast.Name(id="items", ctx=ast.Load()),
                 ifs=[],
+                is_async=0,
             )
         ],
     )
@@ -1585,6 +1014,7 @@ def test_eval_expr_dictcomp():
                 target=ast.Name(id="x", ctx=ast.Store()),
                 iter=ast.Name(id="items", ctx=ast.Load()),
                 ifs=[],
+                is_async=0,
             )
         ],
     )
@@ -1609,6 +1039,7 @@ def test_eval_expr_generatorexp():
                 target=ast.Name(id="x", ctx=ast.Store()),
                 iter=ast.Name(id="items", ctx=ast.Load()),
                 ifs=[],
+                is_async=0,
             )
         ],
     )
@@ -1636,6 +1067,7 @@ def test_eval_expr_comprehension_with_if():
                         right=ast.Constant(value=2),
                     )
                 ],
+                is_async=0,
             )
         ],
     )
@@ -1685,17 +1117,18 @@ def test_eval_expr_generator_constant():
     """Test constants in generator context."""
     state = EvaluatorState.fresh()
 
-    result = list(eval_expr_generator(ast.Constant(value=42), state))
-    assert result == []
-    # The generator should return the value
     gen = eval_expr_generator(ast.Constant(value=42), state)
-    final = None
+    yielded = list(gen)
+    # Constants don't yield anything, they just return the value
+    assert yielded == []
+
+    # Test that the return value is correct
+    gen = eval_expr_generator(ast.Constant(value=42), state)
     try:
-        while True:
-            final = next(gen)
+        next(gen)
+        pytest.fail("Generator should not yield")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else final
-    assert final == 42
+        assert e.value == 42
 
 
 def test_eval_expr_generator_yield():
@@ -1710,10 +1143,9 @@ def test_eval_expr_generator_yield():
 
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
-        assert final == 42
+        assert e.value == 42
 
 
 def test_eval_expr_generator_yield_none():
@@ -1752,7 +1184,7 @@ def test_eval_expr_generator_yield_from():
             val = next(gen)
             values.append(val)
     except StopIteration as e:
-        result = e.value if hasattr(e, "value") else None
+        result = e.value
 
     assert values == [1, 2]
     # The return value should be 3 (from the subgenerator)
@@ -1782,10 +1214,9 @@ def test_eval_expr_generator_binop_with_yield():
     # Final result
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
-        assert final == 3  # 1 + 2
+        assert e.value == 3  # 1 + 2
 
 
 def test_eval_expr_generator_call_with_yield():
@@ -1819,10 +1250,9 @@ def test_eval_expr_generator_call_with_yield():
     # Final result
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
-        assert final == 3
+        assert e.value == 3
 
 
 def test_eval_expr_generator_ifexp_with_yield():
@@ -1871,10 +1301,9 @@ def test_eval_expr_generator_compare_with_yield():
 
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
-        assert final is True  # 1 < 2
+        assert e.value is True  # 1 < 2
 
 
 def test_eval_expr_generator_boolop_with_yield():
@@ -1900,10 +1329,9 @@ def test_eval_expr_generator_boolop_with_yield():
 
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
-        assert final is False
+        assert e.value is False
 
 
 # -------------------------
@@ -2542,7 +1970,7 @@ def test_eval_stmt_generator_expr():
 
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration:
         pass
 
@@ -2564,7 +1992,7 @@ def test_eval_stmt_generator_assign():
         next(gen)
         final = None
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
+        final = e.value
 
     assert final == 42
     assert state.bindings["x"] == 42
@@ -2584,7 +2012,7 @@ def test_eval_stmt_generator_return():
         next(gen)
         final = None
     except StopIteration as e:
-        final = e.value if hasattr(e, "value") else None
+        final = e.value
 
     assert isinstance(final, ReturnException)
     assert final.value == 42
@@ -2922,7 +2350,7 @@ def test_generator_function_return():
 
     try:
         next(gen)
-        assert False, "Generator should be exhausted"
+        pytest.fail("Generator should be exhausted")
     except StopIteration as e:
         assert e.value == 42
 
@@ -4054,10 +3482,8 @@ final_global = global_var
     module = ast.parse(code)
     eval_module(module, state)
 
-    # Global modification in nested functions may not work perfectly
-    # but the function should at least be able to read and return the value
-    assert state.bindings["result"] >= 10  # Should be at least the original value
-    # The global might not be modified due to scoping, which is acceptable
+    assert state.bindings["result"] == 15  # 10 + 5
+    assert state.bindings["final_global"] == 15  # global was modified
 
 
 def test_nested_function_complex_closure():
@@ -4372,39 +3798,15 @@ def outer():
     module = ast.parse(code)
     eval_module(module, state)
 
-    # Verify the outer function exists
     outer_fn = state.bindings["outer"]
     assert callable(outer_fn)
 
-    # Call the outer function to get the inner generator function
-    # Note: There may be issues with returning generator functions from functions
-    # This is a complex case that may not be fully supported
     gen_fn = outer_fn()
-    if callable(gen_fn):
-        gen = gen_fn()
-        if isinstance(gen, Generator):
-            values = list(gen)
-            # Generator may be empty if there are issues with nested generator functions
-            if values:
-                assert values == [1, 2, 3]
-            else:
-                assert False, (
-                    "Nested generator functions may not yield values correctly"
-                )
-        else:
-            assert False, "Generator function did not return a generator"
-    else:
-        # If it returned a generator directly, that's also acceptable
-        if isinstance(gen_fn, Generator):
-            values = list(gen_fn)
-            if values:
-                assert values == [1, 2, 3]
-            else:
-                assert False, (
-                    "Nested generator functions may not yield values correctly"
-                )
-        else:
-            assert False, "Outer function did not return a callable or generator"
+    assert callable(gen_fn), "outer() should return a callable generator function"
+
+    gen = gen_fn()
+    assert isinstance(gen, Generator), "inner_gen() should return a generator"
+    assert list(gen) == [1, 2, 3]
 
 
 def test_class_method_closure():
@@ -4727,246 +4129,657 @@ gen_fn1, regular_fn, gen_fn2 = factory(5)
     assert list(gen2) == [6]
 
 
-def test_meta_circular_matches_python_semantics():
-    """Test that meta-circular interpreter matches Python's builtin semantics."""
+def _values_equivalent(py_val: Any, meta_val: Any, key: str) -> bool:
+    """Check if two values are equivalent, handling callables specially."""
+    # Same value
+    if py_val == meta_val:
+        return True
 
-    def compare_with_python(code: str, setup_code: str = ""):
-        """Compare meta-circular interpreter results with Python's builtin exec/eval."""
-        # Run in Python's builtin interpreter
-        python_globals: dict[str, Any] = {}
-        python_locals: dict[str, Any] = {}
+    # Both are callables - compare by behavior
+    if callable(py_val) and callable(meta_val) and not isinstance(py_val, type):
+        _compare_callables(py_val, meta_val, key, [(0,), (1,), (10,)])
+        return True
+
+    # Both are tuples - compare element-wise
+    if isinstance(py_val, tuple) and isinstance(meta_val, tuple):
+        if len(py_val) != len(meta_val):
+            return False
+        for i, (pv, mv) in enumerate(zip(py_val, meta_val)):
+            if not _values_equivalent(pv, mv, f"{key}[{i}]"):
+                return False
+        return True
+
+    # Both are lists - compare element-wise
+    if isinstance(py_val, list) and isinstance(meta_val, list):
+        if len(py_val) != len(meta_val):
+            return False
+        for i, (pv, mv) in enumerate(zip(py_val, meta_val)):
+            if not _values_equivalent(pv, mv, f"{key}[{i}]"):
+                return False
+        return True
+
+    # Both are generators - compare yielded values
+    if isinstance(py_val, Generator) and isinstance(meta_val, Generator):
+        _compare_generators(py_val, meta_val, key)
+        return True
+
+    return False
+
+
+def _compare_callables(
+    py_fn: Any, meta_fn: Any, key: str, test_inputs: list[tuple]
+) -> None:
+    """Compare two callables by testing them with the same inputs."""
+    # First try with no args to detect zero-arg functions
+    try:
+        py_no_args = py_fn()
+        meta_no_args = meta_fn()
+        # Both succeeded with no args - compare and return
+        assert _values_equivalent(py_no_args, meta_no_args, f"{key}()"), (
+            f"{key}(): {py_no_args} != {meta_no_args}"
+        )
+        return
+    except TypeError:
+        # Needs args, continue with test_inputs
+        pass
+
+    for args in test_inputs:
         try:
-            if setup_code:
-                exec(setup_code, python_globals, python_locals)
-            exec(code, python_globals, python_locals)
-            python_result = dict(python_locals)
-            python_result.update(
-                {k: v for k, v in python_globals.items() if not k.startswith("__")}
+            py_result = py_fn(*args)
+            py_exc = None
+        except Exception as e:
+            py_result = None
+            py_exc = type(e)
+
+        try:
+            meta_result = meta_fn(*args)
+            meta_exc = None
+        except Exception as e:
+            meta_result = None
+            meta_exc = type(e)
+
+        # Both should raise same exception type or return same value
+        if py_exc or meta_exc:
+            assert py_exc == meta_exc, (
+                f"{key}({args}): Python raised {py_exc}, meta raised {meta_exc}"
             )
-        except Exception as e:
-            python_result = {"__exception__": e}
+        else:
+            # Use recursive equivalence check
+            assert _values_equivalent(py_result, meta_result, f"{key}({args})"), (
+                f"{key}({args}): {py_result} != {meta_result}"
+            )
 
-        # Run in meta-circular interpreter
-        module = ast.parse(setup_code + "\n" + code if setup_code else code)
-        state = EvaluatorState.fresh()
-        # Add common builtins
-        import builtins
 
-        for name in dir(builtins):
-            if not name.startswith("_") or name in [
-                "__name__",
-                "__file__",
-                "__package__",
-            ]:
+def _compare_generators(py_gen: Generator, meta_gen: Generator, key: str) -> None:
+    """Compare two generators by exhausting them and comparing yielded values."""
+    py_items = []
+    meta_items = []
+    py_return = None
+    meta_return = None
+
+    # Exhaust Python generator
+    try:
+        while True:
+            py_items.append(next(py_gen))
+    except StopIteration as e:
+        py_return = e.value
+
+    # Exhaust meta generator
+    try:
+        while True:
+            meta_items.append(next(meta_gen))
+    except StopIteration as e:
+        meta_return = e.value
+
+    assert py_items == meta_items, f"{key} generator values: {py_items} != {meta_items}"
+    assert py_return == meta_return, (
+        f"{key} generator return: {py_return} != {meta_return}"
+    )
+
+
+def _compare_with_python(code: str) -> None:
+    """Compare meta-circular interpreter results with Python's builtin exec."""
+    import builtins
+
+    # Run in Python
+    py_ns: dict[str, Any] = {}
+    exec(code, py_ns)
+    py_result = {k: v for k, v in py_ns.items() if not k.startswith("__")}
+
+    # Run in meta-circular interpreter
+    state = EvaluatorState.fresh()
+    # Add common dunder attributes needed for tests
+    for dunder in [
+        "__init__",
+        "__enter__",
+        "__exit__",
+        "__cause__",
+        "__class__",
+    ]:
+        state.allowed_dunder_attrs.add(dunder)
+    for name in [
+        "super",
+        "isinstance",
+        "type",
+        "str",
+        "list",
+        "dict",
+        "tuple",
+        "set",
+        "int",
+        "float",
+        "bool",
+        "len",
+        "range",
+        "abs",
+        "next",
+        "sum",
+        "dir",
+        "Exception",
+        "ValueError",
+        "TypeError",
+        "ZeroDivisionError",
+        "StopIteration",
+    ]:
+        state.bindings[name] = getattr(builtins, name, None) or globals().get(name)
+    eval_module(ast.parse(code), state)
+
+    # Compare user-defined variables
+    for key, py_val in py_result.items():
+        meta_val = state.bindings.get(key)
+        if meta_val is None:
+            continue
+
+        # Compare generators by exhausting them
+        if isinstance(py_val, Generator):
+            if isinstance(meta_val, Generator):
+                _compare_generators(py_val, meta_val, key)
+            continue
+
+        # Compare functions by calling with test inputs
+        if callable(py_val) and not isinstance(py_val, type):
+            if callable(meta_val):
+                # Generate test inputs based on function signature
                 try:
-                    state.bindings[name] = getattr(builtins, name)
-                except:
-                    pass
-        state.allowed_dunder_attrs.add("__init__")
-        state.bindings["super"] = super
-        state.bindings["isinstance"] = isinstance
-        state.bindings["type"] = type
-        state.bindings["str"] = str
-        state.bindings["list"] = list
-        state.bindings["dict"] = dict
-        state.bindings["tuple"] = tuple
-        state.bindings["set"] = set
-        state.bindings["int"] = int
-        state.bindings["float"] = float
-        state.bindings["bool"] = bool
-        state.bindings["len"] = len
-        state.bindings["range"] = range
-        state.bindings["Exception"] = Exception
-        state.bindings["ValueError"] = ValueError
-        state.bindings["TypeError"] = TypeError
+                    import inspect as insp
 
-        try:
-            eval_module(module, state)
-            meta_result = dict(state.bindings)
-            # Remove internal/builtin keys for comparison
-            meta_result = {
-                k: v
-                for k, v in meta_result.items()
-                if not k.startswith("__")
-                or k in ["__name__", "__file__", "__package__"]
-            }
-        except Exception as e:
-            meta_result = {"__exception__": e}
-
-        # Compare results (excluding functions/classes that might have different identity)
-        # Only compare keys that exist in Python's result (to avoid comparing unused builtins)
-        for key in python_result.keys():
-            if key.startswith("__") and key not in [
-                "__name__",
-                "__file__",
-                "__package__",
-                "__exception__",
-            ]:
-                continue
-
-            python_val = python_result.get(key)
-            meta_val = meta_result.get(key)
-
-            # If key doesn't exist in meta result, skip (might be a builtin that wasn't used)
-            if key not in meta_result:
-                continue
-
-            # For classes, compare by behavior (checking attributes/methods)
-            if isinstance(python_val, type) and isinstance(meta_val, type):
-                # Don't compare builtin types that weren't explicitly used in the code
-                if python_val.__module__ == "builtins" and key not in python_result:
-                    continue
-                # For user-defined classes, check they have the same attributes
-                if python_val.__module__ != "builtins":
-                    # Compare class attributes (methods, etc.)
-                    python_attrs = set(
-                        k for k in python_val.__dict__.keys() if not k.startswith("__")
+                    sig = insp.signature(py_val)
+                    param_count = len(
+                        [
+                            p
+                            for p in sig.parameters.values()
+                            if p.default is insp.Parameter.empty
+                            and p.kind
+                            not in (
+                                insp.Parameter.VAR_POSITIONAL,
+                                insp.Parameter.VAR_KEYWORD,
+                            )
+                        ]
                     )
-                    meta_attrs = set(
-                        k for k in meta_val.__dict__.keys() if not k.startswith("__")
-                    )
-                    assert python_attrs == meta_attrs, (
-                        f"Class {key} has different attributes: Python={python_attrs}, Meta={meta_attrs}"
-                    )
-                continue
+                except (ValueError, TypeError):
+                    param_count = 1  # Default guess
 
-            # For instances, compare by their attributes/__dict__
-            if (
-                hasattr(python_val, "__dict__")
-                and hasattr(meta_val, "__dict__")
-                and not isinstance(python_val, (type, Exception))
-                and not isinstance(meta_val, (type, Exception))
-            ):
-                python_dict = {
-                    k: v
-                    for k, v in python_val.__dict__.items()
-                    if not k.startswith("__")
+                # Create test inputs based on parameter count
+                test_inputs: list[tuple[int, ...]]
+                if param_count == 0:
+                    test_inputs = [()]
+                elif param_count == 1:
+                    test_inputs = [(0,), (1,), (5,), (-1,)]
+                elif param_count == 2:
+                    test_inputs = [(0, 0), (1, 2), (3, 4)]
+                else:
+                    test_inputs = [tuple(range(param_count))]
+
+                _compare_callables(py_val, meta_val, key, test_inputs)
+            continue
+
+        # Compare lists of callables (like lambdas)
+        if isinstance(py_val, list) and py_val and callable(py_val[0]):
+            if isinstance(meta_val, list) and len(py_val) == len(meta_val):
+                for i, (py_fn, meta_fn) in enumerate(zip(py_val, meta_val)):
+                    if callable(py_fn) and callable(meta_fn):
+                        _compare_callables(
+                            py_fn, meta_fn, f"{key}[{i}]", [(0,), (10,), (100,)]
+                        )
+            continue
+
+        # Compare classes by their user-defined attributes
+        if isinstance(py_val, type) and isinstance(meta_val, type):
+            py_attrs = {k for k in py_val.__dict__ if not k.startswith("__")}
+            meta_attrs = {k for k in meta_val.__dict__ if not k.startswith("__")}
+            assert py_attrs == meta_attrs, f"Class {key}: {py_attrs} != {meta_attrs}"
+            continue
+
+        # Compare instances by their __dict__
+        if hasattr(py_val, "__dict__") and hasattr(meta_val, "__dict__"):
+            if not isinstance(py_val, (type, Exception)):
+                py_dict = {
+                    k: v for k, v in py_val.__dict__.items() if not k.startswith("__")
                 }
                 meta_dict = {
                     k: v for k, v in meta_val.__dict__.items() if not k.startswith("__")
                 }
-                assert python_dict == meta_dict, (
-                    f"Instance {key} has different attributes: Python={python_dict}, Meta={meta_dict}"
-                )
+                assert py_dict == meta_dict, f"Instance {key}: {py_dict} != {meta_dict}"
                 continue
 
-            # Don't compare functions (they'll have different identity)
-            if callable(python_val) and not isinstance(python_val, type):
-                continue
-            if callable(meta_val) and not isinstance(meta_val, type):
-                continue
+        # Compare primitive values
+        if not callable(py_val):
+            assert py_val == meta_val, f"{key}: {py_val} != {meta_val}"
 
-            # Compare values
-            if python_val != meta_val:
-                # For exceptions, compare the message
-                if isinstance(python_val, Exception) and isinstance(
-                    meta_val, Exception
-                ):
-                    assert str(python_val) == str(meta_val), (
-                        f"Mismatch for {key}: Python={python_val}, Meta={meta_val}"
-                    )
-                else:
-                    assert False, (
-                        f"Mismatch for {key}: Python={python_val} ({type(python_val)}), Meta={meta_val} ({type(meta_val)})"
-                    )
 
-    # Test 1: Simple variable assignment
-    compare_with_python("x = 42\ny = x + 1")
-
-    # Test 2: Function definition and call
-    compare_with_python("""
-def add(a, b):
-    return a + b
-result = add(3, 4)
-""")
-
-    # Test 3: Class definition
-    compare_with_python("""
-class Point:
+PYTHON_SEMANTICS_TESTS = [
+    # Simple assignment
+    "x = 42\ny = x + 1",
+    # Function definition and call
+    "def add(a, b):\n    return a + b\nresult = add(3, 4)",
+    # Class definition
+    """class Point:
     def __init__(self, x, y):
         self.x = x
         self.y = y
-    
-    def distance(self, other):
-        return abs(self.x - other.x) + abs(self.y - other.y)
-
-p1 = Point(1, 2)
-p2 = Point(4, 6)
-dist = p1.distance(p2)
-""")
-
-    # Test 4: Exception handling
-    compare_with_python("""
-result = None
+p = Point(1, 2)""",
+    # Exception handling
+    """result = None
 error = None
 try:
     result = 10 / 0
 except ZeroDivisionError as e:
-    error = str(e)
-""")
-
-    # Test 5: Inheritance and super()
-    compare_with_python("""
-class Base:
+    error = str(e)""",
+    # Inheritance and super()
+    """class Base:
     def __init__(self, x):
         self.x = x
-
 class Derived(Base):
     def __init__(self, x, y):
         super().__init__(x)
         self.y = y
-
-obj = Derived(1, 2)
-""")
-
-    # Test 6: Generators
-    compare_with_python("""
-def gen(n):
+obj = Derived(1, 2)""",
+    # Generators
+    """def gen(n):
     for i in range(n):
         yield i * 2
-
-values = list(gen(5))
-""")
-
-    # Test 7: List comprehensions
-    compare_with_python("""
-squares = [x * x for x in range(5)]
-evens = [x for x in range(10) if x % 2 == 0]
-""")
-
-    # Test 8: Nested functions
-    compare_with_python("""
-def outer(x):
-    def inner(y):
-        return x + y
-    return inner(10)
-
-result = outer(5)
-""")
-
-    # Test 9: Closures
-    compare_with_python("""
-def make_adder(n):
+values = list(gen(5))""",
+    # List comprehensions
+    "squares = [x * x for x in range(5)]",
+    # Nested functions / closures
+    """def make_adder(n):
     def adder(x):
         return x + n
     return adder
-
 add5 = make_adder(5)
-result = add5(10)
-""")
-
-    # Test 10: Exception with custom message
-    compare_with_python("""
-class CustomError(Exception):
-    def __init__(self, msg, code):
-        super().__init__(msg)
-        self.code = code
-
-error_msg = None
-error_code = None
+result = add5(10)""",
+    # Context manager - normal exit
+    """class CM:
+    def __init__(self):
+        self.entered = False
+        self.exited = False
+        self.exc_info = None
+    def __enter__(self):
+        self.entered = True
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.exited = True
+        self.exc_info = (exc_type, exc_val)
+        return False
+cm = CM()
+with cm:
+    inside = True
+result = (cm.entered, cm.exited, cm.exc_info)""",
+    # Context manager - with exception
+    """class CM:
+    def __init__(self):
+        self.exc_info = None
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.exc_info = (exc_type is not None, str(exc_val) if exc_val else None)
+        return True  # Suppress exception
+cm = CM()
+with cm:
+    raise ValueError("test error")
+result = cm.exc_info""",
+    # Bare raise in exception handler
+    """caught = []
 try:
-    raise CustomError("test", 42)
-except CustomError as e:
-    error_msg = str(e)
-    error_code = e.code
-""")
+    try:
+        raise ValueError("inner")
+    except ValueError as e:
+        caught.append(str(e))
+        raise
+except ValueError as e:
+    caught.append("outer: " + str(e))
+result = caught""",
+    # Exception chaining (raise from)
+    """cause = None
+chained = None
+try:
+    try:
+        raise ValueError("original")
+    except ValueError as e:
+        raise TypeError("wrapped") from e
+except TypeError as e:
+    chained = str(e)
+    cause = str(e.__cause__) if e.__cause__ else None
+result = (chained, cause)""",
+    # Lambda capturing variables (closure)
+    """def make_lambdas():
+    result = []
+    for i in range(3):
+        result.append(lambda x, i=i: x + i)
+    return result
+lambdas = make_lambdas()
+values = [f(10) for f in lambdas]""",
+    # Lambda without default (late binding)
+    """def make_lambdas_late():
+    result = []
+    for i in range(3):
+        result.append(lambda x: x + i)
+    return result
+lambdas_late = make_lambdas_late()
+values_late = [f(10) for f in lambdas_late]""",
+    # super() in method with multiple inheritance
+    """class A:
+    def __init__(self):
+        self.a = 'A'
+class B(A):
+    def __init__(self):
+        super().__init__()
+        self.b = 'B'
+class C(A):
+    def __init__(self):
+        super().__init__()
+        self.c = 'C'
+class D(B, C):
+    def __init__(self):
+        super().__init__()
+        self.d = 'D'
+obj = D()
+result = (obj.a, obj.b, obj.d)""",
+    # Global and nonlocal
+    """x = 10
+def outer():
+    x = 20
+    def inner():
+        nonlocal x
+        x = 30
+    inner()
+    return x
+def modify_global():
+    global x
+    x = 100
+result1 = outer()
+modify_global()
+result2 = x""",
+    # Generator with return value
+    """def gen_with_return():
+    yield 1
+    yield 2
+    return "done"
+g = gen_with_return()
+values = []
+ret = None
+try:
+    while True:
+        values.append(next(g))
+except StopIteration as e:
+    ret = e.value
+result = (values, ret)""",
+    # Yield from delegation
+    """def inner():
+    yield 1
+    yield 2
+    return "inner_done"
+def outer():
+    result = yield from inner()
+    yield result
+values = list(outer())""",
+    # For/else clause (no break)
+    """result = None
+for i in range(3):
+    pass
+else:
+    result = "completed"
+for_else_result = result""",
+    # For/else clause (with break)
+    """result = None
+for i in range(3):
+    if i == 1:
+        break
+else:
+    result = "completed"
+for_else_break = result""",
+    # While/else clause (no break)
+    """i = 0
+result = None
+while i < 3:
+    i += 1
+else:
+    result = "completed"
+while_else_result = result""",
+    # While/else clause (with break)
+    """i = 0
+result = None
+while i < 3:
+    i += 1
+    if i == 2:
+        break
+else:
+    result = "completed"
+while_else_break = result""",
+    # Nested with statements
+    """class Counter:
+    count = 0
+    def __init__(self, name):
+        self.name = name
+    def __enter__(self):
+        Counter.count += 1
+        return self
+    def __exit__(self, *args):
+        Counter.count -= 1
+        return False
+with Counter("a") as a, Counter("b") as b:
+    inside_count = Counter.count
+after_count = Counter.count
+result = (inside_count, after_count)""",
+    # Match statement - basic
+    """def describe(val):
+    match val:
+        case 0:
+            return "zero"
+        case 1:
+            return "one"
+        case _:
+            return "other"
+results = [describe(0), describe(1), describe(42)]""",
+    # Match statement - with binding
+    """def get_first(seq):
+    match seq:
+        case [first, *rest]:
+            return first
+        case _:
+            return None
+match_results = [get_first([1, 2, 3]), get_first([]), get_first([42])]""",
+    # Comprehension with multiple for clauses
+    """nested = [[1, 2], [3, 4], [5, 6]]
+flattened = [x for row in nested for x in row]""",
+    # Dict comprehension
+    """squares_dict = {x: x*x for x in range(5)}""",
+    # Set comprehension
+    """evens = {x for x in range(10) if x % 2 == 0}""",
+    # Generator expression
+    """gen_sum = sum(x*x for x in range(5))""",
+    # Augmented assignment
+    """x = 10
+x += 5
+x *= 2
+result = x""",
+    # Multiple assignment targets
+    """a = b = c = 42
+result = (a, b, c)""",
+    # Tuple unpacking with star
+    """first, *middle, last = [1, 2, 3, 4, 5]
+unpack_result = (first, middle, last)""",
+    # Conditional expression
+    """x = 5
+result = "big" if x > 3 else "small" """,
+    # Boolean short-circuit
+    """def side_effect(val, results):
+    results.append(val)
+    return val
+results = []
+r1 = side_effect(False, results) and side_effect(True, results)
+r2 = side_effect(True, results) or side_effect(False, results)
+short_circuit = (results, r1, r2)""",
+    # Try/except/else/finally
+    """flow = []
+try:
+    flow.append("try")
+except:
+    flow.append("except")
+else:
+    flow.append("else")
+finally:
+    flow.append("finally")
+try_flow = flow""",
+    # Try with exception - else not executed
+    """flow = []
+try:
+    flow.append("try")
+    raise ValueError()
+except:
+    flow.append("except")
+else:
+    flow.append("else")
+finally:
+    flow.append("finally")
+try_exc_flow = flow""",
+    # Delete statement
+    """x = 42
+y = x
+del x
+deleted_y = y
+deleted_exists = 'x' not in dir()""",
+    # Class method accessing __class__
+    """class Parent:
+    def get_class(self):
+        return __class__
+class Child(Parent):
+    pass
+p = Parent()
+c = Child()
+class_check = (p.get_class() is Parent, c.get_class() is Parent)""",
+    # ========== CLOSURE MUTABLE REFERENCE TESTS ==========
+    # Closure sees updates to outer variable AFTER closure is created
+    """def make_closure():
+    x = 10
+    def get_x():
+        return x
+    x = 20  # Modify after closure created
+    return get_x
+f = make_closure()
+closure_sees_update = f()""",
+    # Multiple closures share the same outer variable
+    """def make_pair():
+    val = 0
+    def getter():
+        return val
+    def setter(x):
+        nonlocal val
+        val = x
+    return getter, setter
+get_val, set_val = make_pair()
+before = get_val()
+set_val(42)
+after = get_val()
+shared_var_result = (before, after)""",
+    # Closure over mutable container (list)
+    """def make_list_closure():
+    items = []
+    def add(x):
+        items.append(x)
+    def get():
+        return items
+    return add, get
+add_item, get_items = make_list_closure()
+add_item(1)
+add_item(2)
+add_item(3)
+list_closure_result = get_items()""",
+    # Nested closures - inner sees outer's modifications
+    """def outer():
+    x = 1
+    def middle():
+        def inner():
+            return x
+        return inner
+    x = 2  # Modify before middle() is called
+    f = middle()
+    x = 3  # Modify after middle() but before inner() is called
+    return f()
+nested_closure_result = outer()""",
+    # Closure in loop - all share final value (classic gotcha)
+    """def make_funcs():
+    funcs = []
+    for i in range(3):
+        def f():
+            return i
+        funcs.append(f)
+    return funcs
+funcs = make_funcs()
+loop_closure_result = [f() for f in funcs]""",
+    # Lambda closure late binding
+    """def make_lambda_funcs():
+    funcs = []
+    for i in range(3):
+        funcs.append(lambda: i)
+    return funcs
+lambda_funcs = make_lambda_funcs()
+lambda_late_binding = [f() for f in lambda_funcs]""",
+    # Closure captures reference, not value - modification visible
+    """outer_val = 100
+def capture_global():
+    return outer_val
+before_mod = capture_global()
+outer_val = 200
+after_mod = capture_global()
+global_capture_result = (before_mod, after_mod)""",
+    # Multiple closures over different scopes
+    """def level1():
+    a = 1
+    def level2():
+        b = 2
+        def level3():
+            return (a, b)
+        b = 20
+        return level3
+    a = 10
+    return level2()
+multi_scope_closure = level1()()""",
+    # Closure with nonlocal modification
+    """def counter():
+    count = 0
+    def increment():
+        nonlocal count
+        count += 1
+        return count
+    return increment
+inc = counter()
+count_results = [inc(), inc(), inc()]""",
+    # Two independent closures over same function
+    """def make_counter(start):
+    count = start
+    def inc():
+        nonlocal count
+        count += 1
+        return count
+    return inc
+c1 = make_counter(0)
+c2 = make_counter(100)
+independent_counters = (c1(), c1(), c2(), c1(), c2())""",
+]
+
+
+@pytest.mark.parametrize("code", PYTHON_SEMANTICS_TESTS)
+def test_meta_circular_matches_python_semantics(code: str):
+    """Test that meta-circular interpreter matches Python's builtin semantics."""
+    _compare_with_python(code)

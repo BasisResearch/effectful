@@ -10,6 +10,16 @@ from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import Any
 
+
+class _ClassCell:
+    """Mutable container for class forward reference in method definitions."""
+
+    __slots__ = ("cell_contents",)
+
+    def __init__(self) -> None:
+        self.cell_contents: Any = None
+
+
 RESTRICTED_GLOBALS = {
     "hasattr",
     "__import__",
@@ -105,6 +115,9 @@ class EvaluatorState:
 
     bindings: ChainMap[str, Any]
     modules: dict[str, ModuleType]
+    module_globals: dict[
+        str, Any
+    ]  # Reference to module-level globals for `global` stmt
     allowed_modules: Mapping[str, ModuleType]
     scope_directives: list[ScopeDirectives]
     allowed_dunder_attrs: set[str]
@@ -114,6 +127,7 @@ class EvaluatorState:
 
     qualname_stack: list[str]
     exception_stack: list[BaseException]  # Track active exceptions for bare raise
+    class_cell: _ClassCell | None  # Cell for __class__ in method definitions
 
     @classmethod
     def fresh(
@@ -156,9 +170,11 @@ class EvaluatorState:
         module_globals.setdefault("__file__", module_filename)
         module_globals.setdefault("__package__", None)
 
+        # At module level, maps[0] IS module_globals (no separate local scope)
         return cls(
-            bindings=ChainMap({}, module_globals, safe_builtins),
+            bindings=ChainMap(module_globals, safe_builtins),
             modules=module_globals,
+            module_globals=module_globals,
             allowed_modules=MappingProxyType(allowed_modules),
             scope_directives=[],
             allowed_dunder_attrs=set(allowed_dunder_attrs),
@@ -166,6 +182,7 @@ class EvaluatorState:
             module_filename=module_filename,
             qualname_stack=[],
             exception_stack=[],
+            class_cell=None,
         )
 
     # ----- scope stack -----
@@ -191,17 +208,25 @@ class EvaluatorState:
     def resolve_store_target_map(self, name: str) -> MutableMapping[str, Any]:
         directives = self.current_directives()
         if directives is None:
+            # At module level (no function scope), write to local scope (which is module globals)
             return self.bindings.maps[0]
 
         if name in directives.globals:
-            if len(self.bindings.maps) < 2:
-                return self.bindings.maps[0]
-            return self.bindings.maps[1]
+            # Global writes to module globals - find it in the chain
+            for m in self.bindings.maps:
+                if m is self.module_globals:
+                    return m
+            # Fallback to maps[1] if module_globals not found
+            return (
+                self.bindings.maps[1]
+                if len(self.bindings.maps) > 1
+                else self.bindings.maps[0]
+            )
 
         if name in directives.nonlocals:
             for m in self.bindings.maps[1:]:
-                if m is self.bindings.maps[1]:
-                    continue
+                if m is self.module_globals:
+                    continue  # Skip module globals for nonlocal
                 if name in m:
                     return m
             raise NameError(f"nonlocal '{name}' not found in enclosing scope")
@@ -559,7 +584,7 @@ def eval_expr(node: ast.AST, state: EvaluatorState) -> Any:
                         ok = lval not in rval
                     case _:
                         raise InterpreterError(
-                            f"Unsupported compare op: {type(op).__name__}"
+                            f"Unsupported compare op: {type(cmp_op).__name__}"
                         )
                 if not ok:
                     return False
@@ -594,54 +619,13 @@ def eval_expr(node: ast.AST, state: EvaluatorState) -> Any:
         case ast.Call(func=f, args=args, keywords=keywords):
             fn = eval_expr(f, state)
 
-            # Check if we're trying to call a generator (which is not callable)
-            if isinstance(fn, Generator):
-                raise InterpreterError(
-                    f"Cannot call a generator object {fn}. Did you mean to iterate over it or use 'yield from'?"
-                )
-
             # Handle super() without arguments - provide __class__ dynamically
             if fn is super and len(args) == 0 and not keywords:
                 # Get __class__ from state (set during class definition)
-                class_obj = state.bindings.get("__class__")
+                class_obj: Any = state.bindings.get("__class__")
 
                 # Get self from state (set when method is called) or from local scope
                 self_obj = state.bindings.get("__self__")
-                if (
-                    self_obj is None
-                    and state.bindings.maps
-                    and len(state.bindings.maps) > 0
-                ):
-                    local_map = state.bindings.maps[0]
-                    for name in ["self", "cls", "mcs"]:
-                        if name in local_map:
-                            candidate = local_map[name]
-                            # Reject tuples and other primitives
-                            if (
-                                candidate is not None
-                                and not isinstance(
-                                    candidate,
-                                    (
-                                        tuple,
-                                        list,
-                                        dict,
-                                        set,
-                                        frozenset,
-                                        str,
-                                        bytes,
-                                        int,
-                                        float,
-                                        bool,
-                                        type(None),
-                                    ),
-                                )
-                                and hasattr(candidate, "__dict__")
-                            ):
-                                self_obj = candidate
-                                break
-
-                if self_obj is None:
-                    raise RuntimeError("super(): __class__ cell not found")
 
                 # If __class__ not set, get it from type(self)
                 if class_obj is None:
@@ -649,11 +633,7 @@ def eval_expr(node: ast.AST, state: EvaluatorState) -> Any:
 
                 return super(class_obj, self_obj)
 
-            if not callable(fn):
-                raise InterpreterError(
-                    f"Cannot call non-callable object: {type(fn).__name__} ({fn})"
-                )
-
+            # check for dunder methods
             if hasattr(fn, "__name__"):
                 nm = fn.__name__
                 if (
@@ -695,6 +675,7 @@ def eval_expr(node: ast.AST, state: EvaluatorState) -> Any:
                 local_state = EvaluatorState(
                     bindings=ChainMap({}, *captured_maps),
                     modules=state.modules,
+                    module_globals=state.module_globals,
                     allowed_modules=state.allowed_modules,
                     scope_directives=[],
                     allowed_dunder_attrs=state.allowed_dunder_attrs,
@@ -702,17 +683,20 @@ def eval_expr(node: ast.AST, state: EvaluatorState) -> Any:
                     module_filename=state.module_filename,
                     qualname_stack=state.qualname_stack + ["<lambda>"],
                     exception_stack=state.exception_stack.copy(),
+                    class_cell=None,
                 )
                 local_state.push_scope()
                 local_state.push_qual("<lambda>", add_locals_marker=True)
                 try:
+                    local_scope = local_state.bindings.maps[0]
                     for n, v in zip(arg_names, vals):
-                        local_state.bindings[n] = v
+                        local_scope[n] = v
                     for n, v in kws.items():
-                        local_state.bindings[n] = v
+                        local_scope[n] = v
+                    # Apply defaults only if not provided as arg/kwarg
                     for n, v in default_map.items():
-                        if n not in local_state.bindings:
-                            local_state.bindings[n] = v
+                        if n not in local_scope:
+                            local_scope[n] = v
                     if lambda_has_yield:
                         return eval_expr_generator(b, local_state)
                     else:
@@ -915,7 +899,7 @@ def eval_expr_generator(
                         ok = lval not in rval
                     case _:
                         raise InterpreterError(
-                            f"Unsupported compare op: {type(op).__name__}"
+                            f"Unsupported compare op: {type(cmp_op).__name__}"
                         )
                 if not ok:
                     return False
@@ -956,21 +940,8 @@ def eval_expr_generator(
 
             # Handle super() without arguments - provide __class__ dynamically
             if fn is super and len(args) == 0 and not keywords:
-                class_obj = state.bindings.get("__class__")
-
-                self_obj = None
-                for name in ["self", "cls", "mcs"]:
-                    if name in state.bindings:
-                        self_obj = state.bindings[name]
-                        break
-
-                if self_obj is None and state.bindings.maps:
-                    local_map = state.bindings.maps[0]
-                    if local_map:
-                        self_obj = next(iter(local_map.values()), None)
-
-                if self_obj is None:
-                    raise RuntimeError("super(): __class__ cell not found")
+                class_obj: Any = state.bindings.get("__class__")
+                self_obj = state.bindings.get("__self__")
 
                 if class_obj is None:
                     class_obj = type(self_obj)
@@ -1029,6 +1000,7 @@ def eval_expr_generator(
                 local_state = EvaluatorState(
                     bindings=ChainMap({}, *captured_maps),
                     modules=state.modules,
+                    module_globals=state.module_globals,
                     allowed_modules=state.allowed_modules,
                     scope_directives=[],
                     allowed_dunder_attrs=state.allowed_dunder_attrs,
@@ -1036,22 +1008,24 @@ def eval_expr_generator(
                     module_filename=state.module_filename,
                     qualname_stack=state.qualname_stack + ["<lambda>"],
                     exception_stack=state.exception_stack.copy(),
+                    class_cell=None,
                 )
                 local_state.push_scope()
                 local_state.push_qual("<lambda>", add_locals_marker=True)
                 try:
+                    local_scope = local_state.bindings.maps[0]
                     for n, v in zip(arg_names, vals):
-                        local_state.bindings[n] = v
+                        local_scope[n] = v
                     for n, v in kws.items():
-                        local_state.bindings[n] = v
+                        local_scope[n] = v
+                    # Apply defaults only if not provided as arg/kwarg
                     for n, v in default_map.items():
-                        if n not in local_state.bindings:
-                            local_state.bindings[n] = v
+                        if n not in local_scope:
+                            local_scope[n] = v
                     if lambda_has_yield:
                         return eval_expr_generator(b, local_state)
                     else:
-                        result = yield from eval_expr_generator(b, local_state)
-                        return result
+                        return eval_expr(b, local_state)
                 finally:
                     local_state.pop_qual(had_locals_marker=True)
                     local_state.pop_scope()
@@ -1089,11 +1063,6 @@ def eval_expr_generator(
 
         case _:
             raise InterpreterError(f"Unsupported expression: {type(node).__name__}")
-
-
-# -------------------------
-# comprehensions
-# -------------------------
 
 
 def eval_comprehension(node: ast.AST, state: EvaluatorState) -> Any:
@@ -1202,12 +1171,9 @@ def make_function(fn: ast.FunctionDef, state: EvaluatorState) -> Callable[..., A
 
     is_gen = is_generator_function(fn)
 
-    # Check if we're in a class context (__class__ is available)
-    # This means we're defining a method
-    class_obj = (
-        state.bindings.get("__class__") if "__class__" in state.bindings else None
-    )
-    is_method = class_obj is not None and isinstance(class_obj, type)
+    # Capture class cell for super() support (None if not in a class)
+    class_cell = state.class_cell
+    first_param_name = arg_names[0] if arg_names else None
 
     # Extract docstring if present (first statement is a string constant)
     docstring = None
@@ -1221,6 +1187,7 @@ def make_function(fn: ast.FunctionDef, state: EvaluatorState) -> Callable[..., A
         local_state = EvaluatorState(
             bindings=ChainMap({}, *captured_maps),
             modules=state.modules,
+            module_globals=state.module_globals,
             allowed_modules=state.allowed_modules,
             scope_directives=[],
             allowed_dunder_attrs=state.allowed_dunder_attrs,
@@ -1230,24 +1197,30 @@ def make_function(fn: ast.FunctionDef, state: EvaluatorState) -> Callable[..., A
             # outer.<locals>.inner
             qualname_stack=fn_qualname.split(".") + ["<locals>"],
             exception_stack=state.exception_stack.copy(),
+            class_cell=None,
         )
 
         local_state.push_scope()
+        local_scope = local_state.bindings.maps[0]
+
+        # Set up __class__ from captured cell if we're in a method
+        if class_cell is not None:
+            local_scope["__class__"] = class_cell.cell_contents
 
         all_pos_params = posonly_names + arg_names
         for name, val in zip(all_pos_params, args):
-            local_state.bindings[name] = val
+            local_scope[name] = val
 
         extra_pos = args[len(all_pos_params) :]
         if extra_pos:
             if vararg_name:
-                local_state.bindings[vararg_name] = tuple(extra_pos)
+                local_scope[vararg_name] = tuple(extra_pos)
             else:
                 raise TypeError(
                     f"{fn.name}() takes {len(all_pos_params)} positional arguments but more were given"
                 )
         elif vararg_name:
-            local_state.bindings[vararg_name] = tuple()
+            local_scope[vararg_name] = tuple()
 
         for k, v in kwargs.items():
             if k in posonly_names:
@@ -1255,144 +1228,76 @@ def make_function(fn: ast.FunctionDef, state: EvaluatorState) -> Callable[..., A
                     f"{fn.name}() got positional-only arguments passed as keyword: {k}"
                 )
             if k in all_pos_params or k in kwonly_names:
-                local_state.bindings[k] = v
+                local_scope[k] = v
             elif kwarg_name:
-                local_state.bindings.setdefault(kwarg_name, {})[k] = v
+                local_scope.setdefault(kwarg_name, {})[k] = v
             else:
                 raise TypeError(f"{fn.name}() got an unexpected keyword argument '{k}'")
 
-        if kwarg_name and kwarg_name not in local_state.bindings:
-            local_state.bindings[kwarg_name] = {}
+        if kwarg_name and kwarg_name not in local_scope:
+            local_scope[kwarg_name] = {}
 
+        # Apply defaults only if not provided as arg/kwarg (check local scope only)
         if defaults:
             trailing = all_pos_params[-len(defaults) :]
             for name, val in zip(trailing, defaults):
-                if name not in local_state.bindings:
-                    local_state.bindings[name] = val
+                if name not in local_scope:
+                    local_scope[name] = val
 
         for name, dval in zip(kwonly_names, kw_defaults):
-            if name not in local_state.bindings and dval is not None:
-                local_state.bindings[name] = dval
+            if name not in local_scope and dval is not None:
+                local_scope[name] = dval
+
+        # Set up __self__ for super() support
+        if first_param_name and first_param_name in local_scope:
+            local_scope["__self__"] = local_scope[first_param_name]
 
         return local_state
 
-    # Create the function, wrapping it to capture __class__ if it's a method
-    if is_method:
-        # Method: wrap in closure that captures __class__ so super() works
-        __class__ = class_obj  # Capture in closure
-        first_param_name = (
-            arg_names[0] if arg_names else None
-        )  # Capture first param name
+    if is_gen:
 
-        if is_gen:
+        def _call(*args, **kwargs):
+            local_state = setup_args(*args, **kwargs)
+            try:
 
-            def _make_call():
-                def _call(*args, **kwargs):
-                    local_state = setup_args(*args, **kwargs)
-                    # Add __class__ to local state so super() can find it
-                    local_state.bindings["__class__"] = __class__
-                    # Store self in state for super() - use first param if it exists
-                    if first_param_name and first_param_name in local_state.bindings:
-                        local_state.bindings["__self__"] = local_state.bindings[
-                            first_param_name
-                        ]
-                    try:
-
-                        def _gen():
-                            try:
-                                for stmt in fn.body:
-                                    stmt_gen = eval_stmt_generator(stmt, local_state)
-                                    result = None
-                                    try:
-                                        result = yield from stmt_gen
-                                    except StopIteration:
-                                        pass
-                                    if isinstance(result, ReturnException):
-                                        return result.value
-                            except ReturnException as r:
-                                return r.value
-                            finally:
-                                local_state.pop_scope()
-
-                        gen = _gen()
-                        return gen
-                    except ReturnException as r:
-                        local_state.pop_scope()
-                        return r.value
-
-                return _call
-
-            _call = _make_call()
-        else:
-
-            def _make_call():
-                def _call(*args, **kwargs):
-                    local_state = setup_args(*args, **kwargs)
-                    # Add __class__ to local state so super() can find it
-                    local_state.bindings["__class__"] = __class__
-                    # Store self in state for super() - use first param if it exists
-                    if first_param_name and first_param_name in local_state.bindings:
-                        local_state.bindings["__self__"] = local_state.bindings[
-                            first_param_name
-                        ]
+                def _gen():
                     try:
                         for stmt in fn.body:
-                            eval_stmt(stmt, local_state)
-                        return None
+                            stmt_gen = eval_stmt_generator(stmt, local_state)
+                            result = None
+                            try:
+                                result = yield from stmt_gen
+                            except StopIteration:
+                                pass
+                            if isinstance(result, ReturnException):
+                                return result.value
                     except ReturnException as r:
                         return r.value
                     finally:
                         local_state.pop_scope()
 
-                return _call
+                gen = _gen()
+                return gen
+            except ReturnException as r:
+                local_state.pop_scope()
+                return r.value
 
-            _call = _make_call()
     else:
-        # Not a method - create normally
-        if is_gen:
 
-            def _call(*args, **kwargs):
-                local_state = setup_args(*args, **kwargs)
-                try:
-
-                    def _gen():
-                        try:
-                            for stmt in fn.body:
-                                stmt_gen = eval_stmt_generator(stmt, local_state)
-                                result = None
-                                try:
-                                    result = yield from stmt_gen
-                                except StopIteration:
-                                    pass
-                                if isinstance(result, ReturnException):
-                                    return result.value
-                        except ReturnException as r:
-                            return r.value
-                        finally:
-                            local_state.pop_scope()
-
-                    gen = _gen()
-                    return gen
-                except ReturnException as r:
-                    local_state.pop_scope()
-                    return r.value
-        else:
-
-            def _call(*args, **kwargs):
-                local_state = setup_args(*args, **kwargs)
-                try:
-                    for stmt in fn.body:
-                        eval_stmt(stmt, local_state)
-                    return None
-                except ReturnException as r:
-                    return r.value
-                finally:
-                    local_state.pop_scope()
+        def _call(*args, **kwargs):
+            local_state = setup_args(*args, **kwargs)
+            try:
+                for stmt in fn.body:
+                    eval_stmt(stmt, local_state)
+                return None
+            except ReturnException as r:
+                return r.value
+            finally:
+                local_state.pop_scope()
 
     _call.__name__ = fn.name
     _call.__qualname__ = fn_qualname
     _call.__module__ = state.module_name
-    _call.__ast__ = fn
     _call.__doc__ = docstring
     _call.__code__ = _call.__code__.replace(
         co_filename=state.module_filename,
@@ -1421,77 +1326,63 @@ def make_function(fn: ast.FunctionDef, state: EvaluatorState) -> Callable[..., A
 
 
 def eval_classdef(node: ast.ClassDef, state: EvaluatorState) -> type:
-    bases = [eval_expr(b, state) for b in node.bases]
+    bases = tuple(eval_expr(b, state) for b in node.bases)
     keywords = {
         kw.arg: eval_expr(kw.value, state) for kw in node.keywords if kw.arg is not None
     }
     metaclass = keywords.pop("metaclass", type)
 
-    cls_qualname = state.make_qualname(node.name)
+    if hasattr(metaclass, "__prepare__"):
+        ns = metaclass.__prepare__(node.name, bases, **keywords)
+    else:
+        ns = {}
 
-    ns: dict[str, Any] = {}
     ns["__module__"] = state.module_name
-    ns["__qualname__"] = cls_qualname
+    ns["__qualname__"] = state.make_qualname(node.name)
+    ns["__firstlineno__"] = getattr(node, "lineno", 1)
 
     if node.body and isinstance(node.body[0], ast.Expr):
         c = getattr(node.body[0], "value", None)
         if isinstance(c, ast.Constant) and isinstance(c.value, str):
             ns["__doc__"] = c.value
 
+    # Create cell for __class__ before executing body
+    class_cell = _ClassCell()
+    old_cell = state.class_cell
+    state.class_cell = class_cell
+
     state.push_scope()
     state.push_qual(node.name, add_locals_marker=False)
     try:
-        # Use the local scope dict as the namespace - it will become the class __dict__
         local_ns = state.bindings.maps[0]
         local_ns.clear()
         local_ns.update(ns)
 
-        # Create the class early so __class__ is available for method definitions
-        # The namespace dict (local_ns) will become cls.__dict__, so updates are reflected
-        cls = metaclass(node.name, tuple(bases), local_ns, **keywords)
-        state.bindings["__class__"] = cls
-
         annotations: dict[str, Any] = {}
         for stmt in node.body:
             if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                ann = stmt.annotation
-                if ann is not None:
-                    try:
-                        annotations[stmt.target.id] = eval_expr(ann, state)
-                    except Exception:
-                        annotations[stmt.target.id] = (
-                            ast.unparse(ann) if hasattr(ast, "unparse") else str(ann)
-                        )
+                if stmt.annotation is not None:
+                    annotations[stmt.target.id] = eval_expr(stmt.annotation, state)
             eval_stmt(stmt, state)
-        # Update the class with items from local_ns that weren't in the original namespace
-        # Skip special attributes that can't be set
-        skip_attrs = {
-            "__class__",
-            "__dict__",
-            "__weakref__",
-            "__module__",
-            "__qualname__",
-            "__doc__",
-        }
-        original_ns_keys = set(ns.keys()) if ns else set()
-        for key, value in local_ns.items():
-            if (
-                key not in original_ns_keys and key not in skip_attrs
-            ):  # Only add new items defined in the class body
-                try:
-                    setattr(cls, key, value)
-                except (TypeError, AttributeError):
-                    pass  # Skip if we can't set it
+
         if annotations:
-            setattr(cls, "__annotations__", annotations)
+            local_ns["__annotations__"] = annotations
+
+        cls = metaclass(node.name, bases, dict(local_ns), **keywords)
+
+        # Now fill the cell
+        class_cell.cell_contents = cls
     finally:
+        state.class_cell = old_cell
         state.pop_qual(had_locals_marker=False)
         state.pop_scope()
 
-    try:
-        cls.__ast__ = node
-    except Exception:
-        pass
+    for key, value in vars(cls).items():
+        if hasattr(value, "__set_name__"):
+            try:
+                value.__set_name__(cls, key)
+            except Exception:
+                pass
 
     return cls
 
@@ -1928,6 +1819,8 @@ def eval_stmt_generator(
 
         case ast.With(items=items, body=body, type_comment=_):
             entered = []
+            caught_exc: BaseException | None = None
+            out = None
             try:
                 for item in items:
                     ctx = yield from eval_expr_generator(item.context_expr, state)
@@ -1935,21 +1828,31 @@ def eval_stmt_generator(
                     entered.append(ctx)
                     if item.optional_vars is not None:
                         assign_target(item.optional_vars, val, state)
-                out = None
                 for s in body:
                     result = yield from eval_stmt_generator(s, state)
                     if isinstance(result, ReturnException):
+                        # Handle return in finally
+                        for ctx_inner in reversed(entered):
+                            ctx_inner.__exit__(None, None, None)
                         return result
                     out = result
-                return out
             except BaseException as e:
-                for ctx in reversed(entered):
-                    ctx.__exit__(type(e), e, e.__traceback__)
-                raise
+                caught_exc = e
             finally:
-                if entered:
-                    for ctx in reversed(entered):
+                # Call __exit__ on all context managers in reverse order
+                suppressed = False
+                for ctx in reversed(entered):
+                    if caught_exc is not None:
+                        if ctx.__exit__(
+                            type(caught_exc), caught_exc, caught_exc.__traceback__
+                        ):
+                            suppressed = True
+                    else:
                         ctx.__exit__(None, None, None)
+                # Re-raise if not suppressed
+                if caught_exc is not None and not suppressed:
+                    raise caught_exc
+            return out
 
         case ast.Delete(targets=targets):
             for t in targets:
@@ -2319,6 +2222,7 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
 
         case ast.With(items=items, body=body, type_comment=_):
             entered = []
+            caught_exc: BaseException | None = None
             try:
                 for item in items:
                     ctx = eval_expr(item.context_expr, state)
@@ -2329,15 +2233,23 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
                 out = None
                 for s in body:
                     out = eval_stmt(s, state)
-                return out
             except BaseException as e:
-                for ctx in reversed(entered):
-                    ctx.__exit__(type(e), e, e.__traceback__)
-                raise
+                caught_exc = e
             finally:
-                if entered:
-                    for ctx in reversed(entered):
+                # Call __exit__ on all context managers in reverse order
+                suppressed = False
+                for ctx in reversed(entered):
+                    if caught_exc is not None:
+                        if ctx.__exit__(
+                            type(caught_exc), caught_exc, caught_exc.__traceback__
+                        ):
+                            suppressed = True
+                    else:
                         ctx.__exit__(None, None, None)
+                # Re-raise if not suppressed
+                if caught_exc is not None and not suppressed:
+                    raise caught_exc
+            return out
 
         case ast.Delete(targets=targets):
             for t in targets:
@@ -2353,6 +2265,8 @@ def eval_stmt(node: ast.stmt, state: EvaluatorState) -> Any:
 
 def eval_module(module: ast.Module, state: EvaluatorState):
     source_text = ast.unparse(module)
+    # Re-parse to get correct line numbers matching the unparsed source
+    module = ast.parse(source_text)
     state.module_name, state.module_filename = install_synthetic_module(source_text)
 
     for stmt in module.body:
