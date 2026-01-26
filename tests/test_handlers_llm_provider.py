@@ -8,7 +8,7 @@ import functools
 import json
 import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
@@ -344,39 +344,6 @@ class BookReview(BaseModel):
 def review_book(plot: str) -> BookReview:
     """Review a book based on this plot: {plot}."""
     raise NotImplementedError
-
-
-@Template.define
-def generate_similar[T](examples: Sequence[T]) -> T:
-    "Generate another instance of one of the items in {examples}"
-    raise NotHandled
-
-
-@dataclass
-class Book:
-    title: str
-    author: str
-
-
-@requires_openai
-@pytest.mark.parametrize(
-    "model_input",
-    [
-        [1, 2, 3, 4],
-        ["apple", "orange", "pear"],
-        [
-            Book("1984", "George Orwell"),
-            Book("To Kill a Mockingbird", "Harper Lee"),
-            Book("The Great Gatsby", "F. Scott Fitzgerald"),
-        ],
-    ],
-)
-def test_polymorphic_templates(request, model_input):
-    with (
-        handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")),
-        handler(LimitLLMCallsHandler(max_calls=5)),
-    ):
-        assert isinstance(generate_similar(model_input), type(model_input[0]))
 
 
 class TestPydanticBaseModelReturn:

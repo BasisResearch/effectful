@@ -21,11 +21,7 @@ from litellm import (
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import (
-    Encodable,
-    type_to_encodable_type,
-)
-from effectful.internals.unification import TypeExpression, nested_type
+from effectful.handlers.llm.encoding import type_to_encodable_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -217,18 +213,16 @@ def call_with_json_args(
 
 
 @defop
-def compute_response[**P, T](
-    template: Template[P, T], model_input_pair: tuple[list[Any], Encodable[T]]
-) -> ModelResponse:
+def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
     """Produce a complete model response for an input message sequence. This may
     involve multiple API requests if tools are invoked by the model.
 
     """
-    model_input, ret_type_encoder = model_input_pair
+    ret_type = template.__signature__.return_annotation
     tools = template.tools
 
     tool_schemas = [function_definition(t) for t in tools.values()]
-    response_encoding_type: type | None = ret_type_encoder.t
+    response_encoding_type: type | None = type_to_encodable_type(ret_type).t
     if response_encoding_type == str:
         response_encoding_type = None
 
@@ -268,12 +262,7 @@ def compute_response[**P, T](
             )
 
 
-type ModelInput[T] = tuple[list[Any], Encodable[T]]
-
-
-def decode_response[**P, T](
-    template: Callable[P, T], model_input_pair: ModelInput[T], response: ModelResponse
-) -> T:
+def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
     """Decode an LLM response into an instance of the template return type. This
     operation should raise if the output cannot be decoded.
     """
@@ -284,7 +273,8 @@ def decode_response[**P, T](
     result_str = last_resp.content or last_resp.reasoning_content
     assert result_str
 
-    encodable_ty = model_input_pair[1]
+    ret_type = template.__signature__.return_annotation
+    encodable_ty = type_to_encodable_type(ret_type)
 
     if encodable_ty.t == str:
         # if encoding as a type, value is just directly what the llm returned
@@ -301,21 +291,20 @@ def decode_response[**P, T](
 @defop
 def format_model_input[**P, T](
     template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-) -> ModelInput[T]:
+) -> list[Any]:
     """Format a template applied to arguments into a sequence of input
     messages.
 
     """
-    signature = template.__signature__
-
-    bound_args = signature.bind(*args, **kwargs)
+    bound_args = template.__signature__.bind(*args, **kwargs)
     bound_args.apply_defaults()
     # encode arguments
     arguments = {}
-    for param, value in bound_args.arguments.items():
-        ty: TypeExpression = nested_type(value).value
-        encoder = type_to_encodable_type(ty)  # type: ignore
-        encoded = encoder.encode(value, template.__context__)
+    for param in bound_args.arguments:
+        encoder = type_to_encodable_type(
+            template.__signature__.parameters[param].annotation
+        )
+        encoded = encoder.encode(bound_args.arguments[param], template.__context__)
         arguments[param] = encoder.serialize(encoded)
 
     prompt = _OpenAIPromptFormatter().format_as_messages(
@@ -323,7 +312,7 @@ def format_model_input[**P, T](
     )
 
     # install prefix if the return type has a return annotation
-    ret_type = template.__type_rule__(*args, **kwargs)
+    ret_type = template.__signature__.return_annotation
     origin = typing.get_origin(ret_type)
     ret_type = ret_type if origin is None else origin
     ret_type_encoder = type_to_encodable_type(ret_type)
@@ -338,7 +327,7 @@ def format_model_input[**P, T](
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
     messages = [{"type": "message", "content": prompt, "role": "user"}]
-    return (messages, ret_type_encoder)
+    return messages
 
 
 class InstructionHandler(ObjectInterpretation):
@@ -358,16 +347,12 @@ class InstructionHandler(ObjectInterpretation):
         self.instruction = instruction
 
     @implements(format_model_input)
-    def _inject_instruction(
-        self, template: Template, *args, **kwargs
-    ) -> tuple[list[Any], Any]:
+    def _inject_instruction(self, template: Template, *args, **kwargs) -> list[Any]:
         """Append instruction message to the formatted model input."""
-        (messages, decode_ty) = fwd()
-        return (
-            messages
-            + [{"type": "message", "content": self.instruction, "role": "user"}],
-            decode_ty,
-        )
+        messages = fwd()
+        return messages + [
+            {"type": "message", "content": self.instruction, "role": "user"}
+        ]
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -436,4 +421,4 @@ class LiteLLMProvider(ObjectInterpretation):
     ) -> T:
         model_input = format_model_input(template, *args, **kwargs)
         resp = compute_response(template, model_input)
-        return decode_response(template, model_input, resp)
+        return decode_response(template, resp)
