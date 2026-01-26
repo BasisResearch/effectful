@@ -12,7 +12,9 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
+import litellm
 import pytest
+from litellm.caching.caching import Cache
 from litellm.files.main import ModelResponse
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -71,15 +73,21 @@ def retry_on_error(error: type[Exception], n: int):
 
 class ReplayLiteLLMProvider(LiteLLMProvider):
     test_id: str
+    call_count = 0
 
     def __init__(self, request: pytest.FixtureRequest, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.test_id = request.node.nodeid
         self.test_id = self.test_id.replace("/", "_").replace(":", "_")
 
+    def call_id(self):
+        call_id = f"_{self.call_count}" if self.call_count > 0 else ""
+        self.call_count += 1
+        return call_id
+
     @implements(completion)
     def _completion(self, *args, **kwargs):
-        path = FIXTURE_DIR / f"{self.test_id}.json"
+        path = FIXTURE_DIR / f"{self.test_id}{self.call_id()}.json"
         if not REBUILD_FIXTURES:
             if not path.exists():
                 raise RuntimeError(f"Missing replay fixture: {path}")
@@ -364,3 +372,40 @@ class TestPydanticBaseModelReturn:
             assert 1 <= review.rating <= 5
             assert isinstance(review.summary, str)
             assert len(review.summary) > 0
+
+
+def test_litellm_caching_integration(request):
+    litellm.cache = Cache()
+    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")):
+        p1 = simple_prompt("apples")
+        p2 = simple_prompt("apples")
+        p3 = simple_prompt("oranges")
+        assert p1 == p2, (
+            "when caching is enabled, LLM requests with the same parameters will produce the same outputs"
+        )
+        assert p3 != p2, "different inputs should still produce different outputs"
+
+
+def test_litellm_caching_integration_disabled(request):
+    litellm.cache = Cache()
+    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o", caching=False)):
+        p1 = simple_prompt("apples")
+        p2 = simple_prompt("apples")
+        assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
+
+
+def test_litellm_caching_selective(request):
+    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")):
+        p1 = simple_prompt("apples")
+        p2 = simple_prompt("apples")
+        assert p1 != p2, "when caching is not enabled, llm outputs should be different"
+        litellm.enable_cache()
+        p1 = simple_prompt("apples")
+        p2 = simple_prompt("apples")
+        assert p1 == p2, (
+            "when caching is enabled, LLM requests with the same parameters will produce the same outputs"
+        )
+        litellm.disable_cache()
+        p1 = simple_prompt("apples")
+        p2 = simple_prompt("apples")
+        assert p1 != p2, "when caching is not enabled, llm outputs should be different"
