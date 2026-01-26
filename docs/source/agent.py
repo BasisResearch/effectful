@@ -41,12 +41,12 @@ class Agent:
 
     def _format_model_input(self, template, other, *args, **kwargs):
         # update prompt with previous list of messages
-        prompt, enc_ty = fwd()
+        prompt = fwd()
         if Agent.current_agent() is self:
             assert self is other
             self.state.extend(prompt)
             prompt = self.state
-        return (prompt, enc_ty)
+        return prompt
 
     def _compute_response(self, *args, **kwargs):
         # save response into persisted state
