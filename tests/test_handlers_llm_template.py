@@ -155,7 +155,7 @@ class TemplateStringIntp(ObjectInterpretation):
     def _[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        model_input = format_model_input(template, *args, **kwargs)
+        model_input, _ = format_model_input(template, *args, **kwargs)
         template_result = model_input[0]["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]
