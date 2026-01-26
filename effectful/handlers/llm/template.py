@@ -1,3 +1,4 @@
+import functools
 import inspect
 import types
 import typing
@@ -6,6 +7,7 @@ from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+from effectful.internals.unification import freetypevars
 from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, Operation
 
 
@@ -94,6 +96,18 @@ class Tool[**P, T](Operation[P, T]):
             raise ValueError("Tools must have docstrings.")
         signature = IsRecursive.infer_annotations(signature)
         super().__init__(signature, name, default)
+
+    @functools.cached_property
+    def is_polymorphic(self) -> bool:
+        """Whether the tool's signature contains free type variables."""
+        sig = self.__signature__
+
+        def has_free_typevars(ann) -> bool:
+            return ann is not inspect._empty and len(freetypevars(ann)) > 0
+
+        return any(
+            has_free_typevars(p.annotation) for p in sig.parameters.values()
+        ) or has_free_typevars(sig.return_annotation)
 
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
@@ -186,7 +200,7 @@ class Template[**P, T](Tool[P, T]):
             if obj is self and not is_recursive:
                 continue
             # Collect tools in context
-            if isinstance(obj, Tool):
+            if isinstance(obj, Tool) and not obj.is_polymorphic:
                 result[name] = obj
 
             if isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
