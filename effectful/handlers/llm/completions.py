@@ -5,7 +5,7 @@ import logging
 import string
 import traceback
 import typing
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import litellm
@@ -75,34 +75,6 @@ def completion(*args, **kwargs) -> Any:
 
     """
     return litellm.completion(*args, **kwargs)
-
-
-class CacheLLMRequestHandler(ObjectInterpretation):
-    """Caches LLM requests."""
-
-    def __init__(self):
-        self.cache: dict[Hashable, Any] = {}
-
-    def _make_hashable(self, obj: Any) -> Hashable:
-        """Recursively convert objects to hashable representations."""
-        if isinstance(obj, dict):
-            return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
-        elif isinstance(obj, list | tuple):
-            return tuple(self._make_hashable(item) for item in obj)
-        elif isinstance(obj, set):
-            return frozenset(self._make_hashable(item) for item in obj)
-        else:
-            # Primitives (int, float, str, bytes, etc.) are already hashable
-            return obj
-
-    @implements(completion)
-    def _cache_completion(self, *args, **kwargs) -> Any:
-        key = self._make_hashable((args, kwargs))
-        if key in self.cache:
-            return self.cache[key]
-        response = fwd()
-        self.cache[key] = response
-        return response
 
 
 class LLMLoggingHandler(ObjectInterpretation):

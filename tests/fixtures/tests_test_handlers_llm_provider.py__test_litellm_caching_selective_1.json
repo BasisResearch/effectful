@@ -1,0 +1,44 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "annotations": [],
+        "content": "Apples are crisp, juicy fruits that come in a variety of colors and flavors, offering both health benefits and delicious taste.",
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "role": "assistant",
+        "tool_calls": null
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "created": 1769462546,
+  "id": "chatcmpl-D2OKQHwQdpdvVbLnSke1iU5VTB2I8",
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "service_tier": "default",
+  "system_fingerprint": "fp_deacdd5f6f",
+  "usage": {
+    "completion_tokens": 26,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "image_tokens": null,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null
+    },
+    "prompt_tokens": 232,
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "image_tokens": null,
+      "text_tokens": null
+    },
+    "total_tokens": 258
+  }
+}
