@@ -21,8 +21,11 @@ from litellm import (
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import Encodable, type_to_encodable_type
-from effectful.internals.unification import nested_type
+from effectful.handlers.llm.encoding import (
+    Encodable,
+    type_to_encodable_type,
+)
+from effectful.internals.unification import TypeExpression, nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -310,8 +313,8 @@ def format_model_input[**P, T](
     # encode arguments
     arguments = {}
     for param, value in bound_args.arguments.items():
-        ty = nested_type(value).value
-        encoder = type_to_encodable_type(ty)
+        ty: TypeExpression = nested_type(value).value
+        encoder = type_to_encodable_type(ty)  # type: ignore
         encoded = encoder.encode(value, template.__context__)
         arguments[param] = encoder.serialize(encoded)
 
@@ -355,12 +358,16 @@ class InstructionHandler(ObjectInterpretation):
         self.instruction = instruction
 
     @implements(format_model_input)
-    def _inject_instruction(self, template: Template, *args, **kwargs) -> list[Any]:
+    def _inject_instruction(
+        self, template: Template, *args, **kwargs
+    ) -> tuple[list[Any], Any]:
         """Append instruction message to the formatted model input."""
-        messages = fwd()
-        return messages + [
-            {"type": "message", "content": self.instruction, "role": "user"}
-        ]
+        (messages, decode_ty) = fwd()
+        return (
+            messages
+            + [{"type": "message", "content": self.instruction, "role": "user"}],
+            decode_ty,
+        )
 
 
 class RetryLLMHandler(ObjectInterpretation):
