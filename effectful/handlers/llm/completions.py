@@ -313,9 +313,10 @@ def format_model_input[**P, T](
 class InstructionHandler(ObjectInterpretation):
     """Scoped handler that injects additional instructions into model input.
 
-    This handler appends instruction messages to the formatted model input.
-    It's designed to be used as a scoped handler within RetryLLMHandler to
-    provide error feedback without polluting shared state.
+    This handler appends instruction messages to the formatted model
+    input.  It's designed to be used as a scoped handler to provide
+    error feedback without polluting shared state.
+
     """
 
     def __init__(self, instruction: str):
@@ -333,24 +334,6 @@ class InstructionHandler(ObjectInterpretation):
         return messages + [
             {"type": "message", "content": self.instruction, "role": "user"}
         ]
-
-
-class RetryLLMHandler(ObjectInterpretation):
-    """Retries LLM requests if they fail.
-
-    Args:
-        num_retries: The maximum number of retries.
-    """
-
-    def __init__(
-        self,
-        num_retries: int = 3,
-    ):
-        self.num_retries = num_retries
-
-    @implements(completion)
-    def _completion(self, *args, **kwargs):
-        return fwd(*args, **({"num_retries": self.num_retries} | kwargs))
 
 
 class LiteLLMProvider(ObjectInterpretation):
