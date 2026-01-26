@@ -26,6 +26,11 @@ from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
+try:
+    import weave
+except ImportError:
+    weave = None  # type: ignore
+
 
 class _OpenAIPromptFormatter(string.Formatter):
     def format_as_messages(
@@ -419,6 +424,15 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        model_input = format_model_input(template, *args, **kwargs)
-        resp = compute_response(template, model_input)
-        return decode_response(template, resp)
+        op: Callable = lambda f: f
+        if weave:
+            op = weave.op
+
+        @op
+        @functools.wraps(template)
+        def wrapper(*args, **kwargs):
+            model_input = format_model_input(template, *args, **kwargs)
+            resp = compute_response(template, model_input)
+            return decode_response(template, resp)
+
+        return wrapper(*args, **kwargs)
