@@ -1,8 +1,6 @@
-import contextlib
 import functools
 import inspect
 import string
-import traceback
 import typing
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -21,7 +19,7 @@ from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.encoding import type_to_encodable_type
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
@@ -261,9 +259,10 @@ def format_model_input[**P, T](
 class InstructionHandler(ObjectInterpretation):
     """Scoped handler that injects additional instructions into model input.
 
-    This handler appends instruction messages to the formatted model input.
-    It's designed to be used as a scoped handler within RetryLLMHandler to
-    provide error feedback without polluting shared state.
+    This handler appends instruction messages to the formatted model
+    input.  It's designed to be used as a scoped handler to provide
+    error feedback without polluting shared state.
+
     """
 
     def __init__(self, instruction: str):
@@ -281,52 +280,6 @@ class InstructionHandler(ObjectInterpretation):
         return messages + [
             {"type": "message", "content": self.instruction, "role": "user"}
         ]
-
-
-class RetryLLMHandler(ObjectInterpretation):
-    """Retries LLM requests if they fail.
-
-    If the request fails, the handler retries with optional error feedback injected
-    into the prompt via scoped InstructionHandler instances. This ensures nested
-    template calls maintain independent error tracking.
-
-    Args:
-        max_retries: The maximum number of retries.
-        add_error_feedback: Whether to add error feedback to the prompt on retry.
-        exception_cls: The exception class to catch and retry on.
-    """
-
-    def __init__(
-        self,
-        max_retries: int = 3,
-        add_error_feedback: bool = False,
-        exception_cls: type[BaseException] = Exception,
-    ):
-        self.max_retries = max_retries
-        self.add_error_feedback = add_error_feedback
-        self.exception_cls = exception_cls
-
-    @implements(Template.__apply__)
-    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
-        """Retry template execution with error feedback injection via scoped handlers."""
-        failures: list[str] = []
-
-        for attempt in range(self.max_retries):
-            try:
-                # Install scoped handlers for each accumulated failure
-                with contextlib.ExitStack() as stack:
-                    for failure in failures:
-                        stack.enter_context(handler(InstructionHandler(failure)))
-                    return fwd()
-            except self.exception_cls:
-                if attempt == self.max_retries - 1:
-                    raise  # Last attempt, re-raise the exception
-                if self.add_error_feedback:
-                    tb = traceback.format_exc()
-                    failures.append(f"\nError from previous attempt:\n```\n{tb}```")
-
-        # This should not be reached, but just in case
-        return fwd()
 
 
 class LiteLLMProvider(ObjectInterpretation):
