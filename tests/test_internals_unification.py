@@ -1,6 +1,7 @@
 import collections.abc
 import inspect
 import typing
+from typing import Literal
 
 import pytest
 
@@ -115,6 +116,11 @@ def test_canonicalize_1():
         pass
 
     assert canonicalize(GenericClass[int]) == GenericClass[int]
+
+    assert canonicalize(Literal["read", "write"]) == str
+    assert canonicalize(Literal[200, 404]) == int
+    assert canonicalize(Literal[True]) == bool
+    assert canonicalize(Literal[1, "a"]) == (int | str)
 
 
 @pytest.mark.parametrize(
