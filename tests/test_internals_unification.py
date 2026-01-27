@@ -333,6 +333,13 @@ def test_substitute(
             {},
             {K: str, T: int, V: bool},
         ),
+        # Literal type unification
+        (Literal["read", "write"], str, {}, {}),
+        (Literal[200, 404], int, {}, {}),
+        (Literal[True], bool, {}, {}),
+        (T, Literal["read", "write"], {}, {T: str}),
+        (T, Literal[1, 2, 3], {}, {T: int}),
+        (list[T], list[Literal["a", "b"]], {}, {T: str}),
     ],
 )
 def test_unify_success(
