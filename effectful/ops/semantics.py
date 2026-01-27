@@ -294,6 +294,13 @@ def _simple_type(tp: type) -> type:
         )
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
+    if typing.get_origin(tp) == typing.Literal:
+        args = typing.get_args(tp)
+        if not args:
+            raise TypeError(
+                "Literal annotations must be supplied with at least one argument"
+            )
+        return type(args[0])
     return typing.get_origin(tp) or tp
 
 
