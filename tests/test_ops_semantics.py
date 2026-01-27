@@ -847,6 +847,10 @@ def test_typeof_literal():
     def bad_definition() -> Literal[()]:
         raise NotHandled
 
+    @defop
+    def get_mixed() -> Literal[1, "a"]:
+        raise NotHandled
+
     assert typeof(get_mode()) is str
     assert typeof(get_status()) is int
     assert typeof(get_flag()) is bool
@@ -856,3 +860,6 @@ def test_typeof_literal():
         match="Literal annotations must be supplied with at least one argument",
     ):
         bad_definition()
+
+    with pytest.raises(TypeError, match="Union types are not supported"):
+        typeof(get_mixed())
