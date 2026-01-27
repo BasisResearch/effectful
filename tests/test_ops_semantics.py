@@ -3,7 +3,7 @@ import functools
 import itertools
 import logging
 from collections.abc import Callable, Mapping
-from typing import Annotated, Any, Union
+from typing import Annotated, Any, Literal, Union
 
 import pytest
 
@@ -826,3 +826,40 @@ def test_interpretation_typing():
     t1 = f({x: x()}, 2)
 
     assert isinstance(t1, Term) and typeof(t1) == int
+
+
+def test_typeof_literal():
+    """Test typeof with Literal type annotations."""
+
+    @defop
+    def get_mode() -> Literal["read", "write"]:
+        raise NotHandled
+
+    @defop
+    def get_status() -> Literal[200, 404]:
+        raise NotHandled
+
+    @defop
+    def get_flag() -> Literal[True]:
+        raise NotHandled
+
+    @defop
+    def bad_definition() -> Literal[()]:
+        raise NotHandled
+
+    @defop
+    def get_mixed() -> Literal[1, "a"]:
+        raise NotHandled
+
+    assert typeof(get_mode()) is str
+    assert typeof(get_status()) is int
+    assert typeof(get_flag()) is bool
+
+    with pytest.raises(
+        TypeError,
+        match="Literal annotations must be supplied with at least one argument",
+    ):
+        bad_definition()
+
+    with pytest.raises(TypeError, match="Union types are not supported"):
+        typeof(get_mixed())
