@@ -300,8 +300,7 @@ def _simple_type(tp: type) -> type:
             raise TypeError(
                 "Literal annotations must be supplied with at least one argument"
             )
-        arg_types = {type(arg) for arg in args}
-        tp = functools.reduce(operator.or_, arg_types)
+        tp = functools.reduce(operator.or_, (type(arg) for arg in args))
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
     return typing.get_origin(tp) or tp
