@@ -1,12 +1,11 @@
 """Tests for LLM handlers and providers.
 This module tests the functionality from build/main.py and build/llm.py,
-breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
+breaking down individual components like LiteLLMProvider,
 ProgramSynthesis, and sampling strategies.
 """
 
 import functools
 import json
-import logging
 import os
 from collections.abc import Callable
 from enum import Enum
@@ -23,7 +22,6 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
-    LLMLoggingHandler,
     completion,
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
@@ -241,45 +239,6 @@ class TestLiteLLMProvider:
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
-
-
-class TestLLMLoggingHandler:
-    """Tests for LLMLoggingHandler functionality."""
-
-    @requires_openai
-    def test_logs_requests(self, request, caplog):
-        """Test that LLMLoggingHandler properly logs LLM requests."""
-        with caplog.at_level(logging.INFO):
-            with (
-                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
-                handler(LLMLoggingHandler()),
-                handler(LimitLLMCallsHandler(max_calls=1)),
-            ):
-                result = simple_prompt("testing")
-                assert isinstance(result, str)
-
-        # Check that logging occurred
-        assert any("llm.request" in record.message for record in caplog.records)
-
-    @requires_openai
-    def test_custom_logger(self, request, caplog):
-        """Test LLMLoggingHandler with a custom logger."""
-        custom_logger = logging.getLogger("test_custom_logger")
-
-        with caplog.at_level(logging.INFO, logger="test_custom_logger"):
-            with (
-                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
-                handler(LLMLoggingHandler(logger=custom_logger)),
-                handler(LimitLLMCallsHandler(max_calls=1)),
-            ):
-                result = simple_prompt("testing")
-                assert isinstance(result, str)
-
-        # Verify custom logger was used
-        assert any(
-            record.name == "test_custom_logger" and "llm.request" in record.message
-            for record in caplog.records
-        )
 
 
 @pytest.mark.xfail(reason="Program synthesis not implemented")

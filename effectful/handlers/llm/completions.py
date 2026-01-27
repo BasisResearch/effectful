@@ -1,7 +1,6 @@
 import contextlib
 import functools
 import inspect
-import logging
 import string
 import traceback
 import typing
@@ -24,7 +23,6 @@ from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.encoding import type_to_encodable_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Operation
 
 
 class _OpenAIPromptFormatter(string.Formatter):
@@ -75,48 +73,6 @@ def completion(*args, **kwargs) -> Any:
 
     """
     return litellm.completion(*args, **kwargs)
-
-
-class LLMLoggingHandler(ObjectInterpretation):
-    """Logs completion rounds and tool_call invocations using Python logging.
-
-    Configure with a logger or logger name. By default logs at INFO level.
-    """
-
-    def __init__(
-        self,
-        *,
-        logger: logging.Logger | None = None,
-    ):
-        """Initialize the logging handler.
-
-        Args:
-            logger: The logger to use. If None, the logger name will be the name of the class. Note that the logger should have a handler that print out also the extra payload, e.g. `%(payload)s`.
-        """
-        self.logger = logger or logging.getLogger(__name__)
-
-    @implements(completion)
-    def _log_completion(self, *args, **kwargs) -> Any:
-        """Log the LLM request and response."""
-
-        response = fwd()
-        self.logger.info(
-            "llm.request",
-            extra={"payload": {"args": args, "kwargs": kwargs, "response": response}},
-        )
-        return response
-
-    @implements(Tool.__apply__)
-    def _log_tool_call(self, tool: Operation, *args, **kwargs) -> Any:
-        """Log the tool call and result."""
-
-        tool_name = tool.__name__
-        result = fwd()
-        self.logger.info(
-            "llm.tool_call",
-            extra={"payload": {"tool": tool_name, "args": args, "kwargs": kwargs}},
-        )
-        return result
 
 
 def parameter_model(tool: Tool) -> type[pydantic.BaseModel]:
