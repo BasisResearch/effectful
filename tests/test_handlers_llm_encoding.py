@@ -5,18 +5,25 @@ import pydantic
 import pytest
 from PIL import Image
 
-from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.encoding import (
+    encoding_instructions,
+    type_to_encodable_type,
+)
 from effectful.ops.types import Operation, Term
 
 
 def test_type_to_encodable_type_term():
     with pytest.raises(TypeError):
         type_to_encodable_type(Term)
+    with pytest.raises(TypeError):
+        encoding_instructions(Term)
 
 
 def test_type_to_encodable_type_operation():
     with pytest.raises(TypeError):
         type_to_encodable_type(Operation)
+    with pytest.raises(TypeError):
+        encoding_instructions(Operation)
 
 
 def test_type_to_encodable_type_str():
@@ -27,6 +34,7 @@ def test_type_to_encodable_type_str():
     Model = pydantic.create_model("Model", value=encodable.t)
     decoded = Model.model_validate({"value": "hello"})
     assert decoded.value == "hello"
+    assert isinstance(encoding_instructions(str), list)
 
 
 def test_type_to_encodable_type_int():
@@ -39,6 +47,7 @@ def test_type_to_encodable_type_int():
     decoded = Model.model_validate({"value": 42})
     assert decoded.value == 42
     assert isinstance(decoded.value, int)
+    assert isinstance(encoding_instructions(int), list)
 
 
 def test_type_to_encodable_type_bool():
@@ -54,6 +63,7 @@ def test_type_to_encodable_type_bool():
     decoded = Model.model_validate({"value": True})
     assert decoded.value is True
     assert isinstance(decoded.value, bool)
+    assert isinstance(encoding_instructions(bool), list)
 
 
 def test_type_to_encodable_type_float():
@@ -66,6 +76,7 @@ def test_type_to_encodable_type_float():
     decoded = Model.model_validate({"value": 3.14})
     assert decoded.value == 3.14
     assert isinstance(decoded.value, float)
+    assert isinstance(encoding_instructions(float), list)
 
 
 def test_type_to_encodable_type_image():
@@ -84,6 +95,7 @@ def test_type_to_encodable_type_image():
     decoded = Model.model_validate({"value": encoded})
     assert decoded.value["url"] == encoded["url"]
     assert decoded.value["detail"] == "auto"
+    assert isinstance(encoding_instructions(Image.Image), list)
 
 
 def test_type_to_encodable_type_image_roundtrip():
@@ -123,6 +135,7 @@ def test_type_to_encodable_type_tuple():
     decoded_from_model = encodable.decode(model_instance.value, {})
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
+    assert isinstance(encoding_instructions(tuple[int, str]), list)
 
 
 def test_type_to_encodable_type_tuple_empty():
@@ -143,6 +156,7 @@ def test_type_to_encodable_type_tuple_empty():
     decoded_from_model = encodable.decode(model_instance.value, {})
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
+    assert isinstance(encoding_instructions(tuple[()]), list)
 
 
 def test_type_to_encodable_type_tuple_three_elements():
@@ -167,6 +181,7 @@ def test_type_to_encodable_type_tuple_three_elements():
     decoded_from_model = encodable.decode(model_instance.value, {})
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
+    assert isinstance(encoding_instructions(tuple[int, str, bool]), list)
 
 
 def test_type_to_encodable_type_list():
@@ -188,6 +203,7 @@ def test_type_to_encodable_type_list():
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, list)
     assert all(isinstance(elem, int) for elem in decoded_from_model)
+    assert isinstance(encoding_instructions(list[int]), list)
 
 
 def test_type_to_encodable_type_list_str():
@@ -209,6 +225,7 @@ def test_type_to_encodable_type_list_str():
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, list)
     assert all(isinstance(elem, str) for elem in decoded_from_model)
+    assert isinstance(encoding_instructions(list[str]), list)
 
 
 def test_type_to_encodable_type_namedtuple():
@@ -228,6 +245,7 @@ def test_type_to_encodable_type_namedtuple():
     decoded = Model.model_validate({"value": {"x": 10, "y": 20}})
     assert decoded.value == point
     assert isinstance(decoded.value, Point)
+    assert isinstance(encoding_instructions(Point), list)
 
 
 def test_type_to_encodable_type_namedtuple_with_str():
@@ -247,6 +265,7 @@ def test_type_to_encodable_type_namedtuple_with_str():
     decoded = Model.model_validate({"value": {"name": "Alice", "age": 30}})
     assert decoded.value == person
     assert isinstance(decoded.value, Person)
+    assert isinstance(encoding_instructions(Person), list)
 
 
 def test_type_to_encodable_type_typeddict():
@@ -266,6 +285,8 @@ def test_type_to_encodable_type_typeddict():
     decoded = Model.model_validate({"value": {"name": "Bob", "age": 25}})
     assert decoded.value == user
     assert isinstance(decoded.value, dict)
+    assert isinstance(encoding_instructions(dict), list)
+    assert isinstance(encoding_instructions(User), list)
 
 
 def test_type_to_encodable_type_typeddict_optional():
@@ -303,6 +324,7 @@ def test_type_to_encodable_type_complex():
     decoded_from_model = encodable.decode(model_instance.value, {})
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, complex)
+    assert isinstance(encoding_instructions(complex), list)
 
 
 def test_type_to_encodable_type_tuple_of_images():

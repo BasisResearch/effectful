@@ -12,7 +12,8 @@ from litellm import (
 )
 from PIL import Image
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable
+from effectful.ops.semantics import _simple_type
+from effectful.ops.syntax import _CustomSingleDispatchCallable, defop
 from effectful.ops.types import Operation, Term
 
 
@@ -43,13 +44,45 @@ class EncodableAs[T, U](ABC):
         pass
 
     @classmethod
-    def encoding_instructions(cls) -> str | None:
-        """Optional instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
-        return None
-
-    @classmethod
     def serialize(cls, value: U) -> list[OpenAIMessageContentListBlock]:
         return [{"type": "text", "text": str(value)}]
+
+
+@defop
+@_CustomSingleDispatchCallable
+def encoding_instructions[T](
+    __dispatch: Callable[[type[T]], Callable[..., list[str]]], ty: type[T]
+) -> list[str]:
+    """Additional instructions per type to be prefixed onto synthesis prompts to tune the encoding of the result."""
+    dispatch_ty = _simple_type(ty)
+    return __dispatch(dispatch_ty)(ty)
+
+
+@encoding_instructions.register(object)  # type: ignore
+def _(_ty: type[object]) -> list[str]:
+    return []
+
+
+@encoding_instructions.register(list)  # type: ignore
+def _[T](ty: type[list[T]]):
+    args = typing.get_args(ty)
+    return encoding_instructions(args[0]) if args else []
+
+
+@encoding_instructions.register(tuple)  # type: ignore
+def _[T](ty: type[tuple[T, ...]]):
+    args = typing.get_args(ty)
+    return list({ins for arg in args for ins in (encoding_instructions(arg) or [])})
+
+
+@encoding_instructions.register(Term)  # type: ignore
+def _[T: Term](ty: type[T]) -> list[str]:
+    raise TypeError("Terms cannot be encoded or decoded in general.")
+
+
+@encoding_instructions.register(Operation)  # type: ignore
+def _[T: Operation](ty: type[T]) -> list[str]:
+    raise TypeError("Operations cannot be encoded or decoded in general.")
 
 
 class Encodable[T](EncodableAs[T, type]):
@@ -60,8 +93,8 @@ class Encodable[T](EncodableAs[T, type]):
 def type_to_encodable_type[T](
     __dispatch: Callable[[type[T]], Callable[..., Encodable[T]]], ty: type[T]
 ) -> Encodable[T]:
-    origin_ty = typing.get_origin(ty) or ty
-    return __dispatch(origin_ty)(ty)
+    dispatch_ty = _simple_type(ty)
+    return __dispatch(dispatch_ty)(ty)
 
 
 @type_to_encodable_type.register(object)

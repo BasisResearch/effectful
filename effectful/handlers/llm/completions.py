@@ -20,7 +20,10 @@ from litellm import (
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.encoding import (
+    encoding_instructions,
+    type_to_encodable_type,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
@@ -243,8 +246,7 @@ def format_model_input[**P, T](
     ret_type = template.__signature__.return_annotation
     origin = typing.get_origin(ret_type)
     ret_type = ret_type if origin is None else origin
-    ret_type_encoder = type_to_encodable_type(ret_type)
-    prompt_prefix = ret_type_encoder.encoding_instructions()
+    prompt_prefix = "\n".join(encoding_instructions(ret_type))
 
     if prompt_prefix:
         prefix: list[ChatCompletionTextObject] = [
