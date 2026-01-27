@@ -1,6 +1,8 @@
 import collections.abc
 import contextlib
 import dataclasses
+import functools
+import operator
 import types
 import typing
 from collections.abc import Callable
@@ -292,15 +294,16 @@ def _simple_type(tp: type) -> type:
             if tp.__constraints__
             else object
         )
-    if isinstance(tp, types.UnionType):
-        raise TypeError(f"Union types are not supported: {tp}")
     if typing.get_origin(tp) == typing.Literal:
         args = typing.get_args(tp)
         if not args:
             raise TypeError(
                 "Literal annotations must be supplied with at least one argument"
             )
-        return type(args[0])
+        arg_types = {type(arg) for arg in args}
+        tp = functools.reduce(operator.or_, arg_types)
+    if isinstance(tp, types.UnionType):
+        raise TypeError(f"Union types are not supported: {tp}")
     return typing.get_origin(tp) or tp
 
 
