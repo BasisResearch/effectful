@@ -92,10 +92,10 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
             with path.open() as f:
                 result = ModelResponse.model_validate(json.load(f))
                 return result
-        result = fwd(self.model, *args, **(self.config | kwargs))
+        result = fwd(*args, **(self.config | kwargs))
         path.parent.mkdir(exist_ok=True, parents=True)
         with path.open("w") as f:
-            json.dump(result.model_dump(), f, indent=2, sort_keys=True)
+            json.dump(result, f, indent=2, sort_keys=True)
         return result
 
 
@@ -172,7 +172,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_multiple_models(self, request, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -189,7 +189,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_cross_endpoint(self, request, model_name):
         """Test that ReplayLiteLLMProvider works across different API endpoints."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -202,7 +202,7 @@ class TestLiteLLMProvider:
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -217,7 +217,7 @@ class TestLiteLLMProvider:
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -231,9 +231,7 @@ class TestLiteLLMProvider:
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(
-                    request, model_name="gpt-4o-mini", temperature=0.1
-                )
+                ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -251,7 +249,7 @@ class TestProgramSynthesis:
     def test_generates_callable(self, request):
         """Test ProgramSynthesis handler generates executable code."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -293,7 +291,7 @@ def categorise_image(image: Image.Image) -> str:
 @requires_openai
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -319,7 +317,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
