@@ -829,16 +829,7 @@ def bar():
                 encodable.decode(source, {})
 
     @pytest.mark.parametrize(
-        "eval_provider",
-        [
-            UnsafeEvalProvider,
-            pytest.param(
-                RestrictedEvalProvider,
-                marks=pytest.mark.skip(
-                    reason="RestrictedPython doesn't support class definitions"
-                ),
-            ),
-        ],
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
     )
     def test_decode_class(self, eval_provider):
         from collections.abc import Callable
@@ -857,6 +848,80 @@ def bar():
         assert callable(decoded)
         instance = decoded("World")
         assert instance.greet() == "Hello, World!"
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_for_loop(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with for loop
+        source = """def sum_list(items):
+    total = 0
+    for item in items:
+        total = total + item
+    return total"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3, 4]) == 10
+        assert decoded([5, 10]) == 15
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_list_comprehension(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with list comprehension
+        source = """def double_items(items):
+    return [x * 2 for x in items]"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3]) == [2, 4, 6]
+        assert decoded([5, 10, 15]) == [10, 20, 30]
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_dict_comprehension(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with dict comprehension
+        source = """def square_dict(items):
+    return {x: x * x for x in items}"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3]) == {1: 1, 2: 4, 3: 9}
+        assert decoded([5, 10]) == {5: 25, 10: 100}
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_unpacking(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with tuple unpacking
+        source = """def process_pairs(pairs):
+    results = []
+    for a, b in pairs:
+        results.append(a + b)
+    return results"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([(1, 2), (3, 4)]) == [3, 7]
+        assert decoded([(10, 20)]) == [30]
 
     @pytest.mark.parametrize(
         "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]

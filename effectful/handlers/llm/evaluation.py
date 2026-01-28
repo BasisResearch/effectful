@@ -4,7 +4,12 @@ import linecache
 from types import CodeType
 from typing import Any
 
-from RestrictedPython import compile_restricted, safe_globals
+from RestrictedPython import (
+    Eval,
+    Guards,
+    compile_restricted,
+    safe_globals,
+)
 
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
@@ -117,9 +122,24 @@ class RestrictedEvalProvider(ObjectInterpretation):
         # Build restricted globals from RestrictedPython's defaults, then layer `env` on top
         # (without letting callers replace the restricted builtins).
         rglobals = safe_globals.copy()
+
+        # Enable class definitions (required for Python 3)
+        rglobals["__metaclass__"] = type
+        rglobals["__name__"] = "restricted"
+
+        # Layer `env` on top (without letting callers replace the restricted builtins).
         for k, v in env.items():
             if k != "__builtins__":
                 rglobals[k] = v
+
+        # Enable for loops and comprehensions
+        rglobals["_getiter_"] = Eval.default_guarded_getiter
+
+        # Enable sequence unpacking in comprehensions and for loops
+        rglobals["_iter_unpack_sequence_"] = Guards.guarded_iter_unpack_sequence
+        rglobals["getattr"] = Guards.safer_getattr
+        rglobals["setattr"] = Guards.guarded_setattr
+        rglobals["_write_"] = lambda x: x
 
         # Execute with locals=env so top-level defs land in `env` (like your UnsafeEvalProvider).
         builtins.exec(bytecode, rglobals, env)
