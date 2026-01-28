@@ -6,6 +6,8 @@ import pytest
 from PIL import Image
 
 from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
+from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
 
@@ -718,3 +720,223 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+class TestCallableEncodable:
+    """Tests for CallableEncodable - encoding/decoding callables as source code."""
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_encode_decode_function(self, eval_provider):
+        from collections.abc import Callable
+
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        encodable = type_to_encodable_type(Callable)
+        encoded = encodable.encode(add, {})
+        assert isinstance(encoded, str)
+        assert "def add" in encoded
+        assert "return a + b" in encoded
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(encoded, {})
+        assert callable(decoded)
+        assert decoded(2, 3) == 5
+        assert decoded.__name__ == "add"
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_lambda(self, eval_provider):
+        from collections.abc import Callable
+
+        # Lambdas should work if defined in a way that inspect.getsource can find them
+        # Note: lambdas defined inline may not always have retrievable source
+        encodable = type_to_encodable_type(Callable)
+
+        # Test decoding a lambda from source string
+        lambda_source = "f = lambda x: x * 2"
+        with handler(eval_provider()):
+            decoded = encodable.decode(lambda_source, {})
+        assert callable(decoded)
+        assert decoded(5) == 10
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_with_env(self, eval_provider):
+        from collections.abc import Callable
+
+        # Test decoding a function that uses env variables
+        encodable = type_to_encodable_type(Callable)
+        source = """def multiply(x):
+    return x * factor"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {"factor": 3})
+        assert callable(decoded)
+        assert decoded(4) == 12
+
+    def test_encode_non_callable_raises(self):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        with pytest.raises(TypeError, match="Expected callable"):
+            encodable.encode("not a callable", {})
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_encode_builtin_raises(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Built-in functions don't have source code
+        with pytest.raises(RuntimeError, match="Source code of callable .* not found"):
+            with handler(eval_provider()):
+                encodable.encode(len, {})
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_no_callable_raises(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Source code that defines no callable
+        source = "x = 42"
+        with pytest.raises(ValueError, match="exactly one callable"):
+            with handler(eval_provider()):
+                encodable.decode(source, {})
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_multiple_callables_raises(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Source code that defines multiple callables
+        source = """def foo():
+    return 1
+
+def bar():
+    return 2"""
+        with pytest.raises(ValueError, match="exactly one callable"):
+            with handler(eval_provider()):
+                encodable.decode(source, {})
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_class(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Classes are callable, decode should work with class definitions
+        source = """class Greeter:
+    def __init__(self, name):
+        self.name = name
+
+    def greet(self):
+        return f"Hello, {self.name}!\""""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        instance = decoded("World")
+        assert instance.greet() == "Hello, World!"
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_for_loop(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with for loop
+        source = """def sum_list(items):
+    total = 0
+    for item in items:
+        total = total + item
+    return total"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3, 4]) == 10
+        assert decoded([5, 10]) == 15
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_list_comprehension(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with list comprehension
+        source = """def double_items(items):
+    return [x * 2 for x in items]"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3]) == [2, 4, 6]
+        assert decoded([5, 10, 15]) == [10, 20, 30]
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_dict_comprehension(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with dict comprehension
+        source = """def square_dict(items):
+    return {x: x * x for x in items}"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([1, 2, 3]) == {1: 1, 2: 4, 3: 9}
+        assert decoded([5, 10]) == {5: 25, 10: 100}
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_decode_function_with_unpacking(self, eval_provider):
+        from collections.abc import Callable
+
+        encodable = type_to_encodable_type(Callable)
+        # Test function with tuple unpacking
+        source = """def process_pairs(pairs):
+    results = []
+    for a, b in pairs:
+        results.append(a + b)
+    return results"""
+
+        with handler(eval_provider()):
+            decoded = encodable.decode(source, {})
+        assert callable(decoded)
+        assert decoded([(1, 2), (3, 4)]) == [3, 7]
+        assert decoded([(10, 20)]) == [30]
+
+    @pytest.mark.parametrize(
+        "eval_provider", [UnsafeEvalProvider, RestrictedEvalProvider]
+    )
+    def test_roundtrip(self, eval_provider):
+        from collections.abc import Callable
+
+        def greet(name: str) -> str:
+            return f"Hello, {name}!"
+
+        encodable = type_to_encodable_type(Callable)
+        with handler(eval_provider()):
+            encoded = encodable.encode(greet, {})
+            decoded = encodable.decode(encoded, {})
+
+        assert callable(decoded)
+        assert decoded("Alice") == "Hello, Alice!"
+        assert decoded.__name__ == "greet"

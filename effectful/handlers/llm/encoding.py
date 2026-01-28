@@ -1,8 +1,14 @@
+import ast
 import base64
+import inspect
 import io
+import textwrap
+import threading
+import time
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
+from types import CodeType
 from typing import Any
 
 import pydantic
@@ -12,7 +18,10 @@ from litellm import (
 )
 from PIL import Image
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable
+import effectful.handlers.llm.evaluation as evaluation
+from effectful.ops.syntax import (
+    _CustomSingleDispatchCallable,
+)
 from effectful.ops.types import Operation, Term
 
 
@@ -44,7 +53,7 @@ class EncodableAs[T, U](ABC):
 
     @classmethod
     def encoding_instructions(cls) -> str | None:
-        """Optional instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
+        """Optional instructions to be prefixed onto prompts to tune the encoding of the result."""
         return None
 
     @classmethod
@@ -262,3 +271,53 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
                 return super().serialize(value)
 
     return typing.cast(Encodable[T], ListEncodable())
+
+
+@type_to_encodable_type.register(Callable)
+class CallableEncodable(EncodableAs[Callable, str]):
+    t: type[typing.Any] = str
+
+    @classmethod
+    def encode[T](cls, t: T, env: Mapping[str, Any] | None = None) -> typing.Any:
+        if not callable(t):
+            raise TypeError(f"Expected callable, got {type(t)}")
+        try:
+            source = inspect.getsource(t)
+        except (OSError, TypeError):
+            source = None
+
+        if not source:
+            raise RuntimeError(f"Source code of callable {t} not found")
+
+        return textwrap.dedent(source)
+
+    @classmethod
+    def decode(cls, t: str, env: Mapping[str, Any] | None = None) -> Callable:
+        filename = f"<{cls.__name__}.decode:{int(time.time() * 1_000_000)}:{threading.get_ident()}>"
+
+        # https://docs.python.org/3/library/functions.html#exec
+        g: MutableMapping[str, Any] = {}
+        g.update(env or {})
+
+        before_keys = set(g.keys())
+
+        module: ast.AST = evaluation.parse(t, filename)
+        bytecode: CodeType = evaluation.compile(module, filename)
+        evaluation.exec(bytecode, g)
+
+        # Otherwise: find newly-created callables (in insertion order).
+        new_callables = [
+            v for k, v in g.items() if k not in before_keys and callable(v)
+        ]
+        if not new_callables or len(new_callables) > 1:
+            raise ValueError(
+                "decode() required source code to define exactly one callable."
+            )
+
+        return new_callables[0]
+
+    @Operation.define
+    @classmethod
+    def encoding_instructions(cls) -> str | None:
+        """Instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
+        return None
