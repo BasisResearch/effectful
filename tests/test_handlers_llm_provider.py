@@ -22,7 +22,7 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
-    completion,
+    call_assistant,
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
@@ -83,7 +83,7 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
         self.call_count += 1
         return call_id
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         path = FIXTURE_DIR / f"{self.test_id}{self.call_id()}.json"
         if not REBUILD_FIXTURES:
@@ -92,10 +92,10 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
             with path.open() as f:
                 result = ModelResponse.model_validate(json.load(f))
                 return result
-        result = fwd(self.model_name, *args, **(self.config | kwargs))
+        result = fwd(*args, **(self.config | kwargs))
         path.parent.mkdir(exist_ok=True, parents=True)
         with path.open("w") as f:
-            json.dump(result.model_dump(), f, indent=2, sort_keys=True)
+            json.dump(result, f, indent=2, sort_keys=True)
         return result
 
 
@@ -106,7 +106,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     def __init__(self, max_calls: int):
         self.max_calls = max_calls
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         if self.no_calls >= self.max_calls:
             raise RuntimeError(
@@ -172,7 +172,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_multiple_models(self, request, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -189,7 +189,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_cross_endpoint(self, request, model_name):
         """Test that ReplayLiteLLMProvider works across different API endpoints."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -202,7 +202,7 @@ class TestLiteLLMProvider:
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -217,7 +217,7 @@ class TestLiteLLMProvider:
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -231,9 +231,7 @@ class TestLiteLLMProvider:
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(
-                    request, model_name="gpt-4o-mini", temperature=0.1
-                )
+                ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -251,7 +249,7 @@ class TestProgramSynthesis:
     def test_generates_callable(self, request):
         """Test ProgramSynthesis handler generates executable code."""
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(ProgramSynthesis()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -293,7 +291,7 @@ def categorise_image(image: Image.Image) -> str:
 @requires_openai
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -319,7 +317,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -335,7 +333,7 @@ class TestPydanticBaseModelReturn:
 
 def test_litellm_caching_integration(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         p3 = simple_prompt("oranges")
@@ -347,14 +345,14 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o", caching=False)):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o", caching=False)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
 
 
 def test_litellm_caching_selective(request):
-    with handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"

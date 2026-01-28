@@ -14,7 +14,7 @@ from pydantic.dataclasses import dataclass as pydantic_dataclass
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
-    completion,
+    call_assistant,
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -41,7 +41,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     max_calls: int = 10
     call_count: int = 0
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         self.call_count += 1
         if self.call_count > self.max_calls:
@@ -115,17 +115,17 @@ class TestToolCalling:
     """Tests for templates with tool calling functionality."""
 
     @pytest.mark.parametrize(
-        "model_name",
+        "model",
         [
             pytest.param("gpt-5-nano", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
-    def test_tool_calling(self, model_name):
+    def test_tool_calling(self, model):
         """Test that templates with tools work with openai."""
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
-            handler(LiteLLMProvider(model_name=model_name)),
+            handler(LiteLLMProvider(model=model)),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):
