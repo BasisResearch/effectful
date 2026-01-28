@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass
 
 import pytest
@@ -155,7 +156,10 @@ class TemplateStringIntp(ObjectInterpretation):
     def _[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        model_input = call_user(template, *args, **kwargs)
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
+        model_input = call_user(template.__prompt_template__, env)
         template_result = model_input[0]["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]

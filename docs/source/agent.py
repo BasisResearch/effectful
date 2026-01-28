@@ -3,8 +3,9 @@ import functools
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
+    Message,
+    call_assistant,
     call_user,
-    compute_response,
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import defop
@@ -32,27 +33,26 @@ class Agent:
                     {
                         Agent.current_agent: lambda: self,
                         call_user: self._format_model_input,
-                        compute_response: self._compute_response,
+                        call_assistant: self._compute_response,
                     }
                 ):
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
 
-    def _format_model_input(self, template, other, *args, **kwargs):
+    def _format_model_input(self, template, env):
         # update prompt with previous list of messages
         prompt = fwd()
         if Agent.current_agent() is self:
-            assert self is other
             self.state.extend(prompt)
             prompt = self.state
         return prompt
 
     def _compute_response(self, *args, **kwargs):
         # save response into persisted state
-        response = fwd()
+        response: Message = fwd()
         if Agent.current_agent() is self:
-            self.state.append(response.choices[0].message.model_dump())
+            self.state.append(response)
         return response
 
 

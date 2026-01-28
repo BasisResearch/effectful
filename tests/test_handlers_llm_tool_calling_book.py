@@ -98,17 +98,17 @@ def get_book_recommendation(user_preference: str) -> BookRecommendation:
 
 class TestPydanticBaseModelToolCalls:
     @pytest.mark.parametrize(
-        "model_name",
+        "model",
         [
             pytest.param("gpt-5-nano", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
-    def test_pydantic_basemodel_tool_calling(self, model_name):
+    def test_pydantic_basemodel_tool_calling(self, model):
         """Test that templates with tools work with Pydantic BaseModel."""
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
-            handler(LiteLLMProvider(model_name=model_name)),
+            handler(LiteLLMProvider(model=model)),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(book_rec_ctx),
         ):

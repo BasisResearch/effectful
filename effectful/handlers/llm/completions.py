@@ -9,10 +9,14 @@ import typing
 import litellm
 import pydantic
 from litellm import (
+    ChatCompletionFunctionMessage,
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
+    ChatCompletionToolMessage,
     ChatCompletionToolParam,
-    Message,
+    OpenAIChatCompletionAssistantMessage,
+    OpenAIChatCompletionSystemMessage,
+    OpenAIChatCompletionUserMessage,
     OpenAIMessageContentListBlock,
 )
 
@@ -21,6 +25,50 @@ from effectful.handlers.llm.encoding import Encodable, type_to_encodable_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
+
+ToolCall: pydantic.TypeAdapter[list[ChatCompletionMessageToolCall]] = (
+    pydantic.TypeAdapter(list[ChatCompletionMessageToolCall])
+)
+MessageContent: pydantic.TypeAdapter[list[OpenAIMessageContentListBlock] | str] = (
+    pydantic.TypeAdapter(list[OpenAIMessageContentListBlock] | str)
+)
+Message = (
+    OpenAIChatCompletionAssistantMessage
+    | ChatCompletionToolMessage
+    | ChatCompletionFunctionMessage
+    | OpenAIChatCompletionSystemMessage
+    | OpenAIChatCompletionUserMessage
+)
+
+MessageAdapter: pydantic.TypeAdapter[Message] = pydantic.TypeAdapter(Message)
+
+
+def validate_data[T](adapter: pydantic.TypeAdapter[T], data: typing.Any) -> T:
+    adapter.validate_python(data, strict=True)
+    return adapter.dump_python(data)
+
+
+def _message_role(message: Message) -> str:
+    return message["role"]
+
+
+def _message_content(message: Message) -> list[OpenAIMessageContentListBlock] | str:
+    return validate_data(MessageContent, message.get("content"))
+
+
+def _message_reasoning_content(
+    message: Message,
+) -> list[OpenAIMessageContentListBlock] | str:
+    return validate_data(MessageContent, message.get("reasoning_content"))
+
+
+def _message_tool_calls(message: Message) -> list[ChatCompletionMessageToolCall]:
+    tool_calls = message.get("tool_calls") or []
+    assert isinstance(tool_calls, list)
+    return [
+        ChatCompletionMessageToolCall.model_validate(tool_call)
+        for tool_call in tool_calls
+    ]
 
 
 def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
@@ -63,7 +111,6 @@ def call_assistant(
     messages: collections.abc.Sequence[Message],
     response_format: type[pydantic.BaseModel] | None,
     tools: collections.abc.Mapping[str, ChatCompletionToolParam],
-    *,
     model: str,
     **kwargs,
 ) -> Message:
@@ -74,7 +121,7 @@ def call_assistant(
 
     """
     response: litellm.types.utils.ModelResponse = litellm.completion(
-        model=model,
+        model,
         messages=list(messages),
         response_format=response_format,
         tools=list(tools.values()),
@@ -82,9 +129,9 @@ def call_assistant(
     )
     choice = response.choices[0]
     assert isinstance(choice, litellm.types.utils.Choices)
-    message: Message = choice.message
+    message: litellm.Message = choice.message
     assert message.role == "assistant"
-    return message
+    return validate_data(MessageAdapter, message.model_dump(mode="json"))
 
 
 @Operation.define
@@ -123,35 +170,61 @@ def call_tool(
 
     # serialize back to U using encoder for return type
     encoded_result = return_type.serialize(return_type.encode(result))
-    return Message.model_validate(dict(role="tool", content=encoded_result))
+    return validate_data(
+        MessageAdapter,
+        dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
+    )
 
 
 @Operation.define
 def call_user(
     template: str,
     env: collections.abc.Mapping[str, typing.Any],
-) -> Message:
+) -> list[Message]:
     """
     Format a template applied to arguments into a user message.
     """
-    formatter: string.Formatter = string.Formatter()
-    prompt_parts: list[OpenAIMessageContentListBlock] = []
+    formatter = string.Formatter()
+    parts: list[OpenAIMessageContentListBlock] = []
 
-    for literal, field_name, fspec, cspec in formatter.parse(textwrap.dedent(template)):
+    buf: list[str] = []
+
+    def flush_text() -> None:
+        if buf:
+            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            buf.clear()
+
+    for literal, field_name, format_spec, conversion in formatter.parse(
+        textwrap.dedent(template)
+    ):
         if literal:
-            prompt_parts.append(ChatCompletionTextObject(type="text", text=literal))
-        if field_name is not None:
-            obj, _ = formatter.get_field(field_name, (), env)
-            encoder = type_to_encodable_type(type(obj))
-            encoded_obj = encoder.serialize(encoder.encode(obj))
-            for part in formatter.convert_field(encoded_obj, cspec):
-                if part["type"] == "text":
-                    part["text"] = formatter.format_field(part["text"], fspec or "")
-                prompt_parts.append(part)
+            buf.append(literal)
+
+        if field_name is None:
+            continue
+
+        obj, _ = formatter.get_field(field_name, (), env)
+        encoder = type_to_encodable_type(type(obj))
+        encoded_obj: list[OpenAIMessageContentListBlock] = encoder.serialize(
+            encoder.encode(obj)
+        )
+        for part in encoded_obj:
+            if part["type"] == "text":
+                text = (
+                    formatter.convert_field(part["text"], conversion)
+                    if conversion
+                    else part["text"]
+                )
+                buf.append(formatter.format_field(text, format_spec or ""))
+            else:
+                flush_text()
+                parts.append(part)
+
+    flush_text()
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    return Message.model_validate(dict(role="user", content=prompt_parts), strict=True)
+    return [validate_data(MessageAdapter, dict(role="user", content=parts))]
 
 
 @Operation.define
@@ -165,10 +238,11 @@ class LiteLLMProvider(ObjectInterpretation):
 
     config: collections.abc.Mapping[str, typing.Any]
 
-    def __init__(self, **config):
-        self.config = (
-            inspect.signature(litellm.completion).bind_partial(**config).kwargs
-        )
+    def __init__(self, model="gpt-4o", **config):
+        self.config = {
+            "model": model,
+            **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
+        }
 
     @implements(call_assistant)
     @functools.wraps(call_assistant)
@@ -176,8 +250,9 @@ class LiteLLMProvider(ObjectInterpretation):
         return fwd(*args, **{**self.config, **kwargs})
 
     @implements(Template.__apply__)
-    @staticmethod
-    def _call[**P, T](template: Template[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    def _call[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
         response_encoding_type: Encodable[T] = type_to_encodable_type(
             inspect.signature(template).return_annotation
         )
@@ -190,8 +265,8 @@ class LiteLLMProvider(ObjectInterpretation):
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
 
-        message: Message = call_user(template.__prompt_template__, env)
-        messages.append(message)
+        user_messages: list[Message] = call_user(template.__prompt_template__, env)
+        messages.extend(user_messages)
 
         tools = {
             **template.tools,
@@ -200,16 +275,24 @@ class LiteLLMProvider(ObjectInterpretation):
         tool_specs = {k: _tool_model(t) for k, t in tools.items()}
 
         # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-        while message.role != "assistant" or message.tool_calls:
+        tool_calls: list[ChatCompletionMessageToolCall] = []
+
+        message = messages[-1]
+        while _message_role(message) != "assistant" or tool_calls:
             message = call_assistant(messages, response_model, tool_specs)
             messages.append(message)
-
-            for tool_call in message.tool_calls or []:
+            tool_calls = _message_tool_calls(message)
+            for tool_call in tool_calls:
                 message = call_tool(tool_call, tools)
                 messages.append(message)
 
         # return response
-        serialized_result = message.content or message.reasoning_content
+        serialized_result = _message_content(message) or _message_reasoning_content(
+            message
+        )
+        assert isinstance(serialized_result, str), (
+            "final response from the model should be a string"
+        )
         encoded_result = (
             serialized_result
             if response_model is None
