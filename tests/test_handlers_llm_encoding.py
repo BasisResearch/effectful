@@ -718,3 +718,29 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+@pytest.mark.parametrize(
+    "ty,env",
+    [
+        (int, {}),
+        (str, {"key": "value"}),
+        (tuple[int, str], {}),
+        (list[str], {}),
+        (tuple[int, str, bool], {}),
+        (tuple[int, int], {}),
+    ],
+)
+def test_encoding_instructions(ty, env):
+    """Test that encoding_instructions accepts env parameter and returns a list.
+
+    Tests various types including primitives, tuples, and lists to ensure:
+    - The method accepts an env parameter
+    - Returns a Sequence[str] (list)
+    - Returns empty list for default encoders
+    """
+    encodable = type_to_encodable_type(ty)
+    instructions = encodable.encoding_instructions(env)
+    assert isinstance(instructions, list)
+    # Default implementation should return empty list regardless of env or type
+    assert instructions == []
