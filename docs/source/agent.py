@@ -3,8 +3,8 @@ import functools
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
+    call_user,
     compute_response,
-    format_model_input,
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import defop
@@ -31,7 +31,7 @@ class Agent:
                 with handler(
                     {
                         Agent.current_agent: lambda: self,
-                        format_model_input: self._format_model_input,
+                        call_user: self._format_model_input,
                         compute_response: self._compute_response,
                     }
                 ):

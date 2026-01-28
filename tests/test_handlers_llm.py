@@ -4,11 +4,6 @@ from typing import Annotated
 import pytest
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import (
-    RetryLLMHandler,
-    compute_response,
-    format_model_input,
-)
 from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
@@ -169,102 +164,6 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         if self.call_count <= self.fail_count:
             raise self.exception_factory()
         return self.success_response
-
-
-def test_retry_handler_succeeds_after_failures():
-    """Test that RetryLLMHandler retries and eventually succeeds."""
-    provider = FailingThenSucceedingProvider(
-        fail_count=2,
-        success_response="Success after retries!",
-        exception_factory=lambda: ValueError("Temporary failure"),
-    )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
-
-    with handler(provider), handler(retry_handler):
-        result = limerick("test")
-        assert result == "Success after retries!"
-        assert provider.call_count == 3  # 2 failures + 1 success
-
-
-def test_retry_handler_exhausts_retries():
-    """Test that RetryLLMHandler raises after max retries exhausted."""
-    provider = FailingThenSucceedingProvider(
-        fail_count=5,  # More failures than retries
-        success_response="Never reached",
-        exception_factory=lambda: ValueError("Persistent failure"),
-    )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
-
-    with pytest.raises(ValueError, match="Persistent failure"):
-        with handler(provider), handler(retry_handler):
-            limerick("test")
-
-    assert provider.call_count == 3  # Should have tried 3 times
-
-
-def test_retry_handler_only_catches_specified_exception():
-    """Test that RetryLLMHandler only catches the specified exception class."""
-    provider = FailingThenSucceedingProvider(
-        fail_count=1,
-        success_response="Success",
-        exception_factory=lambda: TypeError("Wrong type"),  # Different exception type
-    )
-    retry_handler = RetryLLMHandler(max_retries=3, exception_cls=ValueError)
-
-    # TypeError should not be caught, should propagate immediately
-    with pytest.raises(TypeError, match="Wrong type"):
-        with handler(provider), handler(retry_handler):
-            limerick("test")
-
-    assert provider.call_count == 1  # Should have only tried once
-
-
-def test_retry_handler_with_error_feedback():
-    """Test that RetryLLMHandler includes error feedback when enabled."""
-
-    captured_messages: list[list] = []
-
-    class MessageCapturingProvider(ObjectInterpretation):
-        """Provider that captures formatted messages and fails once."""
-
-        def __init__(self):
-            self.call_count = 0
-
-        @implements(compute_response)
-        def _capture_and_respond(self, template: Template, messages: list):
-            """Capture messages at compute_response level (after error injection)."""
-            self.call_count += 1
-            captured_messages.append(messages)
-            if self.call_count == 1:
-                raise ValueError("First attempt failed")
-            # Return a mock response - not used since we return directly
-            return None
-
-        @implements(Template.__apply__)
-        def _call(self, template: Template, *args, **kwargs):
-            # Call the format/compute chain but return directly
-            messages = format_model_input(template, *args, **kwargs)
-            compute_response(template, messages)
-            return "Success on retry"
-
-    provider = MessageCapturingProvider()
-    retry_handler = RetryLLMHandler(
-        max_retries=2, add_error_feedback=True, exception_cls=ValueError
-    )
-
-    with handler(provider), handler(retry_handler):
-        result = limerick("test")
-        assert result == "Success on retry"
-
-    assert len(captured_messages) == 2
-    # First call has original prompt only
-    first_msg_content = str(captured_messages[0])
-    assert (
-        "limerick" in first_msg_content.lower() or "theme" in first_msg_content.lower()
-    )
-    # Second call should include error feedback
-    second_msg_content = str(captured_messages[1])
-    assert "First attempt failed" in second_msg_content
 
 
 def test_template_captures_other_templates_in_lexical_context():

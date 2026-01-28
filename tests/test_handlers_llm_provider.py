@@ -22,7 +22,7 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
-    completion,
+    call_assistant,
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
@@ -83,7 +83,7 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
         self.call_count += 1
         return call_id
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         path = FIXTURE_DIR / f"{self.test_id}{self.call_id()}.json"
         if not REBUILD_FIXTURES:
@@ -92,7 +92,7 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
             with path.open() as f:
                 result = ModelResponse.model_validate(json.load(f))
                 return result
-        result = fwd(self.model_name, *args, **(self.config | kwargs))
+        result = fwd(self.model, *args, **(self.config | kwargs))
         path.parent.mkdir(exist_ok=True, parents=True)
         with path.open("w") as f:
             json.dump(result.model_dump(), f, indent=2, sort_keys=True)
@@ -106,7 +106,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     def __init__(self, max_calls: int):
         self.max_calls = max_calls
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         if self.no_calls >= self.max_calls:
             raise RuntimeError(

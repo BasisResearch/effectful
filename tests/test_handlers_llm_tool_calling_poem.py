@@ -14,7 +14,7 @@ from pydantic.dataclasses import dataclass as pydantic_dataclass
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
-    completion,
+    call_assistant,
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -41,7 +41,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     max_calls: int = 10
     call_count: int = 0
 
-    @implements(completion)
+    @implements(call_assistant)
     def _completion(self, *args, **kwargs):
         self.call_count += 1
         if self.call_count > self.max_calls:
