@@ -2,7 +2,7 @@ import base64
 import io
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import pydantic
@@ -43,9 +43,9 @@ class EncodableAs[T, U](ABC):
         pass
 
     @classmethod
-    def encoding_instructions(cls) -> str | None:
+    def encoding_instructions(cls, env: Mapping[str, Any]) -> Sequence[str]:
         """Optional instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
-        return None
+        return []
 
     @classmethod
     def serialize(cls, value: U) -> list[OpenAIMessageContentListBlock]:
@@ -192,6 +192,16 @@ def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
             return typing.cast(T, tuple(decoded_elements))
 
         @classmethod
+        def encoding_instructions(cls, env: Mapping[str, Any]) -> Sequence[str]:
+            return list(
+                {
+                    instruction
+                    for enc in element_encoders
+                    for instruction in enc.encoding_instructions(env)
+                }
+            )
+
+        @classmethod
         def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
             if has_image:
                 # If tuple contains images, serialize each element and flatten the results
@@ -247,6 +257,15 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
                 element_encoder.decode(elem, env) for elem in t
             ]
             return typing.cast(T, decoded_elements)
+
+        @classmethod
+        def encoding_instructions(cls, env: Mapping[str, Any]) -> Sequence[str]:
+            return list(
+                {
+                    instruction
+                    for instruction in element_encoder.encoding_instructions(env)
+                }
+            )
 
         @classmethod
         def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
