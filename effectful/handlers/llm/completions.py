@@ -244,7 +244,9 @@ def format_model_input[**P, T](
     origin = typing.get_origin(ret_type)
     ret_type = ret_type if origin is None else origin
     ret_type_encoder = type_to_encodable_type(ret_type)
-    prompt_prefix = ret_type_encoder.encoding_instructions()
+    prompt_prefix = "\n".join(
+        ret_type_encoder.encoding_instructions(template.__context__)
+    )
 
     if prompt_prefix:
         prefix: list[ChatCompletionTextObject] = [
