@@ -4,6 +4,8 @@ import linecache
 from types import CodeType
 from typing import Any
 
+from RestrictedPython import compile_restricted, safe_globals
+
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
@@ -79,3 +81,45 @@ class UnsafeEvalProvider(ObjectInterpretation):
 
         # Execute module-style so top-level defs land in `env`.
         builtins.exec(bytecode, env, env)
+
+
+class RestrictedEvalProvider(ObjectInterpretation):
+    """
+    Safer provider using RestrictedPython.
+
+    Notes:
+    - RestrictedPython is not a complete sandbox, but it enforces a restricted
+      language subset and expects you to provide a constrained exec environment.
+    """
+
+    @implements(parse)
+    def parse(self, source: str, filename: str) -> ast.Module:
+        # Keep inspect.getsource() working for dynamically-defined objects.
+        linecache.cache[filename] = (
+            len(source),
+            None,
+            source.splitlines(True),
+            filename,
+        )
+        return ast.parse(source, filename=filename, mode="exec")
+
+    @implements(compile)
+    def compile(self, module: ast.Module, filename: str) -> CodeType:
+        # RestrictedPython can compile from an AST directly.
+        return compile_restricted(module, filename=filename, mode="exec")
+
+    @implements(exec)
+    def exec(
+        self,
+        bytecode: CodeType,
+        env: dict[str, Any],
+    ) -> None:
+        # Build restricted globals from RestrictedPython's defaults, then layer `env` on top
+        # (without letting callers replace the restricted builtins).
+        rglobals = safe_globals.copy()
+        for k, v in env.items():
+            if k != "__builtins__":
+                rglobals[k] = v
+
+        # Execute with locals=env so top-level defs land in `env` (like your UnsafeEvalProvider).
+        builtins.exec(bytecode, rglobals, env)
