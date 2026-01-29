@@ -2,7 +2,8 @@ import base64
 import io
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import pydantic
@@ -12,6 +13,7 @@ from litellm import (
 )
 from PIL import Image
 
+from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
 
@@ -26,110 +28,117 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-class EncodableAs[T, U](ABC):
-    t: type[U]
+class Encodable[T, U](ABC):
+    base: type[T]
+    enc: type[U]
+    ctx: Mapping[str, Any]
 
-    def __init__(self, *args, **kwargs):
-        pass
-
-    @classmethod
     @abstractmethod
-    def encode(cls, vl: T, env: Mapping[str, Any] | None = None) -> U:
-        pass
+    def encode(self, value: T) -> U:
+        raise NotImplementedError
 
-    @classmethod
     @abstractmethod
-    def decode(cls, vl: U, env: Mapping[str, Any] | None = None) -> T:
-        pass
+    def decode(self, encoded_value: U) -> T:
+        raise NotImplementedError
 
-    @classmethod
-    def encoding_instructions(cls) -> str | None:
-        """Optional instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
-        return None
+    @abstractmethod
+    def serialize(self, encoded_value: U) -> Sequence[OpenAIMessageContentListBlock]:
+        raise NotImplementedError
 
-    @classmethod
-    def serialize(cls, value: U) -> list[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": str(value)}]
+    # serialize and deserialize have different types reflecting the LLM api chat.completions(list[content]) -> str
+    @abstractmethod
+    def deserialize(self, serialized_value: str) -> U:
+        raise NotImplementedError
 
-
-class Encodable[T](EncodableAs[T, type]):
-    t = type
-
-
-@_CustomSingleDispatchCallable
-def type_to_encodable_type[T](
-    __dispatch: Callable[[type[T]], Callable[..., Encodable[T]]], ty: type[T]
-) -> Encodable[T]:
-    origin_ty = typing.get_origin(ty) or ty
-    return __dispatch(origin_ty)(ty)
-
-
-@type_to_encodable_type.register(object)
-def _type_encodable_type_base[T](ty: type[T]) -> Encodable[T]:
-    class BaseEncodable(EncodableAs[T, T]):
-        t: type[T] = ty
-
-        @classmethod
-        def encode(cls, vl: T, env: Mapping[str, Any] | None = None) -> T:
-            return vl
-
-        @classmethod
-        def decode(cls, vl: T, env: Mapping[str, Any] | None = None) -> T:
-            return vl
-
-    return typing.cast(Encodable[T], BaseEncodable())
+    @typing.final
+    @staticmethod
+    @_CustomSingleDispatchCallable
+    def define(
+        __dispatch: Callable[
+            [type[T]], Callable[[type[T], Mapping[str, Any] | None], "Encodable[T, U]"]
+        ],
+        t: type[T],
+        ctx: Mapping[str, Any] | None = None,
+    ) -> "Encodable[T, U]":
+        dispatch_ty = _simple_type(t)
+        return __dispatch(dispatch_ty)(t, ctx)
 
 
-@type_to_encodable_type.register(Term)
-def _type_encodable_type_term[T: Term](ty: type[T]) -> Encodable[T]:
-    raise TypeError("Terms cannot be encoded or decoded in general.")
+@dataclass
+class BaseEncodable[T](Encodable[T, T]):
+    base: type[T]
+    enc: type[T]
+    ctx: Mapping[str, Any]
+    adapter: pydantic.TypeAdapter[T]
+
+    def encode(self, value: T) -> T:
+        return typing.cast(T, self.adapter.validate_python(value))
+
+    def decode(self, encoded_value: T) -> T:
+        return typing.cast(T, self.adapter.validate_python(encoded_value))
+
+    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
+        json_str = self.adapter.dump_json(encoded_value).decode("utf-8")
+        return [{"type": "text", "text": json_str}]
+
+    def deserialize(self, serialized_value: str) -> T:
+        # Parse JSON string into the encoded value, validated as `ty`.
+        return typing.cast(T, self.adapter.validate_json(serialized_value))
 
 
-@type_to_encodable_type.register(Operation)
-def _type_encodable_type_operation[T: Operation](ty: type[T]) -> Encodable[T]:
-    raise TypeError("Operations cannot be encoded or decoded in general.")
+@dataclass
+class StrEncodable(Encodable[str, str]):
+    base: type[str]
+    enc: type[str]
+    ctx: Mapping[str, Any]
+
+    def encode(self, value: str) -> str:
+        return value
+
+    def decode(self, encoded_value: str) -> str:
+        return encoded_value
+
+    def serialize(self, encoded_value: str) -> Sequence[OpenAIMessageContentListBlock]:
+        # Serialize strings without JSON encoding (no extra quotes)
+        return [{"type": "text", "text": encoded_value}]
+
+    def deserialize(self, serialized_value: str) -> str:
+        return serialized_value
 
 
-@type_to_encodable_type.register(pydantic.BaseModel)
-def _type_encodable_type_pydantic_base_model[T: pydantic.BaseModel](
-    ty: type[T],
-) -> Encodable[T]:
-    class EncodablePydanticBaseModel(EncodableAs[T, T]):
-        t: type[T] = ty
+@dataclass
+class PydanticBaseModelEncodable[T: pydantic.BaseModel](Encodable[T, T]):
+    base: type[T]
+    enc: type[T]
+    ctx: Mapping[str, Any]
 
-        @classmethod
-        def decode(cls, vl: T, env: Mapping[str, Any] | None = None) -> T:
-            return vl
+    def decode(self, encoded_value: T) -> T:
+        return encoded_value
 
-        @classmethod
-        def encode(cls, vl: T, env: Mapping[str, Any] | None = None) -> T:
-            return vl
+    def encode(self, value: T) -> T:
+        return value
 
-        @classmethod
-        def serialize(cls, value: T) -> list[OpenAIMessageContentListBlock]:
-            return [{"type": "text", "text": value.model_dump_json()}]
+    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": encoded_value.model_dump_json()}]
 
-    return typing.cast(Encodable[T], EncodablePydanticBaseModel())
+    def deserialize(self, serialized_value: str) -> T:
+        return typing.cast(T, self.base.model_validate_json(serialized_value))
 
 
-@type_to_encodable_type.register(Image.Image)
-class EncodableImage(EncodableAs[Image.Image, ChatCompletionImageUrlObject]):
-    t = ChatCompletionImageUrlObject
+@dataclass
+class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
+    base: type[Image.Image]
+    enc: type[ChatCompletionImageUrlObject]
+    ctx: Mapping[str, Any]
 
-    @classmethod
-    def encode(
-        cls, image: Image.Image, env: Mapping[str, Any] | None = None
-    ) -> ChatCompletionImageUrlObject:
+    def encode(self, value: Image.Image) -> ChatCompletionImageUrlObject:
         return {
             "detail": "auto",
-            "url": _pil_image_to_base64_data_uri(image),
+            "url": _pil_image_to_base64_data_uri(value),
         }
 
-    @classmethod
-    def decode(
-        cls, image: ChatCompletionImageUrlObject, env: Mapping[str, Any] | None = None
-    ) -> Image.Image:
-        image_url = image["url"]
+    def decode(self, encoded_value: ChatCompletionImageUrlObject) -> Image.Image:
+        image_url = encoded_value["url"]
         if not image_url.startswith("data:image/"):
             raise RuntimeError(
                 f"expected base64 encoded image as data uri, received {image_url}"
@@ -137,91 +146,202 @@ class EncodableImage(EncodableAs[Image.Image, ChatCompletionImageUrlObject]):
         data = image_url.split(",")[1]
         return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
-    @classmethod
     def serialize(
-        cls, value: ChatCompletionImageUrlObject
-    ) -> list[OpenAIMessageContentListBlock]:
-        return [{"type": "image_url", "image_url": value}]
+        self, encoded_value: ChatCompletionImageUrlObject
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "image_url", "image_url": encoded_value}]
+
+    def deserialize(self, serialized_value: str) -> ChatCompletionImageUrlObject:
+        # Images are serialized as image_url blocks, not text
+        # This shouldn't be called in normal flow, but provide a fallback
+        raise NotImplementedError("Image deserialization from string is not supported")
 
 
-@type_to_encodable_type.register(tuple)
-def _type_encodable_type_tuple[T](ty: type[T]) -> Encodable[T]:
+@dataclass
+class TupleEncodable[T](Encodable[T, typing.Any]):
+    base: type[T]
+    enc: type[typing.Any]
+    ctx: Mapping[str, Any]
+    has_image: bool
+    element_encoders: list[Encodable]
+
+    def encode(self, value: T) -> typing.Any:
+        if not isinstance(value, tuple):
+            raise TypeError(f"Expected tuple, got {type(value)}")
+        if len(value) != len(self.element_encoders):
+            raise ValueError(
+                f"Tuple length {len(value)} does not match expected length {len(self.element_encoders)}"
+            )
+        return tuple(
+            [enc.encode(elem) for enc, elem in zip(self.element_encoders, value)]
+        )
+
+    def decode(self, encoded_value: typing.Any) -> T:
+        if len(encoded_value) != len(self.element_encoders):
+            raise ValueError(
+                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
+            )
+        decoded_elements: list[typing.Any] = [
+            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
+        ]
+        return typing.cast(T, tuple(decoded_elements))
+
+    def serialize(
+        self, encoded_value: typing.Any
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        if self.has_image:
+            # If tuple contains images, serialize each element and flatten the results
+            result: list[OpenAIMessageContentListBlock] = []
+            if not isinstance(encoded_value, tuple):
+                raise TypeError(f"Expected tuple, got {type(encoded_value)}")
+            if len(encoded_value) != len(self.element_encoders):
+                raise ValueError(
+                    f"Tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
+                )
+            for enc, elem in zip(self.element_encoders, encoded_value):
+                result.extend(enc.serialize(elem))
+            return result
+        else:
+            # Use base serialization for non-image tuples
+            adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
+            json_str = adapter.dump_json(encoded_value).decode("utf-8")
+            return [{"type": "text", "text": json_str}]
+
+    def deserialize(self, serialized_value: str) -> typing.Any:
+        adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
+        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+
+
+@dataclass
+class ListEncodable[T](Encodable[list[T], typing.Any]):
+    base: type[list[T]]
+    enc: type[typing.Any]
+    ctx: Mapping[str, Any]
+    has_image: bool
+    element_encoder: Encodable[T, typing.Any]
+
+    def encode(self, value: list[T]) -> typing.Any:
+        if not isinstance(value, list):
+            raise TypeError(f"Expected list, got {type(value)}")
+        return [self.element_encoder.encode(elem) for elem in value]
+
+    def decode(self, encoded_value: typing.Any) -> list[T]:
+        decoded_elements: list[T] = [
+            self.element_encoder.decode(elem) for elem in encoded_value
+        ]
+        return typing.cast(list[T], decoded_elements)
+
+    def serialize(
+        self, encoded_value: typing.Any
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        if self.has_image:
+            # If list contains images, serialize each element and flatten the results
+            result: list[OpenAIMessageContentListBlock] = []
+            if not isinstance(encoded_value, list):
+                raise TypeError(f"Expected list, got {type(encoded_value)}")
+            for elem in encoded_value:
+                result.extend(self.element_encoder.serialize(elem))
+            return result
+        else:
+            # Use base serialization for non-image lists
+            adapter = pydantic.TypeAdapter(self.enc)
+            json_str = adapter.dump_json(encoded_value).decode("utf-8")
+            return [{"type": "text", "text": json_str}]
+
+    def deserialize(self, serialized_value: str) -> typing.Any:
+        adapter = pydantic.TypeAdapter(self.enc)
+        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+
+
+@Encodable.define.register(object)
+def _encodable_object[T, U](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
+    adapter = pydantic.TypeAdapter(ty)
+    ctx = {} if ctx is None else ctx
+    return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
+
+
+@Encodable.define.register(str)
+def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[str, str]:
+    """Handler for str type that serializes without JSON encoding."""
+    return StrEncodable(ty, ty, ctx or {})
+
+
+@Encodable.define.register(Term)
+def _encodable_term[T: Term, U](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
+    raise TypeError("Terms cannot be encoded or decoded in general.")
+
+
+@Encodable.define.register(Operation)
+def _encodable_operation[T: Operation, U](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
+    raise TypeError("Operations cannot be encoded or decoded in general.")
+
+
+@Encodable.define.register(pydantic.BaseModel)
+def _encodable_pydantic_base_model[T: pydantic.BaseModel](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, T]:
+    return PydanticBaseModelEncodable(ty, ty, ctx or {})
+
+
+@Encodable.define.register(Image.Image)
+def _encodable_image(
+    ty: type[Image.Image], ctx: Mapping[str, Any] | None
+) -> Encodable[Image.Image, ChatCompletionImageUrlObject]:
+    return ImageEncodable(ty, ChatCompletionImageUrlObject, ctx or {})
+
+
+@Encodable.define.register(tuple)
+def _encodable_tuple[T, U](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
     args = typing.get_args(ty)
+    ctx = {} if ctx is None else ctx
 
+    # handle namedtuples
+    origin = typing.get_origin(ty)
+    if origin is None:
+        return _encodable_object(ty, ctx)
     # Handle empty tuple, or tuple with no args
     if not args or args == ((),):
-        return _type_encodable_type_base(ty)
+        return _encodable_object(ty, ctx)
 
     # Create encoders for each element type
-    element_encoders = [type_to_encodable_type(arg) for arg in args]
+    element_encoders = [Encodable.define(arg, ctx) for arg in args]
 
     # Check if any element type is Image.Image
     has_image = any(arg is Image.Image for arg in args)
 
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*(enc.t for enc in element_encoders)],  # type: ignore
+        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
     )
 
-    class TupleEncodable(EncodableAs[T, typing.Any]):
-        t: type[typing.Any] = encoded_ty
-
-        @classmethod
-        def encode(
-            cls, t: T, env: typing.Mapping[str, Any] | None = None
-        ) -> typing.Any:
-            if not isinstance(t, tuple):
-                raise TypeError(f"Expected tuple, got {type(t)}")
-            if len(t) != len(element_encoders):
-                raise ValueError(
-                    f"Tuple length {len(t)} does not match expected length {len(element_encoders)}"
-                )
-            return tuple(
-                [enc.encode(elem, env) for enc, elem in zip(element_encoders, t)]
-            )
-
-        @classmethod
-        def decode(cls, t: typing.Any, env: Mapping[str, Any] | None = None) -> T:
-            if len(t) != len(element_encoders):
-                raise ValueError(
-                    f"tuple length {len(t)} does not match expected length {len(element_encoders)}"
-                )
-            decoded_elements: list[typing.Any] = [
-                enc.decode(elem, env) for enc, elem in zip(element_encoders, t)
-            ]
-            return typing.cast(T, tuple(decoded_elements))
-
-        @classmethod
-        def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
-            if has_image:
-                # If tuple contains images, serialize each element and flatten the results
-                result: list[OpenAIMessageContentListBlock] = []
-                if not isinstance(value, tuple):
-                    raise TypeError(f"Expected tuple, got {type(value)}")
-                if len(value) != len(element_encoders):
-                    raise ValueError(
-                        f"Tuple length {len(value)} does not match expected length {len(element_encoders)}"
-                    )
-                for enc, elem in zip(element_encoders, value):
-                    result.extend(enc.serialize(elem))
-                return result
-            else:
-                return super().serialize(value)
-
-    return typing.cast(Encodable[T], TupleEncodable())
+    return typing.cast(
+        Encodable[T, U],
+        TupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
+    )
 
 
-@type_to_encodable_type.register(list)
-def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
+@Encodable.define.register(list)
+def _encodable_list[T, U](
+    ty: type[list[T]], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
     args = typing.get_args(ty)
+    ctx = {} if ctx is None else ctx
 
     # Handle unparameterized list (list without type args)
     if not args:
-        return _type_encodable_type_base(ty)
+        return _encodable_object(ty, ctx)
 
     # Get the element type (first type argument)
     element_ty = args[0]
-    element_encoder = type_to_encodable_type(element_ty)
+    element_encoder = Encodable.define(element_ty, ctx)
 
     # Check if element type is Image.Image
     has_image = element_ty is Image.Image
@@ -229,36 +349,9 @@ def _type_encodable_type_list[T](ty: type[T]) -> Encodable[T]:
     # Build the encoded type (list of encoded element type) - runtime-created, use Any
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        list[element_encoder.t],  # type: ignore
+        list[element_encoder.enc],  # type: ignore
     )
 
-    class ListEncodable(EncodableAs[T, typing.Any]):
-        t: type[typing.Any] = encoded_ty
-
-        @classmethod
-        def encode(cls, t: T, env: Mapping[str, Any] | None = None) -> typing.Any:
-            if not isinstance(t, list):
-                raise TypeError(f"Expected list, got {type(t)}")
-            return [element_encoder.encode(elem, env) for elem in t]
-
-        @classmethod
-        def decode(cls, t: typing.Any, env: Mapping[str, Any] | None = None) -> T:
-            decoded_elements: list[typing.Any] = [
-                element_encoder.decode(elem, env) for elem in t
-            ]
-            return typing.cast(T, decoded_elements)
-
-        @classmethod
-        def serialize(cls, value: typing.Any) -> list[OpenAIMessageContentListBlock]:
-            if has_image:
-                # If list contains images, serialize each element and flatten the results
-                result: list[OpenAIMessageContentListBlock] = []
-                if not isinstance(value, list):
-                    raise TypeError(f"Expected list, got {type(value)}")
-                for elem in value:
-                    result.extend(element_encoder.serialize(elem))
-                return result
-            else:
-                return super().serialize(value)
-
-    return typing.cast(Encodable[T], ListEncodable())
+    return typing.cast(
+        Encodable[T, U], ListEncodable(ty, encoded_ty, ctx, has_image, element_encoder)
+    )
