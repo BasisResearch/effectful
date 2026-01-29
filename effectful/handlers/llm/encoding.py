@@ -28,7 +28,6 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-@dataclass
 class Encodable[T, U](ABC):
     base: type[T]
     enc: type[U]
@@ -67,6 +66,9 @@ class Encodable[T, U](ABC):
 
 @dataclass
 class BaseEncodable[T](Encodable[T, T]):
+    base: type[T]
+    enc: type[T]
+    ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
 
     def encode(self, value: T) -> T:
@@ -86,6 +88,10 @@ class BaseEncodable[T](Encodable[T, T]):
 
 @dataclass
 class StrEncodable(Encodable[str, str]):
+    base: type[str]
+    enc: type[str]
+    ctx: Mapping[str, Any]
+
     def encode(self, value: str) -> str:
         return value
 
@@ -102,6 +108,10 @@ class StrEncodable(Encodable[str, str]):
 
 @dataclass
 class PydanticBaseModelEncodable[T: pydantic.BaseModel](Encodable[T, T]):
+    base: type[T]
+    enc: type[T]
+    ctx: Mapping[str, Any]
+
     def decode(self, encoded_value: T) -> T:
         return encoded_value
 
@@ -117,6 +127,10 @@ class PydanticBaseModelEncodable[T: pydantic.BaseModel](Encodable[T, T]):
 
 @dataclass
 class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
+    base: type[Image.Image]
+    enc: type[ChatCompletionImageUrlObject]
+    ctx: Mapping[str, Any]
+
     def encode(self, value: Image.Image) -> ChatCompletionImageUrlObject:
         return {
             "detail": "auto",
@@ -145,6 +159,9 @@ class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
 
 @dataclass
 class TupleEncodable[T](Encodable[T, typing.Any]):
+    base: type[T]
+    enc: type[typing.Any]
+    ctx: Mapping[str, Any]
     has_image: bool
     element_encoders: list[Encodable]
 
@@ -197,6 +214,9 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
 @dataclass
 class ListEncodable[T](Encodable[list[T], typing.Any]):
+    base: type[list[T]]
+    enc: type[typing.Any]
+    ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
 
