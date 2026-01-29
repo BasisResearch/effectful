@@ -114,7 +114,6 @@ def call_tool(
 
     sig = inspect.signature(tool)
     param_model = _parameter_model(sig)
-    return_type = type_to_encodable_type(sig.return_annotation)
 
     # build dict of raw encodable types U
     raw_args = param_model.model_validate_json(json_str)
@@ -133,6 +132,7 @@ def call_tool(
     result = tool(*bound_sig.args, **bound_sig.kwargs)
 
     # serialize back to U using encoder for return type
+    return_type = type_to_encodable_type(type(result))
     encoded_result = return_type.serialize(return_type.encode(result))
     return typing.cast(
         Message, dict(role="tool", content=encoded_result, tool_call_id=tool_call.id)
