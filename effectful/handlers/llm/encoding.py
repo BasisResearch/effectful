@@ -102,6 +102,30 @@ def _encodable_object[T, U](
     return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx))
 
 
+@Encodable.define.register(str)
+def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[str, str]:
+    """Handler for str type that serializes without JSON encoding."""
+    ctx = {} if ctx is None else ctx
+
+    class StrEncodable(Encodable[str, str]):
+        def encode(self, value: str) -> str:
+            return value
+
+        def decode(self, encoded_value: str) -> str:
+            return encoded_value
+
+        def serialize(
+            self, encoded_value: str
+        ) -> Sequence[OpenAIMessageContentListBlock]:
+            # Serialize strings without JSON encoding (no extra quotes)
+            return [{"type": "text", "text": encoded_value}]
+
+        def deserialize(self, serialized_value: str) -> str:
+            return serialized_value
+
+    return StrEncodable(ty, ty, ctx)
+
+
 @Encodable.define.register(Term)
 def _encodable_term[T: Term, U](
     ty: type[T], ctx: Mapping[str, Any] | None
@@ -117,9 +141,9 @@ def _encodable_operation[T: Operation, U](
 
 
 @Encodable.define.register(pydantic.BaseModel)
-def _encodable_pydantic_base_model[T: pydantic.BaseModel, U](
+def _encodable_pydantic_base_model[T: pydantic.BaseModel](
     ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
+) -> Encodable[T, T]:
     ctx = {} if ctx is None else ctx
 
     class EncodablePydanticBaseModel(Encodable[T, T]):
@@ -137,13 +161,13 @@ def _encodable_pydantic_base_model[T: pydantic.BaseModel, U](
         def deserialize(self, serialized_value: str) -> T:
             return typing.cast(T, ty.model_validate_json(serialized_value))
 
-    return typing.cast(Encodable[T, U], EncodablePydanticBaseModel(ty, ty, ctx))
+    return EncodablePydanticBaseModel(ty, ty, ctx)
 
 
 @Encodable.define.register(Image.Image)
-def _encodable_image[U](
+def _encodable_image(
     ty: type[Image.Image], ctx: Mapping[str, Any] | None
-) -> Encodable[Image.Image, U]:
+) -> Encodable[Image.Image, ChatCompletionImageUrlObject]:
     ctx = {} if ctx is None else ctx
 
     class EncodableImage(Encodable[Image.Image, ChatCompletionImageUrlObject]):
@@ -174,10 +198,7 @@ def _encodable_image[U](
                 "Image deserialization from string is not supported"
             )
 
-    return typing.cast(
-        Encodable[Image.Image, U],
-        EncodableImage(ty, ChatCompletionImageUrlObject, ctx),
-    )
+    return EncodableImage(ty, ChatCompletionImageUrlObject, ctx)
 
 
 @Encodable.define.register(tuple)
