@@ -10,7 +10,6 @@ from typing import Any
 import litellm
 import pydantic
 from litellm import (
-    ChatCompletionTextObject,
     Choices,
     Message,
     OpenAIChatCompletionToolParam,
@@ -20,7 +19,7 @@ from litellm import (
 from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import type_to_encodable_type
+from effectful.handlers.llm.encoding import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
@@ -75,21 +74,25 @@ def completion(*args, **kwargs) -> Any:
     return litellm.completion(*args, **kwargs)
 
 
-def parameter_model(tool: Tool) -> type[pydantic.BaseModel]:
-    fields = {
-        name: type_to_encodable_type(param.annotation).t
+def parameter_model(
+    tool: Tool, ctx: Mapping[str, Any] | None = None
+) -> type[pydantic.BaseModel]:
+    fields: dict[str, Any] = {
+        name: Encodable.define(param.annotation, ctx).enc
         for name, param in tool.__signature__.parameters.items()
     }
     parameter_model = pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
-        **fields,  # type: ignore
+        **fields,
     )
     return parameter_model
 
 
-def function_definition(tool: Tool) -> OpenAIChatCompletionToolParam:
-    param_model = parameter_model(tool)
+def function_definition(
+    tool: Tool, ctx: Mapping[str, Any] | None = None
+) -> OpenAIChatCompletionToolParam:
+    param_model = parameter_model(tool, ctx)
     response_format = litellm.utils.type_to_response_format_param(param_model)
     description = tool.__default__.__doc__
     assert response_format is not None
@@ -114,16 +117,16 @@ def call_with_json_args(
 
     """
     sig = tool.__signature__
-    param_model = parameter_model(tool)
+    param_model = parameter_model(tool, context)
     try:
         # build dict of raw encodable types U
         raw_args = param_model.model_validate_json(json_str)
 
         # use encoders to decode Us to python types T
         params: dict[str, Any] = {
-            param_name: type_to_encodable_type(
-                sig.parameters[param_name].annotation
-            ).decode(getattr(raw_args, param_name), context)
+            param_name: Encodable.define(
+                sig.parameters[param_name].annotation, context
+            ).decode(getattr(raw_args, param_name))
             for param_name in raw_args.model_fields_set
         }
 
@@ -131,8 +134,8 @@ def call_with_json_args(
         result = tool(**params)
 
         # serialize back to U using encoder for return type
-        encoded_ty = type_to_encodable_type(sig.return_annotation)
-        encoded_value = encoded_ty.encode(result, context)
+        encoded_ty = Encodable.define(sig.return_annotation, context)
+        encoded_value = encoded_ty.encode(result)
 
         # serialise back to Json
         return encoded_ty.serialize(encoded_value)
@@ -149,8 +152,12 @@ def compute_response(template: Template, model_input: list[Any]) -> ModelRespons
     ret_type = template.__signature__.return_annotation
     tools = template.tools
 
-    tool_schemas = [function_definition(t) for t in tools.values()]
-    response_encoding_type: type | None = type_to_encodable_type(ret_type).t
+    tool_schemas = [
+        function_definition(t, template.__context__) for t in tools.values()
+    ]
+    response_encoding_type: type | None = Encodable.define(
+        ret_type, template.__context__
+    ).enc
     if response_encoding_type == str:
         response_encoding_type = None
 
@@ -202,18 +209,18 @@ def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -
     assert result_str
 
     ret_type = template.__signature__.return_annotation
-    encodable_ty = type_to_encodable_type(ret_type)
+    encodable_ty = Encodable.define(ret_type, template.__context__)
 
-    if encodable_ty.t == str:
+    if encodable_ty.enc == str:
         # if encoding as a type, value is just directly what the llm returned
-        value = result_str
+        value: Any = result_str
+        return typing.cast(T, encodable_ty.decode(value))
     else:
-        Result = pydantic.create_model("Result", value=encodable_ty.t)
+        Result = pydantic.create_model("Result", value=encodable_ty.enc)
         result = Result.model_validate_json(result_str)
         assert isinstance(result, Result)
-        value = result.value  # type: ignore
-
-    return encodable_ty.decode(value, template.__context__)  # type: ignore
+        value = getattr(result, "value")
+        return typing.cast(T, encodable_ty.decode(value))
 
 
 @defop
@@ -229,28 +236,15 @@ def format_model_input[**P, T](
     # encode arguments
     arguments = {}
     for param in bound_args.arguments:
-        encoder = type_to_encodable_type(
-            template.__signature__.parameters[param].annotation
+        encoder = Encodable.define(
+            template.__signature__.parameters[param].annotation, template.__context__
         )
-        encoded = encoder.encode(bound_args.arguments[param], template.__context__)
+        encoded = encoder.encode(bound_args.arguments[param])
         arguments[param] = encoder.serialize(encoded)
 
     prompt = _OpenAIPromptFormatter().format_as_messages(
         template.__prompt_template__, **arguments
     )
-
-    # install prefix if the return type has a return annotation
-    ret_type = template.__signature__.return_annotation
-    origin = typing.get_origin(ret_type)
-    ret_type = ret_type if origin is None else origin
-    ret_type_encoder = type_to_encodable_type(ret_type)
-    prompt_prefix = ret_type_encoder.encoding_instructions()
-
-    if prompt_prefix:
-        prefix: list[ChatCompletionTextObject] = [
-            {"type": "text", "text": prompt_prefix}
-        ]
-        prompt = prefix + prompt
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
