@@ -1,5 +1,4 @@
 import base64
-import functools
 import io
 import typing
 from abc import ABC, abstractmethod
@@ -14,7 +13,6 @@ from litellm import (
 )
 from PIL import Image
 
-from effectful.handlers.llm.template import Tool
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -52,11 +50,6 @@ class Encodable[T, U](ABC):
     @abstractmethod
     def deserialize(self, serialized_value: str) -> U:
         raise NotImplementedError
-
-    @typing.final
-    @functools.cached_property
-    def tools(self) -> Mapping[str, Tool]:
-        return {name: t for name, t in self.ctx.items() if isinstance(t, Tool)}
 
     @typing.final
     @staticmethod
@@ -294,7 +287,7 @@ def _encodable_tuple[T, U](
     origin = typing.get_origin(ty)
     if origin is None:
         return _encodable_object(ty, ctx)
-    # Handle empty tuple, or tuple with no args - special case for namedtuples
+    # Handle empty tuple, or tuple with no args
     if not args or args == ((),):
         return _encodable_object(ty, ctx)
 
