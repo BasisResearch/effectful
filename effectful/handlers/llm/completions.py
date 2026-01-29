@@ -26,12 +26,6 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
-ToolCall: pydantic.TypeAdapter[list[ChatCompletionMessageToolCall]] = (
-    pydantic.TypeAdapter(list[ChatCompletionMessageToolCall])
-)
-MessageContent: pydantic.TypeAdapter[list[OpenAIMessageContentListBlock] | str] = (
-    pydantic.TypeAdapter(list[OpenAIMessageContentListBlock] | str)
-)
 Message = (
     OpenAIChatCompletionAssistantMessage
     | ChatCompletionToolMessage
@@ -39,36 +33,6 @@ Message = (
     | OpenAIChatCompletionSystemMessage
     | OpenAIChatCompletionUserMessage
 )
-
-MessageAdapter: pydantic.TypeAdapter[Message] = pydantic.TypeAdapter(Message)
-
-
-def validate_data[T](adapter: pydantic.TypeAdapter[T], data: typing.Any) -> T:
-    adapter.validate_python(data, strict=True)
-    return adapter.dump_python(data)
-
-
-def _message_role(message: Message) -> str:
-    return message["role"]
-
-
-def _message_content(message: Message) -> list[OpenAIMessageContentListBlock] | str:
-    return validate_data(MessageContent, message.get("content"))
-
-
-def _message_reasoning_content(
-    message: Message,
-) -> list[OpenAIMessageContentListBlock] | str:
-    return validate_data(MessageContent, message.get("reasoning_content"))
-
-
-def _message_tool_calls(message: Message) -> list[ChatCompletionMessageToolCall]:
-    tool_calls = message.get("tool_calls") or []
-    assert isinstance(tool_calls, list)
-    return [
-        ChatCompletionMessageToolCall.model_validate(tool_call)
-        for tool_call in tool_calls
-    ]
 
 
 def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
@@ -131,7 +95,7 @@ def call_assistant(
     assert isinstance(choice, litellm.types.utils.Choices)
     message: litellm.Message = choice.message
     assert message.role == "assistant"
-    return validate_data(MessageAdapter, message.model_dump(mode="json"))
+    return typing.cast(Message, message.model_dump(mode="json"))
 
 
 @Operation.define
@@ -170,9 +134,8 @@ def call_tool(
 
     # serialize back to U using encoder for return type
     encoded_result = return_type.serialize(return_type.encode(result))
-    return validate_data(
-        MessageAdapter,
-        dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
+    return typing.cast(
+        Message, dict(role="tool", content=encoded_result, tool_call_id=tool_call.id)
     )
 
 
@@ -224,7 +187,7 @@ def call_user(
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    return [validate_data(MessageAdapter, dict(role="user", content=parts))]
+    return [typing.cast(Message, dict(role="user", content=parts))]
 
 
 @Operation.define
@@ -278,18 +241,17 @@ class LiteLLMProvider(ObjectInterpretation):
         tool_calls: list[ChatCompletionMessageToolCall] = []
 
         message = messages[-1]
-        while _message_role(message) != "assistant" or tool_calls:
+        while message["role"] != "assistant" or tool_calls:
             message = call_assistant(messages, response_model, tool_specs)
             messages.append(message)
-            tool_calls = _message_tool_calls(message)
+            tool_calls = message.get("tool_calls") or []
             for tool_call in tool_calls:
+                tool_call = ChatCompletionMessageToolCall.model_validate(tool_call)
                 message = call_tool(tool_call, tools)
                 messages.append(message)
 
         # return response
-        serialized_result = _message_content(message) or _message_reasoning_content(
-            message
-        )
+        serialized_result = message.get("content") or message.get("reasoning_content")
         assert isinstance(serialized_result, str), (
             "final response from the model should be a string"
         )
