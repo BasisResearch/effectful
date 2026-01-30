@@ -2,7 +2,6 @@ import ast
 import builtins
 import linecache
 import typing
-from collections.abc import MutableMapping
 from types import CodeType
 from typing import Any
 
@@ -10,7 +9,7 @@ from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
 @defop
-def parse(source: str, filename: str) -> ast.AST:
+def parse(source: str, filename: str) -> ast.Module:
     """
     Parse source text into an AST.
 
@@ -23,7 +22,7 @@ def parse(source: str, filename: str) -> ast.AST:
 
 
 @defop
-def compile(module: ast.AST, filename: str) -> CodeType:
+def compile(module: ast.Module, filename: str) -> CodeType:
     """
     Compile an AST into a Python code object.
 
@@ -38,7 +37,7 @@ def compile(module: ast.AST, filename: str) -> CodeType:
 @defop
 def exec(
     bytecode: CodeType,
-    env: MutableMapping[str, Any],
+    env: dict[str, Any],
 ) -> None:
     """
     Execute a compiled code object.
@@ -54,7 +53,7 @@ class UnsafeEvalProvider(ObjectInterpretation):
     by shelling out to python *without* any further checks. Only use for testing."""
 
     @implements(parse)
-    def parse(self, source: str, filename: str) -> ast.AST:
+    def parse(self, source: str, filename: str) -> ast.Module:
         # Cache source under `filename` so inspect.getsource() can retrieve it later.
         # inspect uses f.__code__.co_filename -> linecache.getlines(filename)
         linecache.cache[filename] = (
