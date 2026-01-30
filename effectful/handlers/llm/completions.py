@@ -21,7 +21,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import Encodable, type_to_encodable_type
+from effectful.handlers.llm.encoding import Encodable
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -40,7 +40,7 @@ def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: type_to_encodable_type(param.annotation).t
+            name: Encodable.define(param.annotation).enc
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -49,7 +49,7 @@ def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
 def _response_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Response",
-        value=type_to_encodable_type(sig.return_annotation).t,
+        value=Encodable.define(sig.return_annotation).enc,
         __config__={"extra": "forbid"},
     )
 
@@ -121,8 +121,8 @@ def call_tool(
     # use encoders to decode Us to python types T
     bound_sig: inspect.BoundArguments = sig.bind(
         **{
-            param_name: type_to_encodable_type(
-                sig.parameters[param_name].annotation
+            param_name: Encodable.define(
+                sig.parameters[param_name].annotation, {}
             ).decode(getattr(raw_args, param_name))
             for param_name in raw_args.model_fields_set
         }
@@ -132,7 +132,7 @@ def call_tool(
     result = tool(*bound_sig.args, **bound_sig.kwargs)
 
     # serialize back to U using encoder for return type
-    return_type = type_to_encodable_type(type(result))
+    return_type = Encodable.define(type(result))
     encoded_result = return_type.serialize(return_type.encode(result))
     return typing.cast(
         Message, dict(role="tool", content=encoded_result, tool_call_id=tool_call.id)
@@ -167,8 +167,8 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = type_to_encodable_type(type(obj))
-        encoded_obj: list[OpenAIMessageContentListBlock] = encoder.serialize(
+        encoder = Encodable.define(type(obj))
+        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
         for part in encoded_obj:
@@ -216,8 +216,8 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        response_encoding_type: Encodable[T] = type_to_encodable_type(
-            inspect.signature(template).return_annotation
+        response_encoding_type: Encodable = Encodable.define(
+            inspect.signature(template).return_annotation, template.__context__
         )
         response_model = _response_model(inspect.signature(template))
 
