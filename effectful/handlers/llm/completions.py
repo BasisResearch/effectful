@@ -1,346 +1,253 @@
-import contextlib
+import collections
+import collections.abc
 import functools
 import inspect
 import string
-import traceback
-import typing
-from collections.abc import Callable, Mapping
+import textwrap
 from typing import Any
 
 import litellm
 import pydantic
 from litellm import (
-    Choices,
+    ChatCompletionMessageToolCall,
+    ChatCompletionTextObject,
+    ChatCompletionToolParam,
     Message,
-    OpenAIChatCompletionToolParam,
-    OpenAIMessageContent,
     OpenAIMessageContentListBlock,
 )
-from litellm.types.utils import ModelResponse
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.encoding import Encodable
-from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.handlers.llm.encoding import Encodable, type_to_encodable_type
+from effectful.ops.semantics import fwd
+from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Operation
 
 
-class _OpenAIPromptFormatter(string.Formatter):
-    def format_as_messages(
-        self, format_str: str, /, *args, **kwargs
-    ) -> list[OpenAIMessageContentListBlock]:
-        prompt_parts: list[OpenAIMessageContentListBlock] = []
-        current_text = ""
-
-        def push_current_text():
-            nonlocal current_text
-            if current_text:
-                prompt_parts.append({"type": "text", "text": current_text})
-            current_text = ""
-
-        for literal, field_name, format_spec, conversion in self.parse(format_str):
-            current_text += literal
-
-            if field_name is not None:
-                obj, _ = self.get_field(field_name, args, kwargs)
-                part = self.convert_field(obj, conversion)
-                # special casing for text
-                if (
-                    isinstance(part, list)
-                    and len(part) == 1
-                    and part[0]["type"] == "text"
-                ):
-                    current_text += self.format_field(
-                        part[0]["text"], format_spec if format_spec else ""
-                    )
-                elif isinstance(part, list):
-                    push_current_text()
-                    prompt_parts.extend(part)
-                else:
-                    prompt_parts.append(part)
-
-        push_current_text()
-        return prompt_parts
-
-
-@defop
-@functools.wraps(litellm.completion)
-def completion(*args, **kwargs) -> Any:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
-
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
-
-    """
-    return litellm.completion(*args, **kwargs)
-
-
-def parameter_model(
-    tool: Tool, ctx: Mapping[str, Any] | None = None
-) -> type[pydantic.BaseModel]:
-    fields: dict[str, Any] = {
-        name: Encodable.define(param.annotation, ctx).enc
-        for name, param in tool.__signature__.parameters.items()
-    }
-    parameter_model = pydantic.create_model(
+def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
+    return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
-        **fields,
+        **{
+            name: type_to_encodable_type(param.annotation).t
+            for name, param in sig.parameters.items()
+        },  # type: ignore
     )
-    return parameter_model
 
 
-def function_definition(
-    tool: Tool, ctx: Mapping[str, Any] | None = None
-) -> OpenAIChatCompletionToolParam:
-    param_model = parameter_model(tool, ctx)
+def _response_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
+    return pydantic.create_model(
+        "Response",
+        value=type_to_encodable_type(sig.return_annotation).t,
+        __config__={"extra": "forbid"},
+    )
+
+
+def _tool_model(tool: Tool) -> ChatCompletionToolParam:
+    param_model = _parameter_model(inspect.signature(tool))
     response_format = litellm.utils.type_to_response_format_param(param_model)
-    description = tool.__default__.__doc__
     assert response_format is not None
-    assert description is not None
+    assert tool.__default__.__doc__ is not None
     return {
         "type": "function",
         "function": {
             "name": tool.__name__,
-            "description": description,
+            "description": textwrap.dedent(tool.__default__.__doc__),
             "parameters": response_format["json_schema"]["schema"],
             "strict": True,
         },
     }
 
 
-def call_with_json_args(
-    tool: Tool, context: Mapping[str, Any], json_str: str
-) -> OpenAIMessageContent:
+@Operation.define
+def call_assistant(
+    messages: collections.abc.Sequence[Message],
+    response_format: type[pydantic.BaseModel] | None,
+    tools: collections.abc.Mapping[str, ChatCompletionToolParam],
+    *,
+    model: str,
+    **kwargs,
+) -> Message:
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+
+    This effect is emitted for model request/response rounds so handlers can
+    observe/log requests.
+
+    """
+    response: litellm.types.utils.ModelResponse = litellm.completion(
+        model=model,
+        messages=list(messages),
+        response_format=response_format,
+        tools=list(tools.values()),
+        **kwargs,
+    )
+    choice = response.choices[0]
+    assert isinstance(choice, litellm.types.utils.Choices)
+    message: Message = choice.message
+    assert message.role == "assistant"
+    return message
+
+
+@Operation.define
+def call_tool(
+    tool_call: ChatCompletionMessageToolCall,
+    tools: collections.abc.Mapping[str, Tool],
+) -> Message:
     """Implements a roundtrip call to a python function. Input is a json
     string representing an LLM tool call request parameters. The output is
     the serialised response to the model.
 
     """
-    sig = tool.__signature__
-    param_model = parameter_model(tool, context)
-    try:
-        # build dict of raw encodable types U
-        raw_args = param_model.model_validate_json(json_str)
+    assert tool_call.function.name is not None
+    tool = tools[tool_call.function.name]
+    json_str = tool_call.function.arguments
 
-        # use encoders to decode Us to python types T
-        params: dict[str, Any] = {
-            param_name: Encodable.define(
-                sig.parameters[param_name].annotation, context
+    sig = inspect.signature(tool)
+    param_model = _parameter_model(sig)
+    return_type = type_to_encodable_type(sig.return_annotation)
+
+    # build dict of raw encodable types U
+    raw_args = param_model.model_validate_json(json_str)
+
+    # use encoders to decode Us to python types T
+    bound_sig: inspect.BoundArguments = sig.bind(
+        **{
+            param_name: type_to_encodable_type(
+                sig.parameters[param_name].annotation
             ).decode(getattr(raw_args, param_name))
             for param_name in raw_args.model_fields_set
         }
-
-        # call tool with python types
-        result = tool(**params)
-
-        # serialize back to U using encoder for return type
-        encoded_ty = Encodable.define(sig.return_annotation, context)
-        encoded_value = encoded_ty.encode(result)
-
-        # serialise back to Json
-        return encoded_ty.serialize(encoded_value)
-    except Exception as exn:
-        return str({"status": "failure", "exception": str(exn)})
-
-
-@defop
-def compute_response(template: Template, model_input: list[Any]) -> ModelResponse:
-    """Produce a complete model response for an input message sequence. This may
-    involve multiple API requests if tools are invoked by the model.
-
-    """
-    ret_type = template.__signature__.return_annotation
-    tools = template.tools
-
-    tool_schemas = [
-        function_definition(t, template.__context__) for t in tools.values()
-    ]
-    response_encoding_type: type | None = Encodable.define(
-        ret_type, template.__context__
-    ).enc
-    if response_encoding_type == str:
-        response_encoding_type = None
-
-    # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-    while True:
-        response: ModelResponse = completion(
-            messages=model_input,
-            response_format=pydantic.create_model(
-                "Response", value=response_encoding_type, __config__={"extra": "forbid"}
-            )
-            if response_encoding_type
-            else None,
-            tools=tool_schemas,
-        )
-
-        choice: Choices = typing.cast(Choices, response.choices[0])
-        message: Message = choice.message
-        if not message.tool_calls:
-            return response
-        model_input.append(message.to_dict())
-
-        for tool_call in message.tool_calls:
-            function = tool_call.function
-            function_name = function.name
-            assert function_name is not None
-            tool = tools[function_name]
-            tool_result = call_with_json_args(
-                tool, template.__context__, function.arguments
-            )
-            model_input.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": function_name,
-                    "content": tool_result,
-                }
-            )
-
-
-def decode_response[**P, T](template: Callable[P, T], response: ModelResponse) -> T:
-    """Decode an LLM response into an instance of the template return type. This
-    operation should raise if the output cannot be decoded.
-    """
-    assert isinstance(template, Template)
-    choice: Choices = typing.cast(Choices, response.choices[0])
-    last_resp: Message = choice.message
-    assert isinstance(last_resp, Message)
-    result_str = last_resp.content or last_resp.reasoning_content
-    assert result_str
-
-    ret_type = template.__signature__.return_annotation
-    encodable_ty = Encodable.define(ret_type, template.__context__)
-
-    if encodable_ty.enc == str:
-        # if encoding as a type, value is just directly what the llm returned
-        value: Any = result_str
-        return typing.cast(T, encodable_ty.decode(value))
-    else:
-        Result = pydantic.create_model("Result", value=encodable_ty.enc)
-        result = Result.model_validate_json(result_str)
-        assert isinstance(result, Result)
-        value = getattr(result, "value")
-        return typing.cast(T, encodable_ty.decode(value))
-
-
-@defop
-def format_model_input[**P, T](
-    template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-) -> list[Any]:
-    """Format a template applied to arguments into a sequence of input
-    messages.
-
-    """
-    bound_args = template.__signature__.bind(*args, **kwargs)
-    bound_args.apply_defaults()
-    # encode arguments
-    arguments = {}
-    for param in bound_args.arguments:
-        encoder = Encodable.define(
-            template.__signature__.parameters[param].annotation, template.__context__
-        )
-        encoded = encoder.encode(bound_args.arguments[param])
-        arguments[param] = encoder.serialize(encoded)
-
-    prompt = _OpenAIPromptFormatter().format_as_messages(
-        template.__prompt_template__, **arguments
     )
+
+    # call tool with python types
+    result = tool(*bound_sig.args, **bound_sig.kwargs)
+
+    # serialize back to U using encoder for return type
+    encoded_result = return_type.serialize(return_type.encode(result))
+    return Message.model_validate(dict(role="tool", content=encoded_result))
+
+
+@Operation.define
+def call_user(
+    template: str,
+    env: collections.abc.Mapping[str, Any],
+) -> Message:
+    """
+    Format a template applied to arguments into a user message.
+    """
+    formatter: string.Formatter = string.Formatter()
+    prompt_parts: list[OpenAIMessageContentListBlock] = []
+
+    for literal, field_name, fspec, cspec in formatter.parse(textwrap.dedent(template)):
+        if literal:
+            prompt_parts.append(ChatCompletionTextObject(type="text", text=literal))
+        if field_name is not None:
+            obj, _ = formatter.get_field(field_name, (), env)
+            encoder = type_to_encodable_type(type(obj))
+            encoded_obj = encoder.serialize(encoder.encode(obj))
+            for part in formatter.convert_field(encoded_obj, cspec):
+                if part["type"] == "text":
+                    part["text"] = formatter.format_field(part["text"], fspec or "")
+                prompt_parts.append(part)
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    messages = [{"type": "message", "content": prompt, "role": "user"}]
-    return messages
+    return Message.model_validate(dict(role="user", content=prompt_parts), strict=True)
 
 
-class InstructionHandler(ObjectInterpretation):
-    """Scoped handler that injects additional instructions into model input.
-
-    This handler appends instruction messages to the formatted model input.
-    It's designed to be used as a scoped handler within RetryLLMHandler to
-    provide error feedback without polluting shared state.
-    """
-
-    def __init__(self, instruction: str):
-        """Initialize with an instruction message to inject.
-
-        Args:
-            instruction: The instruction text to append to model input.
-        """
-        self.instruction = instruction
-
-    @implements(format_model_input)
-    def _inject_instruction(self, template: Template, *args, **kwargs) -> list[Any]:
-        """Append instruction message to the formatted model input."""
-        messages = fwd()
-        return messages + [
-            {"type": "message", "content": self.instruction, "role": "user"}
-        ]
-
-
-class RetryLLMHandler(ObjectInterpretation):
-    """Retries LLM requests if they fail.
-
-    If the request fails, the handler retries with optional error feedback injected
-    into the prompt via scoped InstructionHandler instances. This ensures nested
-    template calls maintain independent error tracking.
-
-    Args:
-        max_retries: The maximum number of retries.
-        add_error_feedback: Whether to add error feedback to the prompt on retry.
-        exception_cls: The exception class to catch and retry on.
-    """
-
-    def __init__(
-        self,
-        max_retries: int = 3,
-        add_error_feedback: bool = False,
-        exception_cls: type[BaseException] = Exception,
-    ):
-        self.max_retries = max_retries
-        self.add_error_feedback = add_error_feedback
-        self.exception_cls = exception_cls
-
-    @implements(Template.__apply__)
-    def _retry_completion(self, template: Template, *args, **kwargs) -> Any:
-        """Retry template execution with error feedback injection via scoped handlers."""
-        failures: list[str] = []
-
-        for attempt in range(self.max_retries):
-            try:
-                # Install scoped handlers for each accumulated failure
-                with contextlib.ExitStack() as stack:
-                    for failure in failures:
-                        stack.enter_context(handler(InstructionHandler(failure)))
-                    return fwd()
-            except self.exception_cls:
-                if attempt == self.max_retries - 1:
-                    raise  # Last attempt, re-raise the exception
-                if self.add_error_feedback:
-                    tb = traceback.format_exc()
-                    failures.append(f"\nError from previous attempt:\n```\n{tb}```")
-
-        # This should not be reached, but just in case
-        return fwd()
+@Operation.define
+def call_system(template: Template) -> collections.abc.Sequence[Message]:
+    """Get system instruction message(s) to prepend to all LLM prompts."""
+    return ()
 
 
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
-    model_name: str
-    config: dict[str, Any]
+    config: collections.abc.Mapping[str, Any]
 
-    def __init__(self, model_name: str = "gpt-4o", **config):
-        self.model_name = model_name
-        self.config = inspect.signature(completion).bind_partial(**config).kwargs
+    def __init__(self, **config):
+        self.config = (
+            inspect.signature(litellm.completion).bind_partial(**config).kwargs
+        )
 
-    @implements(completion)
+    @implements(call_assistant)
+    @functools.wraps(call_assistant)
     def _completion(self, *args, **kwargs):
-        return fwd(self.model_name, *args, **(self.config | kwargs))
+        return fwd(*args, **{**self.config, **kwargs})
 
     @implements(Template.__apply__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        model_input = format_model_input(template, *args, **kwargs)
-        resp = compute_response(template, model_input)
-        return decode_response(template, resp)
+    @staticmethod
+    def _call[**P, T](template: Template[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        response_encoding_type: Encodable[T] = type_to_encodable_type(
+            inspect.signature(template).return_annotation
+        )
+        response_model = _response_model(inspect.signature(template))
+
+        messages: list[Message] = [*call_system(template)]
+
+        # encode arguments
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
+
+        message: Message = call_user(template.__prompt_template__, env)
+        messages.append(message)
+
+        tools = {
+            **template.tools,
+            **{k: t for k, t in bound_args.arguments.items() if isinstance(t, Tool)},
+        }
+        tool_specs = {k: _tool_model(t) for k, t in tools.items()}
+
+        # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+        while message.role != "assistant" or message.tool_calls:
+            message = call_assistant(messages, response_model, tool_specs)
+            messages.append(message)
+
+            for tool_call in message.tool_calls or []:
+                message = call_tool(tool_call, tools)
+                messages.append(message)
+
+        # return response
+        serialized_result = message.content or message.reasoning_content
+        encoded_result = (
+            serialized_result
+            if response_model is None
+            else response_model.model_validate_json(serialized_result).value  # type: ignore
+        )
+        return response_encoding_type.decode(encoded_result)
+
+
+class InstructionsHandler(ObjectInterpretation):
+    """Implements system instructions using the LiteLLM API."""
+
+    instructions: str | collections.abc.Mapping[Template, str]
+
+    def __init__(self, instructions: str | collections.abc.Mapping[Template, str]):
+        if isinstance(instructions, collections.abc.Mapping):
+            assert instructions, "Instructions mapping cannot be empty."
+            assert all(instr for instr in instructions.values()), (
+                "All instructions in the mapping must be non-empty."
+            )
+        else:
+            assert instructions, "Instructions string cannot be empty."
+        self.instructions = instructions
+
+    @implements(call_system)
+    def _system_instruction(
+        self, template: Template
+    ) -> collections.abc.Sequence[Message]:
+        if isinstance(self.instructions, str):
+            return (
+                *fwd(),
+                Message.model_validate(dict(role="system", content=self.instructions)),
+            )
+        elif template in self.instructions:
+            return (
+                *fwd(),
+                Message.model_validate(
+                    dict(role="system", content=self.instructions[template])
+                ),
+            )
+        else:
+            return fwd()

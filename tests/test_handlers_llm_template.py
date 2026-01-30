@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import format_model_input
+from effectful.handlers.llm.completions import call_user
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -155,7 +155,7 @@ class TemplateStringIntp(ObjectInterpretation):
     def _[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        model_input = format_model_input(template, *args, **kwargs)
+        model_input = call_user(template, *args, **kwargs)
         template_result = model_input[0]["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]
