@@ -1,6 +1,4 @@
-import functools
 import inspect
-import textwrap
 import types
 import typing
 from collections import ChainMap
@@ -8,11 +6,6 @@ from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-import litellm
-import pydantic
-from litellm import ChatCompletionToolParam
-
-from effectful.handlers.llm.encoding import Encodable
 from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, Operation
 
 
@@ -101,33 +94,6 @@ class Tool[**P, T](Operation[P, T]):
             raise ValueError("Tools must have docstrings.")
         signature = IsRecursive.infer_annotations(signature)
         super().__init__(signature, name, default)
-
-    @functools.cached_property
-    def param_model(self) -> type[pydantic.BaseModel]:
-        sig = inspect.signature(self)
-        return pydantic.create_model(
-            "Params",
-            __config__={"extra": "forbid"},
-            **{
-                name: Encodable.define(param.annotation).enc
-                for name, param in sig.parameters.items()
-            },  # type: ignore
-        )
-
-    @functools.cached_property
-    def model(self) -> ChatCompletionToolParam:
-        response_format = litellm.utils.type_to_response_format_param(self.param_model)
-        assert response_format is not None
-        assert self.__default__.__doc__ is not None
-        return {
-            "type": "function",
-            "function": {
-                "name": self.__name__,
-                "description": textwrap.dedent(self.__default__.__doc__),
-                "parameters": response_format["json_schema"]["schema"],
-                "strict": True,
-            },
-        }
 
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":

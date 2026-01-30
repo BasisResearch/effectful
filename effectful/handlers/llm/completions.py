@@ -13,6 +13,7 @@ from litellm import (
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolMessage,
+    ChatCompletionToolParam,
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionSystemMessage,
     OpenAIChatCompletionUserMessage,
@@ -44,6 +45,35 @@ class DecodedToolCall[T](typing.NamedTuple):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
+@functools.cache
+def _param_model(tool: Tool) -> type[pydantic.BaseModel]:
+    sig = inspect.signature(tool)
+    return pydantic.create_model(
+        "Params",
+        __config__={"extra": "forbid"},
+        **{
+            name: Encodable.define(param.annotation).enc
+            for name, param in sig.parameters.items()
+        },  # type: ignore
+    )
+
+
+@functools.cache
+def _function_model(tool: Tool) -> ChatCompletionToolParam:
+    response_format = litellm.utils.type_to_response_format_param(_param_model(tool))
+    assert response_format is not None
+    assert tool.__default__.__doc__ is not None
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.__name__,
+            "description": textwrap.dedent(tool.__default__.__doc__),
+            "parameters": response_format["json_schema"]["schema"],
+            "strict": True,
+        },
+    }
+
+
 def decode_tool_call(
     tool_call: ChatCompletionMessageToolCall,
     tools: collections.abc.Mapping[str, Tool],
@@ -56,7 +86,7 @@ def decode_tool_call(
     sig = inspect.signature(tool)
 
     # build dict of raw encodable types U
-    raw_args = tool.param_model.model_validate_json(json_str)
+    raw_args = _param_model(tool).model_validate_json(json_str)
 
     # use encoders to decode Us to python types T
     bound_sig: inspect.BoundArguments = sig.bind(
@@ -96,7 +126,7 @@ def call_assistant[T, U](
     observe/log requests.
 
     """
-    tool_specs = {k: t.model for k, t in tools.items()}
+    tool_specs = {k: _function_model(t) for k, t in tools.items()}
     response_model = pydantic.create_model(
         "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
