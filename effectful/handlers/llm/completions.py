@@ -13,7 +13,6 @@ from litellm import (
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolMessage,
-    ChatCompletionToolParam,
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionSystemMessage,
     OpenAIChatCompletionUserMessage,
@@ -22,7 +21,6 @@ from litellm import (
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.encoding import Encodable
-from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -34,89 +32,31 @@ Message = (
     | OpenAIChatCompletionUserMessage
 )
 
-
-def _parameter_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    return pydantic.create_model(
-        "Params",
-        __config__={"extra": "forbid"},
-        **{
-            name: Encodable.define(param.annotation).enc
-            for name, param in sig.parameters.items()
-        },  # type: ignore
-    )
+type ToolCallID = str
 
 
-def _response_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    return pydantic.create_model(
-        "Response",
-        value=Encodable.define(sig.return_annotation).enc,
-        __config__={"extra": "forbid"},
-    )
+class DecodedToolCall[T](typing.NamedTuple):
+    tool: Tool[..., T]
+    bound_args: inspect.BoundArguments
+    id: ToolCallID
 
 
-def _tool_model(tool: Tool) -> ChatCompletionToolParam:
-    param_model = _parameter_model(inspect.signature(tool))
-    response_format = litellm.utils.type_to_response_format_param(param_model)
-    assert response_format is not None
-    assert tool.__default__.__doc__ is not None
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.__name__,
-            "description": textwrap.dedent(tool.__default__.__doc__),
-            "parameters": response_format["json_schema"]["schema"],
-            "strict": True,
-        },
-    }
+type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
-@Operation.define
-def call_assistant(
-    messages: collections.abc.Sequence[Message],
-    response_format: type[pydantic.BaseModel] | None,
-    tools: collections.abc.Mapping[str, ChatCompletionToolParam],
-    model: str,
-    **kwargs,
-) -> Message:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
-
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
-
-    """
-    response: litellm.types.utils.ModelResponse = litellm.completion(
-        model,
-        messages=list(messages),
-        response_format=response_format,
-        tools=list(tools.values()),
-        **kwargs,
-    )
-    choice = response.choices[0]
-    assert isinstance(choice, litellm.types.utils.Choices)
-    message: litellm.Message = choice.message
-    assert message.role == "assistant"
-    return typing.cast(Message, message.model_dump(mode="json"))
-
-
-@Operation.define
-def call_tool(
+def decode_tool_call(
     tool_call: ChatCompletionMessageToolCall,
     tools: collections.abc.Mapping[str, Tool],
-) -> Message:
-    """Implements a roundtrip call to a python function. Input is a json
-    string representing an LLM tool call request parameters. The output is
-    the serialised response to the model.
-
-    """
+) -> DecodedToolCall:
+    """Decode a tool call from the LLM response into a DecodedToolCall."""
     assert tool_call.function.name is not None
     tool = tools[tool_call.function.name]
     json_str = tool_call.function.arguments
 
     sig = inspect.signature(tool)
-    param_model = _parameter_model(sig)
 
     # build dict of raw encodable types U
-    raw_args = param_model.model_validate_json(json_str)
+    raw_args = tool.param_model.model_validate_json(json_str)
 
     # use encoders to decode Us to python types T
     bound_sig: inspect.BoundArguments = sig.bind(
@@ -127,9 +67,82 @@ def call_tool(
             for param_name in raw_args.model_fields_set
         }
     )
+    return DecodedToolCall(tool, bound_sig, tool_call.id)
 
+
+@Operation.define
+@functools.wraps(litellm.completion)
+def completion(*args, **kwargs) -> typing.Any:
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+
+    This effect is emitted for model request/response rounds so handlers can
+    observe/log requests.
+
+    """
+    return litellm.completion(*args, **kwargs)
+
+
+@Operation.define
+def call_assistant[T, U](
+    messages: collections.abc.Sequence[Message],
+    tools: collections.abc.Mapping[str, Tool],
+    response_format: Encodable[T, U],
+    model: str,
+    **kwargs,
+) -> MessageResult[T]:
+    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+
+    This effect is emitted for model request/response rounds so handlers can
+    observe/log requests.
+
+    """
+    tool_specs = {k: t.model for k, t in tools.items()}
+    response_model = pydantic.create_model(
+        "Response", value=response_format.enc, __config__={"extra": "forbid"}
+    )
+
+    response: litellm.types.utils.ModelResponse = completion(
+        model,
+        messages=list(messages),
+        response_format=response_model,
+        tools=list(tool_specs.values()),
+        **kwargs,
+    )
+    choice = response.choices[0]
+    assert isinstance(choice, litellm.types.utils.Choices)
+
+    message: litellm.Message = choice.message
+    assert message.role == "assistant"
+
+    tool_calls: list[DecodedToolCall] = []
+    raw_tool_calls = message.get("tool_calls") or []
+    for tool_call in raw_tool_calls:
+        tool_call = ChatCompletionMessageToolCall.model_validate(tool_call)
+        decoded_tool_call = decode_tool_call(tool_call, tools)
+        tool_calls.append(decoded_tool_call)
+
+    result = None
+    if not tool_calls:
+        # return response
+        serialized_result = message.get("content") or message.get("reasoning_content")
+        assert isinstance(serialized_result, str), (
+            "final response from the model should be a string"
+        )
+        raw_result = response_model.model_validate_json(serialized_result)
+        result = response_format.decode(raw_result.value)  # type: ignore
+
+    return (typing.cast(Message, message.model_dump(mode="json")), tool_calls, result)
+
+
+@Operation.define
+def call_tool(tool_call: DecodedToolCall) -> Message:
+    """Implements a roundtrip call to a python function. Input is a json
+    string representing an LLM tool call request parameters. The output is
+    the serialised response to the model.
+
+    """
     # call tool with python types
-    result = tool(*bound_sig.args, **bound_sig.kwargs)
+    result = tool_call.tool(*tool_call.bound_args.args, **tool_call.bound_args.kwargs)
 
     # serialize back to U using encoder for return type
     return_type = Encodable.define(type(result))
@@ -207,20 +220,10 @@ class LiteLLMProvider(ObjectInterpretation):
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
 
-    @implements(call_assistant)
-    @functools.wraps(call_assistant)
-    def _completion(self, *args, **kwargs):
-        return fwd(*args, **{**self.config, **kwargs})
-
     @implements(Template.__apply__)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        response_encoding_type: Encodable = Encodable.define(
-            inspect.signature(template).return_annotation, template.__context__
-        )
-        response_model = _response_model(inspect.signature(template))
-
         messages: list[Message] = [*call_system(template)]
 
         # encode arguments
@@ -228,36 +231,28 @@ class LiteLLMProvider(ObjectInterpretation):
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
 
+        # Create response_model with env so tools passed as arguments are available
+        response_model = Encodable.define(template.__signature__.return_annotation, env)
+
         user_messages: list[Message] = call_user(template.__prompt_template__, env)
         messages.extend(user_messages)
 
-        tools = {
-            **template.tools,
-            **{k: t for k, t in bound_args.arguments.items() if isinstance(t, Tool)},
-        }
-        tool_specs = {k: _tool_model(t) for k, t in tools.items()}
-
         # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-        tool_calls: list[ChatCompletionMessageToolCall] = []
+        tool_calls: list[DecodedToolCall] = []
 
         message = messages[-1]
+        result: T | None = None
         while message["role"] != "assistant" or tool_calls:
-            message = call_assistant(messages, response_model, tool_specs)
+            message, tool_calls, result = call_assistant(
+                messages, template.tools, response_model, **self.config
+            )
             messages.append(message)
-            tool_calls = message.get("tool_calls") or []
             for tool_call in tool_calls:
-                tool_call = ChatCompletionMessageToolCall.model_validate(tool_call)
-                message = call_tool(tool_call, tools)
+                message = call_tool(tool_call)
                 messages.append(message)
 
+        assert result is not None, (
+            "call_assistant did not produce a result nor tool_calls"
+        )
         # return response
-        serialized_result = message.get("content") or message.get("reasoning_content")
-        assert isinstance(serialized_result, str), (
-            "final response from the model should be a string"
-        )
-        encoded_result = (
-            serialized_result
-            if response_model is None
-            else response_model.model_validate_json(serialized_result).value  # type: ignore
-        )
-        return response_encoding_type.decode(encoded_result)
+        return result

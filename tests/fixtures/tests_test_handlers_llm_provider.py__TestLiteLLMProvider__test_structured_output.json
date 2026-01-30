@@ -1,10 +1,44 @@
 {
-  "annotations": [],
-  "content": "{\"value\":{\"genre\":\"action\",\"explanation\":\"The plot centers on high-intensity, action-driven conflict as a rogue cop confronts an evil group attempting to seize control of a skyscraper. It emphasizes combat, chases, and siege-style sequences typical of the action genre.\"}}",
-  "function_call": null,
-  "provider_specific_fields": {
-    "refusal": null
+  "id": "chatcmpl-D3rNYTWIcoJmMGU1mjErSsz4rJgM6",
+  "created": 1769812544,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\": {\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop taking on an evil group to stop them from taking over a skyscraper, featuring high-stakes conflict and action-oriented sequences typical of the action genre.\"}}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 384,
+    "prompt_tokens": 457,
+    "total_tokens": 841,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 320,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
   },
-  "role": "assistant",
-  "tool_calls": null
+  "service_tier": "default"
 }

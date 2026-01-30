@@ -1,10 +1,44 @@
 {
-  "annotations": [],
-  "content": "{\"value\":73}",
-  "function_call": null,
-  "provider_specific_fields": {
-    "refusal": null
+  "id": "chatcmpl-D3rNbSUc9fUpX7qU6kanq3CXVh8eJ",
+  "created": 1769812547,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":73}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 401,
+    "prompt_tokens": 340,
+    "total_tokens": 741,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 384,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
   },
-  "role": "assistant",
-  "tool_calls": null
+  "service_tier": "default"
 }

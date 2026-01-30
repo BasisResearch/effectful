@@ -1,10 +1,44 @@
 {
-  "annotations": [],
-  "content": "{\"value\":\"Apples are versatile fruits known for their crisp texture and sweet-tart flavor, often enjoyed fresh or used in a variety of culinary dishes.\"}",
-  "function_call": null,
-  "provider_specific_fields": {
-    "refusal": null
+  "id": "chatcmpl-D3rNyx4soJAv5yDrEl5Hlq8n66iem",
+  "created": 1769812570,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_fa7f5b168b",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":\"Apples are a versatile and nutritious fruit, enjoyed in a variety of dishes worldwide.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 25,
+    "prompt_tokens": 262,
+    "total_tokens": 287,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
   },
-  "role": "assistant",
-  "tool_calls": null
+  "service_tier": "default"
 }

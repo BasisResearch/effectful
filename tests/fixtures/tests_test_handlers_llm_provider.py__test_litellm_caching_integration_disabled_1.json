@@ -1,10 +1,44 @@
 {
-  "annotations": [],
-  "content": "{\"value\":\"Apples are a crisp, juicy fruit that come in a variety of colors and flavors, often enjoyed fresh or used in cooking and baking.\"}",
-  "function_call": null,
-  "provider_specific_fields": {
-    "refusal": null
+  "id": "chatcmpl-D3rO02RMv2hfN45N9prEMtvyGO6M1",
+  "created": 1769812572,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_fa7f5b168b",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":\"Apples are crisp, sweet fruits that come in a variety of colors and are packed with essential vitamins and fiber.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 31,
+    "prompt_tokens": 262,
+    "total_tokens": 293,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
   },
-  "role": "assistant",
-  "tool_calls": null
+  "service_tier": "default"
 }

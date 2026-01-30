@@ -23,6 +23,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     call_assistant,
+    completion,
 )
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
@@ -83,7 +84,7 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
         self.call_count += 1
         return call_id
 
-    @implements(call_assistant)
+    @implements(completion)
     def _completion(self, *args, **kwargs):
         path = FIXTURE_DIR / f"{self.test_id}{self.call_id()}.json"
         if not REBUILD_FIXTURES:
@@ -92,10 +93,10 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
             with path.open() as f:
                 result = ModelResponse.model_validate(json.load(f))
                 return result
-        result = fwd(*args, **(self.config | kwargs))
+        result = fwd(*args, **kwargs)
         path.parent.mkdir(exist_ok=True, parents=True)
         with path.open("w") as f:
-            json.dump(result, f, indent=2, sort_keys=True)
+            f.write(result.model_dump_json(indent=2))
         return result
 
 

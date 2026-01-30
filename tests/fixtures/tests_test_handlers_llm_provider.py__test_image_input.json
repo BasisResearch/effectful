@@ -1,10 +1,44 @@
 {
-  "annotations": [],
-  "content": "{\"value\":\"The image is a simple black and white pixel art representation of a smiling face, resembling an emoticon or smiley. It features two white square eyes and a wide rectangular mouth against a black background.\"}",
-  "function_call": null,
-  "provider_specific_fields": {
-    "refusal": null
+  "id": "chatcmpl-D3rNhHv6KxKgfgH1DTBqe9gLaNzpU",
+  "created": 1769812553,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_eadf229d54",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":\"The image is a simple pixel art of a smiley face. It features two square white eyes and a wide white smile set against a black background.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 38,
+    "prompt_tokens": 492,
+    "total_tokens": 530,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
   },
-  "role": "assistant",
-  "tool_calls": null
+  "service_tier": "default"
 }

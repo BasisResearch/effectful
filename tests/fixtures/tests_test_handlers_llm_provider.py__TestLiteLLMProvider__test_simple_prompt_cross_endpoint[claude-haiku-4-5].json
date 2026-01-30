@@ -1,7 +1,39 @@
 {
-  "content": "{\"value\": \"Testing is a critical process that ensures software quality and reliability by identifying bugs and verifying that applications work as expected.\"}",
-  "function_call": null,
-  "provider_specific_fields": null,
-  "role": "assistant",
-  "tool_calls": null
+  "id": "chatcmpl-b08c0c1f-3fd9-45eb-834a-73fe347714ee",
+  "created": 1769812544,
+  "model": "claude-haiku-4-5-20251001",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\": \"Testing is a crucial process that ensures software quality, identifies bugs, and validates that systems work as intended before deployment to users.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": null
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 56,
+    "prompt_tokens": 1179,
+    "total_tokens": 1235,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null,
+      "cache_creation_tokens": 0,
+      "cache_creation_token_details": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      }
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
 }
