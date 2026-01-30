@@ -295,14 +295,7 @@ class Template[**P, T](Tool[P, T]):
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
 
-        is_recursive = _is_recursive_signature(inspect.signature(default))
-        # todo: make this more pythonic
-        if not is_recursive:
-            # drop default.__name__ from context
-            pass
-
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
-        # todo: drop self from contexts if not is_recursive
 
         return typing.cast(Template[Q, V], op)
