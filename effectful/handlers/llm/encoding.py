@@ -1,9 +1,13 @@
+import ast
 import base64
+import inspect
 import io
+import textwrap
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
+from types import CodeType
 from typing import Any
 
 import pydantic
@@ -13,6 +17,7 @@ from litellm import (
 )
 from PIL import Image
 
+import effectful.handlers.llm.evaluation as evaluation
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -253,6 +258,60 @@ class ListEncodable[T](Encodable[list[T], typing.Any]):
         return typing.cast(typing.Any, adapter.validate_json(serialized_value))
 
 
+@dataclass
+class CallableEncodable(Encodable[Callable, str]):
+    base: type[Callable]
+    enc: type[str]
+    ctx: Mapping[str, Any]
+
+    def encode(self, t: Callable) -> typing.Any:
+        # (https://github.com/python/mypy/issues/14928)
+        if not isinstance(t, Callable):  # type: ignore
+            raise TypeError(f"Expected callable, got {type(t)}")
+        try:
+            source = inspect.getsource(t)
+        except (OSError, TypeError):
+            source = None
+
+        if not source:
+            # create source stub using signature and docstring of callable (useful for builtins etc.)
+            pass
+
+        assert source, "Could not retrieve source code or docstring for function"
+
+        return textwrap.dedent(source)
+
+    def decode(self, encoded_value: str) -> Callable:
+        filename = f"<synthesis:{id(self)}>"
+
+        # https://docs.python.org/3/library/functions.html#exec
+        g: MutableMapping[str, Any] = {}
+        g.update(self.ctx or {})
+
+        before_keys = set(g.keys())
+
+        module: ast.AST = evaluation.parse(encoded_value, filename)
+        bytecode: CodeType = evaluation.compile(module, filename)
+        evaluation.exec(bytecode, g)
+
+        # Otherwise: find newly-created callables (in insertion order).
+        new_callables = [
+            v for k, v in g.items() if k not in before_keys and callable(v)
+        ]
+        if not new_callables or len(new_callables) > 1:
+            raise ValueError(
+                "decode() required source code to define exactly one callable."
+            )
+
+        return new_callables[0]
+
+    @Operation.define
+    @classmethod
+    def encoding_instructions(cls) -> str | None:
+        """Instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
+        return None
+
+
 @Encodable.define.register(object)
 def _encodable_object[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
@@ -355,3 +414,8 @@ def _encodable_list[T, U](
     return typing.cast(
         Encodable[T, U], ListEncodable(ty, encoded_ty, ctx, has_image, element_encoder)
     )
+
+
+@Encodable.define.register(Callable)
+def _encodable_callable(*args, **kwargs):
+    raise NotImplementedError

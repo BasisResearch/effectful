@@ -6,6 +6,8 @@ import pytest
 from PIL import Image
 
 from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
 
@@ -718,3 +720,125 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+class TestCallableEncodable:
+    """Tests for CallableEncodable - encoding/decoding callables as source code."""
+
+    def test_encode_decode_function(self):
+        from collections.abc import Callable
+
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        encodable = Encodable.define(Callable, {})
+        encoded = encodable.encode(add)
+        assert isinstance(encoded, str)
+        assert "def add" in encoded
+        assert "return a + b" in encoded
+
+        with handler(UnsafeEvalProvider()):
+            decoded = encodable.decode(encoded)
+        assert callable(decoded)
+        assert decoded(2, 3) == 5
+        assert decoded.__name__ == "add"
+
+    def test_decode_lambda(self):
+        from collections.abc import Callable
+
+        # Lambdas should work if defined in a way that inspect.getsource can find them
+        # Note: lambdas defined inline may not always have retrievable source
+        encodable = Encodable.define(Callable, {})
+
+        # Test decoding a lambda from source string
+        lambda_source = "f = lambda x: x * 2"
+        with handler(UnsafeEvalProvider()):
+            decoded = encodable.decode(lambda_source)
+        assert callable(decoded)
+        assert decoded(5) == 10
+
+    def test_decode_with_env(self):
+        from collections.abc import Callable
+
+        # Test decoding a function that uses env variables
+        encodable = Encodable.define(Callable, {"factor": 3})
+        source = """def multiply(x):
+    return x * factor"""
+
+        with handler(UnsafeEvalProvider()):
+            decoded = encodable.decode(source)
+        assert callable(decoded)
+        assert decoded(4) == 12
+
+    def test_encode_non_callable_raises(self):
+        from collections.abc import Callable
+
+        encodable = Encodable.define(Callable, {})
+        with pytest.raises(TypeError, match="Expected callable"):
+            encodable.encode("not a callable", {})
+
+    def test_encode_builtin_raises(self):
+        from collections.abc import Callable
+
+        encodable = Encodable.define(Callable, {})
+        # Built-in functions don't have source code
+        with pytest.raises(RuntimeError, match="Source code of callable .* not found"):
+            with handler(UnsafeEvalProvider()):
+                encodable.encode(len)
+
+    def test_decode_no_callable_raises(self):
+        from collections.abc import Callable
+
+        encodable = Encodable.define(Callable, {})
+        # Source code that defines no callable
+        source = "x = 42"
+        with pytest.raises(ValueError, match="exactly one callable"):
+            with handler(UnsafeEvalProvider()):
+                encodable.decode(source)
+
+    def test_decode_multiple_callables_raises(self):
+        from collections.abc import Callable
+
+        encodable = Encodable.define(Callable, {})
+        # Source code that defines multiple callables
+        source = """def foo():
+    return 1
+
+def bar():
+    return 2"""
+        with pytest.raises(ValueError, match="exactly one callable"):
+            with handler(UnsafeEvalProvider()):
+                encodable.decode(source)
+
+    def test_decode_class(self):
+        from collections.abc import Callable
+
+        encodable = Encodable.define(Callable, {})
+        # Classes are callable, decode should work with class definitions
+        source = """class Greeter:
+    def __init__(self, name):
+        self.name = name
+
+    def greet(self):
+        return f"Hello, {self.name}!\""""
+
+        with handler(UnsafeEvalProvider()):
+            decoded = encodable.decode(source)
+        assert callable(decoded)
+        instance = decoded("World")
+        assert instance.greet() == "Hello, World!"
+
+    def test_roundtrip(self):
+        from collections.abc import Callable
+
+        def greet(name: str) -> str:
+            return f"Hello, {name}!"
+
+        encodable = Encodable.define(Callable, {})
+        with handler(UnsafeEvalProvider()):
+            encoded = encodable.encode(greet)
+            decoded = encodable.decode(encoded)
+
+        assert callable(decoded)
+        assert decoded("Alice") == "Hello, Alice!"
+        assert decoded.__name__ == "greet"
