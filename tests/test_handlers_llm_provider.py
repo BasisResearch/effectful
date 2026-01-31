@@ -22,9 +22,12 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
+    RetryHandler,
+    Tool,
     call_assistant,
     completion,
 )
+from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -367,3 +370,249 @@ def test_litellm_caching_selective(request):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"
+
+
+# ============================================================================
+# RetryHandler Tests
+# ============================================================================
+
+
+class MockCompletionHandler(ObjectInterpretation):
+    """Mock handler that returns pre-configured completion responses."""
+
+    def __init__(self, responses: list[ModelResponse]):
+        self.responses = responses
+        self.call_count = 0
+        self.received_messages: list = []
+
+    @implements(completion)
+    def _completion(self, model, messages=None, **kwargs):
+        self.received_messages.append(list(messages) if messages else [])
+        response = self.responses[min(self.call_count, len(self.responses) - 1)]
+        self.call_count += 1
+        return response
+
+
+def make_tool_call_response(
+    tool_name: str, tool_args: str, tool_call_id: str = "call_1"
+) -> ModelResponse:
+    """Create a ModelResponse with a tool call."""
+    return ModelResponse(
+        id="test",
+        choices=[
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": tool_args},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        model="test-model",
+    )
+
+
+def make_text_response(content: str) -> ModelResponse:
+    """Create a ModelResponse with text content."""
+    return ModelResponse(
+        id="test",
+        choices=[
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        model="test-model",
+    )
+
+
+@Tool.define
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+class TestRetryHandler:
+    """Tests for RetryHandler functionality."""
+
+    def test_retry_handler_succeeds_on_first_attempt(self):
+        """Test that RetryHandler passes through when no error occurs."""
+        # Response with valid tool call
+        responses = [make_text_response('{"value": "hello"}')]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryHandler(num_retries=3)), handler(mock_handler):
+            message, tool_calls, result = call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        assert mock_handler.call_count == 1
+        assert result == "hello"
+
+    def test_retry_handler_retries_on_invalid_tool_call(self):
+        """Test that RetryHandler retries when tool call decoding fails."""
+        # First response has invalid tool args, second has valid response
+        responses = [
+            make_tool_call_response(
+                "add_numbers", '{"a": "not_an_int", "b": 2}'
+            ),  # Invalid
+            make_text_response('{"value": "success"}'),  # Valid
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryHandler(num_retries=3)), handler(mock_handler):
+            message, tool_calls, result = call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={"add_numbers": add_numbers},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        assert mock_handler.call_count == 2
+        assert result == "success"
+        # Check that the second call included error feedback
+        assert len(mock_handler.received_messages[1]) > len(
+            mock_handler.received_messages[0]
+        )
+
+    def test_retry_handler_retries_on_unknown_tool(self):
+        """Test that RetryHandler retries when tool is not found."""
+        # First response has unknown tool, second has valid response
+        responses = [
+            make_tool_call_response("unknown_tool", '{"x": 1}'),  # Unknown tool
+            make_text_response('{"value": "success"}'),  # Valid
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryHandler(num_retries=3)), handler(mock_handler):
+            message, tool_calls, result = call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={"add_numbers": add_numbers},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        assert mock_handler.call_count == 2
+        assert result == "success"
+
+    def test_retry_handler_exhausts_retries(self):
+        """Test that RetryHandler raises after exhausting all retries."""
+        # All responses have invalid tool calls
+        responses = [
+            make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with pytest.raises(Exception):  # Will raise the underlying decoding error
+            with handler(RetryHandler(num_retries=2)), handler(mock_handler):
+                call_assistant(
+                    messages=[{"role": "user", "content": "test"}],
+                    tools={"add_numbers": add_numbers},
+                    response_format=Encodable.define(str),
+                    model="test-model",
+                )
+
+        # Should have attempted 3 times (1 initial + 2 retries)
+        assert mock_handler.call_count == 3
+
+    def test_retry_handler_with_zero_retries(self):
+        """Test RetryHandler with num_retries=0 fails immediately on error."""
+        responses = [
+            make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with pytest.raises(Exception):
+            with handler(RetryHandler(num_retries=0)), handler(mock_handler):
+                call_assistant(
+                    messages=[{"role": "user", "content": "test"}],
+                    tools={"add_numbers": add_numbers},
+                    response_format=Encodable.define(str),
+                    model="test-model",
+                )
+
+        assert mock_handler.call_count == 1
+
+    def test_retry_handler_valid_tool_call_passes_through(self):
+        """Test that valid tool calls are decoded and returned."""
+        responses = [
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryHandler(num_retries=3)), handler(mock_handler):
+            message, tool_calls, result = call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={"add_numbers": add_numbers},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        assert mock_handler.call_count == 1
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool == add_numbers
+        assert result is None  # No result when there are tool calls
+
+    def test_retry_handler_retries_on_invalid_result(self):
+        """Test that RetryHandler retries when result decoding fails."""
+        # First response has invalid JSON, second has valid response
+        responses = [
+            make_text_response('{"value": "not valid for int"}'),  # Invalid for int
+            make_text_response('{"value": 42}'),  # Valid
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryHandler(num_retries=3)), handler(mock_handler):
+            message, tool_calls, result = call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={},
+                response_format=Encodable.define(int),
+                model="test-model",
+            )
+
+        assert mock_handler.call_count == 2
+        assert result == 42
+        # Check that the second call included error feedback
+        assert len(mock_handler.received_messages[1]) > len(
+            mock_handler.received_messages[0]
+        )
+
+    def test_retry_handler_exhausts_retries_on_result_decoding(self):
+        """Test that RetryHandler raises after exhausting retries on result decoding."""
+        # All responses have invalid results for int type
+        responses = [
+            make_text_response('{"value": "not an int"}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with pytest.raises(Exception):  # Will raise the underlying decoding error
+            with handler(RetryHandler(num_retries=2)), handler(mock_handler):
+                call_assistant(
+                    messages=[{"role": "user", "content": "test"}],
+                    tools={},
+                    response_format=Encodable.define(int),
+                    model="test-model",
+                )
+
+        # Should have attempted 3 times (1 initial + 2 retries)
+        assert mock_handler.call_count == 3
