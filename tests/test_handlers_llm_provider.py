@@ -877,23 +877,19 @@ class TestErrorClasses:
     def test_error_classes_preserve_original_error(self):
         """Test that all error classes preserve the original exception."""
         original = TypeError("type mismatch")
+        mock_message = {"role": "assistant", "content": "test"}
 
-        tool_decode_err = ToolCallDecodingError("fn", "id", original)
+        tool_decode_err = ToolCallDecodingError("fn", "id", original, mock_message)
         assert tool_decode_err.original_error is original
 
-        result_decode_err = ResultDecodingError(original)
+        result_decode_err = ResultDecodingError(original, mock_message)
         assert result_decode_err.original_error is original
 
-    def test_tool_call_decoding_error_raw_message_optional(self):
-        """Test that raw_message can be None initially (set later in call_assistant)."""
-        error = ToolCallDecodingError("fn", "id", ValueError("test"))
-        assert error.raw_message is None
-
-        # Can be set after creation
-        error_with_msg = ToolCallDecodingError(
-            "fn", "id", ValueError("test"), raw_message={"role": "assistant"}
-        )
-        assert error_with_msg.raw_message is not None
+    def test_tool_call_decoding_error_includes_raw_message(self):
+        """Test that ToolCallDecodingError includes the raw message."""
+        mock_message = {"role": "assistant", "content": "test"}
+        error = ToolCallDecodingError("fn", "id", ValueError("test"), mock_message)
+        assert error.raw_message == mock_message
 
 
 # ============================================================================
