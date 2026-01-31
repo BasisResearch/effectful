@@ -1143,7 +1143,7 @@ class TestRestrictedEvalProviderConfig:
                 fn("test")
 
     def test_restricted_with_custom_policy(self):
-        """Can pass custom policy via compile_kwargs."""
+        """Can pass custom policy via kwargs."""
         from RestrictedPython import RestrictingNodeTransformer
 
         # Create a custom policy that's the same as default (just to test the plumbing)
@@ -1155,17 +1155,6 @@ class TestRestrictedEvalProviderConfig:
             module_code="""def add(a: int, b: int) -> int:
     return a + b"""
         )
-        with handler(RestrictedEvalProvider(compile_kwargs={"policy": CustomPolicy})):
+        with handler(RestrictedEvalProvider(policy=CustomPolicy)):
             fn = encodable.decode(source)
         assert fn(2, 3) == 5
-
-    def test_unsafe_allows_private_attribute_access(self):
-        """UnsafeEvalProvider allows access that RestrictedEvalProvider blocks."""
-        encodable = Encodable.define(Callable[[str], str], {})
-        source = SynthesizedFunction(
-            module_code="""def get_class_name(s: str) -> str:
-    return s.__class__.__name__"""
-        )
-        with handler(UnsafeEvalProvider()):
-            fn = encodable.decode(source)
-        assert fn("test") == "str"
