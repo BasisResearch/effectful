@@ -19,7 +19,6 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.synthesis import SynthesizedFunction
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -284,6 +283,18 @@ def _format_callable_type(callable_type: type[Callable]) -> str:
     return str(callable_type)
 
 
+class SynthesizedFunction(pydantic.BaseModel):
+    """Structured output for function synthesis.
+
+    Pydantic model representing synthesized code with function name and module code.
+    """
+
+    module_code: str = pydantic.Field(
+        ...,
+        description="Complete Python module code (no imports needed)",
+    )
+
+
 def _create_typed_synthesized_function(
     callable_type: type[Callable],
 ) -> type[SynthesizedFunction]:
@@ -476,12 +487,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
     def deserialize(self, serialized_value: str) -> SynthesizedFunction:
         return SynthesizedFunction.model_validate_json(serialized_value)
-
-    @Operation.define
-    @classmethod
-    def encoding_instructions(cls) -> str | None:
-        """Instructions to be prefixed onto synthesis prompts to tune the encoding of the result."""
-        return None
 
 
 @Encodable.define.register(object)
