@@ -1,4 +1,18 @@
+import pydantic
+
 from effectful.ops.syntax import ObjectInterpretation
+
+
+class SynthesizedFunction(pydantic.BaseModel):
+    """Structured output for function synthesis.
+
+    Pydantic model representing synthesized code with function name and module code.
+    """
+
+    module_code: str = pydantic.Field(
+        ...,
+        description="Complete Python module code (no imports needed)",
+    )
 
 
 class SynthesisError(Exception):
