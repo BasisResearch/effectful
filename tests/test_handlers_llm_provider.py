@@ -5,6 +5,7 @@ ProgramSynthesis, and sampling strategies.
 """
 
 import functools
+import inspect
 import json
 import os
 from collections.abc import Callable
@@ -25,8 +26,8 @@ from effectful.handlers.llm.completions import (
     call_assistant,
     completion,
 )
+from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -241,29 +242,6 @@ class TestLiteLLMProvider:
             assert isinstance(result, str)
 
 
-@pytest.mark.xfail(reason="Program synthesis not implemented")
-class TestProgramSynthesis:
-    """Tests for ProgramSynthesis handler functionality."""
-
-    @pytest.mark.xfail
-    @requires_openai
-    @retry_on_error(error=SynthesisError, n=3)
-    def test_generates_callable(self, request):
-        """Test ProgramSynthesis handler generates executable code."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            count_func = create_function("a")
-
-            assert callable(count_func)
-            # Test the generated function
-            assert count_func("banana") == 3
-            assert count_func("cherry") == 0
-            assert count_func("aardvark") == 3
-
-
 def smiley_face() -> Image.Image:
     bmp = [
         "00000000",
@@ -473,7 +451,6 @@ class TestCallableSynthesis:
     @requires_openai
     def test_callable_type_signature_in_schema(self, request):
         """Test that the callable type signature is communicated to the LLM."""
-        from effectful.handlers.llm.encoding import Encodable
 
         # Verify that the enc type includes the signature in its docstring
         encodable = Encodable.define(Callable[[int, int], int], {})
@@ -487,8 +464,6 @@ class TestCallableSynthesis:
     @requires_openai
     def test_synthesized_function_roundtrip(self, request):
         """Test that a synthesized function can be encoded and decoded."""
-        from effectful.handlers.llm.encoding import Encodable
-        from effectful.handlers.llm.synthesis import SynthesizedFunction
 
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
@@ -513,7 +488,6 @@ class TestCallableSynthesis:
     @requires_openai
     def test_synthesize_bool_return_type(self, request):
         """Test that LLM respects bool return type in signature."""
-        import inspect
 
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
@@ -536,7 +510,6 @@ class TestCallableSynthesis:
     @requires_openai
     def test_synthesize_three_params(self, request):
         """Test that LLM respects the exact number of parameters in signature."""
-        import inspect
 
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
