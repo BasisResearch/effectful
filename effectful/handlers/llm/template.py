@@ -185,6 +185,7 @@ class Template[**P, T](Tool[P, T]):
         for name, obj in self.__context__.items():
             if obj is self and not is_recursive:
                 continue
+
             # Collect tools in context
             if isinstance(obj, Tool):
                 result[name] = obj
@@ -262,4 +263,5 @@ class Template[**P, T](Tool[P, T]):
 
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+
         return typing.cast(Template[Q, V], op)

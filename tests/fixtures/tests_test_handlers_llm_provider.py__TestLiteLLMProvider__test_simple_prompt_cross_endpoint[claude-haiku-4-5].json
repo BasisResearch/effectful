@@ -1,42 +1,39 @@
 {
+  "id": "chatcmpl-b08c0c1f-3fd9-45eb-834a-73fe347714ee",
+  "created": 1769812544,
+  "model": "claude-haiku-4-5-20251001",
+  "object": "chat.completion",
+  "system_fingerprint": null,
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "Testing is a critical process that helps identify bugs, verify functionality, and ensure that software meets quality standards before deployment.",
-        "function_call": null,
-        "provider_specific_fields": {
-          "citations": null,
-          "thinking_blocks": null
-        },
+        "content": "{\"value\": \"Testing is a crucial process that ensures software quality, identifies bugs, and validates that systems work as intended before deployment to users.\"}",
         "role": "assistant",
-        "tool_calls": null
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": null
       }
     }
   ],
-  "created": 1767182732,
-  "id": "chatcmpl-aa66067c-df8b-4adf-8978-68e8cdcaaa4f",
-  "model": "claude-haiku-4-5-20251001",
-  "object": "chat.completion",
-  "system_fingerprint": null,
   "usage": {
-    "cache_creation_input_tokens": 0,
-    "cache_read_input_tokens": 0,
-    "completion_tokens": 26,
+    "completion_tokens": 56,
+    "prompt_tokens": 1179,
+    "total_tokens": 1235,
     "completion_tokens_details": null,
-    "prompt_tokens": 1145,
     "prompt_tokens_details": {
       "audio_tokens": null,
-      "cache_creation_token_details": {
-        "ephemeral_1h_input_tokens": 0,
-        "ephemeral_5m_input_tokens": 0
-      },
-      "cache_creation_tokens": 0,
       "cached_tokens": 0,
+      "text_tokens": null,
       "image_tokens": null,
-      "text_tokens": null
+      "cache_creation_tokens": 0,
+      "cache_creation_token_details": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      }
     },
-    "total_tokens": 1171
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
   }
 }

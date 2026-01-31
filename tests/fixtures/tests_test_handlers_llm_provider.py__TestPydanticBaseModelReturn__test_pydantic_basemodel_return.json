@@ -1,44 +1,44 @@
 {
+  "id": "chatcmpl-D3rNjYHHVoJdYAi1XKbt6f4aGFFS8",
+  "created": 1769812555,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "annotations": [],
-        "content": "{\"value\":{\"title\":\"The Spark Within the Spire\",\"rating\":4,\"summary\":\"The Spark Within the Spire follows a young student who discovers latent magical powers and earns a place at a venerable wizarding academy. Across his first year, he navigates challenging classes, budding friendships, and a growing sense of destiny as a looming threat quietly unfolds. The book blends classic wizard-school charm with inventive magic, delivering moments of wonder, humor, and quiet courage. While it uses familiar tropes, its strong character work and brisk pace make it a heartfelt coming-of-age tale with enough fresh twists to stay compelling for readers who enjoy magical school adventures.\"}}",
+        "content": "{\"value\":{\"title\":\"The First Spark\",\"rating\":4,\"summary\":\"A brisk coming-of-age fantasy about a young wizard who discovers his powers and enrolls at a wizarding academy. The world-building is vivid, with a fresh take on magic grounded in runes and elemental affinities. The character work—friendships, mentor dynamics, and self-doubt—drives a fast-paced school-year plot that balances whimsy with danger. While it leans on familiar tropes of secret origins and rival houses, the emotional honesty and lively prose keep it engaging. Ideal for readers who enjoy classic magical school tales with a modern, character-forward edge.\"}}",
+        "role": "assistant",
+        "tool_calls": null,
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
-        "role": "assistant",
-        "tool_calls": null
+        "annotations": []
       },
       "provider_specific_fields": {}
     }
   ],
-  "created": 1767182755,
-  "id": "chatcmpl-CspFbHJXFBDmP4RrqnjVI0CDIiePi",
-  "model": "gpt-5-nano-2025-08-07",
-  "object": "chat.completion",
-  "service_tier": "default",
-  "system_fingerprint": null,
   "usage": {
-    "completion_tokens": 2192,
+    "completion_tokens": 1744,
+    "prompt_tokens": 445,
+    "total_tokens": 2189,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "image_tokens": null,
-      "reasoning_tokens": 2048,
+      "reasoning_tokens": 1600,
       "rejected_prediction_tokens": 0,
-      "text_tokens": null
+      "text_tokens": null,
+      "image_tokens": null
     },
-    "prompt_tokens": 526,
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
-      "image_tokens": null,
-      "text_tokens": null
-    },
-    "total_tokens": 2718
-  }
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
 }

@@ -1,44 +1,44 @@
 {
+  "id": "chatcmpl-D3rNyx4soJAv5yDrEl5Hlq8n66iem",
+  "created": 1769812570,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_fa7f5b168b",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "annotations": [],
-        "content": "Apples are a crisp and juicy fruit that come in a variety of flavors and colors, from sweet to tart.",
+        "content": "{\"value\":\"Apples are a versatile and nutritious fruit, enjoyed in a variety of dishes worldwide.\"}",
+        "role": "assistant",
+        "tool_calls": null,
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
-        "role": "assistant",
-        "tool_calls": null
+        "annotations": []
       },
       "provider_specific_fields": {}
     }
   ],
-  "created": 1769462584,
-  "id": "chatcmpl-D2OL2w9GHCV8jAbzqup98G9KU6yRq",
-  "model": "gpt-4o-2024-08-06",
-  "object": "chat.completion",
-  "service_tier": "default",
-  "system_fingerprint": "fp_deacdd5f6f",
   "usage": {
-    "completion_tokens": 24,
+    "completion_tokens": 25,
+    "prompt_tokens": 262,
+    "total_tokens": 287,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "image_tokens": null,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
-      "text_tokens": null
+      "text_tokens": null,
+      "image_tokens": null
     },
-    "prompt_tokens": 232,
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
-      "image_tokens": null,
-      "text_tokens": null
-    },
-    "total_tokens": 256
-  }
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
 }

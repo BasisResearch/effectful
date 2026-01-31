@@ -1,44 +1,44 @@
 {
+  "id": "chatcmpl-D3rNQ45EqoVx6YQZKRX86eowLhhcv",
+  "created": 1769812536,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "annotations": [],
-        "content": "Testing helps ensure product quality by catching issues early.",
+        "content": "{\"value\":\"Testing helps catch mistakes before they reach users.\"}",
+        "role": "assistant",
+        "tool_calls": null,
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
-        "role": "assistant",
-        "tool_calls": null
+        "annotations": []
       },
       "provider_specific_fields": {}
     }
   ],
-  "created": 1767182728,
-  "id": "chatcmpl-CspFA6VcwnTzTxjuvpG76RCuRt3KM",
-  "model": "gpt-5-nano-2025-08-07",
-  "object": "chat.completion",
-  "service_tier": "default",
-  "system_fingerprint": null,
   "usage": {
-    "completion_tokens": 211,
+    "completion_tokens": 282,
+    "prompt_tokens": 342,
+    "total_tokens": 624,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "image_tokens": null,
-      "reasoning_tokens": 192,
+      "reasoning_tokens": 256,
       "rejected_prediction_tokens": 0,
-      "text_tokens": null
+      "text_tokens": null,
+      "image_tokens": null
     },
-    "prompt_tokens": 394,
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
-      "image_tokens": null,
-      "text_tokens": null
-    },
-    "total_tokens": 605
-  }
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
 }
