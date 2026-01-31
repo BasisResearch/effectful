@@ -28,31 +28,6 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
-
-@dataclasses.dataclass
-class ToolCallDecodingError(Exception):
-    """Error raised when decoding a tool call fails."""
-
-    tool_name: str
-    tool_call_id: str
-    original_error: Exception
-    raw_message: typing.Any = None
-
-    def __str__(self) -> str:
-        return f"Error decoding tool call '{self.tool_name}': {self.original_error}"
-
-
-@dataclasses.dataclass
-class ResultDecodingError(Exception):
-    """Error raised when decoding the LLM response result fails."""
-
-    original_error: Exception
-    raw_message: typing.Any = None
-
-    def __str__(self) -> str:
-        return f"Error decoding response: {self.original_error}"
-
-
 Message = (
     OpenAIChatCompletionAssistantMessage
     | ChatCompletionToolMessage
@@ -62,6 +37,41 @@ Message = (
 )
 
 type ToolCallID = str
+
+
+@dataclasses.dataclass
+class ToolCallDecodingError(Exception):
+    """Error raised when decoding a tool call fails."""
+
+    tool_name: str
+    tool_call_id: str
+    original_error: Exception
+    raw_message: Message
+
+    def __str__(self) -> str:
+        return f"Error decoding tool call '{self.tool_name}': {self.original_error}. Please provide a valid response and try again."
+
+
+@dataclasses.dataclass
+class ResultDecodingError(Exception):
+    """Error raised when decoding the LLM response result fails."""
+
+    original_error: Exception
+    raw_message: Message
+
+    def __str__(self) -> str:
+        return f"Error decoding response: {self.original_error}. Please provide a valid response and try again."
+
+
+@dataclasses.dataclass
+class ToolCallExecutionError(Exception):
+    tool_name: str
+    e: Exception
+
+    def __str__(self) -> str:
+        return (
+            f"Tool execution failed: Error executing tool '{self.tool_name}': {self.e}"
+        )
 
 
 class DecodedToolCall[T](typing.NamedTuple):
@@ -105,7 +115,7 @@ def _function_model(tool: Tool) -> ChatCompletionToolParam:
 def decode_tool_call(
     tool_call: ChatCompletionMessageToolCall,
     tools: collections.abc.Mapping[str, Tool],
-    raw_message: Message | None = None,
+    raw_message: Message,
 ) -> DecodedToolCall:
     """Decode a tool call from the LLM response into a DecodedToolCall.
 
@@ -323,12 +333,12 @@ class RetryLLMHandler(ObjectInterpretation):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
 
-    def _format_error(self, error: Exception, base_msg: str) -> str:
+    def _format_error(self, error: Exception) -> str:
         """Format an error message, optionally including traceback."""
         if self.include_traceback:
             tb = traceback.format_exc()
-            return f"{base_msg}\n\nTraceback:\n```\n{tb}```"
-        return base_msg
+            return f"{error}\n\nTraceback:\n```\n{tb}```"
+        return f"{error}"
 
     @implements(call_assistant)
     def _call_assistant[T, U](
@@ -355,22 +365,17 @@ class RetryLLMHandler(ObjectInterpretation):
 
             except ToolCallDecodingError as e:
                 last_error = e
-                # The error includes the raw message from the failed attempt
-                assert e.raw_message is not None, (
-                    "ToolCallDecodingError should include raw_message"
-                )
 
                 # Add the malformed assistant message
                 messages_list.append(e.raw_message)
 
                 # Add error feedback as a tool response
-                base_msg = f"{e}. Please fix the tool call arguments and try again."
                 error_feedback: Message = typing.cast(
                     Message,
                     {
                         "role": "tool",
                         "tool_call_id": e.tool_call_id,
-                        "content": self._format_error(e, base_msg),
+                        "content": self._format_error(e),
                     },
                 )
                 messages_list.append(error_feedback)
@@ -378,21 +383,14 @@ class RetryLLMHandler(ObjectInterpretation):
 
             except ResultDecodingError as e:
                 last_error = e
-                # The error includes the raw message from the failed attempt
-                assert e.raw_message is not None, (
-                    "ResultDecodingError should include raw_message"
-                )
-
                 # Add the malformed assistant message
                 messages_list.append(e.raw_message)
-
                 # Add error feedback as a user message
-                base_msg = f"{e}. Please provide a valid response and try again."
                 result_error_feedback: Message = typing.cast(
                     Message,
                     {
                         "role": "user",
-                        "content": self._format_error(e, base_msg),
+                        "content": self._format_error(e),
                     },
                 )
                 messages_list.append(result_error_feedback)
@@ -417,13 +415,14 @@ class RetryLLMHandler(ObjectInterpretation):
         try:
             return fwd(tool_call)
         except Exception as e:
-            base_msg = f"Tool execution failed: Error executing tool '{tool_call.tool.__name__}': {e}"
             return typing.cast(
                 Message,
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": self._format_error(e, base_msg),
+                    "content": self._format_error(
+                        ToolCallExecutionError(f"{tool_call.tool.__name__}", e)
+                    ),
                 },
             )
 
