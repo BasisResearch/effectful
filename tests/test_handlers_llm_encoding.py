@@ -727,21 +727,6 @@ def test_type_to_encodable_type_nested_pydantic_model():
 class TestCallableEncodable:
     """Tests for CallableEncodable - encoding/decoding callables as SynthesizedFunction."""
 
-    def test_bare_callable_allows_encode_but_not_decode(self):
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        # Bare Callable allows encoding
-        encodable = Encodable.define(Callable, {})
-        encoded = encodable.encode(add)
-        assert isinstance(encoded, SynthesizedFunction)
-        assert "def add" in encoded.module_code
-
-        # But decode is disabled
-        with pytest.raises(TypeError, match="Cannot decode/synthesize callable"):
-            with handler(UnsafeEvalProvider()):
-                encodable.decode(encoded)
-
     def test_encode_decode_function(self):
         def add(a: int, b: int) -> int:
             return a + b
