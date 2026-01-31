@@ -350,9 +350,9 @@ class RetryLLMHandler(ObjectInterpretation):
         **kwargs,
     ) -> MessageResult[T]:
         messages_list = list(messages)
-        last_error: Exception | None = None
+        last_attempt = self.num_retries
 
-        for _attempt in range(self.num_retries + 1):
+        for attempt in range(self.num_retries + 1):
             try:
                 message, tool_calls, result = fwd(
                     messages_list, tools, response_format, model, **kwargs
@@ -364,7 +364,9 @@ class RetryLLMHandler(ObjectInterpretation):
                 return (message, tool_calls, result)
 
             except ToolCallDecodingError as e:
-                last_error = e
+                # On last attempt, re-raise to preserve full traceback
+                if attempt == last_attempt:
+                    raise
 
                 # Add the malformed assistant message
                 messages_list.append(e.raw_message)
@@ -379,10 +381,12 @@ class RetryLLMHandler(ObjectInterpretation):
                     },
                 )
                 messages_list.append(error_feedback)
-                continue
 
             except ResultDecodingError as e:
-                last_error = e
+                # On last attempt, re-raise to preserve full traceback
+                if attempt == last_attempt:
+                    raise
+
                 # Add the malformed assistant message
                 messages_list.append(e.raw_message)
                 # Add error feedback as a user message
@@ -394,11 +398,9 @@ class RetryLLMHandler(ObjectInterpretation):
                     },
                 )
                 messages_list.append(result_error_feedback)
-                continue
 
-        # If all retries failed, raise the last error
-        assert last_error is not None
-        raise last_error
+        # Should never reach here - either we return on success or raise on final failure
+        raise AssertionError("Unreachable: retry loop exited without return or raise")
 
     @implements(completion)
     def _completion(self, *args, **kwargs) -> typing.Any:
