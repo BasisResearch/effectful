@@ -52,18 +52,6 @@ class ResultDecodingError(Exception):
         return f"Error decoding response: {self.original_error}"
 
 
-@dataclasses.dataclass
-class ToolExecutionError(Exception):
-    """Error raised when a tool execution fails at runtime."""
-
-    tool_name: str
-    tool_call_id: str
-    original_error: Exception
-
-    def __str__(self) -> str:
-        return f"Error executing tool '{self.tool_name}': {self.original_error}"
-
-
 Message = (
     OpenAIChatCompletionAssistantMessage
     | ChatCompletionToolMessage
@@ -418,18 +406,12 @@ class RetryLLMHandler(ObjectInterpretation):
         try:
             return fwd(tool_call)
         except Exception as e:
-            # Wrap runtime errors and return as a tool message
-            error = ToolExecutionError(
-                tool_call.tool.__name__,
-                tool_call.id,
-                e,
-            )
             return typing.cast(
                 Message,
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": f"Tool execution failed: {error}",
+                    "content": f"Tool execution failed: Error executing tool '{tool_call.tool.__name__}': {e}",
                 },
             )
 

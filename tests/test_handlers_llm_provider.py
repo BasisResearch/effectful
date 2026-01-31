@@ -22,12 +22,12 @@ from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
+    DecodedToolCall,
     LiteLLMProvider,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
     ToolCallDecodingError,
-    ToolExecutionError,
     call_assistant,
     call_tool,
     completion,
@@ -709,22 +709,8 @@ def divide_tool(a: int, b: int) -> int:
 class TestToolExecutionErrorHandling:
     """Tests for runtime tool execution error handling."""
 
-    def test_tool_execution_error_attributes(self):
-        """Test ToolExecutionError has correct attributes."""
-        original = ValueError("something went wrong")
-        error = ToolExecutionError("my_tool", "call_123", original)
-
-        assert error.tool_name == "my_tool"
-        assert error.tool_call_id == "call_123"
-        assert error.original_error is original
-        assert "my_tool" in str(error)
-        assert "something went wrong" in str(error)
-
     def test_retry_handler_catches_tool_runtime_error(self):
         """Test that RetryLLMHandler catches tool runtime errors and returns error message."""
-        import inspect
-
-        from effectful.handlers.llm.completions import DecodedToolCall
 
         # Create a decoded tool call for failing_tool
         sig = inspect.signature(failing_tool)
@@ -743,9 +729,6 @@ class TestToolExecutionErrorHandling:
 
     def test_retry_handler_catches_division_by_zero(self):
         """Test that RetryLLMHandler catches division by zero errors."""
-        import inspect
-
-        from effectful.handlers.llm.completions import DecodedToolCall
 
         sig = inspect.signature(divide_tool)
         bound_args = sig.bind(a=10, b=0)
@@ -761,9 +744,6 @@ class TestToolExecutionErrorHandling:
 
     def test_successful_tool_execution_returns_result(self):
         """Test that successful tool executions return normal results."""
-        import inspect
-
-        from effectful.handlers.llm.completions import DecodedToolCall
 
         sig = inspect.signature(add_numbers)
         bound_args = sig.bind(a=3, b=4)
@@ -844,15 +824,6 @@ class TestErrorClasses:
         assert "parse error" in error_str
         assert "decoding response" in error_str.lower()
 
-    def test_tool_execution_error_string_representation(self):
-        """Test ToolExecutionError string includes relevant info."""
-        original = RuntimeError("runtime failure")
-        error = ToolExecutionError("compute", "call_xyz", original)
-
-        error_str = str(error)
-        assert "compute" in error_str
-        assert "runtime failure" in error_str
-
     def test_error_classes_preserve_original_error(self):
         """Test that all error classes preserve the original exception."""
         original = TypeError("type mismatch")
@@ -862,9 +833,6 @@ class TestErrorClasses:
 
         result_decode_err = ResultDecodingError(original)
         assert result_decode_err.original_error is original
-
-        tool_exec_err = ToolExecutionError("fn", "id", original)
-        assert tool_exec_err.original_error is original
 
     def test_tool_call_decoding_error_raw_message_optional(self):
         """Test that raw_message can be None initially (set later in call_assistant)."""
