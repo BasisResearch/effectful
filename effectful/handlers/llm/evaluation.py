@@ -8,6 +8,7 @@ from typing import Any
 from RestrictedPython import (
     Eval,
     Guards,
+    RestrictingNodeTransformer,
     compile_restricted,
     safe_globals,
 )
@@ -101,12 +102,54 @@ class RestrictedEvalProvider(ObjectInterpretation):
 
     RestrictedPython is not a complete sandbox, but it enforces a restricted
     language subset and expects you to provide a constrained exec environment.
+
+    policy : dict[str, Any], optional
+        RestrictedPython compile_restricted policy for compilation
+    allow_class_definitions : bool, default True
+        Enable class definitions by providing __metaclass__ and __name__.
+    allow_iteration : bool, default True
+        Enable for loops and comprehensions via _getiter_.
+    allow_sequence_unpacking : bool, default True
+        Enable sequence unpacking in comprehensions and for loops.
+    allow_getattr : bool, default True
+        Enable safer_getattr for attribute access.
+    allow_setattr : bool, default True
+        Enable guarded_setattr for attribute assignment.
+    allow_write : bool, default True
+        Enable _write_ guard (identity function allowing write operations).
+    module_name : str, default "restricted"
+        The __name__ to use for the restricted module namespace.
     """
 
-    config: dict[str, Any]
+    policy: type[RestrictingNodeTransformer] | None = None
+    allow_class_definitions: bool
+    allow_iteration: bool
+    allow_sequence_unpacking: bool
+    allow_getattr: bool
+    allow_setattr: bool
+    allow_write: bool
+    module_name: str
 
-    def __init__(self, **kwargs):
-        self.config = kwargs
+    def __init__(
+        self,
+        *,
+        policy: type[RestrictingNodeTransformer] | None = None,
+        allow_class_definitions: bool = True,
+        allow_iteration: bool = True,
+        allow_sequence_unpacking: bool = True,
+        allow_getattr: bool = True,
+        allow_setattr: bool = True,
+        allow_write: bool = True,
+        module_name: str = "restricted",
+    ):
+        self.policy = policy
+        self.allow_class_definitions = allow_class_definitions
+        self.allow_iteration = allow_iteration
+        self.allow_sequence_unpacking = allow_sequence_unpacking
+        self.allow_getattr = allow_getattr
+        self.allow_setattr = allow_setattr
+        self.allow_write = allow_write
+        self.module_name = module_name
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -122,7 +165,12 @@ class RestrictedEvalProvider(ObjectInterpretation):
     @implements(compile)
     def compile(self, module: ast.Module, filename: str) -> CodeType:
         # RestrictedPython can compile from an AST directly.
-        return compile_restricted(module, filename=filename, mode="exec", **self.config)
+        return compile_restricted(
+            module,
+            filename=filename,
+            mode="exec",
+            policy=self.policy or RestrictingNodeTransformer,
+        )
 
     @implements(exec)
     def exec(
@@ -133,21 +181,30 @@ class RestrictedEvalProvider(ObjectInterpretation):
         # Build restricted globals from RestrictedPython's defaults
         rglobals: dict[str, Any] = safe_globals.copy()
 
-        # Enable class definitions (required for Python 3)
-        rglobals["__metaclass__"] = type
-        rglobals["__name__"] = "restricted"
+        if self.allow_class_definitions:
+            # Enable class definitions (required for Python 3)
+            rglobals["__metaclass__"] = type
+            rglobals["__name__"] = self.module_name
 
         # Layer `env` on top (without letting callers replace the restricted builtins).
         rglobals.update({k: v for k, v in env.items() if k != "__builtins__"})
 
-        # Enable for loops and comprehensions
-        rglobals["_getiter_"] = Eval.default_guarded_getiter
+        if self.allow_iteration:
+            # Enable for loops and comprehensions
+            rglobals["_getiter_"] = Eval.default_guarded_getiter
 
-        # Enable sequence unpacking in comprehensions and for loops
-        rglobals["_iter_unpack_sequence_"] = Guards.guarded_iter_unpack_sequence
-        rglobals["getattr"] = Guards.safer_getattr
-        rglobals["setattr"] = Guards.guarded_setattr
-        rglobals["_write_"] = lambda x: x
+        if self.allow_sequence_unpacking:
+            # Enable sequence unpacking in comprehensions and for loops
+            rglobals["_iter_unpack_sequence_"] = Guards.guarded_iter_unpack_sequence
+
+        if self.allow_getattr:
+            rglobals["getattr"] = Guards.safer_getattr
+
+        if self.allow_setattr:
+            rglobals["setattr"] = Guards.guarded_setattr
+
+        if self.allow_write:
+            rglobals["_write_"] = lambda x: x
 
         # Execute with locals=env so top-level defs land in `env`.
         builtins.exec(bytecode, rglobals, env)
