@@ -1,10 +1,7 @@
 from collections.abc import Callable
 from typing import Annotated
 
-import pytest
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.synthesis import ProgramSynthesis
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -117,22 +114,6 @@ def test_primes_decode_int():
         result = primes(6)
         assert result == 61
         assert isinstance(result, int)
-
-
-@pytest.mark.xfail(reason="Synthesis handler not yet implemented")
-def test_count_char_with_program_synthesis():
-    """Test the count_char template with program synthesis."""
-    mock_code = """<code>
-def count_occurrences(s):
-    return s.count('a')
-</code>"""
-    mock_provider = SingleResponseLLMProvider(mock_code)
-
-    with handler(mock_provider), handler(ProgramSynthesis()):
-        count_a = count_char("a")
-        assert callable(count_a)
-        assert count_a("banana") == 3
-        assert count_a("cherry") == 0
 
 
 class FailingThenSucceedingProvider[T](ObjectInterpretation):

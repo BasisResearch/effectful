@@ -1,0 +1,44 @@
+{
+  "id": "chatcmpl-D3t0A8TB6nGWKFLinAIo6MtI8A9C7",
+  "created": 1769818782,
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_1590f93f9d",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":{\"module_code\":\"def count_character_a(input_string: str) -> int:\\n    return input_string.count('a')\\n\"}}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 34,
+    "prompt_tokens": 641,
+    "total_tokens": 675,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+}
