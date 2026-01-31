@@ -293,7 +293,7 @@ class RetryHandler(ObjectInterpretation):
                 try:
                     decoded_tool_call = decode_tool_call(validated_tool_call, tools)
                     tool_calls.append(decoded_tool_call)
-                except Exception as e:
+                except (KeyError, pydantic.ValidationError) as e:
                     decoding_errors.append((validated_tool_call, e))
 
             # If there were tool call decoding errors, add error feedback and retry
@@ -345,7 +345,7 @@ class RetryHandler(ObjectInterpretation):
                     tool_calls,
                     result,
                 )
-            except Exception as e:
+            except pydantic.ValidationError as e:
                 last_error = e
                 # Add the assistant message and error feedback for result decoding failure
                 messages_list.append(
