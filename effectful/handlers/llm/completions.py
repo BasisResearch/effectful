@@ -5,6 +5,7 @@ import functools
 import inspect
 import string
 import textwrap
+import traceback
 import typing
 
 import litellm
@@ -314,10 +315,20 @@ class RetryLLMHandler(ObjectInterpretation):
 
     Args:
         num_retries: The maximum number of retries (default: 3).
+        include_traceback: If True, include full traceback in error feedback
+            for better debugging context (default: False).
     """
 
-    def __init__(self, num_retries: int = 3):
+    def __init__(self, num_retries: int = 3, include_traceback: bool = False):
         self.num_retries = num_retries
+        self.include_traceback = include_traceback
+
+    def _format_error(self, error: Exception, base_msg: str) -> str:
+        """Format an error message, optionally including traceback."""
+        if self.include_traceback:
+            tb = traceback.format_exc()
+            return f"{base_msg}\n\nTraceback:\n```\n{tb}```"
+        return base_msg
 
     @implements(call_assistant)
     def _call_assistant[T, U](
@@ -353,13 +364,13 @@ class RetryLLMHandler(ObjectInterpretation):
                 messages_list.append(e.raw_message)
 
                 # Add error feedback as a tool response
-                error_msg = f"{e}. Please fix the tool call arguments and try again."
+                base_msg = f"{e}. Please fix the tool call arguments and try again."
                 error_feedback: Message = typing.cast(
                     Message,
                     {
                         "role": "tool",
                         "tool_call_id": e.tool_call_id,
-                        "content": error_msg,
+                        "content": self._format_error(e, base_msg),
                     },
                 )
                 messages_list.append(error_feedback)
@@ -376,12 +387,12 @@ class RetryLLMHandler(ObjectInterpretation):
                 messages_list.append(e.raw_message)
 
                 # Add error feedback as a user message
-                error_msg = f"{e}. Please provide a valid response and try again."
+                base_msg = f"{e}. Please provide a valid response and try again."
                 result_error_feedback: Message = typing.cast(
                     Message,
                     {
                         "role": "user",
-                        "content": error_msg,
+                        "content": self._format_error(e, base_msg),
                     },
                 )
                 messages_list.append(result_error_feedback)
@@ -406,12 +417,13 @@ class RetryLLMHandler(ObjectInterpretation):
         try:
             return fwd(tool_call)
         except Exception as e:
+            base_msg = f"Tool execution failed: Error executing tool '{tool_call.tool.__name__}': {e}"
             return typing.cast(
                 Message,
                 {
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": f"Tool execution failed: Error executing tool '{tool_call.tool.__name__}': {e}",
+                    "content": self._format_error(e, base_msg),
                 },
             )
 

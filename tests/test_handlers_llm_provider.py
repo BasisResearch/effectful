@@ -688,6 +688,56 @@ class TestRetryLLMHandler:
         assert len(tool_feedback) == 1
         assert "nonexistent_tool" in tool_feedback[0]["content"]
 
+    def test_retry_handler_include_traceback_in_error_feedback(self):
+        """Test that include_traceback=True adds traceback to error messages."""
+        responses = [
+            make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
+            make_text_response('{"value": "success"}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with (
+            handler(RetryLLMHandler(num_retries=3, include_traceback=True)),
+            handler(mock_handler),
+        ):
+            call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={"add_numbers": add_numbers},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # Check that the error feedback includes traceback
+        second_call_messages = mock_handler.received_messages[1]
+        tool_feedback = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert len(tool_feedback) == 1
+        assert "Traceback:" in tool_feedback[0]["content"]
+        assert "```" in tool_feedback[0]["content"]
+
+    def test_retry_handler_no_traceback_by_default(self):
+        """Test that include_traceback=False (default) doesn't add traceback."""
+        responses = [
+            make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
+            make_text_response('{"value": "success"}'),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+
+        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+            call_assistant(
+                messages=[{"role": "user", "content": "test"}],
+                tools={"add_numbers": add_numbers},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # Check that the error feedback does NOT include traceback
+        second_call_messages = mock_handler.received_messages[1]
+        tool_feedback = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert len(tool_feedback) == 1
+        assert "Traceback:" not in tool_feedback[0]["content"]
+
 
 # ============================================================================
 # Tool Execution Error Tests
