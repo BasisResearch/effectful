@@ -18,7 +18,9 @@ def parse(source: str, filename: str) -> ast.Module:
 
     Returns the parsed AST.
     """
-    raise TypeError("An eval provider must be installed in order to parse code.")
+    raise NotImplementedError(
+        "An eval provider must be installed in order to parse code."
+    )
 
 
 @defop
@@ -31,7 +33,9 @@ def compile(module: ast.Module, filename: str) -> CodeType:
 
     Returns the compiled code object.
     """
-    raise TypeError("An eval provider must be installed in order to compile code.")
+    raise NotImplementedError(
+        "An eval provider must be installed in order to compile code."
+    )
 
 
 @defop
@@ -45,7 +49,9 @@ def exec(
     bytecode: A code object to execute (typically produced by compile()).
     env: The namespace mapping used during execution.
     """
-    raise TypeError("An eval provider must be installed in order to execute code.")
+    raise NotImplementedError(
+        "An eval provider must be installed in order to execute code."
+    )
 
 
 class UnsafeEvalProvider(ObjectInterpretation):
