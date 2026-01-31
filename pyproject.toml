@@ -44,6 +44,7 @@ llm = [
   "litellm",
   "pillow",
   "pydantic",
+  "restrictedpython>=8.1"
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
