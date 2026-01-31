@@ -1,5 +1,6 @@
 import collections
 import collections.abc
+import dataclasses
 import functools
 import inspect
 import string
@@ -27,61 +28,40 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
+@dataclasses.dataclass
 class ToolCallDecodingError(Exception):
-    """Error raised when decoding a tool call fails.
+    """Error raised when decoding a tool call fails."""
 
-    Attributes:
-        tool_name: Name of the tool that failed to decode.
-        tool_call_id: ID of the tool call that failed.
-        original_error: The underlying exception that caused the failure.
-        raw_message: The raw assistant message containing the failed tool call.
-    """
+    tool_name: str
+    tool_call_id: str
+    original_error: Exception
+    raw_message: typing.Any = None
 
-    def __init__(
-        self,
-        tool_name: str,
-        tool_call_id: str,
-        original_error: Exception,
-        raw_message: typing.Any = None,
-    ):
-        self.tool_name = tool_name
-        self.tool_call_id = tool_call_id
-        self.original_error = original_error
-        self.raw_message = raw_message
-        super().__init__(f"Error decoding tool call '{tool_name}': {original_error}")
+    def __str__(self) -> str:
+        return f"Error decoding tool call '{self.tool_name}': {self.original_error}"
 
 
+@dataclasses.dataclass
 class ResultDecodingError(Exception):
-    """Error raised when decoding the LLM response result fails.
+    """Error raised when decoding the LLM response result fails."""
 
-    Attributes:
-        original_error: The underlying exception that caused the failure.
-        raw_message: The raw assistant message containing the failed result.
-    """
+    original_error: Exception
+    raw_message: typing.Any = None
 
-    def __init__(
-        self,
-        original_error: Exception,
-        raw_message: typing.Any = None,
-    ):
-        self.original_error = original_error
-        self.raw_message = raw_message
-        super().__init__(f"Error decoding response: {original_error}")
+    def __str__(self) -> str:
+        return f"Error decoding response: {self.original_error}"
 
 
+@dataclasses.dataclass
 class ToolExecutionError(Exception):
     """Error raised when a tool execution fails at runtime."""
 
-    def __init__(
-        self,
-        tool_name: str,
-        tool_call_id: str,
-        original_error: Exception,
-    ):
-        self.tool_name = tool_name
-        self.tool_call_id = tool_call_id
-        self.original_error = original_error
-        super().__init__(f"Error executing tool '{tool_name}': {original_error}")
+    tool_name: str
+    tool_call_id: str
+    original_error: Exception
+
+    def __str__(self) -> str:
+        return f"Error executing tool '{self.tool_name}': {self.original_error}"
 
 
 Message = (
