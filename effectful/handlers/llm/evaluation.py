@@ -146,12 +146,13 @@ class RestrictedEvalProvider(ObjectInterpretation):
         # Build restricted globals from RestrictedPython's defaults
         rglobals: dict[str, Any] = safe_globals.copy()
 
-        # Layer `env` on top (without letting callers replace the restricted builtins).
-        rglobals.update({k: v for k, v in env.items() if k != "__builtins__"})
-
         # Enable class definitions (required for Python 3)
         rglobals["__metaclass__"] = type
         rglobals["__name__"] = "restricted"
+
+        # Layer `env` on top (without letting callers replace the restricted builtins).
+        rglobals.update({k: v for k, v in env.items() if k != "__builtins__"})
+
         # Enable for loops and comprehensions
         rglobals["_getiter_"] = Eval.default_guarded_getiter
         # Enable sequence unpacking in comprehensions and for loops
@@ -161,4 +162,12 @@ class RestrictedEvalProvider(ObjectInterpretation):
         rglobals["setattr"] = Guards.guarded_setattr
         rglobals["_write_"] = lambda x: x
 
+        # Track keys before execution to identify new definitions
+        keys_before = set(rglobals.keys())
+
         builtins.exec(bytecode, rglobals, rglobals)
+
+        # Copy newly defined items back to env so caller can access them
+        for key in rglobals:
+            if key not in keys_before:
+                env[key] = rglobals[key]

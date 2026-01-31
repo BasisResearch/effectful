@@ -1,3 +1,4 @@
+import builtins
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, NamedTuple, TypedDict
@@ -5,6 +6,7 @@ from typing import Any, NamedTuple, TypedDict
 import pydantic
 import pytest
 from PIL import Image
+from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
@@ -1144,7 +1146,6 @@ class TestRestrictedEvalProviderConfig:
 
     def test_restricted_with_custom_policy(self):
         """Can pass custom policy via kwargs."""
-        from RestrictedPython import RestrictingNodeTransformer
 
         # Create a custom policy that's the same as default (just to test the plumbing)
         class CustomPolicy(RestrictingNodeTransformer):
@@ -1158,3 +1159,63 @@ class TestRestrictedEvalProviderConfig:
         with handler(RestrictedEvalProvider(policy=CustomPolicy)):
             fn = encodable.decode(source)
         assert fn(2, 3) == 5
+
+    def test_builtins_in_env_does_not_bypass_security(self):
+        """Including __builtins__ in env should not bypass RestrictedEvalProvider security.
+
+        RestrictedEvalProvider explicitly filters out __builtins__ from the env
+        to prevent callers from replacing the restricted builtins with full Python builtins.
+        This test verifies that even if __builtins__ is passed in the context,
+        dangerous operations remain blocked.
+        """
+
+        # Attempt to pass full builtins in the context, which should be filtered out
+        dangerous_ctx = {"__builtins__": builtins.__dict__}
+
+        # Test 1: open() should not be usable even with __builtins__ in context
+        # The function may fail at compile/exec time or at call time, but either way
+        # it should not be able to actually open files
+        encodable_open = Encodable.define(Callable[[str], str], dangerous_ctx)
+        source_open = SynthesizedFunction(
+            module_code="""def read_file(path: str) -> str:
+    return open(path).read()"""
+        )
+        with pytest.raises(Exception):  # Could be NameError, ValueError, or other
+            with handler(RestrictedEvalProvider()):
+                fn = encodable_open.decode(source_open)
+                # If decode succeeded (shouldn't), calling should still fail
+                fn("/etc/passwd")
+
+        # Test 2: __import__ should not be usable
+        encodable_import = Encodable.define(Callable[[], str], dangerous_ctx)
+        source_import = SynthesizedFunction(
+            module_code="""def get_os_name() -> str:
+    os = __import__('os')
+    return os.name"""
+        )
+        with pytest.raises(Exception):
+            with handler(RestrictedEvalProvider()):
+                fn = encodable_import.decode(source_import)
+                fn()
+
+        # Test 3: Verify safe code still works with dangerous context
+        # This confirms we're not just breaking everything
+        encodable_safe = Encodable.define(Callable[[int, int], int], dangerous_ctx)
+        source_safe = SynthesizedFunction(
+            module_code="""def add(a: int, b: int) -> int:
+    return a + b"""
+        )
+        with handler(RestrictedEvalProvider()):
+            fn = encodable_safe.decode(source_safe)
+            assert fn(2, 3) == 5, "Safe code should still work"
+
+        # Test 4: Private attribute access should still be blocked
+        encodable_private = Encodable.define(Callable[[str], str], dangerous_ctx)
+        source_private = SynthesizedFunction(
+            module_code="""def get_class(s: str) -> str:
+    return s.__class__.__name__"""
+        )
+        with pytest.raises(Exception):
+            with handler(RestrictedEvalProvider()):
+                fn = encodable_private.decode(source_private)
+                fn("test")
