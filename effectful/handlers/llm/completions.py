@@ -96,7 +96,7 @@ class ToolCallExecutionError(Exception):
 
     tool_name: str
     tool_call_id: str
-    original_error: Exception
+    original_error: BaseException
 
     def __str__(self) -> str:
         return f"Tool execution failed: Error executing tool '{self.tool_name}': {self.original_error}"
@@ -369,11 +369,21 @@ class RetryLLMHandler(ObjectInterpretation):
         num_retries: The maximum number of retries (default: 3).
         include_traceback: If True, include full traceback in error feedback
             for better debugging context (default: False).
+        catch_tool_errors: Exception type(s) to catch during tool execution.
+            Can be a single exception class or a tuple of exception classes.
+            Defaults to Exception (catches all exceptions).
     """
 
-    def __init__(self, num_retries: int = 3, include_traceback: bool = False):
+    def __init__(
+        self,
+        num_retries: int = 3,
+        include_traceback: bool = False,
+        catch_tool_errors: type[BaseException]
+        | tuple[type[BaseException], ...] = Exception,
+    ):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
+        self.catch_tool_errors = catch_tool_errors
 
     @implements(call_assistant)
     def _call_assistant[T, U](
@@ -423,11 +433,12 @@ class RetryLLMHandler(ObjectInterpretation):
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as
-        error messages to the LLM.
+        error messages to the LLM. Only exceptions matching `catch_tool_errors`
+        are caught; others propagate up.
         """
         try:
             return fwd(tool_call)
-        except Exception as e:
+        except self.catch_tool_errors as e:
             error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
             return error.to_feedback_message(self.include_traceback)
 
