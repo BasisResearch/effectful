@@ -5,6 +5,7 @@ ProgramSynthesis, and sampling strategies.
 """
 
 import functools
+import inspect
 import json
 import os
 from collections.abc import Callable
@@ -31,8 +32,8 @@ from effectful.handlers.llm.completions import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
+from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -55,9 +56,8 @@ requires_anthropic = pytest.mark.skipif(
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
+
 # ============================================================================
-
-
 # Test Fixtures and Mock Data
 # ============================================================================
 def retry_on_error(error: type[Exception], n: int):
@@ -245,29 +245,6 @@ class TestLiteLLMProvider:
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
-
-
-@pytest.mark.xfail(reason="Program synthesis not implemented")
-class TestProgramSynthesis:
-    """Tests for ProgramSynthesis handler functionality."""
-
-    @pytest.mark.xfail
-    @requires_openai
-    @retry_on_error(error=SynthesisError, n=3)
-    def test_generates_callable(self, request):
-        """Test ProgramSynthesis handler generates executable code."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            count_func = create_function("a")
-
-            assert callable(count_func)
-            # Test the generated function
-            assert count_func("banana") == 3
-            assert count_func("cherry") == 0
-            assert count_func("aardvark") == 3
 
 
 def smiley_face() -> Image.Image:
@@ -899,3 +876,184 @@ class TestErrorClasses:
             "fn", "id", ValueError("test"), raw_message={"role": "assistant"}
         )
         assert error_with_msg.raw_message is not None
+
+
+# ============================================================================
+# Callable Synthesis Tests
+# ============================================================================
+
+
+@Template.define
+def synthesize_adder() -> Callable[[int, int], int]:
+    """Generate a Python function that adds two integers together.
+
+    The function should take two integer parameters and return their sum.
+    """
+    raise NotHandled
+
+
+@Template.define
+def synthesize_string_processor() -> Callable[[str], str]:
+    """Generate a Python function that converts a string to uppercase
+    and adds exclamation marks at the end.
+    """
+    raise NotHandled
+
+
+@Template.define
+def synthesize_counter(char: str) -> Callable[[str], int]:
+    """Generate a Python function that counts occurrences of the character '{char}'
+    in a given input string.
+
+    The function should be case-sensitive.
+    """
+    raise NotHandled
+
+
+@Template.define
+def synthesize_is_even() -> Callable[[int], bool]:
+    """Generate a Python function that checks if a number is even.
+
+    Return True if the number is divisible by 2, False otherwise.
+    """
+    raise NotHandled
+
+
+@Template.define
+def synthesize_three_param_func() -> Callable[[int, int, int], int]:
+    """Generate a Python function that takes exactly three integer parameters
+    and returns their product (multiplication).
+    """
+    raise NotHandled
+
+
+class TestCallableSynthesis:
+    """Tests for synthesizing callable functions via LLM."""
+
+    @requires_openai
+    def test_synthesize_adder_function(self, request):
+        """Test that LLM can synthesize a simple addition function with correct signature."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            add_func = synthesize_adder()
+
+            assert callable(add_func)
+            assert add_func(2, 3) == 5
+            assert add_func(0, 0) == 0
+            assert add_func(-1, 1) == 0
+            assert add_func(100, 200) == 300
+
+    @requires_openai
+    def test_synthesize_string_processor(self, request):
+        """Test that LLM can synthesize a string processing function."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            process_func = synthesize_string_processor()
+
+            assert callable(process_func)
+            result = process_func("hello")
+            assert isinstance(result, str)
+            assert "HELLO" in result
+            assert "!" in result
+
+    @requires_openai
+    def test_synthesize_counter_with_parameter(self, request):
+        """Test that LLM can synthesize a parameterized counting function."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=3)),
+        ):
+            count_a = synthesize_counter("a")
+
+            assert callable(count_a)
+            assert count_a("banana") == 3
+            assert count_a("cherry") == 0
+            assert count_a("aardvark") == 3
+            assert count_a("AAA") == 0  # case-sensitive
+
+    @requires_openai
+    def test_callable_type_signature_in_schema(self, request):
+        """Test that the callable type signature is communicated to the LLM."""
+
+        # Verify that the enc type includes the signature in its docstring
+        encodable = Encodable.define(Callable[[int, int], int], {})
+        assert encodable.enc.__doc__ is not None
+        assert "Callable[[int, int], int]" in encodable.enc.__doc__
+
+        encodable2 = Encodable.define(Callable[[str], str], {})
+        assert encodable2.enc.__doc__ is not None
+        assert "Callable[[str], str]" in encodable2.enc.__doc__
+
+    @requires_openai
+    def test_synthesized_function_roundtrip(self, request):
+        """Test that a synthesized function can be encoded and decoded."""
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            # Synthesize a function
+            add_func = synthesize_adder()
+            assert callable(add_func)
+
+            # Encode it back to SynthesizedFunction
+            encodable = Encodable.define(Callable[[int, int], int], {})
+            encoded = encodable.encode(add_func)
+            assert isinstance(encoded, SynthesizedFunction)
+            assert "def " in encoded.module_code
+
+            # Decode it again and verify it still works
+            decoded = encodable.decode(encoded)
+            assert callable(decoded)
+            assert decoded(5, 7) == 12
+
+    @requires_openai
+    def test_synthesize_bool_return_type(self, request):
+        """Test that LLM respects bool return type in signature."""
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            is_even = synthesize_is_even()
+
+            assert callable(is_even)
+            # Verify return type annotation
+            sig = inspect.signature(is_even)
+            assert sig.return_annotation == bool
+
+            # Verify behavior
+            assert is_even(2) is True
+            assert is_even(3) is False
+            assert is_even(0) is True
+            assert is_even(-4) is True
+
+    @requires_openai
+    def test_synthesize_three_params(self, request):
+        """Test that LLM respects the exact number of parameters in signature."""
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            multiply_three = synthesize_three_param_func()
+
+            assert callable(multiply_three)
+            # Verify parameter count
+            sig = inspect.signature(multiply_three)
+            assert len(sig.parameters) == 3
+
+            # Verify behavior
+            assert multiply_three(2, 3, 4) == 24
+            assert multiply_three(1, 1, 1) == 1
+            assert multiply_three(5, 0, 10) == 0
