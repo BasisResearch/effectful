@@ -6,9 +6,8 @@ import pydantic
 import pytest
 from PIL import Image
 
-from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.handlers.llm.synthesis import SynthesizedFunction
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
