@@ -299,8 +299,9 @@ def _create_typed_synthesized_function(
 
 <instructions>
 1. Produce one block of Python code.
-2. Do not include usage examples.
-3. Your output function def must be the final statement in the code block.
+2. The function MUST have type annotations for all parameters and the return type.
+3. The function definition must be the LAST statement - do not add any code after it.
+4. Do not include usage examples or function calls.
 </instructions>
 """
 
@@ -331,9 +332,12 @@ def _validate_signature_ast(
 def _validate_signature_callable(
     func: Callable,
     expected_params: list[type] | None,
-    expected_return: type | None,
+    expected_return: type,
 ) -> None:
-    """Validate the function signature from runtime callable after execution."""
+    """Validate the function signature from runtime callable after execution.
+
+    The synthesized function must have type annotations for parameters and return type.
+    """
     sig = inspect.signature(func)
 
     if expected_params is not None:
@@ -344,16 +348,19 @@ def _validate_signature_callable(
                 f"got {len(actual_params)}"
             )
 
-    if expected_return is not None:
-        actual_return = sig.return_annotation
-        if actual_return is not inspect.Parameter.empty:
-            expected_name = getattr(expected_return, "__name__", str(expected_return))
-            actual_name = getattr(actual_return, "__name__", str(actual_return))
-            if expected_name != actual_name:
-                raise ValueError(
-                    f"decode() expected function with return type {expected_name}, "
-                    f"got {actual_name}"
-                )
+    actual_return = sig.return_annotation
+    if actual_return is inspect.Parameter.empty:
+        raise ValueError(
+            "decode() requires synthesized function to have a return type annotation"
+        )
+
+    expected_name = getattr(expected_return, "__name__", str(expected_return))
+    actual_name = getattr(actual_return, "__name__", str(actual_return))
+    if expected_name != actual_name:
+        raise ValueError(
+            f"decode() expected function with return type {expected_name}, "
+            f"got {actual_name}"
+        )
 
 
 @dataclass
@@ -368,6 +375,7 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         # (https://github.com/python/mypy/issues/14928)
         if not isinstance(t, Callable):  # type: ignore
             raise TypeError(f"Expected callable, got {type(t)}")
+
         try:
             source = inspect.getsource(t)
         except (OSError, TypeError):
@@ -426,7 +434,7 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
             )
 
         last_stmt = module.body[-1]
-        if not isinstance(last_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(last_stmt, ast.FunctionDef):
             raise ValueError(
                 f"decode() requires the last statement to be a function definition, "
                 f"got {type(last_stmt).__name__}"

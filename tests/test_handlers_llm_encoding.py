@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import NamedTuple, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 import pydantic
 import pytest
@@ -727,8 +728,6 @@ class TestCallableEncodable:
     """Tests for CallableEncodable - encoding/decoding callables as SynthesizedFunction."""
 
     def test_bare_callable_allows_encode_but_not_decode(self):
-        from collections.abc import Callable
-
         def add(a: int, b: int) -> int:
             return a + b
 
@@ -744,9 +743,6 @@ class TestCallableEncodable:
                 encodable.decode(encoded)
 
     def test_callable_with_any_return_allows_encode_but_not_decode(self):
-        from collections.abc import Callable
-        from typing import Any
-
         def add(a: int, b: int) -> int:
             return a + b
 
@@ -761,8 +757,6 @@ class TestCallableEncodable:
                 encodable.decode(encoded)
 
     def test_encode_decode_function(self):
-        from collections.abc import Callable
-
         def add(a: int, b: int) -> int:
             return a + b
 
@@ -780,14 +774,12 @@ class TestCallableEncodable:
         assert decoded.__name__ == "add"
 
     def test_decode_with_ellipsis_params(self):
-        from collections.abc import Callable
-
         # Callable[..., int] allows any params but validates return type
         encodable = Encodable.define(Callable[..., int], {})
 
-        # Test decoding a function - must end with function def
+        # Test decoding a function - must end with function def with return annotation
         func_source = SynthesizedFunction(
-            module_code="def double(x):\n    return x * 2"
+            module_code="def double(x) -> int:\n    return x * 2"
         )
         with handler(UnsafeEvalProvider()):
             decoded = encodable.decode(func_source)
@@ -795,12 +787,10 @@ class TestCallableEncodable:
         assert decoded(5) == 10
 
     def test_decode_with_env(self):
-        from collections.abc import Callable
-
         # Test decoding a function that uses env variables
         encodable = Encodable.define(Callable[..., int], {"factor": 3})
         source = SynthesizedFunction(
-            module_code="""def multiply(x):
+            module_code="""def multiply(x) -> int:
     return x * factor"""
         )
 
@@ -810,15 +800,11 @@ class TestCallableEncodable:
         assert decoded(4) == 12
 
     def test_encode_non_callable_raises(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
         with pytest.raises(TypeError, match="Expected callable"):
             encodable.encode("not a callable")
 
     def test_encode_builtin_creates_stub(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
         # Built-in functions don't have source code but have docstrings
         encoded = encodable.encode(len)
@@ -828,8 +814,6 @@ class TestCallableEncodable:
         assert "..." in encoded.module_code  # stub body
 
     def test_encode_builtin_no_docstring_raises(self):
-        from collections.abc import Callable
-
         # Create a callable without source and without docstring
         class NoDocCallable:
             __name__ = "nodoc"
@@ -843,8 +827,6 @@ class TestCallableEncodable:
             encodable.encode(NoDocCallable())
 
     def test_decode_no_function_at_end_raises(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
         # Source code where last statement is not a function definition
         source = SynthesizedFunction(module_code="x = 42")
@@ -855,15 +837,13 @@ class TestCallableEncodable:
                 encodable.decode(source)
 
     def test_decode_multiple_functions_uses_last(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
         # Source code that defines multiple functions - should use the last one
         source = SynthesizedFunction(
-            module_code="""def foo():
+            module_code="""def foo() -> int:
     return 1
 
-def bar():
+def bar() -> int:
     return 2"""
         )
         with handler(UnsafeEvalProvider()):
@@ -873,8 +853,6 @@ def bar():
         assert decoded() == 2
 
     def test_decode_class_raises(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
         # Classes are callable but the last statement must be a function definition
         source = SynthesizedFunction(
@@ -893,8 +871,6 @@ def bar():
                 encodable.decode(source)
 
     def test_roundtrip(self):
-        from collections.abc import Callable
-
         def greet(name: str) -> str:
             return f"Hello, {name}!"
 
@@ -908,8 +884,6 @@ def bar():
         assert decoded.__name__ == "greet"
 
     def test_serialize_deserialize(self):
-        from collections.abc import Callable
-
         def add(a: int, b: int) -> int:
             return a + b
 
@@ -928,8 +902,6 @@ def bar():
         assert "def add" in deserialized.module_code
 
     def test_decode_validates_last_statement(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[..., int], {})
 
         # Helper function followed by assignment - should fail
@@ -946,8 +918,6 @@ result = helper()"""
                 encodable.decode(source)
 
     def test_typed_callable_includes_signature_in_docstring(self):
-        from collections.abc import Callable
-
         # Test that the enc type has the signature in its docstring
         encodable = Encodable.define(Callable[[int, int], int], {})
         assert encodable.enc.__doc__ is not None
@@ -955,8 +925,6 @@ result = helper()"""
         assert "<signature>" in encodable.enc.__doc__
 
     def test_typed_callable_validates_param_count(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[[int, int], int], {})
 
         # Function with wrong number of parameters
@@ -969,8 +937,6 @@ result = helper()"""
                 encodable.decode(source)
 
     def test_typed_callable_validates_return_type(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[[int, int], int], {})
 
         # Function with wrong return type
@@ -982,9 +948,22 @@ result = helper()"""
             with handler(UnsafeEvalProvider()):
                 encodable.decode(source)
 
-    def test_typed_callable_accepts_correct_signature(self):
-        from collections.abc import Callable
+    def test_typed_callable_requires_return_annotation(self):
+        encodable = Encodable.define(Callable[[int, int], int], {})
 
+        # Function missing return type annotation
+        source = SynthesizedFunction(
+            module_code="""def add(a: int, b: int):
+    return a + b"""
+        )
+        with pytest.raises(
+            ValueError,
+            match="requires synthesized function to have a return type annotation",
+        ):
+            with handler(UnsafeEvalProvider()):
+                encodable.decode(source)
+
+    def test_typed_callable_accepts_correct_signature(self):
         encodable = Encodable.define(Callable[[int, int], int], {})
 
         # Function with correct signature
@@ -998,8 +977,6 @@ result = helper()"""
         assert result(2, 3) == 5
 
     def test_ellipsis_callable_skips_param_validation(self):
-        from collections.abc import Callable
-
         # Callable[..., int] should skip param validation but still validate return
         encodable = Encodable.define(Callable[..., int], {})
 
@@ -1013,8 +990,6 @@ result = helper()"""
         assert result(1, 2, 3, 4, 5) == 42
 
     def test_typed_callable_json_schema_includes_signature(self):
-        from collections.abc import Callable
-
         # Test that the JSON schema includes the type signature for the LLM
         encodable = Encodable.define(Callable[[int, int], int], {})
 
@@ -1028,8 +1003,6 @@ result = helper()"""
         assert "<instructions>" in schema["description"]
 
     def test_typed_callable_json_schema_different_signatures(self):
-        from collections.abc import Callable
-
         # Test that different type signatures produce different schemas
         enc1 = Encodable.define(Callable[[str], str], {})
         enc2 = Encodable.define(Callable[[int, int, int], bool], {})
@@ -1041,8 +1014,6 @@ result = helper()"""
         assert "Callable[[int, int, int], bool]" in schema2["description"]
 
     def test_validates_param_count_via_ast(self):
-        from collections.abc import Callable
-
         # Test that param validation happens via AST analysis
         encodable = Encodable.define(Callable[[int, int], int], {})
 
@@ -1056,8 +1027,6 @@ result = helper()"""
                 encodable.decode(source)
 
     def test_validates_param_count_zero_params(self):
-        from collections.abc import Callable
-
         # Test callable with no params
         encodable = Encodable.define(Callable[[], int], {})
 
@@ -1071,8 +1040,6 @@ result = helper()"""
                 encodable.decode(source)
 
     def test_validates_accepts_zero_params(self):
-        from collections.abc import Callable
-
         # Test callable with no params - correct signature
         encodable = Encodable.define(Callable[[], int], {})
 
@@ -1086,8 +1053,6 @@ result = helper()"""
         assert result() == 42
 
     def test_ellipsis_callable_json_schema_includes_signature(self):
-        from collections.abc import Callable
-
         # Test that Callable[..., int] has signature in schema
         encodable = Encodable.define(Callable[..., int], {})
 
@@ -1097,8 +1062,6 @@ result = helper()"""
         assert "<signature>" in schema["description"]
 
     def test_ellipsis_callable_validates_return_type(self):
-        from collections.abc import Callable
-
         # Callable[..., int] should still validate return type
         encodable = Encodable.define(Callable[..., int], {})
 
@@ -1111,8 +1074,6 @@ result = helper()"""
                 encodable.decode(source)
 
     def test_callable_with_single_param(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[[str], int], {})
 
         source = SynthesizedFunction(
@@ -1125,8 +1086,6 @@ result = helper()"""
         assert result("hello") == 5
 
     def test_callable_with_many_params(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[[int, int, int, int], int], {})
 
         source = SynthesizedFunction(
@@ -1139,8 +1098,6 @@ result = helper()"""
         assert result(1, 2, 3, 4) == 10
 
     def test_callable_with_bool_return(self):
-        from collections.abc import Callable
-
         encodable = Encodable.define(Callable[[int], bool], {})
 
         source = SynthesizedFunction(
@@ -1154,9 +1111,6 @@ result = helper()"""
         assert result(-1) is False
 
     def test_callable_type_variations_schema(self):
-        from collections.abc import Callable
-        from typing import Any
-
         # Test various callable type variations have correct schemas
         test_cases = [
             (Callable[[], int], "Callable[[], int]"),
