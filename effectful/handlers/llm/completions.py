@@ -51,6 +51,20 @@ class ToolCallDecodingError(Exception):
     def __str__(self) -> str:
         return f"Error decoding tool call '{self.tool_name}': {self.original_error}. Please provide a valid response and try again."
 
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        error_message = f"{self}"
+        if include_traceback:
+            tb = traceback.format_exc()
+            error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
+        return typing.cast(
+            Message,
+            {
+                "role": "tool",
+                "tool_call_id": self.tool_call_id,
+                "content": error_message,
+            },
+        )
+
 
 @dataclasses.dataclass
 class ResultDecodingError(Exception):
@@ -62,15 +76,43 @@ class ResultDecodingError(Exception):
     def __str__(self) -> str:
         return f"Error decoding response: {self.original_error}. Please provide a valid response and try again."
 
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        error_message = f"{self}"
+        if include_traceback:
+            tb = traceback.format_exc()
+            error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
+        return typing.cast(
+            Message,
+            {
+                "role": "user",
+                "content": error_message,
+            },
+        )
+
 
 @dataclasses.dataclass
 class ToolCallExecutionError(Exception):
+    """Error raised when a tool execution fails at runtime."""
+
     tool_name: str
-    e: Exception
+    tool_call_id: str
+    original_error: Exception
 
     def __str__(self) -> str:
-        return (
-            f"Tool execution failed: Error executing tool '{self.tool_name}': {self.e}"
+        return f"Tool execution failed: Error executing tool '{self.tool_name}': {self.original_error}"
+
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        error_message = f"{self}"
+        if include_traceback:
+            tb = traceback.format_exc()
+            error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
+        return typing.cast(
+            Message,
+            {
+                "role": "tool",
+                "tool_call_id": self.tool_call_id,
+                "content": error_message,
+            },
         )
 
 
@@ -333,13 +375,6 @@ class RetryLLMHandler(ObjectInterpretation):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
 
-    def _format_error(self, error: Exception) -> str:
-        """Format an error message, optionally including traceback."""
-        if self.include_traceback:
-            tb = traceback.format_exc()
-            return f"{error}\n\nTraceback:\n```\n{tb}```"
-        return f"{error}"
-
     @implements(call_assistant)
     def _call_assistant[T, U](
         self,
@@ -363,7 +398,7 @@ class RetryLLMHandler(ObjectInterpretation):
                 # not in the returned result.
                 return (message, tool_calls, result)
 
-            except ToolCallDecodingError as e:
+            except (ToolCallDecodingError, ResultDecodingError) as e:
                 # On last attempt, re-raise to preserve full traceback
                 if attempt == last_attempt:
                     raise
@@ -372,32 +407,8 @@ class RetryLLMHandler(ObjectInterpretation):
                 messages_list.append(e.raw_message)
 
                 # Add error feedback as a tool response
-                error_feedback: Message = typing.cast(
-                    Message,
-                    {
-                        "role": "tool",
-                        "tool_call_id": e.tool_call_id,
-                        "content": self._format_error(e),
-                    },
-                )
+                error_feedback: Message = e.to_feedback_message(self.include_traceback)
                 messages_list.append(error_feedback)
-
-            except ResultDecodingError as e:
-                # On last attempt, re-raise to preserve full traceback
-                if attempt == last_attempt:
-                    raise
-
-                # Add the malformed assistant message
-                messages_list.append(e.raw_message)
-                # Add error feedback as a user message
-                result_error_feedback: Message = typing.cast(
-                    Message,
-                    {
-                        "role": "user",
-                        "content": self._format_error(e),
-                    },
-                )
-                messages_list.append(result_error_feedback)
 
         # Should never reach here - either we return on success or raise on final failure
         raise AssertionError("Unreachable: retry loop exited without return or raise")
@@ -417,16 +428,8 @@ class RetryLLMHandler(ObjectInterpretation):
         try:
             return fwd(tool_call)
         except Exception as e:
-            return typing.cast(
-                Message,
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": self._format_error(
-                        ToolCallExecutionError(f"{tool_call.tool.__name__}", e)
-                    ),
-                },
-            )
+            error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
+            return error.to_feedback_message(self.include_traceback)
 
 
 class LiteLLMProvider(ObjectInterpretation):
