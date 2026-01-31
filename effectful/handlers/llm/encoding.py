@@ -3,6 +3,7 @@ import base64
 import inspect
 import io
 import textwrap
+import types
 import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
@@ -593,16 +594,14 @@ def _encodable_callable(
 ) -> Encodable[Callable, SynthesizedFunction]:
     ctx = ctx or {}
 
-    # Extract type args - Callable requires a type signature
     type_args = typing.get_args(ty)
 
-    # Handle bare Callable without type args - allow encoding but disable decode
-    # this occurs when encoding Tools which return callable (need to Encodable.define(return_type) for return type)
+    # Bare Callable without type args - allow encoding but disable decode
+    # this occurs when decoding the result of Tools which return callable (need to Encodable.define(return_type) for return type)
     if not type_args:
+        assert ty is types.FunctionType, f"Callable must have type signatures {ty}"
         typed_enc = _create_typed_synthesized_function(Callable[..., typing.Any])  # type: ignore[arg-type]
-        return CallableEncodable(
-            ty, typed_enc, ctx, expected_params=None, expected_return=None
-        )
+        return CallableEncodable(ty, typed_enc, ctx)
 
     if len(type_args) < 2:
         raise TypeError(
@@ -610,31 +609,13 @@ def _encodable_callable(
             "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
         )
 
-    # Extract param and return types for validation
-    param_types = type_args[0]
-    expected_return: type | None = type_args[-1]
+    param_types, expected_return = type_args[0], type_args[-1]
 
-    # Handle Any as return type - allow encoding but disable decode
-    # Any doesn't provide useful information for synthesis (expected_return=None)
-    if expected_return is typing.Any:
-        typed_enc = _create_typed_synthesized_function(ty)
-        return CallableEncodable(
-            ty, typed_enc, ctx, expected_params=None, expected_return=None
-        )
-
-    # Create a typed SynthesizedFunction model with the type signature in the description
     typed_enc = _create_typed_synthesized_function(ty)
 
-    # Handle Callable[..., ReturnType] - ellipsis means any params, skip param validation
+    # Ellipsis means any params, skip param validation
     expected_params: list[type] | None = None
-    if param_types is not ...:
-        if isinstance(param_types, (list, tuple)):
-            expected_params = list(param_types)
+    if param_types is not ... and isinstance(param_types, (list, tuple)):
+        expected_params = list(param_types)
 
-    return CallableEncodable(
-        ty,
-        typed_enc,
-        ctx,
-        expected_params=expected_params,
-        expected_return=expected_return,
-    )
+    return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)

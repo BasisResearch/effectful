@@ -742,20 +742,6 @@ class TestCallableEncodable:
             with handler(UnsafeEvalProvider()):
                 encodable.decode(encoded)
 
-    def test_callable_with_any_return_allows_encode_but_not_decode(self):
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        # Callable[..., Any] allows encoding
-        encodable = Encodable.define(Callable[..., Any], {})
-        encoded = encodable.encode(add)
-        assert isinstance(encoded, SynthesizedFunction)
-
-        # But decode is disabled
-        with pytest.raises(TypeError, match="Cannot decode/synthesize callable"):
-            with handler(UnsafeEvalProvider()):
-                encodable.decode(encoded)
-
     def test_encode_decode_function(self):
         def add(a: int, b: int) -> int:
             return a + b
