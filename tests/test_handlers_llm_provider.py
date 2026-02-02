@@ -1082,12 +1082,12 @@ class TestMessageSequence:
         provider = MessageSequence()
 
         # Pre-populate the current frame with existing messages
-        provider.message_sequence_stack[-1]["msg_1"] = {
+        provider.message_sequence["msg_1"] = {
             "id": "msg_1",
             "role": "user",
             "content": "hello",
         }
-        provider.message_sequence_stack[-1]["msg_2"] = {
+        provider.message_sequence["msg_2"] = {
             "id": "msg_2",
             "role": "assistant",
             "content": "hi",
@@ -1099,8 +1099,7 @@ class TestMessageSequence:
             @implements(call_tool)
             def _call_tool(self_, tool_call):
                 # Capture the state of the message sequence stack during execution
-                captured["top_frame"] = dict(provider.message_sequence_stack[-1])
-                captured["stack_depth"] = len(provider.message_sequence_stack)
+                captured["top_frame"] = dict(provider.message_sequence)
                 return {
                     "id": "tool_msg",
                     "role": "tool",
@@ -1117,13 +1116,8 @@ class TestMessageSequence:
         with handler(InnerToolHandler()), handler(provider):
             call_tool(mock_tool_call)
 
-        # During tool execution, the top frame should be fresh (empty)
-        assert captured["top_frame"] == {}
-        assert captured["stack_depth"] == 2  # original frame + fresh frame
-
         # After completion, fresh frame is popped and tool message is in parent frame
-        assert len(provider.message_sequence_stack) == 1
-        assert "tool_msg" in provider.message_sequence_stack[-1]
+        assert "tool_msg" in provider.message_sequence
 
     def test_call_assistant_no_duplicate_messages(self):
         """call_assistant should prepend unseen frame messages without duplicating those already in input."""
@@ -1167,7 +1161,7 @@ class TestMessageSequence:
         provider = MessageSequence()
 
         msg_user = {"id": "msg_user", "role": "user", "content": "hello"}
-        provider.message_sequence_stack[-1]["msg_user"] = msg_user
+        provider.message_sequence["msg_user"] = msg_user
 
         call_log = []
 
@@ -1223,7 +1217,7 @@ class TestMessageSequence:
                 raise RuntimeError("LLM call failed")
 
         msg = {"id": "input_msg", "role": "user", "content": "hello"}
-        frame_snapshot = dict(provider.message_sequence_stack[-1])
+        frame_snapshot = dict(provider.message_sequence)
 
         with pytest.raises(RuntimeError, match="LLM call failed"):
             with handler(FailingAssistantHandler()), handler(provider):
@@ -1235,7 +1229,7 @@ class TestMessageSequence:
                 )
 
         # Frame should be unchanged — no response message was saved
-        assert dict(provider.message_sequence_stack[-1]) == frame_snapshot
+        assert dict(provider.message_sequence) == frame_snapshot
 
 
 @Template.define
