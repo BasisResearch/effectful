@@ -459,12 +459,56 @@ class RetryLLMHandler(ObjectInterpretation):
             return error.to_feedback_message(self.include_traceback)
 
 
-class LiteLLMProvider(ObjectInterpretation):
+class LLMMessageSequenceProvider(ObjectInterpretation):
+    message_sequence_stack: list[collections.OrderedDict[str, Message]]
+
+    def __init__(self):
+        self.message_sequence_stack = [collections.OrderedDict()]
+
+    @implements(call_tool)
+    def _call_tool(self, *args, **kwargs):
+        self.message_sequence_stack.append(collections.OrderedDict())
+        message = fwd()
+        self.message_sequence_stack.pop()
+        self.message_sequence_stack[-1][message["id"]] = message
+        return message
+
+    @implements(call_user)
+    def _call_user(self, *args, **kwargs):
+        messages = fwd()
+        for message in messages:
+            self.message_sequence_stack[-1][message["id"]] = message
+        return messages
+
+    @implements(call_system)
+    def _call_system(self, *args, **kwargs):
+        messages = fwd()
+        for message in messages:
+            self.message_sequence_stack[-1][message["id"]] = message
+        return messages
+
+    @implements(call_assistant)
+    def _call_assistant(
+        self, messages: collections.abc.Sequence[Message], *args, **kwargs
+    ):
+        msg_list = list(messages)
+        seen_ids = {m["id"] for m in msg_list}
+
+        frame = self.message_sequence_stack[-1]
+        prefix = [m for msg_id, m in frame.items() if msg_id not in seen_ids]
+
+        message, tool_calls, result = fwd(prefix + msg_list, *args, **kwargs)
+        frame[message["id"]] = message
+        return message, tool_calls, result
+
+
+class LiteLLMProvider(LLMMessageSequenceProvider):
     """Implements templates using the LiteLLM API."""
 
     config: collections.abc.Mapping[str, typing.Any]
 
     def __init__(self, model="gpt-4o", **config):
+        super().__init__()
         self.config = {
             "model": model,
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
@@ -474,7 +518,7 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        messages: list[Message] = [*call_system(template)]
+        self.message_sequence_stack.append(collections.OrderedDict())
 
         # encode arguments
         bound_args = inspect.signature(template).bind(*args, **kwargs)
@@ -485,24 +529,22 @@ class LiteLLMProvider(ObjectInterpretation):
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
         user_messages: list[Message] = call_user(template.__prompt_template__, env)
-        messages.extend(user_messages)
 
         # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
         tool_calls: list[DecodedToolCall] = []
 
-        message = messages[-1]
+        message = user_messages[-1]
         result: T | None = None
         while message["role"] != "assistant" or tool_calls:
             message, tool_calls, result = call_assistant(
-                messages, template.tools, response_model, **self.config
+                [message], template.tools, response_model, **self.config
             )
-            messages.append(message)
             for tool_call in tool_calls:
                 message = call_tool(tool_call)
-                messages.append(message)
 
         assert result is not None, (
             "call_assistant did not produce a result nor tool_calls"
         )
-        # return response
+
+        self.message_sequence_stack.pop()
         return result

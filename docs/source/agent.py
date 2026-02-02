@@ -1,11 +1,11 @@
 import functools
+from collections import OrderedDict
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     Message,
     call_assistant,
-    call_user,
 )
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import defop
@@ -13,8 +13,10 @@ from effectful.ops.types import NotHandled
 
 
 class Agent:
+    state: OrderedDict[str, Message]
+
     def __init__(self):
-        self.state = []  # persist the list of messages
+        self.state = OrderedDict()  # persist the list of messages
 
     @defop
     @staticmethod
@@ -32,28 +34,26 @@ class Agent:
                 with handler(
                     {
                         Agent.current_agent: lambda: self,
-                        call_user: self._format_model_input,
-                        call_assistant: self._compute_response,
+                        call_assistant: self._call_assistant,
                     }
                 ):
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
 
-    def _format_model_input(self, template, env):
-        # update prompt with previous list of messages
-        prompt = fwd()
-        if Agent.current_agent() is self:
-            self.state.extend(prompt)
-            prompt = self.state
-        return prompt
+    def _call_assistant(self, messages: list[Message], *args, **kwargs):
+        for message in messages:
+            self.state[message["id"]] = message
 
-    def _compute_response(self, *args, **kwargs):
-        # save response into persisted state
-        response: Message = fwd()
-        if Agent.current_agent() is self:
-            self.state.append(response)
-        return response
+        if Agent.current_agent() is not self:
+            return fwd()
+
+        # update state with message sequence
+        response, tool_calls, result = fwd(list(self.state.values()), *args, **kwargs)
+
+        self.state[response["id"]] = response
+
+        return response, tool_calls, result
 
 
 if __name__ == "__main__":
