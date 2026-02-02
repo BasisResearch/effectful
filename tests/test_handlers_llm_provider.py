@@ -1236,3 +1236,74 @@ class TestLLMMessageSequenceProvider:
 
         # Frame should be unchanged — no response message was saved
         assert dict(provider.message_sequence_stack[-1]) == frame_snapshot
+
+
+@Template.define
+def compute_sum(a: int, b: int) -> int:
+    """Compute the sum of {a} and {b}.
+
+    You MUST use the add_numbers tool to compute the result.
+    Do NOT compute the sum yourself.
+    After getting the result from add_numbers, return it.
+    """
+    raise NotHandled
+
+
+class MessageSequenceTracker(ObjectInterpretation):
+    """Intercepts call_assistant to record message IDs forwarded by the provider."""
+
+    def __init__(self):
+        self.call_log: list[list[str]] = []
+
+    @implements(call_assistant)
+    def _call_assistant(self, messages, *args, **kwargs):
+        self.call_log.append([m["id"] for m in messages])
+        return fwd()
+
+
+class TestMessageSequenceReplay:
+    """Fixture-based tests verifying message sequence invariants through the full provider stack."""
+
+    @requires_openai
+    def test_simple_prompt_unique_message_ids(self, request):
+        """A no-tool prompt should produce a single call_assistant with unique message IDs."""
+        tracker = MessageSequenceTracker()
+        with (
+            handler(tracker),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            result = simple_prompt("testing")
+
+        assert isinstance(result, str)
+        assert len(tracker.call_log) == 1
+        ids = tracker.call_log[0]
+        assert len(ids) == len(set(ids)), "message IDs should be unique"
+
+    @requires_openai
+    def test_tool_calling_no_duplicate_message_ids(self, request):
+        """Tool-calling prompts should accumulate messages without duplicates across calls."""
+        tracker = MessageSequenceTracker()
+
+        with (
+            handler(tracker),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            result = compute_sum(3, 5)
+
+        assert result == 8
+        assert len(tracker.call_log) >= 2  # at least: tool call round + final answer
+
+        for i, ids in enumerate(tracker.call_log):
+            assert len(ids) == len(set(ids)), (
+                f"call_assistant invocation {i} has duplicate message IDs: {ids}"
+            )
+
+        # Each successive call should include all previous messages plus new ones
+        for i in range(1, len(tracker.call_log)):
+            prev_set = set(tracker.call_log[i - 1])
+            curr_set = set(tracker.call_log[i])
+            assert prev_set < curr_set, (
+                f"call {i} messages should be a strict superset of call {i - 1}"
+            )
