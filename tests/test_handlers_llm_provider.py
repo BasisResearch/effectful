@@ -24,6 +24,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LiteLLMProvider,
+    LLMMessageSequenceProvider,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -1071,3 +1072,167 @@ class TestCallableSynthesis:
             assert multiply_three(2, 3, 4) == 24
             assert multiply_three(1, 1, 1) == 1
             assert multiply_three(5, 0, 10) == 0
+
+
+class TestLLMMessageSequenceProvider:
+    """Tests for LLMMessageSequenceProvider message sequence tracking."""
+
+    def test_call_tool_fresh_message_sequence(self):
+        """call_tool should push a fresh message sequence frame, isolating tool execution."""
+        provider = LLMMessageSequenceProvider()
+
+        # Pre-populate the current frame with existing messages
+        provider.message_sequence_stack[-1]["msg_1"] = {
+            "id": "msg_1",
+            "role": "user",
+            "content": "hello",
+        }
+        provider.message_sequence_stack[-1]["msg_2"] = {
+            "id": "msg_2",
+            "role": "assistant",
+            "content": "hi",
+        }
+
+        captured = {}
+
+        class InnerToolHandler(ObjectInterpretation):
+            @implements(call_tool)
+            def _call_tool(self_, tool_call):
+                # Capture the state of the message sequence stack during execution
+                captured["top_frame"] = dict(provider.message_sequence_stack[-1])
+                captured["stack_depth"] = len(provider.message_sequence_stack)
+                return {
+                    "id": "tool_msg",
+                    "role": "tool",
+                    "content": "42",
+                    "tool_call_id": tool_call.id,
+                }
+
+        mock_tool_call = DecodedToolCall(
+            tool=add_numbers,
+            bound_args=inspect.signature(add_numbers).bind(1, 2),
+            id="tc_1",
+        )
+
+        with handler(InnerToolHandler()), handler(provider):
+            call_tool(mock_tool_call)
+
+        # During tool execution, the top frame should be fresh (empty)
+        assert captured["top_frame"] == {}
+        assert captured["stack_depth"] == 2  # original frame + fresh frame
+
+        # After completion, fresh frame is popped and tool message is in parent frame
+        assert len(provider.message_sequence_stack) == 1
+        assert "tool_msg" in provider.message_sequence_stack[-1]
+
+    def test_call_assistant_no_duplicate_messages(self):
+        """call_assistant should prepend unseen frame messages without duplicating those already in input."""
+        provider = LLMMessageSequenceProvider()
+
+        # Pre-populate frame with two messages
+        msg_a = {"id": "msg_a", "role": "user", "content": "hello"}
+        msg_b = {"id": "msg_b", "role": "assistant", "content": "hi"}
+        provider.message_sequence_stack[-1]["msg_a"] = msg_a
+        provider.message_sequence_stack[-1]["msg_b"] = msg_b
+
+        captured_messages = []
+
+        class InnerAssistantHandler(ObjectInterpretation):
+            @implements(call_assistant)
+            def _call_assistant(self_, messages, *args, **kwargs):
+                captured_messages.extend(list(messages))
+                response = {
+                    "id": "response_1",
+                    "role": "assistant",
+                    "content": "result",
+                }
+                return response, [], "result_value"
+
+        # Call with msg_b already in the input — it should not appear twice
+        with handler(InnerAssistantHandler()), handler(provider):
+            call_assistant(
+                messages=[msg_b],
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # Forwarded messages should be [msg_a (prefix), msg_b (input)] — no duplicates
+        ids = [m["id"] for m in captured_messages]
+        assert ids == ["msg_a", "msg_b"]
+        assert len(ids) == len(set(ids))
+
+    def test_call_assistant_no_duplicates_across_multiple_calls(self):
+        """Calling call_assistant multiple times should never produce duplicate messages."""
+        provider = LLMMessageSequenceProvider()
+
+        msg_user = {"id": "msg_user", "role": "user", "content": "hello"}
+        provider.message_sequence_stack[-1]["msg_user"] = msg_user
+
+        call_log = []
+
+        class InnerAssistantHandler(ObjectInterpretation):
+            call_count = 0
+
+            @implements(call_assistant)
+            def _call_assistant(self_, messages, *args, **kwargs):
+                call_log.append([m["id"] for m in messages])
+                self_.call_count += 1
+                response = {
+                    "id": f"resp_{self_.call_count}",
+                    "role": "assistant",
+                    "content": f"response {self_.call_count}",
+                }
+                return response, [], f"result_{self_.call_count}"
+
+        inner = InnerAssistantHandler()
+
+        with handler(inner), handler(provider):
+            # First call: input is the latest message (msg_user)
+            resp1, _, _ = call_assistant(
+                messages=[msg_user],
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+            # Second call: input is the first response
+            resp2, _, _ = call_assistant(
+                messages=[resp1],
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # First call: prefix=[] + input=[msg_user]
+        assert call_log[0] == ["msg_user"]
+
+        # Second call: prefix=[msg_user] + input=[resp_1]
+        # msg_user is in the frame but not in the input, so it appears as prefix
+        # resp_1 is in both the frame and the input, so it's NOT duplicated
+        assert call_log[1] == ["msg_user", "resp_1"]
+        assert len(call_log[1]) == len(set(call_log[1]))
+
+    def test_call_assistant_saves_only_on_successful_fwd(self):
+        """call_assistant should only save the response message to the frame when fwd() succeeds."""
+        provider = LLMMessageSequenceProvider()
+
+        class FailingAssistantHandler(ObjectInterpretation):
+            @implements(call_assistant)
+            def _call_assistant(self_, messages, *args, **kwargs):
+                raise RuntimeError("LLM call failed")
+
+        msg = {"id": "input_msg", "role": "user", "content": "hello"}
+        frame_snapshot = dict(provider.message_sequence_stack[-1])
+
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            with handler(FailingAssistantHandler()), handler(provider):
+                call_assistant(
+                    messages=[msg],
+                    tools={},
+                    response_format=Encodable.define(str),
+                    model="test-model",
+                )
+
+        # Frame should be unchanged — no response message was saved
+        assert dict(provider.message_sequence_stack[-1]) == frame_snapshot
