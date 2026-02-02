@@ -7,7 +7,7 @@ from effectful.handlers.llm.completions import (
     Message,
     MessageSequence,
 )
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
 
@@ -29,19 +29,6 @@ class Agent:
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
-
-    def _call_assistant(self, messages: list[Message], *args, **kwargs):
-        for message in messages:
-            self.__history__[message["id"]] = message
-
-        # update state with message sequence
-        response, tool_calls, result = fwd(
-            list(self.__history__.values()), *args, **kwargs
-        )
-
-        self.__history__[response["id"]] = response
-
-        return response, tool_calls, result
 
 
 if __name__ == "__main__":
