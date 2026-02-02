@@ -5,10 +5,9 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     Message,
-    call_assistant,
+    MessageSequence,
 )
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled
 
 
@@ -18,11 +17,6 @@ class Agent:
     def __init__(self):
         self.state = OrderedDict()  # persist the list of messages
 
-    @defop
-    @staticmethod
-    def current_agent() -> "Agent | None":
-        return None
-
     def __init_subclass__(cls):
         for method_name in dir(cls):
             template = getattr(cls, method_name)
@@ -31,12 +25,7 @@ class Agent:
 
             @functools.wraps(template)
             def wrapper(self, *args, **kwargs):
-                with handler(
-                    {
-                        Agent.current_agent: lambda: self,
-                        call_assistant: self._call_assistant,
-                    }
-                ):
+                with handler(MessageSequence(self.state)):
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
@@ -44,9 +33,6 @@ class Agent:
     def _call_assistant(self, messages: list[Message], *args, **kwargs):
         for message in messages:
             self.state[message["id"]] = message
-
-        if Agent.current_agent() is not self:
-            return fwd()
 
         # update state with message sequence
         response, tool_calls, result = fwd(list(self.state.values()), *args, **kwargs)

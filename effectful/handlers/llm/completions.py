@@ -462,8 +462,12 @@ class RetryLLMHandler(ObjectInterpretation):
 class MessageSequence(ObjectInterpretation):
     message_sequence: collections.OrderedDict[str, Message]
 
-    def __init__(self):
-        self.message_sequence = collections.OrderedDict()
+    def __init__(
+        self, message_sequence: collections.OrderedDict[str, Message] | None = None
+    ):
+        self.message_sequence = (
+            collections.OrderedDict() if message_sequence is None else message_sequence
+        )
 
     @implements(call_tool)
     def _call_tool(self, *args, **kwargs):
