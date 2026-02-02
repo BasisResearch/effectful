@@ -29,13 +29,28 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
-Message = (
-    OpenAIChatCompletionAssistantMessage
-    | ChatCompletionToolMessage
-    | ChatCompletionFunctionMessage
-    | OpenAIChatCompletionSystemMessage
-    | OpenAIChatCompletionUserMessage
-)
+
+class AssistantMessage(OpenAIChatCompletionAssistantMessage, total=False):
+    id: str
+
+
+class ToolMessage(ChatCompletionToolMessage, total=False):
+    id: str
+
+
+class FunctionMessage(ChatCompletionFunctionMessage, total=False):
+    id: str
+
+
+class SystemMessage(OpenAIChatCompletionSystemMessage, total=False):
+    id: str
+
+
+class UserMessage(OpenAIChatCompletionUserMessage, total=False):
+    id: str
+
+
+Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
 def _make_message(content: dict) -> Message:
