@@ -12,10 +12,10 @@ from effectful.ops.types import NotHandled
 
 
 class Agent:
-    state: OrderedDict[str, Message]
+    __history__: OrderedDict[str, Message]
 
     def __init__(self):
-        self.state = OrderedDict()  # persist the list of messages
+        self.__history__ = OrderedDict()  # persist the list of messages
 
     def __init_subclass__(cls):
         for method_name in dir(cls):
@@ -32,12 +32,14 @@ class Agent:
 
     def _call_assistant(self, messages: list[Message], *args, **kwargs):
         for message in messages:
-            self.state[message["id"]] = message
+            self.__history__[message["id"]] = message
 
         # update state with message sequence
-        response, tool_calls, result = fwd(list(self.state.values()), *args, **kwargs)
+        response, tool_calls, result = fwd(
+            list(self.__history__.values()), *args, **kwargs
+        )
 
-        self.state[response["id"]] = response
+        self.__history__[response["id"]] = response
 
         return response, tool_calls, result
 
