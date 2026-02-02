@@ -30,24 +30,28 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
-class AssistantMessage(OpenAIChatCompletionAssistantMessage, total=False):
+class MessageID(typing.TypedDict, total=False):
     id: str
 
 
-class ToolMessage(ChatCompletionToolMessage, total=False):
-    id: str
+class AssistantMessage(OpenAIChatCompletionAssistantMessage, MessageID):
+    pass
 
 
-class FunctionMessage(ChatCompletionFunctionMessage, total=False):
-    id: str
+class ToolMessage(ChatCompletionToolMessage, MessageID):
+    pass
 
 
-class SystemMessage(OpenAIChatCompletionSystemMessage, total=False):
-    id: str
+class FunctionMessage(ChatCompletionFunctionMessage, MessageID):
+    pass
 
 
-class UserMessage(OpenAIChatCompletionUserMessage, total=False):
-    id: str
+class SystemMessage(OpenAIChatCompletionSystemMessage, MessageID):
+    pass
+
+
+class UserMessage(OpenAIChatCompletionUserMessage, MessageID):
+    pass
 
 
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
