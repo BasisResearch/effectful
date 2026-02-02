@@ -24,7 +24,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LiteLLMProvider,
-    LLMMessageSequenceProvider,
+    MessageSequence,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -1074,12 +1074,12 @@ class TestCallableSynthesis:
             assert multiply_three(5, 0, 10) == 0
 
 
-class TestLLMMessageSequenceProvider:
-    """Tests for LLMMessageSequenceProvider message sequence tracking."""
+class TestMessageSequence:
+    """Tests for MessageSequence message sequence tracking."""
 
     def test_call_tool_fresh_message_sequence(self):
         """call_tool should push a fresh message sequence frame, isolating tool execution."""
-        provider = LLMMessageSequenceProvider()
+        provider = MessageSequence()
 
         # Pre-populate the current frame with existing messages
         provider.message_sequence_stack[-1]["msg_1"] = {
@@ -1127,13 +1127,13 @@ class TestLLMMessageSequenceProvider:
 
     def test_call_assistant_no_duplicate_messages(self):
         """call_assistant should prepend unseen frame messages without duplicating those already in input."""
-        provider = LLMMessageSequenceProvider()
+        provider = MessageSequence()
 
         # Pre-populate frame with two messages
         msg_a = {"id": "msg_a", "role": "user", "content": "hello"}
         msg_b = {"id": "msg_b", "role": "assistant", "content": "hi"}
-        provider.message_sequence_stack[-1]["msg_a"] = msg_a
-        provider.message_sequence_stack[-1]["msg_b"] = msg_b
+        provider.message_sequence["msg_a"] = msg_a
+        provider.message_sequence["msg_b"] = msg_b
 
         captured_messages = []
 
@@ -1164,7 +1164,7 @@ class TestLLMMessageSequenceProvider:
 
     def test_call_assistant_no_duplicates_across_multiple_calls(self):
         """Calling call_assistant multiple times should never produce duplicate messages."""
-        provider = LLMMessageSequenceProvider()
+        provider = MessageSequence()
 
         msg_user = {"id": "msg_user", "role": "user", "content": "hello"}
         provider.message_sequence_stack[-1]["msg_user"] = msg_user
@@ -1215,7 +1215,7 @@ class TestLLMMessageSequenceProvider:
 
     def test_call_assistant_saves_only_on_successful_fwd(self):
         """call_assistant should only save the response message to the frame when fwd() succeeds."""
-        provider = LLMMessageSequenceProvider()
+        provider = MessageSequence()
 
         class FailingAssistantHandler(ObjectInterpretation):
             @implements(call_assistant)

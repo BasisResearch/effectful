@@ -25,7 +25,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
-from effectful.ops.semantics import fwd
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -459,32 +459,31 @@ class RetryLLMHandler(ObjectInterpretation):
             return error.to_feedback_message(self.include_traceback)
 
 
-class LLMMessageSequenceProvider(ObjectInterpretation):
-    message_sequence_stack: list[collections.OrderedDict[str, Message]]
+class MessageSequence(ObjectInterpretation):
+    message_sequence: collections.OrderedDict[str, Message]
 
     def __init__(self):
-        self.message_sequence_stack = [collections.OrderedDict()]
+        self.message_sequence = collections.OrderedDict()
 
     @implements(call_tool)
     def _call_tool(self, *args, **kwargs):
-        self.message_sequence_stack.append(collections.OrderedDict())
-        message = fwd()
-        self.message_sequence_stack.pop()
-        self.message_sequence_stack[-1][message["id"]] = message
+        with handler(MessageSequence()):
+            message = fwd()
+        self.message_sequence[message["id"]] = message
         return message
 
     @implements(call_user)
     def _call_user(self, *args, **kwargs):
         messages = fwd()
         for message in messages:
-            self.message_sequence_stack[-1][message["id"]] = message
+            self.message_sequence[message["id"]] = message
         return messages
 
     @implements(call_system)
     def _call_system(self, *args, **kwargs):
         messages = fwd()
         for message in messages:
-            self.message_sequence_stack[-1][message["id"]] = message
+            self.message_sequence[message["id"]] = message
         return messages
 
     @implements(call_assistant)
@@ -494,15 +493,16 @@ class LLMMessageSequenceProvider(ObjectInterpretation):
         msg_list = list(messages)
         seen_ids = {m["id"] for m in msg_list}
 
-        frame = self.message_sequence_stack[-1]
-        prefix = [m for msg_id, m in frame.items() if msg_id not in seen_ids]
+        prefix = [
+            m for msg_id, m in self.message_sequence.items() if msg_id not in seen_ids
+        ]
 
         message, tool_calls, result = fwd(prefix + msg_list, *args, **kwargs)
-        frame[message["id"]] = message
+        self.message_sequence[message["id"]] = message
         return message, tool_calls, result
 
 
-class LiteLLMProvider(LLMMessageSequenceProvider):
+class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
     config: collections.abc.Mapping[str, typing.Any]
@@ -518,33 +518,32 @@ class LiteLLMProvider(LLMMessageSequenceProvider):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        self.message_sequence_stack.append(collections.OrderedDict())
+        with handler(MessageSequence()):
+            # encode arguments
+            bound_args = inspect.signature(template).bind(*args, **kwargs)
+            bound_args.apply_defaults()
+            env = template.__context__.new_child(bound_args.arguments)
 
-        # encode arguments
-        bound_args = inspect.signature(template).bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        env = template.__context__.new_child(bound_args.arguments)
-
-        # Create response_model with env so tools passed as arguments are available
-        response_model = Encodable.define(template.__signature__.return_annotation, env)
-
-        user_messages: list[Message] = call_user(template.__prompt_template__, env)
-
-        # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-        tool_calls: list[DecodedToolCall] = []
-
-        message = user_messages[-1]
-        result: T | None = None
-        while message["role"] != "assistant" or tool_calls:
-            message, tool_calls, result = call_assistant(
-                [message], template.tools, response_model, **self.config
+            # Create response_model with env so tools passed as arguments are available
+            response_model = Encodable.define(
+                template.__signature__.return_annotation, env
             )
-            for tool_call in tool_calls:
-                message = call_tool(tool_call)
 
-        assert result is not None, (
-            "call_assistant did not produce a result nor tool_calls"
-        )
+            user_messages: list[Message] = call_user(template.__prompt_template__, env)
 
-        self.message_sequence_stack.pop()
+            # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+            tool_calls: list[DecodedToolCall] = []
+
+            message = user_messages[-1]
+            result: T | None = None
+            while message["role"] != "assistant" or tool_calls:
+                message, tool_calls, result = call_assistant(
+                    [message], template.tools, response_model, **self.config
+                )
+                for tool_call in tool_calls:
+                    message = call_tool(tool_call)
+
+            assert result is not None, (
+                "call_assistant did not produce a result nor tool_calls"
+            )
         return result
