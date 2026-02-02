@@ -317,7 +317,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 def call_user(
     template: str,
     env: collections.abc.Mapping[str, typing.Any],
-) -> list[Message]:
+) -> Message:
     """
     Format a template applied to arguments into a user message.
     """
@@ -361,7 +361,7 @@ def call_user(
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    return [_make_message(dict(role="user", content=parts))]
+    return _make_message(dict(role="user", content=parts))
 
 
 @Operation.define
@@ -478,10 +478,9 @@ class MessageSequence(ObjectInterpretation):
 
     @implements(call_user)
     def _call_user(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
+        message = fwd()
+        self.message_sequence[message["id"]] = message
+        return message
 
     @implements(call_system)
     def _call_system(self, *args, **kwargs):
@@ -532,12 +531,10 @@ class LiteLLMProvider(ObjectInterpretation):
                 template.__signature__.return_annotation, env
             )
 
-            user_messages: list[Message] = call_user(template.__prompt_template__, env)
+            message: Message = call_user(template.__prompt_template__, env)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
-
-            message = user_messages[-1]
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
