@@ -7,6 +7,7 @@ import string
 import textwrap
 import traceback
 import typing
+import uuid
 
 import litellm
 import pydantic
@@ -28,13 +29,34 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
-Message = (
-    OpenAIChatCompletionAssistantMessage
-    | ChatCompletionToolMessage
-    | ChatCompletionFunctionMessage
-    | OpenAIChatCompletionSystemMessage
-    | OpenAIChatCompletionUserMessage
-)
+
+class AssistantMessage(OpenAIChatCompletionAssistantMessage, total=False):
+    id: str
+
+
+class ToolMessage(ChatCompletionToolMessage, total=False):
+    id: str
+
+
+class FunctionMessage(ChatCompletionFunctionMessage, total=False):
+    id: str
+
+
+class SystemMessage(OpenAIChatCompletionSystemMessage, total=False):
+    id: str
+
+
+class UserMessage(OpenAIChatCompletionUserMessage, total=False):
+    id: str
+
+
+Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
+
+
+def _make_message(content: dict) -> Message:
+    m_id = content.get("id") or str(uuid.uuid1())
+    return typing.cast(Message, {**content, "id": m_id})
+
 
 type ToolCallID = str
 
@@ -56,8 +78,7 @@ class ToolCallDecodingError(Exception):
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return typing.cast(
-            Message,
+        return _make_message(
             {
                 "role": "tool",
                 "tool_call_id": self.tool_call_id,
@@ -81,12 +102,8 @@ class ResultDecodingError(Exception):
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return typing.cast(
-            Message,
-            {
-                "role": "user",
-                "content": error_message,
-            },
+        return _make_message(
+            {"role": "user", "content": error_message},
         )
 
 
@@ -106,8 +123,7 @@ class ToolCallExecutionError(Exception):
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return typing.cast(
-            Message,
+        return _make_message(
             {
                 "role": "tool",
                 "tool_call_id": self.tool_call_id,
@@ -252,7 +268,7 @@ def call_assistant[T, U](
     message: litellm.Message = choice.message
     assert message.role == "assistant"
 
-    raw_message = typing.cast(Message, message.model_dump(mode="json"))
+    raw_message = _make_message({**message.model_dump(mode="json")})
 
     tool_calls: list[DecodedToolCall] = []
     raw_tool_calls = message.get("tool_calls") or []
@@ -292,8 +308,8 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     # serialize back to U using encoder for return type
     return_type = Encodable.define(type(result))
     encoded_result = return_type.serialize(return_type.encode(result))
-    return typing.cast(
-        Message, dict(role="tool", content=encoded_result, tool_call_id=tool_call.id)
+    return _make_message(
+        dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
 
 
@@ -345,7 +361,7 @@ def call_user(
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    return [typing.cast(Message, dict(role="user", content=parts))]
+    return [_make_message(dict(role="user", content=parts))]
 
 
 @Operation.define
