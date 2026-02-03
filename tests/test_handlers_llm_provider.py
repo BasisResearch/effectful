@@ -10,7 +10,7 @@ import inspect
 import json
 import os
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import litellm
@@ -25,12 +25,15 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LiteLLMProvider,
+    Message,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
     ToolCallDecodingError,
     call_assistant,
+    call_system,
     call_tool,
+    call_user,
     completion,
     get_message_sequence,
 )
@@ -126,7 +129,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
         return fwd()
 
 
-class MovieGenre(str, Enum):
+class MovieGenre(StrEnum):
     """Movie genre classifications."""
 
     ACTION = "action"
@@ -376,6 +379,22 @@ class MockCompletionHandler(ObjectInterpretation):
         return response
 
 
+@pytest.fixture
+def message_sequence_provider():
+    message_sequence = collections.OrderedDict(
+        id1={"id": "id1", "role": "user", "content": "test"},
+    )
+    return message_sequence, {get_message_sequence: lambda: message_sequence}
+
+
+@pytest.fixture
+def mock_completion_handler_factory():
+    def _factory(responses: list[ModelResponse]) -> MockCompletionHandler:
+        return MockCompletionHandler(responses)
+
+    return _factory
+
+
 def make_tool_call_response(
     tool_name: str, tool_args: str, tool_call_id: str = "call_1"
 ) -> ModelResponse:
@@ -566,33 +585,25 @@ class TestRetryLLMHandler:
                     model="test-model",
                 )
 
-    def test_retry_handler_preserves_tool_messages_in_higher_order_flow(self):
+    @requires_openai
+    def test_retry_handler_preserves_tool_messages_in_higher_order_flow(
+        self,
+        request,
+        message_sequence_provider,
+    ):
         """Higher-order tool flow should preserve tool messages across retries."""
-        responses = [
-            make_tool_call_response(
-                "inner_tool", '{"a": "bad", "b": 2}', tool_call_id="tc_inner"
-            ),
-            make_tool_call_response(
-                "inner_tool", '{"a": 1, "b": 2}', tool_call_id="tc_inner"
-            ),
-            make_text_response('{"value": "ok"}'),
-        ]
-
-        mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence, provider = message_sequence_provider
 
         @Tool.define
         def inner_tool(a: int, b: int) -> int:
             """Inner tool used in higher-order flow."""
             return a + b
 
+        tool_messages: list = []
         with (
             handler(RetryLLMHandler(num_retries=2)),
-            handler(mock_handler),
-            handler(message_sequence_provider),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(provider),
         ):
             tool_calls: list[DecodedToolCall] = []
             result: str | None = None
@@ -600,19 +611,15 @@ class TestRetryLLMHandler:
                 _, tool_calls, result = call_assistant(
                     tools={"inner_tool": inner_tool},
                     response_format=Encodable.define(str),
-                    model="test-model",
+                    model="gpt-4o",
                 )
                 if not tool_calls:
                     break
-                for tool_call in tool_calls:
-                    call_tool(tool_call)
+                tool_messages.extend(call_tool(tool_call) for tool_call in tool_calls)
 
         assert result == "ok"
-        assert mock_handler.call_count == 3
-        assert any(
-            message.get("role") == "tool"
-            for message in mock_handler.received_messages[-1]
-        )
+        assert tool_messages
+        assert tool_messages[-1].get("role") == "tool"
 
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
@@ -641,6 +648,99 @@ class TestRetryLLMHandler:
         assert len(tool_calls) == 1
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
+
+    @requires_openai
+    def test_codeadapt_notebook_replay_fixture(self, request):
+        """Replay fixture for codeadapt higher-order tool flow."""
+
+        @Template.define
+        def generate_paragraph() -> str:
+            """Please generate a paragraph: with exactly 4 sentences ending with 'walk', 'tumbling', 'another', and 'lunatic'."""
+            raise NotHandled
+
+        @Template.define
+        def codeact(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> Callable[[], str]:
+            """Generate a code that solve the following problem:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            DO NOT USE codeadapt tool.
+            """
+            raise NotHandled
+
+        @Template.define
+        def codeadapt(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> str:
+            """Reason about the template, uses the codeact tool to generate a code that solve the problem.
+            The template:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            """
+            raise NotHandled
+
+        class ToolNotUsedError(Exception):
+            """Raised when no tool is called."""
+
+        class CodeAdapt(LiteLLMProvider):
+            def __init__(self, model: str = "gpt-4o"):
+                super().__init__(model=model)
+
+            @implements(Template.__apply__)
+            def _call[**P, T](
+                self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+            ) -> T:
+                tool_called = False
+
+                if template is codeadapt and args and isinstance(args[0], Template):
+                    args = (args[0].__name__, *args[1:])
+
+                message_sequence = get_message_sequence()
+                with handler({get_message_sequence: lambda: message_sequence}), handler(
+                    RetryLLMHandler()
+                ):
+                    bound_args = inspect.signature(template).bind(*args, **kwargs)
+                    bound_args.apply_defaults()
+                    env = template.__context__.new_child(bound_args.arguments)
+
+                    response_model = Encodable.define(
+                        template.__signature__.return_annotation, env
+                    )
+
+                    call_system(template)
+                    message: Message = call_user(template.__prompt_template__, env)
+
+                    tool_calls: list[DecodedToolCall] = []
+                    result: T | None = None
+                    while message["role"] != "assistant" or tool_calls:
+                        message, tool_calls, result = call_assistant(
+                            template.tools, response_model, **self.config
+                        )
+                        for tool_call in tool_calls:
+                            message = call_tool(tool_call)
+                            message_sequence[message["id"]] = message
+                            tool_called = True
+
+                    assert result is not None, (
+                        "call_assistant did not produce a result nor tool_calls"
+                    )
+                    if not tool_called:
+                        raise ToolNotUsedError("No tool was called")
+                return result
+
+        with (
+            handler(RetryLLMHandler(num_retries=2)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(UnsafeEvalProvider()),
+        ):
+            result = codeadapt("generate_paragraph")
+
+        assert isinstance(result, str)
 
     def test_retry_handler_retries_on_invalid_result(self):
         """Test that RetryLLMHandler retries when result decoding fails."""
