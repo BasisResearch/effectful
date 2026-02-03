@@ -26,40 +26,46 @@ from litellm import (
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
 
-class MessageID(typing.TypedDict, total=False):
+class AssistantMessage(OpenAIChatCompletionAssistantMessage):
     id: str
 
 
-class AssistantMessage(OpenAIChatCompletionAssistantMessage, MessageID):
-    pass
+class ToolMessage(ChatCompletionToolMessage):
+    id: str
 
 
-class ToolMessage(ChatCompletionToolMessage, MessageID):
-    pass
+class FunctionMessage(ChatCompletionFunctionMessage):
+    id: str
 
 
-class FunctionMessage(ChatCompletionFunctionMessage, MessageID):
-    pass
+class SystemMessage(OpenAIChatCompletionSystemMessage):
+    id: str
 
 
-class SystemMessage(OpenAIChatCompletionSystemMessage, MessageID):
-    pass
-
-
-class UserMessage(OpenAIChatCompletionUserMessage, MessageID):
-    pass
+class UserMessage(OpenAIChatCompletionUserMessage):
+    id: str
 
 
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
+@defop
+def get_message_sequence() -> collections.OrderedDict[str, Message]:
+    return collections.OrderedDict()
+
+
+def append_message(message: Message):
+    get_message_sequence()[message["id"]] = message
+
+
 def _make_message(content: dict) -> Message:
     m_id = content.get("id") or str(uuid.uuid1())
-    return typing.cast(Message, {**content, "id": m_id})
+    message = typing.cast(Message, {**content, "id": m_id})
+    return message
 
 
 type ToolCallID = str
@@ -237,7 +243,6 @@ def completion(*args, **kwargs) -> typing.Any:
 
 @Operation.define
 def call_assistant[T, U](
-    messages: collections.abc.Sequence[Message],
     tools: collections.abc.Mapping[str, Tool],
     response_format: Encodable[T, U],
     model: str,
@@ -259,6 +264,7 @@ def call_assistant[T, U](
         "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
 
+    messages = list(get_message_sequence().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
@@ -273,6 +279,7 @@ def call_assistant[T, U](
     assert message.role == "assistant"
 
     raw_message = _make_message({**message.model_dump(mode="json")})
+    append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
     raw_tool_calls = message.get("tool_calls") or []
@@ -307,14 +314,21 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    result = tool_call.tool(*tool_call.bound_args.args, **tool_call.bound_args.kwargs)
+    # call_tool invariant: tool is called in a context with a fresh message sequence
+    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
+    with handler({get_message_sequence: lambda: message_sequence}):
+        result = tool_call.tool(
+            *tool_call.bound_args.args, **tool_call.bound_args.kwargs
+        )
 
     # serialize back to U using encoder for return type
     return_type = Encodable.define(type(result))
     encoded_result = return_type.serialize(return_type.encode(result))
-    return _make_message(
+    message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
+    append_message(message)
+    return message
 
 
 @Operation.define
@@ -365,7 +379,9 @@ def call_user(
 
     # Note: The OpenAI api only seems to accept images in the 'user' role. The
     # effect of different roles on the model's response is currently unclear.
-    return _make_message(dict(role="user", content=parts))
+    message = _make_message(dict(role="user", content=parts))
+    append_message(message)
+    return message
 
 
 @Operation.define
@@ -408,24 +424,26 @@ class RetryLLMHandler(ObjectInterpretation):
     @implements(call_assistant)
     def _call_assistant[T, U](
         self,
-        messages: collections.abc.Sequence[Message],
         tools: collections.abc.Mapping[str, Tool],
         response_format: Encodable[T, U],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        messages_list = list(messages)
+        message_sequence = get_message_sequence().copy()
         last_attempt = self.num_retries
 
         for attempt in range(self.num_retries + 1):
             try:
-                message, tool_calls, result = fwd(
-                    messages_list, tools, response_format, model, **kwargs
-                )
+                # call assistant, use saved message_sequence
+                with handler({get_message_sequence: lambda: message_sequence}):
+                    message, tool_calls, result = fwd(
+                        tools, response_format, model, **kwargs
+                    )
 
                 # Success! The returned message is the final successful response.
-                # Malformed messages from retries are only in messages_list,
-                # not in the returned result.
+                # Malformed messages from retries are only in local message_sequence copy,
+                # not in the enclosing message sequence.
+                append_message(message)
                 return (message, tool_calls, result)
 
             except (ToolCallDecodingError, ResultDecodingError) as e:
@@ -434,11 +452,11 @@ class RetryLLMHandler(ObjectInterpretation):
                     raise
 
                 # Add the malformed assistant message
-                messages_list.append(e.raw_message)
+                message_sequence[e.raw_message["id"]] = e.raw_message
 
                 # Add error feedback as a tool response
                 error_feedback: Message = e.to_feedback_message(self.include_traceback)
-                messages_list.append(error_feedback)
+                message_sequence[error_feedback["id"]] = error_feedback
 
         # Should never reach here - either we return on success or raise on final failure
         raise AssertionError("Unreachable: retry loop exited without return or raise")
@@ -463,52 +481,6 @@ class RetryLLMHandler(ObjectInterpretation):
             return error.to_feedback_message(self.include_traceback)
 
 
-class MessageSequence(ObjectInterpretation):
-    message_sequence: collections.OrderedDict[str, Message]
-
-    def __init__(
-        self, message_sequence: collections.OrderedDict[str, Message] | None = None
-    ):
-        self.message_sequence = (
-            collections.OrderedDict() if message_sequence is None else message_sequence
-        )
-
-    @implements(call_tool)
-    def _call_tool(self, *args, **kwargs):
-        with handler(MessageSequence()):
-            message = fwd()
-        self.message_sequence[message["id"]] = message
-        return message
-
-    @implements(call_user)
-    def _call_user(self, *args, **kwargs):
-        message = fwd()
-        self.message_sequence[message["id"]] = message
-        return message
-
-    @implements(call_system)
-    def _call_system(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
-
-    @implements(call_assistant)
-    def _call_assistant(
-        self, messages: collections.abc.Sequence[Message], *args, **kwargs
-    ):
-        msg_list = list(messages)
-        seen_ids = {m["id"] for m in msg_list}
-
-        prefix = [
-            m for msg_id, m in self.message_sequence.items() if msg_id not in seen_ids
-        ]
-
-        message, tool_calls, result = fwd(prefix + msg_list, *args, **kwargs)
-        self.message_sequence[message["id"]] = message
-        return message, tool_calls, result
-
-
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
@@ -524,7 +496,8 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        with handler(MessageSequence()):
+        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
+        with handler({get_message_sequence: lambda: message_sequence}):
             # encode arguments
             bound_args = inspect.signature(template).bind(*args, **kwargs)
             bound_args.apply_defaults()
@@ -535,6 +508,8 @@ class LiteLLMProvider(ObjectInterpretation):
                 template.__signature__.return_annotation, env
             )
 
+            call_system(template)
+
             message: Message = call_user(template.__prompt_template__, env)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
@@ -542,7 +517,7 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    [message], template.tools, response_model, **self.config
+                    template.tools, response_model, **self.config
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
@@ -550,4 +525,4 @@ class LiteLLMProvider(ObjectInterpretation):
             assert result is not None, (
                 "call_assistant did not produce a result nor tool_calls"
             )
-        return result
+            return result

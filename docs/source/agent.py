@@ -5,7 +5,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     Message,
-    MessageSequence,
+    get_message_sequence,
 )
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
@@ -25,7 +25,7 @@ class Agent:
 
             @functools.wraps(template)
             def wrapper(self, *args, **kwargs):
-                with handler(MessageSequence(self.state)):
+                with handler({get_message_sequence: lambda: self.__history__}):
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
