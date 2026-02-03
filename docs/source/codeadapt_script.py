@@ -1,9 +1,11 @@
 # %%
-import typing
+from collections.abc import Callable
+
+from effectful.handlers.llm.encoding_template import Encodable, TemplateEncodable
+
 from effectful.handlers.llm.template import Template
 from effectful.ops.types import NotHandled
-from effectful.handlers.llm.encoding_template import TemplateEncodable, Encodable
-from typing import Callable
+
 
 # %%
 @Encodable.define.register(Template)
@@ -65,7 +67,6 @@ from effectful.handlers.llm.completions import (
     handler,
     implements,
 )
-from effectful.handlers.llm.evaluation import RestrictedEvalProvider
 
 
 class ToolNotUsedError(Exception):
@@ -123,8 +124,9 @@ class CodeAdapt(LiteLLMProvider):
 
 
 # %%
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 import litellm
+
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 litellm._turn_on_debug()
 

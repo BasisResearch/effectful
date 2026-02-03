@@ -10,7 +10,7 @@ import inspect
 import json
 import os
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import litellm
@@ -30,8 +30,6 @@ from effectful.handlers.llm.completions import (
     Tool,
     ToolCallDecodingError,
     call_assistant,
-    call_system,
-    call_user,
     call_tool,
     completion,
     get_message_sequence,
@@ -128,7 +126,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
         return fwd()
 
 
-class MovieGenre(str, Enum):
+class MovieGenre(StrEnum):
     """Movie genre classifications."""
 
     ACTION = "action"

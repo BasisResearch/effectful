@@ -5,7 +5,7 @@ This module is separate to avoid lexical context pollution from other templates.
 
 import os
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pytest
 from pydantic import Field
@@ -59,7 +59,7 @@ class Poem:
     form: str = Field(..., description="name of the type of the poem")
 
 
-class PoemQuality(str, Enum):
+class PoemQuality(StrEnum):
     """Quality rating for a poem."""
 
     GOOD = "GOOD"
