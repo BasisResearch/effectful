@@ -47,7 +47,7 @@ def times_plus_1(x: int, y: int) -> int:
 
 
 def times_n(n: int, *ops: Operation[..., int]) -> Interpretation[int, int]:
-    return {op: (lambda *args: (fwd() * n)) for op in ops}
+    return {op: (lambda *args: fwd() * n) for op in ops}
 
 
 OPERATION_CASES = (
