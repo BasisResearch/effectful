@@ -160,7 +160,7 @@ class TemplateStringIntp(ObjectInterpretation):
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
         model_input = call_user(template.__prompt_template__, env)
-        template_result = model_input[0]["content"]
+        template_result = model_input["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]
 
