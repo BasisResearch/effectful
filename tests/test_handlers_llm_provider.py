@@ -4,6 +4,7 @@ breaking down individual components like LiteLLMProvider,
 ProgramSynthesis, and sampling strategies.
 """
 
+import collections
 import functools
 import inspect
 import json
@@ -31,6 +32,7 @@ from effectful.handlers.llm.completions import (
     call_assistant,
     call_tool,
     completion,
+    get_message_sequence,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
@@ -432,9 +434,17 @@ class TestRetryLLMHandler:
 
         mock_handler = MockCompletionHandler(responses)
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -454,10 +464,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -479,10 +496,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -499,11 +523,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
         with pytest.raises(Exception):  # Will raise the underlying decoding error
-            with handler(RetryLLMHandler(num_retries=2)), handler(mock_handler):
+            with (
+                handler(RetryLLMHandler(num_retries=2)),
+                handler(mock_handler),
+                handler(message_sequence_provider),
+            ):
                 call_assistant(
-                    messages=[{"role": "user", "content": "test"}],
                     tools={"add_numbers": add_numbers},
                     response_format=Encodable.define(str),
                     model="test-model",
@@ -519,11 +549,18 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         with pytest.raises(Exception):
-            with handler(RetryLLMHandler(num_retries=0)), handler(mock_handler):
+            with (
+                handler(RetryLLMHandler(num_retries=0)),
+                handler(mock_handler),
+                handler(message_sequence_provider),
+            ):
                 call_assistant(
-                    messages=[{"role": "user", "content": "test"}],
                     tools={"add_numbers": add_numbers},
                     response_format=Encodable.define(str),
                     model="test-model",
@@ -538,10 +575,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -561,10 +605,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={},
                 response_format=Encodable.define(int),
                 model="test-model",
@@ -585,11 +636,18 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         with pytest.raises(Exception):  # Will raise the underlying decoding error
-            with handler(RetryLLMHandler(num_retries=2)), handler(mock_handler):
+            with (
+                handler(RetryLLMHandler(num_retries=2)),
+                handler(mock_handler),
+                handler(message_sequence_provider),
+            ):
                 call_assistant(
-                    messages=[{"role": "user", "content": "test"}],
                     tools={},
                     response_format=Encodable.define(int),
                     model="test-model",
@@ -605,11 +663,18 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         with pytest.raises(ToolCallDecodingError) as exc_info:
-            with handler(RetryLLMHandler(num_retries=0)), handler(mock_handler):
+            with (
+                handler(RetryLLMHandler(num_retries=0)),
+                handler(mock_handler),
+                handler(message_sequence_provider),
+            ):
                 call_assistant(
-                    messages=[{"role": "user", "content": "test"}],
                     tools={"add_numbers": add_numbers},
                     response_format=Encodable.define(str),
                     model="test-model",
@@ -628,11 +693,18 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         with pytest.raises(ResultDecodingError) as exc_info:
-            with handler(RetryLLMHandler(num_retries=0)), handler(mock_handler):
+            with (
+                handler(RetryLLMHandler(num_retries=0)),
+                handler(mock_handler),
+                handler(message_sequence_provider),
+            ):
                 call_assistant(
-                    messages=[{"role": "user", "content": "test"}],
                     tools={},
                     response_format=Encodable.define(int),
                     model="test-model",
@@ -650,10 +722,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -673,10 +752,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -696,13 +782,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3, include_traceback=True)),
             handler(mock_handler),
+            handler(message_sequence_provider),
         ):
             call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -723,10 +813,17 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
-        with handler(RetryLLMHandler(num_retries=3)), handler(mock_handler):
+        with (
+            handler(RetryLLMHandler(num_retries=3)),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
             call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -820,22 +917,24 @@ class TestToolExecutionErrorHandling:
         ]
 
         mock_handler = MockCompletionHandler(responses)
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
 
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(
-                self, messages, tools, response_format, model, **kwargs
-            ):
-                return fwd(messages, tools, response_format, model, **kwargs)
+            def _call_assistant(self, tools, response_format, model, **kwargs):
+                return fwd(tools, response_format, model, **kwargs)
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
             handler(TestProvider()),
             handler(mock_handler),
+            handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                messages=[{"role": "user", "content": "test"}],
                 tools={"failing_tool": failing_tool},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -1071,3 +1170,240 @@ class TestCallableSynthesis:
             assert multiply_three(2, 3, 4) == 24
             assert multiply_three(1, 1, 1) == 1
             assert multiply_three(5, 0, 10) == 0
+
+
+class TestMessageSequence:
+    """Tests for MessageSequence message sequence tracking."""
+
+    def test_call_tool_fresh_message_sequence(self):
+        """call_tool should push a fresh message sequence frame, isolating tool execution."""
+        message_sequence = collections.OrderedDict()
+
+        # Pre-populate the current frame with existing messages
+        message_sequence["msg_1"] = {
+            "id": "msg_1",
+            "role": "user",
+            "content": "hello",
+        }
+        message_sequence["msg_2"] = {
+            "id": "msg_2",
+            "role": "assistant",
+            "content": "hi",
+        }
+
+        captured_frame = None
+
+        class InnerToolHandler(ObjectInterpretation):
+            @implements(add_numbers)
+            def _add_numbers(self, *args, **kwargs):
+                # Capture the state of the message sequence stack during execution
+                nonlocal captured_frame
+                captured_frame = dict(get_message_sequence())
+                return 42
+
+        mock_tool_call = DecodedToolCall(
+            tool=add_numbers,
+            bound_args=inspect.signature(add_numbers).bind(1, 2),
+            id="tc_1",
+        )
+
+        with (
+            handler(InnerToolHandler()),
+            handler({get_message_sequence: lambda: message_sequence}),
+        ):
+            call_tool(mock_tool_call)
+
+        # After completion, fresh frame is popped and tool message is in parent frame
+        assert len(captured_frame) == 0
+        assert len(message_sequence) == 3
+
+    def test_call_assistant_no_duplicate_messages(self):
+        """call_assistant should prepend unseen frame messages without duplicating those already in input."""
+        message_sequence = collections.OrderedDict()
+
+        # Pre-populate frame with two messages
+        msg_a = {"id": "msg_a", "role": "user", "content": "hello"}
+        msg_b = {"id": "msg_b", "role": "assistant", "content": "hi"}
+        message_sequence["msg_a"] = msg_a
+        message_sequence["msg_b"] = msg_b
+
+        captured_messages = []
+
+        class InnerAssistantHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self_, model, messages, *args, **kwargs):
+                captured_messages.extend(list(messages))
+                response = {
+                    "id": "response_1",
+                    "role": "assistant",
+                    "content": json.dumps({"value": "result"}),
+                }
+                return ModelResponse(
+                    choices=[{"role": "assistant", "message": response}]
+                )
+
+        # Call with msg_b already in the input — it should not appear twice
+        with (
+            handler(InnerAssistantHandler()),
+            handler({get_message_sequence: lambda: message_sequence}),
+        ):
+            call_assistant(
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # Forwarded messages should be [msg_a (prefix), msg_b (input)] — no duplicates
+        ids = [m["id"] for m in captured_messages]
+        assert ids == ["msg_a", "msg_b"]
+        assert len(ids) == len(set(ids))
+
+    def test_call_assistant_no_duplicates_across_multiple_calls(self):
+        """Calling call_assistant multiple times should never produce duplicate messages."""
+
+        msg_user = {"id": "msg_user", "role": "user", "content": "hello"}
+        message_sequence = collections.OrderedDict(msg_user=msg_user)
+
+        call_log = []
+
+        class InnerAssistantHandler(ObjectInterpretation):
+            call_count = 0
+
+            @implements(completion)
+            def _completion(self_, model, messages, *args, **kwargs):
+                call_log.append([m["id"] for m in messages])
+                self_.call_count += 1
+                response = {
+                    "id": "response_1",
+                    "role": "assistant",
+                    "content": json.dumps({"value": "result"}),
+                }
+                return ModelResponse(
+                    choices=[{"role": "assistant", "message": response}]
+                )
+
+        inner = InnerAssistantHandler()
+
+        with (
+            handler(inner),
+            handler({get_message_sequence: lambda: message_sequence}),
+        ):
+            # First call: input is the latest message (msg_user)
+            resp1, _, _ = call_assistant(
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+            # Second call: input is the first response
+            resp2, _, _ = call_assistant(
+                tools={},
+                response_format=Encodable.define(str),
+                model="test-model",
+            )
+
+        # First call: prefix=[] + input=[msg_user]
+        assert call_log[0] == ["msg_user"]
+
+        # Second call: prefix=[msg_user] + input=[resp_1]
+        # msg_user is in the frame but not in the input, so it appears as prefix
+        # resp_1 is in both the frame and the input, so it's NOT duplicated
+        assert call_log[1] == ["msg_user", "response_1"]
+        assert len(call_log[1]) == len(set(call_log[1]))
+
+    def test_call_assistant_saves_only_on_successful_fwd(self):
+        """call_assistant should only save the response message to the frame when fwd() succeeds."""
+        message_sequence = collections.OrderedDict()
+
+        class FailingAssistantHandler(ObjectInterpretation):
+            @implements(call_assistant)
+            def _call_assistant(self_, messages, *args, **kwargs):
+                raise RuntimeError("LLM call failed")
+
+        msg = {"id": "input_msg", "role": "user", "content": "hello"}
+        frame_snapshot = dict(message_sequence)
+
+        with pytest.raises(RuntimeError, match="LLM call failed"):
+            with (
+                handler(FailingAssistantHandler()),
+                handler({get_message_sequence: lambda: message_sequence}),
+            ):
+                call_assistant(
+                    messages=[msg],
+                    tools={},
+                    response_format=Encodable.define(str),
+                    model="test-model",
+                )
+
+        # Frame should be unchanged — no response message was saved
+        assert dict(message_sequence) == frame_snapshot
+
+
+@Template.define
+def compute_sum(a: int, b: int) -> int:
+    """Compute the sum of {a} and {b}.
+
+    You MUST use the add_numbers tool to compute the result.
+    Do NOT compute the sum yourself.
+    After getting the result from add_numbers, return it.
+    """
+    raise NotHandled
+
+
+class MessageSequenceTracker(ObjectInterpretation):
+    """Intercepts call_assistant to record message IDs forwarded by the provider."""
+
+    def __init__(self):
+        self.call_log: list[list[str]] = []
+
+    @implements(call_assistant)
+    def _call_assistant(self, *args, **kwargs):
+        self.call_log.append([m["id"] for m in get_message_sequence().values()])
+        return fwd()
+
+
+class TestMessageSequenceReplay:
+    """Fixture-based tests verifying message sequence invariants through the full provider stack."""
+
+    @requires_openai
+    def test_simple_prompt_unique_message_ids(self, request):
+        """A no-tool prompt should produce a single call_assistant with unique message IDs."""
+        tracker = MessageSequenceTracker()
+        with (
+            handler(tracker),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            result = simple_prompt("testing")
+
+        assert isinstance(result, str)
+        assert len(tracker.call_log) == 1
+        ids = tracker.call_log[0]
+        assert len(ids) == len(set(ids)), "message IDs should be unique"
+
+    @requires_openai
+    def test_tool_calling_no_duplicate_message_ids(self, request):
+        """Tool-calling prompts should accumulate messages without duplicates across calls."""
+        tracker = MessageSequenceTracker()
+
+        with (
+            handler(tracker),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            result = compute_sum(3, 5)
+
+        assert result == 8
+        assert len(tracker.call_log) >= 2  # at least: tool call round + final answer
+
+        for i, ids in enumerate(tracker.call_log):
+            assert len(ids) == len(set(ids)), (
+                f"call_assistant invocation {i} has duplicate message IDs: {ids}"
+            )
+
+        # Each successive call should include all previous messages plus new ones
+        for i in range(1, len(tracker.call_log)):
+            prev_set = set(tracker.call_log[i - 1])
+            curr_set = set(tracker.call_log[i])
+            assert prev_set < curr_set, (
+                f"call {i} messages should be a strict superset of call {i - 1}"
+            )

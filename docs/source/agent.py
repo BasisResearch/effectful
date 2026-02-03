@@ -1,25 +1,21 @@
 import functools
+from collections import OrderedDict
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     Message,
-    call_assistant,
-    call_user,
+    get_message_sequence,
 )
-from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import defop
+from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
 
 class Agent:
-    def __init__(self):
-        self.state = []  # persist the list of messages
+    __history__: OrderedDict[str, Message]
 
-    @defop
-    @staticmethod
-    def current_agent() -> "Agent | None":
-        return None
+    def __init__(self):
+        self.__history__ = OrderedDict()  # persist the list of messages
 
     def __init_subclass__(cls):
         for method_name in dir(cls):
@@ -29,31 +25,10 @@ class Agent:
 
             @functools.wraps(template)
             def wrapper(self, *args, **kwargs):
-                with handler(
-                    {
-                        Agent.current_agent: lambda: self,
-                        call_user: self._format_model_input,
-                        call_assistant: self._compute_response,
-                    }
-                ):
+                with handler({get_message_sequence: lambda: self.__history__}):
                     return template(self, *args, **kwargs)
 
             setattr(cls, method_name, wrapper)
-
-    def _format_model_input(self, template, env):
-        # update prompt with previous list of messages
-        prompt = fwd()
-        if Agent.current_agent() is self:
-            self.state.extend(prompt)
-            prompt = self.state
-        return prompt
-
-    def _compute_response(self, *args, **kwargs):
-        # save response into persisted state
-        response: Message = fwd()
-        if Agent.current_agent() is self:
-            self.state.append(response)
-        return response
 
 
 if __name__ == "__main__":
