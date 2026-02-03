@@ -30,6 +30,8 @@ from effectful.handlers.llm.completions import (
     Tool,
     ToolCallDecodingError,
     call_assistant,
+    call_system,
+    call_user,
     call_tool,
     completion,
     get_message_sequence,
@@ -595,6 +597,50 @@ class TestRetryLLMHandler:
         assert len(tool_calls) == 1
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
+
+    @requires_openai
+    def test_codeadapt_notebook_replay_fixture(self, request):
+        """Replay fixture for codeadapt higher-order tool flow."""
+
+        @Template.define
+        def generate_paragraph() -> str:
+            """Please generate a paragraph: with exactly 4 sentences ending with 'walk', 'tumbling', 'another', and 'lunatic'."""
+            raise NotHandled
+
+        @Template.define
+        def codeact(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> Callable[[], str]:
+            """Generate a code that solve the following problem:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            DO NOT USE codeadapt tool.
+            """
+            raise NotHandled
+
+        @Template.define
+        def codeadapt(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> str:
+            """Reason about the template, uses the codeact tool to generate a code that solve the problem.
+            The template:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            """
+            raise NotHandled
+
+        with (
+            handler(RetryLLMHandler(num_retries=2)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(UnsafeEvalProvider()),
+        ):
+            result = codeadapt("generate_paragraph")
+
+        assert isinstance(result, str)
 
     def test_retry_handler_retries_on_invalid_result(self):
         """Test that RetryLLMHandler retries when result decoding fails."""
