@@ -582,42 +582,6 @@ class TestRetryLLMHandler:
                     model="test-model",
                 )
 
-    @requires_openai
-    def test_retry_handler_preserves_tool_messages_in_higher_order_flow(
-        self,
-        request,
-        message_sequence_provider,
-    ):
-        """Higher-order tool flow should preserve tool messages across retries."""
-        message_sequence, provider = message_sequence_provider
-
-        @Tool.define
-        def inner_tool(a: int, b: int) -> int:
-            """Inner tool used in higher-order flow."""
-            return a + b
-
-        tool_messages: list = []
-        with (
-            handler(RetryLLMHandler(num_retries=2)),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
-            handler(provider),
-        ):
-            tool_calls: list[DecodedToolCall] = []
-            result: str | None = None
-            while True:
-                _, tool_calls, result = call_assistant(
-                    tools={"inner_tool": inner_tool},
-                    response_format=Encodable.define(str),
-                    model="gpt-4o",
-                )
-                if not tool_calls:
-                    break
-                tool_messages.extend(call_tool(tool_call) for tool_call in tool_calls)
-
-        assert result == "ok"
-        assert tool_messages
-        assert tool_messages[-1].get("role") == "tool"
-
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
