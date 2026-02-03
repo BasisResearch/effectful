@@ -420,7 +420,9 @@ class RetryLLMHandler(ObjectInterpretation):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
         self.catch_tool_errors = catch_tool_errors
-        self.tool_calls: collections.OrderedDict[str, Message] = collections.OrderedDict()
+        self.tool_calls: collections.OrderedDict[str, Message] = (
+            collections.OrderedDict()
+        )
 
     @implements(call_assistant)
     def _call_assistant[T, U](
