@@ -1007,9 +1007,9 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            SubOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled SubOperation: {op} {x}"
+            SubOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled SubOperation: {op} {x}"
+            )
         }
     ):
         assert sub_op(3) == f"handled SubOperation: {sub_op} 3"
@@ -1017,9 +1017,9 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            BaseOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled BaseOperation: {op} {x}"
+            BaseOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled BaseOperation: {op} {x}"
+            )
         }
     ):
         assert sub_op(4) == f"handled BaseOperation: {sub_op} 4"
@@ -1027,12 +1027,12 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            SubOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled SubOperation: {op} {x}",
-            BaseOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled BaseOperation: {op} {x}",
+            SubOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled SubOperation: {op} {x}"
+            ),
+            BaseOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled BaseOperation: {op} {x}"
+            ),
         }
     ):
         assert sub_op(6) == f"handled SubOperation: {sub_op} 6"

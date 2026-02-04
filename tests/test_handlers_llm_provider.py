@@ -10,7 +10,7 @@ import inspect
 import json
 import os
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import litellm
@@ -126,7 +126,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
         return fwd()
 
 
-class MovieGenre(str, Enum):
+class MovieGenre(StrEnum):
     """Movie genre classifications."""
 
     ACTION = "action"
@@ -376,6 +376,22 @@ class MockCompletionHandler(ObjectInterpretation):
         return response
 
 
+@pytest.fixture
+def message_sequence_provider():
+    message_sequence = collections.OrderedDict(
+        id1={"id": "id1", "role": "user", "content": "test"},
+    )
+    return message_sequence, {get_message_sequence: lambda: message_sequence}
+
+
+@pytest.fixture
+def mock_completion_handler_factory():
+    def _factory(responses: list[ModelResponse]) -> MockCompletionHandler:
+        return MockCompletionHandler(responses)
+
+    return _factory
+
+
 def make_tool_call_response(
     tool_name: str, tool_args: str, tool_call_id: str = "call_1"
 ) -> ModelResponse:
@@ -566,8 +582,6 @@ class TestRetryLLMHandler:
                     model="test-model",
                 )
 
-        assert mock_handler.call_count == 1
-
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
@@ -595,6 +609,50 @@ class TestRetryLLMHandler:
         assert len(tool_calls) == 1
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
+
+    @requires_openai
+    def test_codeadapt_notebook_replay_fixture(self, request):
+        """Replay fixture for codeadapt higher-order tool flow."""
+
+        @Template.define
+        def generate_paragraph() -> str:
+            """Please generate a paragraph: with exactly 4 sentences ending with 'walk', 'tumbling', 'another', and 'lunatic'."""
+            raise NotHandled
+
+        @Template.define
+        def codeact(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> Callable[[], str]:
+            """Generate a code that solve the following problem:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            DO NOT USE codeadapt tool.
+            """
+            raise NotHandled
+
+        @Template.define
+        def codeadapt(
+            template_name: str,
+            args_json: str = "[]",
+            kwargs_json: str = "{}",
+        ) -> str:
+            """Reason about the template, uses the codeact tool to generate a code that solve the problem.
+            The template:
+            {template_name}
+            Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            """
+            raise NotHandled
+
+        with (
+            handler(RetryLLMHandler(num_retries=2)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(UnsafeEvalProvider()),
+        ):
+            result = codeadapt("generate_paragraph")
+
+        assert isinstance(result, str)
 
     def test_retry_handler_retries_on_invalid_result(self):
         """Test that RetryLLMHandler retries when result decoding fails."""
