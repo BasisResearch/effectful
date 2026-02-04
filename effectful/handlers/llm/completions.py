@@ -484,53 +484,6 @@ class RetryLLMHandler(ObjectInterpretation):
             return message
 
 
-class MessageSequence(ObjectInterpretation):
-    message_sequence: collections.OrderedDict[str, Message]
-
-    def __init__(
-        self, message_sequence: collections.OrderedDict[str, Message] | None = None
-    ):
-        self.message_sequence = (
-            collections.OrderedDict() if message_sequence is None else message_sequence
-        )
-
-    @implements(call_tool)
-    def _call_tool(self, *args, **kwargs):
-        with handler(MessageSequence()):
-            message = fwd()
-        self.message_sequence[message["id"]] = message
-        return message
-
-    @implements(call_user)
-    def _call_user(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
-
-    @implements(call_system)
-    def _call_system(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
-
-    @implements(call_assistant)
-    def _call_assistant(
-        self, messages: collections.abc.Sequence[Message], *args, **kwargs
-    ):
-        msg_list = list(messages)
-        seen_ids = {m["id"] for m in msg_list}
-
-        prefix = [
-            m for msg_id, m in self.message_sequence.items() if msg_id not in seen_ids
-        ]
-
-        message, tool_calls, result = fwd(prefix + msg_list, *args, **kwargs)
-        self.message_sequence[message["id"]] = message
-        return message, tool_calls, result
-
-
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
