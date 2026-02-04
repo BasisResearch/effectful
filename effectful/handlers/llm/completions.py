@@ -475,60 +475,12 @@ class RetryLLMHandler(ObjectInterpretation):
         are caught; others propagate up.
         """
         try:
-            message = fwd(tool_call)
-            return message
+            return fwd(tool_call)
         except self.catch_tool_errors as e:
             error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
             message = error.to_feedback_message(self.include_traceback)
             append_message(message)
             return message
-
-
-class MessageSequence(ObjectInterpretation):
-    message_sequence: collections.OrderedDict[str, Message]
-
-    def __init__(
-        self, message_sequence: collections.OrderedDict[str, Message] | None = None
-    ):
-        self.message_sequence = (
-            collections.OrderedDict() if message_sequence is None else message_sequence
-        )
-
-    @implements(call_tool)
-    def _call_tool(self, *args, **kwargs):
-        with handler(MessageSequence()):
-            message = fwd()
-        self.message_sequence[message["id"]] = message
-        return message
-
-    @implements(call_user)
-    def _call_user(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
-
-    @implements(call_system)
-    def _call_system(self, *args, **kwargs):
-        messages = fwd()
-        for message in messages:
-            self.message_sequence[message["id"]] = message
-        return messages
-
-    @implements(call_assistant)
-    def _call_assistant(
-        self, messages: collections.abc.Sequence[Message], *args, **kwargs
-    ):
-        msg_list = list(messages)
-        seen_ids = {m["id"] for m in msg_list}
-
-        prefix = [
-            m for msg_id, m in self.message_sequence.items() if msg_id not in seen_ids
-        ]
-
-        message, tool_calls, result = fwd(prefix + msg_list, *args, **kwargs)
-        self.message_sequence[message["id"]] = message
-        return message, tool_calls, result
 
 
 class LiteLLMProvider(ObjectInterpretation):
@@ -537,7 +489,6 @@ class LiteLLMProvider(ObjectInterpretation):
     config: collections.abc.Mapping[str, typing.Any]
 
     def __init__(self, model="gpt-4o", **config):
-        super().__init__()
         self.config = {
             "model": model,
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
