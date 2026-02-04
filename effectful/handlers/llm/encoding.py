@@ -19,6 +19,7 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
+import effectful.handlers.llm.type_checking as type_checking
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -366,14 +367,6 @@ def _validate_signature_callable(
             "decode() requires synthesized function to have a return type annotation"
         )
 
-    expected_name = getattr(expected_return, "__name__", str(expected_return))
-    actual_name = getattr(actual_return, "__name__", str(actual_return))
-    if expected_name != actual_name:
-        raise ValueError(
-            f"decode() expected function with return type {expected_name}, "
-            f"got {actual_name}"
-        )
-
 
 @dataclass
 class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
@@ -454,6 +447,11 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
         # Validate signature from AST before execution
         _validate_signature_ast(last_stmt, self.expected_params)
+
+        # Type-check with mypy; pass original module_code so mypy sees exact source
+        type_checking.typecheck_source(
+            module, self.ctx, self.expected_params, self.expected_return
+        )
 
         # Compile and execute
         # https://docs.python.org/3/library/functions.html#exec
