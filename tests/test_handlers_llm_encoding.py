@@ -932,7 +932,7 @@ result = helper()"""
             module_code="""def add(a: int, b: int) -> str:
     return str(a + b)"""
         )
-        with pytest.raises(ValueError, match="Incompatible types in assignment"):
+        with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with handler(eval_provider):
                 encodable.decode(source)
 
@@ -1064,7 +1064,7 @@ result = helper()"""
             module_code="""def get_value() -> str:
     return "wrong type\""""
         )
-        with pytest.raises(ValueError, match="Incompatible types in assignment"):
+        with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with handler(eval_provider):
                 encodable.decode(source)
 

@@ -52,7 +52,7 @@ class TestTypecheckSourceSuccess:
 
     def test_sync_function_return_none(self) -> None:
         mod = ast.parse("def noop() -> None:\n    pass")
-        type_checking.typecheck_source(mod, {}, [], type(None))  # type: ignore[arg-type]
+        type_checking.typecheck_source(mod, {}, [], type(None))
 
     def test_module_import_in_ctx(self) -> None:
         import math
@@ -152,7 +152,7 @@ class TestTypecheckSourceAccessesCtx:
     def test_global_type_mismatch_raises(self):
         # Function uses global as int but we stub it as str -> mypy should fail
         mod = ast.parse("def use_global(x: int) -> int:\n    return x + global_val")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(
                 mod,
                 {"global_val": "not an int"},
@@ -305,7 +305,7 @@ class TestTypecheckSourceOptionalAndAnnotationVariations:
         mod = ast.parse(
             "def head(x: list[int]) -> typing.Optional[int]:\n    return x[0] if x else None"
         )
-        type_checking.typecheck_source(mod, {}, [list[int]], typing.Optional[int])  # type: ignore  # noqa: UP045
+        type_checking.typecheck_source(mod, {}, [list[int]], typing.Optional[int])  # noqa: UP045
 
 
 # --- typecheck_source: signature mismatch causes typecheck to fail ---
@@ -317,7 +317,7 @@ class TestTypecheckSourceSignatureMismatchFails:
     def test_return_type_mismatch_fails(self):
         # Expected Callable[[], int], function has -> str
         mod = ast.parse("def f() -> str:\n    return 'x'")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_return_type_mismatch_multiple_functions_last_wrong(self):
@@ -330,38 +330,38 @@ def main() -> str:
     return "wrong"
 """
         mod = ast.parse(src)
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_param_count_mismatch_fails(self):
         # Expected Callable[[int], int], function has (x: int, y: int) -> int
         mod = ast.parse("def f(x: int, y: int) -> int:\n    return x + y")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [int], int)
 
     def test_param_count_mismatch_too_few_fails(self):
         # Expected Callable[[int, int], int], function has (x: int) -> int
         mod = ast.parse("def f(x: int) -> int:\n    return x")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [int, int], int)
 
     def test_param_type_mismatch_fails(self):
         # Expected Callable[[int], int], function has (x: str) -> int
         mod = ast.parse("def f(x: str) -> int:\n    return len(x)")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [int], int)
 
     def test_zero_arg_wrong_return_fails(self):
         # Zero-arg function: _return_check line forces return type; str != int
         mod = ast.parse("def get() -> str:\n    return 'nope'")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_expected_optional_return_but_got_str_fails(self):
         # Expected Callable[[], Optional[int]], function has -> str
         mod = ast.parse("def f() -> str:\n    return 'x'")
-        with pytest.raises(ValueError, match="Type check failed"):
-            type_checking.typecheck_source(mod, {}, [], typing.Optional[int])  # type: ignore  # noqa: UP045
+        with pytest.raises(TypeError, match="Type check failed"):
+            type_checking.typecheck_source(mod, {}, [], typing.Optional[int])  # noqa: UP045
 
 
 # --- typecheck_source: failure cases (wrong types) ---
@@ -370,27 +370,27 @@ def main() -> str:
 class TestTypecheckSourceFailureWrongTypes:
     def test_wrong_return_type_raises(self):
         mod = ast.parse("def f() -> str:\n    return 'x'")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_wrong_param_count_raises(self):
         mod = ast.parse("def f(x: int, y: int) -> int:\n    return x + y")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [int], int)
 
     def test_wrong_param_type_raises(self):
         mod = ast.parse("def f(x: str) -> int:\n    return len(x)")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [int], int)
 
     def test_return_type_incompatible_with_body_raises(self):
         mod = ast.parse("def f() -> int:\n    return 'wrong'")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_return_type_mismatch_raises(self):
         mod = ast.parse("def f() -> str:\n    return 42")
-        with pytest.raises(ValueError, match="Type check failed"):
+        with pytest.raises(TypeError, match="Type check failed"):
             type_checking.typecheck_source(mod, {}, [], str)
 
 
@@ -405,17 +405,17 @@ class TestTypecheckSourceInvalidInput:
             [ast.Return(ast.Constant(1))],
             [],
         )
-        with pytest.raises(ValueError, match="Module AST"):
+        with pytest.raises(TypeError, match="Module AST"):
             type_checking.typecheck_source(node, {}, [], int)
 
     def test_empty_body_raises(self):
         mod = ast.Module(body=[], type_ignores=[])
-        with pytest.raises(ValueError, match="at least one statement"):
+        with pytest.raises(TypeError, match="at least one statement"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_last_statement_not_function_raises(self):
         mod = ast.parse("def f() -> int:\n    return 1\nx = 2")
-        with pytest.raises(ValueError, match="last statement to be a function"):
+        with pytest.raises(TypeError, match="last statement to be a function"):
             type_checking.typecheck_source(mod, {}, [], int)
 
     def test_multiple_statements_uses_last_as_function(self):
@@ -463,9 +463,9 @@ class TestTypecheckSourceEdgeCases:
 
 
 class TestTypecheckSourceReportContent:
-    def test_value_error_contains_mypy_output(self):
+    def test_type_error_contains_mypy_output(self):
         mod = ast.parse("def f() -> str:\n    return 123")
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(TypeError) as exc_info:
             type_checking.typecheck_source(mod, {}, [], str)
         msg = str(exc_info.value)
         assert "Type check failed" in msg

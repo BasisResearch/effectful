@@ -195,15 +195,15 @@ def typecheck_source(
 
     Builds a full source with prelude (ctx bindings as type stubs), the module body,
     and a postlude that assigns the function to an expected Callable type so mypy
-    validates the signature. Raises ValueError with mypy output on type errors.
+    validates the signature. Raises TypeError with mypy output on type errors.
     """
     if not isinstance(module, ast.Module) or not module.body:
-        raise ValueError(
+        raise TypeError(
             "typecheck_source requires a Module AST with at least one statement"
         )
     last_stmt = module.body[-1]
     if not isinstance(last_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        raise ValueError(
+        raise TypeError(
             "typecheck_source requires the last statement to be a function definition"
         )
     func_name = last_stmt.name
@@ -255,4 +255,4 @@ def typecheck_source(
         report = (stdout or "").strip() + (
             "\n" + (stderr or "").strip() if stderr else ""
         )
-        raise ValueError(f"Type check failed for synthesized function:\n{report}")
+        raise TypeError(f"Type check failed for synthesized function:\n{report}")
