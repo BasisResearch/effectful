@@ -420,9 +420,6 @@ class RetryLLMHandler(ObjectInterpretation):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
         self.catch_tool_errors = catch_tool_errors
-        self.tool_calls: collections.OrderedDict[str, Message] = (
-            collections.OrderedDict()
-        )
 
     @implements(call_assistant)
     def _call_assistant[T, U](
@@ -437,7 +434,6 @@ class RetryLLMHandler(ObjectInterpretation):
 
         for attempt in range(self.num_retries + 1):
             try:
-                self.tool_calls = collections.OrderedDict()
                 # call assistant, use saved message_sequence
                 with handler({get_message_sequence: lambda: message_sequence}):
                     message, tool_calls, result = fwd(
@@ -447,8 +443,6 @@ class RetryLLMHandler(ObjectInterpretation):
                 # Success! The returned message is the final successful response.
                 # Malformed messages from retries are only in local message_sequence copy,
                 # not in the enclosing message sequence.
-                for tool_call in self.tool_calls.values():
-                    append_message(tool_call)
                 append_message(message)
                 return (message, tool_calls, result)
 
@@ -482,11 +476,12 @@ class RetryLLMHandler(ObjectInterpretation):
         """
         try:
             message = fwd(tool_call)
-            self.tool_calls[message["id"]] = message
             return message
         except self.catch_tool_errors as e:
             error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-            return error.to_feedback_message(self.include_traceback)
+            message = error.to_feedback_message(self.include_traceback)
+            append_message(message)
+            return message
 
 
 class MessageSequence(ObjectInterpretation):
