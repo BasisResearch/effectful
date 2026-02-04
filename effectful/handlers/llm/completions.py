@@ -475,8 +475,7 @@ class RetryLLMHandler(ObjectInterpretation):
         are caught; others propagate up.
         """
         try:
-            message = fwd(tool_call)
-            return message
+            return fwd(tool_call)
         except self.catch_tool_errors as e:
             error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
             message = error.to_feedback_message(self.include_traceback)
