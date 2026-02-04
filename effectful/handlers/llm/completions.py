@@ -470,7 +470,7 @@ class RetryLLMHandler(ObjectInterpretation):
     @implements(completion)
     def _completion(self, *args, **kwargs) -> typing.Any:
         """Inject num_retries for litellm's built-in network error handling."""
-        return fwd(*args, **{**kwargs, "num_retries": self.num_retries})
+        return fwd(*args, **({"num_retries": self.num_retries} | kwargs))
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall) -> Message:
