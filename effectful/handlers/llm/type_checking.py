@@ -24,11 +24,7 @@ def _qualname(t: type) -> str:
     return f"{mod}.{name}"
 
 
-def _collect(
-    typ: type,
-    imports: list[str],
-    type_alias_lines: list[str] | None = None,
-) -> str:
+def _collect(typ: type, imports: list[str], type_alias_lines: list[str]) -> str:
     """Recursively convert a type to annotation string; appends required imports and type alias definitions."""
     if typ is ...:
         return "..."
@@ -41,7 +37,7 @@ def _collect(
     if isinstance(typ, _TypeAliasType) and getattr(typ, "__value__", None) is not None:
         alias_name = getattr(typ, "__name__", None)
         alias_value = getattr(typ, "__value__", None)
-        if alias_name and alias_value is not None and type_alias_lines is not None:
+        if alias_name and alias_value:
             expansion = _collect(alias_value, imports, type_alias_lines)
             type_alias_lines.append(f"type {alias_name} = {expansion}")
             return alias_name
@@ -89,10 +85,6 @@ def _collect(
         name = getattr(typ, "__name__", getattr(typ, "__qualname__", str(typ)))
         if mod == "builtins" or mod == "typing":
             return name
-        if mod == "collections.abc":
-            imports.append("from collections.abc import " + name)
-            return name
-        # Other modules: use qualified name and add import
         q = _qualname(typ)
         if mod and mod != "__main__":
             imports.append(f"import {mod}")
@@ -127,23 +119,16 @@ def _referenced_globals(module: ast.Module) -> set[str]:
 
 
 def _prelude_from_ctx(
-    lexical_ctx: typing.Mapping[str, Any] | None,
-    only_names: set[str] | None = None,
+    lexical_ctx: typing.Mapping[str, Any], used_names: set[str]
 ) -> tuple[list[str], list[str], list[str]]:
-    """Build prelude lines, import lines, and type alias lines from context.
-
-    If only_names is provided, only include ctx keys that are in that set
-    (e.g. names referenced by the synthesized module). This avoids emitting
-    stubs for the entire lexical scope that mypy cannot type-check.
-    """
-    ctx = lexical_ctx or {}
+    """Build prelude lines, import lines, and type alias lines from context. Restricted to symbols in `used_names`"""
     prelude_lines: list[str] = []
     all_imports: list[str] = []
     all_type_aliases: list[str] = []
-    for name, value in ctx.items():
+    for name, value in lexical_ctx.items():
         if name.startswith("__"):
             continue
-        if only_names is not None and name not in only_names:
+        if used_names is not None and name not in used_names:
             continue
         if isinstance(value, types.ModuleType):
             mod_name = getattr(value, "__name__", name)
@@ -211,7 +196,7 @@ def typecheck_source(
     # 1. Prelude: only stub ctx names that the synthesized code actually references
     refs = _referenced_globals(module)
     prelude_lines, all_imports, all_type_aliases = _prelude_from_ctx(
-        ctx, only_names=refs
+        ctx, used_names=refs
     )
 
     # Expected callable annotation for postlude

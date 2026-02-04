@@ -19,12 +19,6 @@ class TestTypecheckSourceSuccess:
         mod = ast.parse("def identity(x: int) -> int:\n    return x")
         type_checking.typecheck_source(mod, {}, [int], int)
 
-    def test_none_ctx(self) -> None:
-        mod = ast.parse("def g() -> str:\n    return 'hi'")
-        type_checking.typecheck_source(
-            mod, typing.cast(typing.Mapping[str, typing.Any], None), [], str
-        )
-
     def test_ctx_with_value_stub(self) -> None:
         mod = ast.parse("def use_x(x: int) -> int:\n    return x")
         type_checking.typecheck_source(mod, {"x": 42}, [int], int)
