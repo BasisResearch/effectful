@@ -221,6 +221,19 @@ def type_to_ast(typ: Any) -> ast.expr:
     raise TypeError(f"type_to_ast: unhandled type {typ}")
 
 
+# globals always present in python runtime, so we should not stub, or import for
+SKIPPED_GLOBALS = (
+    "__builtins__",
+    "__doc__",
+    "__file__",
+    "__loader__",
+    "__name__",
+    "__package__",
+    "__spec__",
+    "_frozen_importlib",
+)
+
+
 def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     """Collect module imports and symbol imports from context.
 
@@ -235,7 +248,7 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     symbol_imports: dict[str, list[tuple[str, str]]] = {}
 
     for name_in_ctx, value in ctx.items():
-        if name_in_ctx.startswith("@"):
+        if name_in_ctx.startswith("@") or name_in_ctx in SKIPPED_GLOBALS:
             # pytest adds @pytest_ar, @py_builtins, etc into the context, we skip
             continue
 
@@ -244,7 +257,6 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
             asname = name_in_ctx if name_in_ctx != mod_name else None
             modules.add((mod_name, asname))
             continue
-
         module = getattr(value, "__module__", None)
         if module in (None, "", "__main__", "builtins"):
             continue
@@ -258,6 +270,7 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
         name_in_module = getattr(value, "__name__", name_in_ctx)
         if not hasattr(sys.modules[module], name_in_module):
             continue
+        modules.add((module, None))
         symbol_imports.setdefault(module, []).append((name_in_module, name_in_ctx))
 
     stmts: list[ast.stmt] = []
@@ -292,16 +305,7 @@ def collect_variable_declarations(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     nodes: list[ast.stmt] = []
 
     for name, value in sorted(ctx.items()):
-        if name in (
-            "__builtins__",
-            "__doc__",
-            "__file__",
-            "__loader__",
-            "__name__",
-            "__package__",
-            "__spec__",
-            "_frozen_importlib",
-        ):
+        if name in SKIPPED_GLOBALS:
             continue
         # Skip modules (handled by collect_imports)
         if isinstance(value, types.ModuleType):
@@ -499,10 +503,14 @@ def mypy_type_check(
     stubs = collect_runtime_type_stubs(ctx)
     variables = collect_variable_declarations(ctx)
 
-    param_types = expected_params if expected_params is not None else []
+    param_types = expected_params
     expected_callable_type: type = typing.cast(
-        type, collections.abc.Callable[param_types, expected_return]
+        type,
+        collections.abc.Callable[param_types, expected_return]
+        if expected_params is not None
+        else collections.abc.Callable[..., expected_return],
     )
+
     expected_callable_ast = type_to_ast(expected_callable_type)
     postlude = ast.AnnAssign(
         target=ast.Name(id="_synthesized_check", ctx=ast.Store()),
