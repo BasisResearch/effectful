@@ -19,7 +19,6 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-import effectful.handlers.llm.type_checking as type_checking
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -273,7 +272,7 @@ def _format_callable_type(callable_type: type[Callable]) -> str:
 
         if param_types is ...:
             params_str = "..."
-        elif isinstance(param_types, (list, tuple)):
+        elif isinstance(param_types, list | tuple):
             params_str = ", ".join(getattr(t, "__name__", str(t)) for t in param_types)
         else:
             params_str = str(param_types)
@@ -449,7 +448,7 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         _validate_signature_ast(last_stmt, self.expected_params)
 
         # Type-check with mypy; pass original module_code so mypy sees exact source
-        type_checking.typecheck_source(
+        evaluation.type_check(
             module, self.ctx, self.expected_params, self.expected_return
         )
 
@@ -618,7 +617,7 @@ def _encodable_callable(
 
     # Ellipsis means any params, skip param validation
     expected_params: list[type] | None = None
-    if param_types is not ... and isinstance(param_types, (list, tuple)):
+    if param_types is not ... and isinstance(param_types, list | tuple):
         expected_params = list(param_types)
 
     return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)

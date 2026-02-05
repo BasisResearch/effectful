@@ -136,7 +136,9 @@ def _prelude_from_ctx(
                 f"import {mod_name}" + (f" as {name}" if name != mod_name else "")
             )
         elif isinstance(value, TypeAliasType):
-            ann_str, imps, type_aliases = _type_to_annotation_str(value)
+            ann_str, imps, type_aliases = _type_to_annotation_str(
+                typing.cast(type, value)
+            )
             all_imports.extend(imps)
             all_type_aliases.extend(type_aliases)
             alias_name = getattr(value, "__name__", name)

@@ -13,6 +13,7 @@ from RestrictedPython import (
     safe_globals,
 )
 
+from effectful.handlers.llm.type_checking import typecheck_source
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 
 
@@ -25,6 +26,27 @@ def parse(source: str, filename: str) -> ast.Module:
     filename: The filename recorded in the resulting AST for tracebacks and tooling.
 
     Returns the parsed AST.
+    """
+    raise NotImplementedError(
+        "An eval provider must be installed in order to parse code."
+    )
+
+
+@defop
+def type_check(
+    module: ast.Module,
+    ctx: typing.Mapping[str, Any],
+    expected_params: list[type] | None,
+    expected_return: type,
+) -> None:
+    """
+    Type check a parsed module against an expected signature and lexical context.
+
+    module: The parsed Python source code module to type check.
+    ctx: The lexical context under which the file should be type checked
+    expected_params, expected_return: The expected signature of the last function in the module.
+
+    Returns None, raises TypeError on typechecking failure.
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to parse code."
@@ -65,6 +87,16 @@ def exec(
 class UnsafeEvalProvider(ObjectInterpretation):
     """UNSAFE provider that handles parse, comple and exec operations
     by shelling out to python *without* any further checks. Only use for testing."""
+
+    @implements(type_check)
+    def type_check(
+        self,
+        module: ast.Module,
+        ctx: typing.Mapping[str, Any],
+        expected_params: list[type] | None,
+        expected_return: type,
+    ) -> None:
+        typecheck_source(module, ctx, expected_params, expected_return)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -115,6 +147,16 @@ class RestrictedEvalProvider(ObjectInterpretation):
         policy: type[RestrictingNodeTransformer] | None = None,
     ):
         self.policy = policy
+
+    @implements(type_check)
+    def type_check(
+        self,
+        module: ast.Module,
+        ctx: typing.Mapping[str, Any],
+        expected_params: list[type] | None,
+        expected_return: type,
+    ) -> None:
+        typecheck_source(module, ctx, expected_params, expected_return)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
