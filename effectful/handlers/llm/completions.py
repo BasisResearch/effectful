@@ -221,7 +221,7 @@ def decode_tool_call(
                 for param_name in raw_args.model_fields_set
             }
         )
-    except (pydantic.ValidationError, TypeError, ValueError) as e:
+    except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
         raise ToolCallDecodingError(
             tool_name, tool_call.id, e, raw_message=raw_message
         ) from e
@@ -300,7 +300,7 @@ def call_assistant[T, U](
         try:
             raw_result = response_model.model_validate_json(serialized_result)
             result = response_format.decode(raw_result.value)  # type: ignore
-        except pydantic.ValidationError as e:
+        except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
