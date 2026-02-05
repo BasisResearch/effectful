@@ -42,6 +42,7 @@ jax = ["jax"]
 numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
+  "mypy",
   "pillow",
   "pydantic",
   "restrictedpython>=8.1"
