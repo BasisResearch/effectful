@@ -147,8 +147,8 @@ def _prelude_from_ctx(
         else:
             try:
                 inferred = nested_type(value).value
-            except Exception:
-                continue
+            except TypeError:
+                inferred = Any
             ann_str, imps, type_aliases = _type_to_annotation_str(
                 typing.cast(type, inferred)
             )
