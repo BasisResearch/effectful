@@ -7,11 +7,9 @@ import typing
 from typing import Any
 
 import mypy.api
+from typing_extensions import TypeAliasType  # noqa: UP035
 
 from effectful.internals.unification import nested_type
-
-# PEP 695 (3.12+); use getattr for forward compatibility
-_TypeAliasType = getattr(typing, "TypeAliasType", type(None))
 
 
 def _qualname(t: type) -> str:
@@ -34,7 +32,7 @@ def _collect(typ: type, imports: list[str], type_alias_lines: list[str]) -> str:
             "(" + ", ".join(_collect(a, imports, type_alias_lines) for a in typ) + ")"
         )
     # PEP 695 type alias (type X = Y; Python 3.12+)
-    if isinstance(typ, _TypeAliasType) and getattr(typ, "__value__", None) is not None:
+    if isinstance(typ, TypeAliasType) and getattr(typ, "__value__", None) is not None:
         alias_name = getattr(typ, "__name__", None)
         alias_value = getattr(typ, "__value__", None)
         if alias_name and alias_value:
@@ -99,7 +97,7 @@ def _referenced_globals(module: ast.Module) -> set[str]:
     defined: set[str] = set()
 
     for node in ast.walk(module):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.FunctionDef | ast.AsyncFunctionDef)):
             defined.add(node.name)
             for a in node.args.args + node.args.posonlyargs:
                 defined.add(a.arg)
@@ -137,7 +135,7 @@ def _prelude_from_ctx(
             prelude_lines.append(
                 f"import {mod_name}" + (f" as {name}" if name != mod_name else "")
             )
-        elif isinstance(value, _TypeAliasType):
+        elif isinstance(value, TypeAliasType):
             ann_str, imps, type_aliases = _type_to_annotation_str(value)
             all_imports.extend(imps)
             all_type_aliases.extend(type_aliases)
@@ -187,7 +185,7 @@ def typecheck_source(
             "typecheck_source requires a Module AST with at least one statement"
         )
     last_stmt = module.body[-1]
-    if not isinstance(last_stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    if not isinstance(last_stmt, (ast.FunctionDef | ast.AsyncFunctionDef)):
         raise TypeError(
             "typecheck_source requires the last statement to be a function definition"
         )

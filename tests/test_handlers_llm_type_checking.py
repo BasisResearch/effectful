@@ -420,10 +420,6 @@ class TestTypecheckSourceInvalidInput:
 # --- typecheck_source: ctx with type aliases (PEP 695) ---
 
 
-@pytest.mark.skipif(
-    not hasattr(typing, "TypeAliasType"),
-    reason="PEP 695 type alias requires Python 3.12+",
-)
 class TestTypecheckSourceCtxTypeAlias:
     def test_ctx_value_type_alias_emits_definition(self):
         type MyInt = int
