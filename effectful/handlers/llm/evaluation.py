@@ -279,7 +279,10 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     if module_pairs:
         stmts.append(
             ast.Import(
-                names=[ast.alias(name=m, asname=asname or None) for m, asname in module_pairs]
+                names=[
+                    ast.alias(name=m, asname=asname or None)
+                    for m, asname in module_pairs
+                ]
             )
         )
     for module in sorted(symbol_imports):
