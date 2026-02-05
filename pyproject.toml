@@ -45,6 +45,7 @@ llm = [
   "mypy",
   "pillow",
   "pydantic",
+  "typing_extensions",
   "restrictedpython>=8.1"
 ]
 prettyprinter = ["prettyprinter"]
