@@ -275,11 +275,11 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
 
     stmts: list[ast.stmt] = []
     # Module imports: list of (module_name, asname_in_context)
-    module_pairs = sorted((m, asname) for m, asname in modules)
+    module_pairs = sorted((m, asname or "") for m, asname in modules)
     if module_pairs:
         stmts.append(
             ast.Import(
-                names=[ast.alias(name=m, asname=asname) for m, asname in module_pairs]
+                names=[ast.alias(name=m, asname=asname or None) for m, asname in module_pairs]
             )
         )
     for module in sorted(symbol_imports):
