@@ -586,14 +586,10 @@ def mypy_type_check(
     # (variable declarations and class stubs) that could collide with
     # function definitions in the synthesized module.
     declared_names = {
-        stmt.target.id  # type: ignore[union-attr]
+        stmt.target.id
         for stmt in variables
         if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
-    } | {
-        stmt.name  # type: ignore[union-attr]
-        for stmt in stubs
-        if isinstance(stmt, ast.ClassDef)
-    }
+    } | {stmt.name for stmt in stubs if isinstance(stmt, ast.ClassDef)}
 
     # Find all function names in the synthesized module that collide
     synthesized_func_names = {

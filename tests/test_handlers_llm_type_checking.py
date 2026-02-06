@@ -1365,13 +1365,13 @@ class TestMypyTypeCheckNameCollision:
                 return s.count('a')
         """)
         module = ast.parse(source)
-        original_name = module.body[-1].name  # type: ignore[union-attr]
+        original_name = module.body[-1].name
 
         ctx = get_context()
         mypy_type_check(module, ctx, [str], int)
 
         # Original AST must be untouched
-        assert module.body[-1].name == original_name  # type: ignore[union-attr]
+        assert module.body[-1].name == original_name
 
     def test_helper_reference_updated_after_rename(self):
         """When a helper function is renamed, calls to it inside other
