@@ -1,7 +1,8 @@
 import builtins
+import typing
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, NamedTuple, TypedDict
+from typing import Annotated, Any, NamedTuple, TypedDict
 
 import pydantic
 import pytest
@@ -932,7 +933,7 @@ result = helper()"""
             module_code="""def add(a: int, b: int) -> str:
     return str(a + b)"""
         )
-        with pytest.raises(ValueError, match="expected function with return type int"):
+        with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with handler(eval_provider):
                 encodable.decode(source)
 
@@ -965,6 +966,32 @@ result = helper()"""
             result = encodable.decode(source)
         assert callable(result)
         assert result(2, 3) == 5
+
+    @pytest.mark.parametrize(
+        "eval_provider", [pytest.param(UnsafeEvalProvider(), id="unsafe")]
+    )
+    def test_typed_callable_decode_when_source_uses_annotated(self, eval_provider):
+        """Decoding works when synthesized module code uses typing.Annotated in the function."""
+        encodable = Encodable.define(Callable[[int], int], {"typing": typing})
+        source = SynthesizedFunction(
+            module_code='def f(x: typing.Annotated[int, "positive"]) -> int:\n    return x'
+        )
+        with handler(eval_provider):
+            result = encodable.decode(source)
+        assert callable(result)
+        assert result(42) == 42
+
+    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+    def test_typed_callable_decode_with_expected_annotated(self, eval_provider):
+        """Decoding works when expected signature uses Annotated (stripped for typecheck stub)."""
+        encodable = Encodable.define(
+            Callable[[Annotated[int, "value"]], Annotated[int, "result"]], {}
+        )
+        source = SynthesizedFunction(module_code="def g(x: int) -> int:\n    return x")
+        with handler(eval_provider):
+            result = encodable.decode(source)
+        assert callable(result)
+        assert result(7) == 7
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
     def test_ellipsis_callable_skips_param_validation(self, eval_provider):
@@ -1064,7 +1091,7 @@ result = helper()"""
             module_code="""def get_value() -> str:
     return "wrong type\""""
         )
-        with pytest.raises(ValueError, match="expected function with return type int"):
+        with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with handler(eval_provider):
                 encodable.decode(source)
 

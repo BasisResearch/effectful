@@ -42,8 +42,11 @@ jax = ["jax"]
 numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
+  "mypy",
+  "autoflake",
   "pillow",
   "pydantic",
+  "typing_extensions",
   "restrictedpython>=8.1"
 ]
 prettyprinter = ["prettyprinter"]

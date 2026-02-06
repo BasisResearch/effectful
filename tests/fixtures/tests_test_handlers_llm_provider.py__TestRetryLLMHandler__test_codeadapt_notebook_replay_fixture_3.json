@@ -1,6 +1,6 @@
 {
-  "id": "chatcmpl-D6JLdSh8U5HPoAJDF23CxxLCRTZJ5",
-  "created": 1770396713,
+  "id": "chatcmpl-D6JLu2tQyitxJHHtmEEWHaGuWVkCl",
+  "created": 1770396730,
   "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
   "system_fingerprint": "fp_ad98c18a04",
@@ -23,8 +23,8 @@
   ],
   "usage": {
     "completion_tokens": 100,
-    "prompt_tokens": 937,
-    "total_tokens": 1037,
+    "prompt_tokens": 30657,
+    "total_tokens": 30757,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
@@ -35,7 +35,7 @@
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
-      "cached_tokens": 0,
+      "cached_tokens": 15872,
       "text_tokens": null,
       "image_tokens": null
     }

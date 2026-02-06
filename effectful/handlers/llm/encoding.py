@@ -272,7 +272,7 @@ def _format_callable_type(callable_type: type[Callable]) -> str:
 
         if param_types is ...:
             params_str = "..."
-        elif isinstance(param_types, (list, tuple)):
+        elif isinstance(param_types, list | tuple):
             params_str = ", ".join(getattr(t, "__name__", str(t)) for t in param_types)
         else:
             params_str = str(param_types)
@@ -366,14 +366,6 @@ def _validate_signature_callable(
             "decode() requires synthesized function to have a return type annotation"
         )
 
-    expected_name = getattr(expected_return, "__name__", str(expected_return))
-    actual_name = getattr(actual_return, "__name__", str(actual_return))
-    if expected_name != actual_name:
-        raise ValueError(
-            f"decode() expected function with return type {expected_name}, "
-            f"got {actual_name}"
-        )
-
 
 @dataclass
 class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
@@ -454,6 +446,11 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
         # Validate signature from AST before execution
         _validate_signature_ast(last_stmt, self.expected_params)
+
+        # Type-check with mypy; pass original module_code so mypy sees exact source
+        evaluation.type_check(
+            module, self.ctx, self.expected_params, self.expected_return
+        )
 
         # Compile and execute
         # https://docs.python.org/3/library/functions.html#exec
@@ -620,7 +617,7 @@ def _encodable_callable(
 
     # Ellipsis means any params, skip param validation
     expected_params: list[type] | None = None
-    if param_types is not ... and isinstance(param_types, (list, tuple)):
+    if param_types is not ... and isinstance(param_types, list | tuple):
         expected_params = list(param_types)
 
     return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)
