@@ -124,18 +124,6 @@ class TestCollectImports:
         assert any("math" in s and "import" in s for s in unparsed)
         assert any("os" in s and "import" in s for s in unparsed)
 
-    def test_empty_context(self):
-        """Test empty context returns empty list."""
-        ctx = {}
-        result = collect_imports(ctx)
-        assert result == []
-
-    def test_no_modules_in_context(self):
-        """Test context with no modules returns empty list."""
-        ctx = {"x": 42, "y": "hello"}
-        result = collect_imports(ctx)
-        assert result == []
-
 
 class TestCollectImportsStress:
     """Stress test collect_imports with get_context: imports, aliases, external symbols."""

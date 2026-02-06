@@ -3,6 +3,7 @@ import builtins
 import collections.abc
 import inspect
 import linecache
+import subprocess
 import sys
 import types
 import typing
@@ -535,6 +536,15 @@ def mypy_type_check(
     )
     stub_module = ast.Module(body=full_body, type_ignores=[])
     source = ast.unparse(ast.fix_missing_locations(stub_module))
+    source = (
+        subprocess.run(
+            ["ruff", "check", "--select", "I,F401", "--fix", "--exit-zero", "-"],
+            input=source,
+            text=True,
+            capture_output=True,
+        ).stdout
+        or source
+    )
 
     stdout, stderr, status = mypy_api.run(
         [

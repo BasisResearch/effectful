@@ -43,6 +43,7 @@ numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
   "mypy",
+  "ruff",
   "pillow",
   "pydantic",
   "typing_extensions",
