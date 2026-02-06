@@ -2,6 +2,7 @@
 
 import ast
 import inspect
+import textwrap
 import types
 import typing
 from collections import ChainMap
@@ -1267,3 +1268,122 @@ def outer(x: int) -> bool:
         ctx = ChainMap({"MyErr": MyErr}, get_context())
         with pytest.raises(TypeError):
             mypy_type_check(module, ctx, [], MyErr)
+
+
+class TestMypyTypeCheckNameCollision:
+    """Tests that mypy_type_check renames synthesized functions whose names
+    collide with variable declarations or class stubs from the context."""
+
+    def test_single_function_collides_with_variable(self):
+        """Function name matches a variable in context; should still pass type-check."""
+        count_char = lambda s: s.count("a")  # noqa: E731, F841
+
+        source = textwrap.dedent("""\
+            def count_char(s: str) -> int:
+                return s.count('a')
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        # Should NOT raise — the collision is handled by renaming
+        mypy_type_check(module, ctx, [str], int)
+
+    def test_colliding_function_still_detects_type_errors(self):
+        """Even after renaming, real type errors are still caught."""
+        count_char = lambda s: s.count("a")  # noqa: E731, F841
+
+        source = textwrap.dedent("""\
+            def count_char(s: str) -> int:
+                return s  # wrong return type
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        with pytest.raises(TypeError):
+            mypy_type_check(module, ctx, [str], int)
+
+    def test_no_collision_passes_normally(self):
+        """No name collision — normal type-check should work as before."""
+        x = 42  # noqa: F841
+
+        source = textwrap.dedent("""\
+            def some_unique_func(s: str) -> int:
+                return len(s)
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        mypy_type_check(module, ctx, [str], int)
+
+    def test_multiple_functions_one_collides(self):
+        """Module has helper + main function; only main collides with context."""
+        process = "some_value"  # noqa: F841
+
+        source = textwrap.dedent("""\
+            def helper(x: int) -> str:
+                return str(x)
+            def process(items: list[int]) -> list[str]:
+                return [helper(i) for i in items]
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        mypy_type_check(module, ctx, [list[int]], list[str])
+
+    def test_multiple_functions_both_collide(self):
+        """Both helper and main function names collide with context variables."""
+        helper = lambda: None  # noqa: E731, F841
+        compute = 123  # noqa: F841
+
+        source = textwrap.dedent("""\
+            def helper(x: int) -> str:
+                return str(x)
+            def compute(n: int) -> str:
+                return helper(n)
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        mypy_type_check(module, ctx, [int], str)
+
+    def test_collision_with_class_stub(self):
+        """Function name collides with a runtime class stub in context."""
+
+        class MyModel:
+            value: int
+
+        # Also define a function named MyModel in synthesized code
+        source = textwrap.dedent("""\
+            def MyModel(x: int) -> int:
+                return x * 2
+        """)
+        module = ast.parse(source)
+        ctx = ChainMap({"MyModel": MyModel}, get_context())
+        mypy_type_check(module, ctx, [int], int)
+
+    def test_collision_does_not_mutate_original_ast(self):
+        """Renaming should not modify the original module AST."""
+        count_char = lambda s: s.count("a")  # noqa: E731, F841
+
+        source = textwrap.dedent("""\
+            def count_char(s: str) -> int:
+                return s.count('a')
+        """)
+        module = ast.parse(source)
+        original_name = module.body[-1].name  # type: ignore[union-attr]
+
+        ctx = get_context()
+        mypy_type_check(module, ctx, [str], int)
+
+        # Original AST must be untouched
+        assert module.body[-1].name == original_name  # type: ignore[union-attr]
+
+    def test_helper_reference_updated_after_rename(self):
+        """When a helper function is renamed, calls to it inside other
+        functions are also updated so mypy still sees valid code."""
+        validate = True  # noqa: F841 — collides with helper name
+
+        source = textwrap.dedent("""\
+            def validate(x: int) -> bool:
+                return x > 0
+            def run(x: int) -> bool:
+                return validate(x)
+        """)
+        module = ast.parse(source)
+        ctx = get_context()
+        mypy_type_check(module, ctx, [int], bool)
