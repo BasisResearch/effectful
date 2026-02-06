@@ -367,7 +367,9 @@ def signature_to_ast(name: str, sig: inspect.Signature) -> ast.FunctionDef:
 
     # Build return annotation
     returns: ast.expr | None = None
-    if sig.return_annotation is not inspect.Signature.empty:
+    if (
+        sig.return_annotation is not inspect.Signature.empty and name != "__init__"
+    ):  # mypy complains that __init__ must not return anything
         try:
             returns = type_to_ast(sig.return_annotation)
         except TypeError:
