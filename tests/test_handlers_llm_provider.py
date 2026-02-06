@@ -642,6 +642,7 @@ class TestRetryLLMHandler:
             The template:
             {template_name}
             Args/kwargs are provided as JSON strings (args_json, kwargs_json).
+            Generated program MUST use the name `solution` not `generate_paragraph`.
             """
             raise NotHandled
 
