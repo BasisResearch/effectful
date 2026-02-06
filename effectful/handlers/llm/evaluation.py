@@ -97,21 +97,6 @@ def exec(
 
 
 @defop
-def doctest_check(obj: object, ctx: typing.Mapping[str, Any]) -> None:
-    """
-    Run doctests for an object under the given context.
-
-    obj: The object whose doctests should be tested.
-    ctx: The namespace used to run doctest examples.
-
-    Returns None, raises TypeError on doctest failure.
-    """
-    raise NotImplementedError(
-        "An eval provider must be installed in order to run doctests."
-    )
-
-
-@defop
 def test(obj: object, ctx: typing.Mapping[str, Any]) -> None:
     """
     Run doctests for a synthesized program using the current doctest stack.
@@ -705,10 +690,6 @@ class UnsafeEvalProvider(ObjectInterpretation):
     ) -> None:
         mypy_type_check(module, ctx, expected_params, expected_return)
 
-    @implements(doctest_check)
-    def doctest_check(self, obj: object, ctx: typing.Mapping[str, Any]) -> None:
-        _run_doctests(obj, ctx)
-
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
         # Cache source under `filename` so inspect.getsource() can retrieve it later.
@@ -768,10 +749,6 @@ class RestrictedEvalProvider(ObjectInterpretation):
         expected_return: type,
     ) -> None:
         mypy_type_check(module, ctx, expected_params, expected_return)
-
-    @implements(doctest_check)
-    def doctest_check(self, obj: object, ctx: typing.Mapping[str, Any]) -> None:
-        _run_doctests(obj, ctx)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
