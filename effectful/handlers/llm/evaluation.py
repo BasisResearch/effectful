@@ -519,44 +519,28 @@ class _RenameTransformer(ast.NodeTransformer):
 
     Given a mapping ``{old_name: new_name}``, renames:
     - ``FunctionDef.name`` for matching definitions
-    - ``ast.Name.id`` references, but **not** function parameters or
-      other local bindings that merely shadow the name.
+    - ``ast.Name.id`` references throughout the entire AST
+
+    The rename is applied uniformly because it only targets module-level
+    function definitions that collide with context variable declarations.
+    Local assignments inside function bodies are in their own scope and
+    cannot cause the mypy ``[no-redef]`` error, so they need no special
+    handling.
     """
 
     def __init__(self, rename_map: dict[str, str]):
         self.rename_map = rename_map
-        # Stack of sets tracking parameter names per function scope so we
-        # don't accidentally rename a parameter that shadows a top-level name.
-        self._param_scopes: list[set[str]] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        # Rename the definition itself
         if node.name in self.rename_map:
             node.name = self.rename_map[node.name]
-
-        # Collect parameter names for this scope
-        params: set[str] = set()
-        for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
-            params.add(arg.arg)
-        if node.args.vararg:
-            params.add(node.args.vararg.arg)
-        if node.args.kwarg:
-            params.add(node.args.kwarg.arg)
-
-        self._param_scopes.append(params)
         self.generic_visit(node)
-        self._param_scopes.pop()
         return node
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_Name(self, node: ast.Name) -> ast.Name:
         if node.id in self.rename_map:
-            # Don't rename if it's shadowed by a parameter in any enclosing function
-            # TODO: Should we support the case where LLM attempts to redefine/shadow a name and call this redefinition?
-            for scope in self._param_scopes:
-                if node.id in scope:
-                    return node
             node.id = self.rename_map[node.id]
         return node
 
