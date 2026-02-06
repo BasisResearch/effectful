@@ -36,7 +36,7 @@ from effectful.handlers.llm.completions import (
     get_message_sequence,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import DoctestHandler, UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1084,6 +1084,20 @@ def synthesize_counter(char: str) -> Callable[[str], int]:
 
 
 @Template.define
+def synthesize_counter_with_doctest(char: str) -> Callable[[str], int]:
+    """Generate a Python function named count_char that counts occurrences of the character '{char}'
+    in a given input string.
+
+    The function should be case-sensitive.
+
+    Examples:
+        >>> count_char("banana")
+        4
+    """
+    raise NotHandled
+
+
+@Template.define
 def synthesize_is_even() -> Callable[[int], bool]:
     """Generate a Python function that checks if a number is even.
 
@@ -1109,6 +1123,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             add_func = synthesize_adder()
@@ -1125,6 +1140,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             process_func = synthesize_string_processor()
@@ -1141,6 +1157,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
             count_a = synthesize_counter("a")
@@ -1150,6 +1167,18 @@ class TestCallableSynthesis:
             assert count_a("cherry") == 0
             assert count_a("aardvark") == 3
             assert count_a("AAA") == 0  # case-sensitive
+
+    @requires_openai
+    def test_synthesized_doctest_runs(self, request):
+        """Test that doctests run for synthesized functions."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            with pytest.raises(ResultDecodingError, match="doctest failed"):
+                synthesize_counter_with_doctest("a")
 
     @requires_openai
     def test_callable_type_signature_in_schema(self, request):
@@ -1171,6 +1200,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             # Synthesize a function
@@ -1195,6 +1225,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             is_even = synthesize_is_even()
@@ -1217,6 +1248,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
+            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             multiply_three = synthesize_three_param_func()

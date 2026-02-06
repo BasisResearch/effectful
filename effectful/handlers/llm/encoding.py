@@ -475,6 +475,11 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         # Validate signature from runtime callable after execution
         _validate_signature_callable(result, self.expected_params, self.expected_return)
 
+        # Run doctests from the original template docstring (if any)
+        module_obj = types.ModuleType(filename)
+        module_obj.__dict__.update(g)
+        evaluation.test(module_obj, module_obj.__dict__)
+
         return result
 
     def serialize(
