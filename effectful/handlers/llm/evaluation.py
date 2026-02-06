@@ -536,7 +536,6 @@ def mypy_type_check(
     )
     stub_module = ast.Module(body=full_body, type_ignores=[])
     source = ast.unparse(ast.fix_missing_locations(stub_module))
-    print(f"\n============ SOURCE (BEFORE) ============\n{source}")
     source = (
         subprocess.run(
             [
@@ -555,7 +554,6 @@ def mypy_type_check(
         ).stdout
         or source
     )
-    print(f"\n============ SOURCE (AFTER) ============\n{source}")
 
     stdout, stderr, status = mypy_api.run(
         [
