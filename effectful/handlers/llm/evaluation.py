@@ -225,6 +225,7 @@ def type_to_ast(typ: Any) -> ast.expr:
 # globals always present in python runtime, so we should not stub, or import for
 SKIPPED_GLOBALS = (
     "__builtins__",
+    "__annotations__",
     "__doc__",
     "__file__",
     "__loader__",
@@ -536,17 +537,14 @@ def mypy_type_check(
     )
     stub_module = ast.Module(body=full_body, type_ignores=[])
     source = ast.unparse(ast.fix_missing_locations(stub_module))
+    # Drop unused imports/vars
     source = (
         subprocess.run(
             [
-                "ruff",
-                "check",
-                "--select",
-                "I,F401",
-                "--fix",
-                "--unsafe-fixes",
-                "--exit-zero",
-                "-",
+                "autoflake",
+                "--remove-all-unused-imports",
+                "--remove-unused-variables",
+                "-",  # stdin
             ],
             input=source,
             text=True,
