@@ -3,7 +3,6 @@ import builtins
 import collections.abc
 import inspect
 import linecache
-import subprocess
 import sys
 import types
 import typing
@@ -11,6 +10,7 @@ from collections.abc import Mapping
 from types import CodeType
 from typing import Any, TypeAliasType
 
+import autoflake
 from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
@@ -326,7 +326,12 @@ def collect_variable_declarations(ctx: Mapping[str, Any]) -> list[ast.stmt]:
 
         # skip values that can be imported from
         # somewhere, mypy can just use the imports
-        if hasattr(value, "__qualname__") and "<locals>" not in value.__qualname__:
+        if (
+            hasattr(value, "__qualname__")
+            and hasattr(value, "__module__")
+            and "<locals>" not in value.__qualname__
+            and value.__module__ != "__main__"
+        ):
             continue
 
         try:
@@ -540,19 +545,14 @@ def mypy_type_check(
     stub_module = ast.Module(body=full_body, type_ignores=[])
     source = ast.unparse(ast.fix_missing_locations(stub_module))
     # Drop unused imports/vars
-    source = (
-        subprocess.run(
-            [
-                "autoflake",
-                "--remove-all-unused-imports",
-                "--remove-unused-variables",
-                "-",  # stdin
-            ],
-            input=source,
-            text=True,
-            capture_output=True,
-        ).stdout
-        or source
+
+    source = autoflake.fix_code(
+        source,
+        additional_imports=None,
+        expand_star_imports=True,
+        remove_all_unused_imports=True,
+        remove_duplicate_keys=True,
+        remove_unused_variables=True,
     )
 
     stdout, stderr, status = mypy_api.run(
