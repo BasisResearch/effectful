@@ -163,6 +163,14 @@ def type_to_ast(typ: Any) -> ast.expr:
             result = ast.BinOp(left=result, op=ast.BitOr(), right=type_to_ast(arg))
         return result
 
+    # Handle typing.Annotated: use the first argument (the actual type) for typecheck stubs
+    origin = typing.get_origin(typ)
+    if origin is typing.Annotated:
+        args = typing.get_args(typ)
+        if args:
+            return type_to_ast(args[0])
+        raise TypeError("type_to_ast: Annotated must have at least one type argument")
+
     # Handle generic aliases (e.g., Callable[[int], str], list[int])
     origin = typing.get_origin(typ)
     if origin is not None:

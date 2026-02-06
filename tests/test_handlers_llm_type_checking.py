@@ -7,7 +7,7 @@ import typing
 from collections import ChainMap
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 import pydantic
 import pytest
@@ -320,6 +320,28 @@ class TestTypeToAstTypingAnnotations:
         typ = typing.Sequence[int]
         result = type_to_ast(typ)
         assert ast.unparse(result) == "collections.abc.Sequence[int]"
+
+
+class TestTypeToAstAnnotated:
+    """Test type_to_ast with typing.Annotated (strips to inner type for typecheck stubs)."""
+
+    def test_annotated_strips_to_inner_type(self):
+        """Annotated[int, "meta"] renders as int."""
+        typ = Annotated[int, "meta"]
+        result = type_to_ast(typ)
+        assert ast.unparse(result) == "int"
+
+    def test_annotated_with_multiple_metadata(self):
+        """Annotated[str, "a", "b"] strips to str."""
+        typ = Annotated[str, "a", "b"]
+        result = type_to_ast(typ)
+        assert ast.unparse(result) == "str"
+
+    def test_annotated_generic(self):
+        """Annotated[list[int], "tag"] strips to list[int]."""
+        typ = Annotated[list[int], "tag"]
+        result = type_to_ast(typ)
+        assert ast.unparse(result) == "list[int]"
 
 
 class TestTypeToAstBuiltinAnnotations:
@@ -914,6 +936,64 @@ def sum_list(nums: list[int]) -> int:
 """
         module = ast.parse(source)
         mypy_type_check(module, get_context(), [list], int)
+
+    def test_typecheck_passes_with_fully_annotated_function(self):
+        """Typechecking passes when the module has full type annotations (params + return) matching expected."""
+        _ = 1  # noqa: F841
+        source = """
+def add(x: int, y: int) -> int:
+    return x + y
+"""
+        module = ast.parse(source)
+        mypy_type_check(module, get_context(), [int, int], int)
+
+    def test_typecheck_passes_with_annotated_generics(self):
+        """Typechecking passes when the function uses generic annotations (list, dict) in params."""
+        _ = list  # noqa: F841
+        _ = dict  # noqa: F841
+        source = """
+def process(nums: list[int], mapping: dict[str, int]) -> int:
+    return len(nums) + len(mapping)
+"""
+        module = ast.parse(source)
+        mypy_type_check(module, get_context(), [list, dict], int)
+
+    def test_typecheck_passes_when_module_uses_typing_annotated(self):
+        """Typechecking passes when the function uses typing.Annotated in params and return."""
+        from typing import Annotated  # noqa: F401 - in context for get_context
+
+        source = """
+def f(x: Annotated[int, "positive"], y: Annotated[str, "name"]) -> Annotated[bool, "ok"]:
+    return len(y) > x
+"""
+        module = ast.parse(source)
+        mypy_type_check(module, get_context(), [int, str], bool)
+
+    def test_typecheck_passes_with_expected_annotated(self):
+        """Typechecking passes when expected params/return use Annotated (stripped for stub)."""
+        _ = 1  # noqa: F841
+        source = "def g(x: int) -> int:\n    return x"
+        module = ast.parse(source)
+        mypy_type_check(
+            module,
+            get_context(),
+            [Annotated[int, "value"]],
+            Annotated[int, "result"],
+        )
+
+    def test_typecheck_symbol_in_annotated_metadata_does_not_crash_mypy(self):
+        """A symbol (type/class) in Annotated metadata is resolved from context and does not crash mypy."""
+
+        class Tag:
+            """Metadata marker class in context."""
+
+        source = """
+def f(x: Annotated[int, Tag]) -> int:
+    return x
+"""
+        module = ast.parse(source)
+        ctx = get_context()
+        mypy_type_check(module, ctx, [int], int)
 
 
 class TestMypyTypeCheckFailures:

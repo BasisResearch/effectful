@@ -9,6 +9,7 @@ import functools
 import inspect
 import json
 import os
+import typing
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -1229,6 +1230,17 @@ class TestCallableSynthesis:
             assert multiply_three(2, 3, 4) == 24
             assert multiply_three(1, 1, 1) == 1
             assert multiply_three(5, 0, 10) == 0
+
+    def test_synthesized_program_with_annotated_decodes(self):
+        """Decoding a synthesized program that uses typing.Annotated in source works."""
+        encodable = Encodable.define(Callable[[int], int], {"typing": typing})
+        source = SynthesizedFunction(
+            module_code='def f(x: typing.Annotated[int, "positive"]) -> int:\n    return x'
+        )
+        with handler(UnsafeEvalProvider()):
+            result = encodable.decode(source)
+        assert callable(result)
+        assert result(10) == 10
 
 
 class TestMessageSequence:
