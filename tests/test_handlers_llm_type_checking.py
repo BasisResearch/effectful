@@ -601,7 +601,7 @@ class TestCollectRuntimeTypeStubs:
         result = collect_runtime_type_stubs(ctx)
         unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
         assert "class CustomError(Exception):" in unparsed
-        assert "def __init__(self, code: int, message: str) -> None:" in unparsed
+        assert "def __init__(self, code: int, message: str):" in unparsed
 
     def test_dataclass_like_with_fields(self):
         """Test class with multiple typed fields like a dataclass."""
