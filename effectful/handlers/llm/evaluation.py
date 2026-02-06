@@ -538,7 +538,16 @@ def mypy_type_check(
     source = ast.unparse(ast.fix_missing_locations(stub_module))
     source = (
         subprocess.run(
-            ["ruff", "check", "--select", "I,F401", "--fix", "--exit-zero", "-"],
+            [
+                "ruff",
+                "check",
+                "--select",
+                "I,F401",
+                "--fix",
+                "--unsafe-fixes",
+                "--exit-zero",
+                "-",
+            ],
             input=source,
             text=True,
             capture_output=True,
