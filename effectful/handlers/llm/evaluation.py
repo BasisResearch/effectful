@@ -243,7 +243,7 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
       ``from <module> import <name>`` or ``from <module> import <name> as <alias>``.
     """
     # (module_name, asname_in_context) for plain imports; asname is None when same as module_name
-    modules: set[tuple[str, str | None]] = set()
+    modules: set[tuple[str, str | None]] = set((k, None) for k in sys.modules.keys())
     # module -> list of (name_in_module, name_in_context) for from-imports
     symbol_imports: dict[str, list[tuple[str, str]]] = {}
 
@@ -367,7 +367,7 @@ def signature_to_ast(name: str, sig: inspect.Signature) -> ast.FunctionDef:
         except TypeError:
             returns = type_to_ast(typing.Any)
 
-    node = ast.FunctionDef(  # type: ignore
+    node = ast.FunctionDef(
         name=name,
         args=ast.arguments(
             posonlyargs=[],
