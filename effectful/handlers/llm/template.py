@@ -1,11 +1,14 @@
+import abc
+import collections
+import functools
 import inspect
 import types
 import typing
-from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
+from effectful.ops.semantics import handler
 from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, Operation
 
 
@@ -183,7 +186,7 @@ class Template[**P, T](Tool[P, T]):
 
     """
 
-    __context__: ChainMap[str, Any]
+    __context__: collections.ChainMap[str, Any]
 
     @property
     def __prompt_template__(self) -> str:
@@ -283,7 +286,7 @@ class Template[**P, T](Tool[P, T]):
             frame = frame.f_back
 
         contexts.append(globals_proxy)
-        context: ChainMap[str, Any] = ChainMap(
+        context: collections.ChainMap[str, Any] = collections.ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
 
@@ -291,3 +294,64 @@ class Template[**P, T](Tool[P, T]):
         op.__context__ = context  # type: ignore[attr-defined]
 
         return typing.cast(Template[Q, V], op)
+
+
+class Agent(abc.ABC):
+    """Mixin that gives each instance a persistent LLM message history.
+
+    Subclass and decorate methods with :func:`Template.define`.
+    Each instance accumulates messages across calls so the LLM sees
+    prior conversation context.
+
+    Agents compose freely with :func:`dataclasses.dataclass` and other
+    base classes.  Instance attributes are available in template
+    docstrings via ``{self.attr}``.
+
+    Example::
+
+        import dataclasses
+        from effectful.handlers.llm import Agent, Template
+        from effectful.handlers.llm.completions import LiteLLMProvider
+        from effectful.ops.semantics import handler
+        from effectful.ops.types import NotHandled
+
+        @dataclasses.dataclass
+        class ChatBot(Agent):
+            bot_name: str = dataclasses.field(default="ChatBot")
+
+            @Template.define
+            def send(self, user_input: str) -> str:
+                \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
+                raise NotHandled
+
+        provider = LiteLLMProvider()
+        chatbot = ChatBot()
+
+        with handler(provider):
+            chatbot.send("Hi! How are you? I am in France.")
+            chatbot.send("Remind me again, where am I?")  # sees prior context
+
+    """
+
+    __history__: collections.OrderedDict[str, Any]
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        prop = functools.cached_property(lambda _: collections.OrderedDict())
+        prop.__set_name__(cls, "__history__")
+        cls.__history__ = prop
+
+        for name in list(cls.__dict__):
+            attr = cls.__dict__[name]
+            if not isinstance(attr, Template):
+                continue
+            _template = attr
+
+            @functools.wraps(_template)
+            def wrapper(self, *args, _t=_template, **kwargs):
+                from effectful.handlers.llm.completions import get_message_sequence
+
+                with handler({get_message_sequence: lambda: self.__history__}):
+                    return _t(self, *args, **kwargs)
+
+            setattr(cls, name, wrapper)
