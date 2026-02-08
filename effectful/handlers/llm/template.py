@@ -110,6 +110,20 @@ class _BoundInstance[T]:
     instance: T
 
 
+def _make_context_tool[T](name: str, value: T) -> Tool[[], T]:
+    """Create a synthetic read-only Tool for a lexical variable."""
+    from effectful.internals.unification import nested_type
+
+    def reader():
+        return value
+
+    reader.__name__ = name
+    reader.__doc__ = f"Read the value of lexical variable `{name}`"
+    reader.__annotations__ = {"return": nested_type(value).value}
+
+    return Tool.define(reader)
+
+
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -187,20 +201,32 @@ class Template[**P, T](Tool[P, T]):
                 continue
 
             # Collect tools in context
-            if isinstance(obj, Tool):
+            elif isinstance(obj, Tool):
                 result[name] = obj
 
-            if isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
+            elif isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
                 result[name] = obj.__func__
 
             # Collect tools as methods on any bound instances
-            if isinstance(obj, _BoundInstance):
+            elif isinstance(obj, _BoundInstance):
                 for instance_name in obj.instance.__dir__():
                     if instance_name.startswith(INSTANCE_OP_PREFIX):
                         continue
                     instance_obj = getattr(obj.instance, instance_name)
                     if isinstance(instance_obj, Tool):
                         result[instance_name] = instance_obj
+
+            # Make tools for lexical variables
+            elif not (
+                name.startswith("__")
+                or isinstance(obj, Operation)
+                or inspect.isclass(obj)
+                or inspect.isbuiltin(obj)
+                or inspect.ismodule(obj)
+                or inspect.isroutine(obj)
+                or inspect.isabstract(obj)
+            ):
+                result[name] = _make_context_tool(name, obj)
 
         return result
 
