@@ -561,17 +561,19 @@ class ToolCallEncodable[T](
     ctx: Mapping[str, Any]
 
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
-        tool_name = value.tool.__name__
-        arguments = value.bound_args.arguments
-        adapter = _param_model(inspect.signature(value.tool))
-        json_str = adapter.dump_json(arguments).decode("utf-8")
+        encoded_args = _param_model(inspect.signature(value.tool)).model_validate(
+            {
+                k: Encodable.define(type(v), self.ctx).encode(v)
+                for k, v in value.bound_args.arguments.items()
+            }
+        )
         return ChatCompletionMessageToolCall.model_validate(
             {
                 "type": "tool_call",
                 "id": value.id,
                 "function": {
-                    "name": tool_name,
-                    "arguments": json_str,
+                    "name": value.tool.__name__,
+                    "arguments": encoded_args.model_dump_json(),
                 },
             }
         )

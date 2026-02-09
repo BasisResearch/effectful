@@ -392,7 +392,7 @@ def signature_to_ast(name: str, sig: inspect.Signature) -> ast.FunctionDef:
         except TypeError:
             returns = type_to_ast(typing.Any)
 
-    node = ast.FunctionDef(  # type: ignore
+    node = ast.FunctionDef(
         name=name,
         args=ast.arguments(
             posonlyargs=[],

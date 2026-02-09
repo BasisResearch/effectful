@@ -183,9 +183,8 @@ def call_assistant[T, U](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {
-        k: Encodable.define(type(t), response_format.ctx).encode(t)  # type: ignore
+        k: Encodable.define(type(t), tools).encode(t)  # type: ignore
         for k, t in tools.items()
-        if isinstance(t, Tool)
     }
     messages = list(get_message_sequence().values())
     response: litellm.types.utils.ModelResponse = completion(
@@ -209,7 +208,7 @@ def call_assistant[T, U](
     encoding = Encodable.define(DecodedToolCall, response_format.ctx)  # type: ignore
     for raw_tool_call in raw_tool_calls:
         try:
-            tool_calls += [encoding.decode(raw_tool_call)]
+            tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
         except Exception as e:
             raise ToolCallDecodingError(
                 tool_name=raw_tool_call.function.name,
