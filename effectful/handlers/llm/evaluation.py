@@ -2,8 +2,12 @@ import ast
 import builtins
 import collections.abc
 import doctest
+import copy
 import inspect
+import keyword
 import linecache
+import random
+import string
 import sys
 import textwrap
 import types
@@ -510,6 +514,54 @@ def collect_runtime_type_stubs(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     return nodes
 
 
+def _generate_unique_name(existing_names: set[str]) -> str:
+    """Generate a random valid Python identifier that is not in existing_names.
+
+    Produces names like ``_synth_a3f7b2`` that are valid identifiers,
+    not Python keywords, and not in the given set of existing names.
+    """
+    while True:
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        candidate = f"_synth_{suffix}"
+        if (
+            candidate not in existing_names
+            and candidate.isidentifier()
+            and not keyword.iskeyword(candidate)
+        ):
+            return candidate
+
+
+class _RenameTransformer(ast.NodeTransformer):
+    """Rename function definitions and their references in a module AST.
+
+    Given a mapping ``{old_name: new_name}``, renames:
+    - ``FunctionDef.name`` for matching definitions
+    - ``ast.Name.id`` references throughout the entire AST
+
+    The rename is applied uniformly because it only targets module-level
+    function definitions that collide with context variable declarations.
+    Local assignments inside function bodies are in their own scope and
+    cannot cause the mypy ``[no-redef]`` error, so they need no special
+    handling.
+    """
+
+    def __init__(self, rename_map: dict[str, str]):
+        self.rename_map = rename_map
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        if node.name in self.rename_map:
+            node.name = self.rename_map[node.name]
+        self.generic_visit(node)
+        return node
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        if node.id in self.rename_map:
+            node.id = self.rename_map[node.id]
+        return node
+
+
 def mypy_type_check(
     module: ast.Module,
     ctx: typing.Mapping[str, Any],
@@ -522,6 +574,9 @@ def mypy_type_check(
     appends the module body, then a postlude that assigns the last function to a
     variable annotated with Callable[expected_params, expected_return]. Runs mypy
     on the combined source; raises TypeError with the mypy report on failure.
+
+    If the synthesized function name clashes with a name already in the context,
+    the function is renamed to a unique random identifier for type-checking only.
     """
     if not module.body:
         raise TypeError("mypy_type_check: module.body is empty")
@@ -544,6 +599,43 @@ def mypy_type_check(
     stubs = collect_runtime_type_stubs(ctx)
     variables = collect_variable_declarations(ctx)
 
+    # Collect names already declared in the type-checking preamble
+    # (variable declarations and class stubs) that could collide with
+    # function definitions in the synthesized module.
+    declared_names = {
+        stmt.target.id
+        for stmt in variables
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+    } | {stmt.name for stmt in stubs if isinstance(stmt, ast.ClassDef)}
+
+    # Find all function names in the synthesized module that collide
+    synthesized_func_names = {
+        stmt.name
+        for stmt in module.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    colliding_names = synthesized_func_names & declared_names
+
+    if colliding_names:
+        # Build a rename map for every colliding function name
+        all_reserved = declared_names | synthesized_func_names
+        rename_map: dict[str, str] = {}
+        for name in colliding_names:
+            unique = _generate_unique_name(all_reserved)
+            rename_map[name] = unique
+            all_reserved.add(unique)
+
+        # Deep-copy the module body so we don't mutate the caller's AST,
+        # then rename definitions and all references to them.
+        module_body = copy.deepcopy(list(module.body))
+        stub_module_body = ast.Module(body=module_body, type_ignores=[])
+        _RenameTransformer(rename_map).visit(stub_module_body)
+        module_body = stub_module_body.body
+        tc_func_name = rename_map.get(func_name, func_name)
+    else:
+        module_body = list(module.body)
+        tc_func_name = func_name
+
     param_types = expected_params
     expected_callable_type: type = typing.cast(
         type,
@@ -556,7 +648,7 @@ def mypy_type_check(
     postlude = ast.AnnAssign(
         target=ast.Name(id="_synthesized_check", ctx=ast.Store()),
         annotation=expected_callable_ast,
-        value=ast.Name(id=func_name, ctx=ast.Load()),
+        value=ast.Name(id=tc_func_name, ctx=ast.Load()),
         simple=1,
     )
     full_body = (
@@ -564,7 +656,7 @@ def mypy_type_check(
         + list(imports)
         + list(stubs)
         + list(variables)
-        + list(module.body)
+        + module_body
         + [postlude]
     )
     stub_module = ast.Module(body=full_body, type_ignores=[])
