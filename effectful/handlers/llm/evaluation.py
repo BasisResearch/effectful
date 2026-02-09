@@ -2,14 +2,12 @@ import ast
 import builtins
 import collections.abc
 import copy
-import doctest
 import inspect
 import keyword
 import linecache
 import random
 import string
 import sys
-import textwrap
 import types
 import typing
 from collections.abc import Mapping
@@ -26,9 +24,7 @@ from RestrictedPython import (
     safe_globals,
 )
 
-from effectful.handlers.llm.template import Template
 from effectful.internals.unification import nested_type
-from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
@@ -686,83 +682,6 @@ def mypy_type_check(
         report = (stdout or "") + (stderr or "")
         raise TypeError(f"mypy type check failed:\n{report}\n{source}")
     return None
-
-
-def _run_doctests(obj: object, ctx: typing.Mapping[str, Any]) -> None:
-    name = getattr(obj, "__name__", obj.__class__.__name__)
-    globs = dict(ctx)
-    finder = doctest.DocTestFinder(exclude_empty=True)
-    if isinstance(obj, types.ModuleType):
-        tests = finder.find(obj, name=name, globs=globs, module=False)
-    else:
-        tests = finder.find(obj, name=name, globs=globs)
-    if not tests:
-        return
-
-    output: list[str] = []
-    runner = doctest.DocTestRunner(verbose=False)
-    for test in tests:
-        runner.run(test, out=output.append)
-    results = runner.summarize(verbose=False)
-    if results.failed:
-        report = "".join(output).strip()
-        if not report:
-            report = (
-                f"{results.failed} doctest(s) failed "
-                f"out of {results.attempted} attempted."
-            )
-        raise TypeError(f"doctest failed:\n{report}")
-
-
-class DoctestHandler(ObjectInterpretation):
-    """Collect doctests from templates and run them on synthesis results."""
-
-    _doctest_stack: list[str]
-
-    def __init__(self):
-        self._doctest_stack = []
-
-    @implements(Template.__apply__)
-    def _capture_doctest[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        bound_args = inspect.signature(template).bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        env = template.__context__.new_child(bound_args.arguments)
-        doctest_source = textwrap.dedent(template.__prompt_template__).format_map(env)
-        self._doctest_stack.append(doctest_source)
-        return fwd()
-
-    @implements(test)
-    def _run_from_stack(self, obj: object, ctx: typing.Mapping[str, Any]) -> None:
-        if not self._doctest_stack:
-            return
-        doctest_source = self._doctest_stack.pop()
-        if not doctest_source.strip():
-            return
-        globs = dict(ctx)
-        parser = doctest.DocTestParser()
-        test_case = parser.get_doctest(
-            doctest_source,
-            globs,
-            name=f"{getattr(obj, '__name__', obj.__class__.__name__)}.__template_doctest__",
-            filename=None,
-            lineno=0,
-        )
-        if not test_case.examples:
-            return
-        output: list[str] = []
-        runner = doctest.DocTestRunner(verbose=False)
-        runner.run(test_case, out=output.append)
-        results = runner.summarize(verbose=False)
-        if results.failed:
-            report = "".join(output).strip()
-            if not report:
-                report = (
-                    f"{results.failed} doctest(s) failed "
-                    f"out of {results.attempted} attempted."
-                )
-            raise TypeError(f"doctest failed:\n{report}")
 
 
 # Eval Providers
