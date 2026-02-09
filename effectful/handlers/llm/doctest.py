@@ -95,15 +95,15 @@ class DoctestHandler(ObjectInterpretation):
     # Case 1: prefix messages to inject before the next call_user.
     _pending_prefix: list[Message] | None
 
-    # Re-entrancy guard for calibration.
-    _calibrating: bool
+    # Re-entrancy guard: set of templates currently being calibrated.
+    _calibrating: set[Template]
 
     def __init__(self) -> None:
         self._extraction_cache = {}
         self._doctest_stack = []
         self._prefix_cache = {}
         self._pending_prefix = None
-        self._calibrating = False
+        self._calibrating = set()
 
     # -- helpers ------------------------------------------------------------
 
@@ -138,7 +138,7 @@ class DoctestHandler(ObjectInterpretation):
             return fwd()
 
         # Case 1 – tool-calling: calibration + prefix.
-        if not self._calibrating and template not in self._prefix_cache:
+        if template not in self._calibrating and template not in self._prefix_cache:
             self._calibrate(template, examples)
 
         if template in self._prefix_cache and self._prefix_cache[template]:
@@ -229,14 +229,14 @@ class DoctestHandler(ObjectInterpretation):
         LLM can learn from the full experience.
         """
         prefix_messages: list[Message] = []
-        self._calibrating = True
+        self._calibrating.add(template)
 
         try:
             for example in examples:
                 call_args, call_kwargs = _parse_template_call(
                     example, template.__name__
                 )
-                if call_args is None:
+                if call_args is None or call_kwargs is None:
                     continue  # not a call to this template
 
                 # Run in an isolated message sequence.
@@ -274,7 +274,7 @@ class DoctestHandler(ObjectInterpretation):
                     m for m in cal_msgs.values() if m["role"] != "system"
                 )
         finally:
-            self._calibrating = False
+            self._calibrating.discard(template)
 
         self._prefix_cache[template] = prefix_messages
 
