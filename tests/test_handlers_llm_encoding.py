@@ -10,10 +10,7 @@ from PIL import Image
 from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
-from effectful.handlers.llm.evaluation import (
-    RestrictedEvalProvider,
-    UnsafeEvalProvider,
-)
+from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
@@ -750,9 +747,7 @@ class TestCallableEncodable:
         assert "def add" in encoded.module_code
         assert "return a + b" in encoded.module_code
 
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             decoded = encodable.decode(encoded)
         assert callable(decoded)
         assert decoded(2, 3) == 5
@@ -767,9 +762,7 @@ class TestCallableEncodable:
         func_source = SynthesizedFunction(
             module_code="def double(x) -> int:\n    return x * 2"
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             decoded = encodable.decode(func_source)
         assert callable(decoded)
         assert decoded(5) == 10
@@ -783,9 +776,7 @@ class TestCallableEncodable:
     return x * factor"""
         )
 
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             decoded = encodable.decode(source)
         assert callable(decoded)
         assert decoded(4) == 12
@@ -825,9 +816,7 @@ class TestCallableEncodable:
         with pytest.raises(
             ValueError, match="last statement to be a function definition"
         ):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -841,9 +830,7 @@ class TestCallableEncodable:
 def bar() -> int:
     return 2"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             decoded = encodable.decode(source)
         assert callable(decoded)
         assert decoded.__name__ == "bar"
@@ -865,9 +852,7 @@ def bar() -> int:
         with pytest.raises(
             ValueError, match="last statement to be a function definition"
         ):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -876,9 +861,7 @@ def bar() -> int:
             return f"Hello, {name}!"
 
         encodable = Encodable.define(Callable[[str], str], {})
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             encoded = encodable.encode(greet)
             decoded = encodable.decode(encoded)
 
@@ -918,9 +901,7 @@ result = helper()"""
         with pytest.raises(
             ValueError, match="last statement to be a function definition"
         ):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     def test_typed_callable_includes_signature_in_docstring(self):
@@ -940,9 +921,7 @@ result = helper()"""
     return a"""
         )
         with pytest.raises(ValueError, match="expected function with 2 parameters"):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -955,9 +934,7 @@ result = helper()"""
     return str(a + b)"""
         )
         with pytest.raises(TypeError, match="Incompatible types in assignment"):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -973,9 +950,7 @@ result = helper()"""
             ValueError,
             match="requires synthesized function to have a return type annotation",
         ):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -987,9 +962,7 @@ result = helper()"""
             module_code="""def add(a: int, b: int) -> int:
     return a + b"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result(2, 3) == 5
@@ -1029,9 +1002,7 @@ result = helper()"""
             module_code="""def anything(a, b, c, d, e) -> int:
     return 42"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result(1, 2, 3, 4, 5) == 42
@@ -1071,9 +1042,7 @@ result = helper()"""
     return a + b + c"""
         )
         with pytest.raises(ValueError, match="expected function with 2 parameters"):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -1087,9 +1056,7 @@ result = helper()"""
     return x"""
         )
         with pytest.raises(ValueError, match="expected function with 0 parameters"):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -1101,9 +1068,7 @@ result = helper()"""
             module_code="""def get_value() -> int:
     return 42"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result() == 42
@@ -1127,9 +1092,7 @@ result = helper()"""
     return "wrong type\""""
         )
         with pytest.raises(TypeError, match="Incompatible types in assignment"):
-            with (
-                handler(eval_provider),
-            ):
+            with handler(eval_provider):
                 encodable.decode(source)
 
     @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
@@ -1140,9 +1103,7 @@ result = helper()"""
             module_code="""def count_chars(s: str) -> int:
     return len(s)"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result("hello") == 5
@@ -1155,9 +1116,7 @@ result = helper()"""
             module_code="""def sum_four(a: int, b: int, c: int, d: int) -> int:
     return a + b + c + d"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result(1, 2, 3, 4) == 10
@@ -1170,9 +1129,7 @@ result = helper()"""
             module_code="""def is_positive(x: int) -> bool:
     return x > 0"""
         )
-        with (
-            handler(eval_provider),
-        ):
+        with handler(eval_provider):
             result = encodable.decode(source)
         assert callable(result)
         assert result(5) is True
@@ -1210,9 +1167,7 @@ class TestRestrictedEvalProviderConfig:
         )
         # Should raise due to restricted attribute access
         with pytest.raises(Exception):  # Could be NameError or AttributeError
-            with (
-                handler(RestrictedEvalProvider()),
-            ):
+            with handler(RestrictedEvalProvider()):
                 fn = encodable.decode(source)
                 fn("test")
 
@@ -1253,9 +1208,7 @@ class TestRestrictedEvalProviderConfig:
     return open(path).read()"""
         )
         with pytest.raises(Exception):  # Could be NameError, ValueError, or other
-            with (
-                handler(RestrictedEvalProvider()),
-            ):
+            with handler(RestrictedEvalProvider()):
                 fn = encodable_open.decode(source_open)
                 # If decode succeeded (shouldn't), calling should still fail
                 fn("/etc/passwd")
@@ -1268,9 +1221,7 @@ class TestRestrictedEvalProviderConfig:
     return os.name"""
         )
         with pytest.raises(Exception):
-            with (
-                handler(RestrictedEvalProvider()),
-            ):
+            with handler(RestrictedEvalProvider()):
                 fn = encodable_import.decode(source_import)
                 fn()
 
@@ -1281,9 +1232,7 @@ class TestRestrictedEvalProviderConfig:
             module_code="""def add(a: int, b: int) -> int:
     return a + b"""
         )
-        with (
-            handler(RestrictedEvalProvider()),
-        ):
+        with handler(RestrictedEvalProvider()):
             fn = encodable_safe.decode(source_safe)
             assert fn(2, 3) == 5, "Safe code should still work"
 
@@ -1294,8 +1243,6 @@ class TestRestrictedEvalProviderConfig:
     return s.__class__.__name__"""
         )
         with pytest.raises(Exception):
-            with (
-                handler(RestrictedEvalProvider()),
-            ):
+            with handler(RestrictedEvalProvider()):
                 fn = encodable_private.decode(source_private)
                 fn("test")
