@@ -25,7 +25,7 @@ from litellm import (
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable, ToolCallID
 from effectful.handlers.llm.template import Template, Tool
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
@@ -52,7 +52,7 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
-@defop
+@Operation.define
 def get_message_sequence() -> collections.OrderedDict[str, Message]:
     return collections.OrderedDict()
 
