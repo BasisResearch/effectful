@@ -260,19 +260,15 @@ def call_assistant[T, U](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {k: _function_model(t) for k, t in tools.items()}
-    response_model = (
-        response_format.enc
-        if issubclass(response_format.enc, pydantic.BaseModel)
-        else pydantic.create_model(
-            "Response", value=response_format.enc, __config__={"extra": "forbid"}
-        )
+    response_model = pydantic.create_model(
+        "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
 
     messages = list(get_message_sequence().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
-        response_format=response_model if response_format.enc is not str else None,
+        response_format=response_model,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -295,7 +291,7 @@ def call_assistant[T, U](
         tool_calls.append(decoded_tool_call)
 
     result = None
-    if not tool_calls and response_format.enc is not str:
+    if not tool_calls:
         # return response
         serialized_result = message.get("content") or message.get("reasoning_content")
         assert isinstance(serialized_result, str), (
@@ -303,18 +299,9 @@ def call_assistant[T, U](
         )
         try:
             raw_result = response_model.model_validate_json(serialized_result)
-            result = response_format.decode(
-                raw_result.value
-                if not issubclass(response_format.enc, pydantic.BaseModel)
-                else raw_result
-            )  # type: ignore
+            result = response_format.decode(raw_result.value)  # type: ignore
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
-    elif not tool_calls and response_format.enc is str:
-        # if expecting a string result, return the raw content as the result
-        content = message.get("content") or message.get("reasoning_content")
-        assert isinstance(content, str), "Expected content to be a string"
-        result = content
 
     return (raw_message, tool_calls, result)
 
@@ -400,7 +387,6 @@ def call_user(
 @Operation.define
 def call_system(template: Template) -> collections.abc.Sequence[Message]:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-
     assert inspect.getdoc(type(template)) is not None
 
     system_prompt = inspect.cleandoc(f"""
