@@ -20,7 +20,7 @@ def pytest_runtest_call(item):
             raise e
 
 
-def pytest_collect_modifyitems(config, items):
+def pytest_collection_modifyitems(config, items):
     """Remove auto-collected doctests from LLM template functions.
 
     Template docstrings contain ``>>>`` examples that serve as LLM prompts
