@@ -387,7 +387,35 @@ def call_user(
 @Operation.define
 def call_system(template: Template) -> collections.abc.Sequence[Message]:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    return ()
+    assert inspect.getdoc(type(template)) is not None
+
+    system_prompt = inspect.cleandoc(f"""
+    You are responsible for implementing the `Template` '{template.__name__}' defined in the module source code below.
+
+    First, as background, here is the class-level documentation for the `Template` class::
+
+    {inspect.getdoc(type(template))}
+    """)
+
+    try:
+        system_prompt += inspect.cleandoc(f"""
+        Here is the source code of the module defining the `Template` instance '{template.__name__}'::
+
+        {inspect.getsource(inspect.getmodule(template))}
+        """)
+    except (TypeError, OSError):
+        system_prompt += inspect.cleandoc(f"""
+        The source code for the module defining '{template.__name__}' is not available.
+        Instead, here are the signature and docstring of '{template.__name__}'::
+
+        {template.__name__} :: {template.__signature__.format()}
+
+        {inspect.cleandoc(template.__prompt_template__)}
+        """)
+
+    msg = _make_message(dict(role="system", content=system_prompt))
+    append_message(msg)
+    return (msg,)
 
 
 class RetryLLMHandler(ObjectInterpretation):
