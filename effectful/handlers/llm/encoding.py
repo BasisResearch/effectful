@@ -389,7 +389,7 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
     def encode(self, value: Callable) -> SynthesizedFunction:
         # (https://github.com/python/mypy/issues/14928)
-        if not isinstance(value, Callable):
+        if not isinstance(value, Callable):  # type: ignore
             raise TypeError(f"Expected callable, got {type(value)}")
 
         try:

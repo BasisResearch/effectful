@@ -208,12 +208,11 @@ def call_assistant[T, U](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    raw_tool_calls = message.get("tool_calls") or []
+    raw_tool_calls = message.get("tool_calls") or []  # type: ignore
     for raw_tool_call in raw_tool_calls:
         try:
-            tool_calls += [
-                Encodable.define(Tool, response_format.ctx).decode(raw_tool_call)
-            ]
+            encoding = Encodable.define(DecodedToolCall, response_format.ctx)  # type: ignore
+            tool_calls += [encoding.decode(raw_tool_call)]
         except Exception as e:
             raise ToolCallDecodingError(
                 tool_name=raw_tool_call.function.name,
