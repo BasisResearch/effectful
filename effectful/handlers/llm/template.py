@@ -1,9 +1,9 @@
 import abc
-import collections
 import functools
 import inspect
 import types
 import typing
+from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -172,7 +172,7 @@ class Template[**P, T](Tool[P, T]):
 
     """
 
-    __context__: collections.ChainMap[str, Any]
+    __context__: ChainMap[str, Any]
 
     @property
     def __prompt_template__(self) -> str:
@@ -260,7 +260,7 @@ class Template[**P, T](Tool[P, T]):
             frame = frame.f_back
 
         contexts.append(globals_proxy)
-        context: collections.ChainMap[str, Any] = collections.ChainMap(
+        context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
 
@@ -307,11 +307,11 @@ class Agent(abc.ABC):
 
     """
 
-    __history__: collections.OrderedDict[str, Any]
+    __history__: OrderedDict[str, Mapping[str, Any]]
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        prop = functools.cached_property(lambda _: collections.OrderedDict())
+        prop = functools.cached_property(lambda _: OrderedDict())
         prop.__set_name__(cls, "__history__")
         cls.__history__ = prop
 
