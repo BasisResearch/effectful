@@ -185,7 +185,11 @@ def call_assistant[T, U](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tool_specs = {k: Encodable.define(type(t)).encode(t) for k, t in tools.items()}
+    tool_specs = {
+        k: Encodable.define(type(t), response_format.ctx).encode(t)  # type: ignore
+        for k, t in tools.items()
+        if isinstance(t, Tool)
+    }
     messages = list(get_message_sequence().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,

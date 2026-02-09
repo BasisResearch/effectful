@@ -389,7 +389,7 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
     def encode(self, value: Callable) -> SynthesizedFunction:
         # (https://github.com/python/mypy/issues/14928)
-        if not isinstance(value, Callable):  # type: ignore
+        if not isinstance(value, Callable):
             raise TypeError(f"Expected callable, got {type(value)}")
 
         try:
@@ -509,10 +509,15 @@ def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     )
 
 
+@dataclass
 class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
     base: type[Tool]
     enc: type[ChatCompletionToolParam]
     ctx: Mapping[str, Any]
+
+    @property
+    def adapter(self) -> pydantic.TypeAdapter:
+        return pydantic.TypeAdapter(self.enc)
 
     def encode(self, value: Tool[P, T]) -> ChatCompletionToolParam:
         response_format = litellm.utils.type_to_response_format_param(
@@ -533,7 +538,21 @@ class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
     def decode(self, encoded_value: ChatCompletionToolParam) -> Tool[P, T]:
         raise NotImplementedError("Tools cannot yet be decoded from LLM responses")
 
+    def serialize(
+        self, encoded_value: ChatCompletionToolParam
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [
+            {
+                "type": "text",
+                "text": self.adapter.dump_json(encoded_value).decode("utf-8"),
+            }
+        ]
 
+    def deserialize(self, serialized_value: str) -> ChatCompletionToolParam:
+        return self.adapter.validate_json(serialized_value)
+
+
+@dataclass
 class ToolCallEncodable[T](
     Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]
 ):
@@ -586,6 +605,14 @@ class ToolCallEncodable[T](
             }
         )
         return DecodedToolCall(tool, bound_sig, encoded_value.id)
+
+    def serialize(
+        self, encoded_value: ChatCompletionMessageToolCall
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": encoded_value.model_dump_json()}]
+
+    def deserialize(self, serialized_value: str) -> ChatCompletionMessageToolCall:
+        return self.enc.model_validate_json(serialized_value)
 
 
 @Encodable.define.register(object)
