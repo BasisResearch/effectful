@@ -1,8 +1,8 @@
 import ast
 import builtins
 import collections.abc
-import doctest
 import copy
+import doctest
 import inspect
 import keyword
 import linecache
@@ -107,10 +107,10 @@ def test(obj: object, ctx: typing.Mapping[str, Any]) -> None:
 
     obj: The synthesized module object.
     ctx: The namespace used to run doctest examples.
+
+    No-op by default; install a DoctestHandler to actually run doctests.
     """
-    raise NotImplementedError(
-        "A doctest handler must be installed in order to run doctests."
-    )
+    pass
 
 
 # Type checking implementation

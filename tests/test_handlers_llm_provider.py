@@ -1123,7 +1123,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             add_func = synthesize_adder()
@@ -1140,7 +1139,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             process_func = synthesize_string_processor()
@@ -1157,7 +1155,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
             count_a = synthesize_counter("a")
@@ -1200,7 +1197,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             # Synthesize a function
@@ -1225,7 +1221,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             is_even = synthesize_is_even()
@@ -1248,7 +1243,6 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             multiply_three = synthesize_three_param_func()

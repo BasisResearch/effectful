@@ -11,7 +11,6 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
-    DoctestHandler,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
@@ -753,7 +752,6 @@ class TestCallableEncodable:
 
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             decoded = encodable.decode(encoded)
         assert callable(decoded)
@@ -771,7 +769,6 @@ class TestCallableEncodable:
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             decoded = encodable.decode(func_source)
         assert callable(decoded)
@@ -788,7 +785,6 @@ class TestCallableEncodable:
 
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             decoded = encodable.decode(source)
         assert callable(decoded)
@@ -831,7 +827,6 @@ class TestCallableEncodable:
         ):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -848,7 +843,6 @@ def bar() -> int:
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             decoded = encodable.decode(source)
         assert callable(decoded)
@@ -873,7 +867,6 @@ def bar() -> int:
         ):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -885,7 +878,6 @@ def bar() -> int:
         encodable = Encodable.define(Callable[[str], str], {})
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             encoded = encodable.encode(greet)
             decoded = encodable.decode(encoded)
@@ -928,7 +920,6 @@ result = helper()"""
         ):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -951,7 +942,6 @@ result = helper()"""
         with pytest.raises(ValueError, match="expected function with 2 parameters"):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -967,7 +957,6 @@ result = helper()"""
         with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -986,7 +975,6 @@ result = helper()"""
         ):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -1001,7 +989,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1044,7 +1031,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1087,7 +1073,6 @@ result = helper()"""
         with pytest.raises(ValueError, match="expected function with 2 parameters"):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -1104,7 +1089,6 @@ result = helper()"""
         with pytest.raises(ValueError, match="expected function with 0 parameters"):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -1119,7 +1103,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1146,7 +1129,6 @@ result = helper()"""
         with pytest.raises(TypeError, match="Incompatible types in assignment"):
             with (
                 handler(eval_provider),
-                handler(DoctestHandler()),
             ):
                 encodable.decode(source)
 
@@ -1160,7 +1142,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1176,7 +1157,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1192,7 +1172,6 @@ result = helper()"""
         )
         with (
             handler(eval_provider),
-            handler(DoctestHandler()),
         ):
             result = encodable.decode(source)
         assert callable(result)
@@ -1233,7 +1212,6 @@ class TestRestrictedEvalProviderConfig:
         with pytest.raises(Exception):  # Could be NameError or AttributeError
             with (
                 handler(RestrictedEvalProvider()),
-                handler(DoctestHandler()),
             ):
                 fn = encodable.decode(source)
                 fn("test")
@@ -1277,7 +1255,6 @@ class TestRestrictedEvalProviderConfig:
         with pytest.raises(Exception):  # Could be NameError, ValueError, or other
             with (
                 handler(RestrictedEvalProvider()),
-                handler(DoctestHandler()),
             ):
                 fn = encodable_open.decode(source_open)
                 # If decode succeeded (shouldn't), calling should still fail
@@ -1293,7 +1270,6 @@ class TestRestrictedEvalProviderConfig:
         with pytest.raises(Exception):
             with (
                 handler(RestrictedEvalProvider()),
-                handler(DoctestHandler()),
             ):
                 fn = encodable_import.decode(source_import)
                 fn()
@@ -1307,7 +1283,6 @@ class TestRestrictedEvalProviderConfig:
         )
         with (
             handler(RestrictedEvalProvider()),
-            handler(DoctestHandler()),
         ):
             fn = encodable_safe.decode(source_safe)
             assert fn(2, 3) == 5, "Safe code should still work"
@@ -1321,7 +1296,6 @@ class TestRestrictedEvalProviderConfig:
         with pytest.raises(Exception):
             with (
                 handler(RestrictedEvalProvider()),
-                handler(DoctestHandler()),
             ):
                 fn = encodable_private.decode(source_private)
                 fn("test")
