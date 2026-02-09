@@ -11,17 +11,23 @@ from dataclasses import dataclass
 from types import CodeType
 from typing import Any
 
+import litellm
 import pydantic
 from litellm import (
     ChatCompletionImageUrlObject,
+    ChatCompletionMessageToolCall,
+    ChatCompletionToolParam,
     OpenAIMessageContentListBlock,
 )
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
+from effectful.handlers.llm.template import Tool
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
+
+type ToolCallID = str
 
 
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
@@ -32,6 +38,12 @@ def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
 
 def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
+
+
+class DecodedToolCall[T](typing.NamedTuple):
+    tool: Tool[..., T]
+    bound_args: inspect.BoundArguments
+    id: ToolCallID
 
 
 class Encodable[T, U](ABC):
@@ -375,13 +387,13 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
     expected_params: list[type] | None = None
     expected_return: type | None = None  # None means decode is disabled
 
-    def encode(self, t: Callable) -> SynthesizedFunction:
+    def encode(self, value: Callable) -> SynthesizedFunction:
         # (https://github.com/python/mypy/issues/14928)
-        if not isinstance(t, Callable):  # type: ignore
-            raise TypeError(f"Expected callable, got {type(t)}")
+        if not isinstance(value, Callable):  # type: ignore
+            raise TypeError(f"Expected callable, got {type(value)}")
 
         try:
-            source = inspect.getsource(t)
+            source = inspect.getsource(value)
         except (OSError, TypeError):
             source = None
 
@@ -390,23 +402,23 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
         # Source not available - create stub from name, signature, and docstring
         # This is useful for builtins and C extensions
-        name = getattr(t, "__name__", None)
+        name = getattr(value, "__name__", None)
         if not name:
             raise RuntimeError(
-                f"Cannot encode callable {t}: no source code and no __name__"
+                f"Cannot encode callable {value}: no source code and no __name__"
             )
 
         try:
-            sig = inspect.signature(t)
+            sig = inspect.signature(value)
             sig_str = str(sig)
         except (ValueError, TypeError):
             # Some builtins don't have inspectable signatures
             sig_str = "(...)"
 
-        docstring = inspect.getdoc(t)
+        docstring = inspect.getdoc(value)
         if not docstring:
             raise RuntimeError(
-                f"Cannot encode callable {t}: no source code and no docstring"
+                f"Cannot encode callable {value}: no source code and no docstring"
             )
 
         # Format as a stub function with docstring
@@ -484,6 +496,96 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
     def deserialize(self, serialized_value: str) -> SynthesizedFunction:
         return SynthesizedFunction.model_validate_json(serialized_value)
+
+
+def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
+    return pydantic.create_model(
+        "Params",
+        __config__={"extra": "forbid"},
+        **{
+            name: Encodable.define(param.annotation).enc
+            for name, param in sig.parameters.items()
+        },  # type: ignore
+    )
+
+
+class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
+    base: type[Tool]
+    enc: type[ChatCompletionToolParam]
+    ctx: Mapping[str, Any]
+
+    def encode(self, value: Tool[P, T]) -> ChatCompletionToolParam:
+        response_format = litellm.utils.type_to_response_format_param(
+            _param_model(inspect.signature(value))
+        )
+        assert response_format is not None
+        assert value.__default__.__doc__ is not None
+        return {
+            "type": "function",
+            "function": {
+                "name": value.__name__,
+                "description": textwrap.dedent(value.__default__.__doc__),
+                "parameters": response_format["json_schema"]["schema"],
+                "strict": True,
+            },
+        }
+
+    def decode(self, encoded_value: ChatCompletionToolParam) -> Tool[P, T]:
+        raise NotImplementedError("Tools cannot yet be decoded from LLM responses")
+
+
+class ToolCallEncodable[T](
+    Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]
+):
+    base: type[DecodedToolCall[T]]
+    enc: type[ChatCompletionMessageToolCall]
+    ctx: Mapping[str, Any]
+
+    def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
+        tool_name = value.tool.__name__
+        arguments = value.bound_args.arguments
+        adapter = _param_model(inspect.signature(value.tool))
+        json_str = adapter.dump_json(arguments).decode("utf-8")
+        return ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": value.id,
+                "function": {
+                    "name": tool_name,
+                    "arguments": json_str,
+                },
+            }
+        )
+
+    def decode(
+        self, encoded_value: ChatCompletionMessageToolCall
+    ) -> DecodedToolCall[T]:
+        """Decode a tool call from the LLM response into a DecodedToolCall.
+
+        Args:
+            encoded_value: The tool call to decode.
+        """
+        tool_name = encoded_value.function.name
+        assert tool_name is not None
+        tool = self.ctx[tool_name]
+        assert isinstance(tool, Tool)
+
+        json_str = encoded_value.function.arguments
+        sig = inspect.signature(tool)
+
+        # build dict of raw encodable types U
+        raw_args = _param_model(sig).model_validate_json(json_str)
+
+        # use encoders to decode Us to python types T
+        bound_sig: inspect.BoundArguments = sig.bind(
+            **{
+                param_name: Encodable.define(
+                    sig.parameters[param_name].annotation, {}
+                ).decode(getattr(raw_args, param_name))
+                for param_name in raw_args.model_fields_set
+            }
+        )
+        return DecodedToolCall(tool, bound_sig, encoded_value.id)
 
 
 @Encodable.define.register(object)
@@ -621,3 +723,19 @@ def _encodable_callable(
         expected_params = list(param_types)
 
     return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)
+
+
+@Encodable.define.register(Tool)
+def _encodable_tool[**P, T](
+    ty: type[Tool[P, T]], ctx: Mapping[str, Any] | None
+) -> Encodable[Tool[P, T], ChatCompletionToolParam]:
+    ctx = ctx or {}
+    return ToolEncodable(ty, ChatCompletionToolParam, ctx)
+
+
+@Encodable.define.register(DecodedToolCall)
+def _encodable_tool_call[T](
+    ty: type[DecodedToolCall[T]], ctx: Mapping[str, Any] | None
+) -> Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]:
+    ctx = ctx or {}
+    return ToolCallEncodable(ty, ChatCompletionMessageToolCall, ctx)
