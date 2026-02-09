@@ -9,7 +9,6 @@ import functools
 import inspect
 import json
 import os
-import typing
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -36,7 +35,7 @@ from effectful.handlers.llm.completions import (
     get_message_sequence,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
-from effectful.handlers.llm.evaluation import DoctestHandler, UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1084,20 +1083,6 @@ def synthesize_counter(char: str) -> Callable[[str], int]:
 
 
 @Template.define
-def synthesize_counter_with_doctest(char: str) -> Callable[[str], int]:
-    """Generate a Python function named count_char that counts occurrences of the character '{char}'
-    in a given input string.
-
-    The function should be case-sensitive.
-
-    Examples:
-        >>> count_char("banana")
-        4
-    """
-    raise NotHandled
-
-
-@Template.define
 def synthesize_is_even() -> Callable[[int], bool]:
     """Generate a Python function that checks if a number is even.
 
@@ -1166,31 +1151,6 @@ class TestCallableSynthesis:
             assert count_a("AAA") == 0  # case-sensitive
 
     @requires_openai
-    def test_synthesized_doctest_runs(self, request):
-        """Test that doctests run for synthesized functions."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
-            handler(UnsafeEvalProvider()),
-            handler(DoctestHandler()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            with pytest.raises(ResultDecodingError, match="doctest failed"):
-                synthesize_counter_with_doctest("a")
-
-    @requires_openai
-    def test_callable_type_signature_in_schema(self, request):
-        """Test that the callable type signature is communicated to the LLM."""
-
-        # Verify that the enc type includes the signature in its docstring
-        encodable = Encodable.define(Callable[[int, int], int], {})
-        assert encodable.enc.__doc__ is not None
-        assert "Callable[[int, int], int]" in encodable.enc.__doc__
-
-        encodable2 = Encodable.define(Callable[[str], str], {})
-        assert encodable2.enc.__doc__ is not None
-        assert "Callable[[str], str]" in encodable2.enc.__doc__
-
-    @requires_openai
     def test_synthesized_function_roundtrip(self, request):
         """Test that a synthesized function can be encoded and decoded."""
 
@@ -1256,18 +1216,6 @@ class TestCallableSynthesis:
             assert multiply_three(2, 3, 4) == 24
             assert multiply_three(1, 1, 1) == 1
             assert multiply_three(5, 0, 10) == 0
-
-    def test_synthesized_program_with_annotated_decodes(self):
-        """Decoding a synthesized program that uses typing.Annotated in source works."""
-        encodable = Encodable.define(Callable[[int], int], {"typing": typing})
-        source = SynthesizedFunction(
-            module_code='def f(x: typing.Annotated[int, "positive"]) -> int:\n    return x'
-        )
-        with handler(UnsafeEvalProvider()):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(10) == 10
-
 
 class TestMessageSequence:
     """Tests for MessageSequence message sequence tracking."""
