@@ -22,7 +22,7 @@ from litellm import (
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
+from effectful.handlers.llm.encoding import DecodedToolCall, Encodable, ToolCallID
 from effectful.handlers.llm.template import Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
@@ -65,9 +65,6 @@ def _make_message(content: dict) -> Message:
     m_id = content.get("id") or str(uuid.uuid1())
     message = typing.cast(Message, {**content, "id": m_id})
     return message
-
-
-type ToolCallID = str
 
 
 class DecodingError[T: BaseException](abc.ABC, BaseException):
