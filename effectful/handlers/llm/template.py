@@ -54,61 +54,6 @@ class _IsRecursiveAnnotation(Annotation):
 IsRecursive = _IsRecursiveAnnotation()
 
 
-class _AllowLexicalScopeAnnotation(Annotation):
-    """
-    A special type annotation for return types in the signature of a
-    :class:`Template` that allows the template's docstring format string
-    to reference variables from the enclosing lexical scope, not just
-    the template's own parameters.
-
-    By default, :class:`Template` validates that all format string variables
-    in the docstring correspond to parameters in the template's signature.
-    Adding :class:`AllowLexicalScope` to the return type annotation relaxes
-    this to also accept variables captured in the template's lexical context.
-
-    .. warning::
-
-        :class:`AllowLexicalScope` annotations are only defined for
-        return annotations, and if used in a parameter will raise a
-        :class:`TypeError` at template construction time.
-
-    **Example usage**::
-
-        def poet(author: str) -> Template[[str], str]:
-            @Template.define
-            def write_poem(topic: str) -> Annotated[str, AllowLexicalScope]:
-                \"""Write a poem about {topic} by {author}\"""
-                raise NotHandled
-            return write_poem
-    """
-
-    @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        for name, param in sig.parameters.items():
-            ann = param.annotation
-            if ann is inspect.Parameter.empty:
-                continue
-            if typing.get_origin(ann) is not Annotated:
-                continue
-            if any(isinstance(arg, cls) for arg in typing.get_args(ann)):
-                raise TypeError(
-                    f"Illegal annotation {ann} for parameter {name}, "
-                    "AllowLexicalScope must only be used to annotate return types."
-                )
-        return sig
-
-
-AllowLexicalScope = _AllowLexicalScopeAnnotation()
-
-
-def _has_allow_lexical_scope(sig: inspect.Signature) -> bool:
-    """Check if a signature's return annotation includes AllowLexicalScope."""
-    if typing.get_origin(sig.return_annotation) is not Annotated:
-        return False
-    annotations = typing.get_args(sig.return_annotation)
-    return any(annotation is AllowLexicalScope for annotation in annotations)
-
-
 def _get_root_field_name(field_name: str) -> str:
     """Extract the root identifier from a format field name.
 
@@ -122,12 +67,10 @@ def _get_root_field_name(field_name: str) -> str:
 
 def _validate_format_string(op: "Template") -> None:
     """Validate that all format string variables in the template docstring
-    refer to names that can be resolved.
+    refer to names that can be resolved at call time.
 
-    In strict mode (default), every variable must be a parameter in the
-    template's signature.  In permissive mode (when the return type is
-    annotated with :data:`AllowLexicalScope`), variables may also refer
-    to names captured in the template's lexical context.
+    Each variable must be either a parameter in the template's signature
+    or a name captured in the template's lexical context.
 
     :raises ValueError: If any format string variable cannot be resolved.
     """
@@ -137,8 +80,7 @@ def _validate_format_string(op: "Template") -> None:
 
     formatter = string.Formatter()
     param_names = set(op.__signature__.parameters.keys())
-    allow_lexical = _has_allow_lexical_scope(op.__signature__)
-    context_keys = set(op.__context__.keys()) if allow_lexical else set()
+    context_keys = set(op.__context__.keys())
     allowed_names = param_names | context_keys
 
     unresolved: list[str] = []
@@ -151,19 +93,11 @@ def _validate_format_string(op: "Template") -> None:
 
     if unresolved:
         names_str = ", ".join(f"{{{{ {n} }}}}" for n in unresolved)
-        if allow_lexical:
-            raise ValueError(
-                f"Template '{op.__name__}' docstring references undefined "
-                f"variables {names_str} that are not in the signature or "
-                f"lexical scope."
-            )
-        else:
-            raise ValueError(
-                f"Template '{op.__name__}' docstring references undefined "
-                f"variables {names_str} that are not parameters in the "
-                f"signature. To allow references to lexical scope variables, "
-                f"annotate the return type with AllowLexicalScope."
-            )
+        raise ValueError(
+            f"Template '{op.__name__}' docstring references undefined "
+            f"variables {names_str} that are not in the signature or "
+            f"lexical scope."
+        )
 
 
 def _is_recursive_signature(sig: inspect.Signature):
@@ -207,7 +141,6 @@ class Tool[**P, T](Operation[P, T]):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
         signature = IsRecursive.infer_annotations(signature)
-        signature = AllowLexicalScope.infer_annotations(signature)
         super().__init__(signature, name, default)
 
     @classmethod

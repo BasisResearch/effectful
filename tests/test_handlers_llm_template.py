@@ -1,12 +1,10 @@
 import inspect
 from dataclasses import dataclass
-from typing import Annotated
 
 import pytest
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import call_user
-from effectful.handlers.llm.template import AllowLexicalScope
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -182,7 +180,7 @@ def test_template_formatting_scoped():
     feet_per_mile = 5280  # noqa: F841
 
     @Template.define
-    def convert(feet: int) -> Annotated[float, AllowLexicalScope]:
+    def convert(feet: int) -> float:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
@@ -211,8 +209,8 @@ def test_template_formatting_method():
         )
 
 
-def test_validate_strict_valid():
-    """All format vars match signature params — should succeed."""
+def test_validate_params_valid():
+    """All format vars match signature params -- should succeed."""
 
     @Template.define
     def poem(topic: str, style: str) -> str:
@@ -222,8 +220,8 @@ def test_validate_strict_valid():
     assert poem.__prompt_template__ == "Write a {style} poem about {topic}."
 
 
-def test_validate_strict_no_vars():
-    """No format vars — should succeed."""
+def test_validate_no_vars():
+    """No format vars -- should succeed."""
 
     @Template.define
     def simple() -> str:
@@ -233,8 +231,8 @@ def test_validate_strict_no_vars():
     assert simple.__prompt_template__ == "Just a plain prompt with no variables."
 
 
-def test_validate_strict_undefined_var():
-    """Referencing an undefined variable should raise ValueError at define time."""
+def test_validate_undefined_var():
+    """Referencing a variable not in params or lexical scope raises at define time."""
     with pytest.raises(ValueError, match="author"):
 
         @Template.define
@@ -243,7 +241,7 @@ def test_validate_strict_undefined_var():
             raise NotHandled
 
 
-def test_validate_strict_multiple_undefined_vars():
+def test_validate_multiple_undefined_vars():
     """Multiple undefined variables should all appear in the error."""
     with pytest.raises(ValueError, match="author") as exc_info:
 
@@ -255,7 +253,7 @@ def test_validate_strict_multiple_undefined_vars():
     assert "language" in str(exc_info.value)
 
 
-def test_validate_strict_compound_field_name():
+def test_validate_compound_field_name():
     """Compound field name like {self.name} passes when root is a param."""
 
     @dataclass
@@ -270,7 +268,7 @@ def test_validate_strict_compound_field_name():
     assert Agent.greet.__prompt_template__ == "Agent '{self.name}' says hello on {day}."
 
 
-def test_validate_strict_staticmethod():
+def test_validate_staticmethod():
     """Staticmethod templates should also be validated."""
 
     @Template.define
@@ -283,7 +281,7 @@ def test_validate_strict_staticmethod():
     assert ok.__func__.__prompt_template__ == "Combine {a} and {b}."
 
 
-def test_validate_strict_staticmethod_undefined():
+def test_validate_staticmethod_undefined():
     """Staticmethod templates with undefined vars should raise."""
     with pytest.raises(ValueError, match="missing"):
 
@@ -294,45 +292,37 @@ def test_validate_strict_staticmethod_undefined():
             raise NotHandled
 
 
-def test_validate_permissive_lexical_var():
-    """With AllowLexicalScope, lexical scope variables are allowed."""
+def test_validate_lexical_var():
+    """Lexical scope variables are allowed in template format strings."""
     feet_per_mile = 5280  # noqa: F841
 
     @Template.define
-    def convert(feet: int) -> Annotated[float, AllowLexicalScope]:
+    def convert(feet: int) -> float:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
     assert "feet_per_mile" in convert.__prompt_template__
 
 
-def test_validate_permissive_both_params_and_lexical():
-    """With AllowLexicalScope, both params and lexical vars are allowed."""
+def test_validate_both_params_and_lexical():
+    """Both params and lexical scope vars are allowed."""
     author = "Shakespeare"  # noqa: F841
 
     @Template.define
-    def write_poem(topic: str) -> Annotated[str, AllowLexicalScope]:
+    def write_poem(topic: str) -> str:
         """Write a poem about {topic} by {author}."""
         raise NotHandled
 
     assert write_poem.__prompt_template__ == "Write a poem about {topic} by {author}."
 
 
-def test_validate_permissive_undefined_still_fails():
-    """Even with AllowLexicalScope, truly undefined vars should raise."""
+def test_validate_undefined_with_lexical_still_fails():
+    """Variables not in params or lexical scope still raise."""
+    author = "Shakespeare"  # noqa: F841
+
     with pytest.raises(ValueError, match="nonexistent"):
 
         @Template.define
-        def bad(topic: str) -> Annotated[str, AllowLexicalScope]:
-            """Write about {topic} using {nonexistent}."""
-            raise NotHandled
-
-
-def test_validate_allow_lexical_scope_on_param_raises():
-    """AllowLexicalScope on a parameter annotation should raise TypeError."""
-    with pytest.raises(TypeError, match="AllowLexicalScope"):
-
-        @Template.define
-        def bad(topic: Annotated[str, AllowLexicalScope]) -> str:
-            """Write about {topic}."""
+        def bad(topic: str) -> str:
+            """Write about {topic} by {author} using {nonexistent}."""
             raise NotHandled
