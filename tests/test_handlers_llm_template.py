@@ -1,8 +1,6 @@
 import inspect
 from dataclasses import dataclass
 
-import pytest
-
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import call_user
 from effectful.ops.semantics import NotHandled, handler

@@ -189,11 +189,11 @@ class Template[**P, T](Tool[P, T]):
                     if isinstance(getattr(obj, inst_name), Tool):
                         result[f"{name}.{inst_name}"] = getattr(obj, inst_name)
 
-        # delete self from tools if not recursive
-        if not is_recursive:
-            for name, tool in tuple(result.items()):
-                if tool is self:
-                    del result[name]
+        # deduplicate tools and remove self if not recursive
+        tool2name = {tool: name for name, tool in result.items()}
+        for name, tool in tuple(result.items()):
+            if tool2name[tool] != name or (tool is self and not is_recursive):
+                del result[name]
 
         return result
 
