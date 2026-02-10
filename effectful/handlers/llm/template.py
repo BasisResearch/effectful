@@ -76,7 +76,7 @@ def _validate_format_string(op: "Template") -> None:
     """
     doc = op.__default__.__doc__
     if not doc:
-        return  # no docstring → nothing to validate (Tool.__init__ already checks)
+        return  # no docstring -> nothing to validate (Tool.__init__ already checks)
 
     formatter = string.Formatter()
     param_names = set(op.__signature__.parameters.keys())
