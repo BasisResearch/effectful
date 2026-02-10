@@ -5,11 +5,9 @@ import types
 import typing
 from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
-from dataclasses import dataclass
 from typing import Annotated, Any
 
-from effectful.ops.semantics import handler
-from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, Operation
+from effectful.ops.types import Annotation, Operation
 
 
 class _IsRecursiveAnnotation(Annotation):
@@ -108,11 +106,6 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
-@dataclass
-class _BoundInstance[T]:
-    instance: T
-
-
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -186,24 +179,21 @@ class Template[**P, T](Tool[P, T]):
         is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
-            if obj is self and not is_recursive:
-                continue
-
             # Collect tools in context
             if isinstance(obj, Tool):
                 result[name] = obj
 
-            if isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
-                result[name] = obj.__func__
-
             # Collect tools as methods on any bound instances
-            if isinstance(obj, _BoundInstance):
-                for instance_name in obj.instance.__dir__():
-                    if instance_name.startswith(INSTANCE_OP_PREFIX):
-                        continue
-                    instance_obj = getattr(obj.instance, instance_name)
-                    if isinstance(instance_obj, Tool):
-                        result[instance_name] = instance_obj
+            elif isinstance(obj, Agent):
+                for inst_name in set(dir(type(obj))) | set(dir(obj)):
+                    if isinstance(getattr(obj, inst_name), Tool):
+                        result[f"{name}.{inst_name}"] = getattr(obj, inst_name)
+
+        # delete self from tools if not recursive
+        if not is_recursive:
+            for name, tool in tuple(result.items()):
+                if tool is self:
+                    del result[name]
 
         return result
 
@@ -215,9 +205,18 @@ class Template[**P, T](Tool[P, T]):
 
         result = super().__get__(instance, owner)
         self_param_name = list(self.__signature__.parameters.keys())[0]
-        self_context = {self_param_name: _BoundInstance(instance)}
-        result.__context__ = self.__context__.new_child(self_context)
+        result.__context__ = self.__context__.new_child({self_param_name: instance})
         return result
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        if getattr(self, "__history__", None) is not None:
+            from effectful.handlers.llm.completions import get_message_sequence
+            from effectful.ops.semantics import handler
+
+            with handler({get_message_sequence: lambda: self.__history__}):  # type: ignore
+                return super().__call__(*args, **kwargs)
+        else:
+            return super().__call__(*args, **kwargs)
 
     @classmethod
     def define[**Q, V](
@@ -237,29 +236,35 @@ class Template[**P, T](Tool[P, T]):
         frame = frame.f_back
         assert frame is not None
 
-        # Check if we're in a class definition by looking for __qualname__
+        # Skip class body frames: in Python, class bodies are not lexical
+        # scopes for methods, so their locals should not be captured.
         qualname = frame.f_locals.get("__qualname__")
-        n_frames = 1
         if qualname is not None:
-            name_components = qualname.split(".")
-            for name in reversed(name_components):
+            for name in reversed(qualname.split(".")):
                 if name == "<locals>":
                     break
-                n_frames += 1
+                assert frame is not None
+                frame = frame.f_back
 
-        contexts = []
-        for offset in range(n_frames):
-            assert frame is not None
+        # Collect enclosing (non-class) scope frames up to and including
+        # the module-level frame.
+        assert frame is not None
+        contexts: list[types.MappingProxyType[str, Any]] = []
+        globals_proxy: types.MappingProxyType[str, Any] | None = None
+        while frame is not None:
             locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
                 frame.f_locals
             )
-            globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-                frame.f_globals
-            )
+            globals_proxy = types.MappingProxyType(frame.f_globals)
             contexts.append(locals_proxy)
+            if locals_proxy == globals_proxy:
+                break  # reached module level
             frame = frame.f_back
 
-        contexts.append(globals_proxy)
+        if globals_proxy is not None and (
+            not contexts or contexts[-1] != globals_proxy
+        ):
+            contexts.append(globals_proxy)
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
@@ -315,17 +320,19 @@ class Agent(abc.ABC):
         prop.__set_name__(cls, "__history__")
         cls.__history__ = prop
 
-        for name in list(cls.__dict__):
-            attr = cls.__dict__[name]
-            if not isinstance(attr, Template):
+        for name, attr in list(cls.__dict__.items()):
+            if not isinstance(attr, Template) or isinstance(
+                attr.__default__, staticmethod | classmethod
+            ):
                 continue
-            _template = attr
 
-            @functools.wraps(_template)
-            def wrapper(self, *args, _t=_template, **kwargs):
-                from effectful.handlers.llm.completions import get_message_sequence
+            def _template_prop_fn[T: Template](self, *, template: T) -> T:
+                inst_template = template.__get__(self, type(self))
+                setattr(inst_template, "__history__", self.__history__)
+                return inst_template
 
-                with handler({get_message_sequence: lambda: self.__history__}):
-                    return _t(self, *args, **kwargs)
-
-            setattr(cls, name, wrapper)
+            _template_property = functools.cached_property(
+                functools.partial(_template_prop_fn, template=attr)
+            )
+            _template_property.__set_name__(cls, name)
+            setattr(cls, name, _template_property)
