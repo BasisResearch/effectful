@@ -30,7 +30,8 @@ def test_template_method():
     a = A(0)
     assert isinstance(a.f, Template)
     assert "random" in a.f.tools
-    assert "f" in a.f.tools
+    # f is the template itself — found via self but correctly removed (non-recursive)
+    assert "f" not in a.f.tools
     assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
     assert a.f.tools["random"]() == 4
 
@@ -51,15 +52,14 @@ def test_template_method_nested_class():
     """Test that template methods work on nested classes."""
     local_variable = "test"  # noqa: F841
 
+    @Tool.define
+    def random() -> int:
+        """Returns a random number, chosen by fair dice roll."""
+        return 4
+
     @dataclass
     class A:
         x: int
-
-        @Tool.define
-        @staticmethod
-        def random() -> int:
-            """Returns a random number, chosen by fair dice roll."""
-            return 4
 
         @dataclass
         class B:
@@ -72,8 +72,10 @@ def test_template_method_nested_class():
 
     a = A.B(True)
     assert isinstance(a.f, Template)
+    # random is found via the enclosing function scope
     assert "random" in a.f.tools
-    assert "f" in a.f.tools
+    # f is the template itself — found via self but correctly removed (non-recursive)
+    assert "f" not in a.f.tools
     assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
     assert a.f.tools["random"]() == 4
 
@@ -146,6 +148,109 @@ def test_template_method_scoping():
         assert "hidden" not in t.__context__
 
 
+class TestLexicalScopeCollection:
+    """Tests that Template.define follows Python's lexical scope rules."""
+
+    def test_class_body_locals_excluded_from_context(self):
+        """Class body variables (like __qualname__, field defaults) should not
+        appear as tools, matching Python's rule that class bodies are not
+        lexical scopes for methods."""
+
+        @dataclass
+        class Foo:
+            x: int
+
+            @Tool.define
+            def helper(self) -> int:
+                """A tool."""
+                return 42
+
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        foo = Foo(0)
+        # Class body metadata should not leak into context
+        assert "__qualname__" not in foo.ask.__context__
+        assert "__firstlineno__" not in foo.ask.__context__
+        # But the enclosing function scope is visible
+        assert "Foo" in foo.ask.__context__
+
+    def test_enclosing_function_scope_visible(self):
+        """Tools defined in the enclosing function are visible to templates
+        defined inside a class in that function."""
+
+        @Tool.define
+        def helper() -> int:
+            """A helper tool."""
+            return 99
+
+        class Bar:
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        bar = Bar()
+        assert "helper" in bar.ask.tools
+
+    def test_dynamic_caller_not_leaked(self):
+        """Variables from a dynamic caller (not lexical enclosure) should not
+        appear in the template's context."""
+        leaked = False  # noqa: F841
+
+        def _make():
+            @Template.define
+            def t() -> str:
+                """test"""
+                raise NotHandled
+
+            return t
+
+        t = _make()
+        assert "leaked" not in t.__context__
+
+    def test_class_method_tools_discovered_via_self(self):
+        """After skipping the class body, tools on the same class are still
+        discoverable through the bound `self` instance."""
+
+        @dataclass
+        class Widget:
+            @Tool.define
+            def measure(self) -> int:
+                """Measure the widget."""
+                return 10
+
+            @Template.define
+            def describe(self) -> str:
+                """Describe this widget."""
+                raise NotHandled
+
+        w = Widget()
+        assert "measure" in w.describe.tools
+        # The template itself is not in tools (non-recursive)
+        assert "describe" not in w.describe.tools
+
+    def test_inherited_tools_visible(self):
+        """Tools from a base class are visible through the instance."""
+
+        class Base:
+            @Tool.define
+            def base_tool(self) -> int:
+                """A base tool."""
+                return 1
+
+        class Derived(Base):
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        d = Derived()
+        assert "base_tool" in d.ask.tools
+
+
 class TemplateStringIntp(ObjectInterpretation):
     """Returns the result of template formatting as a string. Only supports
     templates that produce string prompts.
@@ -176,7 +281,6 @@ def test_template_formatting_simple():
         assert rhyme("cat", "hat") == "The cat sat in the hat."
 
 
-@pytest.mark.xfail
 def test_template_formatting_scoped():
     feet_per_mile = 5280  # noqa: F841
 
@@ -192,7 +296,6 @@ def test_template_formatting_scoped():
         )
 
 
-@pytest.mark.xfail
 def test_template_formatting_method():
     @dataclass
     class User:
