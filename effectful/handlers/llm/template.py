@@ -316,6 +316,6 @@ class Template[**P, T](Tool[P, T]):
         # calls Template.define recursively with the unwrapped function,
         # so validation has already run in the inner call.
         if not isinstance(op, staticmethod):
-            _validate_format_string(op)
+            _validate_format_string(typing.cast(Template, op))
 
         return typing.cast(Template[Q, V], op)
