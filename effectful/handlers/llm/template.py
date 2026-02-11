@@ -312,4 +312,4 @@ class Template[**P, T](Tool[P, T]):
 
         sig = inspect.signature(default)
         name = kwargs.get("name") or default.__name__
-        return cls(sig, name, default, context)  # type: ignore[return-value]
+        return cls(sig, name, default, context)  # type: ignore[arg-type, return-value]
