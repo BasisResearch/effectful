@@ -1,6 +1,8 @@
 import abc
 import functools
 import inspect
+import re
+import string
 import types
 import typing
 from collections import ChainMap, OrderedDict
@@ -168,6 +170,43 @@ class Template[**P, T](Tool[P, T]):
 
     __context__: ChainMap[str, Any]
 
+    @classmethod
+    def _validate_prompt(
+        cls,
+        template: "Template",
+        context: ChainMap[str, Any],
+    ) -> None:
+        """Validate that all format string variables in the docstring
+        refer to names resolvable at call time.
+
+        Each variable must be either a parameter in the signature
+        or a name captured in the lexical context.
+
+        :raises TypeError: If any format string variable cannot be resolved.
+        """
+        doc = template.__prompt_template__
+        formatter = string.Formatter()
+        param_names = set(template.__signature__.parameters.keys())
+        context_keys = set(context.keys())
+        allowed_names = param_names | context_keys
+
+        unresolved: list[str] = []
+        for _, field_name, _, _ in formatter.parse(doc):
+            if field_name is None:
+                continue
+            # Extract root identifier from compound names like
+            match = re.match(r"^(\w+)", field_name)
+            root = match.group(1) if match else field_name
+            if root not in allowed_names:
+                unresolved.append(field_name)
+
+        if unresolved:
+            raise TypeError(
+                f"Template '{template.__name__}' docstring references undefined "
+                f"variables {list(sorted(unresolved))} that are not in the signature "
+                f"{{{template.__signature__}}} or lexical scope."
+            )
+
     @property
     def __prompt_template__(self) -> str:
         assert self.__default__.__doc__ is not None
@@ -285,9 +324,16 @@ class Template[**P, T](Tool[P, T]):
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
-
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+
+        # Keep validation on original define-time callables, but skip the bound wrapper path.
+        # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
+        is_bound_wrapper = (
+            isinstance(default, types.MethodType) and default.__self__ is not None
+        )
+        if not isinstance(op, staticmethod | classmethod) and not is_bound_wrapper:
+            cls._validate_prompt(typing.cast(Template, op), context)
 
         return typing.cast(Template[Q, V], op)
 
