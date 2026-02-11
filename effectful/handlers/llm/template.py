@@ -65,41 +65,6 @@ def _get_root_field_name(field_name: str) -> str:
     return match.group(1) if match else field_name
 
 
-def _validate_format_string(op: "Template") -> None:
-    """Validate that all format string variables in the template docstring
-    refer to names that can be resolved at call time.
-
-    Each variable must be either a parameter in the template's signature
-    or a name captured in the template's lexical context.
-
-    :raises ValueError: If any format string variable cannot be resolved.
-    """
-    doc = op.__default__.__doc__
-    if not doc:
-        return  # no docstring -> nothing to validate (Tool.__init__ already checks)
-
-    formatter = string.Formatter()
-    param_names = set(op.__signature__.parameters.keys())
-    context_keys = set(op.__context__.keys())
-    allowed_names = param_names | context_keys
-
-    unresolved: list[str] = []
-    for _, field_name, _, _ in formatter.parse(doc):
-        if field_name is None:
-            continue
-        root = _get_root_field_name(field_name)
-        if root not in allowed_names:
-            unresolved.append(field_name)
-
-    if unresolved:
-        names_str = ", ".join(f"{{{{ {n} }}}}" for n in unresolved)
-        raise ValueError(
-            f"Template '{op.__name__}' docstring references undefined "
-            f"variables {names_str} that are not in the signature or "
-            f"lexical scope."
-        )
-
-
 def _is_recursive_signature(sig: inspect.Signature):
     if typing.get_origin(sig.return_annotation) is not Annotated:
         return False
@@ -219,6 +184,38 @@ class Template[**P, T](Tool[P, T]):
 
     __context__: ChainMap[str, Any]
 
+    def __init__(
+        self,
+        signature: inspect.Signature,
+        name: str,
+        default: Callable[P, T],
+        context: ChainMap[str, Any],
+    ):
+        super().__init__(signature, name, default)
+        self.__context__ = context
+
+        # Validatting of prompt template
+        doc = self.__prompt_template__
+        formatter = string.Formatter()
+        param_names = set(self.__signature__.parameters.keys())
+        context_keys = set(self.__context__.keys())
+        allowed_names = param_names | context_keys
+
+        unresolved: list[str] = []
+        for _, field_name, _, _ in formatter.parse(doc):
+            if field_name is None:
+                continue
+            root = _get_root_field_name(field_name)
+            if root not in allowed_names:
+                unresolved.append(field_name)
+
+        if unresolved:
+            raise TypeError(
+                f"Template '{self.__name__}' docstring references undefined "
+                f"variables {set(unresolved)} that are not in the signature "
+                f"or lexical scope."
+            )
+
     @property
     def __prompt_template__(self) -> str:
         assert self.__default__.__doc__ is not None
@@ -309,13 +306,10 @@ class Template[**P, T](Tool[P, T]):
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
 
-        op = super().define(default, *args, **kwargs)
-        op.__context__ = context  # type: ignore[attr-defined]
+        if isinstance(default, staticmethod):
+            inner = cls.define(default.__func__, *args, **kwargs)
+            return typing.cast(Template[Q, V], staticmethod(inner))
 
-        # When default is a staticmethod, Operation._define_staticmethod
-        # calls Template.define recursively with the unwrapped function,
-        # so validation has already run in the inner call.
-        if not isinstance(op, staticmethod):
-            _validate_format_string(typing.cast(Template, op))
-
-        return typing.cast(Template[Q, V], op)
+        sig = inspect.signature(default)
+        name = kwargs.get("name") or default.__name__
+        return cls(sig, name, default, context)  # type: ignore[return-value]
