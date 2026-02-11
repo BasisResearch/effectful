@@ -1,6 +1,4 @@
 import inspect
-import re
-import string
 import types
 import typing
 from collections import ChainMap
@@ -52,17 +50,6 @@ class _IsRecursiveAnnotation(Annotation):
 
 
 IsRecursive = _IsRecursiveAnnotation()
-
-
-def _get_root_field_name(field_name: str) -> str:
-    """Extract the root identifier from a format field name.
-
-    For compound names like ``self.name`` or ``items[0]``, returns just
-    the root identifier (``self``, ``items``), since attribute and index
-    access cannot be validated statically at definition time.
-    """
-    match = re.match(r"^(\w+)", field_name)
-    return match.group(1) if match else field_name
 
 
 def _is_recursive_signature(sig: inspect.Signature):
@@ -184,38 +171,6 @@ class Template[**P, T](Tool[P, T]):
 
     __context__: ChainMap[str, Any]
 
-    def __init__(
-        self,
-        signature: inspect.Signature,
-        name: str,
-        default: Callable[P, T],
-        context: ChainMap[str, Any],
-    ):
-        super().__init__(signature, name, default)
-        self.__context__ = context
-
-        # Validatting of prompt template
-        doc = self.__prompt_template__
-        formatter = string.Formatter()
-        param_names = set(self.__signature__.parameters.keys())
-        context_keys = set(self.__context__.keys())
-        allowed_names = param_names | context_keys
-
-        unresolved: list[str] = []
-        for _, field_name, _, _ in formatter.parse(doc):
-            if field_name is None:
-                continue
-            root = _get_root_field_name(field_name)
-            if root not in allowed_names:
-                unresolved.append(field_name)
-
-        if unresolved:
-            raise TypeError(
-                f"Template '{self.__name__}' docstring references undefined "
-                f"variables {set(unresolved)} that are not in the signature "
-                f"or lexical scope."
-            )
-
     @property
     def __prompt_template__(self) -> str:
         assert self.__default__.__doc__ is not None
@@ -306,10 +261,7 @@ class Template[**P, T](Tool[P, T]):
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
 
-        if isinstance(default, staticmethod):
-            inner = cls.define(default.__func__, *args, **kwargs)
-            return typing.cast(Template[Q, V], staticmethod(inner))
+        op = super().define(default, *args, **kwargs)
+        op.__context__ = context  # type: ignore[attr-defined]
 
-        sig = inspect.signature(default)
-        name = kwargs.get("name") or default.__name__
-        return cls(sig, name, default, context)  # type: ignore[arg-type, return-value]
+        return typing.cast(Template[Q, V], op)
