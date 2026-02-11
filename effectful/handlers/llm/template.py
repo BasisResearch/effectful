@@ -327,10 +327,8 @@ class Template[**P, T](Tool[P, T]):
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
 
-        # Operation.__get__ re-wraps templates as bound MethodType callables; validating
-        # those bound wrappers drops `self` from the signature and can falsely reject
-        # valid prompt fields like `{self.name}`. Keep validation on original define-time
-        # callables, but skip the bound wrapper path.
+        # Keep validation on original define-time callables, but skip the bound wrapper path.
+        # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
             isinstance(default, types.MethodType) and default.__self__ is not None
         )
