@@ -1261,6 +1261,7 @@ class TestCallableSynthesis:
             assert multiply_three(1, 1, 1) == 1
             assert multiply_three(5, 0, 10) == 0
 
+
 class TestMessageSequence:
     """Tests for MessageSequence message sequence tracking."""
 

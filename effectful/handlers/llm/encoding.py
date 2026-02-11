@@ -239,7 +239,9 @@ class ListEncodable[T](Encodable[list[T], typing.Any]):
         if self.element_encoder is not None:
             return self.element_encoder
         if not value:
-            return typing.cast(Encodable[T, typing.Any], _encodable_object(object, self.ctx))
+            return typing.cast(
+                Encodable[T, typing.Any], _encodable_object(object, self.ctx)
+            )
         elem_types = {type(e) for e in value}
         if len(elem_types) == 1:
             encoder = Encodable.define(elem_types.pop(), self.ctx)
@@ -260,7 +262,9 @@ class ListEncodable[T](Encodable[list[T], typing.Any]):
 
     def decode(self, encoded_value: typing.Any) -> list[T]:
         if not isinstance(encoded_value, list) or not encoded_value:
-            return typing.cast(list[T], encoded_value if isinstance(encoded_value, list) else [])
+            return typing.cast(
+                list[T], encoded_value if isinstance(encoded_value, list) else []
+            )
         encoder = self._resolve_encoder(encoded_value)
         return typing.cast(list[T], [encoder.decode(elem) for elem in encoded_value])
 
