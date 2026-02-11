@@ -11,6 +11,7 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
@@ -472,6 +473,30 @@ def test_type_to_encodable_bare_list_of_images():
     empty_encoded = encodable.encode([])
     empty_serialized = encodable.serialize(empty_encoded)
     assert empty_serialized == []
+
+
+def test_type_to_encodable_nested_type_mutable_sequence_images():
+    """Encodable.define(nested_type(images).value) preserves image list behavior."""
+    images = [
+        Image.new("RGB", (10, 10), color="red"),
+        Image.new("RGB", (20, 20), color="blue"),
+    ]
+
+    inferred_type = nested_type(images).value
+    encodable = Encodable.define(inferred_type)
+
+    encoded = encodable.encode(images)
+    serialized = encodable.serialize(encoded)
+    assert len(serialized) == 2
+    assert all(block["type"] == "image_url" for block in serialized)
+    assert all(block["image_url"]["url"].startswith("data:image/png;base64,") for block in serialized)
+
+    decoded = encodable.decode(encoded)
+    assert isinstance(decoded, list)
+    assert len(decoded) == 2
+    assert all(isinstance(elem, Image.Image) for elem in decoded)
+    assert decoded[0].size == (10, 10)
+    assert decoded[1].size == (20, 20)
 
 
 def test_type_to_encodable_type_dataclass():

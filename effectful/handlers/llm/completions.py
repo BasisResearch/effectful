@@ -159,7 +159,7 @@ def _param_model(tool: Tool) -> type[pydantic.BaseModel]:
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(nested_type(param.annotation).value).enc
+            name: Encodable.define(nested_type(param.annotation)).enc
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -217,7 +217,7 @@ def decode_tool_call(
         bound_sig: inspect.BoundArguments = sig.bind(
             **{
                 param_name: Encodable.define(
-                    nested_type(sig.parameters[param_name].annotation).value, {}
+                    nested_type(sig.parameters[param_name].annotation), {}
                 ).decode(getattr(raw_args, param_name))
                 for param_name in raw_args.model_fields_set
             }
@@ -323,7 +323,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         )
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(nested_type(result).value)
+    return_type = Encodable.define(nested_type(result))
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -360,7 +360,7 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(nested_type(obj).value)
+        encoder = Encodable.define(nested_type(obj))
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
@@ -508,7 +508,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
             # Create response_model with env so tools passed as arguments are available
             response_model = Encodable.define(
-                nested_type(template.__signature__.return_annotation).value, env
+                nested_type(template.__signature__.return_annotation), env
             )
 
             call_system(template)
