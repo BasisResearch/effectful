@@ -159,7 +159,7 @@ def _param_model(tool: Tool) -> type[pydantic.BaseModel]:
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).enc
+            name: Encodable.define(nested_type(param.annotation).value).enc
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -217,7 +217,7 @@ def decode_tool_call(
         bound_sig: inspect.BoundArguments = sig.bind(
             **{
                 param_name: Encodable.define(
-                    sig.parameters[param_name].annotation, {}
+                    nested_type(sig.parameters[param_name].annotation).value, {}
                 ).decode(getattr(raw_args, param_name))
                 for param_name in raw_args.model_fields_set
             }
@@ -323,7 +323,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         )
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(type(result))
+    return_type = Encodable.define(nested_type(result).value)
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -508,7 +508,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
             # Create response_model with env so tools passed as arguments are available
             response_model = Encodable.define(
-                template.__signature__.return_annotation, env
+                nested_type(template.__signature__.return_annotation).value, env
             )
 
             call_system(template)
