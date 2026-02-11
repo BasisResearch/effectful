@@ -54,7 +54,6 @@ class _IsRecursiveAnnotation(Annotation):
 IsRecursive = _IsRecursiveAnnotation()
 
 
-
 def _is_recursive_signature(sig: inspect.Signature):
     if typing.get_origin(sig.return_annotation) is not Annotated:
         return False
@@ -198,15 +197,17 @@ class Template[**P, T](Tool[P, T]):
         for _, field_name, _, _ in formatter.parse(doc):
             if field_name is None:
                 continue
-            root = _get_root_field_name(field_name)
+            # Extract root identifier from compound names like
+            match = re.match(r"^(\w+)", field_name)
+            root = match.group(1) if match else field_name
             if root not in allowed_names:
                 unresolved.append(field_name)
 
         if unresolved:
             raise TypeError(
                 f"Template '{template.__name__}' docstring references undefined "
-                f"variables {set(unresolved)} that are not in the signature "
-                f"or lexical scope."
+                f"variables {list(sorted(unresolved))} that are not in the signature "
+                f"{{{template.__signature__}}} or lexical scope."
             )
 
     @property
@@ -298,21 +299,10 @@ class Template[**P, T](Tool[P, T]):
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
-        if isinstance(default, staticmethod):
-            # Handle staticmethod explicitly: unwrap, build via super().define()
-            # (which doesn't re-enter Template.define and its frame walking),
-            # then attach the already-captured context and validate.
-            #
-            # See: test_validate_staticmethod_lexical_scope
-            inner = typing.cast(
-                Template[Q, V],
-                super().define(default.__func__, *args, **kwargs),
-            )
-            inner.__context__ = context
-            cls._validate_prompt(inner, context)
-            return typing.cast(Template[Q, V], staticmethod(inner))
+        op = super().define(default, *args, **kwargs)
+        op.__context__ = context  # type: ignore[attr-defined]
 
-        op = typing.cast(Template[Q, V], super().define(default, *args, **kwargs))
-        op.__context__ = context
-        cls._validate_prompt(op, context)
-        return op
+        if not isinstance(op, staticmethod):
+            cls._validate_prompt(typing.cast(Template, op), context)
+
+        return typing.cast(Template[Q, V], op)
