@@ -54,16 +54,6 @@ class _IsRecursiveAnnotation(Annotation):
 IsRecursive = _IsRecursiveAnnotation()
 
 
-def _get_root_field_name(field_name: str) -> str:
-    """Extract the root identifier from a format field name.
-
-    For compound names like ``self.name`` or ``items[0]``, returns just
-    the root identifier (``self``, ``items``), since attribute and index
-    access cannot be validated statically at definition time.
-    """
-    match = re.match(r"^(\w+)", field_name)
-    return match.group(1) if match else field_name
-
 
 def _is_recursive_signature(sig: inspect.Signature):
     if typing.get_origin(sig.return_annotation) is not Annotated:
@@ -312,6 +302,8 @@ class Template[**P, T](Tool[P, T]):
             # Handle staticmethod explicitly: unwrap, build via super().define()
             # (which doesn't re-enter Template.define and its frame walking),
             # then attach the already-captured context and validate.
+            #
+            # See: test_validate_staticmethod_lexical_scope
             inner = typing.cast(
                 Template[Q, V],
                 super().define(default.__func__, *args, **kwargs),
@@ -320,9 +312,7 @@ class Template[**P, T](Tool[P, T]):
             cls._validate_prompt(inner, context)
             return typing.cast(Template[Q, V], staticmethod(inner))
 
-        op = typing.cast(
-            Template[Q, V], super().define(default, *args, **kwargs)
-        )
+        op = typing.cast(Template[Q, V], super().define(default, *args, **kwargs))
         op.__context__ = context
         cls._validate_prompt(op, context)
         return op
