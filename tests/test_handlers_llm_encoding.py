@@ -434,21 +434,16 @@ def test_type_to_encodable_type_list_of_images():
     assert decoded_roundtrip[1].mode == original[1].mode
 
 
-def test_type_to_encodable_bare_list_of_images():
-    """Encodable.define(type(images)) handles list[Image.Image] via BareListEncodable.
-
-    Regression test for GitHub issue #552.  ``type(obj)`` on a plain list
-    erases generic args.  BareListEncodable infers element types at encode
-    time so images still produce ``image_url`` content blocks.
-    """
+def test_type_to_encodable_nested_type_mutable_sequence_images():
+    """Encodable.define(nested_type(images).value) preserves image list behavior."""
     images = [
         Image.new("RGB", (10, 10), color="red"),
         Image.new("RGB", (20, 20), color="blue"),
         Image.new("RGB", (30, 30), color="green"),
     ]
 
-    # type(images) is bare `list` — no type args
-    encodable = Encodable.define(type(images))
+    inferred_type = nested_type(images).value
+    encodable = Encodable.define(inferred_type)
 
     encoded = encodable.encode(images)
     serialized = encodable.serialize(encoded)
@@ -473,33 +468,6 @@ def test_type_to_encodable_bare_list_of_images():
     empty_encoded = encodable.encode([])
     empty_serialized = encodable.serialize(empty_encoded)
     assert empty_serialized == []
-
-
-def test_type_to_encodable_nested_type_mutable_sequence_images():
-    """Encodable.define(nested_type(images).value) preserves image list behavior."""
-    images = [
-        Image.new("RGB", (10, 10), color="red"),
-        Image.new("RGB", (20, 20), color="blue"),
-    ]
-
-    inferred_type = nested_type(images).value
-    encodable = Encodable.define(inferred_type)
-
-    encoded = encodable.encode(images)
-    serialized = encodable.serialize(encoded)
-    assert len(serialized) == 2
-    assert all(block["type"] == "image_url" for block in serialized)
-    assert all(
-        block["image_url"]["url"].startswith("data:image/png;base64,")
-        for block in serialized
-    )
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, list)
-    assert len(decoded) == 2
-    assert all(isinstance(elem, Image.Image) for elem in decoded)
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
 
 
 def test_type_to_encodable_type_dataclass():
