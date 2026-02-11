@@ -182,13 +182,12 @@ class Template[**P, T](Tool[P, T]):
             # Collect tools directly in context
             if isinstance(obj, Tool):
                 result[name] = obj
-                continue
 
             # Collect tools as methods on Agent instances in context
-            if isinstance(obj, Agent):
+            elif isinstance(obj, Agent):
                 for cls in type(obj).__mro__:
-                    for attr_name, attr_val in vars(cls).items():
-                        if isinstance(attr_val, Tool):
+                    for attr_name in vars(cls):
+                        if isinstance(getattr(obj, attr_name), Tool):
                             result[attr_name] = getattr(obj, attr_name)
 
         # Deduplicate by tool identity — Tools are hashable Operations
