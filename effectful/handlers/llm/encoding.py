@@ -6,7 +6,7 @@ import textwrap
 import types
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from types import CodeType
 from typing import Any
@@ -219,23 +219,23 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
 
 @dataclass
-class ListEncodable[T](Encodable[list[T], typing.Any]):
-    base: type[list[T]]
+class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
+    base: type[MutableSequence[T]]
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
 
-    def encode(self, value: list[T]) -> typing.Any:
-        if not isinstance(value, list):
-            raise TypeError(f"Expected list, got {type(value)}")
+    def encode(self, value: MutableSequence[T]) -> typing.Any:
+        if not isinstance(value, MutableSequence):
+            raise TypeError(f"Expected MutableSequence, got {type(value)}")
         return [self.element_encoder.encode(elem) for elem in value]
 
-    def decode(self, encoded_value: typing.Any) -> list[T]:
+    def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
         decoded_elements: list[T] = [
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
-        return typing.cast(list[T], decoded_elements)
+        return typing.cast(MutableSequence[T], decoded_elements)
 
     def serialize(
         self, encoded_value: typing.Any
@@ -243,8 +243,8 @@ class ListEncodable[T](Encodable[list[T], typing.Any]):
         if self.has_image:
             # If list contains images, serialize each element and flatten the results
             result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, list):
-                raise TypeError(f"Expected list, got {type(encoded_value)}")
+            if not isinstance(encoded_value, MutableSequence):
+                raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
             for elem in encoded_value:
                 result.extend(self.element_encoder.serialize(elem))
             return result
@@ -562,8 +562,9 @@ def _encodable_tuple[T, U](
 
 
 @Encodable.define.register(list)
-def _encodable_list[T, U](
-    ty: type[list[T]], ctx: Mapping[str, Any] | None
+@Encodable.define.register(MutableSequence)
+def _encodable_mutable_sequence[T, U](
+    ty: type[MutableSequence[T]], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
@@ -586,7 +587,8 @@ def _encodable_list[T, U](
     )
 
     return typing.cast(
-        Encodable[T, U], ListEncodable(ty, encoded_ty, ctx, has_image, element_encoder)
+        Encodable[T, U],
+        MutableSequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
     )
 
 

@@ -25,6 +25,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -322,7 +323,9 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         )
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(type(result))
+    return_type = Encodable.define(
+        typing.cast(type[typing.Any], nested_type(result).value)
+    )
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -359,7 +362,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(type(obj))
+        encoder = Encodable.define(
+            typing.cast(type[typing.Any], nested_type(obj).value)
+        )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
