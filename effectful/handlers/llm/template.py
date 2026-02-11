@@ -184,21 +184,24 @@ class Template[**P, T](Tool[P, T]):
 
     __context__: ChainMap[str, Any]
 
-    def __init__(
-        self,
-        signature: inspect.Signature,
-        name: str,
-        default: Callable[P, T],
+    @classmethod
+    def _validate_prompt(
+        cls,
+        template: "Template",
         context: ChainMap[str, Any],
-    ):
-        super().__init__(signature, name, default)
-        self.__context__ = context
+    ) -> None:
+        """Validate that all format string variables in the docstring
+        refer to names resolvable at call time.
 
-        # Validatting of prompt template
-        doc = self.__prompt_template__
+        Each variable must be either a parameter in the signature
+        or a name captured in the lexical context.
+
+        :raises TypeError: If any format string variable cannot be resolved.
+        """
+        doc = template.__prompt_template__
         formatter = string.Formatter()
-        param_names = set(self.__signature__.parameters.keys())
-        context_keys = set(self.__context__.keys())
+        param_names = set(template.__signature__.parameters.keys())
+        context_keys = set(context.keys())
         allowed_names = param_names | context_keys
 
         unresolved: list[str] = []
@@ -211,7 +214,7 @@ class Template[**P, T](Tool[P, T]):
 
         if unresolved:
             raise TypeError(
-                f"Template '{self.__name__}' docstring references undefined "
+                f"Template '{template.__name__}' docstring references undefined "
                 f"variables {set(unresolved)} that are not in the signature "
                 f"or lexical scope."
             )
@@ -305,11 +308,21 @@ class Template[**P, T](Tool[P, T]):
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
-
         if isinstance(default, staticmethod):
-            inner = cls.define(default.__func__, *args, **kwargs)
+            # Handle staticmethod explicitly: unwrap, build via super().define()
+            # (which doesn't re-enter Template.define and its frame walking),
+            # then attach the already-captured context and validate.
+            inner = typing.cast(
+                Template[Q, V],
+                super().define(default.__func__, *args, **kwargs),
+            )
+            inner.__context__ = context
+            cls._validate_prompt(inner, context)
             return typing.cast(Template[Q, V], staticmethod(inner))
 
-        sig = inspect.signature(default)
-        name = kwargs.get("name") or default.__name__
-        return cls(sig, name, default, context)  # type: ignore[arg-type, return-value]
+        op = typing.cast(
+            Template[Q, V], super().define(default, *args, **kwargs)
+        )
+        op.__context__ = context
+        cls._validate_prompt(op, context)
+        return op

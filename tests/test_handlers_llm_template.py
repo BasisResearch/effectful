@@ -292,6 +292,38 @@ def test_validate_staticmethod_undefined():
             raise NotHandled
 
 
+def test_validate_staticmethod_lexical_scope():
+    """Staticmethod templates should resolve lexical scope variables."""
+    feet_per_mile = 5280  # noqa: F841
+
+    @Template.define
+    @staticmethod
+    def convert(feet: int) -> str:
+        """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
+        raise NotHandled
+
+    # The inner template should have the correct lexical context
+    inner = convert.__func__
+    assert "feet_per_mile" in inner.__context__
+
+
+def test_staticmethod_lexical_scope_formatting():
+    """Staticmethod templates should format lexical scope variables at runtime."""
+    feet_per_mile = 5280  # noqa: F841
+
+    @Template.define
+    @staticmethod
+    def convert(feet: int) -> str:
+        """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
+        raise NotHandled
+
+    with handler(TemplateStringIntp()):
+        assert (
+            convert(7920)
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        )
+
+
 def test_validate_lexical_var():
     """Lexical scope variables are allowed in template format strings."""
     feet_per_mile = 5280  # noqa: F841
