@@ -489,7 +489,10 @@ def test_type_to_encodable_nested_type_mutable_sequence_images():
     serialized = encodable.serialize(encoded)
     assert len(serialized) == 2
     assert all(block["type"] == "image_url" for block in serialized)
-    assert all(block["image_url"]["url"].startswith("data:image/png;base64,") for block in serialized)
+    assert all(
+        block["image_url"]["url"].startswith("data:image/png;base64,")
+        for block in serialized
+    )
 
     decoded = encodable.decode(encoded)
     assert isinstance(decoded, list)
