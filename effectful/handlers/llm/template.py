@@ -334,10 +334,7 @@ class Template[**P, T](Tool[P, T]):
         is_bound_wrapper = (
             isinstance(default, types.MethodType) and default.__self__ is not None
         )
-        if (
-            not isinstance(op, staticmethod | classmethod)
-            and not is_bound_wrapper
-        ):
+        if not isinstance(op, staticmethod | classmethod) and not is_bound_wrapper:
             cls._validate_prompt(typing.cast(Template, op), context)
 
         return typing.cast(Template[Q, V], op)
