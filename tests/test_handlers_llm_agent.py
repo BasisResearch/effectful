@@ -2,6 +2,7 @@
 
 import collections
 import dataclasses
+import inspect
 from dataclasses import dataclass
 
 from litellm import ModelResponse
@@ -663,3 +664,161 @@ class TestLexicalScopeCollection:
         t = _outer()
         assert "inner_var" in t.__context__
         assert "outer_var" in t.__context__
+
+
+# ---------------------------------------------------------------------------
+# staticmethod / classmethod Templates
+# ---------------------------------------------------------------------------
+
+
+class TestStaticAndClassMethodTemplates:
+    """Tests for @Template.define applied to staticmethod and classmethod descriptors."""
+
+    def test_staticmethod_template_in_class(self):
+        """@Template.define @staticmethod in a class body produces a Template
+        accessible as a class attribute."""
+
+        class MyClass:
+            @Template.define
+            @staticmethod
+            def ask(question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        assert isinstance(MyClass.ask, Template)
+        assert isinstance(MyClass().ask, Template)
+
+    def test_staticmethod_template_callable(self):
+        """Staticmethod Templates can be called through a handler."""
+
+        class MyClass:
+            @Template.define
+            @staticmethod
+            def ask(question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        mock = MockCompletionHandler([make_text_response('{"value": "42"}')])
+        with handler(LiteLLMProvider()), handler(mock):
+            result = MyClass.ask("what is 6*7?")
+        assert result == "42"
+
+    def test_staticmethod_template_captures_enclosing_scope(self):
+        """A staticmethod Template captures the enclosing function scope,
+        even through the re-entrant _define_staticmethod call."""
+
+        @Tool.define
+        def helper() -> int:
+            """A helper tool."""
+            return 99
+
+        class MyClass:
+            @Template.define
+            @staticmethod
+            def ask(x: int) -> int:
+                """Compute {x}."""
+                raise NotHandled
+
+        assert "helper" in MyClass.ask.tools
+
+    def test_staticmethod_template_excludes_class_body(self):
+        """A staticmethod Template does not capture class body locals."""
+
+        class MyClass:
+            class_var = 42  # noqa: F841
+
+            @Template.define
+            @staticmethod
+            def ask() -> str:
+                """Ask."""
+                raise NotHandled
+
+        assert "class_var" not in MyClass.ask.__context__
+
+    def test_classmethod_template_in_class(self):
+        """@Template.define @classmethod in a class body produces a Template
+        accessible as a class attribute (lazily via _ClassMethodOpDescriptor)."""
+
+        class MyClass:
+            @Template.define
+            @classmethod
+            def ask(cls, question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        assert isinstance(MyClass.ask, Template)
+
+    def test_classmethod_template_callable(self):
+        """Classmethod Templates can be called through a handler."""
+
+        class MyClass:
+            @Template.define
+            @classmethod
+            def ask(cls, question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        mock = MockCompletionHandler([make_text_response('{"value": "yes"}')])
+        with handler(LiteLLMProvider()), handler(mock):
+            result = MyClass.ask("is the sky blue?")
+        assert result == "yes"
+
+    def test_classmethod_template_signature_excludes_cls(self):
+        """The classmethod Template's signature does not include cls,
+        since the classmethod descriptor binds it automatically."""
+
+        class MyClass:
+            @Template.define
+            @classmethod
+            def ask(cls, question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        sig = inspect.signature(MyClass.ask)
+        assert "cls" not in sig.parameters
+        assert "question" in sig.parameters
+
+    def test_agent_skips_staticmethod_template(self):
+        """Agent.__init_subclass__ does not wrap staticmethod Templates
+        in cached_property — they remain accessible as plain Templates."""
+
+        class MyAgent(Agent):
+            @Template.define
+            def instance_method(self) -> str:
+                """Say hello."""
+                raise NotHandled
+
+            @Template.define
+            @staticmethod
+            def static_method(x: int) -> int:
+                """Double {x}."""
+                raise NotHandled
+
+        agent = MyAgent()
+        # instance_method is wrapped by Agent into a cached_property
+        assert isinstance(agent.instance_method, Template)
+        # static_method remains a plain Template accessible on class and instance
+        assert isinstance(MyAgent.static_method, Template)
+        assert isinstance(agent.static_method, Template)
+        # static_method should NOT have __history__ set
+        assert not hasattr(MyAgent.static_method, "__history__")
+
+    def test_agent_skips_classmethod_template(self):
+        """Agent.__init_subclass__ does not wrap classmethod Templates
+        in cached_property — they remain class-level operations."""
+
+        class MyAgent(Agent):
+            @Template.define
+            def instance_method(self) -> str:
+                """Say hello."""
+                raise NotHandled
+
+            @Template.define
+            @classmethod
+            def class_method(cls) -> str:
+                """Do something."""
+                raise NotHandled
+
+        agent = MyAgent()
+        assert isinstance(agent.instance_method, Template)
+        assert isinstance(MyAgent.class_method, Template)
