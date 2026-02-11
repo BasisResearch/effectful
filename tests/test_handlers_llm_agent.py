@@ -2,6 +2,7 @@
 
 import collections
 import dataclasses
+from dataclasses import dataclass
 
 from litellm import ModelResponse
 
@@ -14,6 +15,68 @@ from effectful.handlers.llm.completions import (
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+
+
+def _make_template_in_own_scope():
+    """Module-level helper: the template's lexical scope is this function,
+    NOT whatever dynamic caller invokes it."""
+
+    @Template.define
+    def t() -> str:
+        """test"""
+        raise NotHandled
+
+    return t
+
+
+class _ModuleLevelA:
+    @Template.define
+    def f(self) -> str:
+        """Do stuff"""
+        raise NotImplementedError
+
+
+def _define_scoped_templates():
+    @Tool.define
+    def shown(self) -> int:
+        """Should be able to see this tool."""
+        return 0
+
+    class A:
+        @Template.define
+        def f(self) -> str:
+            """test"""
+            return ""
+
+    @Template.define
+    def g() -> int:
+        """test"""
+        return 0
+
+    def _nested():
+        nonlocal shown
+
+        @Template.define
+        def h() -> int:
+            """test"""
+            return 0
+
+        return h
+
+    class B:
+        @Template.define
+        def i(self) -> str:
+            """test"""
+            return ""
+
+        class C:
+            @Template.define
+            def j(self) -> str:
+                """test"""
+                return ""
+
+    return [A().f, g, _nested(), B().i, B.C().j]
+
 
 # ---------------------------------------------------------------------------
 # Helpers (same pattern as test_handlers_llm_provider.py)
@@ -321,3 +384,282 @@ class TestAgentWithRetryHandler:
         # assistant message should be there.
         roles = {m["role"] for m in agent.__history__.values()}
         assert {"user", "assistant"} == roles - {"system"}
+
+
+# ---------------------------------------------------------------------------
+# Template method and scoping tests (moved from test_handlers_llm_template.py)
+# ---------------------------------------------------------------------------
+
+
+def test_template_method():
+    """Test that methods can be used as templates."""
+    local_variable = None  # noqa: F841
+
+    @dataclass
+    class A(Agent):
+        x: int
+
+        @Tool.define
+        def random(self) -> int:
+            """Returns a random number, chosen by fair dice roll."""
+            return 4
+
+        @Template.define
+        def f(self) -> int:
+            """What is the number after 3?"""
+            raise NotHandled
+
+    a = A(0)
+    assert isinstance(a.f, Template)
+    assert "random" in a.f.tools
+    # f is the template itself — found via self but correctly removed (non-recursive)
+    assert "f" not in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert a.f.tools["random"]() == 4
+
+    class B(A):
+        @Tool.define
+        def reverse(self, s: str) -> str:
+            """Reverses a string."""
+            return str(reversed(s))
+
+    b = B(1)
+    assert isinstance(b.f, Template)
+    assert "random" in b.f.tools
+    assert "reverse" in b.f.tools
+    assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
+
+
+def test_template_method_nested_class():
+    """Test that template methods work on nested classes."""
+    local_variable = "test"  # noqa: F841
+
+    @Tool.define
+    def random() -> int:
+        """Returns a random number, chosen by fair dice roll."""
+        return 4
+
+    @dataclass
+    class A:
+        x: int
+
+        @dataclass
+        class B:
+            y: bool
+
+            @Template.define
+            def f(self) -> int:
+                """What is the number after 3?"""
+                raise NotHandled
+
+    a = A.B(True)
+    assert isinstance(a.f, Template)
+    # random is found via the enclosing function scope
+    assert "random" in a.f.tools
+    # f is the template itself — found via self but correctly removed (non-recursive)
+    assert "f" not in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert a.f.tools["random"]() == 4
+
+
+def test_template_method_module():
+    """Test that template methods work when defined on module-level classes."""
+    a = _ModuleLevelA()
+    assert isinstance(a.f, Template)
+
+
+def test_template_method_scoping():
+    @Tool.define
+    def hidden(self) -> int:
+        """Shouldn't be able to see this tool."""
+        return 0
+
+    templates = _define_scoped_templates()
+    for t in templates:
+        assert isinstance(t, Template)
+        assert "shown" in t.__context__
+        assert "hidden" not in t.__context__
+
+
+# ---------------------------------------------------------------------------
+# Lexical scope collection
+# ---------------------------------------------------------------------------
+
+
+class TestLexicalScopeCollection:
+    """Tests that Template.define follows Python's lexical scope rules."""
+
+    def test_class_body_locals_excluded_from_context(self):
+        """Class body variables (like __qualname__, field defaults) should not
+        appear as tools, matching Python's rule that class bodies are not
+        lexical scopes for methods."""
+
+        @dataclass
+        class Foo:
+            x: int
+
+            @Tool.define
+            def helper(self) -> int:
+                """A tool."""
+                return 42
+
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        foo = Foo(0)
+        # Class body metadata should not leak into context
+        assert "__qualname__" not in foo.ask.__context__
+        assert "__firstlineno__" not in foo.ask.__context__
+        # But the enclosing function scope is visible
+        assert "Foo" in foo.ask.__context__
+
+    def test_enclosing_function_scope_visible(self):
+        """Tools defined in the enclosing function are visible to templates
+        defined inside a class in that function."""
+
+        @Tool.define
+        def helper() -> int:
+            """A helper tool."""
+            return 99
+
+        class Bar:
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        bar = Bar()
+        assert "helper" in bar.ask.tools
+
+    def test_dynamic_caller_not_leaked(self):
+        """Variables from a dynamic caller (not lexical enclosure) should not
+        appear in the template's context."""
+        leaked = False  # noqa: F841
+
+        # _make_template_in_own_scope is defined at module level, so
+        # this test method is a dynamic caller, not a lexical encloser.
+        t = _make_template_in_own_scope()
+        assert "leaked" not in t.__context__
+
+    def test_class_method_tools_discovered_via_self(self):
+        """After skipping the class body, tools on an Agent are still
+        discoverable through the bound `self` instance."""
+
+        @dataclass
+        class Widget(Agent):
+            @Tool.define
+            def measure(self) -> int:
+                """Measure the widget."""
+                return 10
+
+            @Template.define
+            def describe(self) -> str:
+                """Describe this widget."""
+                raise NotHandled
+
+        w = Widget()
+        assert "measure" in w.describe.tools
+        # The template itself is not in tools (non-recursive)
+        assert "describe" not in w.describe.tools
+
+    def test_inherited_tools_visible(self):
+        """Tools from a base Agent class are visible through the instance."""
+
+        class Base(Agent):
+            @Tool.define
+            def base_tool(self) -> int:
+                """A base tool."""
+                return 1
+
+        class Derived(Base):
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        d = Derived()
+        assert "base_tool" in d.ask.tools
+
+    def test_tool_in_enclosing_function_visible_through_class(self):
+        """function -> class -> Template.define: tool in the function is visible."""
+
+        @Tool.define
+        def outer_tool() -> int:
+            """Outer tool."""
+            return 1
+
+        class Inner:
+            @Template.define
+            def ask(self) -> str:
+                """Ask something."""
+                raise NotHandled
+
+        assert "outer_tool" in Inner().ask.tools
+
+    def test_tool_in_enclosing_function_visible_through_nested_classes(self):
+        """function -> class -> class -> Template.define: tool in the function
+        is still visible after skipping multiple class body frames."""
+
+        @Tool.define
+        def outer_tool() -> int:
+            """Outer tool."""
+            return 1
+
+        class Outer:
+            class Inner:
+                @Template.define
+                def ask(self) -> str:
+                    """Ask something."""
+                    raise NotHandled
+
+        assert "outer_tool" in Outer.Inner().ask.tools
+
+    def test_nested_function_then_class(self):
+        """function -> function -> class -> Template.define: all enclosing
+        function scopes are visible, matching Python's lexical scope rules."""
+
+        def _make():
+            @Tool.define
+            def inner_tool() -> int:
+                """Inner tool."""
+                return 2
+
+            class MyClass:
+                @Template.define
+                def ask(self) -> str:
+                    """Ask."""
+                    raise NotHandled
+
+            return MyClass
+
+        outer_var = True  # noqa: F841
+        cls = _make()
+        assert "inner_tool" in cls().ask.tools
+        # The test method is a lexical encloser of _make, so its locals
+        # are visible — matching Python's actual scoping rules.
+        assert "outer_var" in cls().ask.__context__
+
+    def test_nested_function_scopes_template_at_inner(self):
+        """function -> function -> Template.define: template sees all
+        enclosing function scopes, matching Python's lexical scope rules."""
+
+        def _outer():
+            outer_var = "outer"  # noqa: F841
+
+            def _inner():
+                inner_var = "inner"  # noqa: F841
+
+                @Template.define
+                def t() -> str:
+                    """test"""
+                    raise NotHandled
+
+                return t
+
+            return _inner()
+
+        t = _outer()
+        assert "inner_var" in t.__context__
+        assert "outer_var" in t.__context__

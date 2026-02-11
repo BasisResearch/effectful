@@ -179,17 +179,20 @@ class Template[**P, T](Tool[P, T]):
         is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
-            # Collect tools in context
+            # Collect tools directly in context
             if isinstance(obj, Tool):
                 result[name] = obj
+                continue
 
-            # Collect tools as methods on any bound instances
-            elif isinstance(obj, Agent):
-                for inst_name in set(dir(type(obj))) | set(dir(obj)):
-                    if isinstance(getattr(obj, inst_name), Tool):
-                        result[f"{name}.{inst_name}"] = getattr(obj, inst_name)
+            # Collect tools as methods on Agent instances in context
+            if isinstance(obj, Agent):
+                for cls in type(obj).__mro__:
+                    for attr_name, attr_val in vars(cls).items():
+                        if isinstance(attr_val, Tool):
+                            result[attr_name] = getattr(obj, attr_name)
 
-        # deduplicate tools and remove self if not recursive
+        # Deduplicate by tool identity — Tools are hashable Operations
+        # and instance method Tools are cached per instance.
         tool2name = {tool: name for name, tool in result.items()}
         for name, tool in tuple(result.items()):
             if tool2name[tool] != name or (tool is self and not is_recursive):
@@ -246,25 +249,32 @@ class Template[**P, T](Tool[P, T]):
                 assert frame is not None
                 frame = frame.f_back
 
-        # Collect enclosing (non-class) scope frames up to and including
-        # the module-level frame.
+        # Use the qualname of the decorated function to identify which
+        # frames are *lexical* enclosers (as opposed to dynamic callers).
+        # A segment preceding "<locals>" in the qualname is an enclosing
+        # function; everything else (class names, the function itself) is not.
         assert frame is not None
-        contexts: list[types.MappingProxyType[str, Any]] = []
-        globals_proxy: types.MappingProxyType[str, Any] | None = None
-        while frame is not None:
-            locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-                frame.f_locals
-            )
-            globals_proxy = types.MappingProxyType(frame.f_globals)
-            contexts.append(locals_proxy)
-            if locals_proxy == globals_proxy:
-                break  # reached module level
-            frame = frame.f_back
+        _fn = default
+        if isinstance(_fn, staticmethod | classmethod):
+            _fn = _fn.__func__
+        parts = _fn.__qualname__.split(".")
+        enclosing_fns = [
+            parts[i] for i in range(len(parts) - 1) if parts[i + 1] == "<locals>"
+        ]
+        enclosing_fns.reverse()  # innermost first for frame walking
 
-        if globals_proxy is not None and (
-            not contexts or contexts[-1] != globals_proxy
-        ):
-            contexts.append(globals_proxy)
+        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_globals
+        )
+        contexts: list[types.MappingProxyType[str, Any]] = []
+        for fn_name in enclosing_fns:
+            while frame is not None and frame.f_locals is not frame.f_globals:
+                if frame.f_code.co_name == fn_name:
+                    contexts.append(types.MappingProxyType(frame.f_locals))
+                    frame = frame.f_back
+                    break
+                frame = frame.f_back
+        contexts.append(globals_proxy)
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
