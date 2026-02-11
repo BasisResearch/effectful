@@ -304,12 +304,11 @@ class TestAgentIsolation:
             bot1.send("msg for bot1")
             bot2.send("msg for bot2")
 
-        # bot2's call should NOT contain bot1's messages
-        assert len(mock.received_messages[1]) >= 1  # system + user only
+        # bot2's call should NOT contain bot1's messages — only system + user
+        assert len(mock.received_messages[1]) == len(mock.received_messages[0])
 
-        # Each bot has its own history
-        assert len(bot1.__history__) >= 2  # system, user, assistant
-        assert len(bot2.__history__) >= 2
+        # Each bot made exactly one call, so their histories should be equal in size
+        assert len(bot1.__history__) == len(bot2.__history__)
 
         # Histories share no message IDs
         assert set(bot1.__history__.keys()).isdisjoint(set(bot2.__history__.keys()))
@@ -885,3 +884,5 @@ class TestStaticAndClassMethodTemplates:
         agent = MyAgent()
         assert isinstance(agent.instance_method, Template)
         assert isinstance(MyAgent.class_method, Template)
+        # class_method should NOT have __history__ set
+        assert not hasattr(MyAgent.class_method, "__history__")

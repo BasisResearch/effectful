@@ -7,6 +7,7 @@ from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
 from typing import Annotated, Any
 
+from effectful.ops.semantics import handler
 from effectful.ops.types import Annotation, Operation
 
 
@@ -190,9 +191,16 @@ class Template[**P, T](Tool[P, T]):
                         if isinstance(getattr(obj, attr_name), Tool):
                             result[attr_name] = getattr(obj, attr_name)
 
-        # Deduplicate by tool identity — Tools are hashable Operations
-        # and instance method Tools are cached per instance.
-        tool2name = {tool: name for name, tool in result.items()}
+        # Deduplicate by tool identity and remove self-references.
+        #
+        # The same Tool can appear under multiple names when it is both
+        # visible in the enclosing scope *and* discovered via an Agent
+        # instance's MRO.  Since Tools are hashable Operations and
+        # instance-method Tools are cached per instance, we keep only
+        # the last name for each unique tool object.  We also remove
+        # the template itself from the tool map unless it is explicitly
+        # marked as recursive (see test_template_method, test_template_method_nested_class).
+        tool2name = {tool: name for name, tool in sorted(result.items())}
         for name, tool in tuple(result.items()):
             if tool2name[tool] != name or (tool is self and not is_recursive):
                 del result[name]
@@ -212,8 +220,8 @@ class Template[**P, T](Tool[P, T]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         if getattr(self, "__history__", None) is not None:
+            # Lazy import: completions.py imports from this module (circular).
             from effectful.handlers.llm.completions import get_message_sequence
-            from effectful.ops.semantics import handler
 
             with handler({get_message_sequence: lambda: self.__history__}):  # type: ignore
                 return super().__call__(*args, **kwargs)
