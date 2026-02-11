@@ -323,7 +323,9 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         )
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(nested_type(result).value)
+    return_type = Encodable.define(
+        typing.cast(type[typing.Any], nested_type(result).value)
+    )
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -360,7 +362,7 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(nested_type(obj).value)
+        encoder = Encodable.define(typing.cast(type[typing.Any], nested_type(obj).value))
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
