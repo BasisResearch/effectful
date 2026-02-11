@@ -491,7 +491,7 @@ class RetryLLMHandler(ObjectInterpretation):
                 append_message(message)
                 return message
             else:
-                raise e.original_error from e
+                raise
 
 
 class LiteLLMProvider(ObjectInterpretation):
