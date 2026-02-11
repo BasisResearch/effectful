@@ -220,66 +220,36 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
 @dataclass
 class ListEncodable[T](Encodable[list[T], typing.Any]):
-    """Encodable for ``list[T]``.
-
-    When *element_encoder* is ``None`` (bare ``list``, no type args), the
-    encoder is inferred from element runtime types at :meth:`encode` time
-    and cached for :meth:`decode` / :meth:`serialize` (whose inputs may
-    have different runtime types after encoding, e.g. ``Image`` → ``dict``).
-    """
-
     base: type[list[T]]
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
-    element_encoder: Encodable[T, typing.Any] | None = None
-
-    def _resolve_encoder(self, value: list) -> Encodable[T, typing.Any]:
-        """Return the element encoder, inferring and caching if needed."""
-        if self.element_encoder is not None:
-            return self.element_encoder
-        if not value:
-            return typing.cast(
-                Encodable[T, typing.Any], _encodable_object(object, self.ctx)
-            )
-        elem_types = {type(e) for e in value}
-        if len(elem_types) == 1:
-            encoder = Encodable.define(elem_types.pop(), self.ctx)
-        else:
-            encoder = _encodable_object(object, self.ctx)
-        # Cache so serialize/decode (called on already-encoded values) reuse it.
-        self.element_encoder = typing.cast(Encodable[T, typing.Any], encoder)
-        self.has_image = isinstance(encoder, ImageEncodable)
-        return self.element_encoder
+    element_encoder: Encodable[T, typing.Any]
 
     def encode(self, value: list[T]) -> typing.Any:
         if not isinstance(value, list):
             raise TypeError(f"Expected list, got {type(value)}")
-        if not value:
-            return []
-        encoder = self._resolve_encoder(value)
-        return [encoder.encode(elem) for elem in value]
+        return [self.element_encoder.encode(elem) for elem in value]
 
     def decode(self, encoded_value: typing.Any) -> list[T]:
-        if not isinstance(encoded_value, list) or not encoded_value:
-            return typing.cast(
-                list[T], encoded_value if isinstance(encoded_value, list) else []
-            )
-        encoder = self._resolve_encoder(encoded_value)
-        return typing.cast(list[T], [encoder.decode(elem) for elem in encoded_value])
+        decoded_elements: list[T] = [
+            self.element_encoder.decode(elem) for elem in encoded_value
+        ]
+        return typing.cast(list[T], decoded_elements)
 
     def serialize(
         self, encoded_value: typing.Any
     ) -> Sequence[OpenAIMessageContentListBlock]:
-        if not isinstance(encoded_value, list) or not encoded_value:
-            return []
-        encoder = self._resolve_encoder(encoded_value)
         if self.has_image:
+            # If list contains images, serialize each element and flatten the results
             result: list[OpenAIMessageContentListBlock] = []
+            if not isinstance(encoded_value, list):
+                raise TypeError(f"Expected list, got {type(encoded_value)}")
             for elem in encoded_value:
-                result.extend(encoder.serialize(elem))
+                result.extend(self.element_encoder.serialize(elem))
             return result
         else:
+            # Use base serialization for non-image lists
             adapter = pydantic.TypeAdapter(self.enc)
             json_str = adapter.dump_json(encoded_value).decode("utf-8")
             return [{"type": "text", "text": json_str}]
@@ -598,11 +568,9 @@ def _encodable_list[T, U](
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
-    # Bare list (no type args): defer element type inference to encode time.
+    # Handle unparameterized list (list without type args)
     if not args:
-        return typing.cast(
-            Encodable[T, U], ListEncodable(ty, list, ctx, has_image=False)
-        )
+        return _encodable_object(ty, ctx)
 
     # Get the element type (first type argument)
     element_ty = args[0]

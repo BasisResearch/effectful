@@ -25,6 +25,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -359,7 +360,7 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(type(obj))
+        encoder = Encodable.define(nested_type(obj).value)
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
