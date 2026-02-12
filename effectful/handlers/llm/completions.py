@@ -55,12 +55,15 @@ Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | Use
 
 
 @defop
-def get_message_sequence() -> collections.OrderedDict[str, Message]:
-    return collections.OrderedDict()
+def _get_history() -> collections.OrderedDict[str, Message]:
+    raise NotImplementedError
 
 
 def append_message(message: Message):
-    get_message_sequence()[message["id"]] = message
+    try:
+        _get_history()[message["id"]] = message
+    except NotImplementedError:
+        pass
 
 
 def _make_message(content: dict) -> Message:
@@ -265,7 +268,7 @@ def call_assistant[T, U](
         "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
 
-    messages = list(get_message_sequence().values())
+    messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
@@ -435,13 +438,13 @@ class RetryLLMHandler(ObjectInterpretation):
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        message_sequence = get_message_sequence().copy()
+        message_sequence = _get_history().copy()
         last_attempt = self.num_retries
 
         for attempt in range(self.num_retries + 1):
             try:
                 # call assistant, use saved message_sequence
-                with handler({get_message_sequence: lambda: message_sequence}):
+                with handler({_get_history: lambda: message_sequence}):
                     message, tool_calls, result = fwd(
                         tools, response_format, model, **kwargs
                     )
@@ -514,14 +517,12 @@ class LiteLLMProvider(ObjectInterpretation):
         # Create response_model with env so tools passed as arguments are available
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
-        message_sequence: collections.OrderedDict[str, Message] = (
-            getattr(template, "__history__")
-            if hasattr(template, "__history__")
-            else get_message_sequence()
-        )
+        history: collections.OrderedDict[str, Message] = getattr(
+            template, "__history__", collections.OrderedDict()
+        )  # type: ignore
+        history_copy = history.copy()
 
-        history_copy = message_sequence.copy()
-        with handler({get_message_sequence: lambda: history_copy}):
+        with handler({_get_history: lambda: history_copy}):
             call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
@@ -536,6 +537,8 @@ class LiteLLMProvider(ObjectInterpretation):
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-        if hasattr(template, "__history__"):
-            template.__history__.update(history_copy)
+        try:
+            _get_history()
+        except NotImplementedError:
+            history.update(history_copy)
         return typing.cast(T, result)

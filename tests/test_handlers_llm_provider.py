@@ -30,10 +30,10 @@ from effectful.handlers.llm.completions import (
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
+    _get_history,
     call_assistant,
     call_tool,
     completion,
-    get_message_sequence,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
@@ -426,7 +426,7 @@ def message_sequence_provider():
     message_sequence = collections.OrderedDict(
         id1={"id": "id1", "role": "user", "content": "test"},
     )
-    return message_sequence, {get_message_sequence: lambda: message_sequence}
+    return message_sequence, {_get_history: lambda: message_sequence}
 
 
 @pytest.fixture
@@ -498,7 +498,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -528,7 +528,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -560,7 +560,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -587,7 +587,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
         with pytest.raises(Exception):  # Will raise the underlying decoding error
             with (
                 handler(RetryLLMHandler(num_retries=2)),
@@ -613,7 +613,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with pytest.raises(Exception):
             with (
@@ -637,7 +637,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -712,7 +712,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -743,7 +743,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with pytest.raises(Exception):  # Will raise the underlying decoding error
             with (
@@ -770,7 +770,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with pytest.raises(ToolCallDecodingError) as exc_info:
             with (
@@ -800,7 +800,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with pytest.raises(ResultDecodingError) as exc_info:
             with (
@@ -829,7 +829,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -859,7 +859,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -889,7 +889,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3, include_traceback=True)),
@@ -920,7 +920,7 @@ class TestRetryLLMHandler:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
             handler(RetryLLMHandler(num_retries=3)),
@@ -1024,7 +1024,7 @@ class TestToolExecutionErrorHandling:
         message_sequence = collections.OrderedDict(
             id1={"id": "id1", "role": "user", "content": "test"},
         )
-        message_sequence_provider = {get_message_sequence: lambda: message_sequence}
+        message_sequence_provider = {_get_history: lambda: message_sequence}
 
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
@@ -1266,8 +1266,8 @@ class TestCallableSynthesis:
 class TestMessageSequence:
     """Tests for MessageSequence message sequence tracking."""
 
-    def test_call_tool_fresh_message_sequence(self):
-        """call_tool should push a fresh message sequence frame, isolating tool execution."""
+    def test_call_tool_sees_outer_message_sequence(self):
+        """call_tool should not isolate; the tool sees the outer message sequence."""
         message_sequence = collections.OrderedDict()
 
         # Pre-populate the current frame with existing messages
@@ -1287,9 +1287,9 @@ class TestMessageSequence:
         class InnerToolHandler(ObjectInterpretation):
             @implements(add_numbers)
             def _add_numbers(self, *args, **kwargs):
-                # Capture the state of the message sequence stack during execution
+                # Capture the state of the message sequence during execution
                 nonlocal captured_frame
-                captured_frame = dict(get_message_sequence())
+                captured_frame = dict(_get_history())
                 return 42
 
         mock_tool_call = DecodedToolCall(
@@ -1300,12 +1300,13 @@ class TestMessageSequence:
 
         with (
             handler(InnerToolHandler()),
-            handler({get_message_sequence: lambda: message_sequence}),
+            handler({_get_history: lambda: message_sequence}),
         ):
             call_tool(mock_tool_call)
 
-        # After completion, fresh frame is popped and tool message is in parent frame
-        assert len(captured_frame) == 0
+        # Tool sees the outer message sequence (2 pre-populated messages)
+        assert len(captured_frame) == 2
+        # Tool response is appended to the same outer sequence
         assert len(message_sequence) == 3
 
     def test_call_assistant_no_duplicate_messages(self):
@@ -1336,7 +1337,7 @@ class TestMessageSequence:
         # Call with msg_b already in the input — it should not appear twice
         with (
             handler(InnerAssistantHandler()),
-            handler({get_message_sequence: lambda: message_sequence}),
+            handler({_get_history: lambda: message_sequence}),
         ):
             call_assistant(
                 tools={},
@@ -1377,7 +1378,7 @@ class TestMessageSequence:
 
         with (
             handler(inner),
-            handler({get_message_sequence: lambda: message_sequence}),
+            handler({_get_history: lambda: message_sequence}),
         ):
             # First call: input is the latest message (msg_user)
             resp1, _, _ = call_assistant(
@@ -1416,7 +1417,7 @@ class TestMessageSequence:
         with pytest.raises(RuntimeError, match="LLM call failed"):
             with (
                 handler(FailingAssistantHandler()),
-                handler({get_message_sequence: lambda: message_sequence}),
+                handler({_get_history: lambda: message_sequence}),
             ):
                 call_assistant(
                     messages=[msg],
@@ -1448,7 +1449,7 @@ class MessageSequenceTracker(ObjectInterpretation):
 
     @implements(call_assistant)
     def _call_assistant(self, *args, **kwargs):
-        self.call_log.append([m["id"] for m in get_message_sequence().values()])
+        self.call_log.append([m["id"] for m in _get_history().values()])
         return fwd()
 
 
@@ -1647,7 +1648,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(LiteLLMProvider(model="test")),
                 handler(mock_handler),
-                handler({get_message_sequence: lambda: message_sequence}),
+                handler({_get_history: lambda: message_sequence}),
             ):
                 task_with_flaky_tool("go")
 
@@ -1672,7 +1673,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(LiteLLMProvider(model="test")),
                 handler(mock_handler),
-                handler({get_message_sequence: lambda: message_sequence}),
+                handler({_get_history: lambda: message_sequence}),
             ):
                 task_with_tools("go")
 
@@ -1698,7 +1699,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(LiteLLMProvider(model="test")),
                 handler(mock_handler),
-                handler({get_message_sequence: lambda: message_sequence}),
+                handler({_get_history: lambda: message_sequence}),
             ):
                 task_with_flaky_tool("go")
 
@@ -1707,27 +1708,29 @@ class TestLiteLLMProviderMessagePruning:
         assert "existing" in message_sequence
 
     def test_successful_call_preserves_messages(self):
-        """A successful template call should keep its messages in the sequence."""
+        """A successful top-level template call should write messages back to Agent history."""
         responses = [make_text_response('{"value": "done"}')]
         mock_handler = MockCompletionHandler(responses)
 
-        message_sequence = collections.OrderedDict()
+        class SimpleAgent(Agent):
+            @Template.define
+            def simple_task(self, instruction: str) -> str:
+                """Do: {instruction}"""
+                raise NotHandled
 
-        @Template.define
-        def simple_task(instruction: str) -> str:
-            """Do: {instruction}"""
-            raise NotHandled
+        agent = SimpleAgent()
 
+        # No outer _get_history handler: LiteLLMProvider._call detects this is the
+        # outermost template and writes back to the agent's __history__.
         with (
             handler(LiteLLMProvider(model="test")),
             handler(mock_handler),
-            handler({get_message_sequence: lambda: message_sequence}),
         ):
-            result = simple_task("go")
+            result = agent.simple_task("go")
 
         assert result == "done"
-        # Should have user message + assistant message
-        assert len(message_sequence) >= 2
+        # Agent's __history__ should have messages written back (system + user + assistant)
+        assert len(agent.__history__) >= 2
 
 
 class TestAgentCrossTemplateRecovery:
