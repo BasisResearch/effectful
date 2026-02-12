@@ -213,7 +213,7 @@ class _AgentHistoryState(ObjectInterpretation):
             return deleted_value
         raise KeyError(key)
 
-    def get(self, key: str) -> Mapping[str, Any]:
+    def lookup(self, key: str) -> Mapping[str, Any]:
         for state in reversed(self._active_lineage()):
             if key in state._messages:
                 return state._messages[key]
@@ -228,14 +228,16 @@ class _AgentHistoryState(ObjectInterpretation):
 
         if value.get("role") == "assistant":
             tool_calls = value.get("tool_calls") or []
-            tool_call_ids = {
-                tc.get("id")
-                for tc in tool_calls
-                if isinstance(tc, Mapping) and isinstance(tc.get("id"), str)
-            }
+            tool_call_ids: list[str] = []
+            for tc in tool_calls:
+                if not isinstance(tc, Mapping):
+                    continue
+                tcid = tc.get("id")
+                if isinstance(tcid, str):
+                    tool_call_ids.append(tcid)
             for tcid in tool_call_ids:
-                pending_id = state._pending_tool_call_ids.pop(tcid, None)
-                if pending_id is not None:
+                if tcid in state._pending_tool_call_ids:
+                    pending_id = state._pending_tool_call_ids.pop(tcid)
                     state._messages.pop(pending_id, None)
 
 
@@ -246,7 +248,7 @@ class _AgentHistorySequenceView(MutableMapping[str, Mapping[str, Any]]):
         self._state = state
 
     def __getitem__(self, key: str) -> Mapping[str, Any]:
-        return self._state.get(key)
+        return self._state.lookup(key)
 
     def __setitem__(self, key: str, value: Mapping[str, Any]) -> None:
         if value.get("id") != key:

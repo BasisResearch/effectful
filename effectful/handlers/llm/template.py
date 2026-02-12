@@ -266,7 +266,7 @@ class Template[**P, T](Tool[P, T]):
             if isinstance(history, ObjectInterpretation):
                 with handler(history):
                     return super().__call__(*args, **kwargs)
-            with handler({get_message_sequence: lambda: history}):  # type: ignore
+            with handler({get_message_sequence: lambda: history}):
                 return super().__call__(*args, **kwargs)
         return super().__call__(*args, **kwargs)
 
