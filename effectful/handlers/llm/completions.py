@@ -316,12 +316,10 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     """
     # call tool with python types
     # call_tool invariant: tool is called in a context with a fresh message sequence
-    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
     try:
-        with handler({get_message_sequence: lambda: message_sequence}):
-            result = tool_call.tool(
-                *tool_call.bound_args.args, **tool_call.bound_args.kwargs
-            )
+        result = tool_call.tool(
+            *tool_call.bound_args.args, **tool_call.bound_args.kwargs
+        )
     except Exception as e:
         raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
@@ -516,30 +514,28 @@ class LiteLLMProvider(ObjectInterpretation):
         # Create response_model with env so tools passed as arguments are available
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
-        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        starting_message_count: int = len(message_sequence)
-        try:
-            with handler({get_message_sequence: lambda: message_sequence}):
-                call_system(template)
+        message_sequence: collections.OrderedDict[str, Message] = (
+            getattr(template, "__history__")
+            if hasattr(template, "__history__")
+            else get_message_sequence()
+        )
 
-                message: Message = call_user(template.__prompt_template__, env)
+        history_copy = message_sequence.copy()
+        with handler({get_message_sequence: lambda: history_copy}):
+            call_system(template)
 
-                # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-                tool_calls: list[DecodedToolCall] = []
-                result: T | None = None
-                while message["role"] != "assistant" or tool_calls:
-                    message, tool_calls, result = call_assistant(
-                        template.tools, response_model, **self.config
-                    )
-                    for tool_call in tool_calls:
-                        message = call_tool(tool_call)
+            message: Message = call_user(template.__prompt_template__, env)
 
-                assert result is not None, (
-                    "Result should be set if no tool calls remain"
+            # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+            tool_calls: list[DecodedToolCall] = []
+            result: T | None = None
+            while message["role"] != "assistant" or tool_calls:
+                message, tool_calls, result = call_assistant(
+                    template.tools, response_model, **self.config
                 )
-                return result
-        except Exception:
-            # Prune any malformed messages from unhandled errors before propagating
-            while len(message_sequence) > starting_message_count:
-                message_sequence.popitem(last=True)
-            raise
+                for tool_call in tool_calls:
+                    message = call_tool(tool_call)
+
+        if hasattr(template, "__history__"):
+            template.__history__.update(history_copy)
+        return typing.cast(T, result)
