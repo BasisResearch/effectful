@@ -323,8 +323,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
                 *tool_call.bound_args.args, **tool_call.bound_args.kwargs
             )
     except Exception as e:
-        error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-        raise error from e
+        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
     # serialize back to U using encoder for return type
     return_type = Encodable.define(
