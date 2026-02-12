@@ -24,7 +24,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.template import Agent, Template, Tool
+from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -397,24 +397,8 @@ def call_user(
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = textwrap.dedent(f"""
-    SYSTEM: You are a helpful LLM assistant.
-    You provide the implementation of the `Template` with the following name, signature and prompt template:
-
-    <template_signature>
-    {template.__name__} : {template.__signature__.format()}
-    
-    {inspect.cleandoc(template.__prompt_template__)}
-    </template_signature>
+    SYSTEM: You are a helpful LLM assistant named {template.__name__}.
     """)
-
-    if getattr(template, "__agent_doc__", None) is not None:
-        system_prompt += textwrap.dedent(f"""
-        `{template.__name__}` is a bound method of an `Agent` instance with the following class-level description:
-
-        <agentclass_doc>
-        {getattr(template, "__agent_doc__")}
-        </agentclass_doc>
-        """)
 
     message = _make_message(dict(role="system", content=system_prompt))
     try:
