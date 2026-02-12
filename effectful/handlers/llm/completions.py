@@ -317,10 +317,13 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     # call tool with python types
     # call_tool invariant: tool is called in a context with a fresh message sequence
     message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
-    with handler({get_message_sequence: lambda: message_sequence}):
-        result = tool_call.tool(
-            *tool_call.bound_args.args, **tool_call.bound_args.kwargs
-        )
+    try:
+        with handler({get_message_sequence: lambda: message_sequence}):
+            result = tool_call.tool(
+                *tool_call.bound_args.args, **tool_call.bound_args.kwargs
+            )
+    except Exception as e:
+        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
     # serialize back to U using encoder for return type
     return_type = Encodable.define(
@@ -481,11 +484,13 @@ class RetryLLMHandler(ObjectInterpretation):
         """
         try:
             return fwd(tool_call)
-        except self.catch_tool_errors as e:
-            error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-            message = error.to_feedback_message(self.include_traceback)
-            append_message(message)
-            return message
+        except ToolCallExecutionError as e:
+            if isinstance(e.original_error, self.catch_tool_errors):
+                message = e.to_feedback_message(self.include_traceback)
+                append_message(message)
+                return message
+            else:
+                raise
 
 
 class LiteLLMProvider(ObjectInterpretation):
@@ -503,33 +508,38 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
+        # encode arguments
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
+
+        # Create response_model with env so tools passed as arguments are available
+        response_model = Encodable.define(template.__signature__.return_annotation, env)
+
         message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        with handler({get_message_sequence: lambda: message_sequence}):
-            # encode arguments
-            bound_args = inspect.signature(template).bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            env = template.__context__.new_child(bound_args.arguments)
+        starting_message_count: int = len(message_sequence)
+        try:
+            with handler({get_message_sequence: lambda: message_sequence}):
+                call_system(template)
 
-            # Create response_model with env so tools passed as arguments are available
-            response_model = Encodable.define(
-                template.__signature__.return_annotation, env
-            )
+                message: Message = call_user(template.__prompt_template__, env)
 
-            call_system(template)
+                # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+                tool_calls: list[DecodedToolCall] = []
+                result: T | None = None
+                while message["role"] != "assistant" or tool_calls:
+                    message, tool_calls, result = call_assistant(
+                        template.tools, response_model, **self.config
+                    )
+                    for tool_call in tool_calls:
+                        message = call_tool(tool_call)
 
-            message: Message = call_user(template.__prompt_template__, env)
-
-            # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-            tool_calls: list[DecodedToolCall] = []
-            result: T | None = None
-            while message["role"] != "assistant" or tool_calls:
-                message, tool_calls, result = call_assistant(
-                    template.tools, response_model, **self.config
+                assert result is not None, (
+                    "Result should be set if no tool calls remain"
                 )
-                for tool_call in tool_calls:
-                    message = call_tool(tool_call)
-
-            assert result is not None, (
-                "call_assistant did not produce a result nor tool_calls"
-            )
-            return result
+                return result
+        except Exception:
+            # Prune any malformed messages from unhandled errors before propagating
+            while len(message_sequence) > starting_message_count:
+                message_sequence.popitem(last=True)
+            raise
