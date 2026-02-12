@@ -1,15 +1,14 @@
-import abc
-import functools
 import inspect
 import re
 import string
 import types
 import typing
-from collections import ChainMap, OrderedDict
+from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
 from typing import Annotated, Any
 
 from effectful.ops.semantics import handler
+from effectful.ops.syntax import ObjectInterpretation
 from effectful.ops.types import Annotation, Operation
 
 
@@ -217,6 +216,7 @@ class Template[**P, T](Tool[P, T]):
         """Operations and Templates available as tools. Auto-capture from lexical context."""
         result = {}
         is_recursive = _is_recursive_signature(self.__signature__)
+        from .agent import Agent
 
         for name, obj in self.__context__.items():
             # Collect tools directly in context
@@ -258,14 +258,17 @@ class Template[**P, T](Tool[P, T]):
         return result
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        if getattr(self, "__history__", None) is not None:
+        history = getattr(self, "__history__", None)
+        if history is not None:
             # Lazy import: completions.py imports from this module (circular).
             from effectful.handlers.llm.completions import get_message_sequence
 
-            with handler({get_message_sequence: lambda: self.__history__}):  # type: ignore
+            if isinstance(history, ObjectInterpretation):
+                with handler(history):
+                    return super().__call__(*args, **kwargs)
+            with handler({get_message_sequence: lambda: history}):  # type: ignore
                 return super().__call__(*args, **kwargs)
-        else:
-            return super().__call__(*args, **kwargs)
+        return super().__call__(*args, **kwargs)
 
     @classmethod
     def define[**Q, V](
@@ -336,66 +339,3 @@ class Template[**P, T](Tool[P, T]):
             cls._validate_prompt(typing.cast(Template, op), context)
 
         return typing.cast(Template[Q, V], op)
-
-
-class Agent(abc.ABC):
-    """Mixin that gives each instance a persistent LLM message history.
-
-    Subclass and decorate methods with :func:`Template.define`.
-    Each instance accumulates messages across calls so the LLM sees
-    prior conversation context.
-
-    Agents compose freely with :func:`dataclasses.dataclass` and other
-    base classes.  Instance attributes are available in template
-    docstrings via ``{self.attr}``.
-
-    Example::
-
-        import dataclasses
-        from effectful.handlers.llm import Agent, Template
-        from effectful.handlers.llm.completions import LiteLLMProvider
-        from effectful.ops.semantics import handler
-        from effectful.ops.types import NotHandled
-
-        @dataclasses.dataclass
-        class ChatBot(Agent):
-            bot_name: str = dataclasses.field(default="ChatBot")
-
-            @Template.define
-            def send(self, user_input: str) -> str:
-                \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
-                raise NotHandled
-
-        provider = LiteLLMProvider()
-        chatbot = ChatBot()
-
-        with handler(provider):
-            chatbot.send("Hi! How are you? I am in France.")
-            chatbot.send("Remind me again, where am I?")  # sees prior context
-
-    """
-
-    __history__: OrderedDict[str, Mapping[str, Any]]
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        prop = functools.cached_property(lambda _: OrderedDict())
-        prop.__set_name__(cls, "__history__")
-        cls.__history__ = prop
-
-        for name, attr in list(cls.__dict__.items()):
-            if not isinstance(attr, Template) or isinstance(
-                attr.__default__, staticmethod | classmethod
-            ):
-                continue
-
-            def _template_prop_fn[T: Template](self, *, template: T) -> T:
-                inst_template = template.__get__(self, type(self))
-                setattr(inst_template, "__history__", self.__history__)
-                return inst_template
-
-            _template_property = functools.cached_property(
-                functools.partial(_template_prop_fn, template=attr)
-            )
-            _template_property.__set_name__(cls, name)
-            setattr(cls, name, _template_property)

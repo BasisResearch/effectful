@@ -1938,3 +1938,45 @@ class TestAgentCrossTemplateRecovery:
         # Only messages from the successful call should be in history
         assert len(agent.__history__) >= 2
         assert len(agent.__history__) > history_after_error
+
+    def test_agent_nested_template_call_inside_tool_preserves_tool_sequence(
+        self, request
+    ):
+        """Regression: nested template call in tool should not orphan tool_call IDs."""
+
+        @Tool.define
+        def nested_tool(payload: str) -> str:
+            """Call nested template from inside a tool."""
+            return nested_agent.nested_check(payload)
+
+        import dataclasses
+
+        @dataclasses.dataclass
+        class NestedAgent(Agent):
+            @Template.define
+            def nested_check(self, payload: str) -> str:
+                """Give one-line check for {payload}. Do not use tools."""
+                raise NotHandled
+
+            @Template.define
+            def outer(self, payload: str) -> str:
+                """Call `nested_tool` for payload: {payload}, then return final answer."""
+                raise NotHandled
+
+        nested_agent = NestedAgent()
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=3)),
+        ):
+            result = nested_agent.outer("demo")
+
+        assert result == "outer done"
+
+        history = list(nested_agent.__history__.values())
+        assert len(history) == 4
+        assert history[0]["role"] == "user"
+        assert history[1]["role"] == "assistant"
+        assert history[1].get("tool_calls")
+        assert history[2]["role"] == "tool"
+        assert history[3]["role"] == "assistant"

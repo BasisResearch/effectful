@@ -59,8 +59,25 @@ def get_message_sequence() -> collections.OrderedDict[str, Message]:
     return collections.OrderedDict()
 
 
-def append_message(message: Message):
+@defop
+def record_message(message: Message) -> None:
     get_message_sequence()[message["id"]] = message
+
+
+@defop
+def history_checkpoint() -> int:
+    return len(get_message_sequence())
+
+
+@defop
+def history_rollback(checkpoint: int) -> None:
+    message_sequence = get_message_sequence()
+    while len(message_sequence) > checkpoint:
+        message_sequence.popitem(last=True)
+
+
+def append_message(message: Message):
+    record_message(message)
 
 
 def _make_message(content: dict) -> Message:
@@ -517,7 +534,7 @@ class LiteLLMProvider(ObjectInterpretation):
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
         message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        starting_message_count: int = len(message_sequence)
+        checkpoint = history_checkpoint()
         try:
             with handler({get_message_sequence: lambda: message_sequence}):
                 call_system(template)
@@ -540,6 +557,5 @@ class LiteLLMProvider(ObjectInterpretation):
                 return result
         except Exception:
             # Prune any malformed messages from unhandled errors before propagating
-            while len(message_sequence) > starting_message_count:
-                message_sequence.popitem(last=True)
+            history_rollback(checkpoint)
             raise
