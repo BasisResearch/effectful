@@ -401,6 +401,8 @@ def call_system(template: Template) -> Message:
 
     <signature>                                 
     {template.__name__} : {template.__signature__.format()}
+
+    {inspect.cleandoc(template.__prompt_template__)}
     </signature>
     """)
 
@@ -422,32 +424,15 @@ def call_system(template: Template) -> Message:
         </library_docs>
         """)
 
-    if inspect.getdoc(Tool) is not None:
-        system_prompt += textwrap.dedent(f"""
-        For background, here is the official library documentation for the `Tool` class:
+    for prim_cls in (Tool, Template, Agent):
+        if inspect.getdoc(prim_cls) is not None:
+            system_prompt += textwrap.dedent(f"""
+            For background, here is the official library documentation for the `{prim_cls.__name__}` class:
 
-        <tool_docs>
-        {inspect.getdoc(Tool)}
-        </tool_docs>
-        """)
-
-    if inspect.getdoc(Template) is not None:
-        system_prompt += textwrap.dedent(f"""
-        For background, here is the official library documentation for the `Template` class:
-
-        <template_docs>
-        {inspect.getdoc(Template)}
-        </template_docs>
-        """)
-
-    if inspect.getdoc(Agent) is not None:
-        system_prompt += textwrap.dedent(f"""
-        For background, here is the official library documentation for the `Agent` class:
-
-        <agent_docs>
-        {inspect.getdoc(Agent)}
-        </agent_docs>
-        """)
+            <primitive_docs>
+            {inspect.getdoc(prim_cls)}
+            </primitive_docs>
+            """)
 
     message = _make_message(dict(role="system", content=system_prompt))
     try:
