@@ -397,42 +397,24 @@ def call_user(
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = textwrap.dedent(f"""
-    SYSTEM: You are the implementation of the `Template` with the following signature:
+    SYSTEM: You are a helpful LLM assistant.
+    You provide the implementation of the `Template` with the following name, signature and prompt template:
 
-    <signature>                                 
+    <template_signature>
     {template.__name__} : {template.__signature__.format()}
-
+    
     {inspect.cleandoc(template.__prompt_template__)}
-    </signature>
+    </template_signature>
     """)
 
     if getattr(template, "__agent_doc__", None) is not None:
         system_prompt += textwrap.dedent(f"""
         {template.__name__} is a bound method of an `Agent` instance with the following class-level description:
 
-        <agent_description>
+        <agentclass_doc>
         {getattr(template, "__agent_doc__")}
-        </agent_description>
+        </agentclass_doc>
         """)
-
-    if inspect.getdoc(inspect.getmodule(Template)) is not None:
-        system_prompt += textwrap.dedent(f"""
-        For background, here is the official top-level library documentation for the underlying LLM framework:
-
-        <library_docs>
-        {inspect.getdoc(inspect.getmodule(Template))}
-        </library_docs>
-        """)
-
-    for prim_cls in (Tool, Template, Agent):
-        if inspect.getdoc(prim_cls) is not None:
-            system_prompt += textwrap.dedent(f"""
-            For background, here is the official library documentation for the `{prim_cls.__name__}` class:
-
-            <primitive_docs>
-            {inspect.getdoc(prim_cls)}
-            </primitive_docs>
-            """)
 
     message = _make_message(dict(role="system", content=system_prompt))
     try:
