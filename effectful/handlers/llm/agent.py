@@ -130,6 +130,55 @@ class _AgentHistoryState(ObjectInterpretation):
             merged.update(state._messages)
         return merged
 
+    def merged_for_llm(self) -> OrderedDict[str, Mapping[str, Any]]:
+        """Merged view with in-flight tool call sequences stripped.
+
+        Pending ``__PENDING_TOOL_RESULT__`` placeholders must never reach the
+        LLM.  An assistant message whose tool_calls include *any* still-pending
+        id is also removed (together with every tool response belonging to that
+        same assistant turn), because an incomplete tool-call sequence is
+        invalid for the OpenAI message format.
+        """
+        all_pending: set[str] = set()
+        for state in self._active_lineage():
+            all_pending.update(state._pending_tool_call_ids.keys())
+
+        if not all_pending:
+            return self.merged()
+
+        raw = self.merged()
+
+        # Collect ALL tool_call_ids from assistant messages that have at least
+        # one pending tool_call – both completed and pending ids are "tainted".
+        tainted: set[str] = set()
+        for msg in raw.values():
+            if msg.get("role") != "assistant":
+                continue
+            tc_ids = {
+                typing.cast(str, tc.get("id"))
+                for tc in (msg.get("tool_calls") or ())
+                if isinstance(tc, Mapping) and isinstance(tc.get("id"), str)
+            }
+            if tc_ids & all_pending:
+                tainted |= tc_ids
+
+        filtered: OrderedDict[str, Mapping[str, Any]] = OrderedDict()
+        for key, msg in raw.items():
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                tc_ids = {
+                    typing.cast(str, tc.get("id"))
+                    for tc in (msg.get("tool_calls") or ())
+                    if isinstance(tc, Mapping) and isinstance(tc.get("id"), str)
+                }
+                if tc_ids & tainted:
+                    continue
+            elif role == "tool":
+                if msg.get("tool_call_id") in tainted:
+                    continue
+            filtered[key] = msg
+        return filtered
+
     @implements(get_message_sequence)
     def _get_message_sequence(self):
         return self._owner._sequence_view
@@ -273,22 +322,22 @@ class _AgentHistorySequenceView(MutableMapping[str, Mapping[str, Any]]):
         self._state.delete(key)
 
     def __iter__(self):
-        return iter(self._state.merged())
+        return iter(self._state.merged_for_llm())
 
     def __len__(self) -> int:
-        return len(self._state.merged())
+        return len(self._state.merged_for_llm())
 
     def copy(self):
-        return self._state.merged().copy()
+        return self._state.merged_for_llm().copy()
 
     def values(self):
-        return self._state.merged().values()
+        return self._state.merged_for_llm().values()
 
     def items(self):
-        return self._state.merged().items()
+        return self._state.merged_for_llm().items()
 
     def keys(self):
-        return self._state.merged().keys()
+        return self._state.merged_for_llm().keys()
 
     def popitem(self, last: bool = True):
         merged = self._state.merged()

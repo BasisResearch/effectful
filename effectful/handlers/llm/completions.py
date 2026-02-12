@@ -3,6 +3,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import json
 import string
 import textwrap
 import traceback
@@ -84,6 +85,33 @@ def _make_message(content: dict) -> Message:
     m_id = content.get("id") or str(uuid.uuid1())
     message = typing.cast(Message, {**content, "id": m_id})
     return message
+
+
+def _tool_content_to_string(encoded_result: typing.Any) -> str:
+    """Normalize serialized tool output to provider-safe string content."""
+    if isinstance(encoded_result, str):
+        return encoded_result
+
+    # Common case: serializer emits OpenAI content blocks.
+    if isinstance(encoded_result, list):
+        text_parts: list[str] = []
+        all_text_blocks = True
+        for block in encoded_result:
+            if not isinstance(block, dict):
+                all_text_blocks = False
+                break
+            if block.get("type") != "text" or not isinstance(block.get("text"), str):
+                all_text_blocks = False
+                break
+            text_parts.append(block["text"])
+        if all_text_blocks:
+            return "".join(text_parts)
+
+    # Fall back to JSON string for structured payloads.
+    try:
+        return json.dumps(encoded_result, separators=(",", ":"))
+    except TypeError:
+        return str(encoded_result)
 
 
 type ToolCallID = str
@@ -347,8 +375,9 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         typing.cast(type[typing.Any], nested_type(result).value)
     )
     encoded_result = return_type.serialize(return_type.encode(result))
+    tool_content = _tool_content_to_string(encoded_result)
     message = _make_message(
-        dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
+        dict(role="tool", content=tool_content, tool_call_id=tool_call.id),
     )
     append_message(message)
     return message
