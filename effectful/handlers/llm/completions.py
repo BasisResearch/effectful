@@ -401,8 +401,6 @@ def call_system(template: Template) -> Message:
 
     <signature>                                 
     {template.__name__} : {template.__signature__.format()}
-
-    {template.__prompt_template__}
     </signature>
     """)
 
@@ -417,7 +415,7 @@ def call_system(template: Template) -> Message:
 
     if inspect.getdoc(inspect.getmodule(Template)) is not None:
         system_prompt += textwrap.dedent(f"""
-        Here is the official top-level library documentation for the underlying LLM framework:
+        For background, here is the official top-level library documentation for the underlying LLM framework:
 
         <library_docs>
         {inspect.getdoc(inspect.getmodule(Template))}
@@ -426,7 +424,7 @@ def call_system(template: Template) -> Message:
 
     if inspect.getdoc(Tool) is not None:
         system_prompt += textwrap.dedent(f"""
-        Here is the official library documentation for the `Tool` class:
+        For background, here is the official library documentation for the `Tool` class:
 
         <tool_docs>
         {inspect.getdoc(Tool)}
@@ -435,7 +433,7 @@ def call_system(template: Template) -> Message:
 
     if inspect.getdoc(Template) is not None:
         system_prompt += textwrap.dedent(f"""
-        Here is the official library documentation for the `Template` class:
+        For background, here is the official library documentation for the `Template` class:
 
         <template_docs>
         {inspect.getdoc(Template)}
@@ -444,7 +442,7 @@ def call_system(template: Template) -> Message:
 
     if inspect.getdoc(Agent) is not None:
         system_prompt += textwrap.dedent(f"""
-        Here is the official library documentation for the `Agent` class:
+        For background, here is the official library documentation for the `Agent` class:
 
         <agent_docs>
         {inspect.getdoc(Agent)}
