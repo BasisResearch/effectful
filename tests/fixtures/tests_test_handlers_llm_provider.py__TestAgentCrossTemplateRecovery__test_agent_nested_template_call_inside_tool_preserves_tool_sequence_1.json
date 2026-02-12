@@ -1,0 +1,14 @@
+{
+  "id": "replay_nested_1",
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"value\":\"nested ok\"}"
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}
