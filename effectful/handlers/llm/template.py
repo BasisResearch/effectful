@@ -257,6 +257,8 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            if inspect.getdoc(instance) is not None:
+                result.__agent_doc__ = inspect.getdoc(instance)  # type: ignore[attr-defined]
         return result
 
     @classmethod

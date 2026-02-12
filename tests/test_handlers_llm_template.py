@@ -497,10 +497,11 @@ class TestNestedTemplateCalling:
         roles = [m["role"] for m in agent.__history__.values()]
         # Outer call produces: user, assistant(tool_call), tool, assistant(final)
         # Inner call's user + assistant are NOT written back
+        assert set(roles) <= {"system", "user", "assistant", "tool"}
+        assert roles.count("system") == 1
         assert roles.count("user") == 1
         assert roles.count("assistant") == 2  # tool_call + final
         assert roles.count("tool") == 1
-        assert len(roles) == 4
 
     def test_inner_template_gets_fresh_messages(self):
         """The nested template's LLM call sees only its own system + user,
@@ -521,7 +522,7 @@ class TestNestedTemplateCalling:
         # Call 1: inner's call_assistant → [user] (fresh, from empty history)
         # Call 2: outer's second call_assistant → [user, assistant(tc), tool]
         inner_roles = [m["role"] for m in mock.received_messages[1]]
-        assert inner_roles == ["user"]
+        assert {"user"} <= set(inner_roles) <= {"system", "user"}
 
     def test_inner_template_sees_prior_completed_history(self):
         """After a previous top-level call, the nested inner template sees

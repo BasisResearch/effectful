@@ -402,30 +402,54 @@ def call_system(template: Template) -> Message:
     <signature>                                 
     {template.__name__} : {template.__signature__.format()}
 
-    {inspect.getdoc(template)}
+    {template.__prompt_template__}
     </signature>
     """)
 
-    system_prompt += textwrap.dedent(f"""
-    As background, here is official documentation for `Tool`, `Template` and `Agent`
-    that explains what it means to be an implementation of a `Template`:
+    if getattr(template, "__agent_doc__", None) is not None:
+        system_prompt += textwrap.dedent(f"""
+        {template.__name__} is a bound method of an `Agent` instance with the following class-level description:
 
-    <library_docs>
-    {inspect.getdoc(inspect.getmodule(Template))}
-    </library_docs>
+        <agent_description>
+        {getattr(template, "__agent_doc__")}
+        </agent_description>
+        """)
 
-    <tool_docs>
-    {inspect.getdoc(Tool)}
-    </tool_docs>
+    if inspect.getdoc(inspect.getmodule(Template)) is not None:
+        system_prompt += textwrap.dedent(f"""
+        Here is the official top-level library documentation for the underlying LLM framework:
 
-    <template_docs>
-    {inspect.getdoc(Template)}
-    </template_docs>
+        <library_docs>
+        {inspect.getdoc(inspect.getmodule(Template))}
+        </library_docs>
+        """)
 
-    <agent_docs>
-    {inspect.getdoc(Agent)}
-    </agent_docs>
-    """)
+    if inspect.getdoc(Tool) is not None:
+        system_prompt += textwrap.dedent(f"""
+        Here is the official library documentation for the `Tool` class:
+
+        <tool_docs>
+        {inspect.getdoc(Tool)}
+        </tool_docs>
+        """)
+
+    if inspect.getdoc(Template) is not None:
+        system_prompt += textwrap.dedent(f"""
+        Here is the official library documentation for the `Template` class:
+
+        <template_docs>
+        {inspect.getdoc(Template)}
+        </template_docs>
+        """)
+
+    if inspect.getdoc(Agent) is not None:
+        system_prompt += textwrap.dedent(f"""
+        Here is the official library documentation for the `Agent` class:
+
+        <agent_docs>
+        {inspect.getdoc(Agent)}
+        </agent_docs>
+        """)
 
     message = _make_message(dict(role="system", content=system_prompt))
     try:
@@ -433,6 +457,13 @@ def call_system(template: Template) -> Message:
         if not any(m["role"] == "system" for m in history.values()):
             history[message["id"]] = message
             history.move_to_end(message["id"], last=False)
+        else:
+            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
+                "There should only be one system message in the history"
+            )
+            assert history[next(iter(history))]["role"] == "system", (
+                "The system message should be the first message in the history"
+            )
         return message
     except NotImplementedError:
         return message
