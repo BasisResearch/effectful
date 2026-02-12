@@ -24,7 +24,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.template import Agent, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -394,9 +394,48 @@ def call_user(
 
 
 @Operation.define
-def call_system(template: Template) -> collections.abc.Sequence[Message]:
+def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    return ()
+    system_prompt = textwrap.dedent(f"""
+    You are the implementation of the `Template` with the following signature:
+
+    <signature>                                 
+    {template.__name__} : {template.__signature__.format()}
+
+    {inspect.getdoc(template)}
+    </signature>
+    """)
+
+    system_prompt += textwrap.dedent(f"""
+    As background, here is official documentation for `Tool`, `Template` and `Agent`
+    that explains what it means to be an implementation of a `Template`:
+
+    <library_docs>
+    {inspect.getdoc(inspect.getmodule(Template))}
+    </library_docs>
+
+    <tool_docs>
+    {inspect.getdoc(Tool)}
+    </tool_docs>
+
+    <template_docs>
+    {inspect.getdoc(Template)}
+    </template_docs>
+
+    <agent_docs>
+    {inspect.getdoc(Agent)}
+    </agent_docs>
+    """)
+
+    message = _make_message(dict(role="system", content=system_prompt))
+    try:
+        history: collections.OrderedDict[str, Message] = _get_history()
+        if not any(m["role"] == "system" for m in history.values()):
+            history[message["id"]] = message
+            history.move_to_end(message["id"], last=False)
+        return message
+    except NotImplementedError:
+        return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
