@@ -1982,7 +1982,7 @@ class TestAgentCrossTemplateRecovery:
         assert history[3]["role"] == "assistant"
 
     def test_agent_nested_template_call_sees_parent_history_context(self):
-        """Nested template call sees outer assistant tool-call context."""
+        """Nested template call sees transformed parent context (no tool_calls/pending)."""
 
         @Tool.define
         def nested_tool(payload: str) -> str:
@@ -2018,15 +2018,15 @@ class TestAgentCrossTemplateRecovery:
         assert len(mock.received_messages) >= 2
         nested_call_messages = mock.received_messages[1]
 
-        # Nested call should see the parent assistant tool_call turn.
-        assert any(
+        # The in-flight tool-call turn is transformed: assistant content is
+        # kept (without tool_calls) and pending placeholders are stripped.
+        # Since the mock's tool-call response has content=None, the assistant
+        # message is dropped entirely — nested call sees no assistant or pending.
+        assert not any(
             m.get("role") == "assistant" and bool(m.get("tool_calls"))
             for m in nested_call_messages
         )
-        # And it should see the pending tool placeholder before replacement.
-        assert any(
-            m.get("role") == "tool"
-            and m.get("tool_call_id") == "call_1"
-            and m.get("content") == "__PENDING_TOOL_RESULT__"
+        assert not any(
+            m.get("content") == "__PENDING_TOOL_RESULT__"
             for m in nested_call_messages
         )

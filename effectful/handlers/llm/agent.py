@@ -131,13 +131,13 @@ class _AgentHistoryState(ObjectInterpretation):
         return merged
 
     def merged_for_llm(self) -> OrderedDict[str, Mapping[str, Any]]:
-        """Merged view with in-flight tool call sequences stripped.
+        """Merged view with in-flight tool-call turns transformed.
 
-        Pending ``__PENDING_TOOL_RESULT__`` placeholders must never reach the
-        LLM.  An assistant message whose tool_calls include *any* still-pending
-        id is also removed (together with every tool response belonging to that
-        same assistant turn), because an incomplete tool-call sequence is
-        invalid for the OpenAI message format.
+        An assistant message with ``tool_calls`` that still has pending
+        responses is *transformed*: its text ``content`` is kept (providing
+        context to nested calls) but ``tool_calls`` and all associated tool
+        response messages are dropped.  If the assistant message has no text
+        content (``content is None``), it is dropped entirely.
         """
         all_pending: set[str] = set()
         for state in self._active_lineage():
@@ -172,6 +172,13 @@ class _AgentHistoryState(ObjectInterpretation):
                     if isinstance(tc, Mapping) and isinstance(tc.get("id"), str)
                 }
                 if tc_ids & tainted:
+                    # Transform: keep text content, drop tool_calls
+                    content = msg.get("content")
+                    if content is not None:
+                        transformed = {
+                            k: v for k, v in msg.items() if k != "tool_calls"
+                        }
+                        filtered[key] = transformed
                     continue
             elif role == "tool":
                 if msg.get("tool_call_id") in tainted:
