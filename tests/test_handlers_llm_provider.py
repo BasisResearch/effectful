@@ -1980,3 +1980,53 @@ class TestAgentCrossTemplateRecovery:
         assert history[1].get("tool_calls")
         assert history[2]["role"] == "tool"
         assert history[3]["role"] == "assistant"
+
+    def test_agent_nested_template_call_sees_parent_history_context(self):
+        """Nested template call sees outer assistant tool-call context."""
+
+        @Tool.define
+        def nested_tool(payload: str) -> str:
+            """Call nested template from inside a tool."""
+            return nested_agent.nested_check(payload)
+
+        import dataclasses
+
+        @dataclasses.dataclass
+        class NestedAgent(Agent):
+            @Template.define
+            def nested_check(self, payload: str) -> str:
+                """Give one-line check for {payload}. Do not use tools."""
+                raise NotHandled
+
+            @Template.define
+            def outer(self, payload: str) -> str:
+                """Call `nested_tool` for payload: {payload}, then return final answer."""
+                raise NotHandled
+
+        responses = [
+            make_tool_call_response("nested_tool", '{"payload":"demo"}', "call_1"),
+            make_text_response('{"value": "inner ok"}'),
+            make_text_response('{"value": "outer done"}'),
+        ]
+        mock = MockCompletionHandler(responses)
+        nested_agent = NestedAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(mock):
+            result = nested_agent.outer("demo")
+
+        assert result == "outer done"
+        assert len(mock.received_messages) >= 2
+        nested_call_messages = mock.received_messages[1]
+
+        # Nested call should see the parent assistant tool_call turn.
+        assert any(
+            m.get("role") == "assistant" and bool(m.get("tool_calls"))
+            for m in nested_call_messages
+        )
+        # And it should see the pending tool placeholder before replacement.
+        assert any(
+            m.get("role") == "tool"
+            and m.get("tool_call_id") == "call_1"
+            and m.get("content") == "__PENDING_TOOL_RESULT__"
+            for m in nested_call_messages
+        )

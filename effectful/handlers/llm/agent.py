@@ -91,63 +91,77 @@ class Agent(abc.ABC):
 
 
 class _AgentHistoryState(ObjectInterpretation):
-    """Mutable stacked history state shared across nested template calls."""
+    """Parent/child scoped history state for nested tool/template calls."""
 
-    def __init__(self, root: OrderedDict[str, Mapping[str, Any]]):
+    def __init__(
+        self,
+        root: OrderedDict[str, Mapping[str, Any]] | None = None,
+        *,
+        parent: "_AgentHistoryState | None" = None,
+    ):
         super().__init__()
-        self._frames: list[OrderedDict[str, Mapping[str, Any]]] = [root]
-        self._pending_by_frame: list[dict[str, str]] = [{}]
-        self._sequence_view = _AgentHistorySequenceView(self)
+        self._parent = parent
+        if parent is None:
+            assert root is not None
+            self._owner = self
+            self._messages = root
+            self._active: _AgentHistoryState = self
+            self._sequence_view = _AgentHistorySequenceView(self)
+        else:
+            self._owner = parent._owner
+            self._messages = OrderedDict()
+        self._pending_tool_call_ids: dict[str, str] = {}
 
-    def _current_idx(self) -> int:
-        return len(self._frames) - 1
+    def _active_state(self) -> "_AgentHistoryState":
+        return self._owner._active
 
-    def _push_frame(self) -> None:
-        self._frames.append(OrderedDict())
-        self._pending_by_frame.append({})
-
-    def _pop_frame(self) -> None:
-        if len(self._frames) > 1:
-            self._frames.pop()
-            self._pending_by_frame.pop()
+    def _active_lineage(self) -> list["_AgentHistoryState"]:
+        lineage: list[_AgentHistoryState] = []
+        node: _AgentHistoryState | None = self._active_state()
+        while node is not None:
+            lineage.append(node)
+            node = node._parent
+        lineage.reverse()
+        return lineage
 
     def merged(self) -> OrderedDict[str, Mapping[str, Any]]:
         merged: OrderedDict[str, Mapping[str, Any]] = OrderedDict()
-        for frame in self._frames:
-            merged.update(frame)
+        for state in self._active_lineage():
+            merged.update(state._messages)
         return merged
 
     @implements(get_message_sequence)
     def _get_message_sequence(self):
-        return self._sequence_view
+        return self._owner._sequence_view
 
     @implements(record_message)
     def _record_message(self, message):
         role = message.get("role")
         if role == "tool" and self._replace_pending_placeholder(message):
             return
-
-        frame_idx = self._current_idx()
-        self._frames[frame_idx][typing.cast(str, message["id"])] = message
+        self._active_state()._messages[typing.cast(str, message["id"])] = message
 
     @implements(call_assistant)
     def _call_assistant(self, *args, **kwargs):
         message, tool_calls, result = fwd(*args, **kwargs)
         if message.get("role") == "assistant" and tool_calls:
-            frame_idx = self._current_idx()
             self._append_pending_placeholders(
-                frame_idx, [tool_call.id for tool_call in tool_calls]
+                self._active_state(), [tool_call.id for tool_call in tool_calls]
             )
         return (message, tool_calls, result)
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall):
-        self._push_frame()
+        child = _AgentHistoryState(parent=self._active_state())
+        self._owner._active = child
         try:
-            with handler({get_message_sequence: lambda: self._sequence_view}):
+            with handler(child):
                 return fwd(tool_call)
         finally:
-            self._pop_frame()
+            if self._owner._active is child:
+                parent = child._parent
+                assert parent is not None
+                self._owner._active = parent
 
     @implements(history_checkpoint)
     def _history_checkpoint(self):
@@ -159,16 +173,14 @@ class _AgentHistoryState(ObjectInterpretation):
             merged = self.merged()
             if not merged:
                 raise KeyError("dictionary is empty")
-            key = next(reversed(merged))
-            self.delete(key)
+            self.delete(next(reversed(merged)))
 
     def _append_pending_placeholders(
-        self, frame_idx: int, tool_call_ids: typing.Sequence[str]
+        self, state: "_AgentHistoryState", tool_call_ids: typing.Sequence[str]
     ) -> None:
-        pending_for_frame = self._pending_by_frame[frame_idx]
         for tool_call_id in tool_call_ids:
             pending_message_id = f"pending_tool_{tool_call_id}"
-            self._frames[frame_idx][pending_message_id] = _make_message(
+            state._messages[pending_message_id] = _make_message(
                 {
                     "id": pending_message_id,
                     "role": "tool",
@@ -176,48 +188,43 @@ class _AgentHistoryState(ObjectInterpretation):
                     "content": "__PENDING_TOOL_RESULT__",
                 }
             )
-            pending_for_frame[tool_call_id] = pending_message_id
+            state._pending_tool_call_ids[tool_call_id] = pending_message_id
 
     def _replace_pending_placeholder(self, tool_message: Mapping[str, Any]) -> bool:
         tool_call_id = tool_message.get("tool_call_id")
         if not isinstance(tool_call_id, str):
             return False
-
-        for frame_idx in range(self._current_idx() - 1, -1, -1):
-            pending_for_frame = self._pending_by_frame[frame_idx]
-            pending_message_id = pending_for_frame.get(tool_call_id)
+        for state in reversed(self._active_lineage()[:-1]):
+            pending_message_id = state._pending_tool_call_ids.get(tool_call_id)
             if pending_message_id is None:
                 continue
-
-            self._frames[frame_idx][pending_message_id] = tool_message
-            del pending_for_frame[tool_call_id]
+            state._messages[pending_message_id] = tool_message
+            del state._pending_tool_call_ids[tool_call_id]
             return True
         return False
 
     def delete(self, key: str) -> Mapping[str, Any]:
-        for frame_idx in range(self._current_idx(), -1, -1):
-            frame = self._frames[frame_idx]
-            if key not in frame:
+        for state in reversed(self._active_lineage()):
+            if key not in state._messages:
                 continue
-            deleted_value = frame[key]
-            del frame[key]
-            self._cleanup_after_delete(frame_idx, key, deleted_value)
+            deleted_value = state._messages[key]
+            del state._messages[key]
+            self._cleanup_after_delete(state, key, deleted_value)
             return deleted_value
         raise KeyError(key)
 
     def get(self, key: str) -> Mapping[str, Any]:
-        for frame in reversed(self._frames):
-            if key in frame:
-                return frame[key]
+        for state in reversed(self._active_lineage()):
+            if key in state._messages:
+                return state._messages[key]
         raise KeyError(key)
 
     def _cleanup_after_delete(
-        self, frame_idx: int, key: str, value: Mapping[str, Any]
+        self, state: "_AgentHistoryState", key: str, value: Mapping[str, Any]
     ) -> None:
-        pending_for_frame = self._pending_by_frame[frame_idx]
-        for tcid, pending_id in tuple(pending_for_frame.items()):
+        for tcid, pending_id in tuple(state._pending_tool_call_ids.items()):
             if pending_id == key:
-                del pending_for_frame[tcid]
+                del state._pending_tool_call_ids[tcid]
 
         if value.get("role") == "assistant":
             tool_calls = value.get("tool_calls") or []
@@ -226,12 +233,10 @@ class _AgentHistoryState(ObjectInterpretation):
                 for tc in tool_calls
                 if isinstance(tc, Mapping) and isinstance(tc.get("id"), str)
             }
-            frame = self._frames[frame_idx]
             for tcid in tool_call_ids:
-                pending_id = pending_for_frame.pop(tcid, None)
+                pending_id = state._pending_tool_call_ids.pop(tcid, None)
                 if pending_id is not None:
-                    frame.pop(pending_id, None)
-
+                    state._messages.pop(pending_id, None)
 
 
 class _AgentHistorySequenceView(MutableMapping[str, Mapping[str, Any]]):
@@ -251,8 +256,8 @@ class _AgentHistorySequenceView(MutableMapping[str, Mapping[str, Any]]):
         if role == "tool" and self._state._replace_pending_placeholder(value):
             return
 
-        frame_idx = self._state._current_idx()
-        self._state._frames[frame_idx][typing.cast(str, value["id"])] = value
+        current = self._state._active_state()
+        current._messages[typing.cast(str, value["id"])] = value
         if role == "assistant" and value.get("tool_calls"):
             tool_call_ids = [
                 typing.cast(str, tc["id"])
@@ -260,7 +265,7 @@ class _AgentHistorySequenceView(MutableMapping[str, Mapping[str, Any]]):
                     typing.Sequence[Mapping[str, Any]], value["tool_calls"]
                 )
             ]
-            self._state._append_pending_placeholders(frame_idx, tool_call_ids)
+            self._state._append_pending_placeholders(current, tool_call_ids)
 
     def __delitem__(self, key: str) -> None:
         self._state.delete(key)
