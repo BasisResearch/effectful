@@ -232,9 +232,9 @@ class _AgentHistoryState(ObjectInterpretation):
             for tc in tool_calls:
                 if not isinstance(tc, Mapping):
                     continue
-                tcid = tc.get("id")
-                if isinstance(tcid, str):
-                    tool_call_ids.append(tcid)
+                raw_tcid = tc.get("id")
+                if isinstance(raw_tcid, str):
+                    tool_call_ids.append(raw_tcid)
             for tcid in tool_call_ids:
                 if tcid in state._pending_tool_call_ids:
                     pending_id = state._pending_tool_call_ids.pop(tcid)
