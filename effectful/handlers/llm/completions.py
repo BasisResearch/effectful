@@ -409,7 +409,7 @@ def call_system(template: Template) -> Message:
 
     if getattr(template, "__agent_doc__", None) is not None:
         system_prompt += textwrap.dedent(f"""
-        {template.__name__} is a bound method of an `Agent` instance with the following class-level description:
+        `{template.__name__}` is a bound method of an `Agent` instance with the following class-level description:
 
         <agentclass_doc>
         {getattr(template, "__agent_doc__")}
