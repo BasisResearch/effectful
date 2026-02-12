@@ -27,7 +27,7 @@ from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
@@ -54,7 +54,7 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
-@defop
+@Operation.define
 def _get_history() -> collections.OrderedDict[str, Message]:
     raise NotImplementedError
 
