@@ -397,7 +397,7 @@ def call_user(
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = textwrap.dedent(f"""
-    You are the implementation of the `Template` with the following signature:
+    SYSTEM: You are the implementation of the `Template` with the following signature:
 
     <signature>                                 
     {template.__name__} : {template.__signature__.format()}
