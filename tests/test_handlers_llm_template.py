@@ -440,7 +440,7 @@ class TestAgentWithRetryHandler:
 
         with (
             handler(LiteLLMProvider()),
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock),
         ):
             result = agent.pick_number()
