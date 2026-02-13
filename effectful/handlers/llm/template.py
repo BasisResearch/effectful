@@ -9,7 +9,6 @@ from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
 from typing import Annotated, Any
 
-from effectful.ops.semantics import handler
 from effectful.ops.types import Annotation, Operation
 
 
@@ -255,17 +254,10 @@ class Template[**P, T](Tool[P, T]):
         result = super().__get__(instance, owner)
         self_param_name = list(self.__signature__.parameters.keys())[0]
         result.__context__ = self.__context__.new_child({self_param_name: instance})
+        if isinstance(instance, Agent):
+            assert isinstance(result, Template) and not hasattr(result, "__history__")
+            result.__history__ = instance.__history__  # type: ignore[attr-defined]
         return result
-
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
-        if getattr(self, "__history__", None) is not None:
-            # Lazy import: completions.py imports from this module (circular).
-            from effectful.handlers.llm.completions import get_message_sequence
-
-            with handler({get_message_sequence: lambda: self.__history__}):  # type: ignore
-                return super().__call__(*args, **kwargs)
-        else:
-            return super().__call__(*args, **kwargs)
 
     @classmethod
     def define[**Q, V](
@@ -379,23 +371,7 @@ class Agent(abc.ABC):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        prop = functools.cached_property(lambda _: OrderedDict())
-        prop.__set_name__(cls, "__history__")
-        cls.__history__ = prop
-
-        for name, attr in list(cls.__dict__.items()):
-            if not isinstance(attr, Template) or isinstance(
-                attr.__default__, staticmethod | classmethod
-            ):
-                continue
-
-            def _template_prop_fn[T: Template](self, *, template: T) -> T:
-                inst_template = template.__get__(self, type(self))
-                setattr(inst_template, "__history__", self.__history__)
-                return inst_template
-
-            _template_property = functools.cached_property(
-                functools.partial(_template_prop_fn, template=attr)
-            )
-            _template_property.__set_name__(cls, name)
-            setattr(cls, name, _template_property)
+        if not hasattr(cls, "__history__"):
+            prop = functools.cached_property(lambda _: OrderedDict())
+            prop.__set_name__(cls, "__history__")
+            cls.__history__ = prop

@@ -206,6 +206,25 @@ class ChatBot(Agent):
         raise NotHandled
 
 
+class _DesignerAgent(Agent):
+    """Agent from issue #560: nests template calls via tools."""
+
+    @Template.define
+    def nested_check(self, payload: str) -> str:
+        """Check: {payload}. Do not use tools."""
+        raise NotHandled
+
+    @Tool.define
+    def nested_tool(self, payload: str) -> str:
+        """Check payload by calling a nested LLM template."""
+        return self.nested_check(payload)
+
+    @Template.define
+    def outer(self, payload: str) -> str:
+        """Call `nested_tool` for: {payload}, then return final answer."""
+        raise NotHandled
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -433,6 +452,134 @@ class TestAgentWithRetryHandler:
         # assistant message should be there.
         roles = {m["role"] for m in agent.__history__.values()}
         assert {"user", "assistant"} == roles - {"system"}
+
+
+class TestNestedTemplateCalling:
+    """Issue #560: nested Template invocation via tool on the same Agent.
+
+    When a Template triggers a tool call whose implementation invokes
+    another Template on the same Agent, the inner call must:
+    - work on a fresh copy of the agent's history
+    - NOT write its messages back to agent.__history__
+    - return its result correctly so the outer template can continue
+    """
+
+    def test_same_agent_nested_template_via_tool(self):
+        """The scenario from issue #560 completes without error."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response('{"value": "check passed"}'),
+                make_text_response('{"value": "all good"}'),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = agent.outer("demo")
+
+        assert result == "all good"
+
+    def test_only_outermost_writes_to_history(self):
+        """Inner template's messages are absent from agent.__history__."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response('{"value": "inner"}'),
+                make_text_response('{"value": "outer"}'),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            agent.outer("demo")
+
+        roles = [m["role"] for m in agent.__history__.values()]
+        # Outer call produces: user, assistant(tool_call), tool, assistant(final)
+        # Inner call's user + assistant are NOT written back
+        assert set(roles) <= {"system", "user", "assistant", "tool"}
+        assert roles.count("system") == 1
+        assert roles.count("user") == 1
+        assert roles.count("assistant") == 2  # tool_call + final
+        assert roles.count("tool") == 1
+
+    def test_inner_template_gets_fresh_messages(self):
+        """The nested template's LLM call sees only its own system + user,
+        not the outer template's in-flight messages."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response('{"value": "inner"}'),
+                make_text_response('{"value": "outer"}'),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            agent.outer("demo")
+
+        # Call 0: outer's first call_assistant → [user]
+        # Call 1: inner's call_assistant → [user] (fresh, from empty history)
+        # Call 2: outer's second call_assistant → [user, assistant(tc), tool]
+        inner_roles = [m["role"] for m in mock.received_messages[1]]
+        assert {"user"} <= set(inner_roles) <= {"system", "user"}
+
+    def test_inner_template_sees_prior_completed_history(self):
+        """After a previous top-level call, the nested inner template sees
+        the completed history but NOT the current outer call's in-flight messages."""
+        mock = MockCompletionHandler(
+            [
+                # First call: direct answer (no tool call)
+                make_text_response('{"value": "first"}'),
+                # Second call: tool → nested → final
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response('{"value": "inner"}'),
+                make_text_response('{"value": "second"}'),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            agent.outer("first")
+            agent.outer("second")
+
+        # After first call, agent.__history__ has 2 messages (user + assistant).
+        # Second outer call (call 1): starts from history(2) + own user = 3.
+        # Inner call (call 2): starts from history(2) + own user = 3.
+        # Both see the same base history. If inner saw the outer's in-flight
+        # messages (user, assistant(tc)), it would have more.
+        assert len(mock.received_messages[1]) == len(mock.received_messages[2])
+
+        # Inner call sees more than just its own user message (it has history)
+        assert len(mock.received_messages[2]) > 1
+
+    def test_sequential_call_after_nested_sees_history(self):
+        """A follow-up top-level call sees the first call's full history."""
+        mock = MockCompletionHandler(
+            [
+                # First call: tool → nested → final
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response('{"value": "inner"}'),
+                make_text_response('{"value": "first"}'),
+                # Second call: direct answer
+                make_text_response('{"value": "second"}'),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            r1 = agent.outer("first")
+            r2 = agent.outer("second")
+
+        assert r1 == "first"
+        assert r2 == "second"
+
+        # Second call (mock index 3) should see the full history from the first
+        # call (4 messages: user+assistant(tc)+tool+assistant) plus its own
+        # user = 5 total.
+        assert len(mock.received_messages[3]) > len(mock.received_messages[0])
+        second_call_roles = [m["role"] for m in mock.received_messages[3]]
+        assert second_call_roles.count("assistant") >= 2  # from first call's history
 
 
 # ---------------------------------------------------------------------------
@@ -972,10 +1119,6 @@ def test_validate_staticmethod_undefined():
             raise NotHandled
 
 
-@pytest.mark.xfail(
-    reason="staticmethod + lexical scope: _define_staticmethod re-enters "
-    "Template.define, causing frame walking to capture wrong context"
-)
 def test_validate_staticmethod_lexical_scope():
     """Staticmethod templates should capture lexical scope variables."""
     feet_per_mile = 5280  # noqa: F841
@@ -991,10 +1134,6 @@ def test_validate_staticmethod_lexical_scope():
     assert "feet_per_mile" in inner.__context__
 
 
-@pytest.mark.xfail(
-    reason="staticmethod + lexical scope: _define_staticmethod re-enters "
-    "Template.define, causing frame walking to capture wrong context"
-)
 def test_staticmethod_lexical_scope_formatting():
     """Staticmethod templates should format lexical scope variables at runtime."""
     feet_per_mile = 5280  # noqa: F841

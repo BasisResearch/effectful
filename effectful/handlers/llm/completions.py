@@ -27,7 +27,7 @@ from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
@@ -54,13 +54,16 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
-@defop
-def get_message_sequence() -> collections.OrderedDict[str, Message]:
-    return collections.OrderedDict()
+@Operation.define
+def _get_history() -> collections.OrderedDict[str, Message]:
+    raise NotImplementedError
 
 
 def append_message(message: Message):
-    get_message_sequence()[message["id"]] = message
+    try:
+        _get_history()[message["id"]] = message
+    except NotImplementedError:
+        pass
 
 
 def _make_message(content: dict) -> Message:
@@ -265,7 +268,7 @@ def call_assistant[T, U](
         "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
 
-    messages = list(get_message_sequence().values())
+    messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
@@ -315,13 +318,10 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    # call_tool invariant: tool is called in a context with a fresh message sequence
-    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
     try:
-        with handler({get_message_sequence: lambda: message_sequence}):
-            result = tool_call.tool(
-                *tool_call.bound_args.args, **tool_call.bound_args.kwargs
-            )
+        result = tool_call.tool(
+            *tool_call.bound_args.args, **tool_call.bound_args.kwargs
+        )
     except Exception as e:
         raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
@@ -393,9 +393,28 @@ def call_user(
 
 
 @Operation.define
-def call_system(template: Template) -> collections.abc.Sequence[Message]:
+def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    return ()
+    system_prompt = textwrap.dedent(f"""
+    SYSTEM: You are a helpful LLM assistant named {template.__name__}.
+    """)
+
+    message = _make_message(dict(role="system", content=system_prompt))
+    try:
+        history: collections.OrderedDict[str, Message] = _get_history()
+        if any(m["role"] == "system" for m in history.values()):
+            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
+                "There should be at most one system message in the history"
+            )
+            assert history[next(iter(history))]["role"] == "system", (
+                "The system message should be the first message in the history"
+            )
+            history.popitem(last=False)  # remove existing system message
+        history[message["id"]] = message
+        history.move_to_end(message["id"], last=False)
+        return message
+    except NotImplementedError:
+        return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -437,13 +456,13 @@ class RetryLLMHandler(ObjectInterpretation):
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        message_sequence = get_message_sequence().copy()
+        message_sequence = _get_history().copy()
         last_attempt = self.num_retries
 
         for attempt in range(self.num_retries + 1):
             try:
                 # call assistant, use saved message_sequence
-                with handler({get_message_sequence: lambda: message_sequence}):
+                with handler({_get_history: lambda: message_sequence}):
                     message, tool_calls, result = fwd(
                         tools, response_format, model, **kwargs
                     )
@@ -516,30 +535,28 @@ class LiteLLMProvider(ObjectInterpretation):
         # Create response_model with env so tools passed as arguments are available
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
-        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        starting_message_count: int = len(message_sequence)
-        try:
-            with handler({get_message_sequence: lambda: message_sequence}):
-                call_system(template)
+        history: collections.OrderedDict[str, Message] = getattr(
+            template, "__history__", collections.OrderedDict()
+        )  # type: ignore
+        history_copy = history.copy()
 
-                message: Message = call_user(template.__prompt_template__, env)
+        with handler({_get_history: lambda: history_copy}):
+            call_system(template)
 
-                # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-                tool_calls: list[DecodedToolCall] = []
-                result: T | None = None
-                while message["role"] != "assistant" or tool_calls:
-                    message, tool_calls, result = call_assistant(
-                        template.tools, response_model, **self.config
-                    )
-                    for tool_call in tool_calls:
-                        message = call_tool(tool_call)
+            message: Message = call_user(template.__prompt_template__, env)
 
-                assert result is not None, (
-                    "Result should be set if no tool calls remain"
+            # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+            tool_calls: list[DecodedToolCall] = []
+            result: T | None = None
+            while message["role"] != "assistant" or tool_calls:
+                message, tool_calls, result = call_assistant(
+                    template.tools, response_model, **self.config
                 )
-                return result
-        except Exception:
-            # Prune any malformed messages from unhandled errors before propagating
-            while len(message_sequence) > starting_message_count:
-                message_sequence.popitem(last=True)
-            raise
+                for tool_call in tool_calls:
+                    message = call_tool(tool_call)
+
+        try:
+            _get_history()
+        except NotImplementedError:
+            history.update(history_copy)
+        return typing.cast(T, result)
