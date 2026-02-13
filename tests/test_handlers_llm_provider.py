@@ -15,6 +15,7 @@ from pathlib import Path
 
 import litellm
 import pytest
+import tenacity
 from litellm.caching.caching import Cache
 from litellm.files.main import ModelResponse
 from PIL import Image
@@ -317,7 +318,7 @@ def test_list_image_input(request):
 
     with (
         handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
-        handler(RetryLLMHandler(num_retries=2)),
+        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         result = describe_images(
@@ -501,7 +502,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -531,7 +532,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -563,7 +564,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -590,7 +591,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
         with pytest.raises(Exception):  # Will raise the underlying decoding error
             with (
-                handler(RetryLLMHandler(num_retries=2)),
+                handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
                 handler(message_sequence_provider),
             ):
@@ -604,7 +605,7 @@ class TestRetryLLMHandler:
         assert mock_handler.call_count == 3
 
     def test_retry_handler_with_zero_retries(self):
-        """Test RetryLLMHandler with num_retries=0 fails immediately on error."""
+        """Test RetryLLMHandler with stop_after_attempt(1) fails immediately on error."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
         ]
@@ -617,7 +618,7 @@ class TestRetryLLMHandler:
 
         with pytest.raises(Exception):
             with (
-                handler(RetryLLMHandler(num_retries=0)),
+                handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
                 handler(mock_handler),
                 handler(message_sequence_provider),
             ):
@@ -640,7 +641,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -692,7 +693,7 @@ class TestRetryLLMHandler:
             raise NotHandled
 
         with (
-            handler(RetryLLMHandler(num_retries=2)),
+            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
             handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
             handler(UnsafeEvalProvider()),
         ):
@@ -715,7 +716,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -747,7 +748,7 @@ class TestRetryLLMHandler:
 
         with pytest.raises(Exception):  # Will raise the underlying decoding error
             with (
-                handler(RetryLLMHandler(num_retries=2)),
+                handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
                 handler(message_sequence_provider),
             ):
@@ -774,7 +775,7 @@ class TestRetryLLMHandler:
 
         with pytest.raises(ToolCallDecodingError) as exc_info:
             with (
-                handler(RetryLLMHandler(num_retries=0)),
+                handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
                 handler(mock_handler),
                 handler(message_sequence_provider),
             ):
@@ -804,7 +805,7 @@ class TestRetryLLMHandler:
 
         with pytest.raises(ResultDecodingError) as exc_info:
             with (
-                handler(RetryLLMHandler(num_retries=0)),
+                handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
                 handler(mock_handler),
                 handler(message_sequence_provider),
             ):
@@ -832,7 +833,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -862,7 +863,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -892,7 +893,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3, include_traceback=True)),
+            handler(RetryLLMHandler(include_traceback=True)),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -909,8 +910,8 @@ class TestRetryLLMHandler:
         assert "Traceback:" in tool_feedback[0]["content"]
         assert "```" in tool_feedback[0]["content"]
 
-    def test_retry_handler_no_traceback_by_default(self):
-        """Test that include_traceback=False (default) doesn't add traceback."""
+    def test_retry_handler_no_traceback_when_disabled(self):
+        """Test that include_traceback=False doesn't add traceback."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
             make_text_response('{"value": "success"}'),
@@ -923,7 +924,7 @@ class TestRetryLLMHandler:
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler(include_traceback=False)),
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
@@ -933,7 +934,7 @@ class TestRetryLLMHandler:
                 model="test-model",
             )
 
-        # Check that the error feedback does NOT include traceback
+        # Check that the error feedback does not include traceback
         second_call_messages = mock_handler.received_messages[1]
         tool_feedback = [m for m in second_call_messages if m.get("role") == "tool"]
         assert len(tool_feedback) == 1
@@ -968,7 +969,7 @@ class TestToolExecutionErrorHandling:
         bound_args = sig.bind(x=42)
         tool_call = DecodedToolCall(failing_tool, bound_args, "call_1")
 
-        with handler(RetryLLMHandler(num_retries=3)):
+        with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
 
         # The result should be an error message, not an exception
@@ -985,7 +986,7 @@ class TestToolExecutionErrorHandling:
         bound_args = sig.bind(a=10, b=0)
         tool_call = DecodedToolCall(divide_tool, bound_args, "call_div")
 
-        with handler(RetryLLMHandler(num_retries=3)):
+        with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
 
         assert result["role"] == "tool"
@@ -1000,7 +1001,7 @@ class TestToolExecutionErrorHandling:
         bound_args = sig.bind(a=3, b=4)
         tool_call = DecodedToolCall(add_numbers, bound_args, "call_add")
 
-        with handler(RetryLLMHandler(num_retries=3)):
+        with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
 
         assert result["role"] == "tool"
@@ -1033,7 +1034,7 @@ class TestToolExecutionErrorHandling:
                 return fwd(tools, response_format, model, **kwargs)
 
         with (
-            handler(RetryLLMHandler(num_retries=3)),
+            handler(RetryLLMHandler()),
             handler(TestProvider()),
             handler(mock_handler),
             handler(message_sequence_provider),
@@ -1566,7 +1567,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         bound_args = sig.bind(x=1)
         tc = DecodedToolCall(flaky_tool, bound_args, "call_match")
 
-        with handler(RetryLLMHandler(num_retries=3, catch_tool_errors=ConnectionError)):
+        with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
             result = call_tool(tc)
 
         assert result["role"] == "tool"
@@ -1582,7 +1583,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
 
         # catch_tool_errors=TypeError, but tool raises ConnectionError
         with pytest.raises(ToolCallExecutionError) as exc_info:
-            with handler(RetryLLMHandler(num_retries=3, catch_tool_errors=TypeError)):
+            with handler(RetryLLMHandler(catch_tool_errors=TypeError)):
                 call_tool(tc)
 
         assert isinstance(exc_info.value.original_error, ConnectionError)
@@ -1593,7 +1594,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         bound_args = sig.bind(x=5)
         tc = DecodedToolCall(type_error_tool, bound_args, "call_default")
 
-        with handler(RetryLLMHandler(num_retries=3)):
+        with handler(RetryLLMHandler()):
             result = call_tool(tc)
 
         assert result["role"] == "tool"
@@ -1607,7 +1608,6 @@ class TestRetryHandlerCatchToolErrorsFiltering:
 
         with handler(
             RetryLLMHandler(
-                num_retries=3,
                 catch_tool_errors=(ConnectionError, ValueError),
             )
         ):
