@@ -318,7 +318,6 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    # call_tool invariant: tool is called in a context with a fresh message sequence
     try:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
