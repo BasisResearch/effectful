@@ -435,10 +435,9 @@ class RetryLLMHandler(ObjectInterpretation):
         catch_tool_errors: Exception type(s) to catch during tool execution.
             Can be a single exception class or a tuple of exception classes.
             Defaults to Exception (catches all exceptions).
+        stop: tenacity stop condition for retrying `call_assistant`. Defaults to
+            `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
         **kwargs: Additional keyword arguments forwarded to `tenacity.Retrying`.
-            Defaults: stop=stop_after_attempt(4), retry=retry_if_exception_type(
-            (ToolCallDecodingError, ResultDecodingError)), wait=wait_none(),
-            reraise=True.
     """
 
     call_assistant_retryer: tenacity.Retrying
