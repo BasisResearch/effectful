@@ -1,4 +1,6 @@
 import builtins
+import inspect
+import json
 import typing
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -9,8 +11,16 @@ import pytest
 from PIL import Image
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import (
+    DecodedToolCall,
+    Encodable,
+    SynthesizedFunction,
+    ToolCallEncodable,
+    ToolEncodable,
+    _param_model,
+)
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
+from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
@@ -1283,3 +1293,507 @@ class TestRestrictedEvalProviderConfig:
             with handler(RestrictedEvalProvider()):
                 fn = encodable_private.decode(source_private)
                 fn("test")
+
+
+# ============================================================================
+# Tests for ToolEncodable
+# ============================================================================
+
+
+class TestToolEncodable:
+    """Tests for ToolEncodable - encoding/decoding Tools as ChatCompletionToolParam."""
+
+    def test_define_returns_tool_encodable(self):
+        """Encodable.define(Tool) returns a ToolEncodable instance."""
+        encodable = Encodable.define(Tool)
+        assert isinstance(encodable, ToolEncodable)
+
+    def test_encode_simple_tool(self):
+        """Encoding a simple Tool produces correct ChatCompletionToolParam structure."""
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers together."""
+            return a + b
+
+        encodable = Encodable.define(type(add))
+        encoded = encodable.encode(add)
+
+        assert encoded["type"] == "function"
+        assert encoded["function"]["name"] == "add"
+        assert "Add two numbers together." in encoded["function"]["description"]
+        assert encoded["function"]["strict"] is True
+        assert "parameters" in encoded["function"]
+        params = encoded["function"]["parameters"]
+        assert "a" in params.get("properties", {})
+        assert "b" in params.get("properties", {})
+
+    def test_encode_tool_with_str_param(self):
+        """Tool with string parameter encodes correctly."""
+
+        @Tool.define
+        def greet(name: str) -> str:
+            """Greet someone by name."""
+            return f"Hello, {name}!"
+
+        encodable = Encodable.define(type(greet))
+        encoded = encodable.encode(greet)
+
+        assert encoded["type"] == "function"
+        assert encoded["function"]["name"] == "greet"
+        params = encoded["function"]["parameters"]
+        assert "name" in params.get("properties", {})
+
+    def test_encode_tool_no_params(self):
+        """Tool with no parameters encodes correctly."""
+
+        @Tool.define
+        def get_value() -> int:
+            """Return a constant value."""
+            return 42
+
+        encodable = Encodable.define(type(get_value))
+        encoded = encodable.encode(get_value)
+
+        assert encoded["type"] == "function"
+        assert encoded["function"]["name"] == "get_value"
+
+    def test_decode_raises_not_implemented(self):
+        """Decoding a Tool from ChatCompletionToolParam is not supported."""
+        encodable = Encodable.define(Tool)
+        with pytest.raises(NotImplementedError, match="Tools cannot yet be decoded"):
+            encodable.decode({})
+
+    def test_serialize_deserialize_roundtrip(self):
+        """Serialization and deserialization of encoded Tool roundtrips."""
+
+        @Tool.define
+        def multiply(x: int, y: int) -> int:
+            """Multiply two numbers."""
+            return x * y
+
+        encodable = Encodable.define(type(multiply))
+        encoded = encodable.encode(multiply)
+        serialized = encodable.serialize(encoded)
+
+        assert len(serialized) == 1
+        assert serialized[0]["type"] == "text"
+
+        deserialized = encodable.deserialize(serialized[0]["text"])
+        assert deserialized["type"] == "function"
+        assert deserialized["function"]["name"] == "multiply"
+
+
+# ============================================================================
+# Tests for ToolCallEncodable
+# ============================================================================
+
+
+class TestToolCallEncodable:
+    """Tests for ToolCallEncodable - encoding/decoding DecodedToolCall."""
+
+    def test_define_returns_tool_call_encodable(self):
+        """Encodable.define(DecodedToolCall) returns a ToolCallEncodable instance."""
+        encodable = Encodable.define(DecodedToolCall, {})
+        assert isinstance(encodable, ToolCallEncodable)
+
+    def test_encode_decoded_tool_call(self):
+        """Encoding a DecodedToolCall produces a ChatCompletionMessageToolCall."""
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        sig = inspect.signature(add)
+        bound = sig.bind(3, 5)
+        dtc = DecodedToolCall(tool=add, bound_args=bound, id="call_123", name="add")
+
+        encodable = Encodable.define(DecodedToolCall, {"add": add})
+        encoded = encodable.encode(dtc)
+
+        assert encoded.id == "call_123"
+        assert encoded.function.name == "add"
+        args = json.loads(encoded.function.arguments)
+        assert args["a"] == 3
+        assert args["b"] == 5
+
+    def test_decode_tool_call(self):
+        """Decoding a ChatCompletionMessageToolCall produces a DecodedToolCall."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_456",
+                "function": {
+                    "name": "add",
+                    "arguments": '{"a": 10, "b": 20}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"add": add})
+        decoded = encodable.decode(tool_call)
+
+        assert isinstance(decoded, DecodedToolCall)
+        assert decoded.tool is add
+        assert decoded.id == "call_456"
+        assert decoded.bound_args.arguments == {"a": 10, "b": 20}
+
+    def test_encode_decode_roundtrip(self):
+        """Encoding then decoding a DecodedToolCall roundtrips."""
+
+        @Tool.define
+        def greet(name: str) -> str:
+            """Greet by name."""
+            return f"Hello, {name}!"
+
+        sig = inspect.signature(greet)
+        bound = sig.bind("Alice")
+        original = DecodedToolCall(
+            tool=greet, bound_args=bound, id="call_rt", name="greet"
+        )
+
+        ctx = {"greet": greet}
+        encodable = Encodable.define(DecodedToolCall, ctx)
+        encoded = encodable.encode(original)
+        decoded = encodable.decode(encoded)
+
+        assert decoded.tool is greet
+        assert decoded.id == "call_rt"
+        assert decoded.bound_args.arguments == {"name": "Alice"}
+
+    def test_decode_unknown_tool_raises(self):
+        """Decoding a tool call with a name not in context raises."""
+        from litellm import ChatCompletionMessageToolCall
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_bad",
+                "function": {
+                    "name": "nonexistent",
+                    "arguments": "{}",
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {})
+        with pytest.raises((KeyError, AssertionError)):
+            encodable.decode(tool_call)
+
+    def test_serialize_deserialize(self):
+        """Serialization and deserialization of an encoded tool call."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def double(x: int) -> int:
+            """Double a number."""
+            return x * 2
+
+        sig = inspect.signature(double)
+        bound = sig.bind(7)
+        dtc = DecodedToolCall(
+            tool=double, bound_args=bound, id="call_ser", name="double"
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"double": double})
+        encoded = encodable.encode(dtc)
+        serialized = encodable.serialize(encoded)
+
+        assert len(serialized) == 1
+        assert serialized[0]["type"] == "text"
+
+        deserialized = encodable.deserialize(serialized[0]["text"])
+        assert isinstance(deserialized, ChatCompletionMessageToolCall)
+        assert deserialized.function.name == "double"
+        assert deserialized.id == "call_ser"
+
+    def test_decode_tool_with_str_args(self):
+        """Decoding a tool call with string arguments works correctly."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def concat(a: str, b: str) -> str:
+            """Concatenate two strings."""
+            return a + b
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_str",
+                "function": {
+                    "name": "concat",
+                    "arguments": '{"a": "hello", "b": " world"}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"concat": concat})
+        decoded = encodable.decode(tool_call)
+
+        assert decoded.bound_args.arguments == {"a": "hello", "b": " world"}
+
+
+# ============================================================================
+# Tests for _param_model
+# ============================================================================
+
+
+class TestParamModel:
+    """Tests for _param_model helper that builds pydantic models from signatures."""
+
+    def test_creates_model_from_signature(self):
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add."""
+            return a + b
+
+        sig = inspect.signature(add)
+        model = _param_model(sig)
+
+        assert issubclass(model, pydantic.BaseModel)
+        instance = model.model_validate({"a": 1, "b": 2})
+        assert instance.a == 1
+        assert instance.b == 2
+
+    def test_forbids_extra_fields(self):
+        @Tool.define
+        def f(x: int) -> int:
+            """Identity."""
+            return x
+
+        sig = inspect.signature(f)
+        model = _param_model(sig)
+
+        with pytest.raises(pydantic.ValidationError):
+            model.model_validate({"x": 1, "extra": "bad"})
+
+    def test_model_with_str_param(self):
+        @Tool.define
+        def echo(msg: str) -> str:
+            """Echo."""
+            return msg
+
+        sig = inspect.signature(echo)
+        model = _param_model(sig)
+        instance = model.model_validate({"msg": "hello"})
+        assert instance.msg == "hello"
+
+
+# ============================================================================
+# Tests for ToolCallEncodable argument validation
+# ============================================================================
+
+
+class TestToolCallEncodableArgValidation:
+    """Tests that ToolCallEncodable.decode validates arguments against the tool signature."""
+
+    def test_decode_wrong_arg_type_raises(self):
+        """Passing a string where int is expected should fail pydantic validation."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_type",
+                "function": {
+                    "name": "add",
+                    "arguments": '{"a": "not_an_int", "b": 2}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"add": add})
+        with pytest.raises(pydantic.ValidationError):
+            encodable.decode(tool_call)
+
+    def test_decode_missing_required_arg_raises(self):
+        """Omitting a required argument should fail validation."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_missing",
+                "function": {
+                    "name": "add",
+                    "arguments": '{"a": 1}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"add": add})
+        # Either pydantic rejects the missing field or sig.bind fails
+        with pytest.raises((pydantic.ValidationError, TypeError)):
+            encodable.decode(tool_call)
+
+    def test_decode_extra_arg_raises(self):
+        """Extra arguments not in the signature should fail (extra='forbid')."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_extra",
+                "function": {
+                    "name": "add",
+                    "arguments": '{"a": 1, "b": 2, "c": 3}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"add": add})
+        with pytest.raises(pydantic.ValidationError):
+            encodable.decode(tool_call)
+
+    def test_decode_bool_not_coerced_to_int(self):
+        """Bool arg where int is expected: pydantic may coerce, verify it doesn't crash."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def double(x: int) -> int:
+            """Double a number."""
+            return x * 2
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_bool",
+                "function": {
+                    "name": "double",
+                    "arguments": '{"x": true}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"double": double})
+        decoded = encodable.decode(tool_call)
+        assert decoded.bound_args.arguments["x"] in (True, 1)
+
+    def test_decode_complex_param_types(self):
+        """Tool with list and nested types decodes correctly."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def process(items: list[int], label: str) -> str:
+            """Process items."""
+            return f"{label}: {sum(items)}"
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_complex",
+                "function": {
+                    "name": "process",
+                    "arguments": '{"items": [1, 2, 3], "label": "total"}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"process": process})
+        decoded = encodable.decode(tool_call)
+        assert decoded.bound_args.arguments["items"] == [1, 2, 3]
+        assert decoded.bound_args.arguments["label"] == "total"
+
+    def test_decode_list_with_wrong_element_type_raises(self):
+        """list[int] parameter receiving list of strings should fail."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def sum_items(items: list[int]) -> int:
+            """Sum items."""
+            return sum(items)
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_bad_list",
+                "function": {
+                    "name": "sum_items",
+                    "arguments": '{"items": ["a", "b", "c"]}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"sum_items": sum_items})
+        with pytest.raises(pydantic.ValidationError):
+            encodable.decode(tool_call)
+
+    def test_decode_invalid_json_raises(self):
+        """Malformed JSON in arguments should fail."""
+        from litellm import ChatCompletionMessageToolCall
+
+        @Tool.define
+        def f(x: int) -> int:
+            """Identity."""
+            return x
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_bad_json",
+                "function": {
+                    "name": "f",
+                    "arguments": "{not valid json}",
+                },
+            }
+        )
+
+        encodable = Encodable.define(DecodedToolCall, {"f": f})
+        with pytest.raises(pydantic.ValidationError):
+            encodable.decode(tool_call)
+
+    def test_decode_pydantic_model_param(self):
+        """Tool with a pydantic BaseModel parameter decodes through the Encodable chain."""
+        from litellm import ChatCompletionMessageToolCall
+
+        class Point(pydantic.BaseModel):
+            x: int
+            y: int
+
+        @Tool.define
+        def distance_from_origin(p: Point) -> float:
+            """Compute distance from origin."""
+            return (p.x**2 + p.y**2) ** 0.5
+
+        tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_pydantic",
+                "function": {
+                    "name": "distance_from_origin",
+                    "arguments": '{"p": {"x": 3, "y": 4}}',
+                },
+            }
+        )
+
+        encodable = Encodable.define(
+            DecodedToolCall, {"distance_from_origin": distance_from_origin}
+        )
+        decoded = encodable.decode(tool_call)
+        p = decoded.bound_args.arguments["p"]
+        assert isinstance(p, Point)
+        assert p.x == 3
+        assert p.y == 4
