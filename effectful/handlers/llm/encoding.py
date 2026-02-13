@@ -268,6 +268,8 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
 class ImmutableSequenceEncodable[T](MutableSequenceEncodable[T]):
     """Variable-length tuple encoded as a JSON array, decoded back to tuple."""
 
+    base: type[typing.Any]  # accepts tuple types
+
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         return [self.element_encoder.encode(elem) for elem in value]
 
@@ -574,7 +576,7 @@ def _encodable_tuple[T, U](
         element_ty = args[0]
         element_encoder = Encodable.define(element_ty, ctx)
         has_image = element_ty is Image.Image
-        encoded_ty: type[typing.Any] = typing.cast(
+        encoded_ty = typing.cast(
             type[typing.Any],
             list[element_encoder.enc],  # type: ignore
         )
@@ -589,7 +591,7 @@ def _encodable_tuple[T, U](
     # which OpenAI accepts (unlike the "prefixItems" schema from native tuples).
     element_encoders = [Encodable.define(arg, ctx) for arg in args]
     has_image = any(arg is Image.Image for arg in args)
-    model_cls = pydantic.create_model(
+    model_cls = pydantic.create_model(  # type: ignore[call-overload]
         "TupleItems",
         __config__={"extra": "forbid"},
         **{f"item_{i}": (enc.enc, ...) for i, enc in enumerate(element_encoders)},
@@ -602,9 +604,10 @@ def _encodable_tuple[T, U](
     def _model_to_tuple(v: pydantic.BaseModel) -> tuple:
         return tuple(getattr(v, f"item_{i}") for i in range(n))
 
-    encoded_ty: type[typing.Any] = typing.Annotated[
-        model_cls, pydantic.AfterValidator(_model_to_tuple)
-    ]
+    encoded_ty = typing.cast(
+        type[typing.Any],
+        typing.Annotated[model_cls, pydantic.AfterValidator(_model_to_tuple)],
+    )
 
     return typing.cast(
         Encodable[T, U],

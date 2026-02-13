@@ -435,6 +435,7 @@ def test_type_to_encodable_type_tuple_of_images():
 
     encoded = encodable.encode(value)
     assert isinstance(encoded, tuple)
+    assert len(encoded) == 2
     assert isinstance(encoded[0], dict)
     assert isinstance(encoded[1], dict)
     assert "url" in encoded[0]
