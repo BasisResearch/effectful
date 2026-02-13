@@ -11,6 +11,7 @@ import uuid
 
 import litellm
 import pydantic
+import tenacity
 from litellm import (
     ChatCompletionFunctionMessage,
     ChatCompletionMessageToolCall,
@@ -25,8 +26,9 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Template, Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
@@ -53,13 +55,16 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
 
-@defop
-def get_message_sequence() -> collections.OrderedDict[str, Message]:
-    return collections.OrderedDict()
+@Operation.define
+def _get_history() -> collections.OrderedDict[str, Message]:
+    raise NotImplementedError
 
 
 def append_message(message: Message):
-    get_message_sequence()[message["id"]] = message
+    try:
+        _get_history()[message["id"]] = message
+    except NotImplementedError:
+        pass
 
 
 def _make_message(content: dict) -> Message:
@@ -264,7 +269,7 @@ def call_assistant[T, U](
         "Response", value=response_format.enc, __config__={"extra": "forbid"}
     )
 
-    messages = list(get_message_sequence().values())
+    messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
@@ -314,15 +319,17 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    # call_tool invariant: tool is called in a context with a fresh message sequence
-    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
-    with handler({get_message_sequence: lambda: message_sequence}):
+    try:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
+    except Exception as e:
+        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(type(result))
+    return_type = Encodable.define(
+        typing.cast(type[typing.Any], nested_type(result).value)
+    )
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -359,7 +366,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(type(obj))
+        encoder = Encodable.define(
+            typing.cast(type[typing.Any], nested_type(obj).value)
+        )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
@@ -385,9 +394,28 @@ def call_user(
 
 
 @Operation.define
-def call_system(template: Template) -> collections.abc.Sequence[Message]:
+def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    return ()
+    system_prompt = textwrap.dedent(f"""
+    SYSTEM: You are a helpful LLM assistant named {template.__name__}.
+    """)
+
+    message = _make_message(dict(role="system", content=system_prompt))
+    try:
+        history: collections.OrderedDict[str, Message] = _get_history()
+        if any(m["role"] == "system" for m in history.values()):
+            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
+                "There should be at most one system message in the history"
+            )
+            assert history[next(iter(history))]["role"] == "system", (
+                "The system message should be the first message in the history"
+            )
+            history.popitem(last=False)  # remove existing system message
+        history[message["id"]] = message
+        history.move_to_end(message["id"], last=False)
+        return message
+    except NotImplementedError:
+        return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -402,24 +430,52 @@ class RetryLLMHandler(ObjectInterpretation):
     captured and returned as tool response messages.
 
     Args:
-        num_retries: The maximum number of retries (default: 3).
         include_traceback: If True, include full traceback in error feedback
-            for better debugging context (default: False).
+            for better debugging context (default: True).
         catch_tool_errors: Exception type(s) to catch during tool execution.
             Can be a single exception class or a tuple of exception classes.
             Defaults to Exception (catches all exceptions).
+        stop: tenacity stop condition for retrying `call_assistant`. Defaults to
+            `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
+        **kwargs: Additional keyword arguments forwarded to `tenacity.Retrying`.
     """
+
+    call_assistant_retryer: tenacity.Retrying
+
+    _user_before_sleep: collections.abc.Callable[[tenacity.RetryCallState], None] | None
 
     def __init__(
         self,
-        num_retries: int = 3,
-        include_traceback: bool = False,
+        include_traceback: bool = True,
         catch_tool_errors: type[BaseException]
         | tuple[type[BaseException], ...] = Exception,
+        stop: tenacity.stop.stop_base = tenacity.stop_after_attempt(4),
+        **kwargs,
     ):
-        self.num_retries = num_retries
         self.include_traceback = include_traceback
         self.catch_tool_errors = catch_tool_errors
+        assert "retry" not in kwargs, "Cannot override retry logic of RetryLLMHandler"
+        assert "reraise" not in kwargs, (
+            "Cannot override reraise logic of RetryLLMHandler"
+        )
+        self._user_before_sleep = kwargs.pop("before_sleep", None)
+        self.call_assistant_retryer = tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                (ToolCallDecodingError, ResultDecodingError)
+            ),
+            reraise=True,
+            before_sleep=self._before_sleep,
+            stop=stop,
+            **kwargs,
+        )
+
+    def _before_sleep(self, retry_state: tenacity.RetryCallState) -> None:
+        e = retry_state.outcome.exception()  # type: ignore
+        assert isinstance(e, (ToolCallDecodingError, ResultDecodingError))
+        append_message(e.raw_message)
+        append_message(e.to_feedback_message(self.include_traceback))
+        if self._user_before_sleep is not None:
+            self._user_before_sleep(retry_state)
 
     @implements(call_assistant)
     def _call_assistant[T, U](
@@ -429,42 +485,16 @@ class RetryLLMHandler(ObjectInterpretation):
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        message_sequence = get_message_sequence().copy()
-        last_attempt = self.num_retries
+        _message_sequence = _get_history().copy()
 
-        for attempt in range(self.num_retries + 1):
-            try:
-                # call assistant, use saved message_sequence
-                with handler({get_message_sequence: lambda: message_sequence}):
-                    message, tool_calls, result = fwd(
-                        tools, response_format, model, **kwargs
-                    )
+        def _attempt() -> MessageResult[T]:
+            return fwd(tools, response_format, model, **kwargs)
 
-                # Success! The returned message is the final successful response.
-                # Malformed messages from retries are only in local message_sequence copy,
-                # not in the enclosing message sequence.
-                append_message(message)
-                return (message, tool_calls, result)
+        with handler({_get_history: lambda: _message_sequence}):
+            message, tool_calls, result = self.call_assistant_retryer(_attempt)
 
-            except (ToolCallDecodingError, ResultDecodingError) as e:
-                # On last attempt, re-raise to preserve full traceback
-                if attempt == last_attempt:
-                    raise
-
-                # Add the malformed assistant message
-                message_sequence[e.raw_message["id"]] = e.raw_message
-
-                # Add error feedback as a tool response
-                error_feedback: Message = e.to_feedback_message(self.include_traceback)
-                message_sequence[error_feedback["id"]] = error_feedback
-
-        # Should never reach here - either we return on success or raise on final failure
-        raise AssertionError("Unreachable: retry loop exited without return or raise")
-
-    @implements(completion)
-    def _completion(self, *args, **kwargs) -> typing.Any:
-        """Inject num_retries for litellm's built-in network error handling."""
-        return fwd(*args, **({"num_retries": self.num_retries} | kwargs))
+        append_message(message)
+        return (message, tool_calls, result)
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall) -> Message:
@@ -476,11 +506,13 @@ class RetryLLMHandler(ObjectInterpretation):
         """
         try:
             return fwd(tool_call)
-        except self.catch_tool_errors as e:
-            error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-            message = error.to_feedback_message(self.include_traceback)
-            append_message(message)
-            return message
+        except ToolCallExecutionError as e:
+            if isinstance(e.original_error, self.catch_tool_errors):
+                message = e.to_feedback_message(self.include_traceback)
+                append_message(message)
+                return message
+            else:
+                raise
 
 
 class LiteLLMProvider(ObjectInterpretation):
@@ -498,18 +530,20 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        with handler({get_message_sequence: lambda: message_sequence}):
-            # encode arguments
-            bound_args = inspect.signature(template).bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            env = template.__context__.new_child(bound_args.arguments)
+        # encode arguments
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
 
-            # Create response_model with env so tools passed as arguments are available
-            response_model = Encodable.define(
-                template.__signature__.return_annotation, env
-            )
+        # Create response_model with env so tools passed as arguments are available
+        response_model = Encodable.define(template.__signature__.return_annotation, env)
 
+        history: collections.OrderedDict[str, Message] = getattr(
+            template, "__history__", collections.OrderedDict()
+        )  # type: ignore
+        history_copy = history.copy()
+
+        with handler({_get_history: lambda: history_copy}):
             call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
@@ -524,7 +558,8 @@ class LiteLLMProvider(ObjectInterpretation):
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-            assert result is not None, (
-                "call_assistant did not produce a result nor tool_calls"
-            )
-            return result
+        try:
+            _get_history()
+        except NotImplementedError:
+            history.update(history_copy)
+        return typing.cast(T, result)
