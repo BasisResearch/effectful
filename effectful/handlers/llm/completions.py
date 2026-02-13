@@ -14,6 +14,7 @@ import litellm
 import pydantic
 from litellm import (
     ChatCompletionFunctionMessage,
+    ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolMessage,
     OpenAIChatCompletionAssistantMessage,
@@ -22,7 +23,7 @@ from litellm import (
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import DecodedToolCall, Encodable, ToolCallID
+from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
@@ -83,16 +84,15 @@ class DecodingError[T: BaseException](abc.ABC, BaseException):
 
 
 @dataclasses.dataclass
-class ToolCallDecodingError[T: BaseException](DecodingError[T]):
+class ToolCallDecodingError[E: BaseException](DecodingError[E]):
     """Error raised when decoding a tool call fails."""
 
-    tool_name: str
-    tool_call_id: ToolCallID
-    original_error: T
+    original_error: E
     raw_message: Message
+    raw_tool_call: ChatCompletionMessageToolCall
 
     def __str__(self) -> str:
-        return f"Error decoding tool call '{self.tool_name}': {self.original_error}. Please provide a valid response and try again."
+        return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -102,17 +102,17 @@ class ToolCallDecodingError[T: BaseException](DecodingError[T]):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
 
 
 @dataclasses.dataclass
-class ResultDecodingError[T: BaseException](DecodingError[T]):
+class ResultDecodingError[E: BaseException](DecodingError[E]):
     """Error raised when decoding the LLM response result fails."""
 
-    original_error: T
+    original_error: E
     raw_message: Message
 
     def __str__(self) -> str:
@@ -129,15 +129,14 @@ class ResultDecodingError[T: BaseException](DecodingError[T]):
 
 
 @dataclasses.dataclass
-class ToolCallExecutionError[T: BaseException](DecodingError[T]):
+class ToolCallExecutionError[E: BaseException, T](DecodingError[E]):
     """Error raised when a tool execution fails at runtime."""
 
-    tool_name: str
-    tool_call_id: ToolCallID
-    original_error: T
+    original_error: E
+    raw_tool_call: DecodedToolCall[T]
 
     def __str__(self) -> str:
-        return f"Tool execution failed: Error executing tool '{self.tool_name}': {self.original_error}"
+        return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -147,7 +146,7 @@ class ToolCallExecutionError[T: BaseException](DecodingError[T]):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
@@ -215,8 +214,7 @@ def call_assistant[T, U](
             tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
         except Exception as e:
             raise ToolCallDecodingError(
-                tool_name=raw_tool_call.function.name,
-                tool_call_id=raw_tool_call.id,
+                raw_tool_call=raw_tool_call,
                 original_error=e,
                 raw_message=raw_message,
             ) from e
@@ -250,7 +248,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except Exception as e:
-        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
+        raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     # serialize back to U using encoder for return type
     return_type = Encodable.define(

@@ -40,10 +40,16 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-class DecodedToolCall[T](typing.NamedTuple):
+@dataclass
+class DecodedToolCall[T]:
+    """
+    Structured representation of a tool call decoded from an LLM response.
+    """
+
     tool: Tool[..., T]
     bound_args: inspect.BoundArguments
     id: ToolCallID
+    name: str
 
 
 class Encodable[T, U](ABC):
@@ -586,9 +592,8 @@ class ToolCallEncodable[T](
         Args:
             encoded_value: The tool call to decode.
         """
-        tool_name = encoded_value.function.name
-        assert tool_name is not None
-        tool = self.ctx[tool_name]
+        assert encoded_value.function.name is not None
+        tool: Tool[..., T] = self.ctx[encoded_value.function.name]
         assert isinstance(tool, Tool)
 
         json_str = encoded_value.function.arguments
@@ -598,7 +603,7 @@ class ToolCallEncodable[T](
         raw_args = _param_model(sig).model_validate_json(json_str)
 
         # use encoders to decode Us to python types T
-        bound_sig: inspect.BoundArguments = sig.bind(
+        bound_args: inspect.BoundArguments = sig.bind(
             **{
                 param_name: Encodable.define(
                     sig.parameters[param_name].annotation, {}
@@ -606,7 +611,12 @@ class ToolCallEncodable[T](
                 for param_name in raw_args.model_fields_set
             }
         )
-        return DecodedToolCall(tool, bound_sig, encoded_value.id)
+        return DecodedToolCall(
+            tool=tool,
+            bound_args=bound_args,
+            id=encoded_value.id,
+            name=encoded_value.function.name,
+        )
 
     def serialize(
         self, encoded_value: ChatCompletionMessageToolCall
