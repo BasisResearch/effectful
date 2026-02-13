@@ -72,10 +72,10 @@ def _make_message(content: dict) -> Message:
     return message
 
 
-class DecodingError[T: BaseException](abc.ABC, BaseException):
+class DecodingError[E: Exception](abc.ABC, Exception):
     """Base class for decoding errors that can occur during LLM response processing."""
 
-    original_error: T
+    original_error: E
 
     @abc.abstractmethod
     def to_feedback_message(self, include_traceback: bool) -> Message:
@@ -84,7 +84,7 @@ class DecodingError[T: BaseException](abc.ABC, BaseException):
 
 
 @dataclasses.dataclass
-class ToolCallDecodingError[E: BaseException](DecodingError[E]):
+class ToolCallDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding a tool call fails."""
 
     original_error: E
@@ -109,7 +109,7 @@ class ToolCallDecodingError[E: BaseException](DecodingError[E]):
 
 
 @dataclasses.dataclass
-class ResultDecodingError[E: BaseException](DecodingError[E]):
+class ResultDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding the LLM response result fails."""
 
     original_error: E
@@ -129,7 +129,7 @@ class ResultDecodingError[E: BaseException](DecodingError[E]):
 
 
 @dataclasses.dataclass
-class ToolCallExecutionError[E: BaseException, T](DecodingError[E]):
+class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     """Error raised when a tool execution fails at runtime."""
 
     original_error: E
@@ -208,7 +208,7 @@ def call_assistant[T, U](
 
     tool_calls: list[DecodedToolCall] = []
     raw_tool_calls = message.get("tool_calls") or []
-    encoding = Encodable.define(DecodedToolCall, response_format.ctx)  # type: ignore
+    encoding = Encodable.define(DecodedToolCall, tools)  # type: ignore
     for raw_tool_call in raw_tool_calls:
         try:
             tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
@@ -366,8 +366,7 @@ class RetryLLMHandler(ObjectInterpretation):
         self,
         num_retries: int = 3,
         include_traceback: bool = False,
-        catch_tool_errors: type[BaseException]
-        | tuple[type[BaseException], ...] = Exception,
+        catch_tool_errors: type[Exception] | tuple[type[Exception], ...] = Exception,
     ):
         self.num_retries = num_retries
         self.include_traceback = include_traceback
