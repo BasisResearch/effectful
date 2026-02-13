@@ -403,16 +403,16 @@ def call_system(template: Template) -> Message:
     message = _make_message(dict(role="system", content=system_prompt))
     try:
         history: collections.OrderedDict[str, Message] = _get_history()
-        if not any(m["role"] == "system" for m in history.values()):
-            history[message["id"]] = message
-            history.move_to_end(message["id"], last=False)
-        else:
+        if any(m["role"] == "system" for m in history.values()):
             assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
-                "There should only be one system message in the history"
+                "There should be at most one system message in the history"
             )
             assert history[next(iter(history))]["role"] == "system", (
                 "The system message should be the first message in the history"
             )
+            history.popitem(last=False)  # remove existing system message
+        history[message["id"]] = message
+        history.move_to_end(message["id"], last=False)
         return message
     except NotImplementedError:
         return message
