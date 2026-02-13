@@ -125,14 +125,14 @@ def test_type_to_encodable_type_tuple():
     assert isinstance(decoded, tuple)
     assert decoded[0] == 1
     assert decoded[1] == "test"
-    # Test with pydantic model validation
+    # encode returns a plain tuple
+    assert isinstance(encoded, tuple)
+    # Pydantic validation produces a tuple directly (via AfterValidator)
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
+    model_instance = Model.model_validate({"value": {"item_0": 1, "item_1": "test"}})
     assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 1
-    assert model_instance.value[1] == "test"
-    # Decode from model
+    assert model_instance.value == (1, "test")
+    # decode works with plain tuples — no model handling needed
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
@@ -158,6 +158,114 @@ def test_type_to_encodable_type_tuple_empty():
     assert isinstance(decoded_from_model, tuple)
 
 
+def test_type_to_encodable_type_tuple_single_type_as_immutable_sequence():
+    """tuple[str] is treated as an immutable sequence (variable-length)."""
+    encodable = Encodable.define(tuple[str])
+    value = ("hello", "world", "foo")
+    encoded = encodable.encode(value)
+    # Encodes to a list (like list[str])
+    assert isinstance(encoded, list)
+    assert encoded == ["hello", "world", "foo"]
+    # Decodes back to a tuple
+    decoded = encodable.decode(encoded)
+    assert decoded == value
+    assert isinstance(decoded, tuple)
+    # enc type produces an "items" JSON schema (OpenAI compatible)
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    schema = Model.model_json_schema()
+    params_schema = schema["properties"]["value"]
+    assert params_schema["type"] == "array"
+    assert "items" in params_schema
+    assert "prefixItems" not in params_schema
+    # Roundtrip through pydantic model
+    model_instance = Model.model_validate({"value": encoded})
+    assert model_instance.value == encoded
+    decoded_from_model = encodable.decode(model_instance.value)
+    assert decoded_from_model == value
+    assert isinstance(decoded_from_model, tuple)
+
+
+def test_type_to_encodable_type_tuple_ellipsis_as_immutable_sequence():
+    """tuple[str, ...] is treated as an immutable sequence (variable-length)."""
+    encodable = Encodable.define(tuple[str, ...])
+    value = ("a", "b", "c")
+    encoded = encodable.encode(value)
+    assert isinstance(encoded, list)
+    assert encoded == ["a", "b", "c"]
+    decoded = encodable.decode(encoded)
+    assert decoded == value
+    assert isinstance(decoded, tuple)
+    # enc type produces an "items" JSON schema
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    schema = Model.model_json_schema()
+    params_schema = schema["properties"]["value"]
+    assert params_schema["type"] == "array"
+    assert "items" in params_schema
+    assert "prefixItems" not in params_schema
+
+
+def test_type_to_encodable_type_tuple_single_type_empty():
+    """tuple[str] as immutable sequence handles empty tuples."""
+    encodable = Encodable.define(tuple[str])
+    value: tuple[str, ...] = ()
+    encoded = encodable.encode(value)
+    assert encoded == []
+    decoded = encodable.decode(encoded)
+    assert decoded == ()
+    assert isinstance(decoded, tuple)
+
+
+def test_type_to_encodable_type_tuple_homogeneous_multi_arg():
+    """tuple[str, str, str] uses TupleEncodable — length enforced by model fields."""
+    encodable = Encodable.define(tuple[str, str, str])
+    value = ("a", "b", "c")
+    encoded = encodable.encode(value)
+    assert isinstance(encoded, tuple)
+    decoded = encodable.decode(encoded)
+    assert decoded == value
+    assert isinstance(decoded, tuple)
+    # Schema is an object with item_0, item_1, item_2 (enforces length)
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    schema = Model.model_json_schema()
+    value_schema = schema["properties"]["value"]
+    if "$ref" in value_schema:
+        ref_name = value_schema["$ref"].split("/")[-1]
+        obj_schema = schema["$defs"][ref_name]
+    else:
+        obj_schema = value_schema
+    assert obj_schema["type"] == "object"
+    assert "item_0" in obj_schema["properties"]
+    assert "item_1" in obj_schema["properties"]
+    assert "item_2" in obj_schema["properties"]
+    assert "prefixItems" not in obj_schema
+    # Pydantic validation produces a tuple (via AfterValidator)
+    model_instance = Model.model_validate(
+        {"value": {"item_0": "a", "item_1": "b", "item_2": "c"}}
+    )
+    assert isinstance(model_instance.value, tuple)
+    assert model_instance.value == ("a", "b", "c")
+
+
+def test_type_to_encodable_type_tuple_multi_type_schema_is_object():
+    """tuple[int, str] produces an object schema (not prefixItems)."""
+    encodable = Encodable.define(tuple[int, str])
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    schema = Model.model_json_schema()
+    # The tuple is represented as a nested object with item_0, item_1
+    # (either inline or via $defs/$ref)
+    value_schema = schema["properties"]["value"]
+    if "$ref" in value_schema:
+        ref_name = value_schema["$ref"].split("/")[-1]
+        obj_schema = schema["$defs"][ref_name]
+    else:
+        obj_schema = value_schema
+    assert obj_schema["type"] == "object"
+    assert "item_0" in obj_schema["properties"]
+    assert "item_1" in obj_schema["properties"]
+    assert "prefixItems" not in obj_schema
+    assert "items" not in obj_schema
+
+
 def test_type_to_encodable_type_tuple_three_elements():
     encodable = Encodable.define(tuple[int, str, bool])
     value = (42, "hello", True)
@@ -165,18 +273,18 @@ def test_type_to_encodable_type_tuple_three_elements():
     decoded = encodable.decode(encoded)
     assert decoded == value
     assert isinstance(decoded, tuple)
+    assert isinstance(encoded, tuple)
     assert decoded[0] == 42
     assert decoded[1] == "hello"
     assert decoded[2] is True
-    # Test with pydantic model validation
+    # Pydantic validation produces a tuple directly (via AfterValidator)
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
+    model_instance = Model.model_validate(
+        {"value": {"item_0": 42, "item_1": "hello", "item_2": True}}
+    )
     assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 42
-    assert model_instance.value[1] == "hello"
-    assert model_instance.value[2] is True
-    # Decode from model
+    assert model_instance.value == (42, "hello", True)
+    # decode works with plain tuples
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
@@ -319,6 +427,7 @@ def test_type_to_encodable_type_complex():
 
 
 def test_type_to_encodable_type_tuple_of_images():
+    # tuple[Image, Image] is homogeneous fixed-length -> TupleEncodable
     encodable = Encodable.define(tuple[Image.Image, Image.Image])
     image1 = Image.new("RGB", (10, 10), color="red")
     image2 = Image.new("RGB", (20, 20), color="blue")
@@ -326,7 +435,6 @@ def test_type_to_encodable_type_tuple_of_images():
 
     encoded = encodable.encode(value)
     assert isinstance(encoded, tuple)
-    assert len(encoded) == 2
     assert isinstance(encoded[0], dict)
     assert isinstance(encoded[1], dict)
     assert "url" in encoded[0]
@@ -342,17 +450,15 @@ def test_type_to_encodable_type_tuple_of_images():
     assert decoded[0].size == (10, 10)
     assert decoded[1].size == (20, 20)
 
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
+    # Pydantic validation produces tuple (via AfterValidator on TupleItems model)
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    model_instance = Model.model_validate(
+        {"value": {"item_0": encoded[0], "item_1": encoded[1]}}
+    )
     assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 2
-    assert isinstance(model_instance.value[0], dict)
-    assert isinstance(model_instance.value[1], dict)
     assert model_instance.value[0]["url"] == encoded[0]["url"]
     assert model_instance.value[1]["url"] == encoded[1]["url"]
-    # Decode from model
+    # decode works with tuples
     decoded_from_model = encodable.decode(model_instance.value)
     assert isinstance(decoded_from_model, tuple)
     assert len(decoded_from_model) == 2
@@ -559,6 +665,8 @@ def test_type_to_encodable_type_dataclass_with_tuple():
     assert isinstance(decoded, Pair)
     assert decoded.values == (42, "hello")
     assert decoded.count == 2
+    # Dataclass fields are handled by pydantic natively (not TupleEncodable)
+    assert isinstance(encoded.values, tuple)
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.enc)
     model_instance = Model.model_validate({"value": asdict(encoded)})
