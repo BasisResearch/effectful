@@ -1,3 +1,3 @@
-from .template import Template, Tool
+from .template import Agent, Template, Tool
 
-__all__ = ["Template", "Tool"]
+__all__ = ["Agent", "Template", "Tool"]

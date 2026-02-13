@@ -24,6 +24,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable, ToolCallID
 from effectful.handlers.llm.template import Template, Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -53,12 +54,15 @@ Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | Use
 
 
 @Operation.define
-def get_message_sequence() -> collections.OrderedDict[str, Message]:
-    return collections.OrderedDict()
+def _get_history() -> collections.OrderedDict[str, Message]:
+    raise NotImplementedError
 
 
 def append_message(message: Message):
-    get_message_sequence()[message["id"]] = message
+    try:
+        _get_history()[message["id"]] = message
+    except NotImplementedError:
+        pass
 
 
 def _make_message(content: dict) -> Message:
@@ -186,7 +190,7 @@ def call_assistant[T, U](
         k: Encodable.define(type(t), tools).encode(t)  # type: ignore
         for k, t in tools.items()
     }
-    messages = list(get_message_sequence().values())
+    messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
@@ -241,15 +245,17 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    # call_tool invariant: tool is called in a context with a fresh message sequence
-    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
-    with handler({get_message_sequence: lambda: message_sequence}):
+    try:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
+    except Exception as e:
+        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(type(result))
+    return_type = Encodable.define(
+        typing.cast(type[typing.Any], nested_type(result).value)
+    )
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -286,7 +292,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(type(obj), env)
+        encoder = Encodable.define(
+            typing.cast(type[typing.Any], nested_type(obj).value), env
+        )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
@@ -312,9 +320,28 @@ def call_user(
 
 
 @Operation.define
-def call_system(template: Template) -> collections.abc.Sequence[Message]:
+def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    return ()
+    system_prompt = textwrap.dedent(f"""
+    SYSTEM: You are a helpful LLM assistant named {template.__name__}.
+    """)
+
+    message = _make_message(dict(role="system", content=system_prompt))
+    try:
+        history: collections.OrderedDict[str, Message] = _get_history()
+        if any(m["role"] == "system" for m in history.values()):
+            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
+                "There should be at most one system message in the history"
+            )
+            assert history[next(iter(history))]["role"] == "system", (
+                "The system message should be the first message in the history"
+            )
+            history.popitem(last=False)  # remove existing system message
+        history[message["id"]] = message
+        history.move_to_end(message["id"], last=False)
+        return message
+    except NotImplementedError:
+        return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -356,13 +383,13 @@ class RetryLLMHandler(ObjectInterpretation):
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        message_sequence = get_message_sequence().copy()
+        message_sequence = _get_history().copy()
         last_attempt = self.num_retries
 
         for attempt in range(self.num_retries + 1):
             try:
                 # call assistant, use saved message_sequence
-                with handler({get_message_sequence: lambda: message_sequence}):
+                with handler({_get_history: lambda: message_sequence}):
                     message, tool_calls, result = fwd(
                         tools, response_format, model, **kwargs
                     )
@@ -403,11 +430,13 @@ class RetryLLMHandler(ObjectInterpretation):
         """
         try:
             return fwd(tool_call)
-        except self.catch_tool_errors as e:
-            error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-            message = error.to_feedback_message(self.include_traceback)
-            append_message(message)
-            return message
+        except ToolCallExecutionError as e:
+            if isinstance(e.original_error, self.catch_tool_errors):
+                message = e.to_feedback_message(self.include_traceback)
+                append_message(message)
+                return message
+            else:
+                raise
 
 
 class LiteLLMProvider(ObjectInterpretation):
@@ -425,18 +454,20 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        with handler({get_message_sequence: lambda: message_sequence}):
-            # encode arguments
-            bound_args = inspect.signature(template).bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            env = template.__context__.new_child(bound_args.arguments)
+        # encode arguments
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
 
-            # Create response_model with env so tools passed as arguments are available
-            response_model = Encodable.define(
-                template.__signature__.return_annotation, env
-            )
+        # Create response_model with env so tools passed as arguments are available
+        response_model = Encodable.define(template.__signature__.return_annotation, env)
 
+        history: collections.OrderedDict[str, Message] = getattr(
+            template, "__history__", collections.OrderedDict()
+        )  # type: ignore
+        history_copy = history.copy()
+
+        with handler({_get_history: lambda: history_copy}):
             call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
@@ -451,7 +482,8 @@ class LiteLLMProvider(ObjectInterpretation):
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-            assert result is not None, (
-                "call_assistant did not produce a result nor tool_calls"
-            )
-            return result
+        try:
+            _get_history()
+        except NotImplementedError:
+            history.update(history_copy)
+        return typing.cast(T, result)
