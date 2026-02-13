@@ -176,6 +176,21 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+@Template.define
+def propose(tool_name: str, tool_description: str, params: tuple[str]) -> str:
+    """Given the tool {tool_name} described as: {tool_description}, propose how to
+    call it with the following parameters: {params}."""
+    raise NotHandled
+
+
+# Defined after `propose` so it captures `propose` as a tool in its lexical context.
+@Template.define
+def plan_tool_usage(task: str) -> str:
+    """Plan how to accomplish the following task: {task}.
+    Use the propose tool to suggest how to call relevant tools."""
+    raise NotHandled
+
+
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
@@ -236,6 +251,20 @@ class TestLiteLLMProvider:
 
             assert isinstance(result, int)
             assert 1 <= result <= 100
+
+    @requires_openai
+    def test_nested_template_with_tuple_param(self, request):
+        """Calling a template whose tool has a tuple[str] param works (issue: prefixItems)."""
+        # plan_tool_usage sees `propose` as a tool. `propose` has a tuple[str] param.
+        # The bug was that tuple[str] generated a prefixItems schema that OpenAI rejects.
+        assert "propose" in plan_tool_usage.__context__
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=5)),
+        ):
+            result = plan_tool_usage("search for nearby restaurants")
+            assert isinstance(result, str)
+            assert len(result) > 0
 
     @requires_openai
     def test_with_config_params(self, request):
