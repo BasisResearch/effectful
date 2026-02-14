@@ -779,6 +779,302 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert isinstance(decoded_from_model.address, Address)
 
 
+# ============================================================================
+# Tests for serialize/deserialize contract
+# ============================================================================
+
+
+class TestEncodableSerializeDeserialize:
+    """Systematic tests for the serialize/deserialize contract.
+
+    The serialize/deserialize path is the LLM communication interface:
+    serialize(encode(value)) produces content blocks sent to the LLM,
+    and deserialize(response_string) parses the LLM's response string.
+    The full roundtrip encode → serialize → deserialize → decode must
+    recover the original value for every Encodable type.
+    """
+
+    # -- str (StrEncodable): serializes without JSON encoding --
+
+    def test_str_serialize_plain_text(self):
+        """str serializes as plain text, NOT JSON-encoded with quotes."""
+        enc = Encodable.define(str)
+        blocks = enc.serialize(enc.encode("hello"))
+        assert blocks == [{"type": "text", "text": "hello"}]
+
+    def test_str_serialize_preserves_special_chars(self):
+        """str serialization preserves quotes, newlines, etc."""
+        enc = Encodable.define(str)
+        value = 'line1\nline2\t"quoted"'
+        blocks = enc.serialize(enc.encode(value))
+        assert blocks[0]["text"] == value
+
+    def test_str_deserialize_identity(self):
+        """str deserialization is identity — no JSON parsing."""
+        enc = Encodable.define(str)
+        assert enc.deserialize("hello") == "hello"
+
+    def test_str_deserialize_json_like_not_parsed(self):
+        """str containing JSON-like content is NOT parsed as JSON."""
+        enc = Encodable.define(str)
+        value = '{"key": "value"}'
+        assert enc.deserialize(value) == value
+
+    def test_str_roundtrip(self):
+        enc = Encodable.define(str)
+        for value in ["hello", "", "with spaces", '{"json": true}', "line1\nline2"]:
+            text = enc.serialize(enc.encode(value))[0]["text"]
+            assert enc.decode(enc.deserialize(text)) == value
+
+    # -- int (BaseEncodable) --
+
+    def test_int_serialize(self):
+        enc = Encodable.define(int)
+        assert enc.serialize(enc.encode(42)) == [{"type": "text", "text": "42"}]
+
+    def test_int_serialize_negative(self):
+        enc = Encodable.define(int)
+        assert enc.serialize(enc.encode(-7)) == [{"type": "text", "text": "-7"}]
+
+    def test_int_deserialize(self):
+        enc = Encodable.define(int)
+        assert enc.deserialize("42") == 42
+        assert enc.deserialize("-7") == -7
+        assert enc.deserialize("0") == 0
+
+    def test_int_deserialize_rejects_string(self):
+        enc = Encodable.define(int)
+        with pytest.raises(pydantic.ValidationError):
+            enc.deserialize('"hello"')
+
+    def test_int_roundtrip(self):
+        enc = Encodable.define(int)
+        for value in [42, -7, 0, 999999]:
+            text = enc.serialize(enc.encode(value))[0]["text"]
+            assert enc.decode(enc.deserialize(text)) == value
+
+    # -- bool (BaseEncodable) --
+
+    def test_bool_serialize(self):
+        enc = Encodable.define(bool)
+        assert enc.serialize(enc.encode(True)) == [{"type": "text", "text": "true"}]
+        assert enc.serialize(enc.encode(False)) == [{"type": "text", "text": "false"}]
+
+    def test_bool_deserialize(self):
+        enc = Encodable.define(bool)
+        assert enc.deserialize("true") is True
+        assert enc.deserialize("false") is False
+
+    def test_bool_roundtrip(self):
+        enc = Encodable.define(bool)
+        for value in [True, False]:
+            text = enc.serialize(enc.encode(value))[0]["text"]
+            assert enc.decode(enc.deserialize(text)) is value
+
+    # -- float (BaseEncodable) --
+
+    def test_float_serialize(self):
+        enc = Encodable.define(float)
+        assert enc.serialize(enc.encode(3.14)) == [{"type": "text", "text": "3.14"}]
+
+    def test_float_deserialize(self):
+        enc = Encodable.define(float)
+        assert enc.deserialize("3.14") == 3.14
+
+    def test_float_roundtrip(self):
+        enc = Encodable.define(float)
+        for value in [3.14, -2.5, 0.0]:
+            text = enc.serialize(enc.encode(value))[0]["text"]
+            assert enc.decode(enc.deserialize(text)) == value
+
+    # -- dataclass (BaseEncodable) --
+
+    def test_dataclass_serialize(self):
+        @dataclass
+        class Point:
+            x: int
+            y: int
+
+        enc = Encodable.define(Point)
+        text = enc.serialize(enc.encode(Point(1, 2)))[0]["text"]
+        assert json.loads(text) == {"x": 1, "y": 2}
+
+    def test_dataclass_deserialize(self):
+        @dataclass
+        class Point:
+            x: int
+            y: int
+
+        enc = Encodable.define(Point)
+        assert enc.deserialize('{"x": 1, "y": 2}') == Point(1, 2)
+
+    def test_dataclass_roundtrip(self):
+        @dataclass
+        class Point:
+            x: int
+            y: int
+
+        enc = Encodable.define(Point)
+        original = Point(10, 20)
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    def test_dataclass_with_str_fields_roundtrip(self):
+        @dataclass
+        class Person:
+            name: str
+            age: int
+
+        enc = Encodable.define(Person)
+        original = Person("Alice", 30)
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    def test_dataclass_with_optional_roundtrip(self):
+        @dataclass
+        class Config:
+            host: str
+            port: int
+            timeout: float | None = None
+
+        enc = Encodable.define(Config)
+        for original in [Config("localhost", 8080, 5.0), Config("localhost", 8080)]:
+            text = enc.serialize(enc.encode(original))[0]["text"]
+            assert enc.decode(enc.deserialize(text)) == original
+
+    def test_nested_dataclass_roundtrip(self):
+        @dataclass
+        class Address:
+            street: str
+            city: str
+
+        @dataclass
+        class Person:
+            name: str
+            address: Address
+
+        enc = Encodable.define(Person)
+        original = Person("Bob", Address("123 Main", "NYC"))
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    def test_dataclass_with_list_field_roundtrip(self):
+        @dataclass
+        class Container:
+            items: list[int]
+            label: str
+
+        enc = Encodable.define(Container)
+        original = Container([1, 2, 3], "test")
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    # -- NamedTuple (BaseEncodable) --
+
+    def test_namedtuple_serialize(self):
+        class Coord(NamedTuple):
+            x: int
+            y: int
+
+        enc = Encodable.define(Coord)
+        text = enc.serialize(enc.encode(Coord(3, 4)))[0]["text"]
+        # pydantic serializes NamedTuples as JSON arrays
+        assert json.loads(text) == [3, 4]
+
+    def test_namedtuple_roundtrip(self):
+        class Coord(NamedTuple):
+            x: int
+            y: int
+
+        enc = Encodable.define(Coord)
+        original = Coord(3, 4)
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    # -- TypedDict --
+
+    def test_typeddict_serialize(self):
+        class Config(TypedDict):
+            host: str
+            port: int
+
+        enc = Encodable.define(Config)
+        text = enc.serialize(enc.encode(Config(host="localhost", port=8080)))[0]["text"]
+        assert json.loads(text) == {"host": "localhost", "port": 8080}
+
+    def test_typeddict_roundtrip(self):
+        class Config(TypedDict):
+            host: str
+            port: int
+
+        enc = Encodable.define(Config)
+        original = Config(host="localhost", port=8080)
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    # -- pydantic BaseModel (PydanticBaseModelEncodable) --
+
+    def test_pydantic_model_serialize(self):
+        class User(pydantic.BaseModel):
+            name: str
+            age: int
+
+        enc = Encodable.define(User)
+        text = enc.serialize(enc.encode(User(name="Alice", age=30)))[0]["text"]
+        assert json.loads(text) == {"name": "Alice", "age": 30}
+
+    def test_pydantic_model_deserialize(self):
+        class User(pydantic.BaseModel):
+            name: str
+            age: int
+
+        enc = Encodable.define(User)
+        result = enc.deserialize('{"name": "Alice", "age": 30}')
+        assert result == User(name="Alice", age=30)
+
+    def test_pydantic_model_roundtrip(self):
+        class User(pydantic.BaseModel):
+            name: str
+            age: int
+
+        enc = Encodable.define(User)
+        original = User(name="Alice", age=30)
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    # -- tuple (TupleEncodable) --
+
+    def test_tuple_serialize(self):
+        enc = Encodable.define(tuple[int, str])
+        text = enc.serialize(enc.encode((1, "hello")))[0]["text"]
+        assert json.loads(text) == [1, "hello"]
+
+    def test_tuple_roundtrip(self):
+        enc = Encodable.define(tuple[int, str])
+        original = (1, "hello")
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    # -- list (MutableSequenceEncodable) --
+
+    def test_list_serialize(self):
+        enc = Encodable.define(list[int])
+        text = enc.serialize(enc.encode([1, 2, 3]))[0]["text"]
+        assert json.loads(text) == [1, 2, 3]
+
+    def test_list_roundtrip(self):
+        enc = Encodable.define(list[int])
+        original = [1, 2, 3]
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+    def test_list_of_str_roundtrip(self):
+        enc = Encodable.define(list[str])
+        original = ["hello", "world"]
+        text = enc.serialize(enc.encode(original))[0]["text"]
+        assert enc.decode(enc.deserialize(text)) == original
+
+
 class TestCallableEncodable:
     """Tests for CallableEncodable - encoding/decoding callables as SynthesizedFunction."""
 
