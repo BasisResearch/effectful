@@ -145,12 +145,10 @@ def test_type_to_encodable_type_tuple_empty():
     assert decoded == value
     assert isinstance(decoded, tuple)
     assert len(decoded) == 0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 0
+    # Test with pydantic model validation — enc is a TupleItems BaseModel
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    model_instance = Model.model_validate({"value": {}})
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
@@ -772,24 +770,23 @@ _LAW_CASES: list[tuple[type, Any]] = [
     (bool, True),
     (float, 3.14),
     (complex, 3 + 4j),
-    # tuples — fixed-length heterogeneous
+    # tuples — finitary (fixed-length)
+    (tuple[str], ("hello",)),
     (tuple[int, str], (1, "test")),
     (tuple[int, str, bool], (42, "hello", True)),
     (tuple[str, str, str], ("a", "b", "c")),
-    # tuples — variable-length (immutable sequence)
-    (tuple[str], ("hello", "world", "foo")),
-    (tuple[str, ...], ("a", "b", "c")),
-    # tuples — empty
-    (tuple[str], ()),
     (tuple[()], ()),
+    # tuples — variadic
+    (tuple[str, ...], ("hello", "world", "foo")),
+    (tuple[str, ...], ()),
     # lists
     (list[int], [1, 2, 3]),
     (list[str], ["a", "b"]),
 ]
 
 # Types that don't roundtrip through OpenAI schema or text serialization.
-# complex has no JSON schema; tuple[()] pydantic schema omits `items` (upstream issue).
-_SKIP_SCHEMA = {complex, tuple[()]}
+# complex has no JSON schema representation.
+_SKIP_SCHEMA = {complex}
 # complex serializes via repr, not JSON-compatible text.
 _SKIP_SERDE = {complex}
 

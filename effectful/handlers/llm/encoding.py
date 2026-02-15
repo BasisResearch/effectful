@@ -553,46 +553,50 @@ def _encodable_image(
 def _encodable_tuple[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
+    """Dispatch for ``tuple`` types.
+
+    * Bare ``tuple`` (unspecified type parameter) or ``tuple[T, ...]``
+      (variadic) to :class:`SequenceEncodable` (JSON array).
+    * Named-tuples (subclasses with no generic origin) → object encodable.
+    * Finitary forms (``tuple[()]``, ``tuple[T]``, ``tuple[T1, T2]``, ...)
+      to :class:`TupleEncodable` (JSON object with positional fields).
+
+    https://docs.python.org/3/library/typing.html#annotating-tuples
+    """
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
-    # handle namedtuples
-    origin = typing.get_origin(ty)
-    if origin is None:
-        return _encodable_object(ty, ctx)
-    # Handle empty tuple, or tuple with no args
-    if not args or args == ((),):
+    if typing.get_origin(ty) is None:
+        if ty is tuple:
+            # Bare tuple - treat as tuple[Any, ...].
+            element_encoder = Encodable.define(typing.Any, ctx)
+            encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
+            return typing.cast(
+                Encodable[T, U],
+                SequenceEncodable(ty, encoded_ty, ctx, False, element_encoder),
+            )
+        # Named-tuple or other tuple subclass — delegate to object.
         return _encodable_object(ty, ctx)
 
-    # Variable-length tuples → encoded as a JSON array with ``items``.
-    #
-    # * tuple[T, ...]  — variable-length per PEP 484.
-    # * tuple[T]       — strictly 1-element per PEP 484, but we relax this.
-    #
-    # Fixed-length forms (tuple[T, T, T], tuple[int, str], …) fall through
-    # to TupleEncodable, which uses a pydantic model to enforce length via
-    # required fields in the JSON schema.
-    #
-    # https://docs.python.org/3/library/typing.html#annotating-tuples
-    if (len(args) == 2 and args[1] is Ellipsis) or len(args) == 1:
+    # tuple[T, ...] — variable-length, encode as JSON array.
+    if len(args) == 2 and args[1] is Ellipsis:
         element_ty = args[0]
         element_encoder = Encodable.define(element_ty, ctx)
         has_image = element_ty is Image.Image
-        encoded_ty = typing.cast(
-            type[typing.Any],
-            list[element_encoder.enc],  # type: ignore
-        )
+        encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
         return typing.cast(
             Encodable[T, U],
             SequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
         )
 
-    # Heterogeneous type args (tuple[str, int]) → positional struct.
-    # Build a pydantic model with item_0, item_1, ... fields.
-    # This produces an "object" JSON schema with "properties" and "required",
-    # which OpenAI accepts (unlike the "prefixItems" schema from native tuples).
-    element_encoders = [Encodable.define(arg, ctx) for arg in args]
-    has_image = any(arg is Image.Image for arg in args)
+    # Finitary tuple - fixed-length positional struct.
+    # Includes tuple[()], tuple[T], tuple[T1, T2], etc.
+    # Build a pydantic model with item_0, item_1, ... fields so the JSON
+    # schema uses "properties"/"required" (accepted by OpenAI), not
+    # "prefixItems" (rejected by OpenAI).
+    effective_args = [] if (not args or args == ((),)) else list(args)
+    element_encoders = [Encodable.define(arg, ctx) for arg in effective_args]
+    has_image = any(arg is Image.Image for arg in effective_args)
     model_cls = pydantic.create_model(  # type: ignore[call-overload]
         "TupleItems",
         __config__={"extra": "forbid"},
@@ -605,30 +609,44 @@ def _encodable_tuple[T, U](
     )
 
 
+@Encodable.define.register(Sequence)
+def _encodable_sequence[T, U](
+    ty: type[Sequence[T]], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
+    """Dispatch for ``Sequence[T]`` - immutable variable-length sequence."""
+    args = typing.get_args(ty)
+    ctx = {} if ctx is None else ctx
+
+    if not args:
+        return _encodable_object(ty, ctx)
+
+    element_ty = args[0]
+    element_encoder = Encodable.define(element_ty, ctx)
+    has_image = element_ty is Image.Image
+    encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
+
+    return typing.cast(
+        Encodable[T, U],
+        SequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
+    )
+
+
 @Encodable.define.register(list)
 @Encodable.define.register(MutableSequence)
 def _encodable_mutable_sequence[T, U](
     ty: type[MutableSequence[T]], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
+    """Dispatch for ``list[T]`` / ``MutableSequence[T]``."""
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
-    # Handle unparameterized list (list without type args)
     if not args:
         return _encodable_object(ty, ctx)
 
-    # Get the element type (first type argument)
     element_ty = args[0]
     element_encoder = Encodable.define(element_ty, ctx)
-
-    # Check if element type is Image.Image
     has_image = element_ty is Image.Image
-
-    # Build the encoded type (list of encoded element type) - runtime-created, use Any
-    encoded_ty: type[typing.Any] = typing.cast(
-        type[typing.Any],
-        list[element_encoder.enc],  # type: ignore
-    )
+    encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
 
     return typing.cast(
         Encodable[T, U],
