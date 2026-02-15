@@ -16,6 +16,7 @@ import pydantic
 from litellm import (
     ChatCompletionImageUrlObject,
     ChatCompletionMessageToolCall,
+    ChatCompletionTextObject,
     ChatCompletionToolParam,
     OpenAIMessageContentListBlock,
 )
@@ -85,7 +86,11 @@ class Encodable[T, U](ABC):
         ctx: Mapping[str, Any] | None = None,
     ) -> "Encodable[T, U]":
         dispatch_ty = _simple_type(t)
-        return __dispatch(dispatch_ty)(t, ctx)
+        encodable: Encodable[T, U] = __dispatch(dispatch_ty)(t, ctx)
+        assert issubclass(
+            pydantic.create_model("Model", v=(encodable.enc, ...)), pydantic.BaseModel
+        ), f"enc type {encodable.enc} is not a valid pydantic field type for {t}"
+        return encodable
 
 
 @dataclass
@@ -122,7 +127,7 @@ class StrEncodable(Encodable[str, str]):
     def decode(self, encoded_value: str) -> str:
         return encoded_value
 
-    def serialize(self, encoded_value: str) -> Sequence[OpenAIMessageContentListBlock]:
+    def serialize(self, encoded_value: str) -> Sequence[ChatCompletionTextObject]:
         # Serialize strings without JSON encoding (no extra quotes)
         return [{"type": "text", "text": encoded_value}]
 
@@ -142,7 +147,7 @@ class PydanticBaseModelEncodable[T: pydantic.BaseModel](Encodable[T, T]):
     def encode(self, value: T) -> T:
         return value
 
-    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
+    def serialize(self, encoded_value: T) -> Sequence[ChatCompletionTextObject]:
         return [{"type": "text", "text": encoded_value.model_dump_json()}]
 
     def deserialize(self, serialized_value: str) -> T:
@@ -156,15 +161,18 @@ class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
     ctx: Mapping[str, Any]
 
     def encode(self, value: Image.Image) -> ChatCompletionImageUrlObject:
-        return {
-            "detail": "auto",
-            "url": _pil_image_to_base64_data_uri(value),
-        }
+        adapter = pydantic.TypeAdapter(self.enc)
+        return adapter.validate_python(
+            {
+                "detail": "auto",
+                "url": _pil_image_to_base64_data_uri(value),
+            }
+        )
 
     def decode(self, encoded_value: ChatCompletionImageUrlObject) -> Image.Image:
         image_url = encoded_value["url"]
         if not image_url.startswith("data:image/"):
-            raise RuntimeError(
+            raise TypeError(
                 f"expected base64 encoded image as data uri, received {image_url}"
             )
         data = image_url.split(",")[1]
@@ -409,9 +417,10 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         # Source not available - create stub from name, signature, and docstring
         # This is useful for builtins and C extensions
         name = getattr(value, "__name__", None)
-        if not name:
-            raise RuntimeError(
-                f"Cannot encode callable {value}: no source code and no __name__"
+        docstring = inspect.getdoc(value)
+        if name is None or docstring is None:
+            raise ValueError(
+                f"Cannot encode callable {value}: no source code and no __name__ or docstring"
             )
 
         try:
@@ -420,12 +429,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         except (ValueError, TypeError):
             # Some builtins don't have inspectable signatures
             sig_str = "(...)"
-
-        docstring = inspect.getdoc(value)
-        if not docstring:
-            raise RuntimeError(
-                f"Cannot encode callable {value}: no source code and no docstring"
-            )
 
         # Format as a stub function with docstring
         stub_code = f'''def {name}{sig_str}:
