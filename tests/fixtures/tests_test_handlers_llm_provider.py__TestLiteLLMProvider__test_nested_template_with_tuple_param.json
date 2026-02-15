@@ -14,7 +14,7 @@
         "tool_calls": [
           {
             "function": {
-              "arguments": "{\"tool_name\":\"search\",\"tool_description\":\"Search the web for relevant results\",\"params\":[\"query\",\"max_results\"]}",
+              "arguments": "{\"tool_name\":\"search\",\"tool_description\":\"Search the web for relevant results\",\"params\":{\"item_0\":\"query\"}}",
               "name": "propose"
             },
             "id": "call_nested_tuple_param_001",
