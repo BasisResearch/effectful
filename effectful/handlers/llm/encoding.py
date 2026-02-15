@@ -569,13 +569,15 @@ def _encodable_tuple[T, U](
     if typing.get_origin(ty) is None:
         if ty is tuple:
             # Bare tuple - treat as tuple[Any, ...].
+            # See test_type_to_encodable_type_bare_tuple.
             element_encoder = Encodable.define(typing.Any, ctx)
             encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
             return typing.cast(
                 Encodable[T, U],
                 SequenceEncodable(ty, encoded_ty, ctx, False, element_encoder),
             )
-        # Named-tuple or other tuple subclass — delegate to object.
+        # Named-tuple or other tuple subclass - delegate to object.
+        # See test_type_to_encodable_type_namedtuple.
         return _encodable_object(ty, ctx)
 
     # tuple[T, ...] — variable-length, encode as JSON array.

@@ -177,6 +177,12 @@ def create_function(char: str) -> Callable[[str], int]:
 
 
 @Template.define
+def summarize_items(items: tuple) -> str:
+    """Summarize the following items in one sentence: {items}."""
+    raise NotHandled
+
+
+@Template.define
 def propose(tool_name: str, tool_description: str, params: tuple[str]) -> str:
     """Given the tool {tool_name} described as: {tool_description}, propose how to
     call it with the following parameters: {params}."""
@@ -251,6 +257,17 @@ class TestLiteLLMProvider:
 
             assert isinstance(result, int)
             assert 1 <= result <= 100
+
+    @requires_openai
+    def test_bare_tuple_param(self, request):
+        """Bare ``tuple`` (no type params) works as a template parameter."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            result = summarize_items(("apples", "bananas", "cherries"))
+            assert isinstance(result, str)
+            assert len(result) > 0
 
     @requires_openai
     def test_nested_template_with_tuple_param(self, request):
