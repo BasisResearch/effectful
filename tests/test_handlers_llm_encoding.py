@@ -857,7 +857,9 @@ def test_law_serialize_deserialize_roundtrip(ty: type, value: Any):
     encodable = Encodable.define(ty)
     encoded = encodable.encode(value)
     serialized = encodable.serialize(encoded)
-    text = serialized[0]["text"]
+    part = serialized[0]
+    assert "text" in part, f"expected text content part for {ty}, got {part}"
+    text: str = part["text"]  # type: ignore[typeddict-item]
     deserialized = encodable.deserialize(text)
     assert encodable.decode(deserialized) == value
 
@@ -874,12 +876,14 @@ def test_law_pydantic_validate_decode_roundtrip(ty: type, value: Any):
     encodable = Encodable.define(ty)
     encoded = encodable.encode(value)
     serialized = encodable.serialize(encoded)
-    text = serialized[0]["text"]
+    part = serialized[0]
+    assert "text" in part, f"expected text content part for {ty}, got {part}"
+    text: str = part["text"]  # type: ignore[typeddict-item]
     deserialized = encodable.deserialize(text)
     # Simulate pydantic model validation (as in tool parameter decoding).
     Model = pydantic.create_model("M", value=(encodable.enc, ...))
     model_instance = Model.model_validate({"value": deserialized})
-    decoded = encodable.decode(model_instance.value)
+    decoded = encodable.decode(model_instance.value)  # type: ignore[attr-defined]
     assert decoded == value
 
 
