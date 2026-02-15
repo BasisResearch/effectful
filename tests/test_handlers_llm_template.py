@@ -610,7 +610,7 @@ def test_template_method():
     assert "random" in a.f.tools
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert "f" not in a.f.tools
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert a.f.tools["random"]() == 4
 
     class B(A):
@@ -623,7 +623,7 @@ def test_template_method():
     assert isinstance(b.f, Template)
     assert "random" in b.f.tools
     assert "reverse" in b.f.tools
-    assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
+    assert "local_variable" in b.f.__context__ and "local_variable" in b.f.tools
 
 
 def test_template_method_nested_class():
@@ -654,7 +654,7 @@ def test_template_method_nested_class():
     assert "random" in a.f.tools
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert "f" not in a.f.tools
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert a.f.tools["random"]() == 4
 
 

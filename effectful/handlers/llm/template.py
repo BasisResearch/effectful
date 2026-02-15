@@ -108,7 +108,7 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
-def _make_context_tool[T](name: str, value: T) -> Tool[[], T]:
+def _build_context_tool[T](name: str, value: T) -> Tool[[], T]:
     """Create a synthetic read-only Tool for a lexical variable."""
     from effectful.internals.unification import nested_type
 
@@ -120,6 +120,33 @@ def _make_context_tool[T](name: str, value: T) -> Tool[[], T]:
     reader.__annotations__ = {"return": nested_type(value).value}
 
     return Tool.define(reader)
+
+
+def _build_system_prompt(fn_or_cls) -> str:
+    """Build a system prompt from a function or class's docstring and module source.
+
+    The docstring (if present directly on the object) forms the core of the prompt.
+    The module source code is appended as supporting context when available.
+    """
+    parts: list[str] = []
+
+    doc = fn_or_cls.__doc__
+    if doc:
+        parts.append(inspect.cleandoc(doc))
+
+    try:
+        mod = inspect.getmodule(fn_or_cls)
+        assert mod is not None
+        source = inspect.getsource(mod)
+        parts.append(
+            "Here is the source code of the module where you are defined:\n\n" + source
+        )
+    except (TypeError, OSError):
+        mod = inspect.getmodule(fn_or_cls)
+        if mod is not None and mod.__doc__:
+            parts.append(inspect.cleandoc(mod.__doc__))
+
+    return "\n\n".join(parts)
 
 
 class Template[**P, T](Tool[P, T]):
@@ -182,6 +209,7 @@ class Template[**P, T](Tool[P, T]):
     """
 
     __context__: ChainMap[str, Any]
+    __system_prompt__: str
 
     @classmethod
     def _validate_prompt(
@@ -245,7 +273,8 @@ class Template[**P, T](Tool[P, T]):
 
             # Make tools for lexical variables
             elif not (
-                name.startswith("__")
+                not name.isidentifier()
+                or name.startswith("__")
                 or isinstance(obj, Operation)
                 or inspect.isclass(obj)
                 or inspect.isbuiltin(obj)
@@ -253,7 +282,10 @@ class Template[**P, T](Tool[P, T]):
                 or inspect.isroutine(obj)
                 or inspect.isabstract(obj)
             ):
-                result[name] = _make_context_tool(name, obj)
+                try:
+                    result[name] = _build_context_tool(name, obj)
+                except Exception:
+                    pass
 
         # Deduplicate by tool identity and remove self-references.
         #
@@ -283,6 +315,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__system_prompt__ = instance.__system_prompt__  # type: ignore[attr-defined]
         return result
 
     @classmethod
@@ -344,6 +377,7 @@ class Template[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+        op.__system_prompt__ = _build_system_prompt(_fn)  # type: ignore[attr-defined]
 
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
@@ -394,6 +428,7 @@ class Agent(abc.ABC):
     """
 
     __history__: OrderedDict[str, Mapping[str, Any]]
+    __system_prompt__: str
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -401,3 +436,9 @@ class Agent(abc.ABC):
             prop = functools.cached_property(lambda _: OrderedDict())
             prop.__set_name__(cls, "__history__")
             cls.__history__ = prop
+        if not hasattr(cls, "__system_prompt__"):
+            sp = functools.cached_property(
+                lambda self: _build_system_prompt(type(self))
+            )
+            sp.__set_name__(cls, "__system_prompt__")
+            cls.__system_prompt__ = sp  # type: ignore[assignment]
