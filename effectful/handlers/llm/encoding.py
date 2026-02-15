@@ -228,40 +228,35 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
 
 @dataclass
-class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
-    base: type[MutableSequence[T]]
+class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
+    """Variable-length sequence encoded as a JSON array, decoded back to tuple."""
+
+    base: type[typing.Any]
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
 
-    def encode(self, value: MutableSequence[T]) -> typing.Any:
-        if not isinstance(value, MutableSequence):
-            raise TypeError(f"Expected MutableSequence, got {type(value)}")
+    def encode(self, value: Sequence[T]) -> typing.Any:
         return [self.element_encoder.encode(elem) for elem in value]
 
-    def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
-        decoded_elements: list[T] = [
-            self.element_encoder.decode(elem) for elem in encoded_value
-        ]
-        return typing.cast(MutableSequence[T], decoded_elements)
+    def decode(self, encoded_value: typing.Any) -> Sequence[T]:
+        return typing.cast(
+            Sequence[T],
+            tuple(self.element_encoder.decode(elem) for elem in encoded_value),
+        )
 
     def serialize(
         self, encoded_value: typing.Any
     ) -> Sequence[OpenAIMessageContentListBlock]:
         if self.has_image:
-            # If list contains images, serialize each element and flatten the results
             result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, MutableSequence):
-                raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
             for elem in encoded_value:
                 result.extend(self.element_encoder.serialize(elem))
             return result
-        else:
-            # Use base serialization for non-image lists
-            adapter = pydantic.TypeAdapter(self.enc)
-            json_str = adapter.dump_json(encoded_value).decode("utf-8")
-            return [{"type": "text", "text": json_str}]
+        adapter = pydantic.TypeAdapter(self.enc)
+        json_str = adapter.dump_json(encoded_value).decode("utf-8")
+        return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
@@ -269,16 +264,19 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
 
 
 @dataclass
-class ImmutableSequenceEncodable[T](MutableSequenceEncodable[T]):
-    """Variable-length tuple encoded as a JSON array, decoded back to tuple."""
+class MutableSequenceEncodable[T](SequenceEncodable[T]):
+    """Mutable sequence (list) — same as SequenceEncodable but returns a list."""
 
-    base: type[typing.Any]  # accepts tuple types
+    def encode(self, value: Sequence[T]) -> typing.Any:
+        if not isinstance(value, MutableSequence):
+            raise TypeError(f"Expected MutableSequence, got {type(value)}")
+        return super().encode(value)
 
-    def encode(self, value: MutableSequence[T]) -> typing.Any:
-        return [self.element_encoder.encode(elem) for elem in value]
-
-    def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
-        return typing.cast(MutableSequence[T], tuple(super().decode(encoded_value)))
+    def decode(self, encoded_value: typing.Any) -> Sequence[T]:
+        decoded_elements: list[T] = [
+            self.element_encoder.decode(elem) for elem in encoded_value
+        ]
+        return typing.cast(Sequence[T], decoded_elements)
 
 
 def _format_callable_type(callable_type: type[Callable]) -> str:
@@ -586,7 +584,7 @@ def _encodable_tuple[T, U](
         )
         return typing.cast(
             Encodable[T, U],
-            ImmutableSequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
+            SequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
         )
 
     # Heterogeneous type args (tuple[str, int]) → positional struct.
