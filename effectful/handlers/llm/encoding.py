@@ -40,7 +40,7 @@ def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
     return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
 
 
-@dataclass
+@dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
     Structured representation of a tool call decoded from an LLM response.
@@ -531,15 +531,17 @@ class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
         )
         assert response_format is not None
         assert value.__default__.__doc__ is not None
-        return {
-            "type": "function",
-            "function": {
-                "name": value.__name__,
-                "description": textwrap.dedent(value.__default__.__doc__),
-                "parameters": response_format["json_schema"]["schema"],
-                "strict": True,
-            },
-        }
+        return self.adapter.validate_python(
+            {
+                "type": "function",
+                "function": {
+                    "name": value.__name__,
+                    "description": textwrap.dedent(value.__default__.__doc__),
+                    "parameters": response_format["json_schema"]["schema"],
+                    "strict": True,
+                },
+            }
+        )
 
     def decode(self, encoded_value: ChatCompletionToolParam) -> Tool[P, T]:
         raise NotImplementedError("Tools cannot yet be decoded from LLM responses")
