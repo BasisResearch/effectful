@@ -183,7 +183,7 @@ def summarize_items(items: tuple) -> str:
 
 
 @Template.define
-def propose(tool_name: str, tool_description: str, params: tuple[str]) -> str:
+def propose(tool_name: str, tool_description: str, params: tuple[str, ...]) -> str:
     """Given the tool {tool_name} described as: {tool_description}, propose how to
     call it with the following parameters: {params}."""
     raise NotHandled
