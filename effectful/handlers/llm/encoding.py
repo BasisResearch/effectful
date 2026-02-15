@@ -570,7 +570,7 @@ def _encodable_tuple[T, U](
         if ty is tuple:
             # Bare tuple - treat as tuple[Any, ...].
             # See test_type_to_encodable_type_bare_tuple.
-            element_encoder = Encodable.define(typing.Any, ctx)
+            element_encoder = Encodable.define(typing.cast(type, typing.Any), ctx)
             encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
             return typing.cast(
                 Encodable[T, U],

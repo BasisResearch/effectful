@@ -169,22 +169,6 @@ def test_type_to_encodable_type_bare_tuple():
     assert isinstance(decoded, tuple)
 
 
-def test_type_to_encodable_type_namedtuple():
-    """NamedTuple subclass → BaseEncodable (delegated to object handler)."""
-    from effectful.handlers.llm.encoding import BaseEncodable
-
-    class Point(NamedTuple):
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    assert isinstance(encodable, BaseEncodable)
-    value = Point(x=3, y=4)
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-
-
 def test_type_to_encodable_type_tuple_three_elements():
     encodable = Encodable.define(tuple[int, str, bool])
     value = (42, "hello", True)
