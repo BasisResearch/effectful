@@ -168,8 +168,8 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
     """Encodes fixed-length heterogeneous tuples (e.g. ``tuple[int, str]``).
 
     ``model_cls`` is a dynamic pydantic model (``TupleItems``) with one field
-    per position.  ``enc`` is ``Annotated[model_cls, AfterValidator]`` so that
-    pydantic validation produces plain tuples.
+    per position, producing an object JSON schema that OpenAI accepts
+    (unlike the ``prefixItems`` schema from native tuple types).
     """
 
     base: type[T]
@@ -192,7 +192,12 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
         )
 
     def decode(self, encoded_value: typing.Any) -> T:
-        items = list(encoded_value)
+        # Pydantic validation produces a TupleItems model instance;
+        # extract the positional fields back into a sequence.
+        if isinstance(encoded_value, pydantic.BaseModel):
+            items = list(encoded_value.model_dump().values())
+        else:
+            items = list(encoded_value)
         if len(items) != len(self.element_encoders):
             raise ValueError(
                 f"tuple length {len(items)} does not match "
@@ -214,8 +219,7 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
         model_instance = self.model_cls(
             **{f"item_{i}": v for i, v in enumerate(encoded_value)}
         )
-        adapter = pydantic.TypeAdapter(self.model_cls)
-        json_str = adapter.dump_json(model_instance).decode("utf-8")
+        json_str = model_instance.model_dump_json()
         return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
@@ -597,21 +601,9 @@ def _encodable_tuple[T, U](
         **{f"item_{i}": (enc.enc, ...) for i, enc in enumerate(element_encoders)},
     )
 
-    # Wrap with AfterValidator so pydantic validation produces tuples directly.
-    # JSON schema stays the same (AfterValidator is transparent to schema generation).
-    n = len(element_encoders)
-
-    def _model_to_tuple(v: pydantic.BaseModel) -> tuple:
-        return tuple(getattr(v, f"item_{i}") for i in range(n))
-
-    encoded_ty = typing.cast(
-        type[typing.Any],
-        typing.Annotated[model_cls, pydantic.AfterValidator(_model_to_tuple)],
-    )
-
     return typing.cast(
         Encodable[T, U],
-        TupleEncodable(ty, encoded_ty, model_cls, ctx, has_image, element_encoders),
+        TupleEncodable(ty, model_cls, model_cls, ctx, has_image, element_encoders),
     )
 
 

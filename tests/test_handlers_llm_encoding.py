@@ -128,10 +128,7 @@ def test_type_to_encodable_type_tuple():
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.enc)
     model_instance = Model.model_validate({"value": {"item_0": 1, "item_1": "test"}})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 1
-    assert model_instance.value[1] == "test"
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
@@ -238,12 +235,14 @@ def test_type_to_encodable_type_tuple_homogeneous_multi_arg():
     assert "item_1" in obj_schema["properties"]
     assert "item_2" in obj_schema["properties"]
     assert "prefixItems" not in obj_schema
-    # Pydantic validation produces a tuple (via AfterValidator)
+    # Pydantic validation produces a TupleItems model; decode converts to tuple
     model_instance = Model.model_validate(
         {"value": {"item_0": "a", "item_1": "b", "item_2": "c"}}
     )
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value == ("a", "b", "c")
+    assert isinstance(model_instance.value, pydantic.BaseModel)
+    decoded = encodable.decode(model_instance.value)
+    assert isinstance(decoded, tuple)
+    assert decoded == ("a", "b", "c")
 
 
 def test_type_to_encodable_type_tuple_multi_type_schema_is_object():
@@ -281,11 +280,7 @@ def test_type_to_encodable_type_tuple_three_elements():
     model_instance = Model.model_validate(
         {"value": {"item_0": 42, "item_1": "hello", "item_2": True}}
     )
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 42
-    assert model_instance.value[1] == "hello"
-    assert model_instance.value[2] is True
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
@@ -457,13 +452,7 @@ def test_type_to_encodable_type_tuple_of_images():
     model_instance = Model.model_validate(
         {"value": {"item_0": encoded[0], "item_1": encoded[1]}}
     )
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 2
-    assert isinstance(model_instance.value[0], dict)
-    assert isinstance(model_instance.value[1], dict)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert isinstance(decoded_from_model, tuple)
