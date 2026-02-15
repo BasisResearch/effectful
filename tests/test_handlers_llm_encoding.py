@@ -1,4 +1,5 @@
 import builtins
+import json
 import typing
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -6,6 +7,7 @@ from typing import Annotated, Any, NamedTuple, TypedDict
 
 import pydantic
 import pytest
+from openai.lib._pydantic import to_strict_json_schema
 from PIL import Image
 from RestrictedPython import RestrictingNodeTransformer
 
@@ -127,11 +129,8 @@ def test_type_to_encodable_type_tuple():
     assert decoded[1] == "test"
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 1
-    assert model_instance.value[1] == "test"
+    model_instance = Model.model_validate({"value": {"item_0": 1, "item_1": "test"}})
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
@@ -146,16 +145,28 @@ def test_type_to_encodable_type_tuple_empty():
     assert decoded == value
     assert isinstance(decoded, tuple)
     assert len(decoded) == 0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 0
+    # Test with pydantic model validation — enc is a TupleItems BaseModel
+    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
+    model_instance = Model.model_validate({"value": {}})
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
+
+
+def test_type_to_encodable_type_bare_tuple():
+    """Bare ``tuple`` (no type params) to SequenceEncodable, treated as tuple[Any, ...]."""
+    from effectful.handlers.llm.encoding import SequenceEncodable
+
+    encodable = Encodable.define(tuple)
+    assert isinstance(encodable, SequenceEncodable)
+    value = (1, "hello", True)
+    encoded = encodable.encode(value)
+    assert encoded == [1, "hello", True]
+    decoded = encodable.decode(encoded)
+    assert decoded == value
+    assert isinstance(decoded, tuple)
 
 
 def test_type_to_encodable_type_tuple_three_elements():
@@ -170,12 +181,10 @@ def test_type_to_encodable_type_tuple_three_elements():
     assert decoded[2] is True
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 42
-    assert model_instance.value[1] == "hello"
-    assert model_instance.value[2] is True
+    model_instance = Model.model_validate(
+        {"value": {"item_0": 42, "item_1": "hello", "item_2": True}}
+    )
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
@@ -344,14 +353,10 @@ def test_type_to_encodable_type_tuple_of_images():
 
     # Test with pydantic model validation
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 2
-    assert isinstance(model_instance.value[0], dict)
-    assert isinstance(model_instance.value[1], dict)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
+    model_instance = Model.model_validate(
+        {"value": {"item_0": encoded[0], "item_1": encoded[1]}}
+    )
+    assert isinstance(model_instance.value, pydantic.BaseModel)
     # Decode from model
     decoded_from_model = encodable.decode(model_instance.value)
     assert isinstance(decoded_from_model, tuple)
@@ -767,6 +772,130 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+# Equational law tests — parametrized, implementation-insensitive
+# Types and values for parametrized law tests.
+# Each entry is (type_annotation, sample_value).
+_LAW_CASES: list[tuple[type, Any]] = [
+    # primitives
+    (str, "hello"),
+    (int, 42),
+    (bool, True),
+    (float, 3.14),
+    (complex, 3 + 4j),
+    # tuples — finitary (fixed-length)
+    (tuple[str], ("hello",)),
+    (tuple[int, str], (1, "test")),
+    (tuple[int, str, bool], (42, "hello", True)),
+    (tuple[str, str, str], ("a", "b", "c")),
+    (tuple[()], ()),
+    # tuples — variadic
+    (tuple[str, ...], ("hello", "world", "foo")),
+    (tuple[str, ...], ()),
+    # lists
+    (list[int], [1, 2, 3]),
+    (list[str], ["a", "b"]),
+]
+
+# Types that don't roundtrip through OpenAI schema or text serialization.
+# complex has no JSON schema representation.
+_SKIP_SCHEMA = {complex}
+# complex serializes via repr, not JSON-compatible text.
+_SKIP_SERDE = {complex}
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_encode_decode_roundtrip(ty: type, value: Any):
+    """Equational law: decode(encode(x)) == x."""
+    encodable = Encodable.define(ty)
+    assert encodable.decode(encodable.encode(value)) == value
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_schema_accepted_by_openai(ty: type, value: Any):
+    """Schema produced by Encodable must pass openai's to_strict_json_schema and not use prefixItems.
+
+    to_strict_json_schema is the openai SDK's own schema transformer.
+    It is not a full validator (that happens server-side), but exercising it
+    catches basic structural issues.  We additionally assert that
+    ``prefixItems`` never appears, since that is the keyword OpenAI
+    rejects for arrays.
+    """
+    if ty in _SKIP_SCHEMA:
+        pytest.skip(f"{ty} not supported by OpenAI schema")
+    encodable = Encodable.define(ty)
+    Model = pydantic.create_model("M", value=(encodable.enc, ...))
+    strict_schema = to_strict_json_schema(Model)
+    _assert_no_rejected_keys(strict_schema, path="$", ty=ty)
+
+
+# Keys that OpenAI rejects in tool/function JSON schemas.
+_REJECTED_SCHEMA_KEYS = {"prefixItems"}
+
+
+def _assert_no_rejected_keys(schema: Any, *, path: str, ty: type) -> None:
+    """Recursively walk a JSON schema and assert no rejected keys appear."""
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            assert key not in _REJECTED_SCHEMA_KEYS, (
+                f"rejected key {key!r} found at {path} in schema for {ty}: "
+                f"{json.dumps(schema, indent=2)}"
+            )
+            _assert_no_rejected_keys(value, path=f"{path}/{key}", ty=ty)
+    elif isinstance(schema, list):
+        for i, item in enumerate(schema):
+            _assert_no_rejected_keys(item, path=f"{path}[{i}]", ty=ty)
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_serialize_deserialize_roundtrip(ty: type, value: Any):
+    """Equational law: decode(deserialize(serialize(encode(x)))) == x."""
+    if ty in _SKIP_SERDE:
+        pytest.skip(f"{ty} does not text-roundtrip")
+    encodable = Encodable.define(ty)
+    encoded = encodable.encode(value)
+    serialized = encodable.serialize(encoded)
+    part = serialized[0]
+    assert "text" in part, f"expected text content part for {ty}, got {part}"
+    text: str = part["text"]  # type: ignore[typeddict-item]
+    deserialized = encodable.deserialize(text)
+    assert encodable.decode(deserialized) == value
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_pydantic_validate_decode_roundtrip(ty: type, value: Any):
+    """serialize -> deserialize -> pydantic validate -> decode recovers the original."""
+    if ty in _SKIP_SERDE:
+        pytest.skip(f"{ty} does not text-roundtrip")
+    encodable = Encodable.define(ty)
+    encoded = encodable.encode(value)
+    serialized = encodable.serialize(encoded)
+    part = serialized[0]
+    assert "text" in part, f"expected text content part for {ty}, got {part}"
+    text: str = part["text"]  # type: ignore[typeddict-item]
+    deserialized = encodable.deserialize(text)
+    # Simulate pydantic model validation (as in tool parameter decoding).
+    Model = pydantic.create_model("M", value=(encodable.enc, ...))
+    model_instance = Model.model_validate({"value": deserialized})
+    decoded = encodable.decode(model_instance.value)  # type: ignore[attr-defined]
+    assert decoded == value
 
 
 class TestCallableEncodable:
