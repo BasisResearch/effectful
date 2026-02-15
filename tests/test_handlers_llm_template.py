@@ -4,17 +4,22 @@ import collections
 import dataclasses
 import inspect
 from dataclasses import dataclass
+from typing import Annotated
 
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, IsFinalAnswer, Template, Tool
 from effectful.handlers.llm.completions import (
+    DecodedToolCall,
+    DirectReturn,
     LiteLLMProvider,
     RetryLLMHandler,
+    call_tool,
     call_user,
     completion,
 )
+from effectful.handlers.llm.template import _is_final_answer_tool
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1324,3 +1329,267 @@ def test_validate_format_spec_on_undefined_var():
         def bad(x: int) -> str:
             """Value: {x} and {missing:.2f}."""
             raise NotHandled
+
+
+# ---------------------------------------------------------------------------
+# IsFinalAnswer annotation tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsFinalAnswerAnnotation:
+    """Tests for the IsFinalAnswer type annotation."""
+
+    def test_tool_with_is_final_answer_return_type(self):
+        """Tool with IsFinalAnswer on return type creates successfully."""
+
+        @Tool.define
+        def my_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+            """A tool that returns a final answer."""
+            return str(x)
+
+        assert _is_final_answer_tool(my_tool)
+
+    def test_tool_without_is_final_answer(self):
+        """Normal tool is not detected as final answer."""
+
+        @Tool.define
+        def normal_tool(x: int) -> str:
+            """A normal tool."""
+            return str(x)
+
+        assert not _is_final_answer_tool(normal_tool)
+
+    def test_is_final_answer_on_parameter_raises(self):
+        """IsFinalAnswer on a parameter raises TypeError at define time."""
+        with pytest.raises(TypeError, match="IsFinalAnswer"):
+
+            @Tool.define
+            def bad_tool(x: Annotated[int, IsFinalAnswer]) -> str:
+                """A tool with bad annotation."""
+                return str(x)
+
+    def test_is_final_answer_combined_with_is_recursive(self):
+        """IsFinalAnswer and IsRecursive can coexist on a return type."""
+        from effectful.handlers.llm.template import IsRecursive
+
+        @Tool.define
+        def combo_tool(x: int) -> Annotated[str, IsFinalAnswer, IsRecursive]:
+            """A tool with both annotations."""
+            return str(x)
+
+        assert _is_final_answer_tool(combo_tool)
+
+
+class TestIsFinalAnswerCallTool:
+    """Tests for call_tool behavior with IsFinalAnswer tools."""
+
+    def test_call_tool_raises_direct_return_for_final_answer_tool(self):
+        """call_tool raises DirectReturn when tool has IsFinalAnswer."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Returns a final answer."""
+            return x * 2
+
+        sig = inspect.signature(final_tool)
+        bound_args = sig.bind(x=5)
+        tc = DecodedToolCall(final_tool, bound_args, "call_final")
+
+        with pytest.raises(DirectReturn) as exc_info:
+            call_tool(tc)
+
+        assert exc_info.value.value == 10
+
+    def test_call_tool_normal_for_non_final_answer_tool(self):
+        """call_tool returns a Message normally for non-IsFinalAnswer tools."""
+
+        @Tool.define
+        def normal_tool(x: int) -> int:
+            """A normal tool."""
+            return x + 1
+
+        sig = inspect.signature(normal_tool)
+        bound_args = sig.bind(x=3)
+        tc = DecodedToolCall(normal_tool, bound_args, "call_normal")
+
+        result = call_tool(tc)
+        assert result["role"] == "tool"
+        assert result["tool_call_id"] == "call_normal"
+
+    def test_call_tool_final_answer_with_retry_handler(self):
+        """DirectReturn propagates through RetryLLMHandler._call_tool."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+            """Returns a final answer."""
+            return f"answer: {x}"
+
+        sig = inspect.signature(final_tool)
+        bound_args = sig.bind(x=42)
+        tc = DecodedToolCall(final_tool, bound_args, "call_retry_final")
+
+        with pytest.raises(DirectReturn) as exc_info:
+            with handler(RetryLLMHandler()):
+                call_tool(tc)
+
+        assert exc_info.value.value == "answer: 42"
+
+
+class TestIsFinalAnswerCompletionLoop:
+    """Tests for IsFinalAnswer through the full completion loop."""
+
+    def test_final_answer_tool_skips_final_llm_call(self):
+        """When LLM calls a final-answer tool, result is returned
+        directly without a second call_assistant invocation."""
+
+        @Tool.define
+        def compute(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Compute and return the result directly."""
+            return x * 10
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call compute with {n}."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("compute", '{"x": 7}')]
+        )
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = task(7)
+
+        assert result == 70
+        # Only 1 call_assistant, not 2 (no final LLM round-trip)
+        assert mock.call_count == 1
+
+    def test_final_answer_returns_raw_python_object(self):
+        """The returned value is the raw Python object, not serialized text."""
+
+        @dataclass
+        class MyResult:
+            value: int
+            label: str
+
+        @Tool.define
+        def make_result() -> Annotated[MyResult, IsFinalAnswer]:
+            """Create a structured result."""
+            return MyResult(value=42, label="answer")
+
+        @Template.define
+        def task() -> MyResult:
+            """Call make_result."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("make_result", "{}")]
+        )
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = task()
+
+        assert isinstance(result, MyResult)
+        assert result.value == 42
+        assert result.label == "answer"
+
+    def test_agent_history_valid_after_final_answer(self):
+        """Agent history has no orphaned tool_calls after IsFinalAnswer."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Return final answer."""
+            return x
+
+        @dataclasses.dataclass
+        class MyAgent(Agent):
+            @Template.define
+            def do_work(self, n: int) -> int:
+                """Process {n}."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("final_tool", '{"x": 5}')]
+        )
+        agent = MyAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = agent.do_work(5)
+
+        assert result == 5
+
+        # Verify no orphaned tool_calls in history
+        for msg in agent.__history__.values():
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    tc_id = tc["id"] if isinstance(tc, dict) else tc.id
+                    has_response = any(
+                        m.get("tool_call_id") == tc_id
+                        for m in agent.__history__.values()
+                        if m.get("role") == "tool"
+                    )
+                    assert has_response, (
+                        f"Orphaned tool_call {tc_id} in history"
+                    )
+
+    def test_agent_subsequent_call_after_final_answer(self):
+        """A follow-up call on the same Agent works after IsFinalAnswer."""
+
+        @Tool.define
+        def final_tool() -> Annotated[str, IsFinalAnswer]:
+            """Return final answer."""
+            return "direct result"
+
+        @dataclasses.dataclass
+        class MyAgent(Agent):
+            @Template.define
+            def step(self, msg: str) -> str:
+                """Do: {msg}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class PhaseHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return make_tool_call_response("final_tool", "{}")
+                return make_text_response('{"value": "llm result"}')
+
+        agent = MyAgent()
+
+        with handler(LiteLLMProvider()), handler(PhaseHandler()):
+            r1 = agent.step("first")
+            r2 = agent.step("second")
+
+        assert r1 == "direct result"
+        assert r2 == "llm result"
+
+    def test_final_answer_with_retry_handler_active(self):
+        """IsFinalAnswer works correctly with RetryLLMHandler."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Return final answer."""
+            return x * 3
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call final_tool with {n}."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("final_tool", '{"x": 4}')]
+        )
+
+        with (
+            handler(LiteLLMProvider()),
+            handler(RetryLLMHandler()),
+            handler(mock),
+        ):
+            result = task(4)
+
+        assert result == 12
+        assert mock.call_count == 1

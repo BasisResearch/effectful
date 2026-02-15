@@ -42,8 +42,9 @@ class _IsRecursiveAnnotation(Annotation):
 
     @classmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        for name, ty in sig.parameters.items():
-            if not ty or not typing.get_origin(ty) is Annotated:
+        for name, param in sig.parameters.items():
+            ty = param.annotation
+            if ty is inspect.Parameter.empty or typing.get_origin(ty) is not Annotated:
                 continue
             if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
                 raise TypeError(
@@ -60,6 +61,58 @@ def _is_recursive_signature(sig: inspect.Signature):
         return False
     annotations = typing.get_args(sig.return_annotation)
     return any(annotation is IsRecursive for annotation in annotations)
+
+
+class _IsFinalAnswerAnnotation(Annotation):
+    """
+    A special type annotation for return types in the signature of a
+    :class:`Tool` that indicates its result should be returned directly
+    as the final answer of the enclosing :class:`Template`, skipping
+    the final LLM API call.
+
+    .. warning::
+
+        :class:`IsFinalAnswer` annotations are only defined to ascribe
+        return annotations, and if used in a parameter will raise a
+        :class:`TypeError` at tool construction time.
+
+    **Example usage**::
+
+        >>> from typing import Annotated
+        >>> from effectful.handlers.llm import Tool
+        >>> from effectful.handlers.llm.template import IsFinalAnswer
+
+        >>> @Tool.define
+        ... def generate(prompt: str) -> Annotated[str, IsFinalAnswer]:
+        ...     \"""Generate content for the given prompt.\"""
+        ...     return "generated content"
+    """
+
+    @classmethod
+    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
+        for name, param in sig.parameters.items():
+            ty = param.annotation
+            if ty is inspect.Parameter.empty or typing.get_origin(ty) is not Annotated:
+                continue
+            if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
+                raise TypeError(
+                    f"Illegal annotation {ty} for parameter {name}, "
+                    "IsFinalAnswer must only be used to annotate return types."
+                )
+        return sig
+
+
+IsFinalAnswer = _IsFinalAnswerAnnotation()
+
+
+def _is_final_answer_tool(tool: Any) -> bool:
+    """Check if a tool's return type is annotated with IsFinalAnswer."""
+    ret = tool.__signature__.return_annotation
+    if typing.get_origin(ret) is not Annotated:
+        return False
+    return any(
+        isinstance(arg, _IsFinalAnswerAnnotation) for arg in typing.get_args(ret)
+    )
 
 
 class Tool[**P, T](Operation[P, T]):
@@ -96,6 +149,7 @@ class Tool[**P, T](Operation[P, T]):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
         signature = IsRecursive.infer_annotations(signature)
+        signature = IsFinalAnswer.infer_annotations(signature)
         super().__init__(signature, name, default)
 
     @classmethod

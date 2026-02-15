@@ -147,6 +147,23 @@ class ToolCallExecutionError(Exception):
         )
 
 
+class DirectReturn[T](BaseException):
+    """Raised internally to short-circuit the completion loop when a tool
+    annotated with :class:`~effectful.handlers.llm.template.IsFinalAnswer`
+    produces a result.
+
+    Extends :class:`BaseException` so it is not caught by handlers that
+    catch :class:`Exception` (e.g. ``call_tool``'s wrapping in
+    :class:`ToolCallExecutionError`, or :class:`RetryLLMHandler`).
+    """
+
+    value: T
+
+    def __init__(self, value: T):
+        self.value = value
+        super().__init__(value)
+
+
 class DecodedToolCall[T](typing.NamedTuple):
     tool: Tool[..., T]
     bound_args: inspect.BoundArguments
@@ -317,7 +334,13 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     string representing an LLM tool call request parameters. The output is
     the serialised response to the model.
 
+    If the tool is annotated with
+    :class:`~effectful.handlers.llm.template.IsFinalAnswer`, a
+    :class:`DirectReturn` exception is raised carrying the raw Python
+    result, which short-circuits the completion loop.
     """
+    from effectful.handlers.llm.template import _is_final_answer_tool
+
     # call tool with python types
     try:
         result = tool_call.tool(
@@ -335,6 +358,10 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
     append_message(message)
+
+    if _is_final_answer_tool(tool_call.tool):
+        raise DirectReturn(result)
+
     return message
 
 
@@ -555,8 +582,30 @@ class LiteLLMProvider(ObjectInterpretation):
                 message, tool_calls, result = call_assistant(
                     template.tools, response_model, **self.config
                 )
-                for tool_call in tool_calls:
-                    message = call_tool(tool_call)
+                for i, tool_call in enumerate(tool_calls):
+                    try:
+                        message = call_tool(tool_call)
+                    except DirectReturn as dr:
+                        result = typing.cast(T, dr.value)
+                        # Placeholder messages for remaining unprocessed
+                        # tool calls to keep history valid for Agents.
+                        for remaining_tc in tool_calls[i + 1 :]:
+                            append_message(
+                                _make_message(
+                                    dict(
+                                        role="tool",
+                                        content=[
+                                            {
+                                                "type": "text",
+                                                "text": "[skipped]",
+                                            }
+                                        ],
+                                        tool_call_id=remaining_tc.id,
+                                    )
+                                )
+                            )
+                        tool_calls = []
+                        break
 
         try:
             _get_history()
