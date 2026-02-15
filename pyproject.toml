@@ -42,6 +42,7 @@ jax = ["jax"]
 numpyro = ["numpyro>=0.19"]
 llm = [
   "litellm",
+  "tenacity",
   "mypy",
   "autoflake",
   "pillow",
