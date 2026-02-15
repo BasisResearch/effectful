@@ -1,4 +1,5 @@
 import builtins
+import json
 import typing
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -6,6 +7,7 @@ from typing import Annotated, Any, NamedTuple, TypedDict
 
 import pydantic
 import pytest
+from openai.lib._pydantic import to_strict_json_schema
 from PIL import Image
 from RestrictedPython import RestrictingNodeTransformer
 
@@ -153,116 +155,6 @@ def test_type_to_encodable_type_tuple_empty():
     decoded_from_model = encodable.decode(model_instance.value)
     assert decoded_from_model == value
     assert isinstance(decoded_from_model, tuple)
-
-
-def test_type_to_encodable_type_tuple_single_type_as_immutable_sequence():
-    """tuple[str] is treated as an immutable sequence (variable-length)."""
-    encodable = Encodable.define(tuple[str])
-    value = ("hello", "world", "foo")
-    encoded = encodable.encode(value)
-    # Encodes to a list (like list[str])
-    assert isinstance(encoded, list)
-    assert encoded == ["hello", "world", "foo"]
-    # Decodes back to a tuple
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    # enc type produces an "items" JSON schema (OpenAI compatible)
-    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
-    schema = Model.model_json_schema()
-    params_schema = schema["properties"]["value"]
-    assert params_schema["type"] == "array"
-    assert "items" in params_schema
-    assert "prefixItems" not in params_schema
-    # Roundtrip through pydantic model
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
-
-
-def test_type_to_encodable_type_tuple_ellipsis_as_immutable_sequence():
-    """tuple[str, ...] is treated as an immutable sequence (variable-length)."""
-    encodable = Encodable.define(tuple[str, ...])
-    value = ("a", "b", "c")
-    encoded = encodable.encode(value)
-    assert isinstance(encoded, list)
-    assert encoded == ["a", "b", "c"]
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    # enc type produces an "items" JSON schema
-    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
-    schema = Model.model_json_schema()
-    params_schema = schema["properties"]["value"]
-    assert params_schema["type"] == "array"
-    assert "items" in params_schema
-    assert "prefixItems" not in params_schema
-
-
-def test_type_to_encodable_type_tuple_single_type_empty():
-    """tuple[str] as immutable sequence handles empty tuples."""
-    encodable = Encodable.define(tuple[str])
-    value: tuple[str, ...] = ()
-    encoded = encodable.encode(value)
-    assert encoded == []
-    decoded = encodable.decode(encoded)
-    assert decoded == ()
-    assert isinstance(decoded, tuple)
-
-
-def test_type_to_encodable_type_tuple_homogeneous_multi_arg():
-    """tuple[str, str, str] uses TupleEncodable — length enforced by model fields."""
-    encodable = Encodable.define(tuple[str, str, str])
-    value = ("a", "b", "c")
-    encoded = encodable.encode(value)
-    assert isinstance(encoded, tuple)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    # Schema is an object with item_0, item_1, item_2 (enforces length)
-    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
-    schema = Model.model_json_schema()
-    value_schema = schema["properties"]["value"]
-    if "$ref" in value_schema:
-        ref_name = value_schema["$ref"].split("/")[-1]
-        obj_schema = schema["$defs"][ref_name]
-    else:
-        obj_schema = value_schema
-    assert obj_schema["type"] == "object"
-    assert "item_0" in obj_schema["properties"]
-    assert "item_1" in obj_schema["properties"]
-    assert "item_2" in obj_schema["properties"]
-    assert "prefixItems" not in obj_schema
-    # Pydantic validation produces a TupleItems model; decode converts to tuple
-    model_instance = Model.model_validate(
-        {"value": {"item_0": "a", "item_1": "b", "item_2": "c"}}
-    )
-    assert isinstance(model_instance.value, pydantic.BaseModel)
-    decoded = encodable.decode(model_instance.value)
-    assert isinstance(decoded, tuple)
-    assert decoded == ("a", "b", "c")
-
-
-def test_type_to_encodable_type_tuple_multi_type_schema_is_object():
-    """tuple[int, str] produces an object schema (not prefixItems)."""
-    encodable = Encodable.define(tuple[int, str])
-    Model = pydantic.create_model("Model", value=(encodable.enc, ...))
-    schema = Model.model_json_schema()
-    # The tuple is represented as a nested object with item_0, item_1
-    # (either inline or via $defs/$ref)
-    value_schema = schema["properties"]["value"]
-    if "$ref" in value_schema:
-        ref_name = value_schema["$ref"].split("/")[-1]
-        obj_schema = schema["$defs"][ref_name]
-    else:
-        obj_schema = value_schema
-    assert obj_schema["type"] == "object"
-    assert "item_0" in obj_schema["properties"]
-    assert "item_1" in obj_schema["properties"]
-    assert "prefixItems" not in obj_schema
-    assert "items" not in obj_schema
 
 
 def test_type_to_encodable_type_tuple_three_elements():
@@ -868,6 +760,127 @@ def test_type_to_encodable_type_nested_pydantic_model():
     assert decoded_from_model == person
     assert isinstance(decoded_from_model, Person)
     assert isinstance(decoded_from_model.address, Address)
+
+
+# Equational law tests — parametrized, implementation-insensitive
+# Types and values for parametrized law tests.
+# Each entry is (type_annotation, sample_value).
+_LAW_CASES: list[tuple[type, Any]] = [
+    # primitives
+    (str, "hello"),
+    (int, 42),
+    (bool, True),
+    (float, 3.14),
+    (complex, 3 + 4j),
+    # tuples — fixed-length heterogeneous
+    (tuple[int, str], (1, "test")),
+    (tuple[int, str, bool], (42, "hello", True)),
+    (tuple[str, str, str], ("a", "b", "c")),
+    # tuples — variable-length (immutable sequence)
+    (tuple[str], ("hello", "world", "foo")),
+    (tuple[str, ...], ("a", "b", "c")),
+    # tuples — empty
+    (tuple[str], ()),
+    (tuple[()], ()),
+    # lists
+    (list[int], [1, 2, 3]),
+    (list[str], ["a", "b"]),
+]
+
+# Types that don't roundtrip through OpenAI schema or text serialization.
+# complex has no JSON schema; tuple[()] pydantic schema omits `items` (upstream issue).
+_SKIP_SCHEMA = {complex, tuple[()]}
+# complex serializes via repr, not JSON-compatible text.
+_SKIP_SERDE = {complex}
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_encode_decode_roundtrip(ty: type, value: Any):
+    """Equational law: decode(encode(x)) == x."""
+    encodable = Encodable.define(ty)
+    assert encodable.decode(encodable.encode(value)) == value
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_schema_accepted_by_openai(ty: type, value: Any):
+    """Schema produced by Encodable must pass openai's to_strict_json_schema and not use prefixItems.
+
+    to_strict_json_schema is the openai SDK's own schema transformer.
+    It is not a full validator (that happens server-side), but exercising it
+    catches basic structural issues.  We additionally assert that
+    ``prefixItems`` never appears, since that is the keyword OpenAI
+    rejects for arrays.
+    """
+    if ty in _SKIP_SCHEMA:
+        pytest.skip(f"{ty} not supported by OpenAI schema")
+    encodable = Encodable.define(ty)
+    Model = pydantic.create_model("M", value=(encodable.enc, ...))
+    strict_schema = to_strict_json_schema(Model)
+    _assert_no_rejected_keys(strict_schema, path="$", ty=ty)
+
+
+# Keys that OpenAI rejects in tool/function JSON schemas.
+_REJECTED_SCHEMA_KEYS = {"prefixItems"}
+
+
+def _assert_no_rejected_keys(schema: Any, *, path: str, ty: type) -> None:
+    """Recursively walk a JSON schema and assert no rejected keys appear."""
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            assert key not in _REJECTED_SCHEMA_KEYS, (
+                f"rejected key {key!r} found at {path} in schema for {ty}: "
+                f"{json.dumps(schema, indent=2)}"
+            )
+            _assert_no_rejected_keys(value, path=f"{path}/{key}", ty=ty)
+    elif isinstance(schema, list):
+        for i, item in enumerate(schema):
+            _assert_no_rejected_keys(item, path=f"{path}[{i}]", ty=ty)
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_serialize_deserialize_roundtrip(ty: type, value: Any):
+    """Equational law: decode(deserialize(serialize(encode(x)))) == x."""
+    if ty in _SKIP_SERDE:
+        pytest.skip(f"{ty} does not text-roundtrip")
+    encodable = Encodable.define(ty)
+    encoded = encodable.encode(value)
+    serialized = encodable.serialize(encoded)
+    text = serialized[0]["text"]
+    deserialized = encodable.deserialize(text)
+    assert encodable.decode(deserialized) == value
+
+
+@pytest.mark.parametrize(
+    "ty, value",
+    _LAW_CASES,
+    ids=[f"{t}" for t, _ in _LAW_CASES],
+)
+def test_law_pydantic_validate_decode_roundtrip(ty: type, value: Any):
+    """serialize -> deserialize -> pydantic validate -> decode recovers the original."""
+    if ty in _SKIP_SERDE:
+        pytest.skip(f"{ty} does not text-roundtrip")
+    encodable = Encodable.define(ty)
+    encoded = encodable.encode(value)
+    serialized = encodable.serialize(encoded)
+    text = serialized[0]["text"]
+    deserialized = encodable.deserialize(text)
+    # Simulate pydantic model validation (as in tool parameter decoding).
+    Model = pydantic.create_model("M", value=(encodable.enc, ...))
+    model_instance = Model.model_validate({"value": deserialized})
+    decoded = encodable.decode(model_instance.value)
+    assert decoded == value
 
 
 class TestCallableEncodable:
