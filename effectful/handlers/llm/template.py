@@ -243,6 +243,18 @@ class Template[**P, T](Tool[P, T]):
                         if isinstance(getattr(obj, attr_name), Tool):
                             result[attr_name] = getattr(obj, attr_name)
 
+            # Make tools for lexical variables
+            elif not (
+                name.startswith("__")
+                or isinstance(obj, Operation)
+                or inspect.isclass(obj)
+                or inspect.isbuiltin(obj)
+                or inspect.ismodule(obj)
+                or inspect.isroutine(obj)
+                or inspect.isabstract(obj)
+            ):
+                result[name] = _make_context_tool(name, obj)
+
         # Deduplicate by tool identity and remove self-references.
         #
         # The same Tool can appear under multiple names when it is both
@@ -256,18 +268,6 @@ class Template[**P, T](Tool[P, T]):
         for name, tool in tuple(result.items()):
             if tool2name[tool] != name or (tool is self and not is_recursive):
                 del result[name]
-
-            # Make tools for lexical variables
-            elif not (
-                name.startswith("__")
-                or isinstance(obj, Operation)
-                or inspect.isclass(obj)
-                or inspect.isbuiltin(obj)
-                or inspect.ismodule(obj)
-                or inspect.isroutine(obj)
-                or inspect.isabstract(obj)
-            ):
-                result[name] = _make_context_tool(name, obj)
 
         return result
 
