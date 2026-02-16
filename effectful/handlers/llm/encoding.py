@@ -144,7 +144,9 @@ class WrappedEncodable[T](Encodable[T, typing.Any]):
             value = encoded_value
         return typing.cast(T, self.adapter.validate_python(value))
 
-    def serialize(self, encoded_value: typing.Any) -> Sequence[OpenAIMessageContentListBlock]:
+    def serialize(
+        self, encoded_value: typing.Any
+    ) -> Sequence[OpenAIMessageContentListBlock]:
         # Keep prompt interpolation plain and human-friendly.
         base_value = self.decode(encoded_value)
         json_str = self.adapter.dump_json(base_value).decode("utf-8")
@@ -558,10 +560,12 @@ def _embedded_type_from_enc(enc: Encodable[Any, Any]) -> type[Any]:
     if isinstance(enc, TupleEncodable):
         return typing.cast(
             type[Any],
-            tuple[*( _embedded_type_from_enc(e) for e in enc.element_encoders)],  # type: ignore
+            tuple[*(_embedded_type_from_enc(e) for e in enc.element_encoders)],  # type: ignore
         )
     if isinstance(enc, MutableSequenceEncodable):
-        return typing.cast(type[Any], list[_embedded_type_from_enc(enc.element_encoder)])  # type: ignore
+        return typing.cast(
+            type[Any], list[_embedded_type_from_enc(enc.element_encoder)]
+        )  # type: ignore
     return typing.cast(type[Any], enc.enc)
 
 
@@ -725,6 +729,7 @@ def _wrapped_response_model(ty: Hashable) -> type[pydantic.BaseModel]:
         __config__={"extra": "forbid"},
     )
 
+
 @Encodable.define.register(Term)
 def _encodable_term[T: Term, U](
     ty: type[T], ctx: Mapping[str, Any] | None
@@ -776,7 +781,7 @@ def _encodable_tuple[T, U](
 
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*( _embedded_type_from_enc(enc) for enc in element_encoders)],  # type: ignore
+        tuple[*(_embedded_type_from_enc(enc) for enc in element_encoders)],  # type: ignore
     )
 
     return typing.cast(
