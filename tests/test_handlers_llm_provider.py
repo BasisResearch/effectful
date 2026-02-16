@@ -506,7 +506,7 @@ class TestRetryLLMHandler:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -536,7 +536,7 @@ class TestRetryLLMHandler:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -568,7 +568,7 @@ class TestRetryLLMHandler:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -645,7 +645,7 @@ class TestRetryLLMHandler:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={"add_numbers": add_numbers},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -720,7 +720,7 @@ class TestRetryLLMHandler:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={},
                 response_format=Encodable.define(int),
                 model="test-model",
@@ -970,7 +970,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(failing_tool, bound_args, "call_1")
 
         with handler(RetryLLMHandler()):
-            result, _ = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         # The result should be an error message, not an exception
         assert result["role"] == "tool"
@@ -987,7 +987,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(divide_tool, bound_args, "call_div")
 
         with handler(RetryLLMHandler()):
-            result, _ = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_div"
@@ -1002,7 +1002,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(add_numbers, bound_args, "call_add")
 
         with handler(RetryLLMHandler()):
-            result, _ = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_add"
@@ -1039,7 +1039,7 @@ class TestToolExecutionErrorHandling:
             handler(mock_handler),
             handler(message_sequence_provider),
         ):
-            message, tool_calls, result = call_assistant(
+            message, tool_calls, result, _ = call_assistant(
                 tools={"failing_tool": failing_tool},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -1382,13 +1382,13 @@ class TestMessageSequence:
             handler({_get_history: lambda: message_sequence}),
         ):
             # First call: input is the latest message (msg_user)
-            resp1, _, _ = call_assistant(
+            resp1, _, _, _ = call_assistant(
                 tools={},
                 response_format=Encodable.define(str),
                 model="test-model",
             )
             # Second call: input is the first response
-            resp2, _, _ = call_assistant(
+            resp2, _, _, _ = call_assistant(
                 tools={},
                 response_format=Encodable.define(str),
                 model="test-model",
@@ -1553,7 +1553,7 @@ class TestCallToolWrapsExecutionError:
         bound_args = sig.bind(a=3, b=4)
         tc = DecodedToolCall(add_numbers, bound_args, "call_ok")
 
-        result, _ = call_tool(tc)
+        result, _, _ = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
@@ -1568,7 +1568,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         tc = DecodedToolCall(flaky_tool, bound_args, "call_match")
 
         with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
-            result, _ = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_match"
@@ -1595,7 +1595,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         tc = DecodedToolCall(type_error_tool, bound_args, "call_default")
 
         with handler(RetryLLMHandler()):
-            result, _ = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]
@@ -1611,7 +1611,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
                 catch_tool_errors=(ConnectionError, ValueError),
             )
         ):
-            result, _ = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]

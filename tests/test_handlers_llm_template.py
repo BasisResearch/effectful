@@ -1394,9 +1394,10 @@ class TestIsFinalAnswerCallTool:
         bound_args = sig.bind(x=5)
         tc = DecodedToolCall(final_tool, bound_args, "call_final", is_final=True)
 
-        message, raw_result = call_tool(tc)
+        message, raw_result, is_final = call_tool(tc)
         assert message["role"] == "tool"
         assert raw_result == 10
+        assert is_final is True
 
     def test_call_tool_returns_raw_result_for_normal_tool(self):
         """call_tool returns the raw Python result for all tools."""
@@ -1410,10 +1411,11 @@ class TestIsFinalAnswerCallTool:
         bound_args = sig.bind(x=3)
         tc = DecodedToolCall(normal_tool, bound_args, "call_normal")
 
-        message, raw_result = call_tool(tc)
+        message, raw_result, is_final = call_tool(tc)
         assert message["role"] == "tool"
         assert message["tool_call_id"] == "call_normal"
         assert raw_result == 4
+        assert is_final is False
 
     def test_call_tool_final_answer_with_retry_handler(self):
         """call_tool works with RetryLLMHandler for IsFinalAnswer tools."""
@@ -1428,10 +1430,11 @@ class TestIsFinalAnswerCallTool:
         tc = DecodedToolCall(final_tool, bound_args, "call_retry_final", is_final=True)
 
         with handler(RetryLLMHandler()):
-            message, raw_result = call_tool(tc)
+            message, raw_result, is_final = call_tool(tc)
 
         assert message["role"] == "tool"
         assert raw_result == "answer: 42"
+        assert is_final is True
 
 
 class TestIsFinalAnswerCompletionLoop:
@@ -1586,3 +1589,62 @@ class TestIsFinalAnswerCompletionLoop:
 
         assert result == 12
         assert mock.call_count == 1
+
+    def test_retry_handler_error_on_final_tool_does_not_produce_final_answer(self):
+        """When RetryLLMHandler catches an error on an is_final tool,
+        the error feedback goes back to the LLM instead of None being
+        returned as the final answer."""
+        call_count = 0
+
+        @Tool.define
+        def flaky_final(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Return a final answer, but fail on first call."""
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("transient failure")
+            return x * 10
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call flaky_final with {n}."""
+            raise NotHandled
+
+        # Round 1: LLM calls flaky_final → error caught by RetryLLMHandler
+        # Round 2: LLM calls flaky_final again → succeeds
+        mock = MockCompletionHandler([
+            make_tool_call_response("flaky_final", '{"x": 5}'),
+            make_tool_call_response("flaky_final", '{"x": 5}'),
+        ])
+
+        with (
+            handler(LiteLLMProvider()),
+            handler(RetryLLMHandler()),
+            handler(mock),
+        ):
+            result = task(5)
+
+        assert result == 50  # NOT None
+        assert call_count == 2
+        assert mock.call_count == 2
+
+    def test_call_tool_returns_is_final_false_on_retry_handler_error(self):
+        """call_tool returns is_final=False when RetryLLMHandler catches
+        an error on an is_final tool."""
+
+        @Tool.define
+        def failing_final(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Return a final answer."""
+            raise ValueError("boom")
+
+        sig = inspect.signature(failing_final)
+        bound_args = sig.bind(x=1)
+        tc = DecodedToolCall(failing_final, bound_args, "call_err", is_final=True)
+
+        with handler(RetryLLMHandler()):
+            message, raw_result, is_final = call_tool(tc)
+
+        assert message["role"] == "tool"
+        assert "Tool execution failed" in message["content"]
+        assert raw_result is None
+        assert is_final is False

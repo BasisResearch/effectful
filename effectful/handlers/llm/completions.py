@@ -155,7 +155,7 @@ class DecodedToolCall[T]:
     is_final: bool = False
 
 
-type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None, bool]
 
 
 @functools.cache
@@ -326,16 +326,19 @@ def call_assistant[T, U](
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
-    return (raw_message, tool_calls, result)
+    is_final = any(tc.is_final for tc in tool_calls)
+    return (raw_message, tool_calls, result, is_final)
 
 
 @Operation.define
-def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T]:
-    """Execute a tool and return the serialised message and the raw Python result.
+def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool]:
+    """Execute a tool and return the serialised message, the raw result, and
+    whether this result is a final answer.
 
-    The message is appended to the conversation history.  The raw result is
-    returned alongside so that callers (e.g. the completion loop) can use it
-    directly when the tool is marked ``is_final``.
+    Returns:
+        A 3-tuple ``(message, result, is_final)``.  ``message`` is appended
+        to the conversation history.  When ``is_final`` is ``True`` the
+        completion loop uses ``result`` directly as the template return value.
     """
     # call tool with python types
     try:
@@ -354,7 +357,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T]:
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
     append_message(message)
-    return message, result
+    return message, result, tool_call.is_final
 
 
 @Operation.define
@@ -510,18 +513,20 @@ class RetryLLMHandler(ObjectInterpretation):
             return fwd(tools, response_format, model, **kwargs)
 
         with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result = self.call_assistant_retryer(_attempt)
+            message, tool_calls, result, is_final = self.call_assistant_retryer(_attempt)
 
         append_message(message)
-        return (message, tool_calls, result)
+        return (message, tool_calls, result, is_final)
 
     @implements(call_tool)
-    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> tuple[Message, T | None]:
+    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as
         error messages to the LLM. Only exceptions matching `catch_tool_errors`
-        are caught; others propagate up.
+        are caught; others propagate up.  When an error is caught,
+        ``is_final`` is always ``False`` so the error feedback goes back
+        to the LLM rather than being mistaken for a final answer.
         """
         try:
             return fwd(tool_call)
@@ -529,7 +534,7 @@ class RetryLLMHandler(ObjectInterpretation):
             if isinstance(e.original_error, self.catch_tool_errors):
                 message = e.to_feedback_message(self.include_traceback)
                 append_message(message)
-                return message, None
+                return message, None, False
             else:
                 raise
 
@@ -572,14 +577,13 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             is_final = False
             while message["role"] != "assistant" or tool_calls:
-                message, tool_calls, result = call_assistant(
+                message, tool_calls, result, is_final = call_assistant(
                     template.tools, response_model, **self.config
                 )
                 for tool_call in tool_calls:
-                    message, raw_result = call_tool(tool_call)
-                    if tool_call.is_final:
+                    message, raw_result, is_final = call_tool(tool_call)
+                    if is_final:
                         result = typing.cast(T, raw_result)
-                        is_final = True
                         break
                 if is_final:
                     break
