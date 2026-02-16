@@ -8,7 +8,14 @@ import textwrap
 import types
 import typing
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import (
+    Callable,
+    Hashable,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
+)
 from dataclasses import dataclass
 from types import CodeType
 from typing import Any
@@ -682,7 +689,7 @@ def _encodable_object[T, U](
             __config__={"extra": "forbid"},
             **{f.name: (f.type, ...) for f in dataclasses.fields(ty)},
         )
-        return typing.cast(Encodable[T, U], BaseEncodable(ty, model_cls, ctx, adapter))  # type: ignore[arg-type]
+        return typing.cast(Encodable[T, U], BaseEncodable(ty, model_cls, ctx, adapter))
 
     return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
 
@@ -694,10 +701,11 @@ def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[st
 
 
 @functools.cache
-def _scalar_response_model(ty: type[Any]) -> type[pydantic.BaseModel]:
+def _scalar_response_model(ty: Hashable) -> type[pydantic.BaseModel]:
+    scalar_ty = typing.cast(type[Any], ty)
     return pydantic.create_model(
-        f"Response_{getattr(ty, '__name__', 'scalar')}",
-        value=(ty, ...),
+        f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
+        value=(scalar_ty, ...),
         __config__={"extra": "forbid"},
     )
 
@@ -711,7 +719,7 @@ def _encodable_scalar[T: int | float | bool | complex](
 ) -> Encodable[T, T]:
     """Encode scalar values through a Response(value=...) pydantic model."""
     ctx = {} if ctx is None else ctx
-    model_cls = _scalar_response_model(ty)
+    model_cls = _scalar_response_model(typing.cast(Hashable, ty))
     return ScalarEncodable(
         ty, typing.cast(type[T], model_cls), ctx, pydantic.TypeAdapter(ty)
     )
