@@ -1,6 +1,5 @@
 import ast
 import base64
-import dataclasses
 import functools
 import inspect
 import io
@@ -125,37 +124,40 @@ class BaseEncodable[T](Encodable[T, T]):
 
 
 @dataclass
-class ScalarEncodable[T: int | float | bool | complex](BaseEncodable[T]):
-    """Scalar values encoded as Response(value=...) models."""
+class WrappedEncodable[T](Encodable[T, typing.Any]):
+    """Generic wrapper encodable: base runtime values + wrapped response_format model."""
 
-    def encode(self, value: T) -> T:
-        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
-        validated = self.adapter.validate_python(value)
-        wrapped = model_cls.model_validate({"value": validated})
-        return typing.cast(T, wrapped)
+    base: type[T]
+    enc: type[pydantic.BaseModel]
+    ctx: Mapping[str, Any]
+    adapter: pydantic.TypeAdapter[T]
 
-    def decode(self, encoded_value: T) -> T:
+    def encode(self, value: T) -> typing.Any:
+        return typing.cast(typing.Any, self.adapter.validate_python(value))
+
+    def decode(self, encoded_value: typing.Any) -> T:
         if isinstance(encoded_value, pydantic.BaseModel):
             value = getattr(encoded_value, "value")
         elif isinstance(encoded_value, Mapping):
-            value = encoded_value["value"]
+            value = encoded_value.get("value", encoded_value)
         else:
             value = encoded_value
         return typing.cast(T, self.adapter.validate_python(value))
 
-    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
-        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
-        if isinstance(encoded_value, pydantic.BaseModel):
-            wrapped = encoded_value
-        elif isinstance(encoded_value, Mapping):
-            wrapped = model_cls.model_validate(encoded_value)
-        else:
-            wrapped = model_cls.model_validate({"value": encoded_value})
-        return [{"type": "text", "text": wrapped.model_dump_json()}]
+    def serialize(self, encoded_value: typing.Any) -> Sequence[OpenAIMessageContentListBlock]:
+        # Keep prompt interpolation plain and human-friendly.
+        base_value = self.decode(encoded_value)
+        json_str = self.adapter.dump_json(base_value).decode("utf-8")
+        return [{"type": "text", "text": json_str}]
 
-    def deserialize(self, serialized_value: str) -> T:
+    def deserialize(self, serialized_value: str) -> typing.Any:
         model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
-        return typing.cast(T, model_cls.model_validate_json(serialized_value))
+        try:
+            wrapped = model_cls.model_validate_json(serialized_value)
+            return self.decode(wrapped)
+        except pydantic.ValidationError:
+            # Backward-compatible path for raw JSON payloads.
+            return typing.cast(typing.Any, self.adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -550,12 +552,25 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
+def _embedded_type_from_enc(enc: Encodable[Any, Any]) -> type[Any]:
+    if isinstance(enc, WrappedEncodable):
+        return typing.cast(type[Any], enc.base)
+    if isinstance(enc, TupleEncodable):
+        return typing.cast(
+            type[Any],
+            tuple[*( _embedded_type_from_enc(e) for e in enc.element_encoders)],  # type: ignore
+        )
+    if isinstance(enc, MutableSequenceEncodable):
+        return typing.cast(type[Any], list[_embedded_type_from_enc(enc.element_encoder)])  # type: ignore
+    return typing.cast(type[Any], enc.enc)
+
+
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).enc
+            name: _embedded_type_from_enc(Encodable.define(param.annotation))
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -683,15 +698,16 @@ def _encodable_object[T, U](
     adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
 
-    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
-        model_cls = pydantic.create_model(  # type: ignore[call-overload]
-            ty.__name__,
-            __config__={"extra": "forbid"},
-            **{f.name: (f.type, ...) for f in dataclasses.fields(ty)},
-        )
-        return typing.cast(Encodable[T, U], BaseEncodable(ty, model_cls, ctx, adapter))
-
-    return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
+    model_cls = _wrapped_response_model(typing.cast(Hashable, ty))
+    return typing.cast(
+        Encodable[T, U],
+        WrappedEncodable(
+            ty,
+            typing.cast(type[pydantic.BaseModel], model_cls),
+            ctx,
+            adapter,
+        ),
+    )
 
 
 @Encodable.define.register(str)
@@ -701,29 +717,13 @@ def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[st
 
 
 @functools.cache
-def _scalar_response_model(ty: Hashable) -> type[pydantic.BaseModel]:
+def _wrapped_response_model(ty: Hashable) -> type[pydantic.BaseModel]:
     scalar_ty = typing.cast(type[Any], ty)
     return pydantic.create_model(
         f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
         value=(scalar_ty, ...),
         __config__={"extra": "forbid"},
     )
-
-
-@Encodable.define.register(int)
-@Encodable.define.register(float)
-@Encodable.define.register(bool)
-@Encodable.define.register(complex)
-def _encodable_scalar[T: int | float | bool | complex](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, T]:
-    """Encode scalar values through a Response(value=...) pydantic model."""
-    ctx = {} if ctx is None else ctx
-    model_cls = _scalar_response_model(typing.cast(Hashable, ty))
-    return ScalarEncodable(
-        ty, typing.cast(type[T], model_cls), ctx, pydantic.TypeAdapter(ty)
-    )
-
 
 @Encodable.define.register(Term)
 def _encodable_term[T: Term, U](
@@ -776,7 +776,7 @@ def _encodable_tuple[T, U](
 
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
+        tuple[*( _embedded_type_from_enc(enc) for enc in element_encoders)],  # type: ignore
     )
 
     return typing.cast(
@@ -807,7 +807,7 @@ def _encodable_mutable_sequence[T, U](
     # Build the encoded type (list of encoded element type) - runtime-created, use Any
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        list[element_encoder.enc],  # type: ignore
+        list[_embedded_type_from_enc(element_encoder)],  # type: ignore
     )
 
     return typing.cast(
