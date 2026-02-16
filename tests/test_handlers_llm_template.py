@@ -12,7 +12,6 @@ from litellm import ModelResponse
 from effectful.handlers.llm import Agent, IsFinalAnswer, Template, Tool
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
-    DirectReturn,
     LiteLLMProvider,
     RetryLLMHandler,
     call_tool,
@@ -1383,8 +1382,8 @@ class TestIsFinalAnswerAnnotation:
 class TestIsFinalAnswerCallTool:
     """Tests for call_tool behavior with IsFinalAnswer tools."""
 
-    def test_call_tool_raises_direct_return_for_final_answer_tool(self):
-        """call_tool raises DirectReturn when tool has IsFinalAnswer."""
+    def test_call_tool_returns_raw_result_for_final_answer_tool(self):
+        """call_tool returns the raw Python result alongside the message."""
 
         @Tool.define
         def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
@@ -1393,15 +1392,14 @@ class TestIsFinalAnswerCallTool:
 
         sig = inspect.signature(final_tool)
         bound_args = sig.bind(x=5)
-        tc = DecodedToolCall(final_tool, bound_args, "call_final")
+        tc = DecodedToolCall(final_tool, bound_args, "call_final", is_final=True)
 
-        with pytest.raises(DirectReturn) as exc_info:
-            call_tool(tc)
+        message, raw_result = call_tool(tc)
+        assert message["role"] == "tool"
+        assert raw_result == 10
 
-        assert exc_info.value.value == 10
-
-    def test_call_tool_normal_for_non_final_answer_tool(self):
-        """call_tool returns a Message normally for non-IsFinalAnswer tools."""
+    def test_call_tool_returns_raw_result_for_normal_tool(self):
+        """call_tool returns the raw Python result for all tools."""
 
         @Tool.define
         def normal_tool(x: int) -> int:
@@ -1412,12 +1410,13 @@ class TestIsFinalAnswerCallTool:
         bound_args = sig.bind(x=3)
         tc = DecodedToolCall(normal_tool, bound_args, "call_normal")
 
-        result = call_tool(tc)
-        assert result["role"] == "tool"
-        assert result["tool_call_id"] == "call_normal"
+        message, raw_result = call_tool(tc)
+        assert message["role"] == "tool"
+        assert message["tool_call_id"] == "call_normal"
+        assert raw_result == 4
 
     def test_call_tool_final_answer_with_retry_handler(self):
-        """DirectReturn propagates through RetryLLMHandler._call_tool."""
+        """call_tool works with RetryLLMHandler for IsFinalAnswer tools."""
 
         @Tool.define
         def final_tool(x: int) -> Annotated[str, IsFinalAnswer]:
@@ -1426,13 +1425,13 @@ class TestIsFinalAnswerCallTool:
 
         sig = inspect.signature(final_tool)
         bound_args = sig.bind(x=42)
-        tc = DecodedToolCall(final_tool, bound_args, "call_retry_final")
+        tc = DecodedToolCall(final_tool, bound_args, "call_retry_final", is_final=True)
 
-        with pytest.raises(DirectReturn) as exc_info:
-            with handler(RetryLLMHandler()):
-                call_tool(tc)
+        with handler(RetryLLMHandler()):
+            message, raw_result = call_tool(tc)
 
-        assert exc_info.value.value == "answer: 42"
+        assert message["role"] == "tool"
+        assert raw_result == "answer: 42"
 
 
 class TestIsFinalAnswerCompletionLoop:
@@ -1452,9 +1451,7 @@ class TestIsFinalAnswerCompletionLoop:
             """Call compute with {n}."""
             raise NotHandled
 
-        mock = MockCompletionHandler(
-            [make_tool_call_response("compute", '{"x": 7}')]
-        )
+        mock = MockCompletionHandler([make_tool_call_response("compute", '{"x": 7}')])
 
         with handler(LiteLLMProvider()), handler(mock):
             result = task(7)
@@ -1481,9 +1478,7 @@ class TestIsFinalAnswerCompletionLoop:
             """Call make_result."""
             raise NotHandled
 
-        mock = MockCompletionHandler(
-            [make_tool_call_response("make_result", "{}")]
-        )
+        mock = MockCompletionHandler([make_tool_call_response("make_result", "{}")])
 
         with handler(LiteLLMProvider()), handler(mock):
             result = task()
@@ -1528,9 +1523,7 @@ class TestIsFinalAnswerCompletionLoop:
                         for m in agent.__history__.values()
                         if m.get("role") == "tool"
                     )
-                    assert has_response, (
-                        f"Orphaned tool_call {tc_id} in history"
-                    )
+                    assert has_response, f"Orphaned tool_call {tc_id} in history"
 
     def test_agent_subsequent_call_after_final_answer(self):
         """A follow-up call on the same Agent works after IsFinalAnswer."""

@@ -970,7 +970,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(failing_tool, bound_args, "call_1")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _ = call_tool(tool_call)
 
         # The result should be an error message, not an exception
         assert result["role"] == "tool"
@@ -987,7 +987,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(divide_tool, bound_args, "call_div")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_div"
@@ -1002,7 +1002,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(add_numbers, bound_args, "call_add")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_add"
@@ -1553,7 +1553,7 @@ class TestCallToolWrapsExecutionError:
         bound_args = sig.bind(a=3, b=4)
         tc = DecodedToolCall(add_numbers, bound_args, "call_ok")
 
-        result = call_tool(tc)
+        result, _ = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
@@ -1568,7 +1568,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         tc = DecodedToolCall(flaky_tool, bound_args, "call_match")
 
         with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
-            result = call_tool(tc)
+            result, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_match"
@@ -1595,7 +1595,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         tc = DecodedToolCall(type_error_tool, bound_args, "call_default")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tc)
+            result, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]
@@ -1611,7 +1611,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
                 catch_tool_errors=(ConnectionError, ValueError),
             )
         ):
-            result = call_tool(tc)
+            result, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]

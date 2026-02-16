@@ -147,27 +147,12 @@ class ToolCallExecutionError(Exception):
         )
 
 
-class DirectReturn[T](BaseException):
-    """Raised internally to short-circuit the completion loop when a tool
-    annotated with :class:`~effectful.handlers.llm.template.IsFinalAnswer`
-    produces a result.
-
-    Extends :class:`BaseException` so it is not caught by handlers that
-    catch :class:`Exception` (e.g. ``call_tool``'s wrapping in
-    :class:`ToolCallExecutionError`, or :class:`RetryLLMHandler`).
-    """
-
-    value: T
-
-    def __init__(self, value: T):
-        self.value = value
-        super().__init__(value)
-
-
-class DecodedToolCall[T](typing.NamedTuple):
+@dataclasses.dataclass
+class DecodedToolCall[T]:
     tool: Tool[..., T]
     bound_args: inspect.BoundArguments
     id: ToolCallID
+    is_final: bool = False
 
 
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
@@ -248,7 +233,11 @@ def decode_tool_call(
             tool_name, tool_call.id, e, raw_message=raw_message
         ) from e
 
-    return DecodedToolCall(tool, bound_sig, tool_call.id)
+    from effectful.handlers.llm.template import _is_final_answer_tool
+
+    return DecodedToolCall(
+        tool, bound_sig, tool_call.id, is_final=_is_final_answer_tool(tool)
+    )
 
 
 @Operation.define
@@ -312,6 +301,18 @@ def call_assistant[T, U](
         decoded_tool_call = decode_tool_call(validated_tool_call, tools, raw_message)
         tool_calls.append(decoded_tool_call)
 
+    if any(tc.is_final for tc in tool_calls) and len(tool_calls) > 1:
+        final_name = next(tc.tool.__name__ for tc in tool_calls if tc.is_final)
+        raise ToolCallDecodingError(
+            final_name,
+            next(tc.id for tc in tool_calls if tc.is_final),
+            ValueError(
+                f"IsFinalAnswer tool '{final_name}' must be the only tool call "
+                f"in a round, but {len(tool_calls)} tool calls were generated."
+            ),
+            raw_message=raw_message,
+        )
+
     result = None
     if not tool_calls:
         # return response
@@ -329,18 +330,13 @@ def call_assistant[T, U](
 
 
 @Operation.define
-def call_tool(tool_call: DecodedToolCall) -> Message:
-    """Implements a roundtrip call to a python function. Input is a json
-    string representing an LLM tool call request parameters. The output is
-    the serialised response to the model.
+def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T]:
+    """Execute a tool and return the serialised message and the raw Python result.
 
-    If the tool is annotated with
-    :class:`~effectful.handlers.llm.template.IsFinalAnswer`, a
-    :class:`DirectReturn` exception is raised carrying the raw Python
-    result, which short-circuits the completion loop.
+    The message is appended to the conversation history.  The raw result is
+    returned alongside so that callers (e.g. the completion loop) can use it
+    directly when the tool is marked ``is_final``.
     """
-    from effectful.handlers.llm.template import _is_final_answer_tool
-
     # call tool with python types
     try:
         result = tool_call.tool(
@@ -358,11 +354,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
     append_message(message)
-
-    if _is_final_answer_tool(tool_call.tool):
-        raise DirectReturn(result)
-
-    return message
+    return message, result
 
 
 @Operation.define
@@ -524,7 +516,7 @@ class RetryLLMHandler(ObjectInterpretation):
         return (message, tool_calls, result)
 
     @implements(call_tool)
-    def _call_tool(self, tool_call: DecodedToolCall) -> Message:
+    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> tuple[Message, T | None]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as
@@ -537,7 +529,7 @@ class RetryLLMHandler(ObjectInterpretation):
             if isinstance(e.original_error, self.catch_tool_errors):
                 message = e.to_feedback_message(self.include_traceback)
                 append_message(message)
-                return message
+                return message, None
             else:
                 raise
 
@@ -578,34 +570,19 @@ class LiteLLMProvider(ObjectInterpretation):
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
             result: T | None = None
+            is_final = False
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
                     template.tools, response_model, **self.config
                 )
-                for i, tool_call in enumerate(tool_calls):
-                    try:
-                        message = call_tool(tool_call)
-                    except DirectReturn as dr:
-                        result = typing.cast(T, dr.value)
-                        # Placeholder messages for remaining unprocessed
-                        # tool calls to keep history valid for Agents.
-                        for remaining_tc in tool_calls[i + 1 :]:
-                            append_message(
-                                _make_message(
-                                    dict(
-                                        role="tool",
-                                        content=[
-                                            {
-                                                "type": "text",
-                                                "text": "[skipped]",
-                                            }
-                                        ],
-                                        tool_call_id=remaining_tc.id,
-                                    )
-                                )
-                            )
-                        tool_calls = []
+                for tool_call in tool_calls:
+                    message, raw_result = call_tool(tool_call)
+                    if tool_call.is_final:
+                        result = typing.cast(T, raw_result)
+                        is_final = True
                         break
+                if is_final:
+                    break
 
         try:
             _get_history()
