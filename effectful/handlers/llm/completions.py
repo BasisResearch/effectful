@@ -319,7 +319,7 @@ def call_assistant[T, U](
         tool_ret = inspect.signature(final_tc.tool).return_annotation
         if typing.get_origin(tool_ret) is typing.Annotated:
             tool_ret = typing.get_args(tool_ret)[0]
-        if tool_ret != response_format.base:
+        if not issubclass(tool_ret, response_format.base):
             raise ToolCallDecodingError(
                 final_tc.tool.__name__,
                 final_tc.id,
