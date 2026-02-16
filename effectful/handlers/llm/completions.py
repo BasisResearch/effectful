@@ -309,7 +309,7 @@ def call_assistant[T, U](
                 final_tc.tool.__name__,
                 final_tc.id,
                 ValueError(
-                    f"IsFinalAnswer tool '{final_tc.tool.__name__}' must be the "
+                    f"IsFinal tool '{final_tc.tool.__name__}' must be the "
                     f"only tool call in a round, but {len(tool_calls)} tool calls "
                     f"were generated."
                 ),
@@ -324,7 +324,7 @@ def call_assistant[T, U](
                 final_tc.tool.__name__,
                 final_tc.id,
                 TypeError(
-                    f"IsFinalAnswer tool '{final_tc.tool.__name__}' returns "
+                    f"IsFinal tool '{final_tc.tool.__name__}' returns "
                     f"{tool_ret!r}, but the enclosing template expects "
                     f"{response_format.base!r}."
                 ),

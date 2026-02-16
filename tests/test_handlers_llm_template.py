@@ -9,7 +9,7 @@ from typing import Annotated
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Agent, IsFinalAnswer, Template, Tool
+from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LiteLLMProvider,
@@ -22,7 +22,7 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.template import _is_final_answer_tool
+from effectful.handlers.llm.template import IsFinal, _is_final_answer_tool
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1335,18 +1335,18 @@ def test_validate_format_spec_on_undefined_var():
 
 
 # ---------------------------------------------------------------------------
-# IsFinalAnswer annotation tests
+# IsFinal annotation tests
 # ---------------------------------------------------------------------------
 
 
-class TestIsFinalAnswerAnnotation:
-    """Tests for the IsFinalAnswer type annotation."""
+class TestIsFinalAnnotation:
+    """Tests for the IsFinal type annotation."""
 
     def test_tool_with_is_final_answer_return_type(self):
-        """Tool with IsFinalAnswer on return type creates successfully."""
+        """Tool with IsFinal on return type creates successfully."""
 
         @Tool.define
-        def my_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+        def my_tool(x: int) -> Annotated[str, IsFinal]:
             """A tool that returns a final answer."""
             return str(x)
 
@@ -1363,34 +1363,34 @@ class TestIsFinalAnswerAnnotation:
         assert not _is_final_answer_tool(normal_tool)
 
     def test_is_final_answer_on_parameter_raises(self):
-        """IsFinalAnswer on a parameter raises TypeError at define time."""
-        with pytest.raises(TypeError, match="IsFinalAnswer"):
+        """IsFinal on a parameter raises TypeError at define time."""
+        with pytest.raises(TypeError, match="IsFinal"):
 
             @Tool.define
-            def bad_tool(x: Annotated[int, IsFinalAnswer]) -> str:
+            def bad_tool(x: Annotated[int, IsFinal]) -> str:
                 """A tool with bad annotation."""
                 return str(x)
 
     def test_is_final_answer_combined_with_is_recursive(self):
-        """IsFinalAnswer and IsRecursive can coexist on a return type."""
+        """IsFinal and IsRecursive can coexist on a return type."""
         from effectful.handlers.llm.template import IsRecursive
 
         @Tool.define
-        def combo_tool(x: int) -> Annotated[str, IsFinalAnswer, IsRecursive]:
+        def combo_tool(x: int) -> Annotated[str, IsFinal, IsRecursive]:
             """A tool with both annotations."""
             return str(x)
 
         assert _is_final_answer_tool(combo_tool)
 
 
-class TestIsFinalAnswerCallTool:
-    """Tests for call_tool behavior with IsFinalAnswer tools."""
+class TestIsFinalCallTool:
+    """Tests for call_tool behavior with IsFinal tools."""
 
     def test_call_tool_returns_raw_result_for_final_answer_tool(self):
         """call_tool returns the raw Python result alongside the message."""
 
         @Tool.define
-        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+        def final_tool(x: int) -> Annotated[int, IsFinal]:
             """Returns a final answer."""
             return x * 2
 
@@ -1422,10 +1422,10 @@ class TestIsFinalAnswerCallTool:
         assert is_final is False
 
     def test_call_tool_final_answer_with_retry_handler(self):
-        """call_tool works with RetryLLMHandler for IsFinalAnswer tools."""
+        """call_tool works with RetryLLMHandler for IsFinal tools."""
 
         @Tool.define
-        def final_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+        def final_tool(x: int) -> Annotated[str, IsFinal]:
             """Returns a final answer."""
             return f"answer: {x}"
 
@@ -1441,15 +1441,15 @@ class TestIsFinalAnswerCallTool:
         assert is_final is True
 
 
-class TestIsFinalAnswerCompletionLoop:
-    """Tests for IsFinalAnswer through the full completion loop."""
+class TestIsFinalCompletionLoop:
+    """Tests for IsFinal through the full completion loop."""
 
     def test_final_answer_tool_skips_final_llm_call(self):
         """When LLM calls a final-answer tool, result is returned
         directly without a second call_assistant invocation."""
 
         @Tool.define
-        def compute(x: int) -> Annotated[int, IsFinalAnswer]:
+        def compute(x: int) -> Annotated[int, IsFinal]:
             """Compute and return the result directly."""
             return x * 10
 
@@ -1476,7 +1476,7 @@ class TestIsFinalAnswerCompletionLoop:
             label: str
 
         @Tool.define
-        def make_result() -> Annotated[MyResult, IsFinalAnswer]:
+        def make_result() -> Annotated[MyResult, IsFinal]:
             """Create a structured result."""
             return MyResult(value=42, label="answer")
 
@@ -1495,10 +1495,10 @@ class TestIsFinalAnswerCompletionLoop:
         assert result.label == "answer"
 
     def test_agent_history_valid_after_final_answer(self):
-        """Agent history has no orphaned tool_calls after IsFinalAnswer."""
+        """Agent history has no orphaned tool_calls after IsFinal."""
 
         @Tool.define
-        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+        def final_tool(x: int) -> Annotated[int, IsFinal]:
             """Return final answer."""
             return x
 
@@ -1533,10 +1533,10 @@ class TestIsFinalAnswerCompletionLoop:
                     assert has_response, f"Orphaned tool_call {tc_id} in history"
 
     def test_agent_subsequent_call_after_final_answer(self):
-        """A follow-up call on the same Agent works after IsFinalAnswer."""
+        """A follow-up call on the same Agent works after IsFinal."""
 
         @Tool.define
-        def final_tool() -> Annotated[str, IsFinalAnswer]:
+        def final_tool() -> Annotated[str, IsFinal]:
             """Return final answer."""
             return "direct result"
 
@@ -1568,10 +1568,10 @@ class TestIsFinalAnswerCompletionLoop:
         assert r2 == "llm result"
 
     def test_final_answer_with_retry_handler_active(self):
-        """IsFinalAnswer works correctly with RetryLLMHandler."""
+        """IsFinal works correctly with RetryLLMHandler."""
 
         @Tool.define
-        def final_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+        def final_tool(x: int) -> Annotated[int, IsFinal]:
             """Return final answer."""
             return x * 3
 
@@ -1601,7 +1601,7 @@ class TestIsFinalAnswerCompletionLoop:
         call_count = 0
 
         @Tool.define
-        def flaky_final(x: int) -> Annotated[int, IsFinalAnswer]:
+        def flaky_final(x: int) -> Annotated[int, IsFinal]:
             """Return a final answer, but fail on first call."""
             nonlocal call_count
             call_count += 1
@@ -1639,7 +1639,7 @@ class TestIsFinalAnswerCompletionLoop:
         an error on an is_final tool."""
 
         @Tool.define
-        def failing_final(x: int) -> Annotated[int, IsFinalAnswer]:
+        def failing_final(x: int) -> Annotated[int, IsFinal]:
             """Return a final answer."""
             raise ValueError("boom")
 
@@ -1656,15 +1656,15 @@ class TestIsFinalAnswerCompletionLoop:
         assert is_final is False
 
 
-class TestIsFinalAnswerReturnTypeValidation:
-    """call_assistant should reject IsFinalAnswer tools whose return type
+class TestIsFinalReturnTypeValidation:
+    """call_assistant should reject IsFinal tools whose return type
     does not match the enclosing template's return type."""
 
     def test_mismatched_return_type_raises_tool_call_decoding_error(self):
-        """IsFinalAnswer tool returning str when template expects int is rejected."""
+        """IsFinal tool returning str when template expects int is rejected."""
 
         @Tool.define
-        def wrong_type_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+        def wrong_type_tool(x: int) -> Annotated[str, IsFinal]:
             """Return a string, but template expects int."""
             return str(x)
 
@@ -1693,10 +1693,10 @@ class TestIsFinalAnswerReturnTypeValidation:
         assert "wrong_type_tool" in str(exc_info.value.original_error)
 
     def test_matching_return_type_passes_validation(self):
-        """IsFinalAnswer tool with matching return type is accepted."""
+        """IsFinal tool with matching return type is accepted."""
 
         @Tool.define
-        def correct_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+        def correct_tool(x: int) -> Annotated[int, IsFinal]:
             """Return an int matching template."""
             return x * 2
 
