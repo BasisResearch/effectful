@@ -344,7 +344,7 @@ def call_assistant[T, U](
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
-    is_final = any(tc.is_final for tc in tool_calls)
+    is_final = not all(not tc.is_final for tc in tool_calls)
     return (raw_message, tool_calls, result, is_final)
 
 
@@ -597,18 +597,13 @@ class LiteLLMProvider(ObjectInterpretation):
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
             result: T | None = None
-            is_final = False
-            while message["role"] != "assistant" or tool_calls:
+            is_final: bool = False
+            while not is_final:
                 message, tool_calls, result, is_final = call_assistant(
                     template.tools, response_model, **self.config
                 )
                 for tool_call in tool_calls:
-                    message, raw_result, is_final = call_tool(tool_call)
-                    if is_final:
-                        result = typing.cast(T, raw_result)
-                        break
-                if is_final:
-                    break
+                    message, result, is_final = call_tool(tool_call)
 
         try:
             _get_history()
