@@ -301,17 +301,35 @@ def call_assistant[T, U](
         decoded_tool_call = decode_tool_call(validated_tool_call, tools, raw_message)
         tool_calls.append(decoded_tool_call)
 
-    if any(tc.is_final for tc in tool_calls) and len(tool_calls) > 1:
-        final_name = next(tc.tool.__name__ for tc in tool_calls if tc.is_final)
-        raise ToolCallDecodingError(
-            final_name,
-            next(tc.id for tc in tool_calls if tc.is_final),
-            ValueError(
-                f"IsFinalAnswer tool '{final_name}' must be the only tool call "
-                f"in a round, but {len(tool_calls)} tool calls were generated."
-            ),
-            raw_message=raw_message,
-        )
+    final_tcs = [tc for tc in tool_calls if tc.is_final]
+    if final_tcs:
+        final_tc = final_tcs[0]
+        if len(tool_calls) > 1:
+            raise ToolCallDecodingError(
+                final_tc.tool.__name__,
+                final_tc.id,
+                ValueError(
+                    f"IsFinalAnswer tool '{final_tc.tool.__name__}' must be the "
+                    f"only tool call in a round, but {len(tool_calls)} tool calls "
+                    f"were generated."
+                ),
+                raw_message=raw_message,
+            )
+        # Validate that the tool's return type matches the template's.
+        tool_ret = inspect.signature(final_tc.tool).return_annotation
+        if typing.get_origin(tool_ret) is typing.Annotated:
+            tool_ret = typing.get_args(tool_ret)[0]
+        if tool_ret != response_format.base:
+            raise ToolCallDecodingError(
+                final_tc.tool.__name__,
+                final_tc.id,
+                TypeError(
+                    f"IsFinalAnswer tool '{final_tc.tool.__name__}' returns "
+                    f"{tool_ret!r}, but the enclosing template expects "
+                    f"{response_format.base!r}."
+                ),
+                raw_message=raw_message,
+            )
 
     result = None
     if not tool_calls:
@@ -513,13 +531,17 @@ class RetryLLMHandler(ObjectInterpretation):
             return fwd(tools, response_format, model, **kwargs)
 
         with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result, is_final = self.call_assistant_retryer(_attempt)
+            message, tool_calls, result, is_final = self.call_assistant_retryer(
+                _attempt
+            )
 
         append_message(message)
         return (message, tool_calls, result, is_final)
 
     @implements(call_tool)
-    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool]:
+    def _call_tool[T](
+        self, tool_call: DecodedToolCall[T]
+    ) -> tuple[Message, T | None, bool]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as

@@ -14,10 +14,14 @@ from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LiteLLMProvider,
     RetryLLMHandler,
+    ToolCallDecodingError,
+    _get_history,
+    call_assistant,
     call_tool,
     call_user,
     completion,
 )
+from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import _is_final_answer_tool
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -1612,10 +1616,12 @@ class TestIsFinalAnswerCompletionLoop:
 
         # Round 1: LLM calls flaky_final → error caught by RetryLLMHandler
         # Round 2: LLM calls flaky_final again → succeeds
-        mock = MockCompletionHandler([
-            make_tool_call_response("flaky_final", '{"x": 5}'),
-            make_tool_call_response("flaky_final", '{"x": 5}'),
-        ])
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("flaky_final", '{"x": 5}'),
+                make_tool_call_response("flaky_final", '{"x": 5}'),
+            ]
+        )
 
         with (
             handler(LiteLLMProvider()),
@@ -1648,3 +1654,71 @@ class TestIsFinalAnswerCompletionLoop:
         assert "Tool execution failed" in message["content"]
         assert raw_result is None
         assert is_final is False
+
+
+class TestIsFinalAnswerReturnTypeValidation:
+    """call_assistant should reject IsFinalAnswer tools whose return type
+    does not match the enclosing template's return type."""
+
+    def test_mismatched_return_type_raises_tool_call_decoding_error(self):
+        """IsFinalAnswer tool returning str when template expects int is rejected."""
+
+        @Tool.define
+        def wrong_type_tool(x: int) -> Annotated[str, IsFinalAnswer]:
+            """Return a string, but template expects int."""
+            return str(x)
+
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("wrong_type_tool", '{"x": 5}'),
+            ]
+        )
+
+        with (
+            handler(mock),
+            handler({_get_history: lambda: message_sequence}),
+        ):
+            with pytest.raises(ToolCallDecodingError) as exc_info:
+                call_assistant(
+                    tools={"wrong_type_tool": wrong_type_tool},
+                    response_format=Encodable.define(int),
+                    model="test-model",
+                )
+
+        assert isinstance(exc_info.value.original_error, TypeError)
+        assert "wrong_type_tool" in str(exc_info.value.original_error)
+
+    def test_matching_return_type_passes_validation(self):
+        """IsFinalAnswer tool with matching return type is accepted."""
+
+        @Tool.define
+        def correct_tool(x: int) -> Annotated[int, IsFinalAnswer]:
+            """Return an int matching template."""
+            return x * 2
+
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("correct_tool", '{"x": 5}'),
+            ]
+        )
+
+        with (
+            handler(mock),
+            handler({_get_history: lambda: message_sequence}),
+        ):
+            _, tool_calls, _, is_final = call_assistant(
+                tools={"correct_tool": correct_tool},
+                response_format=Encodable.define(int),
+                model="test-model",
+            )
+
+        assert len(tool_calls) == 1
+        assert is_final is True
