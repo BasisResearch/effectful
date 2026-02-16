@@ -1,5 +1,7 @@
 import ast
 import base64
+import dataclasses
+import functools
 import inspect
 import io
 import textwrap
@@ -113,6 +115,41 @@ class BaseEncodable[T](Encodable[T, T]):
     def deserialize(self, serialized_value: str) -> T:
         # Parse JSON string into the encoded value, validated as `ty`.
         return typing.cast(T, self.adapter.validate_json(serialized_value))
+
+
+@dataclass
+class ScalarEncodable[T: int | float | bool | complex](BaseEncodable[T]):
+    """Scalar values encoded as Response(value=...) models."""
+
+    def encode(self, value: T) -> T:
+        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
+        validated = self.adapter.validate_python(value)
+        wrapped = model_cls.model_validate({"value": validated})
+        return typing.cast(T, wrapped)
+
+    def decode(self, encoded_value: T) -> T:
+        if isinstance(encoded_value, pydantic.BaseModel):
+            value = getattr(encoded_value, "value")
+        elif isinstance(encoded_value, Mapping):
+            value = encoded_value["value"]
+        else:
+            value = encoded_value
+        return typing.cast(T, self.adapter.validate_python(value))
+
+    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
+        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
+        if isinstance(encoded_value, pydantic.BaseModel):
+            wrapped = encoded_value
+        elif isinstance(encoded_value, Mapping):
+            wrapped = model_cls.model_validate(encoded_value)
+        else:
+            wrapped = model_cls.model_validate({"value": encoded_value})
+        return [{"type": "text", "text": wrapped.model_dump_json()}]
+
+    def deserialize(self, serialized_value: str) -> T:
+        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
+        return typing.cast(T, model_cls.model_validate_json(serialized_value))
+
 
 
 @dataclass
@@ -572,9 +609,10 @@ class ToolCallEncodable[T](
     ctx: Mapping[str, Any]
 
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
-        encoded_args = _param_model(inspect.signature(value.tool)).model_validate(
+        sig = inspect.signature(value.tool)
+        encoded_args = _param_model(sig).model_validate(
             {
-                k: Encodable.define(type(v), self.ctx).encode(v)
+                k: Encodable.define(sig.parameters[k].annotation, self.ctx).encode(v)
                 for k, v in value.bound_args.arguments.items()
             }
         )
@@ -638,6 +676,15 @@ def _encodable_object[T, U](
 ) -> Encodable[T, U]:
     adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
+
+    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
+        model_cls = pydantic.create_model(  # type: ignore[call-overload]
+            ty.__name__,
+            __config__={"extra": "forbid"},
+            **{f.name: (f.type, ...) for f in dataclasses.fields(ty)}
+        )
+        return typing.cast(Encodable[T, U], BaseEncodable(ty, model_cls, ctx, adapter))  # type: ignore[arg-type]
+
     return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
 
 
@@ -645,6 +692,29 @@ def _encodable_object[T, U](
 def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[str, str]:
     """Handler for str type that serializes without JSON encoding."""
     return StrEncodable(ty, ty, ctx or {})
+
+
+@functools.cache
+def _scalar_response_model(ty: type[Any]) -> type[pydantic.BaseModel]:
+    return pydantic.create_model(
+        f"Response_{getattr(ty, '__name__', 'scalar')}",
+        value=(ty, ...),
+        __config__={"extra": "forbid"},
+    )
+
+@Encodable.define.register(int)
+@Encodable.define.register(float)
+@Encodable.define.register(bool)
+@Encodable.define.register(complex)
+def _encodable_scalar[T: int | float | bool | complex](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, T]:
+    """Encode scalar values through a Response(value=...) pydantic model."""
+    ctx = {} if ctx is None else ctx
+    model_cls = _scalar_response_model(ty)
+    return ScalarEncodable(
+        ty, typing.cast(type[T], model_cls), ctx, pydantic.TypeAdapter(ty)
+    )
 
 
 @Encodable.define.register(Term)
