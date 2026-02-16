@@ -198,12 +198,17 @@ def evaluate[T](
     6
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_runtime, interpreter
 
-    if intp is not None:
-        return interpreter(intp)(evaluate)(expr)
-
-    return __dispatch(type(expr))(expr)
+    with interpreter(intp if intp is not None else get_runtime().interpretation):
+        cache = get_runtime().cache
+        assert cache is not None, "Cache should be initialized by interpreter"
+        try:
+            return cache[id(expr)]
+        except KeyError:
+            result = __dispatch(type(expr))(expr)
+            cache[id(expr)] = result
+            return result
 
 
 @evaluate.register(object)
