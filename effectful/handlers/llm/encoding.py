@@ -151,7 +151,6 @@ class ScalarEncodable[T: int | float | bool | complex](BaseEncodable[T]):
         return typing.cast(T, model_cls.model_validate_json(serialized_value))
 
 
-
 @dataclass
 class StrEncodable(Encodable[str, str]):
     base: type[str]
@@ -681,7 +680,7 @@ def _encodable_object[T, U](
         model_cls = pydantic.create_model(  # type: ignore[call-overload]
             ty.__name__,
             __config__={"extra": "forbid"},
-            **{f.name: (f.type, ...) for f in dataclasses.fields(ty)}
+            **{f.name: (f.type, ...) for f in dataclasses.fields(ty)},
         )
         return typing.cast(Encodable[T, U], BaseEncodable(ty, model_cls, ctx, adapter))  # type: ignore[arg-type]
 
@@ -701,6 +700,7 @@ def _scalar_response_model(ty: type[Any]) -> type[pydantic.BaseModel]:
         value=(ty, ...),
         __config__={"extra": "forbid"},
     )
+
 
 @Encodable.define.register(int)
 @Encodable.define.register(float)
