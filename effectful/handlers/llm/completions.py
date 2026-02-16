@@ -360,16 +360,16 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool
     """
     # call tool with python types
     try:
-        result = tool_call.tool(
+        result: T = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except Exception as e:
         raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
 
     # serialize back to U using encoder for return type
-    return_type = Encodable.define(
+    return_type: Encodable[T, typing.Any] = Encodable.define(
         typing.cast(type[typing.Any], nested_type(result).value)
-    )
+    )  # type: ignore
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
