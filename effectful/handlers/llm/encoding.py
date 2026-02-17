@@ -149,7 +149,7 @@ class BaseEncodable[T](Encodable[T, T]):
         model_cls = _wrapped_response_model(typing.cast(Hashable, self.base))
         try:
             wrapped = model_cls.model_validate_json(serialized_value)
-            return typing.cast(T, self.adapter.validate_python(wrapped.value))
+            return typing.cast(T, self.adapter.validate_python(wrapped.value))  # type: ignore[attr-defined]
         except pydantic.ValidationError:
             return typing.cast(T, self.adapter.validate_json(serialized_value))
 
@@ -166,10 +166,10 @@ class DataclassEncodable[T](BaseEncodable[T]):
     field_encodables: Mapping[str, Encodable] = dataclasses.field(default_factory=dict)
 
     @functools.cached_property
-    def response_schema(self) -> type:  # type: ignore[override]
+    def response_schema(self) -> type:
         hints = typing.get_type_hints(self.base)
         field_defs: dict[str, Any] = {}
-        for f in dataclasses.fields(self.base):
+        for f in dataclasses.fields(self.base):  # type: ignore[arg-type]
             if f.name in self.field_encodables:
                 field_enc = self.field_encodables[f.name]
                 ft = (
