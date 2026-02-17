@@ -3,7 +3,6 @@ import base64
 import functools
 import inspect
 import io
-import json
 import textwrap
 import types
 import typing
@@ -86,6 +85,19 @@ class Encodable[T, U](ABC):
         raise NotImplementedError
 
     @property
+    def response_schema(self) -> type | None:
+        """Schema type for litellm response_format. None means no structured output."""
+        return self.enc
+
+    def format_for_prompt(self, value: T) -> Sequence[OpenAIMessageContentListBlock]:
+        """Format a value for prompt interpolation or tool result."""
+        return self.serialize(self.encode(value))
+
+    def parse_response(self, serialized_value: str) -> T:
+        """Parse LLM response content to base type. Default: decode(deserialize(str))."""
+        return self.decode(self.deserialize(serialized_value))
+
+    @property
     def param_schema_type(self) -> type[typing.Any]:
         """Type for param schema: base for flat LLM output, enc when base isn't schema-valid."""
         return typing.cast(type[typing.Any], self.base)
@@ -115,6 +127,10 @@ class BaseEncodable[T](Encodable[T, T]):
     ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
 
+    @property
+    def response_schema(self) -> type:
+        return _wrapped_response_model(typing.cast(Hashable, self.base))
+
     def encode(self, value: T) -> T:
         return typing.cast(T, self.adapter.validate_python(value))
 
@@ -126,55 +142,15 @@ class BaseEncodable[T](Encodable[T, T]):
         return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> T:
-        # Parse JSON string into the encoded value, validated as `ty`.
         return typing.cast(T, self.adapter.validate_json(serialized_value))
 
-
-@dataclass
-class WrappedEncodable[T](Encodable[T, typing.Any]):
-    """Generic wrapper encodable: base runtime values + wrapped response_format model."""
-
-    base: type[T]
-    enc: type[pydantic.BaseModel]
-    ctx: Mapping[str, Any]
-    adapter: pydantic.TypeAdapter[T]
-
-    def encode(self, value: T) -> typing.Any:
-        return typing.cast(typing.Any, self.adapter.validate_python(value))
-
-    def decode(self, encoded_value: typing.Any) -> T:
-        """Decode enc or raw (from flat tool params) to base."""
-        if isinstance(encoded_value, pydantic.BaseModel):
-            value = getattr(encoded_value, "value")
-        elif isinstance(encoded_value, Mapping):
-            value = encoded_value.get("value", encoded_value)
-        else:
-            value = encoded_value
-        return typing.cast(T, self.adapter.validate_python(value))
-
-    def serialize(
-        self, encoded_value: typing.Any
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        # Keep prompt interpolation plain and human-friendly.
-        base_value = self.decode(encoded_value)
-        json_str = self.adapter.dump_json(base_value).decode("utf-8")
-        return [{"type": "text", "text": json_str}]
-
-    def deserialize(self, serialized_value: str) -> typing.Any:
-        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
+    def parse_response(self, serialized_value: str) -> T:
+        model_cls = _wrapped_response_model(typing.cast(Hashable, self.base))
         try:
             wrapped = model_cls.model_validate_json(serialized_value)
-            return self.decode(wrapped)
+            return typing.cast(T, self.adapter.validate_python(wrapped.value))
         except pydantic.ValidationError:
-            # model_cls may fail for pydantic dataclasses (create_model field type).
-            # LLM always returns wrapped {"value": ...} since enc=Response_X.
-            parsed: typing.Any = json.loads(serialized_value)
-            assert isinstance(parsed, Mapping) and "value" in parsed, (
-                f"expected wrapped {{'value': ...}}, got {type(parsed).__name__}"
-            )
-            return typing.cast(
-                typing.Any, self.adapter.validate_python(parsed["value"])
-            )
+            return typing.cast(T, self.adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -182,6 +158,10 @@ class StrEncodable(Encodable[str, str]):
     base: type[str]
     enc: type[str]
     ctx: Mapping[str, Any]
+
+    @property
+    def response_schema(self) -> type | None:
+        return None
 
     def encode(self, value: str) -> str:
         return value
@@ -719,12 +699,7 @@ def _encodable_object[T, U](
 ) -> Encodable[T, U]:
     adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
-
-    model_cls = _wrapped_response_model(typing.cast(Hashable, ty))
-    return typing.cast(
-        Encodable[T, U],
-        WrappedEncodable(ty, model_cls, ctx, adapter),
-    )
+    return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
 
 
 @Encodable.define.register(str)

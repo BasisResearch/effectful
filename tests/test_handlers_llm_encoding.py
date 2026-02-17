@@ -471,6 +471,20 @@ def test_encode_idempotent(ty, value, ctx):
 
 
 # ============================================================================
+# Law 6: parse_response(format_for_prompt(v)[0]["text"]) == v
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
+def test_parse_response_roundtrip(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    blocks = enc.format_for_prompt(value)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert enc.parse_response(blocks[0]["text"]) == value
+
+
+# ============================================================================
 # Term-specific: Encodable.define raises TypeError for Term and Operation
 # ============================================================================
 
