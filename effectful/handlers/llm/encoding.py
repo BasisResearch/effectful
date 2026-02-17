@@ -1,5 +1,6 @@
 import ast
 import base64
+import dataclasses
 import functools
 import inspect
 import io
@@ -151,6 +152,49 @@ class BaseEncodable[T](Encodable[T, T]):
             return typing.cast(T, self.adapter.validate_python(wrapped.value))
         except pydantic.ValidationError:
             return typing.cast(T, self.adapter.validate_json(serialized_value))
+
+
+@dataclass
+class DataclassEncodable[T](BaseEncodable[T]):
+    """Encodable for dataclass types (stdlib and pydantic).
+
+    Stores per-field encodables and composes response_schema from them,
+    so the LLM returns the dataclass fields directly (no Response_X wrapper).
+    parse_response is just validate_json — no wrapping, no branching.
+    """
+
+    field_encodables: Mapping[str, Encodable] = dataclasses.field(default_factory=dict)
+
+    @functools.cached_property
+    def response_schema(self) -> type:  # type: ignore[override]
+        hints = typing.get_type_hints(self.base)
+        field_defs: dict[str, Any] = {}
+        for f in dataclasses.fields(self.base):
+            if f.name in self.field_encodables:
+                field_enc = self.field_encodables[f.name]
+                ft = (
+                    field_enc.response_schema
+                    if isinstance(field_enc, DataclassEncodable)
+                    else field_enc.enc
+                )
+            else:
+                ft = hints[f.name]
+            if f.default is not dataclasses.MISSING:
+                field_defs[f.name] = (ft, f.default)
+            elif f.default_factory is not dataclasses.MISSING:
+                field_defs[f.name] = (
+                    ft,
+                    pydantic.Field(default_factory=f.default_factory),
+                )
+            else:
+                field_defs[f.name] = (ft, ...)
+        return pydantic.create_model(
+            self.base.__name__,
+            **field_defs,
+        )
+
+    def parse_response(self, serialized_value: str) -> T:
+        return typing.cast(T, self.adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -699,6 +743,17 @@ def _encodable_object[T, U](
 ) -> Encodable[T, U]:
     adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
+    if dataclasses.is_dataclass(ty):
+        hints = typing.get_type_hints(ty)
+        field_encs = {
+            f.name: Encodable.define(hints[f.name], ctx)
+            for f in dataclasses.fields(ty)
+            if isinstance(hints[f.name], type)
+            and dataclasses.is_dataclass(hints[f.name])
+        }
+        return typing.cast(
+            Encodable[T, U], DataclassEncodable(ty, ty, ctx, adapter, field_encs)
+        )
     return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
 
 
