@@ -1,12 +1,21 @@
 import builtins
+import dataclasses
+import random
 import typing
-from collections.abc import Callable
+from collections.abc import (
+    Callable,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
+    Set,
+)
 from dataclasses import asdict, dataclass
 from typing import Annotated, Any, NamedTuple, TypedDict
 
 import pydantic
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
@@ -22,751 +31,347 @@ EVAL_PROVIDERS = [
 ]
 
 
-def test_type_to_encodable_type_term():
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _images_equal(a: Image.Image, b: Image.Image) -> bool:
+    """Pixel-level image comparison.
+
+    Decoded images are ``PngImageFile`` (not ``Image.Image``), so ``==``
+    returns ``False`` even when pixels are identical.  Use
+    ``ImageChops.difference`` instead.
+    """
+    if not isinstance(a, Image.Image) or not isinstance(b, Image.Image):
+        return False
+    if a.size != b.size:
+        return False
+    return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+
+
+def _values_equal(typ, decoded, value):
+    """Deep equality that handles PIL Image comparisons in nested structures."""
+    if typ is Image.Image:
+        return _images_equal(decoded, value)
+    origin = typing.get_origin(typ)
+    args = typing.get_args(typ)
+    if origin is tuple:
+        if not isinstance(decoded, tuple) or len(decoded) != len(value):
+            return False
+        if not args or args == ((),):
+            return decoded == value
+        return all(_values_equal(t, d, v) for t, d, v in zip(args, decoded, value))
+    if origin is not None and origin is not tuple and issubclass(origin, Sequence):
+        if not isinstance(decoded, list) or len(decoded) != len(value):
+            return False
+        if not args:
+            return decoded == value
+        return all(_values_equal(args[0], d, v) for d, v in zip(decoded, value))
+    return decoded == value
+
+
+def _pydantic_validation_input(encodable, encoded, value):
+    """Prepare input for ``Model.model_validate({'value': ...})``.
+
+    Different base types need different dict conversion for pydantic
+    model_validate to accept them:
+
+    * **pydantic models** -- ``model_dump()``
+    * **dataclasses** -- ``asdict()``
+    * **NamedTuples** -- ``_asdict()``
+    * everything else -- pass-through (already a valid pydantic input)
+    """
+    base = encodable.base
+    if isinstance(base, type) and issubclass(base, pydantic.BaseModel):
+        return encoded.model_dump()
+    if isinstance(base, type) and dataclasses.is_dataclass(base):
+        return asdict(encoded)
+    if isinstance(value, tuple) and hasattr(value, "_asdict"):
+        return value._asdict()
+    return encoded
+
+
+def _contains_image(typ) -> bool:
+    """Check if a type contains ``Image.Image`` anywhere (including nested)."""
+    if typ is Image.Image:
+        return True
+    return any(_contains_image(arg) for arg in typing.get_args(typ))
+
+
+# ---------------------------------------------------------------------------
+# Type definitions for parameterized tests
+# ---------------------------------------------------------------------------
+
+
+class _NTPoint(NamedTuple):
+    x: int
+    y: int
+
+
+class _TDUser(TypedDict):
+    name: str
+    age: int
+
+
+class _TDConfig(TypedDict, total=False):
+    host: str
+    port: int
+
+
+@dataclass
+class _DCPoint:
+    x: int
+    y: int
+
+
+@dataclass
+class _DCAddress:
+    street: str
+    city: str
+
+
+@dataclass
+class _DCPerson:
+    name: str
+    age: int
+    address: _DCAddress
+
+
+@dataclass
+class _DCOptConfig:
+    host: str
+    port: int
+    timeout: float | None = None
+
+
+class _PMPoint(pydantic.BaseModel):
+    x: int
+    y: int
+
+
+class _PMAddress(pydantic.BaseModel):
+    street: str
+    city: str
+
+
+class _PMPerson(pydantic.BaseModel):
+    name: str
+    age: int
+    address: _PMAddress
+
+
+# ---------------------------------------------------------------------------
+# Parameterized test cases
+#
+# Each entry is (type, value).  The parameterized tests below exercise
+# encode/decode roundtrip, pydantic model_validate roundtrip, and
+# serialize/deserialize roundtrip for every case.
+# ---------------------------------------------------------------------------
+
+ENCODABLE_CASES = [
+    # --- Primitives ---
+    pytest.param(str, "hello", id="str"),
+    pytest.param(int, 42, id="int"),
+    pytest.param(bool, True, id="bool"),
+    pytest.param(float, 3.14, id="float"),
+    pytest.param(complex, 3 + 4j, id="complex"),
+    # --- Image ---
+    # Edge case: decoded images are PngImageFile, not Image.Image;
+    # equality requires pixel-level comparison (_images_equal).
+    pytest.param(Image.Image, Image.new("RGB", (10, 10), "red"), id="image"),
+    # --- Tuples ---
+    pytest.param(tuple[int, str], (1, "test"), id="tuple[int,str]"),
+    pytest.param(tuple[()], (), id="tuple_empty"),  # special case: empty tuple
+    pytest.param(tuple[int, str, bool], (42, "hello", True), id="tuple_3elem"),
+    # --- Lists ---
+    pytest.param(list[int], [1, 2, 3], id="list[int]"),
+    pytest.param(list[str], ["hello", "world"], id="list[str]"),
+    # --- Composite image types ---
+    # These serialize to multiple image_url blocks (not text),
+    # so serialize/deserialize roundtrip is unsupported.
+    pytest.param(
+        tuple[Image.Image, Image.Image],
+        (Image.new("RGB", (10, 10), "red"), Image.new("RGB", (20, 20), "blue")),
+        id="tuple[Image,Image]",
+    ),
+    pytest.param(
+        list[Image.Image],
+        [Image.new("RGB", (10, 10), "red"), Image.new("RGB", (20, 20), "blue")],
+        id="list[Image]",
+    ),
+    # --- NamedTuple ---
+    # Pydantic validation uses _asdict() for the dict representation.
+    pytest.param(_NTPoint, _NTPoint(10, 20), id="namedtuple"),
+    # --- TypedDict ---
+    pytest.param(_TDUser, _TDUser(name="Bob", age=25), id="typeddict"),
+    pytest.param(
+        _TDConfig,
+        _TDConfig(host="localhost", port=8080),
+        id="typeddict_partial",
+    ),
+    # --- Dataclasses ---
+    # Pydantic validation uses asdict() for the dict representation.
+    pytest.param(_DCPoint, _DCPoint(10, 20), id="dataclass"),
+    pytest.param(
+        _DCPerson,
+        _DCPerson("Bob", 25, _DCAddress("123 Main St", "NYC")),
+        id="dataclass_nested",
+    ),
+    pytest.param(
+        _DCOptConfig,
+        _DCOptConfig("localhost", 8080, 5.0),
+        id="dataclass_optional",
+    ),
+    pytest.param(
+        _DCOptConfig,
+        _DCOptConfig("localhost", 8080, None),
+        id="dataclass_optional_none",
+    ),
+    # --- Pydantic models ---
+    # Pydantic validation uses model_dump() for the dict representation.
+    pytest.param(_PMPoint, _PMPoint(x=10, y=20), id="pydantic"),
+    pytest.param(
+        _PMPerson,
+        _PMPerson(
+            name="Bob", age=25, address=_PMAddress(street="123 Main St", city="NYC")
+        ),
+        id="pydantic_nested",
+    ),
+    # --- Collection types ---
+    # MutableSequence[T] is supported (uses the same handler as list[T]).
+    pytest.param(MutableSequence[int], [1, 2, 3], id="MutableSequence[int]"),
+    # The following collection types are NOT yet supported by Encodable.define().
+    # Each is marked xfail so failures are expected; issues will be filed.
+    pytest.param(
+        tuple[int, ...],
+        (1, 2, 3),
+        id="tuple[int,...]",
+        marks=pytest.mark.xfail(
+            reason="variable-length homogeneous tuple not supported"
+        ),
+    ),
+    # These collection types are supported via the fallback/object handler.
+    pytest.param(Sequence[int], [1, 2, 3], id="Sequence[int]"),
+    pytest.param(Mapping[str, int], {"a": 1, "b": 2}, id="Mapping[str,int]"),
+    pytest.param(
+        MutableMapping[str, int], {"a": 1, "b": 2}, id="MutableMapping[str,int]"
+    ),
+    pytest.param(Set[int], {1, 2, 3}, id="Set[int]"),
+    pytest.param(frozenset[int], frozenset({1, 2, 3}), id="frozenset[int]"),
+]
+
+# Types that support serialize -> deserialize roundtrip (single text block).
+# Image types serialize to image_url blocks (not text), so Image.deserialize
+# raises NotImplementedError and composite types produce multiple blocks.
+SERIALIZABLE_CASES = [p for p in ENCODABLE_CASES if not _contains_image(p.values[0])]
+
+
+# ---------------------------------------------------------------------------
+# Error case tests
+# ---------------------------------------------------------------------------
+
+
+def test_define_rejects_term():
     with pytest.raises(TypeError):
         Encodable.define(Term)
 
 
-def test_type_to_encodable_type_operation():
+def test_define_rejects_operation():
     with pytest.raises(TypeError):
         Encodable.define(Operation)
 
 
-def test_type_to_encodable_type_str():
-    encodable = Encodable.define(str)
-    encoded = encodable.encode("hello")
-    decoded = encodable.decode(encoded)
-    assert decoded == "hello"
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": "hello"})
-    assert decoded.value == "hello"
-
-
-def test_type_to_encodable_type_int():
-    encodable = Encodable.define(int)
-    encoded = encodable.encode(42)
-    decoded = encodable.decode(encoded)
-    assert decoded == 42
-    assert isinstance(decoded, int)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": 42})
-    assert decoded.value == 42
-    assert isinstance(decoded.value, int)
-
-
-def test_type_to_encodable_type_bool():
-    encodable = Encodable.define(bool)
-    encoded = encodable.encode(True)
-    decoded = encodable.decode(encoded)
-    assert decoded is True
-    assert isinstance(decoded, bool)
-    encoded_false = encodable.encode(False)
-    decoded_false = encodable.decode(encoded_false)
-    assert decoded_false is False
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": True})
-    assert decoded.value is True
-    assert isinstance(decoded.value, bool)
-
-
-def test_type_to_encodable_type_float():
-    encodable = Encodable.define(float)
-    encoded = encodable.encode(3.14)
-    decoded = encodable.decode(encoded)
-    assert decoded == 3.14
-    assert isinstance(decoded, float)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": 3.14})
-    assert decoded.value == 3.14
-    assert isinstance(decoded.value, float)
-
-
-def test_type_to_encodable_type_image():
+def test_image_decode_rejects_non_data_uri():
+    """Only base64 data URIs are accepted; HTTP URLs are rejected."""
     encodable = Encodable.define(Image.Image)
-    image = Image.new("RGB", (10, 10), color="red")
-    encoded = encodable.encode(image)
-    assert isinstance(encoded, dict)
-    assert "url" in encoded
-    assert "detail" in encoded
-    assert encoded["detail"] == "auto"
-    assert encoded["url"].startswith("data:image/png;base64,")
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Image.Image)
-    assert decoded.size == (10, 10)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": encoded})
-    assert decoded.value["url"] == encoded["url"]
-    assert decoded.value["detail"] == "auto"
-
-
-def test_type_to_encodable_type_image_roundtrip():
-    encodable = Encodable.define(Image.Image)
-    original = Image.new("RGB", (20, 20), color="green")
-    encoded = encodable.encode(original)
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Image.Image)
-    assert decoded.size == original.size
-    assert decoded.mode == original.mode
-
-
-def test_type_to_encodable_type_image_decode_invalid_url():
-    encodable = Encodable.define(Image.Image)
-    encoded = {"url": "http://example.com/image.png", "detail": "auto"}
     with pytest.raises(RuntimeError, match="expected base64 encoded image as data uri"):
-        encodable.decode(encoded)
+        encodable.decode({"url": "http://example.com/image.png", "detail": "auto"})
 
 
-def test_type_to_encodable_type_tuple():
-    encodable = Encodable.define(tuple[int, str])
-    value = (1, "test")
+# ---------------------------------------------------------------------------
+# Parameterized roundtrip tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typ,value", ENCODABLE_CASES)
+def test_encode_decode_roundtrip(typ, value):
+    """encode -> decode preserves the original value."""
+    encodable = Encodable.define(typ)
+    decoded = encodable.decode(encodable.encode(value))
+    assert _values_equal(typ, decoded, value)
+
+
+@pytest.mark.parametrize("typ,value", ENCODABLE_CASES)
+def test_pydantic_roundtrip(typ, value):
+    """encode -> pydantic model_validate -> decode preserves values."""
+    encodable = Encodable.define(typ)
     encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert decoded[0] == 1
-    assert decoded[1] == "test"
-    # Test with pydantic model validation
+
     Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 1
-    assert model_instance.value[1] == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
+    validation_input = _pydantic_validation_input(encodable, encoded, value)
+    model_instance = Model.model_validate({"value": validation_input})
+    decoded = encodable.decode(model_instance.value)
+
+    assert _values_equal(typ, decoded, value)
 
 
-def test_type_to_encodable_type_tuple_empty():
-    encodable = Encodable.define(tuple[()])
-    value = ()
+@pytest.mark.parametrize("typ,value", SERIALIZABLE_CASES)
+def test_serialize_deserialize_roundtrip(typ, value):
+    """encode -> serialize -> deserialize -> decode preserves values.
+
+    Image types are excluded: ``Image.serialize`` produces ``image_url``
+    blocks (not text), so ``deserialize`` is unsupported.
+    """
+    encodable = Encodable.define(typ)
     encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert len(decoded) == 0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 0
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
+    serialized = encodable.serialize(encoded)
+
+    assert len(serialized) == 1 and serialized[0]["type"] == "text"
+    decoded = encodable.decode(encodable.deserialize(serialized[0]["text"]))
+
+    assert _values_equal(typ, decoded, value)
 
 
-def test_type_to_encodable_type_tuple_three_elements():
-    encodable = Encodable.define(tuple[int, str, bool])
-    value = (42, "hello", True)
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert decoded[0] == 42
-    assert decoded[1] == "hello"
-    assert decoded[2] is True
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 42
-    assert model_instance.value[1] == "hello"
-    assert model_instance.value[2] is True
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
+# ---------------------------------------------------------------------------
+# Image-specific edge cases
+# ---------------------------------------------------------------------------
 
 
-def test_type_to_encodable_type_list():
-    encodable = Encodable.define(list[int])
-    value = [1, 2, 3, 4, 5]
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, list)
-    assert all(isinstance(elem, int) for elem in decoded)
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert model_instance.value == [1, 2, 3, 4, 5]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, list)
-    assert all(isinstance(elem, int) for elem in decoded_from_model)
+def test_image_encoding_format():
+    """Image encodes to a dict with base64 data URI and ``detail='auto'``."""
+    encodable = Encodable.define(Image.Image)
+    encoded = encodable.encode(Image.new("RGB", (10, 10), color="red"))
+
+    assert isinstance(encoded, dict)
+    assert encoded["url"].startswith("data:image/png;base64,")
+    assert encoded["detail"] == "auto"
 
 
-def test_type_to_encodable_type_list_str():
-    encodable = Encodable.define(list[str])
-    value = ["hello", "world", "test"]
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, list)
-    assert all(isinstance(elem, str) for elem in decoded)
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert model_instance.value == ["hello", "world", "test"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, list)
-    assert all(isinstance(elem, str) for elem in decoded_from_model)
-
-
-def test_type_to_encodable_type_namedtuple():
-    class Point(NamedTuple):
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(10, 20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"x": 10, "y": 20}})
-    assert decoded.value == point
-    assert isinstance(decoded.value, Point)
-
-
-def test_type_to_encodable_type_namedtuple_with_str():
-    class Person(NamedTuple):
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person("Alice", 30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"name": "Alice", "age": 30}})
-    assert decoded.value == person
-    assert isinstance(decoded.value, Person)
-
-
-def test_type_to_encodable_type_typeddict():
-    class User(TypedDict):
-        name: str
-        age: int
-
-    encodable = Encodable.define(User)
-    user = User(name="Bob", age=25)
-    encoded = encodable.encode(user)
-    decoded = encodable.decode(encoded)
-    assert decoded == user
-    assert isinstance(decoded, dict)
-    assert decoded["name"] == "Bob"
-    assert decoded["age"] == 25
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"name": "Bob", "age": 25}})
-    assert decoded.value == user
-    assert isinstance(decoded.value, dict)
-
-
-def test_type_to_encodable_type_typeddict_optional():
-    class Config(TypedDict, total=False):
-        host: str
-        port: int
-
-    encodable = Encodable.define(Config)
-    config = Config(host="localhost", port=8080)
-    encoded = encodable.encode(config)
-    decoded = encodable.decode(encoded)
-    assert decoded == config
-    assert decoded["host"] == "localhost"
-    assert decoded["port"] == 8080
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"host": "localhost", "port": 8080}})
-    assert decoded.value == config
-    assert isinstance(decoded.value, dict)
-
-
-def test_type_to_encodable_type_complex():
-    encodable = Encodable.define(complex)
-    value = 3 + 4j
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, complex)
-    assert decoded.real == 3.0
-    assert decoded.imag == 4.0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, complex)
-
-
-def test_type_to_encodable_type_tuple_of_images():
-    encodable = Encodable.define(tuple[Image.Image, Image.Image])
-    image1 = Image.new("RGB", (10, 10), color="red")
-    image2 = Image.new("RGB", (20, 20), color="blue")
-    value = (image1, image2)
-
-    encoded = encodable.encode(value)
-    assert isinstance(encoded, tuple)
-    assert len(encoded) == 2
-    assert isinstance(encoded[0], dict)
-    assert isinstance(encoded[1], dict)
-    assert "url" in encoded[0]
-    assert "url" in encoded[1]
-    assert encoded[0]["url"].startswith("data:image/png;base64,")
-    assert encoded[1]["url"].startswith("data:image/png;base64,")
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, tuple)
-    assert len(decoded) == 2
-    assert isinstance(decoded[0], Image.Image)
-    assert isinstance(decoded[1], Image.Image)
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 2
-    assert isinstance(model_instance.value[0], dict)
-    assert isinstance(model_instance.value[1], dict)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert isinstance(decoded_from_model, tuple)
-    assert len(decoded_from_model) == 2
-    assert isinstance(decoded_from_model[0], Image.Image)
-    assert isinstance(decoded_from_model[1], Image.Image)
-    assert decoded_from_model[0].size == (10, 10)
-    assert decoded_from_model[1].size == (20, 20)
-
-    # Roundtrip test
-    original = (
-        Image.new("RGB", (15, 15), color="green"),
-        Image.new("RGB", (25, 25), color="yellow"),
-    )
-    encoded_roundtrip = encodable.encode(original)
-    decoded_roundtrip = encodable.decode(encoded_roundtrip)
-    assert isinstance(decoded_roundtrip, tuple)
-    assert len(decoded_roundtrip) == 2
-    assert decoded_roundtrip[0].size == original[0].size
-    assert decoded_roundtrip[1].size == original[1].size
-    assert decoded_roundtrip[0].mode == original[0].mode
-    assert decoded_roundtrip[1].mode == original[1].mode
-
-
-def test_type_to_encodable_type_list_of_images():
-    encodable = Encodable.define(list[Image.Image])
+def test_image_list_serializes_to_image_url_blocks():
+    """``nested_type``-inferred image lists serialize to ``image_url`` content blocks."""
     images = [
         Image.new("RGB", (10, 10), color="red"),
         Image.new("RGB", (20, 20), color="blue"),
-        Image.new("RGB", (30, 30), color="green"),
-    ]
-
-    encoded = encodable.encode(images)
-    assert isinstance(encoded, list)
-    assert len(encoded) == 3
-    assert all(isinstance(elem, dict) for elem in encoded)
-    assert all("url" in elem for elem in encoded)
-    assert all(elem["url"].startswith("data:image/png;base64,") for elem in encoded)
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, list)
-    assert len(decoded) == 3
-    assert all(isinstance(elem, Image.Image) for elem in decoded)
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-    assert decoded[2].size == (30, 30)
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert len(model_instance.value) == 3
-    assert all(isinstance(elem, dict) for elem in model_instance.value)
-    assert all("url" in elem for elem in model_instance.value)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
-    assert model_instance.value[2]["url"] == encoded[2]["url"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert isinstance(decoded_from_model, list)
-    assert len(decoded_from_model) == 3
-    assert all(isinstance(elem, Image.Image) for elem in decoded_from_model)
-    assert decoded_from_model[0].size == (10, 10)
-    assert decoded_from_model[1].size == (20, 20)
-    assert decoded_from_model[2].size == (30, 30)
-
-    # Roundtrip test
-    original = [
-        Image.new("RGB", (15, 15), color="yellow"),
-        Image.new("RGB", (25, 25), color="purple"),
-    ]
-    encoded_roundtrip = encodable.encode(original)
-    decoded_roundtrip = encodable.decode(encoded_roundtrip)
-    assert isinstance(decoded_roundtrip, list)
-    assert len(decoded_roundtrip) == 2
-    assert decoded_roundtrip[0].size == original[0].size
-    assert decoded_roundtrip[1].size == original[1].size
-    assert decoded_roundtrip[0].mode == original[0].mode
-    assert decoded_roundtrip[1].mode == original[1].mode
-
-
-def test_type_to_encodable_nested_type_mutable_sequence_images():
-    """Encodable.define(nested_type(images).value) preserves image list behavior."""
-    images = [
-        Image.new("RGB", (10, 10), color="red"),
-        Image.new("RGB", (20, 20), color="blue"),
-        Image.new("RGB", (30, 30), color="green"),
     ]
 
     inferred_type = nested_type(images).value
     encodable = Encodable.define(inferred_type)
+    serialized = encodable.serialize(encodable.encode(images))
 
-    encoded = encodable.encode(images)
-    serialized = encodable.serialize(encoded)
-
-    assert len(serialized) == 3
-    for i, block in enumerate(serialized):
-        assert block["type"] == "image_url", (
-            f"Expected image_url block at index {i}, got {block['type']}"
-        )
-        assert "image_url" in block
+    assert len(serialized) == 2
+    for block in serialized:
+        assert block["type"] == "image_url"
         assert block["image_url"]["url"].startswith("data:image/png;base64,")
         assert block["image_url"]["detail"] == "auto"
 
-    # Round-trip through decode
-    decoded = encodable.decode(encoded)
-    assert len(decoded) == 3
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-    assert decoded[2].size == (30, 30)
-
-    # Empty list
-    empty_encoded = encodable.encode([])
-    empty_serialized = encodable.serialize(empty_encoded)
-    assert empty_serialized == []
+    # Empty list produces no blocks
+    assert encodable.serialize(encodable.encode([])) == []
 
 
-def test_type_to_encodable_type_dataclass():
-    @dataclass
-    class Point:
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(10, 20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.x == 10
-    assert model_instance.value.y == 20
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == point
-    assert isinstance(decoded_from_model, Point)
-
-
-def test_type_to_encodable_type_dataclass_with_str():
-    @dataclass
-    class Person:
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person("Alice", 30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.name == "Alice"
-    assert model_instance.value.age == 30
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-
-
-def test_type_to_encodable_type_dataclass_with_list():
-    @dataclass
-    class Container:
-        items: list[int]
-        name: str
-
-    encodable = Encodable.define(Container)
-    container = Container(items=[1, 2, 3], name="test")
-    encoded = encodable.encode(container)
-    decoded = encodable.decode(encoded)
-    assert decoded == container
-    assert isinstance(decoded, Container)
-    assert decoded.items == [1, 2, 3]
-    assert decoded.name == "test"
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.items == [1, 2, 3]
-    assert model_instance.value.name == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == container
-    assert isinstance(decoded_from_model, Container)
-
-
-def test_type_to_encodable_type_dataclass_with_tuple():
-    @dataclass
-    class Pair:
-        values: tuple[int, str]
-        count: int
-
-    encodable = Encodable.define(Pair)
-    pair = Pair(values=(42, "hello"), count=2)
-    encoded = encodable.encode(pair)
-    decoded = encodable.decode(encoded)
-    assert decoded == pair
-    assert isinstance(decoded, Pair)
-    assert decoded.values == (42, "hello")
-    assert decoded.count == 2
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.values == (42, "hello")
-    assert model_instance.value.count == 2
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == pair
-    assert isinstance(decoded_from_model, Pair)
-
-
-def test_type_to_encodable_type_dataclass_with_optional():
-    @dataclass
-    class Config:
-        host: str
-        port: int
-        timeout: float | None = None
-
-    encodable = Encodable.define(Config)
-    config = Config(host="localhost", port=8080, timeout=5.0)
-    encoded = encodable.encode(config)
-    decoded = encodable.decode(encoded)
-    assert decoded == config
-    assert isinstance(decoded, Config)
-    assert decoded.host == "localhost"
-    assert decoded.port == 8080
-    assert decoded.timeout == 5.0
-
-    # Test with None value
-    config_none = Config(host="localhost", port=8080, timeout=None)
-    encoded_none = encodable.encode(config_none)
-    decoded_none = encodable.decode(encoded_none)
-    assert decoded_none == config_none
-    assert decoded_none.timeout is None
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.host == "localhost"
-    assert model_instance.value.port == 8080
-    assert model_instance.value.timeout == 5.0
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == config
-
-
-def test_type_to_encodable_type_nested_dataclass():
-    @dataclass
-    class Address:
-        street: str
-        city: str
-
-    @dataclass
-    class Person:
-        name: str
-        age: int
-        address: Address
-
-    encodable = Encodable.define(Person)
-    address = Address(street="123 Main St", city="New York")
-    person = Person(name="Bob", age=25, address=address)
-
-    encoded = encodable.encode(person)
-    assert isinstance(encoded, Person)
-    assert hasattr(encoded, "name")
-    assert hasattr(encoded, "age")
-    assert hasattr(encoded, "address")
-    assert isinstance(encoded.address, Address)
-    assert encoded.address.street == "123 Main St"
-    assert encoded.address.city == "New York"
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Person)
-    assert isinstance(decoded.address, Address)
-    assert decoded.name == "Bob"
-    assert decoded.age == 25
-    assert decoded.address.street == "123 Main St"
-    assert decoded.address.city == "New York"
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.name == "Bob"
-    assert model_instance.value.age == 25
-    assert model_instance.value.address.street == "123 Main St"
-    assert model_instance.value.address.city == "New York"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-    assert isinstance(decoded_from_model.address, Address)
-
-
-def test_type_to_encodable_type_pydantic_model():
-    class Point(pydantic.BaseModel):
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(x=10, y=20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.x == 10
-    assert model_instance.value.y == 20
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == point
-    assert isinstance(decoded_from_model, Point)
-
-
-def test_type_to_encodable_type_pydantic_model_with_str():
-    class Person(pydantic.BaseModel):
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person(name="Alice", age=30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.name == "Alice"
-    assert model_instance.value.age == 30
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-
-
-def test_type_to_encodable_type_pydantic_model_with_list():
-    class Container(pydantic.BaseModel):
-        items: list[int]
-        name: str
-
-    encodable = Encodable.define(Container)
-    container = Container(items=[1, 2, 3], name="test")
-    encoded = encodable.encode(container)
-    decoded = encodable.decode(encoded)
-    assert decoded == container
-    assert isinstance(decoded, Container)
-    assert decoded.items == [1, 2, 3]
-    assert decoded.name == "test"
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.items == [1, 2, 3]
-    assert model_instance.value.name == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == container
-    assert isinstance(decoded_from_model, Container)
-
-
-def test_type_to_encodable_type_nested_pydantic_model():
-    class Address(pydantic.BaseModel):
-        street: str
-        city: str
-
-    class Person(pydantic.BaseModel):
-        name: str
-        age: int
-        address: Address
-
-    encodable = Encodable.define(Person)
-    address = Address(street="123 Main St", city="New York")
-    person = Person(name="Bob", age=25, address=address)
-
-    encoded = encodable.encode(person)
-    assert isinstance(encoded, pydantic.BaseModel)
-    assert hasattr(encoded, "name")
-    assert hasattr(encoded, "age")
-    assert hasattr(encoded, "address")
-    assert isinstance(encoded.address, pydantic.BaseModel)
-    assert encoded.address.street == "123 Main St"
-    assert encoded.address.city == "New York"
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Person)
-    assert isinstance(decoded.address, Address)
-    assert decoded.name == "Bob"
-    assert decoded.age == 25
-    assert decoded.address.street == "123 Main St"
-    assert decoded.address.city == "New York"
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.name == "Bob"
-    assert model_instance.value.age == 25
-    assert model_instance.value.address.street == "123 Main St"
-    assert model_instance.value.address.city == "New York"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-    assert isinstance(decoded_from_model.address, Address)
+# ---------------------------------------------------------------------------
+# Callable encoding tests
+# ---------------------------------------------------------------------------
 
 
 class TestCallableEncodable:
@@ -1190,6 +795,323 @@ result = helper()"""
                 f"Expected {expected_sig} in schema for {callable_type}, "
                 f"got: {schema['description'][:100]}..."
             )
+
+
+# ---------------------------------------------------------------------------
+# Random fuzz tests
+#
+# These use seeded random generators to produce random type/value
+# combinations (primitives, nested tuples/lists, callables) and verify
+# that all roundtrip pipelines hold.
+# ---------------------------------------------------------------------------
+
+_PRIMITIVES = [
+    # (type, annotation_str, sample_values)
+    (int, "int", [0, -1, 42]),
+    (str, "str", ["", "hello", "café"]),
+    (bool, "bool", [True, False]),
+    (float, "float", [0.0, -3.14, 1e10]),
+    (complex, "complex", [0j, 3 + 4j]),
+    (
+        Image.Image,
+        "Image",
+        [Image.new("RGB", (5, 5), c) for c in ("red", "blue", "green")],
+    ),
+]
+
+
+def _random_type_and_value(rng, depth=0):
+    """Generate a random ``(type, value)`` pair, with nesting up to depth 2."""
+    if depth >= 2:
+        typ, _ann, vals = rng.choice(_PRIMITIVES)
+        return typ, rng.choice(vals)
+
+    kind = rng.choice(["primitive", "tuple", "list", "mutablesequence"])
+    if kind == "primitive":
+        typ, _ann, vals = rng.choice(_PRIMITIVES)
+        return typ, rng.choice(vals)
+    if kind == "tuple":
+        n = rng.randint(1, 3)
+        pairs = [_random_type_and_value(rng, depth + 1) for _ in range(n)]
+        types, values = zip(*pairs)
+        return tuple[*types], values  # values is already a tuple from zip
+    if kind == "mutablesequence":
+        elem_typ, elem_val = _random_type_and_value(rng, depth + 1)
+        n = rng.randint(0, 3)
+        return MutableSequence[elem_typ], [elem_val] * n
+    # list
+    elem_typ, elem_val = _random_type_and_value(rng, depth + 1)
+    n = rng.randint(0, 3)
+    return list[elem_typ], [elem_val] * n
+
+
+# --- Callable random generation ---
+# Types are randomly generated: primitives (including Image.Image), lists,
+# tuples, and dynamically-created NamedTuples / pydantic models whose fields
+# are themselves random primitives.  Dynamic types are created with a
+# ``<locals>``-containing ``__qualname__`` so the mypy stub generator treats
+# them as runtime-only and produces class stubs.
+
+
+def _dyn_name(rng, prefix):
+    """Generate a short unique-ish name like ``NT_a3f``."""
+    suffix = "".join(rng.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=4))
+    return f"{prefix}_{suffix}"
+
+
+def _make_dyn_namedtuple(rng):
+    """Create a NamedTuple with random primitive fields (including Image).
+
+    Uses ``class`` syntax inside an exec'd function so the resulting type
+    naturally gets a ``<locals>``-containing ``__qualname__``.
+    """
+    name = _dyn_name(rng, "NT")
+    n = rng.randint(1, 3)
+    specs = [rng.choice(_PRIMITIVES) for _ in range(n)]
+    ns: dict[str, Any] = {"NamedTuple": NamedTuple}
+    for i, s in enumerate(specs):
+        ns[f"_T{i}"] = s[0]
+    fields = "\n        ".join(f"f{i}: _T{i}" for i in range(n))
+    exec(
+        f"def _f():\n    class {name}(NamedTuple):\n        {fields}\n    return {name}",
+        ns,
+    )
+    NT = ns["_f"]()
+    val = NT(*(rng.choice(s[2]) for s in specs))
+    return NT, name, val
+
+
+def _make_dyn_pydantic(rng):
+    """Create a pydantic BaseModel with random primitive fields (including Image).
+
+    Uses ``class`` syntax inside an exec'd function so the resulting type
+    naturally gets a ``<locals>``-containing ``__qualname__``.
+    """
+    name = _dyn_name(rng, "PM")
+    n = rng.randint(1, 3)
+    specs = [rng.choice(_PRIMITIVES) for _ in range(n)]
+    ns: dict[str, Any] = {"BaseModel": pydantic.BaseModel}
+    for i, s in enumerate(specs):
+        ns[f"_T{i}"] = s[0]
+    fields = "\n        ".join(f"f{i}: _T{i}" for i in range(n))
+    exec(
+        f"def _f():\n"
+        f"    class {name}(BaseModel):\n"
+        f"        model_config = dict(arbitrary_types_allowed=True)\n"
+        f"        {fields}\n"
+        f"    return {name}",
+        ns,
+    )
+    PM = ns["_f"]()
+    kwargs = {f"f{i}": rng.choice(s[2]) for i, s in enumerate(specs)}
+    val = PM(**kwargs)
+    return PM, name, val
+
+
+def _random_callable_type_value_ann(rng, depth=0):
+    """Randomly generate ``(type, value, annotation_str, ctx, skip_reasons)`` for a callable param.
+
+    Recursively builds nested lists, tuples, dynamically-created NamedTuples,
+    and pydantic models up to *depth* 2, then falls back to primitives.
+    *skip_reasons* is a ``set[str]`` of reasons the enclosing test should skip
+    (e.g. ``"complex"`` or ``"pydantic"``).
+    """
+
+    def _primitive(rng):
+        typ, ann, vals = rng.choice(_PRIMITIVES)
+        return typ, rng.choice(vals), ann, {}, set()
+
+    if depth >= 2:
+        return _primitive(rng)
+
+    kind = rng.choice(
+        ["primitive", "list", "mutablesequence", "tuple", "namedtuple", "pydantic"]
+    )
+    if kind == "primitive":
+        return _primitive(rng)
+    if kind == "list":
+        et, ev, ea, ec, es = _random_callable_type_value_ann(rng, depth + 1)
+        n = rng.randint(0, 3)
+        return list[et], [ev] * n, f"list[{ea}]", ec, es
+    if kind == "mutablesequence":
+        et, ev, ea, ec, es = _random_callable_type_value_ann(rng, depth + 1)
+        n = rng.randint(0, 3)
+        ec = {**ec, "MutableSequence": MutableSequence}
+        return MutableSequence[et], [ev] * n, f"MutableSequence[{ea}]", ec, es
+    if kind == "tuple":
+        n = rng.randint(1, 3)
+        parts = [_random_callable_type_value_ann(rng, depth + 1) for _ in range(n)]
+        types = tuple(p[0] for p in parts)
+        vals = tuple(p[1] for p in parts)
+        anns = [p[2] for p in parts]
+        ctx: dict[str, Any] = {}
+        skip: set[str] = set()
+        for p in parts:
+            ctx.update(p[3])
+            skip |= p[4]
+        return tuple[*types], vals, f"tuple[{', '.join(anns)}]", ctx, skip
+    if kind == "namedtuple":
+        NT, name, val = _make_dyn_namedtuple(rng)
+        return NT, val, name, {name: NT}, set()
+    # pydantic
+    PM, name, val = _make_dyn_pydantic(rng)
+    return (
+        PM,
+        val,
+        name,
+        {name: PM},
+        {
+            "stub generator produces incompatible method signatures for BaseModel subclasses"
+        },
+    )
+
+
+def _random_callable_case(rng):
+    """Generate a callable with a randomly-generated type signature.
+
+    Single param produces an identity function; multiple params pack into a
+    tuple.  ``Image.Image`` is always available in ctx as ``Image``.
+    Returns ``(callable_type, source, ctx, call_args, expected, skip_reasons)``.
+    """
+    n_params = rng.randint(1, 3)
+    parts = [_random_callable_type_value_ann(rng) for _ in range(n_params)]
+    param_types = [p[0] for p in parts]
+    param_vals = tuple(p[1] for p in parts)
+    param_anns = [p[2] for p in parts]
+    skip_reasons: set[str] = set()
+    for p in parts:
+        skip_reasons |= p[4]
+    ctx: dict[str, Any] = {"Image": Image.Image}
+    for p in parts:
+        ctx.update(p[3])
+
+    names = [chr(ord("a") + i) for i in range(n_params)]
+    params_str = ", ".join(f"{nm}: {a}" for nm, a in zip(names, param_anns))
+
+    if n_params == 1:
+        # Identity: f(x: T) -> T
+        code = f"def f({params_str}) -> {param_anns[0]}:\n    return a"
+        callable_typ = Callable[[param_types[0]], param_types[0]]
+        expected = param_vals[0]
+    else:
+        # Pack: f(a: A, b: B) -> tuple[A, B]
+        ret_ann = f"tuple[{', '.join(param_anns)}]"
+        body = f"({', '.join(names)},)"
+        code = f"def f({params_str}) -> {ret_ann}:\n    return {body}"
+        callable_typ = Callable[param_types, tuple[*param_types]]
+        expected = param_vals
+
+    return (
+        callable_typ,
+        SynthesizedFunction(module_code=code),
+        ctx,
+        param_vals,
+        expected,
+        skip_reasons,
+    )
+
+
+def _build_callable_cases(n=10):
+    cases = []
+    for seed in range(n):
+        case = _random_callable_case(random.Random(seed))
+        sig = case[1].module_code.split("\n")[0]
+        skip_reasons = case[-1]
+        marks = (
+            [pytest.mark.xfail(reason="; ".join(skip_reasons))] if skip_reasons else []
+        )
+        cases.append(pytest.param(*case, id=sig, marks=marks))
+    return cases
+
+
+_RANDOM_CALLABLE_CASES = _build_callable_cases()
+
+
+def _build_roundtrip_cases(n=15):
+    cases = []
+    for seed in range(n):
+        rng = random.Random(seed)
+        typ, value = _random_type_and_value(rng)
+        cases.append(pytest.param(typ, value, id=str(typ)))
+    return cases
+
+
+_RANDOM_ROUNDTRIP_CASES = _build_roundtrip_cases()
+
+
+class TestRandomFuzz:
+    """Fuzz tests with seeded random type/value generation."""
+
+    @pytest.mark.parametrize("typ,value", _RANDOM_ROUNDTRIP_CASES)
+    def test_roundtrips(self, typ, value):
+        """Random types through encode/decode, pydantic, and serialize roundtrips."""
+        encodable = Encodable.define(typ)
+        encoded = encodable.encode(value)
+        decoded = encodable.decode(encoded)
+        assert _values_equal(typ, decoded, value), f"{typ}: {decoded!r} != {value!r}"
+
+        # encode -> pydantic model_validate -> decode
+        Model = pydantic.create_model("M", value=encodable.enc)
+        validated = Model.model_validate(
+            {"value": _pydantic_validation_input(encodable, encoded, value)}
+        )
+        decoded = encodable.decode(validated.value)
+        assert _values_equal(typ, decoded, value), (
+            f"{typ}: pydantic {decoded!r} != {value!r}"
+        )
+
+        # encode -> serialize -> deserialize -> decode (skip image types)
+        if not _contains_image(typ):
+            serialized = encodable.serialize(encoded)
+            if len(serialized) == 1 and serialized[0]["type"] == "text":
+                decoded = encodable.decode(encodable.deserialize(serialized[0]["text"]))
+                assert _values_equal(typ, decoded, value), (
+                    f"{typ}: serde {decoded!r} != {value!r}"
+                )
+
+    @pytest.mark.parametrize(
+        "typ,source,ctx,args,expected,skip_reasons", _RANDOM_CALLABLE_CASES
+    )
+    def test_callable_roundtrips(self, typ, source, ctx, args, expected, skip_reasons):
+        """Callable with random signature through decode, pydantic, and serialize.
+
+        Uses ``UnsafeEvalProvider`` only -- ``RestrictedPython`` rewrites generic
+        subscripts like ``list[int]`` into ``_getitem_`` calls, breaking type
+        annotations in synthesized source code.
+        """
+        info = (
+            f"\ntype={typ}\nctx_keys={list(ctx.keys())}"
+            f"\nsource:\n{source.module_code}\nargs={args!r}"
+        )
+        encodable = Encodable.define(typ, ctx)
+        provider = UnsafeEvalProvider()
+
+        try:
+            # decode
+            with handler(provider):
+                decoded = encodable.decode(source)
+            assert callable(decoded) and decoded(*args) == expected
+
+            # pydantic roundtrip
+            Model = pydantic.create_model("M", value=encodable.enc)
+            validated = Model.model_validate({"value": source.model_dump()})
+            with handler(provider):
+                decoded = encodable.decode(validated.value)
+            assert callable(decoded) and decoded(*args) == expected
+
+            # serialize roundtrip
+            serialized = encodable.serialize(source)
+            deserialized = encodable.deserialize(serialized[0]["text"])
+            with handler(provider):
+                decoded = encodable.decode(deserialized)
+            assert callable(decoded) and decoded(*args) == expected
+        except Exception as exc:
+            raise type(exc)(f"{exc}{info}") from exc
+
+
+# ---------------------------------------------------------------------------
+# RestrictedEvalProvider security tests
+# ---------------------------------------------------------------------------
 
 
 class TestRestrictedEvalProviderConfig:
