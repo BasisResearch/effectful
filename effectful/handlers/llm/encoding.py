@@ -84,6 +84,11 @@ class Encodable[T, U](ABC):
     def deserialize(self, serialized_value: str) -> U:
         raise NotImplementedError
 
+    @property
+    def param_schema_type(self) -> type[typing.Any]:
+        """Type for param schema: base for flat LLM output, enc when base isn't schema-valid."""
+        return typing.cast(type[typing.Any], self.base)
+
     @typing.final
     @staticmethod
     @_CustomSingleDispatchCallable
@@ -209,6 +214,10 @@ class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
     enc: type[ChatCompletionImageUrlObject]
     ctx: Mapping[str, Any]
 
+    @property
+    def param_schema_type(self) -> type[typing.Any]:
+        return typing.cast(type[typing.Any], self.enc)
+
     def encode(self, value: Image.Image) -> ChatCompletionImageUrlObject:
         adapter = pydantic.TypeAdapter(self.enc)
         return adapter.validate_python(
@@ -245,6 +254,10 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoders: list[Encodable]
+
+    @property
+    def param_schema_type(self) -> type[typing.Any]:
+        return typing.cast(type[typing.Any], self.enc if self.has_image else self.base)
 
     def encode(self, value: T) -> typing.Any:
         if not isinstance(value, tuple):
@@ -300,6 +313,10 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
+
+    @property
+    def param_schema_type(self) -> type[typing.Any]:
+        return typing.cast(type[typing.Any], self.enc if self.has_image else self.base)
 
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
@@ -556,21 +573,12 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
-def _param_schema_type(
-    encodable: Encodable[typing.Any, typing.Any],
-) -> type[typing.Any]:
-    """Type for param schema: base for flat LLM output, enc when base isn't schema-valid (e.g. Image)."""
-    if encodable.base is Image.Image:
-        return encodable.enc
-    return encodable.base
-
-
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: _param_schema_type(Encodable.define(param.annotation))
+            name: Encodable.define(param.annotation).param_schema_type
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
