@@ -3,6 +3,7 @@ import base64
 import functools
 import inspect
 import io
+import json
 import textwrap
 import types
 import typing
@@ -165,8 +166,15 @@ class WrappedEncodable[T](Encodable[T, typing.Any]):
             wrapped = model_cls.model_validate_json(serialized_value)
             return self.decode(wrapped)
         except pydantic.ValidationError:
-            # Backward-compatible path for raw JSON payloads.
-            return typing.cast(typing.Any, self.adapter.validate_json(serialized_value))
+            # model_cls may fail for pydantic dataclasses (create_model field type).
+            # LLM always returns wrapped {"value": ...} since enc=Response_X.
+            parsed: typing.Any = json.loads(serialized_value)
+            assert isinstance(parsed, Mapping) and "value" in parsed, (
+                f"expected wrapped {{'value': ...}}, got {type(parsed).__name__}"
+            )
+            return typing.cast(
+                typing.Any, self.adapter.validate_python(parsed["value"])
+            )
 
 
 @dataclass
