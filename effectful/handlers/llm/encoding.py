@@ -133,13 +133,17 @@ class WrappedEncodable[T](Encodable[T, typing.Any]):
     ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
 
-    def encode(self, value: T) -> pydantic.BaseModel:
-        validated = self.adapter.validate_python(value)
-        model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
-        return model_cls(value=validated)
+    def encode(self, value: T) -> typing.Any:
+        return typing.cast(typing.Any, self.adapter.validate_python(value))
 
-    def decode(self, encoded_value: pydantic.BaseModel) -> T:
-        value = getattr(encoded_value, "value")
+    def decode(self, encoded_value: typing.Any) -> T:
+        """Decode enc or raw (from flat tool params) to base."""
+        if isinstance(encoded_value, pydantic.BaseModel):
+            value = getattr(encoded_value, "value")
+        elif isinstance(encoded_value, Mapping):
+            value = encoded_value.get("value", encoded_value)
+        else:
+            value = encoded_value
         return typing.cast(T, self.adapter.validate_python(value))
 
     def serialize(
@@ -150,14 +154,14 @@ class WrappedEncodable[T](Encodable[T, typing.Any]):
         json_str = self.adapter.dump_json(base_value).decode("utf-8")
         return [{"type": "text", "text": json_str}]
 
-    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
+    def deserialize(self, serialized_value: str) -> typing.Any:
         model_cls = typing.cast(type[pydantic.BaseModel], self.enc)
         try:
-            return model_cls.model_validate_json(serialized_value)
+            wrapped = model_cls.model_validate_json(serialized_value)
+            return self.decode(wrapped)
         except pydantic.ValidationError:
-            # Backward-compatible path for raw JSON payloads (e.g. from serialize).
-            raw = self.adapter.validate_json(serialized_value)
-            return model_cls(value=raw)
+            # Backward-compatible path for raw JSON payloads.
+            return typing.cast(typing.Any, self.adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -552,12 +556,21 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
+def _param_schema_type(
+    encodable: Encodable[typing.Any, typing.Any],
+) -> type[typing.Any]:
+    """Type for param schema: base for flat LLM output, enc when base isn't schema-valid (e.g. Image)."""
+    if encodable.base is Image.Image:
+        return encodable.enc
+    return encodable.base
+
+
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).enc
+            name: _param_schema_type(Encodable.define(param.annotation))
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -652,15 +665,19 @@ class ToolCallEncodable[T](
         json_str = encoded_value.function.arguments
         sig = inspect.signature(tool)
 
-        # build dict of raw encodable types U
+        # build dict of raw encodable types U (base in schema for flat LLM output)
         raw_args = _param_model(sig).model_validate_json(json_str)
 
-        # use encoders to decode Us to python types T
+        # decode raw args (base from flat schema) to python types T
+        encodables = {
+            name: Encodable.define(sig.parameters[name].annotation, {})
+            for name in raw_args.model_fields_set
+        }
         bound_args: inspect.BoundArguments = sig.bind(
             **{
-                param_name: Encodable.define(
-                    sig.parameters[param_name].annotation, {}
-                ).decode(getattr(raw_args, param_name))
+                param_name: encodables[param_name].decode(
+                    getattr(raw_args, param_name),
+                )
                 for param_name in raw_args.model_fields_set
             }
         )
@@ -761,7 +778,7 @@ def _encodable_tuple[T, U](
 
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
+        tuple[*(enc.base for enc in element_encoders)],  # type: ignore
     )
 
     return typing.cast(
@@ -792,7 +809,7 @@ def _encodable_mutable_sequence[T, U](
     # Build the encoded type (list of encoded element type) - runtime-created, use Any
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        list[element_encoder.enc],  # type: ignore
+        list[element_encoder.base],  # type: ignore
     )
 
     return typing.cast(
