@@ -776,9 +776,15 @@ def _encodable_tuple[T, U](
     # Check if any element type is Image.Image
     has_image = any(arg is Image.Image for arg in args)
 
+    # Use enc for Image (schema-valid), base otherwise
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*(enc.base for enc in element_encoders)],  # type: ignore
+        tuple[
+            *(
+                enc.enc if has_image else enc.base
+                for enc in element_encoders
+            )
+        ],  # type: ignore
     )
 
     return typing.cast(
@@ -806,10 +812,12 @@ def _encodable_mutable_sequence[T, U](
     # Check if element type is Image.Image
     has_image = element_ty is Image.Image
 
-    # Build the encoded type (list of encoded element type) - runtime-created, use Any
+    # Use enc for Image (schema-valid), base otherwise
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        list[element_encoder.base],  # type: ignore
+        list[
+            element_encoder.enc if has_image else element_encoder.base
+        ],  # type: ignore
     )
 
     return typing.cast(
