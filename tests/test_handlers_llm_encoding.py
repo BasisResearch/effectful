@@ -448,11 +448,7 @@ def test_serialize_succeeds(ty, value, ctx):
 
 @pytest.mark.parametrize(
     "ty,value,ctx",
-    [
-        c
-        for c in ROUNDTRIP_CASES
-        if c.id not in _IMAGE_IDS and c.id not in _TOOL_IDS
-    ],
+    [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS and c.id not in _TOOL_IDS],
 )
 def test_encode_idempotent(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
