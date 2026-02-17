@@ -67,12 +67,6 @@ class Encodable[T, U](ABC):
     enc: type[U]
     ctx: Mapping[str, Any]
 
-    @property
-    def embedded_type(self) -> type[Any]:
-        """Type to use when embedding in composite schemas (tool params, tuple/list elements).
-        Default: enc. WrappedEncodable returns base; Tuple/MutableSequence use children's embedded_type."""
-        return typing.cast(type[Any], self.enc)
-
     @abstractmethod
     def encode(self, value: T) -> U:
         raise NotImplementedError
@@ -138,10 +132,6 @@ class WrappedEncodable[T](Encodable[T, typing.Any]):
     enc: type[pydantic.BaseModel]
     ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
-
-    @property
-    def embedded_type(self) -> type[Any]:
-        return typing.cast(type[Any], self.base)
 
     def encode(self, value: T) -> pydantic.BaseModel:
         validated = self.adapter.validate_python(value)
@@ -252,13 +242,6 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
     has_image: bool
     element_encoders: list[Encodable]
 
-    @property
-    def embedded_type(self) -> type[Any]:
-        return typing.cast(
-            type[Any],
-            tuple[*(e.embedded_type for e in self.element_encoders)],  # type: ignore
-        )
-
     def encode(self, value: T) -> typing.Any:
         if not isinstance(value, tuple):
             raise TypeError(f"Expected tuple, got {type(value)}")
@@ -313,10 +296,6 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
-
-    @property
-    def embedded_type(self) -> type[Any]:
-        return typing.cast(type[Any], list[self.element_encoder.embedded_type])  # type: ignore
 
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
