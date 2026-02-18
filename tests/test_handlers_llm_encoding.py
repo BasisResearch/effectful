@@ -69,23 +69,23 @@ class _Container:
 
 
 class _Coord(NamedTuple):
-        x: int
-        y: int
+    x: int
+    y: int
 
 
 class _PersonNT(NamedTuple):
-        name: str
-        age: int
+    name: str
+    age: int
 
 
 class _UserTD(TypedDict):
-        name: str
-        age: int
+    name: str
+    age: int
 
 
 class _ConfigTD(TypedDict, total=False):
-        host: str
-        port: int
+    host: str
+    port: int
 
 
 @dataclass
@@ -95,18 +95,18 @@ class _Pair:
 
 
 class _PointModel(pydantic.BaseModel):
-        x: int
-        y: int
+    x: int
+    y: int
 
 
 class _PersonModel(pydantic.BaseModel):
-        name: str
-        age: int
+    name: str
+    age: int
 
 
 class _ContainerModel(pydantic.BaseModel):
-        items: list[int]
-        name: str
+    items: list[int]
+    name: str
 
 
 class _AddressModel(pydantic.BaseModel):
@@ -468,7 +468,6 @@ def test_encode_idempotent(ty, value, ctx):
     once = enc.encode(value)
     twice = Encodable.define(enc.enc, ctx).encode(once)
     assert once == twice
-
 
 
 # ============================================================================

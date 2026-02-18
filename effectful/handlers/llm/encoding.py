@@ -84,7 +84,9 @@ class Encodable[T, U](ABC):
     def deserialize(self, serialized_value: str) -> U:
         raise NotImplementedError
 
-    def format_for_prompt(self, encoded_value: U) -> Sequence[OpenAIMessageContentListBlock]:
+    def format_for_prompt(
+        self, encoded_value: U
+    ) -> Sequence[OpenAIMessageContentListBlock]:
         """Format an encoded value for clean prompt output (strips wrappers)."""
         return self.serialize(encoded_value)
 
@@ -137,9 +139,9 @@ class BaseEncodable[T](Encodable[T, pydantic.BaseModel]):
         self, encoded_value: pydantic.BaseModel
     ) -> Sequence[OpenAIMessageContentListBlock]:
         raw = encoded_value.value  # type: ignore[attr-defined]
-        json_str = self.adapter.dump_json(
-            self.adapter.validate_python(raw)
-        ).decode("utf-8")
+        json_str = self.adapter.dump_json(self.adapter.validate_python(raw)).decode(
+            "utf-8"
+        )
         return [{"type": "text", "text": json_str}]
 
 

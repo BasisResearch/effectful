@@ -399,7 +399,9 @@ class TestAgentWithToolCalls:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("add", '{"a": {"value": 2}, "b": {"value": 3}}'),
+                make_tool_call_response(
+                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
+                ),
                 make_text_response("The answer is 5"),
             ]
         )
