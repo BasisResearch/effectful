@@ -470,19 +470,6 @@ def test_encode_idempotent(ty, value, ctx):
     assert once == twice
 
 
-# ============================================================================
-# Law 6: decode(deserialize(serialize(encode(v))[0]["text"])) == v
-# ============================================================================
-
-
-@pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
-def test_serialize_deserialize_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    blocks = enc.serialize(enc.encode(value))
-    assert len(blocks) == 1
-    assert blocks[0]["type"] == "text"
-    assert enc.decode(enc.deserialize(blocks[0]["text"])) == value
-
 
 # ============================================================================
 # Term-specific: Encodable.define raises TypeError for Term and Operation

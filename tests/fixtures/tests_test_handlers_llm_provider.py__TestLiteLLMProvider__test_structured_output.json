@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop taking on an evil group to stop them from taking over a skyscraper, featuring high-stakes conflict and action-oriented sequences typical of the action genre.\"}",
+        "content": "{\"value\": {\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop taking on an evil group to stop them from taking over a skyscraper, featuring high-stakes conflict and action-oriented sequences typical of the action genre.\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
