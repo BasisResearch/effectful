@@ -194,7 +194,7 @@ def call_assistant[T, U](
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
-        response_format=response_format.response_schema,
+        response_format=None if response_format.enc is str else response_format.enc,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -228,7 +228,9 @@ def call_assistant[T, U](
             "final response from the model should be a string"
         )
         try:
-            result = response_format.parse_response(serialized_result)
+            result = response_format.decode(
+                response_format.deserialize(serialized_result)
+            )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -253,7 +255,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     return_type = Encodable.define(
         typing.cast(type[typing.Any], nested_type(result).value)
     )
-    encoded_result = return_type.format_for_prompt(result)
+    encoded_result = return_type.format_for_prompt(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -293,7 +295,7 @@ def call_user(
             typing.cast(type[typing.Any], nested_type(obj).value), env
         )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = (
-            encoder.format_for_prompt(obj)
+            encoder.format_for_prompt(encoder.encode(obj))
         )
         for part in encoded_obj:
             if part["type"] == "text":

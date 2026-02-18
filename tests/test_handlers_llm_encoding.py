@@ -69,23 +69,23 @@ class _Container:
 
 
 class _Coord(NamedTuple):
-    x: int
-    y: int
+        x: int
+        y: int
 
 
 class _PersonNT(NamedTuple):
-    name: str
-    age: int
+        name: str
+        age: int
 
 
 class _UserTD(TypedDict):
-    name: str
-    age: int
+        name: str
+        age: int
 
 
 class _ConfigTD(TypedDict, total=False):
-    host: str
-    port: int
+        host: str
+        port: int
 
 
 @dataclass
@@ -95,18 +95,18 @@ class _Pair:
 
 
 class _PointModel(pydantic.BaseModel):
-    x: int
-    y: int
+        x: int
+        y: int
 
 
 class _PersonModel(pydantic.BaseModel):
-    name: str
-    age: int
+        name: str
+        age: int
 
 
 class _ContainerModel(pydantic.BaseModel):
-    items: list[int]
-    name: str
+        items: list[int]
+        name: str
 
 
 class _AddressModel(pydantic.BaseModel):
@@ -455,7 +455,7 @@ def test_serialize_succeeds(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize(
+    @pytest.mark.parametrize(
     "ty,value,ctx",
     [
         c
@@ -466,22 +466,22 @@ def test_serialize_succeeds(ty, value, ctx):
 def test_encode_idempotent(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     once = enc.encode(value)
-    twice = Encodable.define(enc.base, ctx).encode(once)
+    twice = Encodable.define(enc.enc, ctx).encode(once)
     assert once == twice
 
 
 # ============================================================================
-# Law 6: parse_response(format_for_prompt(v)[0]["text"]) == v
+# Law 6: decode(deserialize(serialize(encode(v))[0]["text"])) == v
 # ============================================================================
 
 
 @pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
-def test_parse_response_roundtrip(ty, value, ctx):
+def test_serialize_deserialize_roundtrip(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
-    blocks = enc.format_for_prompt(value)
+    blocks = enc.serialize(enc.encode(value))
     assert len(blocks) == 1
     assert blocks[0]["type"] == "text"
-    assert enc.parse_response(blocks[0]["text"]) == value
+    assert enc.decode(enc.deserialize(blocks[0]["text"])) == value
 
 
 # ============================================================================
@@ -619,9 +619,9 @@ def test_callable_encode_decode_behavioral(
 ):
     """Decoded callable is behaviorally equivalent to the original."""
     enc = Encodable.define(ty, ctx)
-    with handler(eval_provider):
+        with handler(eval_provider):
         decoded = enc.decode(enc.encode(func))
-    assert decoded(*args) == expected
+        assert decoded(*args) == expected
 
 
 @pytest.mark.parametrize("ty,func,ctx,args,expected", CALLABLE_CASES)

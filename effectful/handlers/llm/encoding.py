@@ -1,6 +1,5 @@
 import ast
 import base64
-import dataclasses
 import functools
 import inspect
 import io
@@ -85,23 +84,14 @@ class Encodable[T, U](ABC):
     def deserialize(self, serialized_value: str) -> U:
         raise NotImplementedError
 
-    @property
-    def response_schema(self) -> type | None:
-        """Schema type for litellm response_format. None means no structured output."""
-        return self.enc
-
-    def format_for_prompt(self, value: T) -> Sequence[OpenAIMessageContentListBlock]:
-        """Format a value for prompt interpolation or tool result."""
-        return self.serialize(self.encode(value))
-
-    def parse_response(self, serialized_value: str) -> T:
-        """Parse LLM response content to base type. Default: decode(deserialize(str))."""
-        return self.decode(self.deserialize(serialized_value))
+    def format_for_prompt(self, encoded_value: U) -> Sequence[OpenAIMessageContentListBlock]:
+        """Format an encoded value for clean prompt output (strips wrappers)."""
+        return self.serialize(encoded_value)
 
     @property
     def param_schema_type(self) -> type[typing.Any]:
-        """Type for param schema: base for flat LLM output, enc when base isn't schema-valid."""
-        return typing.cast(type[typing.Any], self.base)
+        """Type used in tool parameter schemas. Always enc (U)."""
+        return typing.cast(type[typing.Any], self.enc)
 
     @typing.final
     @staticmethod
@@ -122,79 +112,35 @@ class Encodable[T, U](ABC):
 
 
 @dataclass
-class BaseEncodable[T](Encodable[T, T]):
+class BaseEncodable[T](Encodable[T, pydantic.BaseModel]):
     base: type[T]
-    enc: type[T]
+    enc: type[pydantic.BaseModel]
     ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
 
-    @property
-    def response_schema(self) -> type:
-        return _wrapped_response_model(typing.cast(Hashable, self.base))
+    def encode(self, value: T) -> pydantic.BaseModel:
+        validated = self.adapter.validate_python(value)
+        return self.enc(value=validated)
 
-    def encode(self, value: T) -> T:
-        return typing.cast(T, self.adapter.validate_python(value))
+    def decode(self, encoded_value: pydantic.BaseModel) -> T:
+        return typing.cast(T, self.adapter.validate_python(encoded_value.value))  # type: ignore[attr-defined]
 
-    def decode(self, encoded_value: T) -> T:
-        return typing.cast(T, self.adapter.validate_python(encoded_value))
+    def serialize(
+        self, encoded_value: pydantic.BaseModel
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": encoded_value.model_dump_json()}]
 
-    def serialize(self, encoded_value: T) -> Sequence[OpenAIMessageContentListBlock]:
-        json_str = self.adapter.dump_json(encoded_value).decode("utf-8")
+    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
+        return self.enc.model_validate_json(serialized_value)
+
+    def format_for_prompt(
+        self, encoded_value: pydantic.BaseModel
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        raw = encoded_value.value  # type: ignore[attr-defined]
+        json_str = self.adapter.dump_json(
+            self.adapter.validate_python(raw)
+        ).decode("utf-8")
         return [{"type": "text", "text": json_str}]
-
-    def deserialize(self, serialized_value: str) -> T:
-        return typing.cast(T, self.adapter.validate_json(serialized_value))
-
-    def parse_response(self, serialized_value: str) -> T:
-        model_cls = _wrapped_response_model(typing.cast(Hashable, self.base))
-        try:
-            wrapped = model_cls.model_validate_json(serialized_value)
-            return typing.cast(T, self.adapter.validate_python(wrapped.value))  # type: ignore[attr-defined]
-        except pydantic.ValidationError:
-            return typing.cast(T, self.adapter.validate_json(serialized_value))
-
-
-@dataclass
-class DataclassEncodable[T](BaseEncodable[T]):
-    """Encodable for dataclass types (stdlib and pydantic).
-
-    Stores per-field encodables and composes response_schema from them,
-    so the LLM returns the dataclass fields directly (no Response_X wrapper).
-    parse_response is just validate_json — no wrapping, no branching.
-    """
-
-    field_encodables: Mapping[str, Encodable] = dataclasses.field(default_factory=dict)
-
-    @functools.cached_property
-    def response_schema(self) -> type:
-        hints = typing.get_type_hints(self.base)
-        field_defs: dict[str, Any] = {}
-        for f in dataclasses.fields(self.base):  # type: ignore[arg-type]
-            if f.name in self.field_encodables:
-                field_enc = self.field_encodables[f.name]
-                ft = (
-                    field_enc.response_schema
-                    if isinstance(field_enc, DataclassEncodable)
-                    else field_enc.enc
-                )
-            else:
-                ft = hints[f.name]
-            if f.default is not dataclasses.MISSING:
-                field_defs[f.name] = (ft, f.default)
-            elif f.default_factory is not dataclasses.MISSING:
-                field_defs[f.name] = (
-                    ft,
-                    pydantic.Field(default_factory=f.default_factory),
-                )
-            else:
-                field_defs[f.name] = (ft, ...)
-        return pydantic.create_model(
-            self.base.__name__,
-            **field_defs,
-        )
-
-    def parse_response(self, serialized_value: str) -> T:
-        return typing.cast(T, self.adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -202,10 +148,6 @@ class StrEncodable(Encodable[str, str]):
     base: type[str]
     enc: type[str]
     ctx: Mapping[str, Any]
-
-    @property
-    def response_schema(self) -> type | None:
-        return None
 
     def encode(self, value: str) -> str:
         return value
@@ -246,10 +188,6 @@ class ImageEncodable(Encodable[Image.Image, ChatCompletionImageUrlObject]):
     enc: type[ChatCompletionImageUrlObject]
     ctx: Mapping[str, Any]
 
-    @property
-    def param_schema_type(self) -> type[typing.Any]:
-        return typing.cast(type[typing.Any], self.enc)
-
     def encode(self, value: Image.Image) -> ChatCompletionImageUrlObject:
         adapter = pydantic.TypeAdapter(self.enc)
         return adapter.validate_python(
@@ -286,10 +224,6 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoders: list[Encodable]
-
-    @property
-    def param_schema_type(self) -> type[typing.Any]:
-        return typing.cast(type[typing.Any], self.enc if self.has_image else self.base)
 
     def encode(self, value: T) -> typing.Any:
         if not isinstance(value, tuple):
@@ -345,10 +279,6 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
-
-    @property
-    def param_schema_type(self) -> type[typing.Any]:
-        return typing.cast(type[typing.Any], self.enc if self.has_image else self.base)
 
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
@@ -743,18 +673,8 @@ def _encodable_object[T, U](
 ) -> Encodable[T, U]:
     adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
-    if dataclasses.is_dataclass(ty):
-        hints = typing.get_type_hints(ty)
-        field_encs = {
-            f.name: Encodable.define(hints[f.name], ctx)
-            for f in dataclasses.fields(ty)
-            if isinstance(hints[f.name], type)
-            and dataclasses.is_dataclass(hints[f.name])
-        }
-        return typing.cast(
-            Encodable[T, U], DataclassEncodable(ty, ty, ctx, adapter, field_encs)
-        )
-    return typing.cast(Encodable[T, U], BaseEncodable(ty, ty, ctx, adapter))
+    wrapped = _wrapped_response_model(typing.cast(Hashable, ty))
+    return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx, adapter))
 
 
 @Encodable.define.register(str)
@@ -825,7 +745,7 @@ def _encodable_tuple[T, U](
     # Use enc for Image (schema-valid), base otherwise
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        tuple[*(enc.enc if has_image else enc.base for enc in element_encoders)],  # type: ignore
+        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
     )
 
     return typing.cast(
@@ -856,7 +776,7 @@ def _encodable_mutable_sequence[T, U](
     # Use enc for Image (schema-valid), base otherwise
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
-        list[element_encoder.enc if has_image else element_encoder.base],  # type: ignore
+        list[element_encoder.enc],  # type: ignore
     )
 
     return typing.cast(
