@@ -90,11 +90,6 @@ class Encodable[T, U](ABC):
         """Format an encoded value for clean prompt output (strips wrappers)."""
         return self.serialize(encoded_value)
 
-    @property
-    def param_schema_type(self) -> type[typing.Any]:
-        """Type used in tool parameter schemas. Always enc (U)."""
-        return typing.cast(type[typing.Any], self.enc)
-
     @typing.final
     @staticmethod
     @_CustomSingleDispatchCallable
@@ -542,7 +537,7 @@ def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).param_schema_type
+            name: Encodable.define(param.annotation).enc
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
