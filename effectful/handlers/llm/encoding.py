@@ -531,12 +531,21 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
+def _param_field_type(encodable: "Encodable") -> type[Any]:
+    """Use base (T) for tool param fields; fall back to enc (U) if T isn't pydantic-compatible."""
+    try:
+        pydantic.TypeAdapter(encodable.base)
+        return typing.cast(type[Any], encodable.base)
+    except pydantic.errors.PydanticSchemaGenerationError:
+        return typing.cast(type[Any], encodable.enc)
+
+
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).base
+            name: _param_field_type(Encodable.define(param.annotation))
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
