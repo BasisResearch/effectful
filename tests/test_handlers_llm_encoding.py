@@ -455,7 +455,7 @@ def test_serialize_succeeds(ty, value, ctx):
 # ============================================================================
 
 
-    @pytest.mark.parametrize(
+@pytest.mark.parametrize(
     "ty,value,ctx",
     [
         c
@@ -619,7 +619,7 @@ def test_callable_encode_decode_behavioral(
 ):
     """Decoded callable is behaviorally equivalent to the original."""
     enc = Encodable.define(ty, ctx)
-        with handler(eval_provider):
+    with handler(eval_provider):
         decoded = enc.decode(enc.encode(func))
         assert decoded(*args) == expected
 
