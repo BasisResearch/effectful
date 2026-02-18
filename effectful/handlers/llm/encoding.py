@@ -638,10 +638,7 @@ class ToolCallEncodable[T](
         raw_args = _param_model(sig).model_validate_json(json_str)
 
         bound_args: inspect.BoundArguments = sig.bind(
-            **{
-                name: getattr(raw_args, name)
-                for name in raw_args.model_fields_set
-            }
+            **{name: getattr(raw_args, name) for name in raw_args.model_fields_set}
         )
         return DecodedToolCall(
             tool=tool,
