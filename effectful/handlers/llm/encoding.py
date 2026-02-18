@@ -32,7 +32,6 @@ from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
 from effectful.handlers.llm.template import Tool
-from effectful.internals.unification import nested_type
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -537,7 +536,7 @@ def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).enc
+            name: Encodable.define(param.annotation).base
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -599,12 +598,7 @@ class ToolCallEncodable[T](
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
         sig = inspect.signature(value.tool)
         encoded_args = _param_model(sig).model_validate(
-            {
-                k: Encodable.define(
-                    typing.cast(type[Any], nested_type(v).value), self.ctx
-                ).encode(v)
-                for k, v in value.bound_args.arguments.items()
-            }
+            {k: v for k, v in value.bound_args.arguments.items()}
         )
         return ChatCompletionMessageToolCall.model_validate(
             {
@@ -632,20 +626,12 @@ class ToolCallEncodable[T](
         json_str = encoded_value.function.arguments
         sig = inspect.signature(tool)
 
-        # build dict of raw encodable types U (base in schema for flat LLM output)
         raw_args = _param_model(sig).model_validate_json(json_str)
 
-        # decode raw args (base from flat schema) to python types T
-        encodables = {
-            name: Encodable.define(sig.parameters[name].annotation, {})
-            for name in raw_args.model_fields_set
-        }
         bound_args: inspect.BoundArguments = sig.bind(
             **{
-                param_name: encodables[param_name].decode(
-                    getattr(raw_args, param_name),
-                )
-                for param_name in raw_args.model_fields_set
+                name: getattr(raw_args, name)
+                for name in raw_args.model_fields_set
             }
         )
         return DecodedToolCall(

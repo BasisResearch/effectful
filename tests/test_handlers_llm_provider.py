@@ -632,9 +632,7 @@ class TestRetryLLMHandler:
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response(
-                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
-            ),
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -1020,7 +1018,7 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_tool_call_response("failing_tool", '{"x": 42}'),
             make_text_response("handled the error"),
         ]
 
@@ -1670,7 +1668,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1719,7 +1717,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 

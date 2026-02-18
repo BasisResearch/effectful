@@ -399,9 +399,7 @@ class TestAgentWithToolCalls:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response(
-                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
-                ),
+                make_tool_call_response("add", '{"a": 2, "b": 3}'),
                 make_text_response("The answer is 5"),
             ]
         )
@@ -426,7 +424,7 @@ class TestAgentWithRetryHandler:
         mock = MockCompletionHandler(
             [
                 # First attempt: invalid result for int
-                make_text_response('{"value": "not_an_int"}'),
+                make_text_response('"not_an_int"'),
                 # Retry: valid
                 make_text_response('{"value": 42}'),
             ]
