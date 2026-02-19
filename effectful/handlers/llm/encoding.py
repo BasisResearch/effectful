@@ -102,25 +102,30 @@ class Encodable[T, U](ABC):
 
 
 @dataclass
-class BaseEncodable[T](Encodable[T, pydantic.BaseModel]):
+class _BoxEncoding[T](pydantic.BaseModel):
+    value: T
+
+
+@dataclass
+class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
     base: type[T]
-    enc: type[pydantic.BaseModel]
+    enc: type[_BoxEncoding[T]]
     ctx: Mapping[str, Any]
     adapter: pydantic.TypeAdapter[T]
 
-    def encode(self, value: T) -> pydantic.BaseModel:
+    def encode(self, value: T) -> _BoxEncoding[T]:
         validated = self.adapter.validate_python(value)
         return self.enc(value=validated)
 
-    def decode(self, encoded_value: pydantic.BaseModel) -> T:
-        return typing.cast(T, self.adapter.validate_python(encoded_value.value))  # type: ignore[attr-defined]
+    def decode(self, encoded_value: _BoxEncoding[T]) -> T:
+        return typing.cast(T, self.adapter.validate_python(encoded_value.value))
 
     def serialize(
-        self, encoded_value: pydantic.BaseModel
+        self, encoded_value: _BoxEncoding[T]
     ) -> Sequence[OpenAIMessageContentListBlock]:
         return [{"type": "text", "text": encoded_value.model_dump_json()}]
 
-    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
+    def deserialize(self, serialized_value: str) -> _BoxEncoding[T]:
         return self.enc.model_validate_json(serialized_value)
 
 
@@ -699,7 +704,15 @@ def _encodable_object[T, U](
 ) -> Encodable[T, U]:
     ctx = {} if ctx is None else ctx
     adapter = pydantic.TypeAdapter(ty)
-    wrapped = _wrapped_response_model(typing.cast(Hashable, ty))
+    scalar_ty = typing.cast(type[Any], typing.cast(Hashable, ty))
+    wrapped = typing.cast(
+        type[_BoxEncoding[Any]],
+        pydantic.create_model(
+            f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
+            value=(scalar_ty, ...),
+            __config__={"extra": "forbid"},
+        ),
+    )
     return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx, adapter))
 
 
@@ -707,16 +720,6 @@ def _encodable_object[T, U](
 def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[str, str]:
     """Handler for str type that serializes without JSON encoding."""
     return StrEncodable(ty, ty, ctx or {})
-
-
-@functools.cache
-def _wrapped_response_model(ty: Hashable) -> type[pydantic.BaseModel]:
-    scalar_ty = typing.cast(type[Any], ty)
-    return pydantic.create_model(
-        f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
-        value=(scalar_ty, ...),
-        __config__={"extra": "forbid"},
-    )
 
 
 @Encodable.define.register(Term)
