@@ -363,15 +363,6 @@ _IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"
 _TOOL_IDS = frozenset(
     {"tool-add", "tool-greet", "tool-process", "tool-no-params", "tool-pydantic-param"}
 )
-_DTC_IDS = frozenset(
-    {
-        "dtc-add-3-5",
-        "dtc-add-0-neg",
-        "dtc-greet-alice",
-        "dtc-process-items",
-        "dtc-pydantic-param",
-    }
-)
 
 _tool_decode_xfail = pytest.mark.xfail(
     raises=NotImplementedError, reason="Tool.decode not yet implemented"
