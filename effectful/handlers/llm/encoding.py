@@ -1,6 +1,5 @@
 import ast
 import base64
-import functools
 import inspect
 import io
 import textwrap
