@@ -102,7 +102,6 @@ class Encodable[T, U](ABC):
         return encodable
 
 
-@dataclass
 class _BoxEncoding[T](pydantic.BaseModel):
     value: T
 
@@ -136,6 +135,7 @@ class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
             pydantic.create_model(
                 f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
                 value=(scalar_ty, ...),
+                __base__=_BoxEncoding,
                 __config__={"extra": "forbid"},
             ),
         )
