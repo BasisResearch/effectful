@@ -141,9 +141,11 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
     content = response.choices[0].message.content
     assert content is not None, f"Expected content in response for {_type_label(ty)}"
+    
 
     decoded = enc.decode(enc.deserialize(content))
     assert isinstance(decoded, enc.base)
+
 
 
 @requires_openai
