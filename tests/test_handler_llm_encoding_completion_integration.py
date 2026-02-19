@@ -1,7 +1,7 @@
 import os
 import re
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import litellm
 import pytest
@@ -22,13 +22,15 @@ def _unique_type_cases() -> list[tuple[Any, Mapping[str, Any] | None, str]]:
     cases: list[tuple[Any, Mapping[str, Any] | None, str]] = []
     seen: set[str] = set()
     for c in ROUNDTRIP_CASES:
-        ty, _, ctx = c.values
+        values = cast(tuple[Any, Any, Any], c.values)
+        ty, _, ctx_raw = values
+        ctx = ctx_raw if isinstance(ctx_raw, Mapping) else None
         ctx_keys = tuple(sorted((ctx or {}).keys()))
         key = f"{ty!r}|{ctx_keys!r}"
         if key in seen:
             continue
         seen.add(key)
-        case_id = c.id or getattr(ty, "__name__", repr(ty))
+        case_id = c.id if isinstance(c.id, str) else getattr(ty, "__name__", repr(ty))
         cases.append((ty, ctx, case_id))
     return cases
 
@@ -155,11 +157,17 @@ def test_litellm_completion_accepts_all_supported_tool_schemas_in_single_call() 
     for ty, _ctx, case_id in _UNIQUE_TYPES:
         foo, foo_inv = _build_tool_pair(ty, case_id)
         for tool in (foo, foo_inv):
-            tool_spec = Encodable.define(type(tool)).encode(tool)
-            if isinstance(tool_spec, dict):
-                tool_specs.append(tool_spec)
+            tool_ty = cast(type[Any], type(tool))
+            tool_enc = cast(Encodable[Any, Any], Encodable.define(tool_ty))
+            tool_spec_obj = tool_enc.encode(tool)
+            if isinstance(tool_spec_obj, Mapping):
+                tool_specs.append(dict(tool_spec_obj))
+            elif hasattr(tool_spec_obj, "model_dump"):
+                tool_specs.append(cast(dict[str, Any], tool_spec_obj.model_dump()))
             else:
-                tool_specs.append(tool_spec.model_dump())  # pyright: ignore[reportUnknownMemberType]
+                raise TypeError(
+                    f"Unexpected encoded tool spec type: {type(tool_spec_obj)}"
+                )
 
     response = _completion_with_tools(
         model=CHEAP_MODEL,
