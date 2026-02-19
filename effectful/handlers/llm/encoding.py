@@ -267,7 +267,7 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
-        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+        return adapter.validate_json(serialized_value)
 
 
 @dataclass
@@ -323,7 +323,7 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
-        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+        return adapter.validate_json(serialized_value)
 
 
 @dataclass
@@ -336,7 +336,7 @@ class MappingEncodable[K, V](Encodable[Mapping[K, V], typing.Any]):
         if not isinstance(value, Mapping):
             raise TypeError(f"Expected Mapping, got {type(value)}")
         adapter = pydantic.TypeAdapter(self.enc)
-        return typing.cast(typing.Any, adapter.validate_python(value))
+        return adapter.validate_python(value)
 
     def decode(self, encoded_value: typing.Any) -> Mapping[K, V]:
         if isinstance(encoded_value, pydantic.BaseModel):
@@ -353,13 +353,15 @@ class MappingEncodable[K, V](Encodable[Mapping[K, V], typing.Any]):
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
-        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+        return adapter.validate_json(serialized_value)
 
     @staticmethod
     @functools.cache
-    def _typeddict_model(td: type) -> type[pydantic.BaseModel]:
+    def _typeddict_model(td: type[Any]) -> type[pydantic.BaseModel]:
         hints = typing.get_type_hints(td)
-        required = td.__required_keys__
+        required = typing.cast(
+            frozenset[str], getattr(td, "__required_keys__", frozenset())
+        )
         fields: dict[str, Any] = {}
         for k, v in hints.items():
             fields[k] = (v, ...) if k in required else (v, None)
@@ -739,12 +741,24 @@ class _ComplexParts(pydantic.BaseModel):
 
 
 @dataclass
-class _ComplexEncodable(BaseEncodable[complex]):
+class _ComplexEncodable(Encodable[complex, _ComplexParts]):
+    base: type[complex]
+    enc: type[_ComplexParts]
+    ctx: Mapping[str, Any]
+
     def encode(self, value: complex) -> _ComplexParts:
         return _ComplexParts(real=value.real, imag=value.imag)
 
     def decode(self, encoded_value: _ComplexParts) -> complex:
         return complex(encoded_value.real, encoded_value.imag)
+
+    def serialize(
+        self, encoded_value: _ComplexParts
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": encoded_value.model_dump_json()}]
+
+    def deserialize(self, serialized_value: str) -> _ComplexParts:
+        return _ComplexParts.model_validate_json(serialized_value)
 
 
 @Encodable.define.register(complex)
@@ -900,7 +914,7 @@ def _encodable_mapping[K, V, U](
 ) -> Encodable[Mapping[K, V], U]:
     ctx = {} if ctx is None else ctx
 
-    enc = ty
+    enc: type[Any] = ty
     if typing.is_typeddict(ty):
         enc = MappingEncodable._typeddict_model(ty)
 
