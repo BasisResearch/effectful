@@ -294,8 +294,8 @@ def call_user(
         encoder = Encodable.define(
             typing.cast(type[typing.Any], nested_type(obj).value), env
         )
-        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = (
-            encoder.serialize(encoder.encode(obj))
+        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
+            encoder.encode(obj)
         )
         for part in encoded_obj:
             if part["type"] == "text":

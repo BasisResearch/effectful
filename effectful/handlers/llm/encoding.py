@@ -516,8 +516,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
-
-
 @dataclass
 class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
     base: type[Tool]

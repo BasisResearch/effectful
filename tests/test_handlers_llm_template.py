@@ -1032,7 +1032,7 @@ def test_template_formatting_scoped():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
         )
 
 
