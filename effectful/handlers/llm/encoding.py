@@ -339,7 +339,9 @@ class MappingEncodable[K, V](Encodable[Mapping[K, V], typing.Any]):
         return typing.cast(typing.Any, adapter.validate_python(value))
 
     def decode(self, encoded_value: typing.Any) -> Mapping[K, V]:
-        adapter = pydantic.TypeAdapter(self.enc)
+        if isinstance(encoded_value, pydantic.BaseModel):
+            encoded_value = encoded_value.model_dump()
+        adapter = pydantic.TypeAdapter(self.base)
         return typing.cast(Mapping[K, V], adapter.validate_python(encoded_value))
 
     def serialize(
@@ -352,6 +354,19 @@ class MappingEncodable[K, V](Encodable[Mapping[K, V], typing.Any]):
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
         return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+
+    @staticmethod
+    @functools.cache
+    def _typeddict_model(td: type) -> type[pydantic.BaseModel]:
+        hints = typing.get_type_hints(td)
+        required = td.__required_keys__
+        fields: dict[str, Any] = {}
+        for k, v in hints.items():
+            fields[k] = (v, ...) if k in required else (v, None)
+        return pydantic.create_model(
+            td.__name__,
+            **fields,
+        )
 
 
 def _format_callable_type(callable_type: type[Callable]) -> str:
@@ -863,9 +878,13 @@ def _encodable_mapping[K, V, U](
 ) -> Encodable[Mapping[K, V], U]:
     ctx = {} if ctx is None else ctx
 
+    enc = ty
+    if typing.is_typeddict(ty):
+        enc = MappingEncodable._typeddict_model(ty)
+
     return typing.cast(
         Encodable[Mapping[K, V], U],
-        MappingEncodable(ty, ty, ctx),
+        MappingEncodable(ty, enc, ctx),
     )
 
 
