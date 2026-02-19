@@ -110,14 +110,12 @@ class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
     base: type[T]
     enc: type[_BoxEncoding[T]]
     ctx: Mapping[str, Any]
-    adapter: pydantic.TypeAdapter[T]
 
     def encode(self, value: T) -> _BoxEncoding[T]:
-        validated = self.adapter.validate_python(value)
-        return self.enc(value=validated)
+        return self.enc(value=value)
 
     def decode(self, encoded_value: _BoxEncoding[T]) -> T:
-        return typing.cast(T, self.adapter.validate_python(encoded_value.value))
+        return typing.cast(T, encoded_value.value)
 
     def serialize(
         self, encoded_value: _BoxEncoding[T]
@@ -702,7 +700,6 @@ def _encodable_object[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
     ctx = {} if ctx is None else ctx
-    adapter = pydantic.TypeAdapter(ty)
     scalar_ty = typing.cast(type[Any], typing.cast(Hashable, ty))
     wrapped = typing.cast(
         type[_BoxEncoding[Any]],
@@ -712,7 +709,7 @@ def _encodable_object[T, U](
             __config__={"extra": "forbid"},
         ),
     )
-    return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx, adapter))
+    return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx))
 
 
 @Encodable.define.register(str)
