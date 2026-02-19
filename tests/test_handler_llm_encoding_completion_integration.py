@@ -151,26 +151,24 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 
 @requires_openai
-@pytest.mark.xfail(
-    reason="Includes tuple-shaped tool schemas, which are a known provider schema bug."
-)
-def test_litellm_completion_accepts_all_supported_tool_schemas_in_single_call() -> None:
+@pytest.mark.parametrize("ty,ctx", TYPE_CASES)
+def test_litellm_completion_accepts_encodable_tool_schema(
+    ty: Any, ctx: Mapping[str, Any] | None
+) -> None:
+    foo, foo_inv = _build_tool_pair(ty, _type_label(ty))
     tool_specs: list[dict[str, Any]] = []
-
-    for ty, _ctx, case_id in _UNIQUE_TYPES:
-        foo, foo_inv = _build_tool_pair(ty, case_id)
-        for tool in (foo, foo_inv):
-            tool_ty = cast(type[Any], type(tool))
-            tool_enc = cast(Encodable[Any, Any], Encodable.define(tool_ty))
-            tool_spec_obj = tool_enc.encode(tool)
-            if isinstance(tool_spec_obj, Mapping):
-                tool_specs.append(dict(tool_spec_obj))
-            elif hasattr(tool_spec_obj, "model_dump"):
-                tool_specs.append(cast(dict[str, Any], tool_spec_obj.model_dump()))
-            else:
-                raise TypeError(
-                    f"Unexpected encoded tool spec type: {type(tool_spec_obj)}"
-                )
+    for tool in (foo, foo_inv):
+        tool_ty = cast(type[Any], type(tool))
+        tool_enc = cast(Encodable[Any, Any], Encodable.define(tool_ty))
+        tool_spec_obj = tool_enc.encode(tool)
+        if isinstance(tool_spec_obj, Mapping):
+            tool_specs.append(dict(tool_spec_obj))
+        elif hasattr(tool_spec_obj, "model_dump"):
+            tool_specs.append(cast(dict[str, Any], tool_spec_obj.model_dump()))
+        else:
+            raise TypeError(
+                f"Unexpected encoded tool spec type: {type(tool_spec_obj)}"
+            )
 
     response = _completion_with_tools(
         model=CHEAP_MODEL,
