@@ -1,5 +1,6 @@
 import ast
 import base64
+import functools
 import inspect
 import io
 import textwrap
@@ -124,6 +125,19 @@ class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
 
     def deserialize(self, serialized_value: str) -> _BoxEncoding[T]:
         return self.enc.model_validate_json(serialized_value)
+
+    @staticmethod
+    @functools.cache
+    def wrapped_model(ty: Hashable) -> type[_BoxEncoding[Any]]:
+        scalar_ty = typing.cast(type[Any], ty)
+        return typing.cast(
+            type[_BoxEncoding[Any]],
+            pydantic.create_model(
+                f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
+                value=(scalar_ty, ...),
+                __config__={"extra": "forbid"},
+            ),
+        )
 
 
 @dataclass
@@ -573,18 +587,11 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
 
 
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    def _field_type(encodable: "Encodable") -> type[Any]:
-        try:
-            pydantic.TypeAdapter(encodable.base)
-            return typing.cast(type[Any], encodable.base)
-        except pydantic.errors.PydanticSchemaGenerationError:
-            return typing.cast(type[Any], encodable.enc)
-
     return pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: _field_type(Encodable.define(param.annotation))
+            name: Encodable.define(param.annotation).enc
             for name, param in sig.parameters.items()
         },  # type: ignore
     )
@@ -646,7 +653,12 @@ class ToolCallEncodable[T](
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
         sig = inspect.signature(value.tool)
         encoded_args = _param_model(sig).model_validate(
-            {k: v for k, v in value.bound_args.arguments.items()}
+            {
+                k: Encodable.define(
+                    typing.cast(type[Any], sig.parameters[k].annotation), self.ctx
+                ).encode(v)
+                for k, v in value.bound_args.arguments.items()
+            }
         )
         return ChatCompletionMessageToolCall.model_validate(
             {
@@ -677,7 +689,12 @@ class ToolCallEncodable[T](
         raw_args = _param_model(sig).model_validate_json(json_str)
 
         bound_args: inspect.BoundArguments = sig.bind(
-            **{name: getattr(raw_args, name) for name in raw_args.model_fields_set}
+            **{
+                name: Encodable.define(
+                    typing.cast(type[Any], sig.parameters[name].annotation), self.ctx
+                ).decode(getattr(raw_args, name))
+                for name in raw_args.model_fields_set
+            }
         )
         return DecodedToolCall(
             tool=tool,
@@ -700,15 +717,7 @@ def _encodable_object[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
     ctx = {} if ctx is None else ctx
-    scalar_ty = typing.cast(type[Any], typing.cast(Hashable, ty))
-    wrapped = typing.cast(
-        type[_BoxEncoding[Any]],
-        pydantic.create_model(
-            f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
-            value=(scalar_ty, ...),
-            __config__={"extra": "forbid"},
-        ),
-    )
+    wrapped = BaseEncodable.wrapped_model(typing.cast(Hashable, ty))
     return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx))
 
 
