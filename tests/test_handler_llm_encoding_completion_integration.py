@@ -57,6 +57,7 @@ def _case_marks(case_id: str) -> list[pytest.MarkDecorator]:
         marks.append(_provider_response_format_xfail)
     return marks
 
+
 TYPE_CASES = [
     pytest.param(
         ty,
@@ -141,7 +142,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
     content = response.choices[0].message.content
     assert content is not None, f"Expected content in response for {_type_label(ty)}"
-    
+
     deserialized = enc.deserialize(content)
     pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
 
