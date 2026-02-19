@@ -732,6 +732,28 @@ def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[st
     return StrEncodable(ty, ty, ctx or {})
 
 
+class _ComplexParts(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    real: float
+    imag: float
+
+
+@dataclass
+class _ComplexEncodable(BaseEncodable[complex]):
+    def encode(self, value: complex) -> _ComplexParts:
+        return _ComplexParts(real=value.real, imag=value.imag)
+
+    def decode(self, encoded_value: _ComplexParts) -> complex:
+        return complex(encoded_value.real, encoded_value.imag)
+
+
+@Encodable.define.register(complex)
+def _encodable_complex(
+    ty: type[complex], ctx: Mapping[str, Any] | None
+) -> Encodable[complex, _ComplexParts]:
+    return _ComplexEncodable(ty, _ComplexParts, ctx or {})
+
+
 @Encodable.define.register(Term)
 def _encodable_term[T: Term, U](
     ty: type[T], ctx: Mapping[str, Any] | None
