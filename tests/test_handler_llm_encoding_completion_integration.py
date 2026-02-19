@@ -1,6 +1,6 @@
 import re
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import litellm
 import pydantic
@@ -18,8 +18,7 @@ def _unique_type_cases() -> list[tuple[Any, Mapping[str, Any] | None, str]]:
     cases: list[tuple[Any, Mapping[str, Any] | None, str]] = []
     seen: set[str] = set()
     for c in ROUNDTRIP_CASES:
-        values = cast(tuple[Any, Any, Any], c.values)
-        ty, _, ctx_raw = values
+        ty, _, ctx_raw = c.values
         ctx = ctx_raw if isinstance(ctx_raw, Mapping) else None
         ctx_keys = tuple(sorted((ctx or {}).keys()))
         key = f"{ty!r}|{ctx_keys!r}"
@@ -64,14 +63,14 @@ TYPE_CASES = [
 ]
 
 
-
 def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
-    tool_enc = cast(Encodable[Any, Any], Encodable.define(cast(type[Any], type(tool))))
+    tool_ty: type[Any] = type(tool)
+    tool_enc: Encodable[Any, Any] = Encodable.define(tool_ty)
     tool_spec_obj = tool_enc.encode(tool)
     if isinstance(tool_spec_obj, Mapping):
         return dict(tool_spec_obj)
     elif hasattr(tool_spec_obj, "model_dump"):
-        return cast(dict[str, Any], tool_spec_obj.model_dump())
+        return dict(tool_spec_obj.model_dump())
     raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
 
 
@@ -83,7 +82,12 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     enc = Encodable.define(ty, ctx)
     kwargs: dict[str, Any] = {
         "model": CHEAP_MODEL,
-        "messages": [{"role": "user", "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}."}],
+        "messages": [
+            {
+                "role": "user",
+                "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
+            }
+        ],
         "max_tokens": 200,
     }
     if enc.enc is not str:
@@ -92,7 +96,9 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     assert response is not None
 
     content = response.choices[0].message.content
-    assert content is not None, f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
+    assert content is not None, (
+        f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
+    )
 
     deserialized = enc.deserialize(content)
     pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
@@ -110,11 +116,12 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
 
     def _fn(value):
         raise RuntimeError("should not be called")
+
     _fn.__name__ = f"accept_{name}"
     _fn.__doc__ = f"Accept a value of type {name}."
     _fn.__annotations__ = {"value": ty, "return": None}
 
-    tool = Tool.define(_fn)
+    tool: Tool[..., Any] = Tool.define(_fn)
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
@@ -134,11 +141,12 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
 
     def _fn():
         raise RuntimeError("should not be called")
+
     _fn.__name__ = f"return_{name}"
     _fn.__doc__ = f"Return a value of type {name}."
     _fn.__annotations__ = {"return": ty}
 
-    tool = Tool.define(_fn)
+    tool: Tool[..., Any] = Tool.define(_fn)
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
