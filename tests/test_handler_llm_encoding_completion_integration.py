@@ -142,10 +142,11 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     content = response.choices[0].message.content
     assert content is not None, f"Expected content in response for {_type_label(ty)}"
     
+    deserialized = enc.deserialize(content)
+    pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
 
-    decoded = enc.decode(enc.deserialize(content))
+    decoded = enc.decode(deserialized)
     pydantic.TypeAdapter(enc.base).validate_python(decoded)
-
 
 
 @requires_openai
