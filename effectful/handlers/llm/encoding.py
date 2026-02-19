@@ -641,6 +641,7 @@ class ToolCallEncodable[T](
 
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
         sig = inspect.signature(value.tool)
+        # Note: Needed to use param annotation to ensure contract preservation.
         encoded_args = _param_model(sig).model_validate(
             {
                 k: Encodable.define(
