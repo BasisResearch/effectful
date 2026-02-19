@@ -1,4 +1,3 @@
-import os
 import re
 from collections.abc import Mapping
 from typing import Any, cast
@@ -10,11 +9,7 @@ import pytest
 from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.template import Tool
 from tests.test_handlers_llm_encoding import ROUNDTRIP_CASES
-
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
-)
+from tests.test_handlers_llm_tool_calling_book import requires_openai
 
 CHEAP_MODEL = "gpt-4o-mini"
 
@@ -69,28 +64,15 @@ TYPE_CASES = [
 ]
 
 
-def _type_label(ty: Any) -> str:
-    return getattr(ty, "__name__", repr(ty))
 
-
-def _build_tool_pair(ty: Any, suffix: str) -> tuple[Tool[..., Any], Tool[..., Any]]:
-    safe_suffix = re.sub(r"[^0-9a-zA-Z_]+", "_", suffix)
-
-    def _accept(value):
-        raise RuntimeError("Integration schema tool should not be called.")
-
-    _accept.__name__ = f"foo_{safe_suffix}"
-    _accept.__doc__ = f"Accept a value of type {suffix}."
-    _accept.__annotations__ = {"value": ty, "return": None}
-
-    def _invert():
-        raise RuntimeError("Integration schema tool should not be called.")
-
-    _invert.__name__ = f"foo_inv_{safe_suffix}"
-    _invert.__doc__ = f"Return a value of type {suffix}."
-    _invert.__annotations__ = {"return": ty}
-
-    return Tool.define(_accept), Tool.define(_invert)
+def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
+    tool_enc = cast(Encodable[Any, Any], Encodable.define(cast(type[Any], type(tool))))
+    tool_spec_obj = tool_enc.encode(tool)
+    if isinstance(tool_spec_obj, Mapping):
+        return dict(tool_spec_obj)
+    elif hasattr(tool_spec_obj, "model_dump"):
+        return cast(dict[str, Any], tool_spec_obj.model_dump())
+    raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
 
 
 @requires_openai
@@ -101,7 +83,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     enc = Encodable.define(ty, ctx)
     kwargs: dict[str, Any] = {
         "model": CHEAP_MODEL,
-        "messages": [{"role": "user", "content": f"Return an instance of {_type_label(ty)}."}],
+        "messages": [{"role": "user", "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}."}],
         "max_tokens": 200,
     }
     if enc.enc is not str:
@@ -110,7 +92,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     assert response is not None
 
     content = response.choices[0].message.content
-    assert content is not None, f"Expected content in response for {_type_label(ty)}"
+    assert content is not None, f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
 
     deserialized = enc.deserialize(content)
     pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
@@ -121,26 +103,46 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 @requires_openai
 @pytest.mark.parametrize("ty,ctx", TYPE_CASES)
-def test_litellm_completion_accepts_encodable_tool_schema(
+def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, ctx: Mapping[str, Any] | None
 ) -> None:
-    foo, foo_inv = _build_tool_pair(ty, _type_label(ty))
-    tool_specs: list[dict[str, Any]] = []
-    for tool in (foo, foo_inv):
-        tool_ty = cast(type[Any], type(tool))
-        tool_enc = cast(Encodable[Any, Any], Encodable.define(tool_ty))
-        tool_spec_obj = tool_enc.encode(tool)
-        if isinstance(tool_spec_obj, Mapping):
-            tool_specs.append(dict(tool_spec_obj))
-        elif hasattr(tool_spec_obj, "model_dump"):
-            tool_specs.append(cast(dict[str, Any], tool_spec_obj.model_dump()))
-        else:
-            raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
+    name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
 
+    def _fn(value):
+        raise RuntimeError("should not be called")
+    _fn.__name__ = f"accept_{name}"
+    _fn.__doc__ = f"Accept a value of type {name}."
+    _fn.__annotations__ = {"value": ty, "return": None}
+
+    tool = Tool.define(_fn)
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=tool_specs,
+        tools=[_encode_tool_spec(tool)],
+        tool_choice="none",
+        max_tokens=200,
+    )
+    assert response is not None
+
+
+@requires_openai
+@pytest.mark.parametrize("ty,ctx", TYPE_CASES)
+def test_litellm_completion_accepts_tool_with_type_as_return(
+    ty: Any, ctx: Mapping[str, Any] | None
+) -> None:
+    name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
+
+    def _fn():
+        raise RuntimeError("should not be called")
+    _fn.__name__ = f"return_{name}"
+    _fn.__doc__ = f"Return a value of type {name}."
+    _fn.__annotations__ = {"return": ty}
+
+    tool = Tool.define(_fn)
+    response = litellm.completion(
+        model=CHEAP_MODEL,
+        messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
+        tools=[_encode_tool_spec(tool)],
         tool_choice="none",
         max_tokens=200,
     )
