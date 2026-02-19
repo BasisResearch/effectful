@@ -254,19 +254,41 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
 
 
 @dataclass
+class NamedTupleEncodable[T](TupleEncodable[T]):
+    """Tuple encodable that reconstructs the original NamedTuple type on decode."""
+
+    def decode(self, encoded_value: typing.Any) -> T:
+        if len(encoded_value) != len(self.element_encoders):
+            raise ValueError(
+                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
+            )
+        decoded_elements: list[typing.Any] = [
+            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
+        ]
+        return typing.cast(T, self.base(*decoded_elements))
+
+
+@dataclass
 class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     base: type[MutableSequence[T]]
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
-    element_encoder: Encodable[T, typing.Any]
+    element_encoder: Encodable[T, typing.Any] | None
 
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
             raise TypeError(f"Expected MutableSequence, got {type(value)}")
+        if self.element_encoder is None:
+            # Unparameterized sequence: validate as-is through adapter.
+            adapter = pydantic.TypeAdapter(self.enc)
+            return typing.cast(typing.Any, adapter.validate_python(value))
         return [self.element_encoder.encode(elem) for elem in value]
 
     def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
+        if self.element_encoder is None:
+            adapter = pydantic.TypeAdapter(self.enc)
+            return typing.cast(MutableSequence[T], adapter.validate_python(encoded_value))
         decoded_elements: list[T] = [
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
@@ -288,6 +310,34 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
             adapter = pydantic.TypeAdapter(self.enc)
             json_str = adapter.dump_json(encoded_value).decode("utf-8")
             return [{"type": "text", "text": json_str}]
+
+    def deserialize(self, serialized_value: str) -> typing.Any:
+        adapter = pydantic.TypeAdapter(self.enc)
+        return typing.cast(typing.Any, adapter.validate_json(serialized_value))
+
+
+@dataclass
+class MappingEncodable[K, V](Encodable[Mapping[K, V], typing.Any]):
+    base: type[Mapping[K, V]]
+    enc: type[typing.Any]
+    ctx: Mapping[str, Any]
+
+    def encode(self, value: Mapping[K, V]) -> typing.Any:
+        if not isinstance(value, Mapping):
+            raise TypeError(f"Expected Mapping, got {type(value)}")
+        adapter = pydantic.TypeAdapter(self.enc)
+        return typing.cast(typing.Any, adapter.validate_python(value))
+
+    def decode(self, encoded_value: typing.Any) -> Mapping[K, V]:
+        adapter = pydantic.TypeAdapter(self.enc)
+        return typing.cast(Mapping[K, V], adapter.validate_python(encoded_value))
+
+    def serialize(
+        self, encoded_value: typing.Any
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        adapter = pydantic.TypeAdapter(self.enc)
+        json_str = adapter.dump_json(encoded_value).decode("utf-8")
+        return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
@@ -643,8 +693,8 @@ class ToolCallEncodable[T](
 def _encodable_object[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
-    adapter = pydantic.TypeAdapter(ty)
     ctx = {} if ctx is None else ctx
+    adapter = pydantic.TypeAdapter(ty)
     wrapped = _wrapped_response_model(typing.cast(Hashable, ty))
     return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx, adapter))
 
@@ -697,33 +747,67 @@ def _encodable_image(
 def _encodable_tuple[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
+    def _is_namedtuple_type(ty: type[Any]) -> bool:
+        return isinstance(ty, type) and issubclass(ty, tuple) and hasattr(ty, "_fields")
+
+
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
-    # handle namedtuples
+    # Handle plain tuple runtime type explicitly.
+    if ty is tuple:
+        return typing.cast(
+            Encodable[T, U],
+            TupleEncodable(ty, ty, ctx, False, []),
+        )
+
+    # NamedTuple handling is routed through tuple logic, but decoded back into
+    # the concrete NamedTuple class.
     origin = typing.get_origin(ty)
+    is_namedtuple = origin is None and _is_namedtuple_type(ty)
     if origin is None:
-        return _encodable_object(ty, ctx)
-    # Handle empty tuple, or tuple with no args
-    if not args or args == ((),):
-        return _encodable_object(ty, ctx)
+        if is_namedtuple:
+            hints = typing.get_type_hints(ty)
+            tuple_field_types: list[type[Any]] = list(hints.values())
+            if not tuple_field_types:
+                tuple_field_types = [typing.Any] * len(getattr(ty, "_fields", ()))
+        else:
+            tuple_field_types = []
+    else:
+        tuple_field_types = list(args)
 
-    # Create encoders for each element type
-    element_encoders = [Encodable.define(arg, ctx) for arg in args]
+    if not tuple_field_types:
+        # Non-parameterized tuple subclasses still use object fallback.
+        if not is_namedtuple:
+            return _encodable_object(ty, ctx)
+        # Empty namedtuple; keep tuple identity behavior.
+        return typing.cast(Encodable[T, U], NamedTupleEncodable(ty, ty, ctx, False, []))
 
-    # Check if any element type is Image.Image
-    has_image = any(arg is Image.Image for arg in args)
+    # Handle empty tuple annotation (tuple[()]).
+    if tuple_field_types == [()] or args == ((),):
+        return TupleEncodable(ty, ty, ctx, False, [])
 
-    # Use enc for Image (schema-valid), base otherwise
+    element_encoders = [Encodable.define(arg, ctx) for arg in tuple_field_types]
+    has_image = any(arg is Image.Image for arg in tuple_field_types)
     encoded_ty: type[typing.Any] = typing.cast(
         type[typing.Any],
         tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
     )
 
+    if is_namedtuple:
+        return typing.cast(
+            Encodable[T, U],
+            NamedTupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
+        )
+
+    if origin is None:
+        return _encodable_object(ty, ctx)
+
     return typing.cast(
         Encodable[T, U],
         TupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
     )
+
 
 
 @Encodable.define.register(list)
@@ -736,7 +820,10 @@ def _encodable_mutable_sequence[T, U](
 
     # Handle unparameterized list (list without type args)
     if not args:
-        return _encodable_object(ty, ctx)
+        return typing.cast(
+            Encodable[T, U],
+            MutableSequenceEncodable(ty, list[Any], ctx, False, None),
+        )
 
     # Get the element type (first type argument)
     element_ty = args[0]
@@ -754,6 +841,20 @@ def _encodable_mutable_sequence[T, U](
     return typing.cast(
         Encodable[T, U],
         MutableSequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
+    )
+
+
+@Encodable.define.register(dict)
+@Encodable.define.register(MutableMapping)
+@Encodable.define.register(Mapping)
+def _encodable_mapping[K, V, U](
+    ty: type[Mapping[K, V]], ctx: Mapping[str, Any] | None
+) -> Encodable[Mapping[K, V], U]:
+    ctx = {} if ctx is None else ctx
+
+    return typing.cast(
+        Encodable[Mapping[K, V], U],
+        MappingEncodable(ty, ty, ctx),
     )
 
 
