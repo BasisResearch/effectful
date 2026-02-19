@@ -288,7 +288,9 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
         if self.element_encoder is None:
             adapter = pydantic.TypeAdapter(self.enc)
-            return typing.cast(MutableSequence[T], adapter.validate_python(encoded_value))
+            return typing.cast(
+                MutableSequence[T], adapter.validate_python(encoded_value)
+            )
         decoded_elements: list[T] = [
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
@@ -299,6 +301,8 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     ) -> Sequence[OpenAIMessageContentListBlock]:
         if self.has_image:
             # If list contains images, serialize each element and flatten the results
+            if self.element_encoder is None:
+                raise TypeError("Expected element encoder for image sequence")
             result: list[OpenAIMessageContentListBlock] = []
             if not isinstance(encoded_value, MutableSequence):
                 raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
@@ -750,7 +754,6 @@ def _encodable_tuple[T, U](
     def _is_namedtuple_type(ty: type[Any]) -> bool:
         return isinstance(ty, type) and issubclass(ty, tuple) and hasattr(ty, "_fields")
 
-
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
@@ -807,7 +810,6 @@ def _encodable_tuple[T, U](
         Encodable[T, U],
         TupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
     )
-
 
 
 @Encodable.define.register(list)
