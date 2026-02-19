@@ -290,23 +290,14 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
-    element_encoder: Encodable[T, typing.Any] | None
+    element_encoder: Encodable[T, typing.Any]
 
     def encode(self, value: MutableSequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
             raise TypeError(f"Expected MutableSequence, got {type(value)}")
-        if self.element_encoder is None:
-            # Unparameterized sequence: validate as-is through adapter.
-            adapter = pydantic.TypeAdapter(self.enc)
-            return typing.cast(typing.Any, adapter.validate_python(value))
         return [self.element_encoder.encode(elem) for elem in value]
 
     def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
-        if self.element_encoder is None:
-            adapter = pydantic.TypeAdapter(self.enc)
-            return typing.cast(
-                MutableSequence[T], adapter.validate_python(encoded_value)
-            )
         decoded_elements: list[T] = [
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
@@ -317,8 +308,6 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
     ) -> Sequence[OpenAIMessageContentListBlock]:
         if self.has_image:
             # If list contains images, serialize each element and flatten the results
-            if self.element_encoder is None:
-                raise TypeError("Expected element encoder for image sequence")
             result: list[OpenAIMessageContentListBlock] = []
             if not isinstance(encoded_value, MutableSequence):
                 raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
@@ -830,9 +819,20 @@ def _encodable_mutable_sequence[T, U](
 
     # Handle unparameterized list (list without type args)
     if not args:
+        identity_encoder = typing.cast(
+            Encodable[T, typing.Any],
+            BaseEncodable(
+                typing.cast(type[T], object),
+                typing.cast(
+                    type[_BoxEncoding[T]],
+                    BaseEncodable.wrapped_model(typing.cast(Hashable, object)),
+                ),
+                ctx,
+            ),
+        )
         return typing.cast(
             Encodable[T, U],
-            MutableSequenceEncodable(ty, list[Any], ctx, False, None),
+            MutableSequenceEncodable(ty, list[Any], ctx, False, identity_encoder),
         )
 
     # Get the element type (first type argument)
