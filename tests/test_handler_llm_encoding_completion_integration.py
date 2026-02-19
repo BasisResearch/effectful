@@ -92,13 +92,7 @@ def _completion_with_response_model(
     if response_model is str:
         return litellm.completion(**kwargs)
 
-    try:
-        return litellm.completion(response_model=response_model, **kwargs)
-    except Exception as exc:
-        # Backward compatibility with LiteLLM versions that use response_format.
-        if "response_model" not in str(exc) and "JSON serializable" not in str(exc):
-            raise
-        return litellm.completion(response_format=response_model, **kwargs)
+    return litellm.completion(response_format=response_model, **kwargs)
 
 
 def _completion_with_tools(
