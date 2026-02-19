@@ -32,6 +32,7 @@ from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
 from effectful.handlers.llm.template import Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
 from effectful.ops.types import Operation, Term
@@ -641,11 +642,10 @@ class ToolCallEncodable[T](
 
     def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
         sig = inspect.signature(value.tool)
-        # Note: Needed to use param annotation to ensure contract preservation.
         encoded_args = _param_model(sig).model_validate(
             {
                 k: Encodable.define(
-                    typing.cast(type[Any], sig.parameters[k].annotation), self.ctx
+                    typing.cast(type[Any], nested_type(v).value), self.ctx
                 ).encode(v)
                 for k, v in value.bound_args.arguments.items()
             }
