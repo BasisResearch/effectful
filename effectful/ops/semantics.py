@@ -203,12 +203,14 @@ def evaluate[T](
     with interpreter(intp if intp is not None else get_runtime().interpretation):
         cache = get_runtime().cache
         assert cache is not None, "Cache should be initialized by interpreter"
-        try:
-            return cache[id(expr)]
-        except KeyError:
-            result = __dispatch(type(expr))(expr)
-            cache[id(expr)] = result
-            return result
+        key = id(expr)
+        if key in cache:
+            ref, result = cache[key]
+            if ref is expr:
+                return result
+        result = __dispatch(type(expr))(expr)
+        cache[key] = (expr, result)
+        return result
 
 
 @evaluate.register(object)

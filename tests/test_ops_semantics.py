@@ -889,6 +889,8 @@ def test_evaluate_dag_no_exponential_blowup():
     with handler({counted: counted_handler}):
         result = evaluate(node)
 
+    deffn(node, counted)(0)
+
     # The handler should only be called once (the shared Term)
     assert call_count == 1
     # The result should be nested tuples of 42
@@ -918,9 +920,7 @@ def test_evaluate_dag_nested_different_intp():
     shared = x()
     inner_expr = (shared, shared)
 
-    result = evaluate(
-        y(), intp={y: lambda: evaluate(inner_expr, intp={x: lambda: 7})}
-    )
+    result = evaluate(y(), intp={y: lambda: evaluate(inner_expr, intp={x: lambda: 7})})
     assert result == (7, 7)
 
 
