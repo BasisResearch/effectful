@@ -255,7 +255,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     return_type = Encodable.define(
         typing.cast(type[typing.Any], nested_type(result).value)
     )
-    encoded_result = return_type.format_for_prompt(return_type.encode(result))
+    encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -295,7 +295,7 @@ def call_user(
             typing.cast(type[typing.Any], nested_type(obj).value), env
         )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = (
-            encoder.format_for_prompt(encoder.encode(obj))
+            encoder.serialize(encoder.encode(obj))
         )
         for part in encoded_obj:
             if part["type"] == "text":

@@ -83,12 +83,6 @@ class Encodable[T, U](ABC):
     def deserialize(self, serialized_value: str) -> U:
         raise NotImplementedError
 
-    def format_for_prompt(
-        self, encoded_value: U
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        """Format an encoded value for clean prompt output (strips wrappers)."""
-        return self.serialize(encoded_value)
-
     @typing.final
     @staticmethod
     @_CustomSingleDispatchCallable
@@ -128,15 +122,6 @@ class BaseEncodable[T](Encodable[T, pydantic.BaseModel]):
 
     def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
         return self.enc.model_validate_json(serialized_value)
-
-    def format_for_prompt(
-        self, encoded_value: pydantic.BaseModel
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        raw = encoded_value.value  # type: ignore[attr-defined]
-        json_str = self.adapter.dump_json(self.adapter.validate_python(raw)).decode(
-            "utf-8"
-        )
-        return [{"type": "text", "text": json_str}]
 
 
 @dataclass
@@ -531,24 +516,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
-def _param_field_type(encodable: "Encodable") -> type[Any]:
-    """Use base (T) for tool param fields; fall back to enc (U) if T isn't pydantic-compatible."""
-    try:
-        pydantic.TypeAdapter(encodable.base)
-        return typing.cast(type[Any], encodable.base)
-    except pydantic.errors.PydanticSchemaGenerationError:
-        return typing.cast(type[Any], encodable.enc)
-
-
-def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    return pydantic.create_model(
-        "Params",
-        __config__={"extra": "forbid"},
-        **{
-            name: _param_field_type(Encodable.define(param.annotation))
-            for name, param in sig.parameters.items()
-        },  # type: ignore
-    )
 
 
 @dataclass
@@ -654,6 +621,24 @@ class ToolCallEncodable[T](
 
     def deserialize(self, serialized_value: str) -> ChatCompletionMessageToolCall:
         return self.enc.model_validate_json(serialized_value)
+
+
+def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
+    def _field_type(encodable: "Encodable") -> type[Any]:
+        try:
+            pydantic.TypeAdapter(encodable.base)
+            return typing.cast(type[Any], encodable.base)
+        except pydantic.errors.PydanticSchemaGenerationError:
+            return typing.cast(type[Any], encodable.enc)
+
+    return pydantic.create_model(
+        "Params",
+        __config__={"extra": "forbid"},
+        **{
+            name: _field_type(Encodable.define(param.annotation))
+            for name, param in sig.parameters.items()
+        },  # type: ignore
+    )
 
 
 @Encodable.define.register(object)
