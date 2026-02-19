@@ -144,7 +144,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     
 
     decoded = enc.decode(enc.deserialize(content))
-    assert isinstance(decoded, enc.base)
+    pydantic.TypeAdapter(enc.base).validate_python(decoded)
 
 
 
