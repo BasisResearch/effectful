@@ -95,18 +95,6 @@ def _completion_with_response_model(
     return litellm.completion(response_format=response_model, **kwargs)
 
 
-def _completion_with_tools(
-    *, model: str, prompt: str, tools: list[dict[str, Any]]
-) -> Any:
-    return litellm.completion(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        tools=tools,
-        tool_choice="none",
-        max_tokens=200,
-    )
-
-
 def _build_tool_pair(ty: Any, suffix: str) -> tuple[Tool[..., Any], Tool[..., Any]]:
     safe_suffix = re.sub(r"[^0-9a-zA-Z_]+", "_", suffix)
 
@@ -166,13 +154,13 @@ def test_litellm_completion_accepts_encodable_tool_schema(
         elif hasattr(tool_spec_obj, "model_dump"):
             tool_specs.append(cast(dict[str, Any], tool_spec_obj.model_dump()))
         else:
-            raise TypeError(
-                f"Unexpected encoded tool spec type: {type(tool_spec_obj)}"
-            )
+            raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
 
-    response = _completion_with_tools(
+    response = litellm.completion(
         model=CHEAP_MODEL,
-        prompt="Return hello, do NOT call any tools.",
+        messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=tool_specs,
+        tool_choice="none",
+        max_tokens=200,
     )
     assert response is not None
