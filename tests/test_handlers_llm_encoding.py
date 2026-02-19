@@ -23,6 +23,7 @@ from effectful.handlers.llm.encoding import (
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
@@ -362,15 +363,6 @@ _IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"
 _TOOL_IDS = frozenset(
     {"tool-add", "tool-greet", "tool-process", "tool-no-params", "tool-pydantic-param"}
 )
-_DTC_IDS = frozenset(
-    {
-        "dtc-add-3-5",
-        "dtc-add-0-neg",
-        "dtc-greet-alice",
-        "dtc-process-items",
-        "dtc-pydantic-param",
-    }
-)
 
 _tool_decode_xfail = pytest.mark.xfail(
     raises=NotImplementedError, reason="Tool.decode not yet implemented"
@@ -457,16 +449,12 @@ def test_serialize_succeeds(ty, value, ctx):
 
 @pytest.mark.parametrize(
     "ty,value,ctx",
-    [
-        c
-        for c in ROUNDTRIP_CASES
-        if c.id not in _IMAGE_IDS and c.id not in _TOOL_IDS and c.id not in _DTC_IDS
-    ],
+    ROUNDTRIP_CASES,
 )
 def test_encode_idempotent(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     once = enc.encode(value)
-    twice = Encodable.define(enc.enc, ctx).encode(once)
+    twice = Encodable.define(nested_type(once).value, ctx).encode(once)
     assert once == twice
 
 
