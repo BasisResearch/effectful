@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import litellm
+import pydantic
 import pytest
 
 from effectful.handlers.llm.encoding import Encodable
@@ -56,7 +57,6 @@ def _case_marks(case_id: str) -> list[pytest.MarkDecorator]:
         marks.append(_provider_response_format_xfail)
     return marks
 
-
 TYPE_CASES = [
     pytest.param(
         ty,
@@ -88,7 +88,6 @@ def _completion_with_response_model(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "none"
 
-    # LiteLLM/OpenAI treats plain string responses as the default (no schema).
     if response_model is str:
         return litellm.completion(**kwargs)
 
@@ -139,6 +138,12 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         response_model=enc.enc,
     )
     assert response is not None
+
+    content = response.choices[0].message.content
+    assert content is not None, f"Expected content in response for {_type_label(ty)}"
+
+    decoded = enc.decode(enc.deserialize(content))
+    assert isinstance(decoded, enc.base)
 
 
 @requires_openai
