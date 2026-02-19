@@ -516,6 +516,24 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
+def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
+    def _field_type(encodable: "Encodable") -> type[Any]:
+        try:
+            pydantic.TypeAdapter(encodable.base)
+            return typing.cast(type[Any], encodable.base)
+        except pydantic.errors.PydanticSchemaGenerationError:
+            return typing.cast(type[Any], encodable.enc)
+
+    return pydantic.create_model(
+        "Params",
+        __config__={"extra": "forbid"},
+        **{
+            name: _field_type(Encodable.define(param.annotation))
+            for name, param in sig.parameters.items()
+        },  # type: ignore
+    )
+
+
 @dataclass
 class ToolEncodable[**P, T](Encodable[Tool[P, T], ChatCompletionToolParam]):
     base: type[Tool]
@@ -619,24 +637,6 @@ class ToolCallEncodable[T](
 
     def deserialize(self, serialized_value: str) -> ChatCompletionMessageToolCall:
         return self.enc.model_validate_json(serialized_value)
-
-
-def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    def _field_type(encodable: "Encodable") -> type[Any]:
-        try:
-            pydantic.TypeAdapter(encodable.base)
-            return typing.cast(type[Any], encodable.base)
-        except pydantic.errors.PydanticSchemaGenerationError:
-            return typing.cast(type[Any], encodable.enc)
-
-    return pydantic.create_model(
-        "Params",
-        __config__={"extra": "forbid"},
-        **{
-            name: _field_type(Encodable.define(param.annotation))
-            for name, param in sig.parameters.items()
-        },  # type: ignore
-    )
 
 
 @Encodable.define.register(object)
