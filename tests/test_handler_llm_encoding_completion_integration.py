@@ -13,24 +13,6 @@ from tests.test_handlers_llm_tool_calling_book import requires_openai
 
 CHEAP_MODEL = "gpt-4o-mini"
 
-
-def _unique_type_cases() -> list[tuple[Any, Mapping[str, Any] | None, str]]:
-    cases: list[tuple[Any, Mapping[str, Any] | None, str]] = []
-    seen: set[str] = set()
-    for c in ROUNDTRIP_CASES:
-        ty, _, ctx_raw = c.values
-        ctx = ctx_raw if isinstance(ctx_raw, Mapping) else None
-        ctx_keys = tuple(sorted((ctx or {}).keys()))
-        key = f"{ty!r}|{ctx_keys!r}"
-        if key in seen:
-            continue
-        seen.add(key)
-        case_id = c.id if isinstance(c.id, str) else getattr(ty, "__name__", repr(ty))
-        cases.append((ty, ctx, case_id))
-    return cases
-
-
-_UNIQUE_TYPES = _unique_type_cases()
 _tuple_schema_bug_xfail = pytest.mark.xfail(
     reason="Known tuple schema bug; expected to fail until fixed."
 )
@@ -39,7 +21,7 @@ _provider_response_format_xfail = pytest.mark.xfail(
 )
 
 
-def _case_marks(case_id: str) -> list[pytest.MarkDecorator]:
+def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
     if case_id.startswith("tuple-") or case_id in {
         "dc-with-tuple",
@@ -52,16 +34,22 @@ def _case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     return marks
 
 
-TYPE_CASES = [
-    pytest.param(
-        ty,
-        ctx,
-        id=case_id,
-        marks=_case_marks(case_id),
-    )
-    for ty, ctx, case_id in _UNIQUE_TYPES
-]
+def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for c in cases:
+        case_id = c.id if isinstance(c.id, str) else None
+        if case_id is None:
+            out.append(c)
+            continue
+        marks = [*c.marks, *_provider_case_marks(case_id)]
+        if marks == list(c.marks):
+            out.append(c)
+            continue
+        out.append(pytest.param(*c.values, id=case_id, marks=marks))
+    return out
 
+
+PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 
 def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
     tool_ty: type[Any] = type(tool)
@@ -75,9 +63,9 @@ def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
 
 
 @requires_openai
-@pytest.mark.parametrize("ty,ctx", TYPE_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
-    ty: Any, ctx: Mapping[str, Any] | None
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc = Encodable.define(ty, ctx)
     kwargs: dict[str, Any] = {
@@ -108,9 +96,9 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 
 @requires_openai
-@pytest.mark.parametrize("ty,ctx", TYPE_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
-    ty: Any, ctx: Mapping[str, Any] | None
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
 
@@ -133,9 +121,9 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
 
 
 @requires_openai
-@pytest.mark.parametrize("ty,ctx", TYPE_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
-    ty: Any, ctx: Mapping[str, Any] | None
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
 
