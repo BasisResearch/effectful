@@ -73,28 +73,6 @@ def _type_label(ty: Any) -> str:
     return getattr(ty, "__name__", repr(ty))
 
 
-def _completion_with_response_model(
-    *,
-    model: str,
-    prompt: str,
-    response_model: Any,
-    tools: list[dict[str, Any]] | None = None,
-) -> Any:
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200,
-    }
-    if tools is not None:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "none"
-
-    if response_model is str:
-        return litellm.completion(**kwargs)
-
-    return litellm.completion(response_format=response_model, **kwargs)
-
-
 def _build_tool_pair(ty: Any, suffix: str) -> tuple[Tool[..., Any], Tool[..., Any]]:
     safe_suffix = re.sub(r"[^0-9a-zA-Z_]+", "_", suffix)
 
@@ -121,11 +99,14 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     ty: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc = Encodable.define(ty, ctx)
-    response = _completion_with_response_model(
-        model=CHEAP_MODEL,
-        prompt=f"Return an instance of {_type_label(ty)}.",
-        response_model=enc.enc,
-    )
+    kwargs: dict[str, Any] = {
+        "model": CHEAP_MODEL,
+        "messages": [{"role": "user", "content": f"Return an instance of {_type_label(ty)}."}],
+        "max_tokens": 200,
+    }
+    if enc.enc is not str:
+        kwargs["response_format"] = enc.enc
+    response = litellm.completion(**kwargs)
     assert response is not None
 
     content = response.choices[0].message.content
