@@ -99,7 +99,9 @@ def _completion_with_response_model(
         return litellm.completion(response_format=response_model, **kwargs)
 
 
-def _completion_with_tools(*, model: str, prompt: str, tools: list[dict[str, Any]]) -> Any:
+def _completion_with_tools(
+    *, model: str, prompt: str, tools: list[dict[str, Any]]
+) -> Any:
     return litellm.completion(
         model=model,
         messages=[{"role": "user", "content": prompt}],
