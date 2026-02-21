@@ -28,9 +28,8 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
-from tests.test_handlers_llm_tool_calling_book import requires_openai
 
-CHEAP_MODEL = "gpt-4o-mini"
+CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -723,37 +722,24 @@ def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
 PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 
 
-def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
-    tool_ty: type[Any] = type(tool)
-    tool_enc: Encodable[Any, Any] = Encodable.define(tool_ty)
-    tool_spec_obj = tool_enc.encode(tool)
-    if isinstance(tool_spec_obj, Mapping):
-        return dict(tool_spec_obj)
-    elif hasattr(tool_spec_obj, "model_dump"):
-        return dict(tool_spec_obj.model_dump())
-    raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
-
-
-@requires_openai
+# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc = Encodable.define(ty, ctx)
-    kwargs: dict[str, Any] = {
-        "model": CHEAP_MODEL,
-        "messages": [
+    response = litellm.completion(
+        model=CHEAP_MODEL,
+        response_format=None if enc.enc is str else enc.enc,
+        messages=[
             {
                 "role": "user",
                 "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
             }
         ],
-        "max_tokens": 200,
-    }
-    if enc.enc is not str:
-        kwargs["response_format"] = enc.enc
-    response = litellm.completion(**kwargs)
-    assert response is not None
+        max_tokens=200,
+    )
+    assert isinstance(response, litellm.ModelResponse)
 
     content = response.choices[0].message.content
     assert content is not None, (
@@ -767,7 +753,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     pydantic.TypeAdapter(enc.base).validate_python(decoded)
 
 
-@requires_openai
+# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
@@ -782,17 +768,18 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     _fn.__annotations__ = {"value": ty, "return": None}
 
     tool: Tool[..., Any] = Tool.define(_fn)
+    enc = Encodable.define(type(tool), ctx)
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[_encode_tool_spec(tool)],
+        tools=[enc.encode(tool)],
         tool_choice="none",
         max_tokens=200,
     )
-    assert response is not None
+    assert isinstance(response, litellm.ModelResponse)
 
 
-@requires_openai
+# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
@@ -807,11 +794,12 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     _fn.__annotations__ = {"return": ty}
 
     tool: Tool[..., Any] = Tool.define(_fn)
+    enc = Encodable.define(type(tool), ctx)
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[_encode_tool_spec(tool)],
+        tools=[enc.encode(tool)],
         tool_choice="none",
         max_tokens=200,
     )
-    assert response is not None
+    assert isinstance(response, litellm.ModelResponse)
