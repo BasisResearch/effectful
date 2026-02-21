@@ -228,8 +228,9 @@ def call_assistant[T, U](
             "final response from the model should be a string"
         )
         try:
-            raw_result = response_format.deserialize(serialized_result)
-            result = response_format.decode(raw_result)
+            result = response_format.decode(
+                response_format.deserialize(serialized_result)
+            )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -251,7 +252,6 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    # serialize back to U using encoder for return type
     return_type = Encodable.define(
         typing.cast(type[typing.Any], nested_type(result).value)
     )
