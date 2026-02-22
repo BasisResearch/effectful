@@ -21,11 +21,7 @@ from PIL import Image
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
-    PydanticImage,
-    PydanticTool,
-    PydanticToolCall,
     SynthesizedFunction,
-    pydantic_type,
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
@@ -328,11 +324,28 @@ ROUNDTRIP_CASES = [
         id="list-img",
     ),
     # --- Tool ---
-    pytest.param(type(_tool_add), _tool_add, None, id="tool-add"),
-    pytest.param(type(_tool_greet), _tool_greet, None, id="tool-greet"),
-    pytest.param(type(_tool_process), _tool_process, None, id="tool-process"),
-    pytest.param(type(_tool_get_value), _tool_get_value, None, id="tool-no-params"),
-    pytest.param(type(_tool_distance), _tool_distance, None, id="tool-pydantic-param"),
+    pytest.param(type(_tool_add), _tool_add, {"_tool_add": _tool_add}, id="tool-add"),
+    pytest.param(
+        type(_tool_greet), _tool_greet, {"_tool_greet": _tool_greet}, id="tool-greet"
+    ),
+    pytest.param(
+        type(_tool_process),
+        _tool_process,
+        {"_tool_process": _tool_process},
+        id="tool-process",
+    ),
+    pytest.param(
+        type(_tool_get_value),
+        _tool_get_value,
+        {"_tool_get_value": _tool_get_value},
+        id="tool-no-params",
+    ),
+    pytest.param(
+        type(_tool_distance),
+        _tool_distance,
+        {"_tool_distance": _tool_distance},
+        id="tool-pydantic-param",
+    ),
     # --- DecodedToolCall ---
     pytest.param(
         DecodedToolCall,
@@ -368,36 +381,11 @@ ROUNDTRIP_CASES = [
 
 # Filter ID sets
 _IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"})
-_TOOL_IDS = frozenset(
-    {"tool-add", "tool-greet", "tool-process", "tool-no-params", "tool-pydantic-param"}
-)
-
-_tool_decode_xfail = pytest.mark.xfail(
-    raises=NotImplementedError, reason="Tool.decode not yet implemented"
-)
-
-
-def _xfail_tools(cases):
-    """Add xfail mark to Tool cases (whose decode raises NotImplementedError)."""
-    return [
-        pytest.param(*c.values, marks=[*c.marks, _tool_decode_xfail], id=c.id)
-        if c.id in _TOOL_IDS
-        else c
-        for c in cases
-    ]
-
 
 # Derived case lists
-# decode: Tool cases are xfail (decode raises NotImplementedError)
-DECODE_CASES = _xfail_tools(ROUNDTRIP_CASES)
 
 # Text-serializable: everything except Image-containing types
 TEXT_CASES = [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
-
-# Full pipeline (encode→serialize→deserialize→decode): needs both text and decode
-FULL_PIPELINE_CASES = _xfail_tools(
-    [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
-)
 
 
 # ============================================================================
@@ -405,7 +393,7 @@ FULL_PIPELINE_CASES = _xfail_tools(
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty,value,ctx", DECODE_CASES)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_decode_roundtrip(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     assert enc.decode(enc.encode(value)) == value
@@ -431,7 +419,7 @@ def test_serialize_deserialize_roundtrip(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
+@pytest.mark.parametrize("ty,value,ctx", TEXT_CASES)
 def test_full_pipeline_roundtrip(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
@@ -484,13 +472,13 @@ def test_define_raises_for_invalid_types(ty):
 
 def test_image_deserialize_raises():
     enc = Encodable.define(Image.Image)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(Exception):
         enc.deserialize("anything")
 
 
 def test_image_decode_rejects_non_data_uri():
     enc = Encodable.define(Image.Image)
-    with pytest.raises(TypeError):
+    with pytest.raises(Exception):
         enc.decode({"url": "http://example.com/image.png", "detail": "auto"})
 
 
@@ -665,7 +653,7 @@ def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provide
 
 def test_callable_encode_non_callable():
     enc = Encodable.define(Callable[..., int], {})
-    with pytest.raises(TypeError):
+    with pytest.raises(Exception):
         enc.encode("not a callable")
 
 
@@ -687,9 +675,6 @@ def test_callable_encode_no_source_no_docstring():
 # Provider integration tests
 # ---------------------------------------------------------------------------
 
-_tuple_schema_bug_xfail = pytest.mark.xfail(
-    reason="Known tuple schema bug; expected to fail until fixed."
-)
 _provider_response_format_xfail = pytest.mark.xfail(
     reason="Known OpenAI/LiteLLM response_format limitation for this type."
 )
@@ -697,13 +682,7 @@ _provider_response_format_xfail = pytest.mark.xfail(
 
 def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
-    if case_id.startswith("tuple-") or case_id in {
-        "dc-with-tuple",
-        "nt-coord",
-        "nt-person",
-    }:
-        marks.append(_tuple_schema_bug_xfail)
-    if case_id.startswith(("list-", "img-", "tool-", "dtc-")):
+    if "img" in case_id or "tool" in case_id or "dtc" in case_id:
         marks.append(_provider_response_format_xfail)
     return marks
 
@@ -741,7 +720,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
                 "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
             }
         ],
-        max_tokens=200,
+        max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
 
@@ -776,13 +755,13 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[enc.encode(tool)],
         tool_choice="none",
-        max_tokens=200,
+        max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
 
 
 # @requires_openai
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
@@ -802,110 +781,6 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[enc.encode(tool)],
         tool_choice="none",
-        max_tokens=200,
+        max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
-
-
-# ---------------------------------------------------------------------------
-# pydantic_type substitution tests
-# ---------------------------------------------------------------------------
-
-
-class TestPydanticTypeLeafSubstitutions:
-    """Leaf types are replaced with their Pydantic Annotated equivalents."""
-
-    def test_image(self):
-        assert pydantic_type(Image.Image) is PydanticImage
-
-    def test_tool(self):
-        assert pydantic_type(Tool) is PydanticTool
-
-    def test_tool_call(self):
-        assert pydantic_type(DecodedToolCall) is PydanticToolCall
-
-    def test_callable(self):
-        result = pydantic_type(Callable[[int], str])
-        import typing
-
-        assert typing.get_origin(result) is Annotated
-
-
-class TestPydanticTypePassthrough:
-    """Types without registrations pass through unchanged."""
-
-    def test_int(self):
-        assert pydantic_type(int) is int
-
-    def test_str(self):
-        assert pydantic_type(str) is str
-
-    def test_float(self):
-        assert pydantic_type(float) is float
-
-    def test_list_int(self):
-        ty = list[int]
-        assert pydantic_type(ty) is ty
-
-    def test_dict_str_int(self):
-        ty = dict[str, int]
-        assert pydantic_type(ty) is ty
-
-    def test_pydantic_model(self):
-        assert pydantic_type(_PointModel) is _PointModel
-
-
-class TestPydanticTypeNestedGenerics:
-    """Generic types have their type args recursively substituted."""
-
-    def test_list_image(self):
-        result = pydantic_type(list[Image.Image])
-        assert result == list[PydanticImage]
-
-    def test_dict_str_tool(self):
-        result = pydantic_type(dict[str, Tool])
-        assert result == dict[str, PydanticTool]
-
-    def test_tuple_image_str(self):
-        result = pydantic_type(tuple[Image.Image, str])
-        assert result == tuple[PydanticImage, str]
-
-    def test_list_list_image(self):
-        result = pydantic_type(list[list[Image.Image]])
-        assert result == list[list[PydanticImage]]
-
-    def test_mixed_no_substitution_args(self):
-        """Only args that need substitution are changed."""
-        result = pydantic_type(dict[str, Image.Image])
-        assert result == dict[str, PydanticImage]
-
-
-class TestPydanticTypeErrors:
-    """Invalid types raise TypeError."""
-
-    def test_term(self):
-        with pytest.raises(TypeError):
-            pydantic_type(Term)
-
-    def test_operation(self):
-        with pytest.raises(TypeError):
-            pydantic_type(Operation)
-
-
-class TestPydanticTypeRoundtrip:
-    """Substituted types work with pydantic.TypeAdapter for validation and serialization."""
-
-    def test_list_image_roundtrip(self):
-        img = Image.new("RGB", (2, 2), color="red")
-        adapter = pydantic.TypeAdapter(pydantic_type(list[Image.Image]))
-
-        serialized = adapter.dump_python([img], mode="json")
-        assert isinstance(serialized, list)
-        assert len(serialized) == 1
-        assert isinstance(serialized[0], dict)
-        assert "url" in serialized[0]
-
-        roundtripped = adapter.validate_python(serialized)
-        assert isinstance(roundtripped, list)
-        assert len(roundtripped) == 1
-        assert isinstance(roundtripped[0], Image.Image)

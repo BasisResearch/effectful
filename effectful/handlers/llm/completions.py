@@ -291,9 +291,7 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(
-            typing.cast(type[typing.Any], nested_type(obj).value), env
-        )
+        encoder = Encodable.define(nested_type(obj).value, env)  # type: ignore
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
         )
