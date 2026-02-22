@@ -21,7 +21,11 @@ from PIL import Image
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
+    PydanticImage,
+    PydanticTool,
+    PydanticToolCall,
     SynthesizedFunction,
+    pydantic_type,
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
@@ -801,3 +805,107 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
         max_tokens=200,
     )
     assert isinstance(response, litellm.ModelResponse)
+
+
+# ---------------------------------------------------------------------------
+# pydantic_type substitution tests
+# ---------------------------------------------------------------------------
+
+
+class TestPydanticTypeLeafSubstitutions:
+    """Leaf types are replaced with their Pydantic Annotated equivalents."""
+
+    def test_image(self):
+        assert pydantic_type(Image.Image) is PydanticImage
+
+    def test_tool(self):
+        assert pydantic_type(Tool) is PydanticTool
+
+    def test_tool_call(self):
+        assert pydantic_type(DecodedToolCall) is PydanticToolCall
+
+    def test_callable(self):
+        result = pydantic_type(Callable[[int], str])
+        import typing
+
+        assert typing.get_origin(result) is Annotated
+
+
+class TestPydanticTypePassthrough:
+    """Types without registrations pass through unchanged."""
+
+    def test_int(self):
+        assert pydantic_type(int) is int
+
+    def test_str(self):
+        assert pydantic_type(str) is str
+
+    def test_float(self):
+        assert pydantic_type(float) is float
+
+    def test_list_int(self):
+        ty = list[int]
+        assert pydantic_type(ty) is ty
+
+    def test_dict_str_int(self):
+        ty = dict[str, int]
+        assert pydantic_type(ty) is ty
+
+    def test_pydantic_model(self):
+        assert pydantic_type(_PointModel) is _PointModel
+
+
+class TestPydanticTypeNestedGenerics:
+    """Generic types have their type args recursively substituted."""
+
+    def test_list_image(self):
+        result = pydantic_type(list[Image.Image])
+        assert result == list[PydanticImage]
+
+    def test_dict_str_tool(self):
+        result = pydantic_type(dict[str, Tool])
+        assert result == dict[str, PydanticTool]
+
+    def test_tuple_image_str(self):
+        result = pydantic_type(tuple[Image.Image, str])
+        assert result == tuple[PydanticImage, str]
+
+    def test_list_list_image(self):
+        result = pydantic_type(list[list[Image.Image]])
+        assert result == list[list[PydanticImage]]
+
+    def test_mixed_no_substitution_args(self):
+        """Only args that need substitution are changed."""
+        result = pydantic_type(dict[str, Image.Image])
+        assert result == dict[str, PydanticImage]
+
+
+class TestPydanticTypeErrors:
+    """Invalid types raise TypeError."""
+
+    def test_term(self):
+        with pytest.raises(TypeError):
+            pydantic_type(Term)
+
+    def test_operation(self):
+        with pytest.raises(TypeError):
+            pydantic_type(Operation)
+
+
+class TestPydanticTypeRoundtrip:
+    """Substituted types work with pydantic.TypeAdapter for validation and serialization."""
+
+    def test_list_image_roundtrip(self):
+        img = Image.new("RGB", (2, 2), color="red")
+        adapter = pydantic.TypeAdapter(pydantic_type(list[Image.Image]))
+
+        serialized = adapter.dump_python([img], mode="json")
+        assert isinstance(serialized, list)
+        assert len(serialized) == 1
+        assert isinstance(serialized[0], dict)
+        assert "url" in serialized[0]
+
+        roundtripped = adapter.validate_python(serialized)
+        assert isinstance(roundtripped, list)
+        assert len(roundtripped) == 1
+        assert isinstance(roundtripped[0], Image.Image)

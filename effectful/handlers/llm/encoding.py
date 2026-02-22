@@ -650,7 +650,10 @@ _tool_adapter: pydantic.TypeAdapter[ChatCompletionToolParam] = pydantic.TypeAdap
 )
 
 
-def _validate_tool(value: Any, info: pydantic.ValidationInfo) -> Tool:
+def _validate_tool(
+    value: Tool | ChatCompletionToolParam,
+    info: pydantic.ValidationInfo
+) -> Tool:
     if isinstance(value, Tool):
         return value
     if isinstance(value, dict):
@@ -740,7 +743,8 @@ class ToolEncodable[**P, T](Encodable[Tool[P, T], pydantic.BaseModel]):
 
 
 def _validate_tool_call(
-    value: Any, info: pydantic.ValidationInfo
+    value: DecodedToolCall | ChatCompletionMessageToolCall,
+    info: pydantic.ValidationInfo
 ) -> DecodedToolCall:
     if isinstance(value, DecodedToolCall):
         return value
@@ -792,6 +796,88 @@ PydanticToolCall = typing.Annotated[
     pydantic.PlainSerializer(_serialize_tool_call),
     pydantic.WithJsonSchema(ChatCompletionMessageToolCall.model_json_schema())
 ]
+
+
+@_CustomSingleDispatchCallable
+def pydantic_type(
+    __dispatch: Callable[[type], Callable[[Any], Any]],
+    ty: Any,
+) -> Any:
+    """Substitute custom types with their Pydantic Annotated equivalents.
+
+    Recursively walks a type annotation tree, replacing leaf types that have
+    registered Pydantic annotations (e.g., Image.Image -> PydanticImage) and
+    reconstructing the full generic type.
+
+    The result can be passed to pydantic.TypeAdapter() for automatic
+    validation and serialization of nested structures.
+    """
+    if isinstance(ty, tuple | list | set | frozenset):
+        return type(ty)(pydantic_type(t) for t in ty)
+    elif isinstance(ty, typing.TypeVar | typing.ParamSpec | typing.ParamSpecArgs | typing.ParamSpecKwargs):
+        return ty
+    elif typing.get_origin(ty) is typing.Annotated:
+        args = typing.get_args(ty)
+        return typing.Annotated[pydantic_type(args[0]), *args[1:]]
+    elif not typing.get_args(ty):
+        return __dispatch(typing.get_origin(ty) or ty)(ty)
+    else:
+        origin = typing.get_origin(ty)
+        return __dispatch(origin)(origin[pydantic_type(typing.get_args(ty))])
+
+
+@pydantic_type.register(object)
+@pydantic_type.register(str)
+@pydantic_type.register(pydantic.BaseModel)
+def _pydantic_type_base[T](ty: type[T]) -> type[T]:
+    return ty
+
+
+@pydantic_type.register(Term)
+def _pydantic_type_term(ty: type[Term]):
+    raise TypeError("Terms cannot be converted to Pydantic types.")
+
+
+@pydantic_type.register(Operation)
+def _pydantic_type_operation(ty: type[Operation]):
+    raise TypeError("Operations cannot be converted to Pydantic types.")
+
+
+@pydantic_type.register(Image.Image)
+def _pydantic_type_image(ty: type[Image.Image]):
+    adapter = pydantic.TypeAdapter(ChatCompletionImageUrlObject)
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_image),
+        pydantic.PlainSerializer(_serialize_image),
+        pydantic.WithJsonSchema(adapter.json_schema()),
+    ]
+
+
+@pydantic_type.register(Tool)
+def _pydantic_type_tool(ty: type[Tool]):
+    adapter = pydantic.TypeAdapter(ChatCompletionToolParam)
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_tool),
+        pydantic.PlainSerializer(_serialize_tool),
+        pydantic.WithJsonSchema(adapter.json_schema()),
+    ]
+
+
+@pydantic_type.register(DecodedToolCall)
+def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_tool_call),
+        pydantic.PlainSerializer(_serialize_tool_call),
+        pydantic.WithJsonSchema(ChatCompletionMessageToolCall.model_json_schema()),
+    ]
+
+
+@pydantic_type.register(Callable)
+def _pydantic_type_callable(ty: type[Callable]):
+    return PydanticCallable(ty)
 
 
 class ToolCallEncodable[T](
