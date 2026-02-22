@@ -730,7 +730,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     enc = Encodable.define(ty, ctx)
     response = litellm.completion(
         model=CHEAP_MODEL,
-        response_format=None if enc.enc is str else enc.enc,
+        response_format=enc.response_format,
         messages=[
             {
                 "role": "user",
@@ -747,8 +747,6 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     )
 
     deserialized = enc.deserialize(content)
-    pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
-
     decoded = enc.decode(deserialized)
     pydantic.TypeAdapter(enc.base).validate_python(decoded)
 

@@ -194,7 +194,7 @@ def call_assistant[T, U](
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
-        response_format=None if response_format.enc is str else response_format.enc,
+        response_format=response_format.response_format,
         tools=list(tool_specs.values()),
         **kwargs,
     )
