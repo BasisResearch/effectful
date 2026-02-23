@@ -713,7 +713,11 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     enc = Encodable.define(ty, ctx)
     response = litellm.completion(
         model=CHEAP_MODEL,
-        response_format=enc.response_format,
+        response_format={
+            "type": "json_schema",
+            "schema": enc.enc.json_schema(),
+            "strict": True,
+        },
         messages=[
             {
                 "role": "user",

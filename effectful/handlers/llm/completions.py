@@ -195,7 +195,11 @@ def call_assistant[T](
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
-        response_format=response_format.response_format,
+        response_format={
+            "type": "json_schema",
+            "schema": response_format.enc.json_schema(),
+            "strict": True,
+        },
         tools=list(tool_specs.values()),
         **kwargs,
     )

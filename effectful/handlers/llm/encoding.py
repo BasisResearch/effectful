@@ -45,12 +45,6 @@ class DecodedToolCall[T]:
     name: str
 
 
-class _RawResponseFormatSchema(typing.TypedDict):
-    type: typing.Literal["json_schema"]
-    schema: dict[str, Any]
-    strict: bool
-
-
 @dataclasses.dataclass
 class Encodable[T]:
     base: type[T]
@@ -60,15 +54,6 @@ class Encodable[T]:
     @functools.cached_property
     def enc(self) -> pydantic.TypeAdapter[T]:
         return pydantic.TypeAdapter(TypeToPydanticType().evaluate(self.base))
-
-    @functools.cached_property
-    def response_format(self) -> _RawResponseFormatSchema:
-        """Return a response format expected by litellm"""
-        return {
-            "type": "json_schema",
-            "schema": self.enc.json_schema(),
-            "strict": self.strict,
-        }
 
     def encode(self, value: T) -> Mapping[str, Any]:
         return self.enc.dump_python(value, context=self.ctx, mode="json")
