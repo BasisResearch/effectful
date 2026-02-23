@@ -380,11 +380,6 @@ class Agent(abc.ABC):
     __history__: OrderedDict[str, Mapping[str, Any]]
     __system_prompt__: str
 
-    @classmethod
-    def _build_system_prompt(cls) -> str:
-        """Build an Agent-specific prompt from class docstring hierarchy."""
-        return inspect.getdoc(cls) or ""
-
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if not hasattr(cls, "__history__"):
@@ -392,8 +387,6 @@ class Agent(abc.ABC):
             prop.__set_name__(cls, "__history__")
             cls.__history__ = prop
         if not hasattr(cls, "__system_prompt__"):
-            sp = functools.cached_property(
-                lambda self: type(self)._build_system_prompt()
-            )
+            sp = functools.cached_property(lambda self: inspect.getdoc(type(self)) or "")
             sp.__set_name__(cls, "__system_prompt__")
             cls.__system_prompt__ = sp

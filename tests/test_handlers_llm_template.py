@@ -477,17 +477,16 @@ class TestAgentDocstringFallback:
             pass
 
         assert MissingDocAgent.__doc__ is None
-        assert MissingDocAgent._build_system_prompt()
-        assert (
-            "persistent LLM message history" in MissingDocAgent._build_system_prompt()
-        )
+        prompt = MissingDocAgent().__system_prompt__
+        assert prompt
+        assert "persistent LLM message history" in prompt
 
     def test_blank_docstring_uses_inherited_doc(self):
         class BlankDocAgent(Agent):
             """ """
 
         assert BlankDocAgent.__doc__ == " "
-        assert BlankDocAgent._build_system_prompt() == ""
+        assert BlankDocAgent().__system_prompt__ == ""
 
     def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):
@@ -497,10 +496,7 @@ class TestAgentDocstringFallback:
 
         assert ValidDocAgent.__doc__ is not None
         assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
-        assert (
-            "You are a valid-docstring test agent."
-            in ValidDocAgent._build_system_prompt()
-        )
+        assert "You are a valid-docstring test agent." in ValidDocAgent().__system_prompt__
 
 
 class TestAgentCachedProperty:
