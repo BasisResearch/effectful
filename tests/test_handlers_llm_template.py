@@ -449,29 +449,47 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[0])
         assert_single_system_message_first(mock.received_messages[1])
 
+    def test_empty_system_prompt_uses_default_fallback(self):
+        @Template.define
+        def standalone(topic: str) -> str:
+            """Write about {topic}."""
+            raise NotHandled
 
-class TestAgentDocstringEnforcement:
-    """Agent subclasses must define explicit non-empty docstrings."""
+        # Simulate notebook/empty-module-docstring fallback case.
+        standalone.__system_prompt__ = ""
 
-    def test_missing_docstring_raises(self):
-        with pytest.raises(
-            ValueError,
-            match="Agent subclasses must define a non-empty class docstring.",
-        ):
+        mock = MockCompletionHandler([make_text_response("ok")])
+        with handler(LiteLLMProvider()), handler(mock):
+            standalone("fish")
 
-            class MissingDocAgent(Agent):
-                pass
+        assert_single_system_message_first(mock.received_messages[0])
+        assert (
+            mock.received_messages[0][0]["content"]
+            == "You are a helpful assistant, you need to follow user's instruction"
+        )
 
-    def test_blank_docstring_raises(self):
-        with pytest.raises(
-            ValueError,
-            match="Agent subclasses must define a non-empty class docstring.",
-        ):
 
-            class BlankDocAgent(Agent):
-                """ """
+class TestAgentDocstringFallback:
+    """Agent subclasses can fall back to inherited class docstrings."""
 
-    def test_non_empty_docstring_succeeds(self):
+    def test_missing_docstring_uses_inherited_doc(self):
+        class MissingDocAgent(Agent):
+            pass
+
+        assert MissingDocAgent.__doc__ is None
+        assert MissingDocAgent._build_system_prompt()
+        assert (
+            "persistent LLM message history" in MissingDocAgent._build_system_prompt()
+        )
+
+    def test_blank_docstring_uses_inherited_doc(self):
+        class BlankDocAgent(Agent):
+            """ """
+
+        assert BlankDocAgent.__doc__ == " "
+        assert BlankDocAgent._build_system_prompt() == ""
+
+    def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):
             """You are a valid-docstring test agent.
             Your goal is to satisfy the explicit Agent docstring requirement.
@@ -479,6 +497,10 @@ class TestAgentDocstringEnforcement:
 
         assert ValidDocAgent.__doc__ is not None
         assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
+        assert (
+            "You are a valid-docstring test agent."
+            in ValidDocAgent._build_system_prompt()
+        )
 
 
 class TestAgentCachedProperty:

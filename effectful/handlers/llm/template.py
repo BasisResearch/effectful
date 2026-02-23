@@ -111,9 +111,9 @@ class Tool[**P, T](Operation[P, T]):
 def _module_docstring_system_prompt(fn_or_cls: Any) -> str:
     """Build a system prompt from the defining module docstring."""
     mod = inspect.getmodule(fn_or_cls)
-    if mod is None or not mod.__doc__:
+    if mod is None:
         return ""
-    return inspect.cleandoc(mod.__doc__)
+    return inspect.getdoc(mod) or ""
 
 
 class Template[**P, T](Tool[P, T]):
@@ -389,21 +389,11 @@ class Agent(abc.ABC):
 
     @classmethod
     def _build_system_prompt(cls) -> str:
-        """Build an Agent-specific system prompt from class docstring."""
-        class_doc = cls.__dict__.get("__doc__")
-        if class_doc:
-            cleaned = inspect.cleandoc(class_doc)
-            if cleaned:
-                return cleaned
-        return ""
+        """Build an Agent-specific prompt from class docstring hierarchy."""
+        return inspect.getdoc(cls) or ""
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        class_doc = cls.__dict__.get("__doc__")
-        if class_doc is None or not inspect.cleandoc(class_doc):
-            raise ValueError(
-                "Agent subclasses must define a non-empty class docstring."
-            )
         if not hasattr(cls, "__history__"):
             prop = functools.cached_property(lambda _: OrderedDict())
             prop.__set_name__(cls, "__history__")

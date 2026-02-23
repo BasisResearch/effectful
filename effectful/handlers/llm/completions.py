@@ -321,7 +321,11 @@ def call_user(
 @Operation.define
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    message = _make_message(dict(role="system", content=template.__system_prompt__))
+    system_prompt = (
+        template.__system_prompt__
+        or "You are a helpful assistant, you need to follow user's instruction"
+    )
+    message = _make_message(dict(role="system", content=system_prompt))
     try:
         history: collections.OrderedDict[str, Message] = _get_history()
         if any(m["role"] == "system" for m in history.values()):
