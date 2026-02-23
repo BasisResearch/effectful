@@ -455,7 +455,8 @@ class TestAgentDocstringEnforcement:
 
     def test_missing_docstring_raises(self):
         with pytest.raises(
-            ValueError, match="Agent subclasses must define a non-empty class docstring."
+            ValueError,
+            match="Agent subclasses must define a non-empty class docstring.",
         ):
 
             class MissingDocAgent(Agent):
@@ -463,11 +464,12 @@ class TestAgentDocstringEnforcement:
 
     def test_blank_docstring_raises(self):
         with pytest.raises(
-            ValueError, match="Agent subclasses must define a non-empty class docstring."
+            ValueError,
+            match="Agent subclasses must define a non-empty class docstring.",
         ):
 
             class BlankDocAgent(Agent):
-                """   """
+                """ """
 
     def test_non_empty_docstring_succeeds(self):
         class ValidDocAgent(Agent):
