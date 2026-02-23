@@ -108,21 +108,6 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
-def _build_template_system_prompt(fn_or_cls: Any) -> str:
-    """Build a template system prompt from module and object docstrings."""
-    parts: list[str] = []
-
-    mod = inspect.getmodule(fn_or_cls)
-    if mod is not None and mod.__doc__:
-        parts.append(inspect.cleandoc(mod.__doc__))
-
-    doc = getattr(fn_or_cls, "__doc__", None)
-    if doc:
-        parts.append(inspect.cleandoc(doc))
-
-    return "\n\n".join(parts)
-
-
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -335,8 +320,6 @@ class Template[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
-        op.__system_prompt__ = _build_template_system_prompt(_fn)  # type: ignore[attr-defined]
-
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
