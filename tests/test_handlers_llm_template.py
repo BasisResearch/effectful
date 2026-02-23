@@ -189,6 +189,12 @@ class MockCompletionHandler(ObjectInterpretation):
         return response
 
 
+def assert_single_system_message_first(messages):
+    roles = [m["role"] for m in messages]
+    assert roles.count("system") == 1
+    assert roles[0] == "system"
+
+
 # ---------------------------------------------------------------------------
 # Agent subclass used by most tests
 # ---------------------------------------------------------------------------
@@ -196,7 +202,9 @@ class MockCompletionHandler(ObjectInterpretation):
 
 @dataclasses.dataclass
 class ChatBot(Agent):
-    """Simple chat agent for testing history accumulation."""
+    """You are a chat agent for history-accumulation tests.
+    Your goal is to respond to `send` calls consistently across turns.
+    """
 
     bot_name: str = dataclasses.field(default="ChatBot")
 
@@ -207,7 +215,9 @@ class ChatBot(Agent):
 
 
 class _DesignerAgent(Agent):
-    """Agent from issue #560: nests template calls via tools."""
+    """You are an agent for nested-template regression tests.
+    Your goal is to call nested tools/templates and return a final response.
+    """
 
     @Template.define
     def nested_check(self, payload: str) -> str:
@@ -346,11 +356,138 @@ class TestAgentIsolation:
         assert len(mock.received_messages[2]) >= 3
 
 
+class TestSystemPromptInvariant:
+    """Exactly one system message is sent and it appears first."""
+
+    def test_agent_first_call_has_one_system_message(self):
+        mock = MockCompletionHandler([make_text_response("hi")])
+        bot = ChatBot()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            bot.send("hello")
+
+        assert_single_system_message_first(mock.received_messages[0])
+
+    def test_agent_second_call_has_one_system_message(self):
+        mock = MockCompletionHandler(
+            [
+                make_text_response("r1"),
+                make_text_response("r2"),
+            ]
+        )
+        bot = ChatBot()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            bot.send("first")
+            bot.send("second")
+
+        assert_single_system_message_first(mock.received_messages[0])
+        assert_single_system_message_first(mock.received_messages[1])
+
+    def test_nested_agent_flow_has_one_system_message_per_round(self):
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_text_response("inner"),
+                make_text_response("outer"),
+            ]
+        )
+        agent = _DesignerAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            agent.outer("demo")
+
+        for messages in mock.received_messages:
+            assert_single_system_message_first(messages)
+
+    def test_retry_flow_has_one_system_message_per_attempt(self):
+        class RetryAgent(Agent):
+            """You are a retry-flow test agent.
+            Your goal is to produce an integer response after retry feedback.
+            """
+
+            @Template.define
+            def pick_number(self) -> int:
+                """Pick a number."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [
+                make_text_response('"not_an_int"'),
+                make_text_response('{"value": 7}'),
+            ]
+        )
+
+        with (
+            handler(LiteLLMProvider()),
+            handler(RetryLLMHandler()),
+            handler(mock),
+        ):
+            assert RetryAgent().pick_number() == 7
+
+        assert len(mock.received_messages) == 2
+        assert_single_system_message_first(mock.received_messages[0])
+        assert_single_system_message_first(mock.received_messages[1])
+
+    def test_non_agent_template_calls_have_one_system_message(self):
+        @Template.define
+        def standalone(topic: str) -> str:
+            """Write about {topic}."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [
+                make_text_response("a"),
+                make_text_response("b"),
+            ]
+        )
+
+        with handler(LiteLLMProvider()), handler(mock):
+            standalone("fish")
+            standalone("birds")
+
+        assert_single_system_message_first(mock.received_messages[0])
+        assert_single_system_message_first(mock.received_messages[1])
+
+
+class TestAgentDocstringEnforcement:
+    """Agent subclasses must define explicit non-empty docstrings."""
+
+    def test_missing_docstring_raises(self):
+        with pytest.raises(
+            ValueError, match="Agent subclasses must define a non-empty class docstring."
+        ):
+
+            class MissingDocAgent(Agent):
+                pass
+
+    def test_blank_docstring_raises(self):
+        with pytest.raises(
+            ValueError, match="Agent subclasses must define a non-empty class docstring."
+        ):
+
+            class BlankDocAgent(Agent):
+                """   """
+
+    def test_non_empty_docstring_succeeds(self):
+        class ValidDocAgent(Agent):
+            """You are a valid-docstring test agent.
+            Your goal is to satisfy the explicit Agent docstring requirement.
+            """
+
+        assert ValidDocAgent.__doc__ is not None
+        assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
+
+
 class TestAgentCachedProperty:
     """__history__ is lazily created per instance without requiring __init__."""
 
     def test_no_init_required(self):
         class MinimalAgent(Agent):
+            """You are a minimal cached-property test agent.
+            Your goal is to expose lazily initialized Agent state.
+            """
+
             @Template.define
             def greet(self, name: str) -> str:
                 """Hello {name}."""
@@ -363,6 +500,10 @@ class TestAgentCachedProperty:
 
     def test_subclass_with_own_init(self):
         class CustomAgent(Agent):
+            """You are a custom-init test agent.
+            Your goal is to ensure Agent mixin behavior survives custom `__init__`.
+            """
+
             def __init__(self, name: str):
                 self.name = name
 
@@ -392,6 +533,10 @@ class TestAgentWithToolCalls:
             return a + b
 
         class MathAgent(Agent):
+            """You are a math-tool test agent.
+            Your goal is to call arithmetic tools and return a textual answer.
+            """
+
             @Template.define
             def compute(self, question: str) -> str:
                 """Answer: {question}"""
@@ -433,6 +578,10 @@ class TestAgentWithRetryHandler:
         )
 
         class NumberAgent(Agent):
+            """You are a numeric retry test agent.
+            Your goal is to return an integer after potential retry corrections.
+            """
+
             @Template.define
             def pick_number(self) -> int:
                 """Pick a number."""
@@ -595,6 +744,10 @@ def test_template_method():
 
     @dataclass
     class A(Agent):
+        """You are a template-method test agent.
+        Your goal is to expose method tools and method templates correctly.
+        """
+
         x: int
 
         @Tool.define
@@ -616,6 +769,10 @@ def test_template_method():
     assert a.f.tools["random"]() == 4
 
     class B(A):
+        """You are a derived template-method test agent.
+        Your goal is to add inherited-tool coverage for method-template tests.
+        """
+
         @Tool.define
         def reverse(self, s: str) -> str:
             """Reverses a string."""
@@ -747,6 +904,10 @@ class TestLexicalScopeCollection:
 
         @dataclass
         class Widget(Agent):
+            """You are a class-body discovery test agent.
+            Your goal is to expose tools discovered via bound `self`.
+            """
+
             @Tool.define
             def measure(self) -> int:
                 """Measure the widget."""
@@ -766,12 +927,20 @@ class TestLexicalScopeCollection:
         """Tools from a base Agent class are visible through the instance."""
 
         class Base(Agent):
+            """You are a base-class tool test agent.
+            Your goal is to provide a tool inherited by derived agents.
+            """
+
             @Tool.define
             def base_tool(self) -> int:
                 """A base tool."""
                 return 1
 
         class Derived(Base):
+            """You are a derived-class tool test agent.
+            Your goal is to consume tools inherited from a base agent class.
+            """
+
             @Template.define
             def ask(self) -> str:
                 """Ask something."""
@@ -980,6 +1149,10 @@ class TestStaticAndClassMethodTemplates:
         in cached_property — they remain accessible as plain Templates."""
 
         class MyAgent(Agent):
+            """You are a staticmethod-template test agent.
+            Your goal is to verify Agent wrapping does not alter static templates.
+            """
+
             @Template.define
             def instance_method(self) -> str:
                 """Say hello."""
@@ -1005,6 +1178,10 @@ class TestStaticAndClassMethodTemplates:
         in cached_property — they remain class-level operations."""
 
         class MyAgent(Agent):
+            """You are a classmethod-template test agent.
+            Your goal is to verify Agent wrapping does not alter class templates.
+            """
+
             @Template.define
             def instance_method(self) -> str:
                 """Say hello."""

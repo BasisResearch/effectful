@@ -108,6 +108,21 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
+def _build_template_system_prompt(fn_or_cls: Any) -> str:
+    """Build a template system prompt from module and object docstrings."""
+    parts: list[str] = []
+
+    mod = inspect.getmodule(fn_or_cls)
+    if mod is not None and mod.__doc__:
+        parts.append(inspect.cleandoc(mod.__doc__))
+
+    doc = getattr(fn_or_cls, "__doc__", None)
+    if doc:
+        parts.append(inspect.cleandoc(doc))
+
+    return "\n\n".join(parts)
+
+
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -168,6 +183,7 @@ class Template[**P, T](Tool[P, T]):
     """
 
     __context__: ChainMap[str, Any]
+    __system_prompt__: str
 
     @classmethod
     def _validate_prompt(
@@ -257,6 +273,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__system_prompt__ = instance.__system_prompt__  # type: ignore[attr-defined]
         return result
 
     @classmethod
@@ -318,6 +335,7 @@ class Template[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+        op.__system_prompt__ = _build_template_system_prompt(_fn)  # type: ignore[attr-defined]
 
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
@@ -368,10 +386,39 @@ class Agent(abc.ABC):
     """
 
     __history__: OrderedDict[str, Mapping[str, Any]]
+    __system_prompt__: str
+
+    @classmethod
+    def _build_system_prompt(cls) -> str:
+        """Build an Agent system prompt from module and class docstrings."""
+        parts: list[str] = []
+
+        mod = inspect.getmodule(cls)
+        if mod is not None and mod.__doc__:
+            parts.append(inspect.cleandoc(mod.__doc__))
+
+        class_doc = cls.__dict__.get("__doc__")
+        if class_doc:
+            cleaned = inspect.cleandoc(class_doc)
+            if cleaned:
+                parts.append(cleaned)
+
+        return "\n\n".join(parts)
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+        class_doc = cls.__dict__.get("__doc__")
+        if class_doc is None or not inspect.cleandoc(class_doc):
+            raise ValueError(
+                "Agent subclasses must define a non-empty class docstring."
+            )
         if not hasattr(cls, "__history__"):
             prop = functools.cached_property(lambda _: OrderedDict())
             prop.__set_name__(cls, "__history__")
             cls.__history__ = prop
+        if not hasattr(cls, "__system_prompt__"):
+            sp = functools.cached_property(
+                lambda self: type(self)._build_system_prompt()
+            )
+            sp.__set_name__(cls, "__system_prompt__")
+            cls.__system_prompt__ = sp  # type: ignore[assignment]
