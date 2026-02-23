@@ -387,6 +387,8 @@ class Agent(abc.ABC):
             prop.__set_name__(cls, "__history__")
             cls.__history__ = prop
         if not hasattr(cls, "__system_prompt__"):
-            sp = functools.cached_property(lambda self: inspect.getdoc(type(self)) or "")
+            sp = functools.cached_property(
+                lambda self: inspect.getdoc(type(self)) or ""
+            )
             sp.__set_name__(cls, "__system_prompt__")
             cls.__system_prompt__ = sp

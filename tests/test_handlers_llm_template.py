@@ -496,7 +496,9 @@ class TestAgentDocstringFallback:
 
         assert ValidDocAgent.__doc__ is not None
         assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
-        assert "You are a valid-docstring test agent." in ValidDocAgent().__system_prompt__
+        assert (
+            "You are a valid-docstring test agent." in ValidDocAgent().__system_prompt__
+        )
 
 
 class TestAgentCachedProperty:
