@@ -217,6 +217,7 @@ class Template[**P, T](Tool[P, T]):
         """Operations and Templates available as tools. Auto-capture from lexical context."""
         result = {}
         is_recursive = _is_recursive_signature(self.__signature__)
+        include_agent_instance_tools = hasattr(self, "__history__")
 
         for name, obj in self.__context__.items():
             # Collect tools directly in context
@@ -224,7 +225,7 @@ class Template[**P, T](Tool[P, T]):
                 result[name] = obj
 
             # Collect tools as methods on Agent instances in context
-            elif isinstance(obj, Agent):
+            elif include_agent_instance_tools and isinstance(obj, Agent):
                 for cls in type(obj).__mro__:
                     for attr_name in vars(cls):
                         if isinstance(getattr(obj, attr_name), Tool):
