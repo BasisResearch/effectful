@@ -268,7 +268,10 @@ class Template[**P, T](Tool[P, T]):
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
             result.__system_prompt__ = "\n\n".join(
                 part
-                for part in (getattr(result, "__system_prompt__", ""), instance.__system_prompt__)
+                for part in (
+                    getattr(result, "__system_prompt__", ""),
+                    instance.__system_prompt__,
+                )
                 if part
             )
         return result
