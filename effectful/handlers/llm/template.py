@@ -108,6 +108,14 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
+def _module_docstring_system_prompt(fn_or_cls: Any) -> str:
+    """Build a system prompt from the defining module docstring."""
+    mod = inspect.getmodule(fn_or_cls)
+    if mod is None or not mod.__doc__:
+        return ""
+    return inspect.cleandoc(mod.__doc__)
+
+
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -258,7 +266,11 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
-            result.__system_prompt__ = instance.__system_prompt__
+            result.__system_prompt__ = "\n\n".join(
+                part
+                for part in (getattr(result, "__system_prompt__", ""), instance.__system_prompt__)
+                if part
+            )
         return result
 
     @classmethod
@@ -320,6 +332,7 @@ class Template[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
+        op.__system_prompt__ = _module_docstring_system_prompt(_fn)  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
@@ -373,20 +386,13 @@ class Agent(abc.ABC):
 
     @classmethod
     def _build_system_prompt(cls) -> str:
-        """Build an Agent system prompt from module and class docstrings."""
-        parts: list[str] = []
-
-        mod = inspect.getmodule(cls)
-        if mod is not None and mod.__doc__:
-            parts.append(inspect.cleandoc(mod.__doc__))
-
+        """Build an Agent-specific system prompt from class docstring."""
         class_doc = cls.__dict__.get("__doc__")
         if class_doc:
             cleaned = inspect.cleandoc(class_doc)
             if cleaned:
-                parts.append(cleaned)
-
-        return "\n\n".join(parts)
+                return cleaned
+        return ""
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
