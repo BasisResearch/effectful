@@ -273,7 +273,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
-            result.__system_prompt__ = instance.__system_prompt__  # type: ignore[attr-defined]
+            result.__system_prompt__ = instance.__system_prompt__
         return result
 
     @classmethod
@@ -421,4 +421,4 @@ class Agent(abc.ABC):
                 lambda self: type(self)._build_system_prompt()
             )
             sp.__set_name__(cls, "__system_prompt__")
-            cls.__system_prompt__ = sp  # type: ignore[assignment]
+            cls.__system_prompt__ = sp
