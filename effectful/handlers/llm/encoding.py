@@ -53,6 +53,18 @@ class _RawResponseFormatSchema(typing.TypedDict):
     strict: bool
 
 
+@dataclass(frozen=True, eq=True)
+class DecodedToolCall[T]:
+    """
+    Structured representation of a tool call decoded from an LLM response.
+    """
+
+    tool: Tool[..., T]
+    bound_args: inspect.BoundArguments
+    id: ToolCallID
+    name: str
+
+
 class Encodable[T, U](ABC):
     base: type[T]
     enc: type[pydantic.BaseModel] | pydantic.TypeAdapter | type[str]
