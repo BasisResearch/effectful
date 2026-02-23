@@ -4,6 +4,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import json
 import string
 import textwrap
 import traceback
@@ -169,9 +170,9 @@ def completion(*args, **kwargs) -> typing.Any:
 
 
 @Operation.define
-def call_assistant[T, U](
+def call_assistant[T](
     tools: collections.abc.Mapping[str, Tool],
-    response_format: Encodable[T, U],
+    response_format: Encodable[T],
     model: str,
     **kwargs,
 ) -> MessageResult[T]:
@@ -228,9 +229,7 @@ def call_assistant[T, U](
             "final response from the model should be a string"
         )
         try:
-            result = response_format.decode(
-                response_format.deserialize(serialized_result)
-            )
+            result = response_format.decode(json.loads(serialized_result))
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -401,10 +400,10 @@ class RetryLLMHandler(ObjectInterpretation):
             self._user_before_sleep(retry_state)
 
     @implements(call_assistant)
-    def _call_assistant[T, U](
+    def _call_assistant[T](
         self,
         tools: collections.abc.Mapping[str, Tool],
-        response_format: Encodable[T, U],
+        response_format: Encodable[T],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:

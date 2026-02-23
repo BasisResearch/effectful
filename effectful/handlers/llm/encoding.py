@@ -1,29 +1,27 @@
 import ast
 import base64
+import dataclasses
 import functools
 import inspect
 import io
 import json
 import textwrap
 import typing
-from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
     Mapping,
     MutableMapping,
-    Sequence,
 )
-from dataclasses import dataclass
 from types import CodeType
 from typing import Any
 
 import litellm
 import pydantic
 from litellm import (
-    ChatCompletionImageUrlObject,
+    ChatCompletionImageObject,
     ChatCompletionMessageToolCall,
     ChatCompletionToolParam,
-    OpenAIMessageContentListBlock,
+    OpenAIMessageContent,
 )
 from PIL import Image
 
@@ -35,7 +33,7 @@ from effectful.ops.types import Operation, Term
 type ToolCallID = str
 
 
-@dataclass(frozen=True, eq=True)
+@dataclasses.dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
     Structured representation of a tool call decoded from an LLM response.
@@ -53,87 +51,45 @@ class _RawResponseFormatSchema(typing.TypedDict):
     strict: bool
 
 
-class Encodable[T, U](ABC):
+@dataclasses.dataclass
+class Encodable[T]:
     base: type[T]
-    enc: type[pydantic.BaseModel] | pydantic.TypeAdapter | type[str]
-    ctx: Mapping[str, Any]
+    ctx: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    strict: bool = True
 
-    @typing.final
-    @property
-    def response_format(
-        self,
-    ) -> type[pydantic.BaseModel] | _RawResponseFormatSchema | None:
+    @functools.cached_property
+    def enc(self) -> pydantic.TypeAdapter[T]:
+        return pydantic.TypeAdapter(TypeToPydanticType().evaluate(self.base))
+
+    @functools.cached_property
+    def response_format(self) -> _RawResponseFormatSchema:
         """Return a response format expected by litellm"""
-        if self.enc is str:
-            return None  # No schema for plain strings, they are serialized as-is without JSON encoding
-        elif isinstance(self.enc, pydantic.TypeAdapter):
-            if self.enc.json_schema() == {"type": "string"}:
-                return None  # No schema for plain strings, they are serialized as-is without JSON encoding
-            return _RawResponseFormatSchema(
-                type="json_schema",
-                schema=self.enc.json_schema(),
-                strict=True,
-            )
-        elif issubclass(self.enc, pydantic.BaseModel):
-            return self.enc
-        else:
-            raise TypeError(
-                f"Unsupported enc type {self.enc} for response format schema"
-            )
+        return {
+            "type": "json_schema",
+            "schema": self.enc.json_schema(),
+            "strict": self.strict,
+        }
 
-    @abstractmethod
-    def encode(self, value: T) -> U:
-        raise NotImplementedError
-
-    @abstractmethod
-    def decode(self, encoded_value: U) -> T:
-        raise NotImplementedError
-
-    @abstractmethod
-    def serialize(self, encoded_value: U) -> Sequence[OpenAIMessageContentListBlock]:
-        raise NotImplementedError
-
-    # serialize and deserialize have different types reflecting the LLM api chat.completions(list[content]) -> str
-    @abstractmethod
-    def deserialize(self, serialized_value: str) -> U:
-        raise NotImplementedError
-
-    @typing.final
-    @staticmethod
-    def define(
-        t: type[T],
-        ctx: Mapping[str, Any] | None = None,
-    ) -> "Encodable[T, U]":
-        return _AdapterEncodable(t, ctx or {})
-
-
-class _AdapterEncodable[T](Encodable[T, Any]):
-    enc: pydantic.TypeAdapter[T]
-
-    def __init__(self, base: type[T], ctx: Mapping[str, Any]):
-        self.base = base
-        self.ctx = ctx
-        self.enc = pydantic.TypeAdapter(TypeToPydanticType().evaluate(base))
-
-    def encode(self, value: T):
+    def encode(self, value: T) -> Mapping[str, Any]:
         return self.enc.dump_python(value, context=self.ctx, mode="json")
 
-    def decode(self, encoded_value: dict[str, Any]) -> T:
+    def decode(self, encoded_value: Mapping[str, Any]) -> T:
         return self.enc.validate_python(encoded_value, context=self.ctx)
 
-    def serialize(
-        self, encoded_value: dict[str, Any]
-    ) -> Sequence[OpenAIMessageContentListBlock]:
+    def serialize(self, encoded_value: Mapping[str, Any]) -> OpenAIMessageContent:
         return [{"type": "text", "text": json.dumps(encoded_value)}]
-        # return [{"type": "text", "text": self.enc.dump_json(self.enc.validate_python(encoded_value, context=self.ctx), context=self.ctx).decode("utf-8")}]
 
-    def deserialize(self, serialized_value: str) -> str | dict[str, Any]:
-        return (
-            serialized_value
-            if self.response_format is None
-            else json.loads(serialized_value)
-        )
-        # return self.enc.dump_python(self.enc.validate_json(serialized_value, context=self.ctx), context=self.ctx)
+    def deserialize(self, serialized_value: str) -> str | Mapping[str, Any]:
+        return json.loads(serialized_value)
+
+    @typing.final
+    @classmethod
+    def define(
+        cls: type[typing.Self],
+        t: type[T],
+        ctx: Mapping[str, Any] | None = None,
+    ) -> typing.Self:
+        return cls(t, ctx or {})
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -184,29 +140,28 @@ def _pydantic_type_operation(ty: type[Operation]):
     raise TypeError("Operations cannot be converted to Pydantic types.")
 
 
-def _validate_image(value: Image.Image | ChatCompletionImageUrlObject) -> Image.Image:
-    if isinstance(value, Image.Image):
-        return value
-    value = pydantic.TypeAdapter(ChatCompletionImageUrlObject).validate_python(value)
-    url = value.get("url")
-    if not isinstance(url, str) or not url.startswith("data:image/"):
+def _validate_image(value: ChatCompletionImageObject) -> Image.Image:
+    value = pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(value)
+    image_url: litellm.ChatCompletionImageUrlObject | str = value["image_url"]
+    url: str = image_url["url"] if isinstance(image_url, dict) else image_url
+    prefix, data = url.split(",")
+    if not prefix.startswith("data:image/"):
         raise ValueError(f"expected base64 encoded image as data uri, received {url}")
-    data = url.split(",")[1]
     return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
 
-def _serialize_image(value: Image.Image) -> ChatCompletionImageUrlObject:
-    adapter = pydantic.TypeAdapter(ChatCompletionImageUrlObject)
+def _serialize_image(value: Image.Image) -> ChatCompletionImageObject:
     buf = io.BytesIO()
     value.save(buf, format="PNG")
-    raw_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-    url_str = f"data:image/png;base64,{raw_str}"
-    return adapter.validate_python(dict(detail="auto", url=url_str))
+    url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+    return pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(
+        {"type": "image_url", "image_url": {"detail": "auto", "url": url}}
+    )
 
 
 @TypeToPydanticType.register(Image.Image)
 def _pydantic_type_image(ty: type[Image.Image]):
-    adapter = pydantic.TypeAdapter(ChatCompletionImageUrlObject)
+    adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_image),
@@ -449,10 +404,8 @@ def _pydantic_callable(callable_type: Any) -> Any:
 
 
 def _validate_tool(
-    value: Tool | ChatCompletionToolParam, info: pydantic.ValidationInfo
+    value: ChatCompletionToolParam, info: pydantic.ValidationInfo
 ) -> Tool:
-    if isinstance(value, Tool):
-        return value
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     name = value.get("function", {}).get("name")
     ctx = info.context or {}
@@ -501,11 +454,9 @@ def _pydantic_type_tool(ty: type[Tool]):
 
 
 def _validate_tool_call(
-    value: DecodedToolCall | ChatCompletionMessageToolCall,
+    value: ChatCompletionMessageToolCall,
     info: pydantic.ValidationInfo,
 ) -> DecodedToolCall:
-    if isinstance(value, DecodedToolCall):
-        return value
     if isinstance(value, dict):
         value = ChatCompletionMessageToolCall.model_validate(value)
     ctx = info.context or {}
