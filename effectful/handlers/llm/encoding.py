@@ -127,8 +127,8 @@ class _AdapterEncodable[T](Encodable[T, Any]):
         return [{"type": "text", "text": json.dumps(encoded_value)}]
         # return [{"type": "text", "text": self.enc.dump_json(self.enc.validate_python(encoded_value, context=self.ctx), context=self.ctx).decode("utf-8")}]
 
-    def deserialize(self, serialized_value: str) -> dict[str, Any]:
-        return json.loads(serialized_value)
+    def deserialize(self, serialized_value: str) -> str | dict[str, Any]:
+        return serialized_value if self.response_format is None else json.loads(serialized_value)
         # return self.enc.dump_python(self.enc.validate_json(serialized_value, context=self.ctx), context=self.ctx)
 
 
