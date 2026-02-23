@@ -49,7 +49,6 @@ class DecodedToolCall[T]:
 class Encodable[T]:
     base: type[T]
     ctx: Mapping[str, Any] = dataclasses.field(default_factory=dict)
-    strict: bool = True
 
     @functools.cached_property
     def enc(self) -> pydantic.TypeAdapter[T]:
@@ -63,9 +62,6 @@ class Encodable[T]:
 
     def serialize(self, encoded_value: Mapping[str, Any]) -> OpenAIMessageContent:
         return [{"type": "text", "text": json.dumps(encoded_value)}]
-
-    def deserialize(self, serialized_value: str) -> str | Mapping[str, Any]:
-        return json.loads(serialized_value)
 
     @typing.final
     @classmethod
@@ -391,24 +387,21 @@ def _pydantic_callable(callable_type: Any) -> Any:
 def _validate_tool(
     value: ChatCompletionToolParam, info: pydantic.ValidationInfo
 ) -> Tool:
+    assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
-    name = value.get("function", {}).get("name")
-    ctx = info.context or {}
-    tool = ctx.get(name)
-    if isinstance(tool, Tool):
-        return tool
-    else:
-        raise NotImplementedError(f"Unknown tool: {name}")
+    try:
+        return info.context[value["function"]["name"]]
+    except KeyError as e:
+        raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
 
 def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
-    sig = inspect.signature(value)
     sig_model = pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
             name: TypeToPydanticType().evaluate(param.annotation)
-            for name, param in sig.parameters.items()
+            for name, param in inspect.signature(value).parameters.items()
         },  # type: ignore
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
@@ -482,7 +475,7 @@ def _serialize_tool_call(
                 "arguments": encoded_args,
             },
         }
-    ).model_dump()
+    ).model_dump(mode="json")
 
 
 @TypeToPydanticType.register(DecodedToolCall)

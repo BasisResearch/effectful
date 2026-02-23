@@ -213,11 +213,10 @@ def call_assistant[T](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    raw_tool_calls = message.get("tool_calls") or []
-    encoding = Encodable.define(DecodedToolCall, tools)  # type: ignore
-    for raw_tool_call in raw_tool_calls:
+    encoding = Encodable.define(DecodedToolCall, tools)
+    for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
+            tool_calls += [encoding.decode(raw_tool_call)]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -255,9 +254,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(
-        typing.cast(type[typing.Any], nested_type(result).value)
-    )
+    return_type = Encodable.define(nested_type(result).value)  # type: ignore
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),

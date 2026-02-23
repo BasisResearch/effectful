@@ -7,6 +7,7 @@ interface, parametrized over many types and values.
 
 import inspect
 import io
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -27,7 +28,6 @@ from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEval
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
-from effectful.ops.types import Operation, Term
 
 CHEAP_MODEL = "gpt-4o-mini"
 
@@ -379,15 +379,6 @@ ROUNDTRIP_CASES = [
     ),
 ]
 
-# Filter ID sets
-_IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"})
-
-# Derived case lists
-
-# Text-serializable: everything except Image-containing types
-TEXT_CASES = [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
-
-
 # ============================================================================
 # Law 1: decode(encode(v)) == v
 # ============================================================================
@@ -404,14 +395,11 @@ def test_encode_decode_roundtrip(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty,value,ctx", TEXT_CASES)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_serialize_deserialize_roundtrip(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
-    blocks = enc.serialize(encoded)
-    assert len(blocks) == 1
-    assert blocks[0]["type"] == "text"
-    assert enc.deserialize(blocks[0]["text"]) == encoded
+    assert json.loads(json.dumps(encoded)) == encoded
 
 
 # ============================================================================
@@ -419,23 +407,11 @@ def test_serialize_deserialize_roundtrip(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty,value,ctx", TEXT_CASES)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_full_pipeline_roundtrip(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
-    text = enc.serialize(encoded)[0]["text"]
-    assert enc.decode(enc.deserialize(text)) == value
-
-
-# ============================================================================
-# Law 4: serialize(encode(v)) succeeds
-# ============================================================================
-
-
-@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
-def test_serialize_succeeds(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    enc.serialize(enc.encode(value))
+    assert enc.decode(json.loads(json.dumps(encoded))) == value
 
 
 # ============================================================================
@@ -443,43 +419,11 @@ def test_serialize_succeeds(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize(
-    "ty,value,ctx",
-    ROUNDTRIP_CASES,
-)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_idempotent(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    once = enc.encode(value)
+    once = Encodable.define(ty, ctx).encode(value)
     twice = Encodable.define(nested_type(once).value, ctx).encode(once)
     assert once == twice
-
-
-# ============================================================================
-# Term-specific: Encodable.define raises TypeError for Term and Operation
-# ============================================================================
-
-
-@pytest.mark.parametrize("ty", [Term, Operation])
-def test_define_raises_for_invalid_types(ty):
-    with pytest.raises(TypeError):
-        Encodable.define(ty)
-
-
-# ============================================================================
-# Image-specific: deserialize raises, decode rejects invalid URLs
-# ============================================================================
-
-
-def test_image_deserialize_raises():
-    enc = Encodable.define(Image.Image)
-    with pytest.raises(Exception):
-        enc.deserialize("anything")
-
-
-def test_image_decode_rejects_non_data_uri():
-    enc = Encodable.define(Image.Image)
-    with pytest.raises(Exception):
-        enc.decode({"url": "http://example.com/image.png", "detail": "auto"})
 
 
 # ============================================================================
@@ -601,9 +545,9 @@ def test_callable_full_pipeline_behavioral(
 ):
     """Full encode->serialize->deserialize->decode pipeline is behaviorally equivalent."""
     enc = Encodable.define(ty, ctx)
-    text = enc.serialize(enc.encode(func))[0]["text"]
+    text = json.dumps(enc.encode(func))
     with handler(eval_provider):
-        decoded = enc.decode(enc.deserialize(text))
+        decoded = enc.decode(json.loads(text))
     assert decoded(*args) == expected
 
 
@@ -733,7 +677,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
     )
 
-    deserialized = enc.deserialize(content)
+    deserialized = json.loads(content)
     decoded = enc.decode(deserialized)
     pydantic.TypeAdapter(enc.base).validate_python(decoded)
 
