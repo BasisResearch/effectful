@@ -236,8 +236,8 @@ class TestAgentHistoryAccumulation:
     def test_second_call_sees_prior_messages(self):
         mock = MockCompletionHandler(
             [
-                make_text_response('{"value": "hi"}'),
-                make_text_response('{"value": "good"}'),
+                make_text_response("hi"),
+                make_text_response("good"),
             ]
         )
         bot = ChatBot()
@@ -260,8 +260,8 @@ class TestAgentHistoryAccumulation:
     def test_history_contains_all_messages_after_two_calls(self):
         mock = MockCompletionHandler(
             [
-                make_text_response('{"value": "r1"}'),
-                make_text_response('{"value": "r2"}'),
+                make_text_response("r1"),
+                make_text_response("r2"),
             ]
         )
         bot = ChatBot()
@@ -278,8 +278,8 @@ class TestAgentHistoryAccumulation:
     def test_message_ids_are_unique(self):
         mock = MockCompletionHandler(
             [
-                make_text_response('{"value": "r1"}'),
-                make_text_response('{"value": "r2"}'),
+                make_text_response("r1"),
+                make_text_response("r2"),
             ]
         )
         bot = ChatBot()
@@ -298,8 +298,8 @@ class TestAgentIsolation:
     def test_two_agents_have_independent_histories(self):
         mock = MockCompletionHandler(
             [
-                make_text_response('{"value": "from bot1"}'),
-                make_text_response('{"value": "from bot2"}'),
+                make_text_response("from bot1"),
+                make_text_response("from bot2"),
             ]
         )
         bot1 = ChatBot()
@@ -326,9 +326,9 @@ class TestAgentIsolation:
 
         mock = MockCompletionHandler(
             [
-                make_text_response('{"value": "agent reply"}'),
-                make_text_response('{"value": "standalone reply"}'),
-                make_text_response('{"value": "agent reply 2"}'),
+                make_text_response("agent reply"),
+                make_text_response("standalone reply"),
+                make_text_response("agent reply 2"),
             ]
         )
         bot = ChatBot()
@@ -399,8 +399,10 @@ class TestAgentWithToolCalls:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("add", '{"a": 2, "b": 3}'),
-                make_text_response('{"value": "The answer is 5"}'),
+                make_tool_call_response(
+                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
+                ),
+                make_text_response("The answer is 5"),
             ]
         )
         agent = MathAgent()
@@ -424,7 +426,7 @@ class TestAgentWithRetryHandler:
         mock = MockCompletionHandler(
             [
                 # First attempt: invalid result for int
-                make_text_response('{"value": "not_an_int"}'),
+                make_text_response('"not_an_int"'),
                 # Retry: valid
                 make_text_response('{"value": 42}'),
             ]
@@ -469,8 +471,8 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
-                make_text_response('{"value": "check passed"}'),
-                make_text_response('{"value": "all good"}'),
+                make_text_response("check passed"),
+                make_text_response("all good"),
             ]
         )
         agent = _DesignerAgent()
@@ -485,8 +487,8 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
-                make_text_response('{"value": "inner"}'),
-                make_text_response('{"value": "outer"}'),
+                make_text_response("inner"),
+                make_text_response("outer"),
             ]
         )
         agent = _DesignerAgent()
@@ -509,8 +511,8 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
-                make_text_response('{"value": "inner"}'),
-                make_text_response('{"value": "outer"}'),
+                make_text_response("inner"),
+                make_text_response("outer"),
             ]
         )
         agent = _DesignerAgent()
@@ -530,11 +532,11 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 # First call: direct answer (no tool call)
-                make_text_response('{"value": "first"}'),
+                make_text_response("first"),
                 # Second call: tool → nested → final
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
-                make_text_response('{"value": "inner"}'),
-                make_text_response('{"value": "second"}'),
+                make_text_response("inner"),
+                make_text_response("second"),
             ]
         )
         agent = _DesignerAgent()
@@ -559,10 +561,10 @@ class TestNestedTemplateCalling:
             [
                 # First call: tool → nested → final
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
-                make_text_response('{"value": "inner"}'),
-                make_text_response('{"value": "first"}'),
+                make_text_response("inner"),
+                make_text_response("first"),
                 # Second call: direct answer
-                make_text_response('{"value": "second"}'),
+                make_text_response("second"),
             ]
         )
         agent = _DesignerAgent()
@@ -893,7 +895,7 @@ class TestStaticAndClassMethodTemplates:
                 """Answer: {question}"""
                 raise NotHandled
 
-        mock = MockCompletionHandler([make_text_response('{"value": "42"}')])
+        mock = MockCompletionHandler([make_text_response("42")])
         with handler(LiteLLMProvider()), handler(mock):
             result = MyClass.ask("what is 6*7?")
         assert result == "42"
@@ -953,7 +955,7 @@ class TestStaticAndClassMethodTemplates:
                 """Answer: {question}"""
                 raise NotHandled
 
-        mock = MockCompletionHandler([make_text_response('{"value": "yes"}')])
+        mock = MockCompletionHandler([make_text_response("yes")])
         with handler(LiteLLMProvider()), handler(mock):
             result = MyClass.ask("is the sky blue?")
         assert result == "yes"
@@ -1032,7 +1034,7 @@ def test_template_formatting_scoped():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
         )
 
 
@@ -1147,7 +1149,7 @@ def test_staticmethod_lexical_scope_formatting():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
         )
 
 

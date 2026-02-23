@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def convert_to_uppercase_with_exclamations(input_string: str) -> str:\\n    return input_string.upper() + '!!' \\n\"}}",
+        "content": "{\"module_code\":\"def convert_to_uppercase_with_exclamations(input_string: str) -> str:\\n    return input_string.upper() + '!!' \\n\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

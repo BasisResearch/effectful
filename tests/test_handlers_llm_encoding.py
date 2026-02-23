@@ -1,1285 +1,817 @@
-import builtins
-import typing
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+"""
+Law-based test suite for effectful.handlers.llm.encoding.
+
+Each test function verifies a single equational law of the Encodable[T, U]
+interface, parametrized over many types and values.
+"""
+
+import inspect
+import io
+import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any, NamedTuple, TypedDict
 
+import litellm
 import pydantic
 import pytest
+from litellm import ChatCompletionMessageToolCall
 from PIL import Image
-from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import (
+    DecodedToolCall,
+    Encodable,
+    SynthesizedFunction,
+)
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
+from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
+from tests.test_handlers_llm_tool_calling_book import requires_openai
 
-# Eval providers for parameterized tests
+CHEAP_MODEL = "gpt-4o-mini"
+
+# ---------------------------------------------------------------------------
+# Module-level type definitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Point:
+    x: int
+    y: int
+
+
+@dataclass
+class _Person:
+    name: str
+    age: int
+
+
+@dataclass
+class _Address:
+    street: str
+    city: str
+
+
+@dataclass
+class _PersonWithAddress:
+    name: str
+    address: _Address
+
+
+@dataclass
+class _Config:
+    host: str
+    port: int
+    timeout: float | None = None
+
+
+@dataclass
+class _Container:
+    items: list[int]
+    label: str
+
+
+class _Coord(NamedTuple):
+    x: int
+    y: int
+
+
+class _PersonNT(NamedTuple):
+    name: str
+    age: int
+
+
+class _UserTD(TypedDict):
+    name: str
+    age: int
+
+
+class _ConfigTD(TypedDict, total=False):
+    host: str
+    port: int
+
+
+@dataclass
+class _Pair:
+    values: tuple[int, str]
+    count: int
+
+
+class _PointModel(pydantic.BaseModel):
+    x: int
+    y: int
+
+
+class _PersonModel(pydantic.BaseModel):
+    name: str
+    age: int
+
+
+class _ContainerModel(pydantic.BaseModel):
+    items: list[int]
+    name: str
+
+
+class _AddressModel(pydantic.BaseModel):
+    street: str
+    city: str
+
+
+class _PersonWithAddressModel(pydantic.BaseModel):
+    name: str
+    address: _AddressModel
+
+
+# ---------------------------------------------------------------------------
+# Module-level tool definitions
+# ---------------------------------------------------------------------------
+
+
+@Tool.define
+def _tool_add(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b
+
+
+@Tool.define
+def _tool_greet(name: str) -> str:
+    """Greet someone by name."""
+    return f"Hello, {name}!"
+
+
+@Tool.define
+def _tool_process(items: list[int], label: str) -> str:
+    """Process a list of items."""
+    return f"{label}: {sum(items)}"
+
+
+@Tool.define
+def _tool_get_value() -> int:
+    """Return a constant value."""
+    return 42
+
+
+@Tool.define
+def _tool_distance(p: _PointModel) -> float:
+    """Compute distance from origin."""
+    return (p.x**2 + p.y**2) ** 0.5
+
+
+# ---------------------------------------------------------------------------
+# Module-level callable definitions
+# ---------------------------------------------------------------------------
+
+
+def fn_add(a: int, b: int) -> int:
+    return a + b
+
+
+def fn_greet(name: str) -> str:
+    return f"Hello, {name}!"
+
+
+def fn_is_positive(x: int) -> bool:
+    return x > 0
+
+
+def fn_identity(x: int) -> int:
+    return x
+
+
+def fn_constant() -> int:
+    return 42
+
+
+fn_multiply_factor = 3
+
+
+def fn_multiply(x: int) -> int:
+    return x * fn_multiply_factor
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_png_image(mode, size, color):
+    """Create a loaded PngImageFile from the given spec.
+
+    Image.new() returns a plain Image.Image, but encode/decode roundtrips
+    through PNG, producing a PngImageFile.  PIL's __eq__ uses strict class
+    identity, so Image.Image != PngImageFile.  By constructing test values
+    as PngImageFile from the start, we can use plain == in assertions.
+    """
+    buf = io.BytesIO()
+    Image.new(mode, size, color).save(buf, "PNG")
+    buf.seek(0)
+    img = Image.open(buf)
+    img.load()
+    return img
+
+
+def _make_dtc(tool, kwargs, call_id):
+    """Construct a DecodedToolCall from a tool, kwargs, and call id."""
+    sig = inspect.signature(tool)
+    bound = sig.bind(**kwargs)
+    return DecodedToolCall(tool=tool, bound_args=bound, id=call_id, name=tool.__name__)
+
+
+# ---------------------------------------------------------------------------
+# Test case lists
+# ---------------------------------------------------------------------------
+
+# (type_annotation, value, ctx) triples — reused across law tests.
+# ctx=None means Encodable.define(ty), otherwise Encodable.define(ty, ctx).
+ROUNDTRIP_CASES = [
+    # --- str ---
+    pytest.param(str, "hello", None, id="str-hello"),
+    pytest.param(str, "", None, id="str-empty"),
+    pytest.param(str, "with spaces and\ttabs", None, id="str-whitespace"),
+    pytest.param(str, "line1\nline2", None, id="str-multiline"),
+    pytest.param(str, '{"key": "value"}', None, id="str-json-like"),
+    # --- int ---
+    pytest.param(int, 42, None, id="int-positive"),
+    pytest.param(int, -7, None, id="int-negative"),
+    pytest.param(int, 0, None, id="int-zero"),
+    pytest.param(int, 999999, None, id="int-large"),
+    # --- bool ---
+    pytest.param(bool, True, None, id="bool-true"),
+    pytest.param(bool, False, None, id="bool-false"),
+    # --- float ---
+    pytest.param(float, 3.14, None, id="float-positive"),
+    pytest.param(float, -2.5, None, id="float-negative"),
+    pytest.param(float, 0.0, None, id="float-zero"),
+    # --- complex ---
+    pytest.param(complex, 3 + 4j, None, id="complex-positive"),
+    pytest.param(complex, -1 + 0j, None, id="complex-real"),
+    # --- dataclass ---
+    pytest.param(_Point, _Point(10, 20), None, id="dc-point"),
+    pytest.param(_Person, _Person("Alice", 30), None, id="dc-person"),
+    pytest.param(
+        _Config, _Config("localhost", 8080, 5.0), None, id="dc-config-timeout"
+    ),
+    pytest.param(_Config, _Config("localhost", 8080), None, id="dc-config-none"),
+    pytest.param(
+        _PersonWithAddress,
+        _PersonWithAddress("Bob", _Address("123 Main", "NYC")),
+        None,
+        id="dc-nested",
+    ),
+    pytest.param(_Container, _Container([1, 2, 3], "test"), None, id="dc-with-list"),
+    pytest.param(_Pair, _Pair(values=(42, "hello"), count=2), None, id="dc-with-tuple"),
+    # --- NamedTuple ---
+    pytest.param(_Coord, _Coord(3, 4), None, id="nt-coord"),
+    pytest.param(_PersonNT, _PersonNT("Alice", 30), None, id="nt-person"),
+    # --- TypedDict ---
+    pytest.param(_UserTD, _UserTD(name="Bob", age=25), None, id="td-user"),
+    pytest.param(
+        _ConfigTD, _ConfigTD(host="localhost", port=8080), None, id="td-config"
+    ),
+    # --- pydantic BaseModel ---
+    pytest.param(_PointModel, _PointModel(x=10, y=20), None, id="pm-point"),
+    pytest.param(
+        _PersonModel, _PersonModel(name="Alice", age=30), None, id="pm-person"
+    ),
+    pytest.param(
+        _ContainerModel,
+        _ContainerModel(items=[1, 2, 3], name="test"),
+        None,
+        id="pm-with-list",
+    ),
+    pytest.param(
+        _PersonWithAddressModel,
+        _PersonWithAddressModel(
+            name="Bob", address=_AddressModel(street="123 Main", city="NYC")
+        ),
+        None,
+        id="pm-nested",
+    ),
+    # --- tuple ---
+    pytest.param(tuple[int, str], (1, "hello"), None, id="tuple-int-str"),
+    pytest.param(tuple[int, str, bool], (42, "hello", True), None, id="tuple-three"),
+    pytest.param(tuple[()], (), None, id="tuple-empty"),
+    # --- list ---
+    pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
+    pytest.param(list[str], ["hello", "world"], None, id="list-str"),
+    pytest.param(list[int], [], None, id="list-empty"),
+    # --- Image ---
+    pytest.param(
+        Image.Image, _make_png_image("RGB", (10, 10), "red"), None, id="img-red"
+    ),
+    pytest.param(
+        Image.Image,
+        _make_png_image("RGBA", (20, 20), (0, 0, 255, 128)),
+        None,
+        id="img-blue-alpha",
+    ),
+    # --- composite with Image ---
+    pytest.param(
+        tuple[Image.Image, str],
+        (_make_png_image("RGB", (5, 5), "green"), "label"),
+        None,
+        id="tuple-img-str",
+    ),
+    pytest.param(
+        list[Image.Image],
+        [
+            _make_png_image("RGB", (10, 10), "red"),
+            _make_png_image("RGB", (15, 15), "blue"),
+        ],
+        None,
+        id="list-img",
+    ),
+    # --- Tool ---
+    pytest.param(type(_tool_add), _tool_add, None, id="tool-add"),
+    pytest.param(type(_tool_greet), _tool_greet, None, id="tool-greet"),
+    pytest.param(type(_tool_process), _tool_process, None, id="tool-process"),
+    pytest.param(type(_tool_get_value), _tool_get_value, None, id="tool-no-params"),
+    pytest.param(type(_tool_distance), _tool_distance, None, id="tool-pydantic-param"),
+    # --- DecodedToolCall ---
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_add, {"a": 3, "b": 5}, "call_1"),
+        {"_tool_add": _tool_add},
+        id="dtc-add-3-5",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_add, {"a": 0, "b": -1}, "call_2"),
+        {"_tool_add": _tool_add},
+        id="dtc-add-0-neg",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_greet, {"name": "Alice"}, "call_3"),
+        {"_tool_greet": _tool_greet},
+        id="dtc-greet-alice",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_process, {"items": [1, 2, 3], "label": "total"}, "call_4"),
+        {"_tool_process": _tool_process},
+        id="dtc-process-items",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_distance, {"p": _PointModel(x=3, y=4)}, "call_5"),
+        {"_tool_distance": _tool_distance},
+        id="dtc-pydantic-param",
+    ),
+]
+
+# Filter ID sets
+_IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"})
+_TOOL_IDS = frozenset(
+    {"tool-add", "tool-greet", "tool-process", "tool-no-params", "tool-pydantic-param"}
+)
+
+_tool_decode_xfail = pytest.mark.xfail(
+    raises=NotImplementedError, reason="Tool.decode not yet implemented"
+)
+
+
+def _xfail_tools(cases):
+    """Add xfail mark to Tool cases (whose decode raises NotImplementedError)."""
+    return [
+        pytest.param(*c.values, marks=[*c.marks, _tool_decode_xfail], id=c.id)
+        if c.id in _TOOL_IDS
+        else c
+        for c in cases
+    ]
+
+
+# Derived case lists
+# decode: Tool cases are xfail (decode raises NotImplementedError)
+DECODE_CASES = _xfail_tools(ROUNDTRIP_CASES)
+
+# Text-serializable: everything except Image-containing types
+TEXT_CASES = [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
+
+# Full pipeline (encode→serialize→deserialize→decode): needs both text and decode
+FULL_PIPELINE_CASES = _xfail_tools(
+    [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
+)
+
+
+# ============================================================================
+# Law 1: decode(encode(v)) == v
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", DECODE_CASES)
+def test_encode_decode_roundtrip(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    assert enc.decode(enc.encode(value)) == value
+
+
+# ============================================================================
+# Law 2: deserialize(serialize(encode(v))[0]["text"]) == encode(v)
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", TEXT_CASES)
+def test_serialize_deserialize_roundtrip(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    encoded = enc.encode(value)
+    blocks = enc.serialize(encoded)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert enc.deserialize(blocks[0]["text"]) == encoded
+
+
+# ============================================================================
+# Law 3: decode(deserialize(serialize(encode(v))[0]["text"])) == v
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
+def test_full_pipeline_roundtrip(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    encoded = enc.encode(value)
+    text = enc.serialize(encoded)[0]["text"]
+    assert enc.decode(enc.deserialize(text)) == value
+
+
+# ============================================================================
+# Law 4: serialize(encode(v)) succeeds
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_serialize_succeeds(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    enc.serialize(enc.encode(value))
+
+
+# ============================================================================
+# Law 5: encode(encode(v)) == encode(v) (idempotency)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "ty,value,ctx",
+    ROUNDTRIP_CASES,
+)
+def test_encode_idempotent(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    once = enc.encode(value)
+    twice = Encodable.define(nested_type(once).value, ctx).encode(once)
+    assert once == twice
+
+
+# ============================================================================
+# Term-specific: Encodable.define raises TypeError for Term and Operation
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty", [Term, Operation])
+def test_define_raises_for_invalid_types(ty):
+    with pytest.raises(TypeError):
+        Encodable.define(ty)
+
+
+# ============================================================================
+# Image-specific: deserialize raises, decode rejects invalid URLs
+# ============================================================================
+
+
+def test_image_deserialize_raises():
+    enc = Encodable.define(Image.Image)
+    with pytest.raises(NotImplementedError):
+        enc.deserialize("anything")
+
+
+def test_image_decode_rejects_non_data_uri():
+    enc = Encodable.define(Image.Image)
+    with pytest.raises(TypeError):
+        enc.decode({"url": "http://example.com/image.png", "detail": "auto"})
+
+
+# ============================================================================
+# DecodedToolCall-specific: error cases
+# ============================================================================
+
+TOOL_CALL_ERROR_CASES = [
+    pytest.param(
+        "nonexistent", "{}", {}, (KeyError, AssertionError), id="unknown-tool"
+    ),
+    pytest.param(
+        "_tool_add",
+        '{"a": "not_an_int", "b": 2}',
+        {"_tool_add": _tool_add},
+        pydantic.ValidationError,
+        id="wrong-arg-type",
+    ),
+    pytest.param(
+        "_tool_add",
+        '{"a": 1}',
+        {"_tool_add": _tool_add},
+        (pydantic.ValidationError, TypeError),
+        id="missing-required-arg",
+    ),
+    pytest.param(
+        "_tool_add",
+        '{"a": 1, "b": 2, "c": 3}',
+        {"_tool_add": _tool_add},
+        pydantic.ValidationError,
+        id="extra-arg",
+    ),
+    pytest.param(
+        "_tool_add",
+        "{not valid json}",
+        {"_tool_add": _tool_add},
+        pydantic.ValidationError,
+        id="invalid-json",
+    ),
+    pytest.param(
+        "_tool_process",
+        '{"items": ["a", "b"], "label": "total"}',
+        {"_tool_process": _tool_process},
+        pydantic.ValidationError,
+        id="wrong-list-element-type",
+    ),
+]
+
+
+@pytest.mark.parametrize("tool_name,args_json,ctx,exc_type", TOOL_CALL_ERROR_CASES)
+def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
+    tool_call = ChatCompletionMessageToolCall.model_validate(
+        {
+            "type": "tool_call",
+            "id": "call_err",
+            "function": {"name": tool_name, "arguments": args_json},
+        }
+    )
+    enc = Encodable.define(DecodedToolCall, ctx)
+    with pytest.raises(exc_type):
+        enc.decode(tool_call)
+
+
+# ============================================================================
+# Callable: behavioral roundtrip, serialize/deserialize, error cases
+# ============================================================================
+
 EVAL_PROVIDERS = [
     pytest.param(UnsafeEvalProvider(), id="unsafe"),
     pytest.param(RestrictedEvalProvider(), id="restricted"),
 ]
 
+# (callable_type, function, ctx, test_args, expected_result)
+CALLABLE_CASES = [
+    pytest.param(Callable[[int, int], int], fn_add, {}, (2, 3), 5, id="add"),
+    pytest.param(
+        Callable[[str], str], fn_greet, {}, ("Alice",), "Hello, Alice!", id="greet"
+    ),
+    pytest.param(Callable[[int], bool], fn_is_positive, {}, (5,), True, id="pos-true"),
+    pytest.param(
+        Callable[[int], bool], fn_is_positive, {}, (-1,), False, id="pos-false"
+    ),
+    pytest.param(Callable[[int], int], fn_identity, {}, (42,), 42, id="identity"),
+    pytest.param(Callable[[], int], fn_constant, {}, (), 42, id="zero-params"),
+    pytest.param(
+        Callable[[int], int],
+        fn_multiply,
+        {"fn_multiply_factor": fn_multiply_factor},
+        (4,),
+        12,
+        id="env-factor",
+    ),
+    pytest.param(
+        Callable[[Annotated[int, "value"]], Annotated[int, "result"]],
+        fn_identity,
+        {},
+        (7,),
+        7,
+        id="annotated-expected-type",
+    ),
+]
 
-def test_type_to_encodable_type_term():
+
+@pytest.mark.parametrize("ty,func,ctx,args,expected", CALLABLE_CASES)
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_callable_encode_decode_behavioral(
+    ty, func, ctx, args, expected, eval_provider
+):
+    """Decoded callable is behaviorally equivalent to the original."""
+    enc = Encodable.define(ty, ctx)
+    with handler(eval_provider):
+        decoded = enc.decode(enc.encode(func))
+        assert decoded(*args) == expected
+
+
+@pytest.mark.parametrize("ty,func,ctx,args,expected", CALLABLE_CASES)
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_callable_full_pipeline_behavioral(
+    ty, func, ctx, args, expected, eval_provider
+):
+    """Full encode->serialize->deserialize->decode pipeline is behaviorally equivalent."""
+    enc = Encodable.define(ty, ctx)
+    text = enc.serialize(enc.encode(func))[0]["text"]
+    with handler(eval_provider):
+        decoded = enc.decode(enc.deserialize(text))
+    assert decoded(*args) == expected
+
+
+# Callable error cases: (type, ctx, source, exc_type, match)
+CALLABLE_ERROR_CASES = [
+    pytest.param(
+        Callable[..., int],
+        {},
+        SynthesizedFunction(module_code="x = 42"),
+        ValueError,
+        id="non-function-last-stmt",
+    ),
+    pytest.param(
+        Callable[[int, int], int],
+        {},
+        SynthesizedFunction(module_code="def add(a: int) -> int:\n    return a"),
+        ValueError,
+        id="wrong-param-count",
+    ),
+    pytest.param(
+        Callable[[int, int], int],
+        {},
+        SynthesizedFunction(
+            module_code="def add(a: int, b: int) -> str:\n    return str(a + b)"
+        ),
+        TypeError,
+        id="wrong-return-type",
+    ),
+    pytest.param(
+        Callable[[int, int], int],
+        {},
+        SynthesizedFunction(module_code="def add(a: int, b: int):\n    return a + b"),
+        ValueError,
+        id="missing-return-annotation",
+    ),
+]
+
+
+@pytest.mark.parametrize("ty,ctx,source,exc_type", CALLABLE_ERROR_CASES)
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provider):
+    enc = Encodable.define(ty, ctx)
+    with pytest.raises(exc_type):
+        with handler(eval_provider):
+            enc.decode(source)
+
+
+def test_callable_encode_non_callable():
+    enc = Encodable.define(Callable[..., int], {})
     with pytest.raises(TypeError):
-        Encodable.define(Term)
+        enc.encode("not a callable")
 
 
-def test_type_to_encodable_type_operation():
-    with pytest.raises(TypeError):
-        Encodable.define(Operation)
+def test_callable_encode_no_source_no_docstring():
 
+    class _NoDocCallable:
+        __name__ = "nodoc"
+        __doc__ = None
 
-def test_type_to_encodable_type_str():
-    encodable = Encodable.define(str)
-    encoded = encodable.encode("hello")
-    decoded = encodable.decode(encoded)
-    assert decoded == "hello"
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": "hello"})
-    assert decoded.value == "hello"
-
-
-def test_type_to_encodable_type_int():
-    encodable = Encodable.define(int)
-    encoded = encodable.encode(42)
-    decoded = encodable.decode(encoded)
-    assert decoded == 42
-    assert isinstance(decoded, int)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": 42})
-    assert decoded.value == 42
-    assert isinstance(decoded.value, int)
-
-
-def test_type_to_encodable_type_bool():
-    encodable = Encodable.define(bool)
-    encoded = encodable.encode(True)
-    decoded = encodable.decode(encoded)
-    assert decoded is True
-    assert isinstance(decoded, bool)
-    encoded_false = encodable.encode(False)
-    decoded_false = encodable.decode(encoded_false)
-    assert decoded_false is False
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": True})
-    assert decoded.value is True
-    assert isinstance(decoded.value, bool)
-
-
-def test_type_to_encodable_type_float():
-    encodable = Encodable.define(float)
-    encoded = encodable.encode(3.14)
-    decoded = encodable.decode(encoded)
-    assert decoded == 3.14
-    assert isinstance(decoded, float)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": 3.14})
-    assert decoded.value == 3.14
-    assert isinstance(decoded.value, float)
-
-
-def test_type_to_encodable_type_image():
-    encodable = Encodable.define(Image.Image)
-    image = Image.new("RGB", (10, 10), color="red")
-    encoded = encodable.encode(image)
-    assert isinstance(encoded, dict)
-    assert "url" in encoded
-    assert "detail" in encoded
-    assert encoded["detail"] == "auto"
-    assert encoded["url"].startswith("data:image/png;base64,")
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Image.Image)
-    assert decoded.size == (10, 10)
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": encoded})
-    assert decoded.value["url"] == encoded["url"]
-    assert decoded.value["detail"] == "auto"
-
-
-def test_type_to_encodable_type_image_roundtrip():
-    encodable = Encodable.define(Image.Image)
-    original = Image.new("RGB", (20, 20), color="green")
-    encoded = encodable.encode(original)
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Image.Image)
-    assert decoded.size == original.size
-    assert decoded.mode == original.mode
-
-
-def test_type_to_encodable_type_image_decode_invalid_url():
-    encodable = Encodable.define(Image.Image)
-    encoded = {"url": "http://example.com/image.png", "detail": "auto"}
-    with pytest.raises(RuntimeError, match="expected base64 encoded image as data uri"):
-        encodable.decode(encoded)
-
-
-def test_type_to_encodable_type_tuple():
-    encodable = Encodable.define(tuple[int, str])
-    value = (1, "test")
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert decoded[0] == 1
-    assert decoded[1] == "test"
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 1
-    assert model_instance.value[1] == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
-
-
-def test_type_to_encodable_type_tuple_empty():
-    encodable = Encodable.define(tuple[()])
-    value = ()
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert len(decoded) == 0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 0
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
-
-
-def test_type_to_encodable_type_tuple_three_elements():
-    encodable = Encodable.define(tuple[int, str, bool])
-    value = (42, "hello", True)
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, tuple)
-    assert decoded[0] == 42
-    assert decoded[1] == "hello"
-    assert decoded[2] is True
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert model_instance.value[0] == 42
-    assert model_instance.value[1] == "hello"
-    assert model_instance.value[2] is True
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, tuple)
-
-
-def test_type_to_encodable_type_list():
-    encodable = Encodable.define(list[int])
-    value = [1, 2, 3, 4, 5]
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, list)
-    assert all(isinstance(elem, int) for elem in decoded)
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert model_instance.value == [1, 2, 3, 4, 5]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, list)
-    assert all(isinstance(elem, int) for elem in decoded_from_model)
-
-
-def test_type_to_encodable_type_list_str():
-    encodable = Encodable.define(list[str])
-    value = ["hello", "world", "test"]
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, list)
-    assert all(isinstance(elem, str) for elem in decoded)
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert model_instance.value == ["hello", "world", "test"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, list)
-    assert all(isinstance(elem, str) for elem in decoded_from_model)
-
-
-def test_type_to_encodable_type_namedtuple():
-    class Point(NamedTuple):
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(10, 20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"x": 10, "y": 20}})
-    assert decoded.value == point
-    assert isinstance(decoded.value, Point)
-
-
-def test_type_to_encodable_type_namedtuple_with_str():
-    class Person(NamedTuple):
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person("Alice", 30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"name": "Alice", "age": 30}})
-    assert decoded.value == person
-    assert isinstance(decoded.value, Person)
-
-
-def test_type_to_encodable_type_typeddict():
-    class User(TypedDict):
-        name: str
-        age: int
-
-    encodable = Encodable.define(User)
-    user = User(name="Bob", age=25)
-    encoded = encodable.encode(user)
-    decoded = encodable.decode(encoded)
-    assert decoded == user
-    assert isinstance(decoded, dict)
-    assert decoded["name"] == "Bob"
-    assert decoded["age"] == 25
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"name": "Bob", "age": 25}})
-    assert decoded.value == user
-    assert isinstance(decoded.value, dict)
-
-
-def test_type_to_encodable_type_typeddict_optional():
-    class Config(TypedDict, total=False):
-        host: str
-        port: int
-
-    encodable = Encodable.define(Config)
-    config = Config(host="localhost", port=8080)
-    encoded = encodable.encode(config)
-    decoded = encodable.decode(encoded)
-    assert decoded == config
-    assert decoded["host"] == "localhost"
-    assert decoded["port"] == 8080
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    decoded = Model.model_validate({"value": {"host": "localhost", "port": 8080}})
-    assert decoded.value == config
-    assert isinstance(decoded.value, dict)
-
-
-def test_type_to_encodable_type_complex():
-    encodable = Encodable.define(complex)
-    value = 3 + 4j
-    encoded = encodable.encode(value)
-    decoded = encodable.decode(encoded)
-    assert decoded == value
-    assert isinstance(decoded, complex)
-    assert decoded.real == 3.0
-    assert decoded.imag == 4.0
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == value
-    assert isinstance(decoded_from_model, complex)
-
-
-def test_type_to_encodable_type_tuple_of_images():
-    encodable = Encodable.define(tuple[Image.Image, Image.Image])
-    image1 = Image.new("RGB", (10, 10), color="red")
-    image2 = Image.new("RGB", (20, 20), color="blue")
-    value = (image1, image2)
-
-    encoded = encodable.encode(value)
-    assert isinstance(encoded, tuple)
-    assert len(encoded) == 2
-    assert isinstance(encoded[0], dict)
-    assert isinstance(encoded[1], dict)
-    assert "url" in encoded[0]
-    assert "url" in encoded[1]
-    assert encoded[0]["url"].startswith("data:image/png;base64,")
-    assert encoded[1]["url"].startswith("data:image/png;base64,")
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, tuple)
-    assert len(decoded) == 2
-    assert isinstance(decoded[0], Image.Image)
-    assert isinstance(decoded[1], Image.Image)
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, tuple)
-    assert len(model_instance.value) == 2
-    assert isinstance(model_instance.value[0], dict)
-    assert isinstance(model_instance.value[1], dict)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert isinstance(decoded_from_model, tuple)
-    assert len(decoded_from_model) == 2
-    assert isinstance(decoded_from_model[0], Image.Image)
-    assert isinstance(decoded_from_model[1], Image.Image)
-    assert decoded_from_model[0].size == (10, 10)
-    assert decoded_from_model[1].size == (20, 20)
-
-    # Roundtrip test
-    original = (
-        Image.new("RGB", (15, 15), color="green"),
-        Image.new("RGB", (25, 25), color="yellow"),
-    )
-    encoded_roundtrip = encodable.encode(original)
-    decoded_roundtrip = encodable.decode(encoded_roundtrip)
-    assert isinstance(decoded_roundtrip, tuple)
-    assert len(decoded_roundtrip) == 2
-    assert decoded_roundtrip[0].size == original[0].size
-    assert decoded_roundtrip[1].size == original[1].size
-    assert decoded_roundtrip[0].mode == original[0].mode
-    assert decoded_roundtrip[1].mode == original[1].mode
-
-
-def test_type_to_encodable_type_list_of_images():
-    encodable = Encodable.define(list[Image.Image])
-    images = [
-        Image.new("RGB", (10, 10), color="red"),
-        Image.new("RGB", (20, 20), color="blue"),
-        Image.new("RGB", (30, 30), color="green"),
-    ]
-
-    encoded = encodable.encode(images)
-    assert isinstance(encoded, list)
-    assert len(encoded) == 3
-    assert all(isinstance(elem, dict) for elem in encoded)
-    assert all("url" in elem for elem in encoded)
-    assert all(elem["url"].startswith("data:image/png;base64,") for elem in encoded)
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, list)
-    assert len(decoded) == 3
-    assert all(isinstance(elem, Image.Image) for elem in decoded)
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-    assert decoded[2].size == (30, 30)
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded})
-    assert model_instance.value == encoded
-    assert isinstance(model_instance.value, list)
-    assert len(model_instance.value) == 3
-    assert all(isinstance(elem, dict) for elem in model_instance.value)
-    assert all("url" in elem for elem in model_instance.value)
-    assert model_instance.value[0]["url"] == encoded[0]["url"]
-    assert model_instance.value[1]["url"] == encoded[1]["url"]
-    assert model_instance.value[2]["url"] == encoded[2]["url"]
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert isinstance(decoded_from_model, list)
-    assert len(decoded_from_model) == 3
-    assert all(isinstance(elem, Image.Image) for elem in decoded_from_model)
-    assert decoded_from_model[0].size == (10, 10)
-    assert decoded_from_model[1].size == (20, 20)
-    assert decoded_from_model[2].size == (30, 30)
-
-    # Roundtrip test
-    original = [
-        Image.new("RGB", (15, 15), color="yellow"),
-        Image.new("RGB", (25, 25), color="purple"),
-    ]
-    encoded_roundtrip = encodable.encode(original)
-    decoded_roundtrip = encodable.decode(encoded_roundtrip)
-    assert isinstance(decoded_roundtrip, list)
-    assert len(decoded_roundtrip) == 2
-    assert decoded_roundtrip[0].size == original[0].size
-    assert decoded_roundtrip[1].size == original[1].size
-    assert decoded_roundtrip[0].mode == original[0].mode
-    assert decoded_roundtrip[1].mode == original[1].mode
-
-
-def test_type_to_encodable_nested_type_mutable_sequence_images():
-    """Encodable.define(nested_type(images).value) preserves image list behavior."""
-    images = [
-        Image.new("RGB", (10, 10), color="red"),
-        Image.new("RGB", (20, 20), color="blue"),
-        Image.new("RGB", (30, 30), color="green"),
-    ]
-
-    inferred_type = nested_type(images).value
-    encodable = Encodable.define(inferred_type)
-
-    encoded = encodable.encode(images)
-    serialized = encodable.serialize(encoded)
-
-    assert len(serialized) == 3
-    for i, block in enumerate(serialized):
-        assert block["type"] == "image_url", (
-            f"Expected image_url block at index {i}, got {block['type']}"
-        )
-        assert "image_url" in block
-        assert block["image_url"]["url"].startswith("data:image/png;base64,")
-        assert block["image_url"]["detail"] == "auto"
-
-    # Round-trip through decode
-    decoded = encodable.decode(encoded)
-    assert len(decoded) == 3
-    assert decoded[0].size == (10, 10)
-    assert decoded[1].size == (20, 20)
-    assert decoded[2].size == (30, 30)
-
-    # Empty list
-    empty_encoded = encodable.encode([])
-    empty_serialized = encodable.serialize(empty_encoded)
-    assert empty_serialized == []
-
-
-def test_type_to_encodable_type_dataclass():
-    @dataclass
-    class Point:
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(10, 20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.x == 10
-    assert model_instance.value.y == 20
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == point
-    assert isinstance(decoded_from_model, Point)
-
-
-def test_type_to_encodable_type_dataclass_with_str():
-    @dataclass
-    class Person:
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person("Alice", 30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.name == "Alice"
-    assert model_instance.value.age == 30
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-
-
-def test_type_to_encodable_type_dataclass_with_list():
-    @dataclass
-    class Container:
-        items: list[int]
-        name: str
-
-    encodable = Encodable.define(Container)
-    container = Container(items=[1, 2, 3], name="test")
-    encoded = encodable.encode(container)
-    decoded = encodable.decode(encoded)
-    assert decoded == container
-    assert isinstance(decoded, Container)
-    assert decoded.items == [1, 2, 3]
-    assert decoded.name == "test"
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.items == [1, 2, 3]
-    assert model_instance.value.name == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == container
-    assert isinstance(decoded_from_model, Container)
-
-
-def test_type_to_encodable_type_dataclass_with_tuple():
-    @dataclass
-    class Pair:
-        values: tuple[int, str]
-        count: int
-
-    encodable = Encodable.define(Pair)
-    pair = Pair(values=(42, "hello"), count=2)
-    encoded = encodable.encode(pair)
-    decoded = encodable.decode(encoded)
-    assert decoded == pair
-    assert isinstance(decoded, Pair)
-    assert decoded.values == (42, "hello")
-    assert decoded.count == 2
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.values == (42, "hello")
-    assert model_instance.value.count == 2
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == pair
-    assert isinstance(decoded_from_model, Pair)
-
-
-def test_type_to_encodable_type_dataclass_with_optional():
-    @dataclass
-    class Config:
-        host: str
-        port: int
-        timeout: float | None = None
-
-    encodable = Encodable.define(Config)
-    config = Config(host="localhost", port=8080, timeout=5.0)
-    encoded = encodable.encode(config)
-    decoded = encodable.decode(encoded)
-    assert decoded == config
-    assert isinstance(decoded, Config)
-    assert decoded.host == "localhost"
-    assert decoded.port == 8080
-    assert decoded.timeout == 5.0
-
-    # Test with None value
-    config_none = Config(host="localhost", port=8080, timeout=None)
-    encoded_none = encodable.encode(config_none)
-    decoded_none = encodable.decode(encoded_none)
-    assert decoded_none == config_none
-    assert decoded_none.timeout is None
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.host == "localhost"
-    assert model_instance.value.port == 8080
-    assert model_instance.value.timeout == 5.0
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == config
-
-
-def test_type_to_encodable_type_nested_dataclass():
-    @dataclass
-    class Address:
-        street: str
-        city: str
-
-    @dataclass
-    class Person:
-        name: str
-        age: int
-        address: Address
-
-    encodable = Encodable.define(Person)
-    address = Address(street="123 Main St", city="New York")
-    person = Person(name="Bob", age=25, address=address)
-
-    encoded = encodable.encode(person)
-    assert isinstance(encoded, Person)
-    assert hasattr(encoded, "name")
-    assert hasattr(encoded, "age")
-    assert hasattr(encoded, "address")
-    assert isinstance(encoded.address, Address)
-    assert encoded.address.street == "123 Main St"
-    assert encoded.address.city == "New York"
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Person)
-    assert isinstance(decoded.address, Address)
-    assert decoded.name == "Bob"
-    assert decoded.age == 25
-    assert decoded.address.street == "123 Main St"
-    assert decoded.address.city == "New York"
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": asdict(encoded)})
-    assert model_instance.value.name == "Bob"
-    assert model_instance.value.age == 25
-    assert model_instance.value.address.street == "123 Main St"
-    assert model_instance.value.address.city == "New York"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-    assert isinstance(decoded_from_model.address, Address)
-
-
-def test_type_to_encodable_type_pydantic_model():
-    class Point(pydantic.BaseModel):
-        x: int
-        y: int
-
-    encodable = Encodable.define(Point)
-    point = Point(x=10, y=20)
-    encoded = encodable.encode(point)
-    decoded = encodable.decode(encoded)
-    assert decoded == point
-    assert isinstance(decoded, Point)
-    assert decoded.x == 10
-    assert decoded.y == 20
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.x == 10
-    assert model_instance.value.y == 20
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == point
-    assert isinstance(decoded_from_model, Point)
-
-
-def test_type_to_encodable_type_pydantic_model_with_str():
-    class Person(pydantic.BaseModel):
-        name: str
-        age: int
-
-    encodable = Encodable.define(Person)
-    person = Person(name="Alice", age=30)
-    encoded = encodable.encode(person)
-    decoded = encodable.decode(encoded)
-    assert decoded == person
-    assert isinstance(decoded, Person)
-    assert decoded.name == "Alice"
-    assert decoded.age == 30
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.name == "Alice"
-    assert model_instance.value.age == 30
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-
-
-def test_type_to_encodable_type_pydantic_model_with_list():
-    class Container(pydantic.BaseModel):
-        items: list[int]
-        name: str
-
-    encodable = Encodable.define(Container)
-    container = Container(items=[1, 2, 3], name="test")
-    encoded = encodable.encode(container)
-    decoded = encodable.decode(encoded)
-    assert decoded == container
-    assert isinstance(decoded, Container)
-    assert decoded.items == [1, 2, 3]
-    assert decoded.name == "test"
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.items == [1, 2, 3]
-    assert model_instance.value.name == "test"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == container
-    assert isinstance(decoded_from_model, Container)
-
-
-def test_type_to_encodable_type_nested_pydantic_model():
-    class Address(pydantic.BaseModel):
-        street: str
-        city: str
-
-    class Person(pydantic.BaseModel):
-        name: str
-        age: int
-        address: Address
-
-    encodable = Encodable.define(Person)
-    address = Address(street="123 Main St", city="New York")
-    person = Person(name="Bob", age=25, address=address)
-
-    encoded = encodable.encode(person)
-    assert isinstance(encoded, pydantic.BaseModel)
-    assert hasattr(encoded, "name")
-    assert hasattr(encoded, "age")
-    assert hasattr(encoded, "address")
-    assert isinstance(encoded.address, pydantic.BaseModel)
-    assert encoded.address.street == "123 Main St"
-    assert encoded.address.city == "New York"
-
-    decoded = encodable.decode(encoded)
-    assert isinstance(decoded, Person)
-    assert isinstance(decoded.address, Address)
-    assert decoded.name == "Bob"
-    assert decoded.age == 25
-    assert decoded.address.street == "123 Main St"
-    assert decoded.address.city == "New York"
-
-    # Test with pydantic model validation
-    Model = pydantic.create_model("Model", value=encodable.enc)
-    model_instance = Model.model_validate({"value": encoded.model_dump()})
-    assert model_instance.value.name == "Bob"
-    assert model_instance.value.age == 25
-    assert model_instance.value.address.street == "123 Main St"
-    assert model_instance.value.address.city == "New York"
-    # Decode from model
-    decoded_from_model = encodable.decode(model_instance.value)
-    assert decoded_from_model == person
-    assert isinstance(decoded_from_model, Person)
-    assert isinstance(decoded_from_model.address, Address)
-
-
-class TestCallableEncodable:
-    """Tests for CallableEncodable - encoding/decoding callables as SynthesizedFunction."""
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_encode_decode_function(self, eval_provider):
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        # Use typed Callable with matching signature
-        encodable = Encodable.define(Callable[[int, int], int], {})
-        encoded = encodable.encode(add)
-        assert isinstance(encoded, SynthesizedFunction)
-        assert "def add" in encoded.module_code
-        assert "return a + b" in encoded.module_code
-
-        with handler(eval_provider):
-            decoded = encodable.decode(encoded)
-        assert callable(decoded)
-        assert decoded(2, 3) == 5
-        assert decoded.__name__ == "add"
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_with_ellipsis_params(self, eval_provider):
-        # Callable[..., int] allows any params but validates return type
-        encodable = Encodable.define(Callable[..., int], {})
-
-        # Test decoding a function - must end with function def with return annotation
-        func_source = SynthesizedFunction(
-            module_code="def double(x) -> int:\n    return x * 2"
-        )
-        with handler(eval_provider):
-            decoded = encodable.decode(func_source)
-        assert callable(decoded)
-        assert decoded(5) == 10
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_with_env(self, eval_provider):
-        # Test decoding a function that uses env variables
-        encodable = Encodable.define(Callable[..., int], {"factor": 3})
-        source = SynthesizedFunction(
-            module_code="""def multiply(x) -> int:
-    return x * factor"""
-        )
-
-        with handler(eval_provider):
-            decoded = encodable.decode(source)
-        assert callable(decoded)
-        assert decoded(4) == 12
-
-    def test_encode_non_callable_raises(self):
-        encodable = Encodable.define(Callable[..., int], {})
-        with pytest.raises(TypeError, match="Expected callable"):
-            encodable.encode("not a callable")
-
-    def test_encode_builtin_creates_stub(self):
-        encodable = Encodable.define(Callable[..., int], {})
-        # Built-in functions don't have source code but have docstrings
-        encoded = encodable.encode(len)
-        assert isinstance(encoded, SynthesizedFunction)
-        assert "def len" in encoded.module_code
-        assert '"""' in encoded.module_code  # docstring present
-        assert "..." in encoded.module_code  # stub body
-
-    def test_encode_builtin_no_docstring_raises(self):
-        # Create a callable without source and without docstring
-        class NoDocCallable:
-            __name__ = "nodoc"
-            __doc__ = None
-
-            def __call__(self):
-                pass
-
-        encodable = Encodable.define(Callable[..., int], {})
-        with pytest.raises(RuntimeError, match="no source code and no docstring"):
-            encodable.encode(NoDocCallable())
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_no_function_at_end_raises(self, eval_provider):
-        encodable = Encodable.define(Callable[..., int], {})
-        # Source code where last statement is not a function definition
-        source = SynthesizedFunction(module_code="x = 42")
-        with pytest.raises(
-            ValueError, match="last statement to be a function definition"
-        ):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_multiple_functions_uses_last(self, eval_provider):
-        encodable = Encodable.define(Callable[..., int], {})
-        # Source code that defines multiple functions - should use the last one
-        source = SynthesizedFunction(
-            module_code="""def foo() -> int:
-    return 1
-
-def bar() -> int:
-    return 2"""
-        )
-        with handler(eval_provider):
-            decoded = encodable.decode(source)
-        assert callable(decoded)
-        assert decoded.__name__ == "bar"
-        assert decoded() == 2
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_class_raises(self, eval_provider):
-        encodable = Encodable.define(Callable[..., int], {})
-        # Classes are callable but the last statement must be a function definition
-        source = SynthesizedFunction(
-            module_code="""class Greeter:
-    def __init__(self, name):
-        self.name = name
-
-    def greet(self):
-        return f"Hello, {self.name}!\""""
-        )
-
-        with pytest.raises(
-            ValueError, match="last statement to be a function definition"
-        ):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_roundtrip(self, eval_provider):
-        def greet(name: str) -> str:
-            return f"Hello, {name}!"
-
-        encodable = Encodable.define(Callable[[str], str], {})
-        with handler(eval_provider):
-            encoded = encodable.encode(greet)
-            decoded = encodable.decode(encoded)
-
-        assert callable(decoded)
-        assert decoded("Alice") == "Hello, Alice!"
-        assert decoded.__name__ == "greet"
-
-    def test_serialize_deserialize(self):
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        encodable = Encodable.define(Callable[[int, int], int], {})
-        encoded = encodable.encode(add)
-
-        # Test serialization
-        serialized = encodable.serialize(encoded)
-        assert len(serialized) == 1
-        assert serialized[0]["type"] == "text"
-        assert "module_code" in serialized[0]["text"]
-
-        # Test deserialization
-        deserialized = encodable.deserialize(serialized[0]["text"])
-        assert isinstance(deserialized, SynthesizedFunction)
-        assert "def add" in deserialized.module_code
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_decode_validates_last_statement(self, eval_provider):
-        encodable = Encodable.define(Callable[..., int], {})
-
-        # Helper function followed by assignment - should fail
-        source = SynthesizedFunction(
-            module_code="""def helper():
-    return 42
-
-result = helper()"""
-        )
-        with pytest.raises(
-            ValueError, match="last statement to be a function definition"
-        ):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    def test_typed_callable_includes_signature_in_docstring(self):
-        # Test that the enc type has the signature in its docstring
-        encodable = Encodable.define(Callable[[int, int], int], {})
-        assert encodable.enc.__doc__ is not None
-        assert "Callable[[int, int], int]" in encodable.enc.__doc__
-        assert "<signature>" in encodable.enc.__doc__
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_typed_callable_validates_param_count(self, eval_provider):
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Function with wrong number of parameters
-        source = SynthesizedFunction(
-            module_code="""def add(a: int) -> int:
-    return a"""
-        )
-        with pytest.raises(ValueError, match="expected function with 2 parameters"):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_typed_callable_validates_return_type(self, eval_provider):
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Function with wrong return type
-        source = SynthesizedFunction(
-            module_code="""def add(a: int, b: int) -> str:
-    return str(a + b)"""
-        )
-        with pytest.raises(TypeError, match="Incompatible types in assignment"):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_typed_callable_requires_return_annotation(self, eval_provider):
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Function missing return type annotation
-        source = SynthesizedFunction(
-            module_code="""def add(a: int, b: int):
-    return a + b"""
-        )
-        with pytest.raises(
-            ValueError,
-            match="requires synthesized function to have a return type annotation",
-        ):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_typed_callable_accepts_correct_signature(self, eval_provider):
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Function with correct signature
-        source = SynthesizedFunction(
-            module_code="""def add(a: int, b: int) -> int:
-    return a + b"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(2, 3) == 5
-
-    @pytest.mark.parametrize(
-        "eval_provider", [pytest.param(UnsafeEvalProvider(), id="unsafe")]
-    )
-    def test_typed_callable_decode_when_source_uses_annotated(self, eval_provider):
-        """Decoding works when synthesized module code uses typing.Annotated in the function."""
-        encodable = Encodable.define(Callable[[int], int], {"typing": typing})
-        source = SynthesizedFunction(
-            module_code='def f(x: typing.Annotated[int, "positive"]) -> int:\n    return x'
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(42) == 42
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_typed_callable_decode_with_expected_annotated(self, eval_provider):
-        """Decoding works when expected signature uses Annotated (stripped for typecheck stub)."""
-        encodable = Encodable.define(
-            Callable[[Annotated[int, "value"]], Annotated[int, "result"]], {}
-        )
-        source = SynthesizedFunction(module_code="def g(x: int) -> int:\n    return x")
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(7) == 7
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_ellipsis_callable_skips_param_validation(self, eval_provider):
-        # Callable[..., int] should skip param validation but still validate return
-        encodable = Encodable.define(Callable[..., int], {})
-
-        source = SynthesizedFunction(
-            module_code="""def anything(a, b, c, d, e) -> int:
-    return 42"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(1, 2, 3, 4, 5) == 42
-
-    def test_typed_callable_json_schema_includes_signature(self):
-        # Test that the JSON schema includes the type signature for the LLM
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Get the JSON schema from the enc model
-        schema = encodable.enc.model_json_schema()
-
-        # The description should contain the type signature
-        assert "description" in schema
-        assert "Callable[[int, int], int]" in schema["description"]
-        assert "<signature>" in schema["description"]
-        assert "<instructions>" in schema["description"]
-
-    def test_typed_callable_json_schema_different_signatures(self):
-        # Test that different type signatures produce different schemas
-        enc1 = Encodable.define(Callable[[str], str], {})
-        enc2 = Encodable.define(Callable[[int, int, int], bool], {})
-
-        schema1 = enc1.enc.model_json_schema()
-        schema2 = enc2.enc.model_json_schema()
-
-        assert "Callable[[str], str]" in schema1["description"]
-        assert "Callable[[int, int, int], bool]" in schema2["description"]
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_validates_param_count_via_ast(self, eval_provider):
-        # Test that param validation happens via AST analysis
-        encodable = Encodable.define(Callable[[int, int], int], {})
-
-        # Function with 3 params when 2 expected
-        source = SynthesizedFunction(
-            module_code="""def add(a: int, b: int, c: int) -> int:
-    return a + b + c"""
-        )
-        with pytest.raises(ValueError, match="expected function with 2 parameters"):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_validates_param_count_zero_params(self, eval_provider):
-        # Test callable with no params
-        encodable = Encodable.define(Callable[[], int], {})
-
-        # Function with params when 0 expected
-        source = SynthesizedFunction(
-            module_code="""def get_value(x: int) -> int:
-    return x"""
-        )
-        with pytest.raises(ValueError, match="expected function with 0 parameters"):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_validates_accepts_zero_params(self, eval_provider):
-        # Test callable with no params - correct signature
-        encodable = Encodable.define(Callable[[], int], {})
-
-        source = SynthesizedFunction(
-            module_code="""def get_value() -> int:
-    return 42"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result() == 42
-
-    def test_ellipsis_callable_json_schema_includes_signature(self):
-        # Test that Callable[..., int] has signature in schema
-        encodable = Encodable.define(Callable[..., int], {})
-
-        schema = encodable.enc.model_json_schema()
-        assert "description" in schema
-        assert "Callable[[...], int]" in schema["description"]
-        assert "<signature>" in schema["description"]
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_ellipsis_callable_validates_return_type(self, eval_provider):
-        # Callable[..., int] should still validate return type
-        encodable = Encodable.define(Callable[..., int], {})
-
-        source = SynthesizedFunction(
-            module_code="""def get_value() -> str:
-    return "wrong type\""""
-        )
-        with pytest.raises(TypeError, match="Incompatible types in assignment"):
-            with handler(eval_provider):
-                encodable.decode(source)
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_callable_with_single_param(self, eval_provider):
-        encodable = Encodable.define(Callable[[str], int], {})
-
-        source = SynthesizedFunction(
-            module_code="""def count_chars(s: str) -> int:
-    return len(s)"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result("hello") == 5
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_callable_with_many_params(self, eval_provider):
-        encodable = Encodable.define(Callable[[int, int, int, int], int], {})
-
-        source = SynthesizedFunction(
-            module_code="""def sum_four(a: int, b: int, c: int, d: int) -> int:
-    return a + b + c + d"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(1, 2, 3, 4) == 10
-
-    @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-    def test_callable_with_bool_return(self, eval_provider):
-        encodable = Encodable.define(Callable[[int], bool], {})
-
-        source = SynthesizedFunction(
-            module_code="""def is_positive(x: int) -> bool:
-    return x > 0"""
-        )
-        with handler(eval_provider):
-            result = encodable.decode(source)
-        assert callable(result)
-        assert result(5) is True
-        assert result(-1) is False
-
-    def test_callable_type_variations_schema(self):
-        # Test various callable type variations have correct schemas
-        test_cases = [
-            (Callable[[], int], "Callable[[], int]"),
-            (Callable[[str], str], "Callable[[str], str]"),
-            (Callable[[int, str], bool], "Callable[[int, str], bool]"),
-            (Callable[..., int], "Callable[[...], int]"),
-            (Callable[..., Any], "Callable[[...], Any]"),
-        ]
-
-        for callable_type, expected_sig in test_cases:
-            encodable = Encodable.define(callable_type, {})
-            schema = encodable.enc.model_json_schema()
-            assert "description" in schema, f"No description for {callable_type}"
-            assert expected_sig in schema["description"], (
-                f"Expected {expected_sig} in schema for {callable_type}, "
-                f"got: {schema['description'][:100]}..."
-            )
-
-
-class TestRestrictedEvalProviderConfig:
-    """Tests for RestrictedEvalProvider configuration options."""
-
-    def test_restricted_blocks_private_attribute_access(self):
-        """RestrictedPython blocks access to underscore-prefixed attributes by default."""
-        encodable = Encodable.define(Callable[[str], int], {})
-        source = SynthesizedFunction(
-            module_code="""def get_private(s: str) -> int:
-    return s.__class__.__name__"""
-        )
-        # Should raise due to restricted attribute access
-        with pytest.raises(Exception):  # Could be NameError or AttributeError
-            with handler(RestrictedEvalProvider()):
-                fn = encodable.decode(source)
-                fn("test")
-
-    def test_restricted_with_custom_policy(self):
-        """Can pass custom policy via kwargs."""
-
-        # Create a custom policy that's the same as default (just to test the plumbing)
-        class CustomPolicy(RestrictingNodeTransformer):
+        def __call__(self):
             pass
 
-        encodable = Encodable.define(Callable[[int, int], int], {})
-        source = SynthesizedFunction(
-            module_code="""def add(a: int, b: int) -> int:
-    return a + b"""
-        )
-        with handler(RestrictedEvalProvider(policy=CustomPolicy)):
-            fn = encodable.decode(source)
-        assert fn(2, 3) == 5
+    enc = Encodable.define(Callable[..., int], {})
+    with pytest.raises(ValueError):
+        enc.encode(_NoDocCallable())
 
-    def test_builtins_in_env_does_not_bypass_security(self):
-        """Including __builtins__ in env should not bypass RestrictedEvalProvider security.
 
-        RestrictedEvalProvider explicitly filters out __builtins__ from the env
-        to prevent callers from replacing the restricted builtins with full Python builtins.
-        This test verifies that even if __builtins__ is passed in the context,
-        dangerous operations remain blocked.
-        """
+# ---------------------------------------------------------------------------
+# Provider integration tests
+# ---------------------------------------------------------------------------
 
-        # Attempt to pass full builtins in the context, which should be filtered out
-        dangerous_ctx = {"__builtins__": builtins.__dict__}
+_tuple_schema_bug_xfail = pytest.mark.xfail(
+    reason="Known tuple schema bug; expected to fail until fixed."
+)
+_provider_response_format_xfail = pytest.mark.xfail(
+    reason="Known OpenAI/LiteLLM response_format limitation for this type."
+)
 
-        # Test 1: open() should not be usable even with __builtins__ in context
-        # The function may fail at compile/exec time or at call time, but either way
-        # it should not be able to actually open files
-        encodable_open = Encodable.define(Callable[[str], str], dangerous_ctx)
-        source_open = SynthesizedFunction(
-            module_code="""def read_file(path: str) -> str:
-    return open(path).read()"""
-        )
-        with pytest.raises(Exception):  # Could be NameError, ValueError, or other
-            with handler(RestrictedEvalProvider()):
-                fn = encodable_open.decode(source_open)
-                # If decode succeeded (shouldn't), calling should still fail
-                fn("/etc/passwd")
 
-        # Test 2: __import__ should not be usable
-        encodable_import = Encodable.define(Callable[[], str], dangerous_ctx)
-        source_import = SynthesizedFunction(
-            module_code="""def get_os_name() -> str:
-    os = __import__('os')
-    return os.name"""
-        )
-        with pytest.raises(Exception):
-            with handler(RestrictedEvalProvider()):
-                fn = encodable_import.decode(source_import)
-                fn()
+def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
+    marks: list[pytest.MarkDecorator] = []
+    if case_id.startswith("tuple-") or case_id in {
+        "dc-with-tuple",
+        "nt-coord",
+        "nt-person",
+    }:
+        marks.append(_tuple_schema_bug_xfail)
+    if case_id.startswith(("list-", "img-", "tool-", "dtc-")):
+        marks.append(_provider_response_format_xfail)
+    return marks
 
-        # Test 3: Verify safe code still works with dangerous context
-        # This confirms we're not just breaking everything
-        encodable_safe = Encodable.define(Callable[[int, int], int], dangerous_ctx)
-        source_safe = SynthesizedFunction(
-            module_code="""def add(a: int, b: int) -> int:
-    return a + b"""
-        )
-        with handler(RestrictedEvalProvider()):
-            fn = encodable_safe.decode(source_safe)
-            assert fn(2, 3) == 5, "Safe code should still work"
 
-        # Test 4: Private attribute access should still be blocked
-        encodable_private = Encodable.define(Callable[[str], str], dangerous_ctx)
-        source_private = SynthesizedFunction(
-            module_code="""def get_class(s: str) -> str:
-    return s.__class__.__name__"""
-        )
-        with pytest.raises(Exception):
-            with handler(RestrictedEvalProvider()):
-                fn = encodable_private.decode(source_private)
-                fn("test")
+def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for c in cases:
+        case_id = c.id if isinstance(c.id, str) else None
+        if case_id is None:
+            out.append(c)
+            continue
+        marks = [*c.marks, *_provider_case_marks(case_id)]
+        if marks == list(c.marks):
+            out.append(c)
+            continue
+        out.append(pytest.param(*c.values, id=case_id, marks=marks))
+    return out
+
+
+PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
+
+
+def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
+    tool_ty: type[Any] = type(tool)
+    tool_enc: Encodable[Any, Any] = Encodable.define(tool_ty)
+    tool_spec_obj = tool_enc.encode(tool)
+    if isinstance(tool_spec_obj, Mapping):
+        return dict(tool_spec_obj)
+    elif hasattr(tool_spec_obj, "model_dump"):
+        return dict(tool_spec_obj.model_dump())
+    raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
+
+
+@requires_openai
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
+) -> None:
+    enc = Encodable.define(ty, ctx)
+    kwargs: dict[str, Any] = {
+        "model": CHEAP_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
+            }
+        ],
+        "max_tokens": 200,
+    }
+    if enc.enc is not str:
+        kwargs["response_format"] = enc.enc
+    response = litellm.completion(**kwargs)
+    assert response is not None
+
+    content = response.choices[0].message.content
+    assert content is not None, (
+        f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
+    )
+
+    deserialized = enc.deserialize(content)
+    pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
+
+    decoded = enc.decode(deserialized)
+    pydantic.TypeAdapter(enc.base).validate_python(decoded)
+
+
+@requires_openai
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+def test_litellm_completion_accepts_tool_with_type_as_param(
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
+) -> None:
+    name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
+
+    def _fn(value):
+        raise RuntimeError("should not be called")
+
+    _fn.__name__ = f"accept_{name}"
+    _fn.__doc__ = f"Accept a value of type {name}."
+    _fn.__annotations__ = {"value": ty, "return": None}
+
+    tool: Tool[..., Any] = Tool.define(_fn)
+    response = litellm.completion(
+        model=CHEAP_MODEL,
+        messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
+        tools=[_encode_tool_spec(tool)],
+        tool_choice="none",
+        max_tokens=200,
+    )
+    assert response is not None
+
+
+@requires_openai
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+def test_litellm_completion_accepts_tool_with_type_as_return(
+    ty: Any, _value: Any, ctx: Mapping[str, Any] | None
+) -> None:
+    name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
+
+    def _fn():
+        raise RuntimeError("should not be called")
+
+    _fn.__name__ = f"return_{name}"
+    _fn.__doc__ = f"Return a value of type {name}."
+    _fn.__annotations__ = {"return": ty}
+
+    tool: Tool[..., Any] = Tool.define(_fn)
+    response = litellm.completion(
+        model=CHEAP_MODEL,
+        messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
+        tools=[_encode_tool_spec(tool)],
+        tool_choice="none",
+        max_tokens=200,
+    )
+    assert response is not None
