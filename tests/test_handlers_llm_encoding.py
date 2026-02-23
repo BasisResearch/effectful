@@ -28,7 +28,6 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
-from tests.test_handlers_llm_tool_calling_book import requires_openai
 
 CHEAP_MODEL = "gpt-4o-mini"
 

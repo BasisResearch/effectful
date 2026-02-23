@@ -53,18 +53,6 @@ class _RawResponseFormatSchema(typing.TypedDict):
     strict: bool
 
 
-@dataclass(frozen=True, eq=True)
-class DecodedToolCall[T]:
-    """
-    Structured representation of a tool call decoded from an LLM response.
-    """
-
-    tool: Tool[..., T]
-    bound_args: inspect.BoundArguments
-    id: ToolCallID
-    name: str
-
-
 class Encodable[T, U](ABC):
     base: type[T]
     enc: type[pydantic.BaseModel] | pydantic.TypeAdapter | type[str]
@@ -140,7 +128,11 @@ class _AdapterEncodable[T](Encodable[T, Any]):
         # return [{"type": "text", "text": self.enc.dump_json(self.enc.validate_python(encoded_value, context=self.ctx), context=self.ctx).decode("utf-8")}]
 
     def deserialize(self, serialized_value: str) -> str | dict[str, Any]:
-        return serialized_value if self.response_format is None else json.loads(serialized_value)
+        return (
+            serialized_value
+            if self.response_format is None
+            else json.loads(serialized_value)
+        )
         # return self.enc.dump_python(self.enc.validate_json(serialized_value, context=self.ctx), context=self.ctx)
 
 
