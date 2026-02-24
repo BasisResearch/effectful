@@ -31,7 +31,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 
-CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
+CHEAP_MODEL = "gpt-4o-mini"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -317,6 +317,12 @@ ROUNDTRIP_CASES = [
         id="tuple-img-str",
     ),
     pytest.param(
+        tuple[str, Image.Image, str],
+        ("before", _make_png_image("RGB", (5, 5), "green"), "after"),
+        None,
+        id="tuple-str-img-str",
+    ),
+    pytest.param(
         list[Image.Image],
         [
             _make_png_image("RGB", (10, 10), "red"),
@@ -324,6 +330,16 @@ ROUNDTRIP_CASES = [
         ],
         None,
         id="list-img",
+    ),
+    # --- deeper generic composition with Image ---
+    pytest.param(
+        list[tuple[str, Image.Image]],
+        [
+            ("first", _make_png_image("RGB", (4, 4), "red")),
+            ("second", _make_png_image("RGB", (4, 4), "blue")),
+        ],
+        None,
+        id="list-tuple-str-img",
     ),
     # --- Tool ---
     pytest.param(type(_tool_add), _tool_add, {"_tool_add": _tool_add}, id="tool-add"),
