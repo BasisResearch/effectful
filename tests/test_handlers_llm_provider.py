@@ -1750,6 +1750,10 @@ class TestLiteLLMProviderMessagePruning:
         mock_handler = MockCompletionHandler(responses)
 
         class SimpleAgent(Agent):
+            """You are a persistence-check test agent.
+            Your goal is to complete `simple_task` and persist successful history.
+            """
+
             @Template.define
             def simple_task(self, instruction: str) -> str:
                 """Do: {instruction}"""
@@ -1790,6 +1794,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class TestAgent(Agent):
+            """You are a cross-template recovery test agent.
+            Your goal is to recover from failed tool calls across template methods.
+            """
+
             @Template.define
             def step_with_tool(self, task: str) -> str:
                 """Use bad_service for: {task}"""
@@ -1859,6 +1867,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class CleanupAgent(Agent):
+            """You are an error-cleanup test agent.
+            Your goal is to ensure failed calls do not persist message history.
+            """
+
             @Template.define
             def do_work(self, task: str) -> str:
                 """Do: {task}"""
@@ -1882,6 +1894,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class SuccessAgent(Agent):
+            """You are a success-history test agent.
+            Your goal is to preserve message history for successful calls.
+            """
+
             @Template.define
             def greet(self, name: str) -> str:
                 """Say hello to {name}."""
@@ -1905,6 +1921,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class ChatAgent(Agent):
+            """You are a multi-call history test agent.
+            Your goal is to accumulate conversation history across successful calls.
+            """
+
             @Template.define
             def chat(self, msg: str) -> str:
                 """Respond to: {msg}"""
@@ -1942,6 +1962,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class RecoveryAgent(Agent):
+            """You are a failure-recovery test agent.
+            Your goal is to recover after a failed call and retain only successful history.
+            """
+
             @Template.define
             def risky(self, task: str) -> str:
                 """Do risky: {task}"""
