@@ -226,8 +226,9 @@ def call_assistant[T, U](
                     )
                 # Validate that the tool's return type matches the template's.
                 tool_sig = inspect.signature(tool_calls[-1].tool)
+                return_annotation = typing.get_args(tool_sig.return_annotation)[0]
                 if not issubclass(
-                    _simple_type(tool_sig.return_annotation), response_format.base
+                    _simple_type(return_annotation), response_format.base
                 ):
                     raise TypeError(
                         f"IsFinal tool '{raw_tool_call.function.name}' has signature "
@@ -255,7 +256,7 @@ def call_assistant[T, U](
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
-    is_final = not all(not tc.is_final for tc in tool_calls)
+    is_final = any(tc.is_final for tc in tool_calls) or not tool_calls
     return (raw_message, tool_calls, result, is_final)
 
 

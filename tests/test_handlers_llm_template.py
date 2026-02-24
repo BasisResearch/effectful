@@ -1545,7 +1545,7 @@ class TestIsFinalCallTool:
 
         sig = inspect.signature(final_tool)
         bound_args = sig.bind(x=5)
-        tc = DecodedToolCall(final_tool, bound_args, "call_final", is_final=True)
+        tc = DecodedToolCall(final_tool, bound_args, id="call_final", name="final_tool")
 
         message, raw_result, is_final = call_tool(tc)
         assert message["role"] == "tool"
@@ -1562,7 +1562,9 @@ class TestIsFinalCallTool:
 
         sig = inspect.signature(normal_tool)
         bound_args = sig.bind(x=3)
-        tc = DecodedToolCall(normal_tool, bound_args, "call_normal")
+        tc = DecodedToolCall(
+            normal_tool, bound_args, id="call_normal", name="normal_tool"
+        )
 
         message, raw_result, is_final = call_tool(tc)
         assert message["role"] == "tool"
@@ -1580,7 +1582,9 @@ class TestIsFinalCallTool:
 
         sig = inspect.signature(final_tool)
         bound_args = sig.bind(x=42)
-        tc = DecodedToolCall(final_tool, bound_args, "call_retry_final", is_final=True)
+        tc = DecodedToolCall(
+            final_tool, bound_args, id="call_retry_final", name="final_tool"
+        )
 
         with handler(RetryLLMHandler()):
             message, raw_result, is_final = call_tool(tc)
@@ -1607,7 +1611,9 @@ class TestIsFinalCompletionLoop:
             """Call compute with {n}."""
             raise NotHandled
 
-        mock = MockCompletionHandler([make_tool_call_response("compute", '{"x": 7}')])
+        mock = MockCompletionHandler(
+            [make_tool_call_response("compute", '{"x": {"value": 7}}')]
+        )
 
         with handler(LiteLLMProvider()), handler(mock):
             result = task(7)
@@ -1659,7 +1665,7 @@ class TestIsFinalCompletionLoop:
                 raise NotHandled
 
         mock = MockCompletionHandler(
-            [make_tool_call_response("final_tool", '{"x": 5}')]
+            [make_tool_call_response("final_tool", '{"x": {"value": 5}}')]
         )
         agent = MyAgent()
 
@@ -1705,7 +1711,7 @@ class TestIsFinalCompletionLoop:
                 call_count += 1
                 if call_count == 1:
                     return make_tool_call_response("final_tool", "{}")
-                return make_text_response('{"value": "llm result"}')
+                return make_text_response("llm result")
 
         agent = MyAgent()
 
@@ -1730,7 +1736,7 @@ class TestIsFinalCompletionLoop:
             raise NotHandled
 
         mock = MockCompletionHandler(
-            [make_tool_call_response("final_tool", '{"x": 4}')]
+            [make_tool_call_response("final_tool", '{"x": {"value": 4}}')]
         )
 
         with (
@@ -1767,8 +1773,8 @@ class TestIsFinalCompletionLoop:
         # Round 2: LLM calls flaky_final again → succeeds
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("flaky_final", '{"x": 5}'),
-                make_tool_call_response("flaky_final", '{"x": 5}'),
+                make_tool_call_response("flaky_final", '{"x": {"value": 5}}'),
+                make_tool_call_response("flaky_final", '{"x": {"value": 5}}'),
             ]
         )
 
@@ -1794,7 +1800,9 @@ class TestIsFinalCompletionLoop:
 
         sig = inspect.signature(failing_final)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(failing_final, bound_args, "call_err", is_final=True)
+        tc = DecodedToolCall(
+            failing_final, bound_args, id="call_err", name="failing_final"
+        )
 
         with handler(RetryLLMHandler()):
             message, raw_result, is_final = call_tool(tc)
@@ -1823,7 +1831,7 @@ class TestIsFinalReturnTypeValidation:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("wrong_type_tool", '{"x": 5}'),
+                make_tool_call_response("wrong_type_tool", '{"x": {"value": 5}}'),
             ]
         )
 
@@ -1855,7 +1863,7 @@ class TestIsFinalReturnTypeValidation:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("correct_tool", '{"x": 5}'),
+                make_tool_call_response("correct_tool", '{"x": {"value": 5}}'),
             ]
         )
 
