@@ -1723,11 +1723,6 @@ class TestIsFinalCompletionLoop:
         assert raw_result is None
         assert is_final is False
 
-
-class TestIsFinalReturnTypeValidation:
-    """call_assistant should reject IsFinal tools whose return type
-    does not match the enclosing template's return type."""
-
     def test_mismatched_return_type_raises_tool_call_decoding_error(self):
         """IsFinal tool returning str when template expects int is rejected."""
 
