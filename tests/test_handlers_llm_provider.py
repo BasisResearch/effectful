@@ -267,35 +267,22 @@ class TestLiteLLMProvider:
 
 @requires_openai
 def test_agent_tool_names_are_openai_compatible_integration():
-    template = _ToolNameAgent().ask
+    agent = _ToolNameAgent()
+    template = agent.ask
     tools = template.tools
-    tool_specs = [
-        Encodable.define(type(tool), tools).encode(tool) for tool in tools.values()
-    ]
+    assert tools
+    assert "self__helper" in tools
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
 
-    tool_names: list[str] = []
-    for spec in tool_specs:
-        function = spec["function"] if isinstance(spec, dict) else spec.function
-        name = function["name"] if isinstance(function, dict) else function.name
-        tool_names.append(name)
+    # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
 
-    assert tool_names
-    assert "self__helper" in tool_names
-    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tool_names)
-
-    response = litellm.completion(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": "Reply with the word ok. Do not call tools.",
-            }
-        ],
-        tools=tool_specs,
-        tool_choice="none",
-        max_tokens=16,
-    )
-    assert response is not None
+    assert isinstance(result, str)
+    assert result
 
 
 def smiley_face() -> Image.Image:
