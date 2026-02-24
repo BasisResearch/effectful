@@ -277,7 +277,9 @@ def test_agent_tool_names_are_openai_compatible_integration():
 
     # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
     with (
-        handler(LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)),
+        handler(
+            LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)
+        ),
         handler(LimitLLMCallsHandler(max_calls=1)),
     ):
         result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
