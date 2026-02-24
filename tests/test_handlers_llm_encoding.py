@@ -31,7 +31,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 
-CHEAP_MODEL = "gpt-4o-mini"
+CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions

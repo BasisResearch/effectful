@@ -42,7 +42,8 @@ CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
 )
 
 
-def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+@pydantic.validate_call(validate_return=True)
+def to_content_blocks(value: typing.Any) -> OpenAIMessageContent:
     """Convert an encoded JSON-compatible value into a flat list of content blocks.
 
     Walks the value tree, extracting content-block-shaped dicts (identified by
@@ -82,7 +83,7 @@ def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
 
     walk(value)
     flush()
-    return pydantic.TypeAdapter(OpenAIMessageContent).validate_python(blocks)
+    return blocks
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -173,6 +174,7 @@ def _pydantic_type_operation(ty: type[Operation]):
     raise TypeError("Operations cannot be converted to Pydantic types.")
 
 
+@pydantic.validate_call(validate_return=False)
 def _validate_image(value: ChatCompletionImageObject) -> Image.Image:
     value = pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(value)
     image_url: litellm.ChatCompletionImageUrlObject | str = value["image_url"]
