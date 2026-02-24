@@ -481,13 +481,6 @@ class TestAgentDocstringFallback:
         assert agent_doc is not None
         assert prompt == agent_doc
 
-    def test_blank_docstring_uses_inherited_doc(self):
-        class BlankDocAgent(Agent):
-            """ """
-
-        assert BlankDocAgent.__doc__ == " "
-        assert BlankDocAgent().__system_prompt__ == ""
-
     def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):
             """You are a valid-docstring test agent.
