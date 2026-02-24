@@ -220,7 +220,7 @@ def call_assistant[T, U](
             if tool_calls[-1].is_final:
                 if len(raw_tool_calls) > 1:
                     raise ValueError(
-                        f"IsFinal tool '{tool_calls[-1].tool.__name__}' must be the "
+                        f"IsFinal tool '{raw_tool_call.function.name}' must be the "
                         f"only tool call in a round, but {len(raw_tool_calls)} tool calls "
                         f"were generated."
                     )
