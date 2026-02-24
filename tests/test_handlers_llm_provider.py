@@ -9,6 +9,7 @@ import functools
 import inspect
 import json
 import os
+import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -177,6 +178,18 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+class _ToolNameAgent(Agent):
+    @Template.define
+    def helper(self) -> str:
+        """Return the literal string 'ok'."""
+        raise NotHandled
+
+    @Template.define
+    def ask(self, prompt: str) -> str:
+        """Answer briefly: {prompt}"""
+        raise NotHandled
+
+
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
@@ -250,6 +263,29 @@ class TestLiteLLMProvider:
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
+
+
+@requires_openai
+def test_agent_tool_names_are_openai_compatible_integration():
+    agent = _ToolNameAgent()
+    template = agent.ask
+    tools = template.tools
+    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    assert tools
+    assert expected_helper_tool_name in tools
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+
+    # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
+    with (
+        handler(
+            LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)
+        ),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
+
+    assert isinstance(result, str)
+    assert result
 
 
 def smiley_face() -> Image.Image:

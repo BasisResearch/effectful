@@ -388,7 +388,7 @@ class TestSystemPromptInvariant:
     def test_nested_agent_flow_has_one_system_message_per_round(self):
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -634,7 +634,7 @@ class TestNestedTemplateCalling:
         """The scenario from issue #560 completes without error."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("check passed"),
                 make_text_response("all good"),
             ]
@@ -650,7 +650,7 @@ class TestNestedTemplateCalling:
         """Inner template's messages are absent from agent.__history__."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -674,7 +674,7 @@ class TestNestedTemplateCalling:
         not the outer template's in-flight messages."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -698,7 +698,7 @@ class TestNestedTemplateCalling:
                 # First call: direct answer (no tool call)
                 make_text_response("first"),
                 # Second call: tool → nested → final
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("second"),
             ]
@@ -724,7 +724,7 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 # First call: tool → nested → final
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("first"),
                 # Second call: direct answer
