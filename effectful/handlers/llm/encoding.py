@@ -31,7 +31,7 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Tool, _is_final_answer_tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
@@ -60,7 +60,10 @@ class DecodedToolCall[T]:
     bound_args: inspect.BoundArguments
     id: ToolCallID
     name: str
-    is_final: bool = False
+
+    @property
+    def is_final(self) -> bool:
+        return _is_final_answer_tool(self.tool)
 
 
 class Encodable[T, U](ABC):

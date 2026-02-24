@@ -27,7 +27,7 @@ from litellm import (
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import _simple_type, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -217,40 +217,29 @@ def call_assistant[T, U](
     for raw_tool_call in raw_tool_calls:
         try:
             tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
+            if tool_calls[-1].is_final:
+                if len(raw_tool_calls) > 1:
+                    raise ValueError(
+                        f"IsFinal tool '{tool_calls[-1].tool.__name__}' must be the "
+                        f"only tool call in a round, but {len(raw_tool_calls)} tool calls "
+                        f"were generated."
+                    )
+                # Validate that the tool's return type matches the template's.
+                tool_sig = inspect.signature(tool_calls[-1].tool)
+                if not issubclass(
+                    _simple_type(tool_sig.return_annotation), response_format.base
+                ):
+                    raise TypeError(
+                        f"IsFinal tool '{raw_tool_call.function.name}' has signature "
+                        f"{tool_sig.format()}, but the enclosing template expects "
+                        f"{response_format.base!r}."
+                    )
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
                 original_error=e,
                 raw_message=raw_message,
             ) from e
-
-    final_tcs = [tc for tc in tool_calls if tc.is_final]
-    if final_tcs:
-        final_tc = final_tcs[0]
-        if len(tool_calls) > 1:
-            raise ToolCallDecodingError(
-                raw_tool_call=raw_message.tool_calls[0],  # type: ignore
-                original_error=ValueError(
-                    f"IsFinal tool '{final_tc.tool.__name__}' must be the "
-                    f"only tool call in a round, but {len(tool_calls)} tool calls "
-                    f"were generated."
-                ),
-                raw_message=raw_message,
-            )
-        # Validate that the tool's return type matches the template's.
-        tool_ret = inspect.signature(final_tc.tool).return_annotation
-        if typing.get_origin(tool_ret) is typing.Annotated:
-            tool_ret = typing.get_args(tool_ret)[0]
-        if not issubclass(tool_ret, response_format.base):
-            raise ToolCallDecodingError(
-                raw_tool_call=raw_message.tool_calls[0],  # type: ignore
-                original_error=TypeError(
-                    f"IsFinal tool '{final_tc.tool.__name__}' returns "
-                    f"{tool_ret!r}, but the enclosing template expects "
-                    f"{response_format.base!r}."
-                ),
-                raw_message=raw_message,
-            )
 
     result = None
     if not tool_calls:
@@ -288,8 +277,8 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(nested_type(result).value)
-    encoded_result = return_type.serialize(return_type.encode(result))
+    return_type = Encodable.define(nested_type(result).value)  # type: ignore
+    encoded_result = return_type.serialize(return_type.encode(result))  # type: ignore
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
