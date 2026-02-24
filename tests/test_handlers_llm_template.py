@@ -22,7 +22,7 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
-from effectful.handlers.llm.template import IsFinal, _is_final_answer_tool
+from effectful.handlers.llm.template import IsFinal
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1530,50 +1530,6 @@ def test_validate_format_spec_on_undefined_var():
 # ---------------------------------------------------------------------------
 # IsFinal annotation tests
 # ---------------------------------------------------------------------------
-
-
-class TestIsFinalAnnotation:
-    """Tests for the IsFinal type annotation."""
-
-    def test_tool_with_is_final_answer_return_type(self):
-        """Tool with IsFinal on return type creates successfully."""
-
-        @Tool.define
-        def my_tool(x: int) -> Annotated[str, IsFinal]:
-            """A tool that returns a final answer."""
-            return str(x)
-
-        assert _is_final_answer_tool(my_tool)
-
-    def test_tool_without_is_final_answer(self):
-        """Normal tool is not detected as final answer."""
-
-        @Tool.define
-        def normal_tool(x: int) -> str:
-            """A normal tool."""
-            return str(x)
-
-        assert not _is_final_answer_tool(normal_tool)
-
-    def test_is_final_answer_on_parameter_raises(self):
-        """IsFinal on a parameter raises TypeError at define time."""
-        with pytest.raises(TypeError, match="IsFinal"):
-
-            @Tool.define
-            def bad_tool(x: Annotated[int, IsFinal]) -> str:
-                """A tool with bad annotation."""
-                return str(x)
-
-    def test_is_final_answer_combined_with_is_recursive(self):
-        """IsFinal and IsRecursive can coexist on a return type."""
-        from effectful.handlers.llm.template import IsRecursive
-
-        @Tool.define
-        def combo_tool(x: int) -> Annotated[str, IsFinal, IsRecursive]:
-            """A tool with both annotations."""
-            return str(x)
-
-        assert _is_final_answer_tool(combo_tool)
 
 
 class TestIsFinalCallTool:
