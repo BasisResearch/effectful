@@ -10,6 +10,7 @@ from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
+    DEFAULT_SYSTEM_PROMPT,
     LiteLLMProvider,
     RetryLLMHandler,
     call_user,
@@ -355,6 +356,7 @@ class TestAgentIsolation:
         # but NOT the standalone messages
         assert len(mock.received_messages[2]) >= 3
 
+
 class TestSystemPromptInvariant:
     """Exactly one system message is sent and it appears first."""
 
@@ -462,10 +464,7 @@ class TestSystemPromptInvariant:
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        assert (
-            mock.received_messages[0][0]["content"]
-            == "You are a helpful assistant, you need to follow user's instruction"
-        )
+        assert mock.received_messages[0][0]["content"] == DEFAULT_SYSTEM_PROMPT
 
 
 class TestAgentDocstringFallback:
@@ -478,7 +477,9 @@ class TestAgentDocstringFallback:
         assert MissingDocAgent.__doc__ is None
         prompt = MissingDocAgent().__system_prompt__
         assert prompt
-        assert "persistent LLM message history" in prompt
+        agent_doc = inspect.getdoc(Agent)
+        assert agent_doc is not None
+        assert prompt == agent_doc
 
     def test_blank_docstring_uses_inherited_doc(self):
         class BlankDocAgent(Agent):
