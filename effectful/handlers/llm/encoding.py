@@ -621,7 +621,10 @@ class ToolEncodable[**P, T](Encodable[Tool[P, T], pydantic.BaseModel]):
             {
                 "type": "function",
                 "function": {
-                    "name": value.__name__,
+                    "name": next(
+                        (k for k, v in self.ctx.items() if v is value),
+                        value.__name__,
+                    ),
                     "description": textwrap.dedent(value.__default__.__doc__),
                     "parameters": response_format["json_schema"]["schema"],
                     "strict": True,
@@ -669,7 +672,10 @@ class ToolCallEncodable[T](
                 "type": "tool_call",
                 "id": value.id,
                 "function": {
-                    "name": value.tool.__name__,
+                    "name": next(
+                        (k for k, v in self.ctx.items() if v is value.tool),
+                        value.tool.__name__,
+                    ),
                     "arguments": encoded_args.model_dump_json(),
                 },
             }
