@@ -104,6 +104,86 @@ class Box[T]:
     value: T
 
 
+class TypeEvaluator(abc.ABC):
+    """
+    Abstract base class for evaluating type expressions.
+
+    This class defines the interface for evaluating type expressions, which may
+    involve resolving type variables, computing canonical forms of types, or
+    performing other transformations. Subclasses should implement the evaluate
+    method to provide specific evaluation logic.
+
+    The TypeEvaluator can be used in contexts where type expressions need to be
+    processed or normalized before unification or other type operations.
+    """
+
+    @functools.singledispatchmethod
+    def evaluate(self, typ) -> TypeExpressions:
+        """
+        Normalize generic types
+        """
+        raise TypeError(f"Cannot traverse type {typ}.")
+
+    @evaluate.register
+    def _(self, typ: TypeConstant | TypeVariable):
+        return typ
+
+    @evaluate.register
+    def _(self, typ: GenericAlias):
+        origin, args = typing.get_origin(typ), typing.get_args(typ)
+        return origin[self.evaluate(args)]
+
+    @evaluate.register
+    def _(self, typ: UnionType):
+        ctyp = self.evaluate(typing.get_args(typ)[0])
+        for arg in typing.get_args(typ)[1:]:
+            ctyp = ctyp | self.evaluate(arg)  # type: ignore
+        return ctyp
+
+    @evaluate.register
+    def _(self, typ: typing._AnnotatedAlias):  # type: ignore
+        return typing.Annotated[
+            self.evaluate(typing.get_args(typ)[0]),
+            typ.__metadata__,
+        ]
+
+    @evaluate.register
+    def _(self, typ: typing._LiteralGenericAlias):  # type: ignore
+        return typ
+
+    @evaluate.register
+    def _(self, typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):  # type: ignore
+        return typ
+
+    @evaluate.register
+    def _(self, typ: typing._SpecialGenericAlias):  # type: ignore
+        assert not typing.get_args(typ), "Should not have type arguments"
+        return typ
+
+    @evaluate.register
+    def _(self, typ: typing._ConcatenateGenericAlias):  # type: ignore
+        return typing.Concatenate[self.evaluate(typing.get_args(typ))]
+
+    @evaluate.register
+    def _(self, typ: list | tuple):
+        return type(typ)(self.evaluate(item) for item in typ)
+
+    @evaluate.register
+    def _(self, typ: typing.NewType):
+        return typing.NewType(typ.__name__, self.evaluate(typ.__supertype__))
+
+    @evaluate.register
+    def _(self, typ: typing.TypeAliasType):
+        return self.evaluate(typ.__value__)
+
+    @evaluate.register
+    def _(self, typ: typing.ForwardRef):
+        if typ.__forward_value__ is not None:
+            return self.evaluate(typ.__forward_value__)
+        else:
+            return typ
+
+
 @typing.overload
 def unify(
     typ: inspect.Signature,

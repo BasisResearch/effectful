@@ -1,56 +1,98 @@
 import ast
 import base64
+import dataclasses
 import functools
 import inspect
 import io
+import json
 import textwrap
-import types
 import typing
-from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
-    Hashable,
     Mapping,
     MutableMapping,
-    MutableSequence,
-    Sequence,
 )
-from dataclasses import dataclass
 from types import CodeType
 from typing import Any
 
 import litellm
 import pydantic
 from litellm import (
-    ChatCompletionImageUrlObject,
+    ChatCompletionImageObject,
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolParam,
+    OpenAIMessageContent,
     OpenAIMessageContentListBlock,
 )
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
 from effectful.handlers.llm.template import Tool
-from effectful.internals.unification import nested_type
-from effectful.ops.semantics import _simple_type
-from effectful.ops.syntax import _CustomSingleDispatchCallable
+from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
 
-
-def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
-    buf = io.BytesIO()
-    pil_image.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-def _pil_image_to_base64_data_uri(pil_image: Image.Image) -> str:
-    return f"data:image/png;base64,{_pil_image_to_base64_data(pil_image)}"
+CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
+    literal
+    for member in typing.get_args(OpenAIMessageContentListBlock)
+    for literal in typing.get_args(typing.get_type_hints(member).get("type", str))
+    if isinstance(literal, str)
+)
 
 
-@dataclass(frozen=True, eq=True)
+@pydantic.validate_call(validate_return=True)
+def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+    """Convert an encoded JSON-compatible value into a flat list of content blocks.
+
+    Walks the value tree, extracting content-block-shaped dicts (identified by
+    their ``type`` discriminator) and emitting JSON syntax as text around them.
+
+    Top-level strings are emitted bare (for natural template rendering).
+    Inside JSON structures, separators match ``json.dumps`` defaults so that
+    the linearization law holds for non-string encoded values:
+    ``linearize(to_content_blocks(v)) == json.dumps(v)``.
+    """
+    if isinstance(value, str):
+        return [ChatCompletionTextObject(type="text", text=value)]
+
+    buf: list[str] = []
+    blocks: list[OpenAIMessageContentListBlock] = []
+
+    def flush() -> None:
+        if buf:
+            blocks.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            buf.clear()
+
+    def walk(v: typing.Any) -> None:
+        if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
+            flush()
+            blocks.append(typing.cast(OpenAIMessageContentListBlock, v))
+        elif isinstance(v, dict):
+            buf.append("{")
+            for i, (k, val) in enumerate(v.items()):
+                if i:
+                    buf.append(", ")
+                buf.append(json.dumps(k) + ": ")
+                walk(val)
+            buf.append("}")
+        elif isinstance(v, list):
+            buf.append("[")
+            for i, item in enumerate(v):
+                if i:
+                    buf.append(", ")
+                walk(item)
+            buf.append("]")
+        else:
+            buf.append(json.dumps(v))
+
+    walk(value)
+    flush()
+    return blocks
+
+
+@dataclasses.dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
     Structured representation of a tool call decoded from an LLM response.
@@ -62,314 +104,111 @@ class DecodedToolCall[T]:
     name: str
 
 
-class Encodable[T, U](ABC):
+@dataclasses.dataclass
+class Encodable[T]:
     base: type[T]
-    enc: type[U]
-    ctx: Mapping[str, Any]
+    ctx: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
-    @abstractmethod
-    def encode(self, value: T) -> U:
-        raise NotImplementedError
+    @functools.cached_property
+    def enc(self) -> pydantic.TypeAdapter[T]:
+        return pydantic.TypeAdapter(TypeToPydanticType().evaluate(self.base))
 
-    @abstractmethod
-    def decode(self, encoded_value: U) -> T:
-        raise NotImplementedError
+    def encode(self, value: T) -> Mapping[str, Any]:
+        return self.enc.dump_python(value, context=self.ctx, mode="json")
 
-    @abstractmethod
-    def serialize(self, encoded_value: U) -> Sequence[OpenAIMessageContentListBlock]:
-        raise NotImplementedError
+    def decode(self, encoded_value: Mapping[str, Any]) -> T:
+        return self.enc.validate_python(encoded_value, context=self.ctx)
 
-    # serialize and deserialize have different types reflecting the LLM api chat.completions(list[content]) -> str
-    @abstractmethod
-    def deserialize(self, serialized_value: str) -> U:
-        raise NotImplementedError
+    def serialize(self, encoded_value: Mapping[str, Any]) -> OpenAIMessageContent:
+        return to_content_blocks(encoded_value)
 
     @typing.final
-    @staticmethod
-    @_CustomSingleDispatchCallable
+    @classmethod
     def define(
-        __dispatch: Callable[
-            [type[T]], Callable[[type[T], Mapping[str, Any] | None], "Encodable[T, U]"]
-        ],
+        cls: type[typing.Self],
         t: type[T],
         ctx: Mapping[str, Any] | None = None,
-    ) -> "Encodable[T, U]":
-        dispatch_ty = _simple_type(t)
-        encodable: Encodable[T, U] = __dispatch(dispatch_ty)(t, ctx)
-        assert issubclass(
-            pydantic.create_model("Model", v=(encodable.enc, ...)), pydantic.BaseModel
-        ), f"enc type {encodable.enc} is not a valid pydantic field type for {t}"
-        return encodable
+    ) -> typing.Self:
+        return cls(t, ctx or {})
 
 
-class _BoxEncoding[T](pydantic.BaseModel):
-    value: T
+class TypeToPydanticType(TypeEvaluator):
+    """Substitute custom types with their Pydantic Annotated equivalents.
 
+    Recursively walks a type annotation tree, replacing leaf types that have
+    registered Pydantic annotations (e.g., Image.Image -> PydanticImage) and
+    reconstructing the full generic type.
 
-@dataclass
-class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
-    base: type[T]
-    enc: type[_BoxEncoding[T]]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: T) -> _BoxEncoding[T]:
-        return self.enc(value=value)
-
-    def decode(self, encoded_value: _BoxEncoding[T]) -> T:
-        return typing.cast(T, encoded_value.value)
-
-    def serialize(
-        self, encoded_value: _BoxEncoding[T]
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
-
-    def deserialize(self, serialized_value: str) -> _BoxEncoding[T]:
-        return self.enc.model_validate_json(serialized_value)
+    The result can be passed to pydantic.TypeAdapter() for automatic
+    validation and serialization of nested structures.
+    """
 
     @staticmethod
-    @functools.cache
-    def wrapped_model(ty: Hashable) -> type[_BoxEncoding[Any]]:
-        scalar_ty = typing.cast(type[Any], ty)
-        return typing.cast(
-            type[_BoxEncoding[Any]],
-            pydantic.create_model(
-                f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
-                value=(scalar_ty, ...),
-                __base__=_BoxEncoding,
-                __config__={"extra": "forbid"},
-            ),
-        )
+    @functools.singledispatch
+    def _registry(ty: type):
+        raise RuntimeError("should not be here!")
 
+    @classmethod
+    def register(cls, *args, **kwargs):
+        return cls._registry.register(*args, **kwargs)
 
-@dataclass
-class StrEncodable(Encodable[str, str]):
-    base: type[str]
-    enc: type[str]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: str) -> str:
-        return value
-
-    def decode(self, encoded_value: str) -> str:
-        return encoded_value
-
-    def serialize(self, encoded_value: str) -> Sequence[ChatCompletionTextObject]:
-        # Serialize strings without JSON encoding (no extra quotes)
-        return [{"type": "text", "text": encoded_value}]
-
-    def deserialize(self, serialized_value: str) -> str:
-        return serialized_value
-
-
-@dataclass
-class PydanticBaseModelEncodable[T: pydantic.BaseModel](Encodable[T, T]):
-    base: type[T]
-    enc: type[T]
-    ctx: Mapping[str, Any]
-
-    def decode(self, encoded_value: T) -> T:
-        return encoded_value
-
-    def encode(self, value: T) -> T:
-        return value
-
-    def serialize(self, encoded_value: T) -> Sequence[ChatCompletionTextObject]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
-
-    def deserialize(self, serialized_value: str) -> T:
-        return typing.cast(T, self.base.model_validate_json(serialized_value))
-
-
-@dataclass
-class ImageEncodable(Encodable[Image.Image, pydantic.BaseModel]):
-    base: type[Image.Image]
-    enc: type[pydantic.BaseModel]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: Image.Image) -> pydantic.BaseModel:
-        return self.enc(
-            detail="auto",
-            url=_pil_image_to_base64_data_uri(value),
-        )
-
-    def decode(
-        self, encoded_value: pydantic.BaseModel | Mapping[str, Any]
-    ) -> Image.Image:
-        normalized = self.enc.model_validate(encoded_value)
-        image_url = typing.cast(str, getattr(normalized, "url"))
-        if not image_url.startswith("data:image/"):
-            raise TypeError(
-                f"expected base64 encoded image as data uri, received {image_url}"
-            )
-        data = image_url.split(",")[1]
-        return Image.open(fp=io.BytesIO(base64.b64decode(data)))
-
-    def serialize(
-        self, encoded_value: pydantic.BaseModel
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [
-            {
-                "type": "image_url",
-                "image_url": typing.cast(
-                    ChatCompletionImageUrlObject,
-                    encoded_value.model_dump(exclude_none=True),
-                ),
-            }
-        ]
-
-    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
-        # Images are serialized as image_url blocks, not text
-        # This shouldn't be called in normal flow, but provide a fallback
-        raise NotImplementedError("Image deserialization from string is not supported")
-
-
-@dataclass
-class TupleEncodable[T](Encodable[T, typing.Any]):
-    base: type[T]
-    enc: type[typing.Any]
-    ctx: Mapping[str, Any]
-    has_image: bool
-    element_encoders: list[Encodable]
-
-    def encode(self, value: T) -> typing.Any:
-        if not isinstance(value, tuple):
-            raise TypeError(f"Expected tuple, got {type(value)}")
-        if len(value) != len(self.element_encoders):
-            raise ValueError(
-                f"Tuple length {len(value)} does not match expected length {len(self.element_encoders)}"
-            )
-        return tuple(
-            [enc.encode(elem) for enc, elem in zip(self.element_encoders, value)]
-        )
-
-    def decode(self, encoded_value: typing.Any) -> T:
-        if len(encoded_value) != len(self.element_encoders):
-            raise ValueError(
-                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
-            )
-        decoded_elements: list[typing.Any] = [
-            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
-        ]
-        return typing.cast(T, tuple(decoded_elements))
-
-    def serialize(
-        self, encoded_value: typing.Any
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        if self.has_image:
-            # If tuple contains images, serialize each element and flatten the results
-            result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, tuple):
-                raise TypeError(f"Expected tuple, got {type(encoded_value)}")
-            if len(encoded_value) != len(self.element_encoders):
-                raise ValueError(
-                    f"Tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
-                )
-            for enc, elem in zip(self.element_encoders, encoded_value):
-                result.extend(enc.serialize(elem))
-            return result
+    def evaluate(self, ty):
+        app = super().evaluate(ty)
+        if (
+            isinstance(app, type | GenericAlias)
+            and typing.get_origin(app) is not typing.Annotated
+        ):
+            return self._registry.dispatch(typing.get_origin(app) or app)(app)
         else:
-            # Use base serialization for non-image tuples
-            adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
-            json_str = adapter.dump_json(encoded_value).decode("utf-8")
-            return [{"type": "text", "text": json_str}]
-
-    def deserialize(self, serialized_value: str) -> typing.Any:
-        adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
-        return adapter.validate_json(serialized_value)
+            return app
 
 
-@dataclass
-class NamedTupleEncodable[T](TupleEncodable[T]):
-    """Tuple encodable that reconstructs the original NamedTuple type on decode."""
-
-    def decode(self, encoded_value: typing.Any) -> T:
-        if len(encoded_value) != len(self.element_encoders):
-            raise ValueError(
-                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
-            )
-        decoded_elements: list[typing.Any] = [
-            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
-        ]
-        return typing.cast(T, self.base(*decoded_elements))
+@TypeToPydanticType.register(object)
+@TypeToPydanticType.register(str)
+@TypeToPydanticType.register(pydantic.BaseModel)
+def _pydantic_type_base[T](ty: type[T]) -> type[T]:
+    return ty
 
 
-@dataclass
-class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
-    base: type[MutableSequence[T]]
-    enc: type[typing.Any]
-    ctx: Mapping[str, Any]
-    has_image: bool
-    element_encoder: Encodable[T, typing.Any]
-
-    def encode(self, value: MutableSequence[T]) -> typing.Any:
-        if not isinstance(value, MutableSequence):
-            raise TypeError(f"Expected MutableSequence, got {type(value)}")
-        return [self.element_encoder.encode(elem) for elem in value]
-
-    def decode(self, encoded_value: typing.Any) -> MutableSequence[T]:
-        decoded_elements: list[T] = [
-            self.element_encoder.decode(elem) for elem in encoded_value
-        ]
-        return typing.cast(MutableSequence[T], decoded_elements)
-
-    def serialize(
-        self, encoded_value: typing.Any
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        if self.has_image:
-            # If list contains images, serialize each element and flatten the results
-            result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, MutableSequence):
-                raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
-            for elem in encoded_value:
-                result.extend(self.element_encoder.serialize(elem))
-            return result
-        else:
-            # Use base serialization for non-image lists
-            adapter = pydantic.TypeAdapter(self.enc)
-            json_str = adapter.dump_json(encoded_value).decode("utf-8")
-            return [{"type": "text", "text": json_str}]
-
-    def deserialize(self, serialized_value: str) -> typing.Any:
-        adapter = pydantic.TypeAdapter(self.enc)
-        return adapter.validate_json(serialized_value)
+@TypeToPydanticType.register(Term)
+def _pydantic_type_term(ty: type[Term]):
+    raise TypeError("Terms cannot be converted to Pydantic types.")
 
 
-@dataclass
-class TypedDictEncodable[T](Encodable[T, pydantic.BaseModel]):
-    base: type[T]
-    enc: type[pydantic.BaseModel]
-    ctx: Mapping[str, Any]
+@TypeToPydanticType.register(Operation)
+def _pydantic_type_operation(ty: type[Operation]):
+    raise TypeError("Operations cannot be converted to Pydantic types.")
 
-    def encode(self, value: T) -> pydantic.BaseModel:
-        return self.enc.model_validate(value)
 
-    def decode(self, encoded_value: pydantic.BaseModel) -> T:
-        decoded_value: dict[str, Any] = encoded_value.model_dump()
-        adapter = pydantic.TypeAdapter(self.base)
-        return typing.cast(T, adapter.validate_python(decoded_value))
+@pydantic.validate_call(validate_return=False)
+def _validate_image(value: ChatCompletionImageObject) -> Image.Image:
+    value = pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(value)
+    image_url: litellm.ChatCompletionImageUrlObject | str = value["image_url"]
+    url: str = image_url["url"] if isinstance(image_url, dict) else image_url
+    prefix, data = url.split(",")
+    if not prefix.startswith("data:image/"):
+        raise ValueError(f"expected base64 encoded image as data uri, received {url}")
+    return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
-    def serialize(
-        self, encoded_value: pydantic.BaseModel
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
 
-    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
-        return self.enc.model_validate_json(serialized_value)
+def _serialize_image(value: Image.Image) -> ChatCompletionImageObject:
+    buf = io.BytesIO()
+    value.save(buf, format="PNG")
+    url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
+    return pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(
+        {"type": "image_url", "image_url": {"detail": "auto", "url": url}}
+    )
 
-    @staticmethod
-    @functools.cache
-    def _typeddict_model(td: type[Any]) -> type[pydantic.BaseModel]:
-        hints = typing.get_type_hints(td)
-        required = typing.cast(
-            frozenset[str], getattr(td, "__required_keys__", frozenset())
-        )
-        fields: dict[str, Any] = {}
-        for k, v in hints.items():
-            fields[k] = (v, ...) if k in required else (v, None)
-        return pydantic.create_model(
-            td.__name__,
-            **fields,
-        )
+
+@TypeToPydanticType.register(Image.Image)
+def _pydantic_type_image(ty: type[Image.Image]):
+    adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_image),
+        pydantic.PlainSerializer(_serialize_image),
+        pydantic.WithJsonSchema(adapter.json_schema()),
+    ]
 
 
 def _format_callable_type(callable_type: type[Callable]) -> str:
@@ -480,65 +319,56 @@ def _validate_signature_callable(
         )
 
 
-@dataclass
-class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
-    base: type[Callable]
-    enc: type[SynthesizedFunction]
-    ctx: Mapping[str, Any]
-    expected_params: list[type] | None = None
-    expected_return: type | None = None  # None means decode is disabled
+@TypeToPydanticType.register(Callable)
+def _pydantic_callable(callable_type: Any) -> Any:
+    """Create a Pydantic-compatible Annotated type for a parameterized Callable.
 
-    def encode(self, value: Callable) -> SynthesizedFunction:
-        # (https://github.com/python/mypy/issues/14928)
-        if not isinstance(value, Callable):  # type: ignore
-            raise TypeError(f"Expected callable, got {type(value)}")
+    Usage: PydanticCallable(Callable[[int, str], bool])
+    """
+    type_args = typing.get_args(callable_type)
 
-        try:
-            source = inspect.getsource(value)
-        except (OSError, TypeError):
-            source = None
+    if not type_args:
+        typed_enc = _create_typed_synthesized_function(Callable[..., typing.Any])  # type: ignore[arg-type]
+        expected_params = None
+        expected_return = None
+    else:
+        if len(type_args) < 2:
+            raise TypeError(
+                f"Callable type signature incomplete: {callable_type}. "
+                "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
+            )
+        param_types, expected_return = type_args[0], type_args[-1]
+        typed_enc = _create_typed_synthesized_function(callable_type)
+        if param_types is not ... and isinstance(param_types, list | tuple):
+            expected_params = list(param_types)
+        else:
+            expected_params = None
 
-        if source:
-            return self.enc(module_code=textwrap.dedent(source))
-
-        # Source not available - create stub from name, signature, and docstring
-        # This is useful for builtins and C extensions
-        name = getattr(value, "__name__", None)
-        docstring = inspect.getdoc(value)
-        if name is None or docstring is None:
+    def _validate(value: Any, info: pydantic.ValidationInfo) -> Callable:
+        if callable(value) and not isinstance(value, dict):
+            return value
+        if isinstance(value, SynthesizedFunction):
+            encoded = value
+        elif isinstance(value, dict):
+            encoded = typed_enc.model_validate(value)
+        elif isinstance(value, str):
+            encoded = typed_enc.model_validate_json(value)
+        else:
             raise ValueError(
-                f"Cannot encode callable {value}: no source code and no __name__ or docstring"
+                f"Expected callable, SynthesizedFunction dict, or JSON string, "
+                f"got {type(value)}"
             )
 
-        try:
-            sig = inspect.signature(value)
-            sig_str = str(sig)
-        except (ValueError, TypeError):
-            # Some builtins don't have inspectable signatures
-            sig_str = "(...)"
-
-        # Format as a stub function with docstring
-        stub_code = f'''def {name}{sig_str}:
-    """{docstring}"""
-    ...
-'''
-        return self.enc(module_code=stub_code)
-
-    def decode(self, encoded_value: SynthesizedFunction) -> Callable:
-        # Decode requires a concrete return type for synthesis
-        if self.expected_return is None:
+        if expected_return is None:
             raise TypeError(
                 "Cannot decode/synthesize callable without a concrete type signature. "
                 "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
                 "with a concrete return type (not Any)."
             )
 
-        filename = f"<synthesis:{id(self)}>"
-
-        module_code = encoded_value.module_code
-
-        # Parse and validate AST before execution
-        module: ast.AST = evaluation.parse(module_code, filename)
+        ctx = info.context or {}
+        filename = f"<synthesis:{id(encoded)}>"
+        module: ast.AST = evaluation.parse(encoded.module_code, filename)
 
         if not isinstance(module, ast.Module) or not module.body:
             raise ValueError(
@@ -552,19 +382,11 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
                 f"got {type(last_stmt).__name__}"
             )
 
-        # Validate signature from AST before execution
-        _validate_signature_ast(last_stmt, self.expected_params)
+        _validate_signature_ast(last_stmt, expected_params)
+        evaluation.type_check(module, ctx, expected_params, expected_return)
 
-        # Type-check with mypy; pass original module_code so mypy sees exact source
-        evaluation.type_check(
-            module, self.ctx, self.expected_params, self.expected_return
-        )
-
-        # Compile and execute
-        # https://docs.python.org/3/library/functions.html#exec
         g: MutableMapping[str, Any] = {}
-        g.update(self.ctx or {})
-
+        g.update(ctx)
         bytecode: CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
@@ -580,392 +402,147 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
                 f"decode() expected '{func_name}' to be callable, got {type(result)}"
             )
 
-        # Validate signature from runtime callable after execution
-        _validate_signature_callable(result, self.expected_params, self.expected_return)
-
+        _validate_signature_callable(result, expected_params, expected_return)
         return result
 
-    def serialize(
-        self, encoded_value: SynthesizedFunction
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
+    def _serialize(value: Callable) -> dict:
+        if not callable(value):
+            raise TypeError(f"Expected callable, got {type(value)}")
 
-    def deserialize(self, serialized_value: str) -> SynthesizedFunction:
-        return SynthesizedFunction.model_validate_json(serialized_value)
+        try:
+            source = inspect.getsource(value)
+        except (OSError, TypeError):
+            source = None
+
+        if source:
+            return typed_enc(module_code=textwrap.dedent(source)).model_dump()
+
+        name = getattr(value, "__name__", None)
+        docstring = inspect.getdoc(value)
+        if name is None or docstring is None:
+            raise ValueError(
+                f"Cannot encode callable {value}: no source code and no __name__ or docstring"
+            )
+
+        try:
+            sig = inspect.signature(value)
+            sig_str = str(sig)
+        except (ValueError, TypeError):
+            sig_str = "(...)"
+
+        stub_code = f'''def {name}{sig_str}:
+    """{docstring}"""
+    ...
+'''
+        return typed_enc(module_code=stub_code).model_dump()
+
+    return typing.Annotated[
+        callable_type,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(_serialize),
+        pydantic.WithJsonSchema(pydantic.TypeAdapter(typed_enc).json_schema()),
+    ]
 
 
-def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
-    return pydantic.create_model(
+def _validate_tool(
+    value: ChatCompletionToolParam, info: pydantic.ValidationInfo
+) -> Tool:
+    assert isinstance(info.context, Mapping), "Tool decoding requires context"
+    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
+    try:
+        return info.context[value["function"]["name"]]
+    except KeyError as e:
+        raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
+
+
+def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+    sig_model = pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
         **{
-            name: Encodable.define(param.annotation).enc
-            for name, param in sig.parameters.items()
+            name: TypeToPydanticType().evaluate(param.annotation)
+            for name, param in inspect.signature(value).parameters.items()
         },  # type: ignore
     )
-
-
-@dataclass
-class ToolEncodable[**P, T](Encodable[Tool[P, T], pydantic.BaseModel]):
-    base: type[Tool]
-    enc: type[pydantic.BaseModel]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: Tool[P, T]) -> pydantic.BaseModel:
-        response_format = litellm.utils.type_to_response_format_param(
-            _param_model(inspect.signature(value))
-        )
-        assert response_format is not None
-        assert value.__default__.__doc__ is not None
-        return self.enc.model_validate(
-            {
-                "type": "function",
-                "function": {
-                    "name": value.__name__,
-                    "description": textwrap.dedent(value.__default__.__doc__),
-                    "parameters": response_format["json_schema"]["schema"],
-                    "strict": True,
-                },
-            }
-        )
-
-    def decode(self, encoded_value: pydantic.BaseModel) -> Tool[P, T]:
-        raise NotImplementedError("Tools cannot yet be decoded from LLM responses")
-
-    def serialize(
-        self, encoded_value: pydantic.BaseModel
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [
-            {
-                "type": "text",
-                "text": encoded_value.model_dump_json(exclude_none=True),
-            }
-        ]
-
-    def deserialize(self, serialized_value: str) -> pydantic.BaseModel:
-        return self.enc.model_validate_json(serialized_value)
-
-
-@dataclass
-class ToolCallEncodable[T](
-    Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]
-):
-    base: type[DecodedToolCall[T]]
-    enc: type[ChatCompletionMessageToolCall]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: DecodedToolCall[T]) -> ChatCompletionMessageToolCall:
-        sig = inspect.signature(value.tool)
-        encoded_args = _param_model(sig).model_validate(
-            {
-                k: Encodable.define(
-                    typing.cast(type[Any], nested_type(v).value), self.ctx
-                ).encode(v)
-                for k, v in value.bound_args.arguments.items()
-            }
-        )
-        return ChatCompletionMessageToolCall.model_validate(
-            {
-                "type": "tool_call",
-                "id": value.id,
-                "function": {
-                    "name": value.tool.__name__,
-                    "arguments": encoded_args.model_dump_json(),
-                },
-            }
-        )
-
-    def decode(
-        self, encoded_value: ChatCompletionMessageToolCall
-    ) -> DecodedToolCall[T]:
-        """Decode a tool call from the LLM response into a DecodedToolCall.
-
-        Args:
-            encoded_value: The tool call to decode.
-        """
-        assert encoded_value.function.name is not None
-        tool: Tool[..., T] = self.ctx[encoded_value.function.name]
-        assert isinstance(tool, Tool)
-
-        json_str = encoded_value.function.arguments
-        sig = inspect.signature(tool)
-
-        raw_args = _param_model(sig).model_validate_json(json_str)
-
-        bound_args: inspect.BoundArguments = sig.bind(
-            **{
-                name: Encodable.define(
-                    typing.cast(type[Any], sig.parameters[name].annotation), self.ctx
-                ).decode(getattr(raw_args, name))
-                for name in raw_args.model_fields_set
-            }
-        )
-        return DecodedToolCall(
-            tool=tool,
-            bound_args=bound_args,
-            id=encoded_value.id,
-            name=encoded_value.function.name,
-        )
-
-    def serialize(
-        self, encoded_value: ChatCompletionMessageToolCall
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
-
-    def deserialize(self, serialized_value: str) -> ChatCompletionMessageToolCall:
-        return self.enc.model_validate_json(serialized_value)
-
-
-@Encodable.define.register(object)
-def _encodable_object[T, U](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
-    ctx = {} if ctx is None else ctx
-    wrapped = BaseEncodable.wrapped_model(typing.cast(Hashable, ty))
-    return typing.cast(Encodable[T, U], BaseEncodable(ty, wrapped, ctx))
-
-
-@Encodable.define.register(str)
-def _encodable_str(ty: type[str], ctx: Mapping[str, Any] | None) -> Encodable[str, str]:
-    """Handler for str type that serializes without JSON encoding."""
-    return StrEncodable(ty, ty, ctx or {})
-
-
-class _ComplexParts(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    real: float
-    imag: float
-
-
-@dataclass
-class _ComplexEncodable(Encodable[complex, _ComplexParts]):
-    base: type[complex]
-    enc: type[_ComplexParts]
-    ctx: Mapping[str, Any]
-
-    def encode(self, value: complex) -> _ComplexParts:
-        return _ComplexParts(real=value.real, imag=value.imag)
-
-    def decode(self, encoded_value: _ComplexParts) -> complex:
-        return complex(encoded_value.real, encoded_value.imag)
-
-    def serialize(
-        self, encoded_value: _ComplexParts
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        return [{"type": "text", "text": encoded_value.model_dump_json()}]
-
-    def deserialize(self, serialized_value: str) -> _ComplexParts:
-        return _ComplexParts.model_validate_json(serialized_value)
-
-
-@Encodable.define.register(complex)
-def _encodable_complex(
-    ty: type[complex], ctx: Mapping[str, Any] | None
-) -> Encodable[complex, _ComplexParts]:
-    return _ComplexEncodable(ty, _ComplexParts, ctx or {})
-
-
-@Encodable.define.register(Term)
-def _encodable_term[T: Term, U](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
-    raise TypeError("Terms cannot be encoded or decoded in general.")
-
-
-@Encodable.define.register(Operation)
-def _encodable_operation[T: Operation, U](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
-    raise TypeError("Operations cannot be encoded or decoded in general.")
-
-
-@Encodable.define.register(pydantic.BaseModel)
-def _encodable_pydantic_base_model[T: pydantic.BaseModel](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, T]:
-    return PydanticBaseModelEncodable(ty, ty, ctx or {})
-
-
-@Encodable.define.register(Image.Image)
-def _encodable_image(
-    ty: type[Image.Image], ctx: Mapping[str, Any] | None
-) -> Encodable[Image.Image, pydantic.BaseModel]:
-    image_model = TypedDictEncodable._typeddict_model(ChatCompletionImageUrlObject)
-    return ImageEncodable(ty, image_model, ctx or {})
-
-
-@Encodable.define.register(tuple)
-def _encodable_tuple[T, U](
-    ty: type[T], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
-    def _is_namedtuple_type(ty: type[Any]) -> bool:
-        return isinstance(ty, type) and issubclass(ty, tuple) and hasattr(ty, "_fields")
-
-    args = typing.get_args(ty)
-    ctx = {} if ctx is None else ctx
-
-    # Handle plain tuple runtime type explicitly.
-    if ty is tuple:
-        return typing.cast(
-            Encodable[T, U],
-            TupleEncodable(ty, ty, ctx, False, []),
-        )
-
-    # NamedTuple handling is routed through tuple logic, but decoded back into
-    # the concrete NamedTuple class.
-    origin = typing.get_origin(ty)
-    is_namedtuple = origin is None and _is_namedtuple_type(ty)
-    if origin is None:
-        if is_namedtuple:
-            hints = typing.get_type_hints(ty)
-            tuple_field_types: list[type[Any]] = list(hints.values())
-            if not tuple_field_types:
-                tuple_field_types = [typing.Any] * len(getattr(ty, "_fields", ()))
-        else:
-            tuple_field_types = []
-    else:
-        tuple_field_types = list(args)
-
-    if not tuple_field_types:
-        # Non-parameterized tuple subclasses still use object fallback.
-        if not is_namedtuple:
-            return _encodable_object(ty, ctx)
-        # Empty namedtuple; keep tuple identity behavior.
-        return typing.cast(Encodable[T, U], NamedTupleEncodable(ty, ty, ctx, False, []))
-
-    # Handle empty tuple annotation (tuple[()]).
-    if tuple_field_types == [()] or args == ((),):
-        return TupleEncodable(ty, ty, ctx, False, [])
-
-    element_encoders = [Encodable.define(arg, ctx) for arg in tuple_field_types]
-    has_image = any(arg is Image.Image for arg in tuple_field_types)
-    encoded_ty: type[typing.Any] = typing.cast(
-        type[typing.Any],
-        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
-    )
-
-    if is_namedtuple:
-        return typing.cast(
-            Encodable[T, U],
-            NamedTupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
-        )
-
-    if origin is None:
-        return _encodable_object(ty, ctx)
-
-    return typing.cast(
-        Encodable[T, U],
-        TupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
+    response_format = litellm.utils.type_to_response_format_param(sig_model)
+    assert response_format is not None
+    assert value.__default__.__doc__ is not None
+    return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
+        {
+            "type": "function",
+            "function": {
+                "name": value.__name__,
+                "description": textwrap.dedent(value.__default__.__doc__),
+                "parameters": response_format["json_schema"]["schema"],
+                "strict": True,
+            },
+        }
     )
 
 
-@Encodable.define.register(list)
-@Encodable.define.register(MutableSequence)
-def _encodable_mutable_sequence[T, U](
-    ty: type[MutableSequence[T]], ctx: Mapping[str, Any] | None
-) -> Encodable[T, U]:
-    args = typing.get_args(ty)
-    ctx = {} if ctx is None else ctx
+@TypeToPydanticType.register(Tool)
+def _pydantic_type_tool(ty: type[Tool]):
+    adapter = pydantic.TypeAdapter(ChatCompletionToolParam)
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_tool),
+        pydantic.PlainSerializer(_serialize_tool),
+        pydantic.WithJsonSchema(adapter.json_schema()),
+    ]
 
-    # Handle unparameterized list (list without type args)
-    if not args:
-        identity_encoder = typing.cast(
-            Encodable[T, typing.Any],
-            BaseEncodable(
-                typing.cast(type[T], object),
-                typing.cast(
-                    type[_BoxEncoding[T]],
-                    BaseEncodable.wrapped_model(typing.cast(Hashable, object)),
-                ),
-                ctx,
-            ),
+
+def _validate_tool_call(
+    value: ChatCompletionMessageToolCall,
+    info: pydantic.ValidationInfo,
+) -> DecodedToolCall:
+    if isinstance(value, dict):
+        value = ChatCompletionMessageToolCall.model_validate(value)
+    ctx = info.context or {}
+    assert value.function.name is not None
+    tool = ctx[value.function.name]
+    assert isinstance(tool, Tool)
+    sig = inspect.signature(tool)
+    decoded_args = {}
+    for name, raw_arg in json.loads(value.function.arguments).items():
+        assert name in sig.parameters, (
+            f"Unexpected argument {name} for tool {tool.__name__}"
         )
-        return typing.cast(
-            Encodable[T, U],
-            MutableSequenceEncodable(ty, list[Any], ctx, False, identity_encoder),
-        )
-
-    # Get the element type (first type argument)
-    element_ty = args[0]
-    element_encoder = Encodable.define(element_ty, ctx)
-
-    # Check if element type is Image.Image
-    has_image = element_ty is Image.Image
-
-    # Use enc for Image (schema-valid), base otherwise
-    encoded_ty: type[typing.Any] = typing.cast(
-        type[typing.Any],
-        list[element_encoder.enc],  # type: ignore
-    )
-
-    return typing.cast(
-        Encodable[T, U],
-        MutableSequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
+        param = sig.parameters[name]
+        arg_enc = Encodable.define(param.annotation, ctx)
+        decoded_args[name] = arg_enc.decode(raw_arg)
+    return DecodedToolCall(
+        tool=tool,
+        bound_args=sig.bind(**decoded_args),
+        id=value.id,
+        name=value.function.name,
     )
 
 
-@Encodable.define.register(dict)
-@Encodable.define.register(MutableMapping)
-@Encodable.define.register(Mapping)
-def _encodable_mapping[K, V, U](
-    ty: type[Mapping[K, V]], ctx: Mapping[str, Any] | None
-) -> Encodable[Mapping[K, V], U]:
-    ctx = {} if ctx is None else ctx
-
-    if typing.is_typeddict(ty):
-        return typing.cast(
-            Encodable[Mapping[K, V], U],
-            TypedDictEncodable(ty, TypedDictEncodable._typeddict_model(ty), ctx),
-        )
-
-    return _encodable_object(ty, ctx)
-
-
-@Encodable.define.register(Callable)
-def _encodable_callable(
-    ty: type[Callable], ctx: Mapping[str, Any] | None
-) -> Encodable[Callable, SynthesizedFunction]:
-    ctx = ctx or {}
-
-    type_args = typing.get_args(ty)
-
-    # Bare Callable without type args - allow encoding but disable decode
-    # this occurs when decoding the result of Tools which return callable (need to Encodable.define(return_type) for return type)
-    if not type_args:
-        assert ty is types.FunctionType, f"Callable must have type signatures {ty}"
-        typed_enc = _create_typed_synthesized_function(Callable[..., typing.Any])  # type: ignore[arg-type]
-        return CallableEncodable(ty, typed_enc, ctx)
-
-    if len(type_args) < 2:
-        raise TypeError(
-            f"Callable type signature incomplete: {ty}. "
-            "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
-        )
-
-    param_types, expected_return = type_args[0], type_args[-1]
-
-    typed_enc = _create_typed_synthesized_function(ty)
-
-    # Ellipsis means any params, skip param validation
-    expected_params: list[type] | None = None
-    if param_types is not ... and isinstance(param_types, list | tuple):
-        expected_params = list(param_types)
-
-    return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)
+def _serialize_tool_call(
+    value: DecodedToolCall, info: pydantic.SerializationInfo
+) -> dict:
+    ctx = info.context or {}
+    encoded_args = {}
+    for k, v in value.bound_args.arguments.items():
+        v_enc = Encodable.define(nested_type(v).value, ctx)
+        encoded_args[k] = v_enc.encode(v)
+    return ChatCompletionMessageToolCall.model_validate(
+        {
+            "type": "tool_call",
+            "id": value.id,
+            "function": {
+                "name": value.tool.__name__,
+                "arguments": encoded_args,
+            },
+        }
+    ).model_dump(mode="json")
 
 
-@Encodable.define.register(Tool)
-def _encodable_tool[**P, T](
-    ty: type[Tool[P, T]], ctx: Mapping[str, Any] | None
-) -> Encodable[Tool[P, T], pydantic.BaseModel]:
-    ctx = ctx or {}
-    tool_model = TypedDictEncodable._typeddict_model(ChatCompletionToolParam)
-    return ToolEncodable(ty, tool_model, ctx)
-
-
-@Encodable.define.register(DecodedToolCall)
-def _encodable_tool_call[T](
-    ty: type[DecodedToolCall[T]], ctx: Mapping[str, Any] | None
-) -> Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]:
-    ctx = ctx or {}
-    return ToolCallEncodable(ty, ChatCompletionMessageToolCall, ctx)
+@TypeToPydanticType.register(DecodedToolCall)
+def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_tool_call),
+        pydantic.PlainSerializer(_serialize_tool_call),
+        pydantic.WithJsonSchema(ChatCompletionMessageToolCall.model_json_schema()),
+    ]
