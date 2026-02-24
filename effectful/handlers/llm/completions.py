@@ -231,7 +231,7 @@ def call_assistant[T, U](
                 ):
                     raise TypeError(
                         f"IsFinal tool '{raw_tool_call.function.name}' has signature "
-                        f"{tool_sig.format()}, but the enclosing template expects "
+                        f"{tool_sig!r}, but the enclosing template expects "
                         f"{response_format.base!r}."
                     )
         except Exception as e:
