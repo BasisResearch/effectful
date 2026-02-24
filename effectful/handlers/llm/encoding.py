@@ -31,7 +31,7 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool, _is_final_answer_tool
+from effectful.handlers.llm.template import Tool, _IsFinalAnnotation
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
@@ -63,7 +63,10 @@ class DecodedToolCall[T]:
 
     @property
     def is_final(self) -> bool:
-        return _is_final_answer_tool(self.tool)
+        ret = inspect.signature(self.tool).return_annotation
+        return typing.get_origin(ret) is typing.Annotated and any(
+            isinstance(arg, _IsFinalAnnotation) for arg in ret.__metadata__
+        )
 
 
 class Encodable[T, U](ABC):

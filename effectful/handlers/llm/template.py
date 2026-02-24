@@ -105,14 +105,6 @@ class _IsFinalAnnotation(Annotation):
 IsFinal = _IsFinalAnnotation()
 
 
-def _is_final_answer_tool(tool: Any) -> bool:
-    """Check if a tool's return type is annotated with IsFinal."""
-    ret = tool.__signature__.return_annotation
-    if typing.get_origin(ret) is not Annotated:
-        return False
-    return any(isinstance(arg, _IsFinalAnnotation) for arg in typing.get_args(ret))
-
-
 class Tool[**P, T](Operation[P, T]):
     """A :class:`Tool` is a function that may be called by a :class:`Template`.
 
