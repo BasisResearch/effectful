@@ -863,3 +863,80 @@ def test_typeof_literal():
 
     with pytest.raises(TypeError, match="Union types are not supported"):
         typeof(get_mixed())
+
+
+def test_evaluate_dag_no_exponential_blowup():
+    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n)."""
+    call_count = 0
+
+    @defop
+    def counted() -> int:
+        raise NotHandled
+
+    def counted_handler():
+        nonlocal call_count
+        call_count += 1
+        return 42
+
+    # Build a DAG of nested tuples: each level shares the same child object.
+    # As a tree this would have 2^depth leaves; as a DAG it's depth+1 objects.
+    depth = 20
+    node = counted()
+    for _ in range(depth):
+        node = (node, node)
+
+    call_count = 0
+    with handler({counted: counted_handler}):
+        result = evaluate(node)
+
+    deffn(node, counted)(0)
+
+    # The handler should only be called once (the shared Term)
+    assert call_count == 1
+    # The result should be nested tuples of 42
+    leaf = result
+    for _ in range(depth):
+        assert isinstance(leaf, tuple) and len(leaf) == 2
+        assert leaf[0] is leaf[1]  # memoization returns same object
+        leaf = leaf[0]
+    assert leaf == 42
+
+
+def test_evaluate_dag_cache_isolation():
+    """Different interpretations produce different results for the same expr."""
+    x = defop(int, name="x")
+    shared = x()
+    expr = (shared, shared)
+
+    assert evaluate(expr, intp={x: lambda: 1}) == (1, 1)
+    assert evaluate(expr, intp={x: lambda: 99}) == (99, 99)
+
+
+def test_evaluate_dag_nested_different_intp():
+    """evaluate(expr, intp=...) inside a handler gets its own cache."""
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+
+    shared = x()
+    inner_expr = (shared, shared)
+
+    result = evaluate(y(), intp={y: lambda: evaluate(inner_expr, intp={x: lambda: 7})})
+    assert result == (7, 7)
+
+
+def test_evaluate_dag_matches_tree():
+    """DAG evaluation produces the same result as evaluating an equivalent tree."""
+    x = defop(int, name="x")
+
+    @defop
+    def mul(a: int, b: int) -> int:
+        raise NotHandled
+
+    shared = x()
+    dag = (mul(shared, shared), mul(shared, shared))
+
+    # Equivalent tree with distinct Term objects
+    tree = (mul(x(), x()), mul(x(), x()))
+
+    intp = {x: lambda: 3, mul: lambda a, b: a * b}
+    assert evaluate(dag, intp=intp) == evaluate(tree, intp=intp) == (9, 9)

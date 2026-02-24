@@ -64,6 +64,7 @@ import functools
 import inspect
 import numbers
 import operator
+import threading
 import types
 import typing
 from dataclasses import dataclass
@@ -813,6 +814,26 @@ def _(value: tuple):
 @nested_type.register
 def _(value: str | bytes | range | None):
     return Box(type(value))
+
+
+_nested_type_dispatch = nested_type
+_nested_type_state = threading.local()
+_NESTED_TYPE_MAX_DEPTH = 5
+
+
+def nested_type(value) -> Box[TypeExpression]:  # type: ignore[no-redef]
+    depth = getattr(_nested_type_state, "depth", 0)
+    if depth >= _NESTED_TYPE_MAX_DEPTH:
+        return Box(type(value))
+    _nested_type_state.depth = depth + 1
+    try:
+        return _nested_type_dispatch(value)
+    finally:
+        _nested_type_state.depth = depth
+
+
+nested_type.register = _nested_type_dispatch.register  # type: ignore[attr-defined]
+nested_type.dispatch = _nested_type_dispatch.dispatch  # type: ignore[attr-defined]
 
 
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:

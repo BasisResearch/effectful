@@ -1,7 +1,8 @@
 import contextlib
 import dataclasses
 import functools
-from collections.abc import Callable, Mapping
+import typing
+from collections.abc import Callable, Mapping, MutableMapping
 from threading import local
 
 from effectful.ops.syntax import defop
@@ -11,11 +12,12 @@ from effectful.ops.types import Interpretation, Operation
 @dataclasses.dataclass
 class Runtime[S, T](local):
     interpretation: "Interpretation[S, T]"
+    cache: MutableMapping[int, typing.Any] | None
 
 
 @functools.lru_cache(maxsize=1)
 def get_runtime() -> Runtime:
-    return Runtime(interpretation={})
+    return Runtime(interpretation={}, cache=None)
 
 
 def get_interpretation():
@@ -25,12 +27,16 @@ def get_interpretation():
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
     r = get_runtime()
-    old_intp = r.interpretation
+    old_intp, old_cache = r.interpretation, r.cache
     try:
-        old_intp, r.interpretation = r.interpretation, dict(intp)
+        old_intp, r.interpretation = r.interpretation, intp
+        old_cache, r.cache = (
+            r.cache,
+            old_cache if old_intp is intp and old_cache is not None else {},
+        )
         yield intp
     finally:
-        r.interpretation = old_intp
+        r.interpretation, r.cache = old_intp, old_cache
 
 
 @defop

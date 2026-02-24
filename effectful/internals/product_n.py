@@ -58,49 +58,59 @@ def _unpack(x, prompt):
     return x
 
 
-def map_structure(func, expr):
+def map_structure(func, expr, _cache=None):
+    if _cache is None:
+        _cache = {}
+
+    key = id(expr)
+    if key in _cache:
+        ref, result = _cache[key]
+        if ref is expr:
+            return result
+
+    def recurse(x):
+        return map_structure(func, x, _cache)
+
     if isinstance(expr, collections.abc.Mapping):
         if isinstance(expr, collections.defaultdict):
-            return type(expr)(
-                expr.default_factory, map_structure(func, tuple(expr.items()))
-            )
+            result = type(expr)(expr.default_factory, recurse(tuple(expr.items())))
         elif isinstance(expr, types.MappingProxyType):
-            return type(expr)(dict(map_structure(func, tuple(expr.items()))))
+            result = type(expr)(dict(recurse(tuple(expr.items()))))
         else:
-            return type(expr)(map_structure(func, tuple(expr.items())))
+            result = type(expr)(recurse(tuple(expr.items())))
     elif isinstance(expr, collections.abc.Sequence):
         if isinstance(expr, str | bytes):
-            return expr
+            result = expr
         elif (
             isinstance(expr, tuple)
             and hasattr(expr, "_fields")
             and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
         ):  # namedtuple
-            return type(expr)(
-                **{
-                    field: map_structure(func, getattr(expr, field))
-                    for field in expr._fields
-                }
+            result = type(expr)(
+                **{field: recurse(getattr(expr, field)) for field in expr._fields}
             )
         else:
-            return type(expr)(map_structure(func, item) for item in expr)
+            result = type(expr)(recurse(item) for item in expr)
     elif isinstance(expr, collections.abc.Set):
         if isinstance(expr, collections.abc.ItemsView | collections.abc.KeysView):
-            return {map_structure(func, item) for item in expr}
+            result = {recurse(item) for item in expr}
         else:
-            return type(expr)(map_structure(func, item) for item in expr)
+            result = type(expr)(recurse(item) for item in expr)
     elif isinstance(expr, collections.abc.ValuesView):
-        return [map_structure(func, item) for item in expr]
+        result = [recurse(item) for item in expr]
     elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-        return dataclasses.replace(
+        result = dataclasses.replace(
             expr,
             **{
-                field.name: map_structure(func, getattr(expr, field.name))
+                field.name: recurse(getattr(expr, field.name))
                 for field in dataclasses.fields(expr)
             },
         )
     else:
-        return func(expr)
+        result = func(expr)
+
+    _cache[key] = (expr, result)
+    return result
 
 
 def productN(intps: Mapping[Operation, Interpretation]) -> Interpretation:
