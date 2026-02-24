@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def count_character_a(input_string: str) -> int:\\n    return input_string.count('a')\\n\"}}",
+        "content": "{\"module_code\":\"def count_character_a(input_string: str) -> int:\\n    return input_string.count('a')\\n\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

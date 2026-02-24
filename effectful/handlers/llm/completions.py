@@ -1,3 +1,4 @@
+import abc
 import collections
 import collections.abc
 import dataclasses
@@ -17,14 +18,13 @@ from litellm import (
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolMessage,
-    ChatCompletionToolParam,
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionSystemMessage,
     OpenAIChatCompletionUserMessage,
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
@@ -54,6 +54,10 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant, you need to follow user's instruction"
+)
+
 
 @Operation.define
 def _get_history() -> collections.OrderedDict[str, Message]:
@@ -73,20 +77,27 @@ def _make_message(content: dict) -> Message:
     return message
 
 
-type ToolCallID = str
+class DecodingError[E: Exception](abc.ABC, Exception):
+    """Base class for decoding errors that can occur during LLM response processing."""
+
+    original_error: E
+
+    @abc.abstractmethod
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        """Convert the decoding error into a feedback message to be sent back to the LLM."""
+        raise NotImplementedError
 
 
 @dataclasses.dataclass
-class ToolCallDecodingError(Exception):
+class ToolCallDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding a tool call fails."""
 
-    tool_name: str
-    tool_call_id: str
-    original_error: Exception
+    original_error: E
     raw_message: Message
+    raw_tool_call: ChatCompletionMessageToolCall
 
     def __str__(self) -> str:
-        return f"Error decoding tool call '{self.tool_name}': {self.original_error}. Please provide a valid response and try again."
+        return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -96,17 +107,17 @@ class ToolCallDecodingError(Exception):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
 
 
 @dataclasses.dataclass
-class ResultDecodingError(Exception):
+class ResultDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding the LLM response result fails."""
 
-    original_error: Exception
+    original_error: E
     raw_message: Message
 
     def __str__(self) -> str:
@@ -123,15 +134,14 @@ class ResultDecodingError(Exception):
 
 
 @dataclasses.dataclass
-class ToolCallExecutionError(Exception):
+class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     """Error raised when a tool execution fails at runtime."""
 
-    tool_name: str
-    tool_call_id: str
-    original_error: BaseException
+    original_error: E
+    raw_tool_call: DecodedToolCall[T]
 
     def __str__(self) -> str:
-        return f"Tool execution failed: Error executing tool '{self.tool_name}': {self.original_error}"
+        return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -141,103 +151,13 @@ class ToolCallExecutionError(Exception):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
 
 
-@dataclasses.dataclass
-class DecodedToolCall[T]:
-    tool: Tool[..., T]
-    bound_args: inspect.BoundArguments
-    id: ToolCallID
-    is_final: bool = False
-
-
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None, bool]
-
-
-@functools.cache
-def _param_model(tool: Tool) -> type[pydantic.BaseModel]:
-    sig = inspect.signature(tool)
-    return pydantic.create_model(
-        "Params",
-        __config__={"extra": "forbid"},
-        **{
-            name: Encodable.define(param.annotation).enc
-            for name, param in sig.parameters.items()
-        },  # type: ignore
-    )
-
-
-@functools.cache
-def _function_model(tool: Tool) -> ChatCompletionToolParam:
-    response_format = litellm.utils.type_to_response_format_param(_param_model(tool))
-    assert response_format is not None
-    assert tool.__default__.__doc__ is not None
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.__name__,
-            "description": textwrap.dedent(tool.__default__.__doc__),
-            "parameters": response_format["json_schema"]["schema"],
-            "strict": True,
-        },
-    }
-
-
-def decode_tool_call(
-    tool_call: ChatCompletionMessageToolCall,
-    tools: collections.abc.Mapping[str, Tool],
-    raw_message: Message,
-) -> DecodedToolCall:
-    """Decode a tool call from the LLM response into a DecodedToolCall.
-
-    Args:
-        tool_call: The tool call to decode.
-        tools: Mapping of tool names to Tool objects.
-        raw_message: Optional raw assistant message for error context.
-
-    Raises:
-        ToolCallDecodingError: If the tool call cannot be decoded.
-    """
-    tool_name = tool_call.function.name
-    assert tool_name is not None
-
-    try:
-        tool = tools[tool_name]
-    except KeyError as e:
-        raise ToolCallDecodingError(
-            tool_name, tool_call.id, e, raw_message=raw_message
-        ) from e
-
-    json_str = tool_call.function.arguments
-    sig = inspect.signature(tool)
-
-    try:
-        # build dict of raw encodable types U
-        raw_args = _param_model(tool).model_validate_json(json_str)
-
-        # use encoders to decode Us to python types T
-        bound_sig: inspect.BoundArguments = sig.bind(
-            **{
-                param_name: Encodable.define(
-                    sig.parameters[param_name].annotation, {}
-                ).decode(getattr(raw_args, param_name))
-                for param_name in raw_args.model_fields_set
-            }
-        )
-    except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
-        raise ToolCallDecodingError(
-            tool_name, tool_call.id, e, raw_message=raw_message
-        ) from e
-
-    from effectful.handlers.llm.template import _is_final_answer_tool
-
-    return DecodedToolCall(
-        tool, bound_sig, tool_call.id, is_final=_is_final_answer_tool(tool)
-    )
 
 
 @Operation.define
@@ -270,16 +190,15 @@ def call_assistant[T, U](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tool_specs = {k: _function_model(t) for k, t in tools.items()}
-    response_model = pydantic.create_model(
-        "Response", value=response_format.enc, __config__={"extra": "forbid"}
-    )
-
+    tool_specs = {
+        k: Encodable.define(type(t), tools).encode(t)  # type: ignore
+        for k, t in tools.items()
+    }
     messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(messages),
-        response_format=response_model,
+        response_format=None if response_format.enc is str else response_format.enc,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -294,21 +213,24 @@ def call_assistant[T, U](
 
     tool_calls: list[DecodedToolCall] = []
     raw_tool_calls = message.get("tool_calls") or []
+    encoding = Encodable.define(DecodedToolCall, tools)  # type: ignore
     for raw_tool_call in raw_tool_calls:
-        validated_tool_call = ChatCompletionMessageToolCall.model_validate(
-            raw_tool_call
-        )
-        decoded_tool_call = decode_tool_call(validated_tool_call, tools, raw_message)
-        tool_calls.append(decoded_tool_call)
+        try:
+            tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
+        except Exception as e:
+            raise ToolCallDecodingError(
+                raw_tool_call=raw_tool_call,
+                original_error=e,
+                raw_message=raw_message,
+            ) from e
 
     final_tcs = [tc for tc in tool_calls if tc.is_final]
     if final_tcs:
         final_tc = final_tcs[0]
         if len(tool_calls) > 1:
             raise ToolCallDecodingError(
-                final_tc.tool.__name__,
-                final_tc.id,
-                ValueError(
+                raw_tool_call=raw_message.tool_calls[0],  # type: ignore
+                original_error=ValueError(
                     f"IsFinal tool '{final_tc.tool.__name__}' must be the "
                     f"only tool call in a round, but {len(tool_calls)} tool calls "
                     f"were generated."
@@ -321,9 +243,8 @@ def call_assistant[T, U](
             tool_ret = typing.get_args(tool_ret)[0]
         if not issubclass(tool_ret, response_format.base):
             raise ToolCallDecodingError(
-                final_tc.tool.__name__,
-                final_tc.id,
-                TypeError(
+                raw_tool_call=raw_message.tool_calls[0],  # type: ignore
+                original_error=TypeError(
                     f"IsFinal tool '{final_tc.tool.__name__}' returns "
                     f"{tool_ret!r}, but the enclosing template expects "
                     f"{response_format.base!r}."
@@ -339,8 +260,9 @@ def call_assistant[T, U](
             "final response from the model should be a string"
         )
         try:
-            raw_result = response_model.model_validate_json(serialized_result)
-            result = response_format.decode(raw_result.value)  # type: ignore
+            result = response_format.decode(
+                response_format.deserialize(serialized_result)
+            )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -364,12 +286,9 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except Exception as e:
-        raise ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e) from e
+        raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    # serialize back to U using encoder for return type
-    return_type: Encodable[T, typing.Any] = Encodable.define(
-        typing.cast(type[typing.Any], nested_type(result).value)
-    )  # type: ignore
+    return_type = Encodable.define(nested_type(result).value)
     encoded_result = return_type.serialize(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
@@ -407,7 +326,7 @@ def call_user(
 
         obj, _ = formatter.get_field(field_name, (), env)
         encoder = Encodable.define(
-            typing.cast(type[typing.Any], nested_type(obj).value)
+            typing.cast(type[typing.Any], nested_type(obj).value), env
         )
         encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
             encoder.encode(obj)
@@ -436,10 +355,7 @@ def call_user(
 @Operation.define
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-    system_prompt = textwrap.dedent(f"""
-    SYSTEM: You are a helpful LLM assistant named {template.__name__}.
-    """)
-
+    system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
     message = _make_message(dict(role="system", content=system_prompt))
     try:
         history: collections.OrderedDict[str, Message] = _get_history()
