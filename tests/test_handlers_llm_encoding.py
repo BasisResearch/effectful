@@ -16,13 +16,15 @@ from typing import Annotated, Any, NamedTuple, TypedDict
 import litellm
 import pydantic
 import pytest
-from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
 from effectful.handlers.llm.encoding import (
+    CONTENT_BLOCK_TYPES,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
+    to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
@@ -391,7 +393,7 @@ def test_encode_decode_roundtrip(ty, value, ctx):
 
 
 # ============================================================================
-# Law 2: deserialize(serialize(encode(v))[0]["text"]) == encode(v)
+# Law 2: json.loads(json.dumps(encode(v))) == encode(v)
 # ============================================================================
 
 
@@ -403,7 +405,7 @@ def test_serialize_deserialize_roundtrip(ty, value, ctx):
 
 
 # ============================================================================
-# Law 3: decode(deserialize(serialize(encode(v))[0]["text"])) == v
+# Law 3: decode(json.loads(json.dumps(encode(v)))) == v
 # ============================================================================
 
 
@@ -424,6 +426,67 @@ def test_encode_idempotent(ty, value, ctx):
     once = Encodable.define(ty, ctx).encode(value)
     twice = Encodable.define(nested_type(once).value, ctx).encode(once)
     assert once == twice
+
+
+# ============================================================================
+# to_content_blocks helpers
+# ============================================================================
+
+
+def _linearize(blocks: list[OpenAIMessageContentListBlock]) -> str:
+    """Concatenate content blocks back into a JSON string."""
+    return "".join(b["text"] if b["type"] == "text" else json.dumps(b) for b in blocks)
+
+
+def _has_content_block(v):
+    """Recursively check whether v contains any content-block-shaped dicts."""
+    if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
+        return True
+    if isinstance(v, dict):
+        return any(_has_content_block(val) for val in v.values())
+    if isinstance(v, list):
+        return any(_has_content_block(item) for item in v)
+    return False
+
+
+# ============================================================================
+# Law 6: linearize(to_content_blocks(encode(v))) == json.dumps(encode(v))
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_linearization(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    encoded = enc.encode(value)
+    assert _linearize(to_content_blocks(encoded)) == json.dumps(encoded)
+
+
+# ============================================================================
+# Law 7: decode(json.loads(linearize(to_content_blocks(encode(v))))) == v
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_full_pipeline(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    encoded = enc.encode(value)
+    assert enc.decode(json.loads(_linearize(to_content_blocks(encoded)))) == value
+
+
+# ============================================================================
+# Law 8: no content blocks hidden in text (maximal extraction)
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_maximal_extraction(ty, value, ctx):
+    enc = Encodable.define(ty, ctx)
+    encoded = enc.encode(value)
+    blocks = to_content_blocks(encoded)
+    skeleton = json.loads(
+        "".join(b["text"] if b["type"] == "text" else "null" for b in blocks)
+    )
+    assert not _has_content_block(skeleton)
 
 
 # ============================================================================

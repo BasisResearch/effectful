@@ -20,8 +20,10 @@ import pydantic
 from litellm import (
     ChatCompletionImageObject,
     ChatCompletionMessageToolCall,
+    ChatCompletionTextObject,
     ChatCompletionToolParam,
     OpenAIMessageContent,
+    OpenAIMessageContentListBlock,
 )
 from PIL import Image
 
@@ -31,6 +33,56 @@ from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
+
+CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
+    literal
+    for member in typing.get_args(OpenAIMessageContentListBlock)
+    for literal in typing.get_args(typing.get_type_hints(member).get("type", str))
+    if isinstance(literal, str)
+)
+
+
+def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+    """Convert an encoded JSON-compatible value into a flat list of content blocks.
+
+    Walks the value tree, extracting content-block-shaped dicts (identified by
+    their ``type`` discriminator) and emitting JSON syntax as text around them.
+    The separators match ``json.dumps`` defaults so that the linearization law
+    holds: ``linearize(to_content_blocks(v)) == json.dumps(v)``.
+    """
+    buf: list[str] = []
+    blocks: list[OpenAIMessageContentListBlock] = []
+
+    def flush() -> None:
+        if buf:
+            blocks.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            buf.clear()
+
+    def walk(v: typing.Any) -> None:
+        if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
+            flush()
+            blocks.append(typing.cast(OpenAIMessageContentListBlock, v))
+        elif isinstance(v, dict):
+            buf.append("{")
+            for i, (k, val) in enumerate(v.items()):
+                if i:
+                    buf.append(", ")
+                buf.append(json.dumps(k) + ": ")
+                walk(val)
+            buf.append("}")
+        elif isinstance(v, list):
+            buf.append("[")
+            for i, item in enumerate(v):
+                if i:
+                    buf.append(", ")
+                walk(item)
+            buf.append("]")
+        else:
+            buf.append(json.dumps(v))
+
+    walk(value)
+    flush()
+    return pydantic.TypeAdapter(OpenAIMessageContent).validate_python(blocks)
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -61,7 +113,7 @@ class Encodable[T]:
         return self.enc.validate_python(encoded_value, context=self.ctx)
 
     def serialize(self, encoded_value: Mapping[str, Any]) -> OpenAIMessageContent:
-        return [{"type": "text", "text": json.dumps(encoded_value)}]
+        return to_content_blocks(encoded_value)
 
     @typing.final
     @classmethod
