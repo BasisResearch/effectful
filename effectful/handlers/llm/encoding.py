@@ -43,14 +43,20 @@ CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
 
 
 @pydantic.validate_call(validate_return=True)
-def to_content_blocks(value: typing.Any) -> OpenAIMessageContent:
+def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
     """Convert an encoded JSON-compatible value into a flat list of content blocks.
 
     Walks the value tree, extracting content-block-shaped dicts (identified by
     their ``type`` discriminator) and emitting JSON syntax as text around them.
-    The separators match ``json.dumps`` defaults so that the linearization law
-    holds: ``linearize(to_content_blocks(v)) == json.dumps(v)``.
+
+    Top-level strings are emitted bare (for natural template rendering).
+    Inside JSON structures, separators match ``json.dumps`` defaults so that
+    the linearization law holds for non-string encoded values:
+    ``linearize(to_content_blocks(v)) == json.dumps(v)``.
     """
+    if isinstance(value, str):
+        return [ChatCompletionTextObject(type="text", text=value)]
+
     buf: list[str] = []
     blocks: list[OpenAIMessageContentListBlock] = []
 

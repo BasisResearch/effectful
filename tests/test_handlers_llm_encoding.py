@@ -467,6 +467,7 @@ def _has_content_block(v):
 
 # ============================================================================
 # Law 6: linearize(to_content_blocks(encode(v))) == json.dumps(encode(v))
+#         (for non-string encoded values; bare strings are emitted unquoted)
 # ============================================================================
 
 
@@ -474,11 +475,16 @@ def _has_content_block(v):
 def test_to_content_blocks_linearization(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
-    assert _linearize(to_content_blocks(encoded)) == json.dumps(encoded)
+    if isinstance(encoded, str):
+        # Bare strings are emitted without JSON quoting for natural template rendering
+        assert _linearize(to_content_blocks(encoded)) == encoded
+    else:
+        assert _linearize(to_content_blocks(encoded)) == json.dumps(encoded)
 
 
 # ============================================================================
 # Law 7: decode(json.loads(linearize(to_content_blocks(encode(v))))) == v
+#         (for non-string encoded values; bare strings roundtrip directly)
 # ============================================================================
 
 
@@ -486,7 +492,11 @@ def test_to_content_blocks_linearization(ty, value, ctx):
 def test_to_content_blocks_full_pipeline(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
-    assert enc.decode(json.loads(_linearize(to_content_blocks(encoded)))) == value
+    linearized = _linearize(to_content_blocks(encoded))
+    if isinstance(encoded, str):
+        assert enc.decode(linearized) == value
+    else:
+        assert enc.decode(json.loads(linearized)) == value
 
 
 # ============================================================================
@@ -498,6 +508,9 @@ def test_to_content_blocks_full_pipeline(ty, value, ctx):
 def test_to_content_blocks_maximal_extraction(ty, value, ctx):
     enc = Encodable.define(ty, ctx)
     encoded = enc.encode(value)
+    if isinstance(encoded, str):
+        # Bare strings are emitted unquoted; they can't contain content blocks
+        return
     blocks = to_content_blocks(encoded)
     skeleton = json.loads(
         "".join(b["text"] if b["type"] == "text" else "null" for b in blocks)

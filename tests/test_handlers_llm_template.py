@@ -3,6 +3,7 @@
 import collections
 import dataclasses
 import inspect
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -134,13 +135,19 @@ def _define_scoped_templates():
 # ---------------------------------------------------------------------------
 
 
-def make_text_response(content: str) -> ModelResponse:
+def make_text_response(content: object) -> ModelResponse:
+    """Create a ModelResponse with JSON-encoded content.
+
+    ``call_assistant`` does ``json.loads(message["content"])``, so the
+    content must be valid JSON.  Pass a Python value and it will be
+    ``json.dumps``'d automatically.
+    """
     return ModelResponse(
         id="test",
         choices=[
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
+                "message": {"role": "assistant", "content": json.dumps(content)},
                 "finish_reason": "stop",
             }
         ],
@@ -414,8 +421,8 @@ class TestSystemPromptInvariant:
 
         mock = MockCompletionHandler(
             [
-                make_text_response('"not_an_int"'),
-                make_text_response('{"value": 7}'),
+                make_text_response("not_an_int"),
+                make_text_response(7),
             ]
         )
 
@@ -560,7 +567,7 @@ class TestAgentWithToolCalls:
         mock = MockCompletionHandler(
             [
                 make_tool_call_response(
-                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
+                    "add", '{"a": 2, "b": 3}'
                 ),
                 make_text_response("The answer is 5"),
             ]
@@ -586,9 +593,9 @@ class TestAgentWithRetryHandler:
         mock = MockCompletionHandler(
             [
                 # First attempt: invalid result for int
-                make_text_response('"not_an_int"'),
+                make_text_response("not_an_int"),
                 # Retry: valid
-                make_text_response('{"value": 42}'),
+                make_text_response(42),
             ]
         )
 
@@ -1226,7 +1233,7 @@ def test_template_formatting_scoped():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1341,7 +1348,7 @@ def test_staticmethod_lexical_scope_formatting():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
