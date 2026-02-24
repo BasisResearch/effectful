@@ -270,8 +270,9 @@ def test_agent_tool_names_are_openai_compatible_integration():
     agent = _ToolNameAgent()
     template = agent.ask
     tools = template.tools
+    expected_helper_tool_name = f"self__{agent.helper.__name__}"
     assert tools
-    assert "self__helper" in tools
+    assert expected_helper_tool_name in tools
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
 
     # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
