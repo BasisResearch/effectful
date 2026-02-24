@@ -9,6 +9,7 @@ import functools
 import inspect
 import json
 import os
+import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -177,6 +178,18 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+class _ToolNameAgent(Agent):
+    @Template.define
+    def helper(self) -> str:
+        """Return the literal string 'ok'."""
+        raise NotHandled
+
+    @Template.define
+    def ask(self, prompt: str) -> str:
+        """Answer briefly: {prompt}"""
+        raise NotHandled
+
+
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
@@ -250,6 +263,39 @@ class TestLiteLLMProvider:
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
+
+
+@requires_openai
+def test_agent_tool_names_are_openai_compatible_integration():
+    template = _ToolNameAgent().ask
+    tools = template.tools
+    tool_specs = [
+        Encodable.define(type(tool), tools).encode(tool) for tool in tools.values()
+    ]
+
+    tool_names: list[str] = []
+    for spec in tool_specs:
+        function = spec["function"] if isinstance(spec, dict) else spec.function
+        name = function["name"] if isinstance(function, dict) else function.name
+        tool_names.append(name)
+
+    assert tool_names
+    assert "self__helper" in tool_names
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tool_names)
+
+    response = litellm.completion(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": "Reply with the word ok. Do not call tools.",
+            }
+        ],
+        tools=tool_specs,
+        tool_choice="none",
+        max_tokens=16,
+    )
+    assert response is not None
 
 
 def smiley_face() -> Image.Image:

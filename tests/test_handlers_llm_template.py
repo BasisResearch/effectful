@@ -3,7 +3,6 @@
 import collections
 import dataclasses
 import inspect
-import re
 from dataclasses import dataclass
 
 import pytest
@@ -401,35 +400,6 @@ class TestSystemPromptInvariant:
 
         for messages in mock.received_messages:
             assert_single_system_message_first(messages)
-
-    def test_agent_tool_names_sent_to_provider_are_openai_compatible(self):
-        observed_tool_names: list[str] = []
-
-        class CaptureToolsHandler(ObjectInterpretation):
-            @implements(completion)
-            def _completion(self, model, messages=None, tools=None, **kwargs):
-                nonlocal observed_tool_names
-                observed_tool_names = []
-                for tool in tools or []:
-                    function = (
-                        tool["function"] if isinstance(tool, dict) else tool.function
-                    )
-                    name = (
-                        function["name"]
-                        if isinstance(function, dict)
-                        else function.name
-                    )
-                    observed_tool_names.append(name)
-                return make_text_response("ok")
-
-        with handler(LiteLLMProvider()), handler(CaptureToolsHandler()):
-            _DesignerAgent().outer("demo")
-
-        assert observed_tool_names
-        assert "self__nested_tool" in observed_tool_names
-        assert all(
-            re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in observed_tool_names
-        )
 
     def test_retry_flow_has_one_system_message_per_attempt(self):
         class RetryAgent(Agent):
