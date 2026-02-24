@@ -71,7 +71,6 @@ test = [
     "ruff",
     "nbval",
     "nbqa",
-    "pytest-timeout",
 ]
 
 [dependency-groups]
