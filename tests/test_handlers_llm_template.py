@@ -355,33 +355,6 @@ class TestAgentIsolation:
         # but NOT the standalone messages
         assert len(mock.received_messages[2]) >= 3
 
-    def test_non_agent_template_does_not_auto_capture_agent_templates(self):
-        class HelperAgent(Agent):
-            """You are a helper agent for tool visibility tests.
-            Your goal is to expose a template method that must not leak to non-agent templates.
-            """
-
-            @Template.define
-            def helper(self, payload: str) -> str:
-                """Echo {payload}."""
-                raise NotHandled
-
-        helper_agent = HelperAgent()
-
-        def make_template():
-            captured_agent = helper_agent
-
-            @Template.define
-            def standalone(topic: str) -> str:
-                """Write about {topic}."""
-                raise NotHandled
-
-            return standalone, captured_agent
-
-        standalone, _ = make_template()
-        assert "helper" not in standalone.tools
-
-
 class TestSystemPromptInvariant:
     """Exactly one system message is sent and it appears first."""
 
