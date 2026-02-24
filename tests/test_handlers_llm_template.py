@@ -3,6 +3,7 @@
 import collections
 import dataclasses
 import inspect
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -388,7 +389,7 @@ class TestSystemPromptInvariant:
     def test_nested_agent_flow_has_one_system_message_per_round(self):
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -400,6 +401,35 @@ class TestSystemPromptInvariant:
 
         for messages in mock.received_messages:
             assert_single_system_message_first(messages)
+
+    def test_agent_tool_names_sent_to_provider_are_openai_compatible(self):
+        observed_tool_names: list[str] = []
+
+        class CaptureToolsHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, tools=None, **kwargs):
+                nonlocal observed_tool_names
+                observed_tool_names = []
+                for tool in tools or []:
+                    function = (
+                        tool["function"] if isinstance(tool, dict) else tool.function
+                    )
+                    name = (
+                        function["name"]
+                        if isinstance(function, dict)
+                        else function.name
+                    )
+                    observed_tool_names.append(name)
+                return make_text_response("ok")
+
+        with handler(LiteLLMProvider()), handler(CaptureToolsHandler()):
+            _DesignerAgent().outer("demo")
+
+        assert observed_tool_names
+        assert "self__nested_tool" in observed_tool_names
+        assert all(
+            re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in observed_tool_names
+        )
 
     def test_retry_flow_has_one_system_message_per_attempt(self):
         class RetryAgent(Agent):
@@ -634,7 +664,7 @@ class TestNestedTemplateCalling:
         """The scenario from issue #560 completes without error."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("check passed"),
                 make_text_response("all good"),
             ]
@@ -650,7 +680,7 @@ class TestNestedTemplateCalling:
         """Inner template's messages are absent from agent.__history__."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -674,7 +704,7 @@ class TestNestedTemplateCalling:
         not the outer template's in-flight messages."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -698,7 +728,7 @@ class TestNestedTemplateCalling:
                 # First call: direct answer (no tool call)
                 make_text_response("first"),
                 # Second call: tool → nested → final
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("second"),
             ]
@@ -724,7 +754,7 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 # First call: tool → nested → final
-                make_tool_call_response("self.nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("first"),
                 # Second call: direct answer

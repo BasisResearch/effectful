@@ -228,7 +228,7 @@ class Template[**P, T](Tool[P, T]):
                 for cls in type(obj).__mro__:
                     for attr_name in vars(cls):
                         if isinstance(getattr(obj, attr_name), Tool):
-                            result[f"{name}.{attr_name}"] = getattr(obj, attr_name)
+                            result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
 
         # Deduplicate by tool identity and remove self-references.
         #
