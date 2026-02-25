@@ -211,30 +211,6 @@ def _pydantic_type_image(ty: type[Image.Image]):
     ]
 
 
-def _format_callable_type(callable_type: type[Callable]) -> str:
-    """Format a Callable type annotation as a string for LLM instructions."""
-    args = typing.get_args(callable_type)
-    if not args:
-        return "Callable"
-
-    # Callable[[arg1, arg2, ...], return_type]
-    if len(args) >= 2:
-        param_types = args[0]
-        return_type = args[-1]
-
-        if param_types is ...:
-            params_str = "..."
-        elif isinstance(param_types, list | tuple):
-            params_str = ", ".join(getattr(t, "__name__", str(t)) for t in param_types)
-        else:
-            params_str = str(param_types)
-
-        return_str = getattr(return_type, "__name__", str(return_type))
-        return f"Callable[[{params_str}], {return_str}]"
-
-    return str(callable_type)
-
-
 class SynthesizedFunction(pydantic.BaseModel):
     """Structured output for function synthesis.
 
@@ -255,7 +231,24 @@ def _create_typed_synthesized_function(
     Uses pydantic.create_model to ensure the description is included in the JSON schema
     sent to the LLM, informing it of the expected function signature.
     """
-    type_signature = _format_callable_type(callable_type)
+    if not typing.get_args(callable_type):
+        type_signature = "Callable"
+    # Callable[[arg1, arg2, ...], return_type]
+    elif len(typing.get_args(callable_type)) >= 2:
+        param_types = typing.get_args(callable_type)[0]
+        return_type = typing.get_args(callable_type)[-1]
+
+        if param_types is ...:
+            params_str = "..."
+        elif isinstance(param_types, list | tuple):
+            params_str = ", ".join(getattr(t, "__name__", str(t)) for t in param_types)
+        else:
+            params_str = str(param_types)
+
+        return_str = getattr(return_type, "__name__", str(return_type))
+        type_signature = f"Callable[[{params_str}], {return_str}]"
+    else:
+        type_signature = str(callable_type)
 
     description = f"""Given the specification above, generate a Python function satisfying the following specification and type signature.
 
