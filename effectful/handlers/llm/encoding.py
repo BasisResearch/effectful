@@ -690,6 +690,18 @@ class TypeEncodable(Encodable[type, SynthesizedType]):
         synthesized_type.__synthesized__ = encoded_value  # type: ignore[attr-defined]
         synthesized_type.__module__ = module_name
 
+        # Set __firstlineno__ for Python 3.13+ (inspect.getsource requires it).
+        # Must be set AFTER __module__ since __module__ assignment can clear it.
+        firstlineno = next(
+            (
+                n.lineno
+                for n in ast.walk(ast.parse(module_code))
+                if isinstance(n, ast.ClassDef) and n.name == type_name
+            ),
+            1,
+        )
+        synthesized_type.__firstlineno__ = firstlineno  # type: ignore[attr-defined]
+
         return synthesized_type
 
     def serialize(
