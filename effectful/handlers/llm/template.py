@@ -1,14 +1,3 @@
-<<<<<<< HEAD
-import inspect
-import types
-import typing
-from collections import ChainMap
-from collections.abc import Callable, Mapping, MutableMapping
-from dataclasses import dataclass
-from typing import Annotated, Any
-
-from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Operation
-=======
 import abc
 import functools
 import inspect
@@ -21,7 +10,6 @@ from collections.abc import Callable, Mapping, MutableMapping
 from typing import Annotated, Any
 
 from effectful.ops.types import Annotation, Operation
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
 
 class _IsRecursiveAnnotation(Annotation):
@@ -120,14 +108,6 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
-<<<<<<< HEAD
-@dataclass
-class _BoundInstance[T]:
-    instance: T
-
-
-=======
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -188,8 +168,6 @@ class Template[**P, T](Tool[P, T]):
     """
 
     __context__: ChainMap[str, Any]
-<<<<<<< HEAD
-=======
     __system_prompt__: str
 
     @classmethod
@@ -228,7 +206,6 @@ class Template[**P, T](Tool[P, T]):
                 f"variables {list(sorted(unresolved))} that are not in the signature "
                 f"{{{template.__signature__}}} or lexical scope."
             )
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
     @property
     def __prompt_template__(self) -> str:
@@ -242,25 +219,6 @@ class Template[**P, T](Tool[P, T]):
         is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
-<<<<<<< HEAD
-            if obj is self and not is_recursive:
-                continue
-            # Collect tools in context
-            if isinstance(obj, Tool):
-                result[name] = obj
-
-            if isinstance(obj, staticmethod) and isinstance(obj.__func__, Tool):
-                result[name] = obj.__func__
-
-            # Collect tools as methods on any bound instances
-            if isinstance(obj, _BoundInstance):
-                for instance_name in obj.instance.__dir__():
-                    if instance_name.startswith(INSTANCE_OP_PREFIX):
-                        continue
-                    instance_obj = getattr(obj.instance, instance_name)
-                    if isinstance(instance_obj, Tool):
-                        result[instance_name] = instance_obj
-=======
             # Collect tools directly in context
             if isinstance(obj, Tool):
                 result[name] = obj
@@ -285,7 +243,6 @@ class Template[**P, T](Tool[P, T]):
         for name, tool in tuple(result.items()):
             if tool2name[tool] != name or (tool is self and not is_recursive):
                 del result[name]
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
         return result
 
@@ -297,10 +254,6 @@ class Template[**P, T](Tool[P, T]):
 
         result = super().__get__(instance, owner)
         self_param_name = list(self.__signature__.parameters.keys())[0]
-<<<<<<< HEAD
-        self_context = {self_param_name: _BoundInstance(instance)}
-        result.__context__ = self.__context__.new_child(self_context)
-=======
         result.__context__ = self.__context__.new_child({self_param_name: instance})
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
@@ -313,7 +266,6 @@ class Template[**P, T](Tool[P, T]):
                 )
                 if part
             )
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         return result
 
     @classmethod
@@ -334,30 +286,6 @@ class Template[**P, T](Tool[P, T]):
         frame = frame.f_back
         assert frame is not None
 
-<<<<<<< HEAD
-        # Check if we're in a class definition by looking for __qualname__
-        qualname = frame.f_locals.get("__qualname__")
-        n_frames = 1
-        if qualname is not None:
-            name_components = qualname.split(".")
-            for name in reversed(name_components):
-                if name == "<locals>":
-                    break
-                n_frames += 1
-
-        contexts = []
-        for offset in range(n_frames):
-            assert frame is not None
-            locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-                frame.f_locals
-            )
-            globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-                frame.f_globals
-            )
-            contexts.append(locals_proxy)
-            frame = frame.f_back
-
-=======
         # Skip class body frames: in Python, class bodies are not lexical
         # scopes for methods, so their locals should not be captured.
         qualname = frame.f_locals.get("__qualname__")
@@ -393,40 +321,10 @@ class Template[**P, T](Tool[P, T]):
                     frame = frame.f_back
                     break
                 frame = frame.f_back
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         contexts.append(globals_proxy)
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
-<<<<<<< HEAD
-
-        op = super().define(default, *args, **kwargs)
-        op.__context__ = context  # type: ignore[attr-defined]
-        return typing.cast(Template[Q, V], op)
-
-    def replace(
-        self,
-        signature: inspect.Signature | None = None,
-        prompt_template: str | None = None,
-        name: str | None = None,
-    ) -> "Template":
-        signature = signature or self.__signature__
-        prompt_template = prompt_template or self.__prompt_template__
-        name = name or self.__name__
-
-        if prompt_template:
-
-            def default(*args, **kwargs):
-                raise NotHandled
-
-            default.__doc__ = prompt_template
-        else:
-            default = self.__default__
-
-        op = Template(signature, name, default)
-        op.__context__ = self.__context__
-        return op
-=======
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
         mod = inspect.getmodule(_fn)
@@ -494,4 +392,3 @@ class Agent(abc.ABC):
             )
             sp.__set_name__(cls, "__system_prompt__")
             cls.__system_prompt__ = sp
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8

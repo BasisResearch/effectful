@@ -1,66 +1,26 @@
 {
-<<<<<<< HEAD
-=======
   "id": "chatcmpl-D9hhLJOHKOw4k9zRbHsj0gQ83wHo4",
   "created": 1771205299,
   "model": "gpt-5-nano-2025-08-07",
   "object": "chat.completion",
   "system_fingerprint": null,
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-<<<<<<< HEAD
-        "annotations": [],
-        "content": "{\"value\":{\"title\":\"The Spark Within the Spire\",\"rating\":4,\"summary\":\"The Spark Within the Spire follows a young student who discovers latent magical powers and earns a place at a venerable wizarding academy. Across his first year, he navigates challenging classes, budding friendships, and a growing sense of destiny as a looming threat quietly unfolds. The book blends classic wizard-school charm with inventive magic, delivering moments of wonder, humor, and quiet courage. While it uses familiar tropes, its strong character work and brisk pace make it a heartfelt coming-of-age tale with enough fresh twists to stay compelling for readers who enjoy magical school adventures.\"}}",
-=======
         "content": "{\"title\":\"Harry Potter and the Philosopher's Stone\",\"rating\":5,\"summary\":\"A wonderfully inviting entry to a long-running fantasy saga. It follows a boy who discovers he is a wizard and begins at Hogwarts, where magic, friendship, and danger intertwine. The book shines with imaginative world-building, endearing characters, and themes of courage, loyalty, and self-discovery. While aimed at younger readers, its charm and sense of wonder appeal to all ages and set the standard for modern fantasy.\"}",
         "role": "assistant",
         "tool_calls": null,
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
-<<<<<<< HEAD
-        "role": "assistant",
-        "tool_calls": null
-=======
         "annotations": []
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
       },
       "provider_specific_fields": {}
     }
   ],
-<<<<<<< HEAD
-  "created": 1767182755,
-  "id": "chatcmpl-CspFbHJXFBDmP4RrqnjVI0CDIiePi",
-  "model": "gpt-5-nano-2025-08-07",
-  "object": "chat.completion",
-  "service_tier": "default",
-  "system_fingerprint": null,
-  "usage": {
-    "completion_tokens": 2192,
-    "completion_tokens_details": {
-      "accepted_prediction_tokens": 0,
-      "audio_tokens": 0,
-      "image_tokens": null,
-      "reasoning_tokens": 2048,
-      "rejected_prediction_tokens": 0,
-      "text_tokens": null
-    },
-    "prompt_tokens": 526,
-    "prompt_tokens_details": {
-      "audio_tokens": 0,
-      "cached_tokens": 0,
-      "image_tokens": null,
-      "text_tokens": null
-    },
-    "total_tokens": 2718
-  }
-=======
   "usage": {
     "completion_tokens": 1268,
     "prompt_tokens": 923,
@@ -81,5 +41,4 @@
     }
   },
   "service_tier": "default"
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 }

@@ -1,20 +1,5 @@
 """Tests for LLM handlers and providers.
 This module tests the functionality from build/main.py and build/llm.py,
-<<<<<<< HEAD
-breaking down individual components like LiteLLMProvider, LLMLoggingHandler,
-ProgramSynthesis, and sampling strategies.
-"""
-
-import functools
-import json
-import logging
-import os
-from collections.abc import Callable
-from enum import Enum
-from pathlib import Path
-
-import pytest
-=======
 breaking down individual components like LiteLLMProvider,
 ProgramSynthesis, and sampling strategies.
 """
@@ -34,21 +19,11 @@ import pytest
 import tenacity
 from litellm import ChatCompletionMessageToolCall
 from litellm.caching.caching import Cache
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 from litellm.files.main import ModelResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
-<<<<<<< HEAD
-from effectful.handlers.llm import Template
-from effectful.handlers.llm.providers import (
-    LiteLLMProvider,
-    LLMLoggingHandler,
-    completion,
-)
-from effectful.handlers.llm.synthesis import ProgramSynthesis, SynthesisError
-=======
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
@@ -65,7 +40,6 @@ from effectful.handlers.llm.completions import (
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -88,14 +62,8 @@ requires_anthropic = pytest.mark.skipif(
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
-<<<<<<< HEAD
-# ============================================================================
-
-
-=======
 
 # ============================================================================
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 # Test Fixtures and Mock Data
 # ============================================================================
 def retry_on_error(error: type[Exception], n: int):
@@ -117,21 +85,13 @@ def retry_on_error(error: type[Exception], n: int):
 
 class ReplayLiteLLMProvider(LiteLLMProvider):
     test_id: str
-<<<<<<< HEAD
-=======
     call_count = 0
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
     def __init__(self, request: pytest.FixtureRequest, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.test_id = request.node.nodeid
         self.test_id = self.test_id.replace("/", "_").replace(":", "_")
 
-<<<<<<< HEAD
-    @implements(completion)
-    def _completion(self, *args, **kwargs):
-        path = FIXTURE_DIR / f"{self.test_id}.json"
-=======
     def call_id(self):
         call_id = f"_{self.call_count}" if self.call_count > 0 else ""
         self.call_count += 1
@@ -140,24 +100,16 @@ class ReplayLiteLLMProvider(LiteLLMProvider):
     @implements(completion)
     def _completion(self, *args, **kwargs):
         path = FIXTURE_DIR / f"{self.test_id}{self.call_id()}.json"
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         if not REBUILD_FIXTURES:
             if not path.exists():
                 raise RuntimeError(f"Missing replay fixture: {path}")
             with path.open() as f:
                 result = ModelResponse.model_validate(json.load(f))
                 return result
-<<<<<<< HEAD
-        result = fwd(self.model_name, *args, **(self.config | kwargs))
-        path.parent.mkdir(exist_ok=True, parents=True)
-        with path.open("w") as f:
-            json.dump(result.model_dump(), f, indent=2, sort_keys=True)
-=======
         result = fwd(*args, **kwargs)
         path.parent.mkdir(exist_ok=True, parents=True)
         with path.open("w") as f:
             f.write(result.model_dump_json(indent=2))
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         return result
 
 
@@ -168,11 +120,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     def __init__(self, max_calls: int):
         self.max_calls = max_calls
 
-<<<<<<< HEAD
-    @implements(completion)
-=======
     @implements(call_assistant)
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
     def _completion(self, *args, **kwargs):
         if self.no_calls >= self.max_calls:
             raise RuntimeError(
@@ -182,11 +130,7 @@ class LimitLLMCallsHandler(ObjectInterpretation):
         return fwd()
 
 
-<<<<<<< HEAD
-class MovieGenre(str, Enum):
-=======
 class MovieGenre(StrEnum):
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
     """Movie genre classifications."""
 
     ACTION = "action"
@@ -234,8 +178,6 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
-<<<<<<< HEAD
-=======
 class _ToolNameAgent(Agent):
     @Template.define
     def helper(self) -> str:
@@ -248,7 +190,6 @@ class _ToolNameAgent(Agent):
         raise NotHandled
 
 
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
@@ -257,11 +198,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_multiple_models(self, request, model_name):
         """Test that LiteLLMProvider works with different model configurations."""
         with (
-<<<<<<< HEAD
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
-=======
             handler(ReplayLiteLLMProvider(request, model=model_name)),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -278,11 +215,7 @@ class TestLiteLLMProvider:
     def test_simple_prompt_cross_endpoint(self, request, model_name):
         """Test that ReplayLiteLLMProvider works across different API endpoints."""
         with (
-<<<<<<< HEAD
-            handler(ReplayLiteLLMProvider(request, model_name=model_name)),
-=======
             handler(ReplayLiteLLMProvider(request, model=model_name)),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -295,11 +228,7 @@ class TestLiteLLMProvider:
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-<<<<<<< HEAD
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
-=======
             handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -314,11 +243,7 @@ class TestLiteLLMProvider:
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-<<<<<<< HEAD
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
-=======
             handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -332,13 +257,7 @@ class TestLiteLLMProvider:
         # Test with temperature parameter
         with (
             handler(
-<<<<<<< HEAD
-                ReplayLiteLLMProvider(
-                    request, model_name="gpt-4o-mini", temperature=0.1
-                )
-=======
                 ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -346,68 +265,6 @@ class TestLiteLLMProvider:
             assert isinstance(result, str)
 
 
-<<<<<<< HEAD
-class TestLLMLoggingHandler:
-    """Tests for LLMLoggingHandler functionality."""
-
-    @requires_openai
-    def test_logs_requests(self, request, caplog):
-        """Test that LLMLoggingHandler properly logs LLM requests."""
-        with caplog.at_level(logging.INFO):
-            with (
-                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
-                handler(LLMLoggingHandler()),
-                handler(LimitLLMCallsHandler(max_calls=1)),
-            ):
-                result = simple_prompt("testing")
-                assert isinstance(result, str)
-
-        # Check that logging occurred
-        assert any("llm.request" in record.message for record in caplog.records)
-
-    @requires_openai
-    def test_custom_logger(self, request, caplog):
-        """Test LLMLoggingHandler with a custom logger."""
-        custom_logger = logging.getLogger("test_custom_logger")
-
-        with caplog.at_level(logging.INFO, logger="test_custom_logger"):
-            with (
-                handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
-                handler(LLMLoggingHandler(logger=custom_logger)),
-                handler(LimitLLMCallsHandler(max_calls=1)),
-            ):
-                result = simple_prompt("testing")
-                assert isinstance(result, str)
-
-        # Verify custom logger was used
-        assert any(
-            record.name == "test_custom_logger" and "llm.request" in record.message
-            for record in caplog.records
-        )
-
-
-@pytest.mark.xfail(reason="Program synthesis not implemented")
-class TestProgramSynthesis:
-    """Tests for ProgramSynthesis handler functionality."""
-
-    @pytest.mark.xfail
-    @requires_openai
-    @retry_on_error(error=SynthesisError, n=3)
-    def test_generates_callable(self, request):
-        """Test ProgramSynthesis handler generates executable code."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-4o-mini")),
-            handler(ProgramSynthesis()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            count_func = create_function("a")
-
-            assert callable(count_func)
-            # Test the generated function
-            assert count_func("banana") == 3
-            assert count_func("cherry") == 0
-            assert count_func("aardvark") == 3
-=======
 @requires_openai
 def test_agent_tool_names_are_openai_compatible_integration():
     agent = _ToolNameAgent()
@@ -429,7 +286,6 @@ def test_agent_tool_names_are_openai_compatible_integration():
 
     assert isinstance(result, str)
     assert result
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
 
 def smiley_face() -> Image.Image:
@@ -461,18 +317,12 @@ def categorise_image(image: Image.Image) -> str:
 @requires_openai
 def test_image_input(request):
     with (
-<<<<<<< HEAD
-        handler(ReplayLiteLLMProvider(request, model_name="gpt-4o")),
-=======
         handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
 
 
-<<<<<<< HEAD
-=======
 class ImageDescription(BaseModel):
     """Description of a set of images."""
 
@@ -517,7 +367,6 @@ def test_list_image_input(request):
     assert result.count == 2
 
 
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 class BookReview(BaseModel):
     """A book review with rating and summary."""
 
@@ -538,11 +387,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-<<<<<<< HEAD
-            handler(ReplayLiteLLMProvider(request, model_name="gpt-5-nano")),
-=======
             handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -554,8 +399,6 @@ class TestPydanticBaseModelReturn:
             assert 1 <= review.rating <= 5
             assert isinstance(review.summary, str)
             assert len(review.summary) > 0
-<<<<<<< HEAD
-=======
 
 
 def test_litellm_caching_integration(request):
@@ -2195,4 +2038,3 @@ class TestAgentCrossTemplateRecovery:
         # Only messages from the successful call should be in history
         assert len(agent.__history__) >= 2
         assert len(agent.__history__) > history_after_error
->>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
