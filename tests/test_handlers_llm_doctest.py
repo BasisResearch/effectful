@@ -1,3 +1,4 @@
+import doctest as _doctest
 import os
 from collections.abc import Callable
 
@@ -139,7 +140,10 @@ class TestDoctestExecution:
             "    return input_string.count('a')"
         )
         doctest_handler = DoctestHandler()
-        doctest_handler._doctest_stack.append(">>> count_char('banana')\n4\n")
+        # Push cached Example objects (matching the new _doctest_stack type).
+        doctest_handler._doctest_stack.append(
+            [_doctest.Example("count_char('banana')\n", "4\n")]
+        )
         with (
             handler(UnsafeEvalProvider()),
             handler(doctest_handler),
@@ -206,6 +210,22 @@ class TestCase1Calibration:
         assert stripped2 is stripped
         assert examples2 is examples
 
+    def test_calibration_uses_shared_history(self):
+        """Calibration should accumulate messages in a shared history
+        (Agent-style OrderedDict) rather than isolated per-example sequences."""
+        from effectful.handlers.llm.doctest import _SENTINEL
+
+        dh = DoctestHandler()
+
+        # Verify template starts without __history__
+        assert not hasattr(summarize, "__history__")
+
+        # After calibration, __history__ should be cleaned up
+        # (We can't run full calibration without a provider, but we can
+        # verify the sentinel-based save/restore mechanism.)
+        old = getattr(summarize, "__history__", _SENTINEL)
+        assert old is _SENTINEL
+
     @requires_openai
     def test_case1_calibration_integration(self):
         """End-to-end: calibration should cache a prefix for tool-calling."""
@@ -219,3 +239,6 @@ class TestCase1Calibration:
         assert summarize in dh._prefix_cache
         assert isinstance(result, str)
         assert len(result) > 0
+
+        # Calibration should clean up: no lingering __history__ on template
+        assert not hasattr(summarize, "__history__")

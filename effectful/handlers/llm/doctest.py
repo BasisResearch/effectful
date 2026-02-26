@@ -20,8 +20,6 @@ import ast
 import collections
 import collections.abc
 import doctest
-import inspect
-import textwrap
 import typing
 from collections.abc import Mapping
 from typing import Any
@@ -31,12 +29,13 @@ from effectful.handlers.llm.completions import (
     _make_message,
     append_message,
     call_user,
-    get_message_sequence,
 )
 from effectful.handlers.llm.evaluation import test
 from effectful.handlers.llm.template import Template
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
+
+_SENTINEL = object()
 
 # ---------------------------------------------------------------------------
 # Utility
@@ -89,8 +88,8 @@ class DoctestHandler(ObjectInterpretation):
     # Case 1: calibration conversation prefix, cached per template.
     _prefix_cache: dict[Template, list[Message]]
 
-    # Case 2: per-call formatted doctest source for test() validation.
-    _doctest_stack: list[str]
+    # Case 2: per-call cached doctest examples for test() validation.
+    _doctest_stack: list[list[doctest.Example]]
 
     # Case 1: prefix messages to inject before the next call_user.
     _pending_prefix: list[Message] | None
@@ -129,12 +128,8 @@ class DoctestHandler(ObjectInterpretation):
             return fwd()
 
         if _is_callable_return(template):
-            # Case 2 – code generation: push formatted doctests for test().
-            bound_args = inspect.signature(template).bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            env = template.__context__.new_child(bound_args.arguments)
-            formatted = textwrap.dedent(template.__prompt_template__).format_map(env)
-            self._doctest_stack.append(formatted)
+            # Case 2 – code generation: push cached examples for test().
+            self._doctest_stack.append(examples)
             return fwd()
 
         # Case 1 – tool-calling: calibration + prefix.
@@ -182,24 +177,22 @@ class DoctestHandler(ObjectInterpretation):
     def _run_from_stack(self, obj: object, ctx: typing.Mapping[str, Any]) -> None:
         if not self._doctest_stack:
             return
-        doctest_source = self._doctest_stack.pop()
-        if not doctest_source.strip():
+        examples = self._doctest_stack.pop()
+        if not examples:
             return
 
-        globs = dict(ctx)
-        parser = doctest.DocTestParser()
-        test_case = parser.get_doctest(
-            doctest_source,
-            globs,
-            name=(
-                f"{getattr(obj, '__name__', obj.__class__.__name__)}"
-                ".__template_doctest__"
-            ),
+        name = (
+            f"{getattr(obj, '__name__', obj.__class__.__name__)}"
+            ".__template_doctest__"
+        )
+        test_case = doctest.DocTest(
+            examples=examples,
+            globs=dict(ctx),
+            name=name,
             filename=None,
             lineno=0,
+            docstring=None,
         )
-        if not test_case.examples:
-            return
 
         output: list[str] = []
         runner = doctest.DocTestRunner(verbose=False)
@@ -220,16 +213,28 @@ class DoctestHandler(ObjectInterpretation):
         template: Template,
         examples: list[doctest.Example],
     ) -> None:
-        """Run a calibration loop for tool-calling templates.
+        """Run calibration as a mini ReAct agent with Agent-style history.
 
-        For each doctest example that calls *template*, the template is
-        invoked with the example's arguments (prompt stripped of doctests).
-        All conversation turns — including any incorrect attempts — are
-        accumulated into a prefix that is cached for future calls, so the
-        LLM can learn from the full experience.
+        Reuses the same persistent-history mechanism as :class:`Agent`: a
+        shared :class:`~collections.OrderedDict` bound to
+        ``template.__history__`` that accumulates messages across calls.
+        Each doctest example is evaluated in order; the LLM sees all prior
+        conversation turns (including any corrective feedback for incorrect
+        answers) when processing subsequent examples, enabling it to learn
+        from the full experience.
         """
-        prefix_messages: list[Message] = []
         self._calibrating.add(template)
+
+        # Agent-style history: a single OrderedDict shared across all
+        # calibration examples, exactly like Agent.__history__.
+        shared_history: collections.OrderedDict[str, Message] = (
+            collections.OrderedDict()
+        )
+
+        # Temporarily bind the shared history to the template, using the
+        # same mechanism Agent.__get__ uses.
+        old_history = getattr(template, "__history__", _SENTINEL)
+        template.__history__ = shared_history  # type: ignore[attr-defined]
 
         try:
             for example in examples:
@@ -239,44 +244,46 @@ class DoctestHandler(ObjectInterpretation):
                 if call_args is None or call_kwargs is None:
                     continue  # not a call to this template
 
-                # Run in an isolated message sequence.
-                cal_msgs: collections.OrderedDict[str, Message] = (
-                    collections.OrderedDict()
-                )
-                with handler({get_message_sequence: lambda: cal_msgs}):
-                    result = template(*call_args, **call_kwargs)
+                # Call the template; the provider reads template.__history__
+                # and writes back after completion, so messages naturally
+                # accumulate in shared_history.
+                result = template(*call_args, **call_kwargs)
 
-                # Check output; append corrective feedback if wrong.
+                # Check output; append corrective feedback if wrong so
+                # subsequent examples benefit from the correction.
                 checker = doctest.OutputChecker()
                 actual = repr(result) + "\n"
-                # example.options is dict[int, bool]; reduce to int flags.
                 optionflags = 0
                 for flag, val in example.options.items():
                     if val:
                         optionflags |= flag
                 if not checker.check_output(example.want, actual, optionflags):
-                    append_message(
-                        _make_message(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"That was incorrect. "
-                                    f"Expected {example.want.strip()!r} "
-                                    f"but got {repr(result)!r}."
-                                ),
-                            }
-                        )
+                    feedback = _make_message(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"That was incorrect. "
+                                f"Expected {example.want.strip()!r} "
+                                f"but got {repr(result)!r}."
+                            ),
+                        }
                     )
-
-                # Keep user/assistant turns (skip system messages since
-                # call_system will re-add it during the actual call).
-                prefix_messages.extend(
-                    m for m in cal_msgs.values() if m["role"] != "system"
-                )
+                    shared_history[feedback["id"]] = feedback
         finally:
             self._calibrating.discard(template)
+            # Restore original state.
+            if old_history is _SENTINEL:
+                try:
+                    del template.__history__  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
+            else:
+                template.__history__ = old_history  # type: ignore[attr-defined]
 
-        self._prefix_cache[template] = prefix_messages
+        # Cache non-system messages as the prefix for future calls.
+        self._prefix_cache[template] = [
+            m for m in shared_history.values() if m["role"] != "system"
+        ]
 
 
 def _parse_template_call(
