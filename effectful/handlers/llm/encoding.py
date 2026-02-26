@@ -597,14 +597,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
-class SynthesisError(Exception):
-    """Raised when type synthesis fails."""
-
-    def __init__(self, message: str, code: str | None = None):
-        super().__init__(message)
-        self.code = code
-
-
 class _PyMappingProxyObject(ctypes.Structure):
     """Internal ctypes structure to access the underlying dict of a mappingproxy."""
 
@@ -704,25 +696,19 @@ class TypeEncodable(Encodable[type, SynthesizedType]):
             code_obj = evaluation.compile(tree, filename)
             evaluation.exec(code_obj, g)
         except SyntaxError as exc:
-            raise SynthesisError(
-                f"Syntax error in generated code: {exc}", module_code
-            ) from exc
-        except Exception as exc:
-            raise SynthesisError(f"Evaluation failed: {exc!r}", module_code) from exc
+            raise ValueError(f"Syntax error in generated code: {exc}") from exc
 
         if type_name not in g:
-            raise SynthesisError(
+            raise ValueError(
                 f"Type '{type_name}' not found after execution. "
-                f"Available names: {[k for k in g.keys() if not k.startswith('_')]}",
-                module_code,
+                f"Available names: {[k for k in g.keys() if not k.startswith('_')]}"
             )
 
         synthesized_type = g[type_name]
 
         if not isinstance(synthesized_type, type):
-            raise SynthesisError(
-                f"'{type_name}' is not a type, got {type(synthesized_type).__name__}",
-                module_code,
+            raise ValueError(
+                f"'{type_name}' is not a type, got {type(synthesized_type).__name__}"
             )
 
         # Attach source code and module name

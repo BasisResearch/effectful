@@ -620,9 +620,7 @@ def mypy_type_check(
     if isinstance(last, ast.FunctionDef):
         func_name = last.name
         tc_func_name = (
-            rename_map.get(func_name, func_name)
-            if colliding_names
-            else func_name
+            rename_map.get(func_name, func_name) if colliding_names else func_name
         )
         param_types = expected_params
         expected_callable_type: type = typing.cast(

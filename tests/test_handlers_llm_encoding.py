@@ -21,7 +21,6 @@ from PIL import Image
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
-    SynthesisError,
     SynthesizedFunction,
     SynthesizedType,
 )
@@ -686,11 +685,6 @@ def test_callable_encode_no_source_no_docstring():
 # Type: roundtrip, type_check pass/fail, serialize/deserialize
 # ============================================================================
 
-# NOTE: RestrictedPython rejects __firstlineno__ injection and underscore-prefixed
-# names used in class synthesis. Type synthesis tests use UnsafeEvalProvider only.
-
-_UNSAFE_PROVIDER = pytest.param(UnsafeEvalProvider(), id="unsafe")
-
 
 class SimplePoint:
     x: int
@@ -709,10 +703,11 @@ class Greeter:
 # --- pass cases: type_check should succeed ---
 
 
-def test_type_encode_decode_simple_class():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_encode_decode_simple_class(eval_provider):
     """Roundtrip encode/decode of a simple class with typed attributes."""
     enc = Encodable.define(type)
-    with handler(UnsafeEvalProvider()):
+    with handler(eval_provider):
         decoded = enc.decode(enc.encode(SimplePoint))
     assert isinstance(decoded, type)
     assert decoded.__name__ == "SimplePoint"
@@ -721,20 +716,22 @@ def test_type_encode_decode_simple_class():
     assert obj.y == 2
 
 
-def test_type_decode_valid_class_code():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_valid_class_code(eval_provider):
     """Decode hand-crafted SynthesizedType with valid class code."""
     code = SynthesizedType(
         type_name="Adder",
         module_code="class Adder:\n    def add(self, a: int, b: int) -> int:\n        return a + b\n",
     )
     enc = Encodable.define(type)
-    with handler(UnsafeEvalProvider()):
+    with handler(eval_provider):
         decoded = enc.decode(code)
     assert decoded.__name__ == "Adder"
     assert decoded().add(3, 4) == 7
 
 
-def test_type_decode_class_with_context():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_class_with_context(eval_provider):
     """Decode a class that references a type from lexical context."""
     code = SynthesizedType(
         type_name="ChildPoint",
@@ -757,33 +754,35 @@ def test_type_decode_class_with_context():
 
     ctx = {"BasePoint": BasePoint}
     enc = Encodable.define(type, ctx)
-    with handler(UnsafeEvalProvider()):
+    with handler(eval_provider):
         decoded = enc.decode(code)
     obj = decoded(1, 2, 3)
     assert obj.x == 1 and obj.y == 2 and obj.z == 3
     assert isinstance(obj, BasePoint)
 
 
-def test_type_full_pipeline():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_full_pipeline(eval_provider):
     """Full encode->serialize->deserialize->decode pipeline."""
     enc = Encodable.define(type)
     encoded = enc.encode(Greeter)
     serialized = enc.serialize(encoded)
     deserialized = enc.deserialize(serialized[0]["text"])
-    with handler(UnsafeEvalProvider()):
+    with handler(eval_provider):
         decoded = enc.decode(deserialized)
     assert isinstance(decoded, type)
     assert decoded().hello() == "world"
 
 
-def test_type_inspect_getsource_works():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_inspect_getsource_works(eval_provider):
     """inspect.getsource() works on decoded synthesized types."""
     code = SynthesizedType(
         type_name="Greeter",
         module_code="class Greeter:\n    def hello(self) -> str:\n        return 'world'\n",
     )
     enc = Encodable.define(type)
-    with handler(UnsafeEvalProvider()):
+    with handler(eval_provider):
         decoded = enc.decode(code)
     source = inspect.getsource(decoded)
     assert "class Greeter" in source
@@ -795,66 +794,71 @@ def test_type_inspect_getsource_works():
 
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
 def test_type_decode_syntax_error(eval_provider):
-    """Syntax error in module_code raises SynthesisError."""
+    """Syntax error in module_code raises ValueError."""
     code = SynthesizedType(
         type_name="Bad",
         module_code="class Bad:\n    def __init__(self)  # missing colon\n        pass\n",
     )
     enc = Encodable.define(type)
-    with pytest.raises(SynthesisError):
+    with pytest.raises(ValueError):
         with handler(eval_provider):
             enc.decode(code)
 
 
-def test_type_decode_missing_type_name():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_missing_type_name(eval_provider):
     """Code executes but doesn't define the expected type name."""
     code = SynthesizedType(
         type_name="Expected",
         module_code="class Actual:\n    pass\n",
     )
     enc = Encodable.define(type)
-    with pytest.raises(SynthesisError, match="Expected"):
-        with handler(UnsafeEvalProvider()):
+    with pytest.raises(ValueError, match="Expected"):
+        with handler(eval_provider):
             enc.decode(code)
 
 
-def test_type_decode_not_a_type():
-    """Code that doesn't define a class is rejected by type_check or post-exec check."""
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_not_a_type(eval_provider):
+    """Code that doesn't define a class is rejected by type_check."""
     code = SynthesizedType(
         type_name="MyType",
         module_code="MyType = 42\n",
     )
     enc = Encodable.define(type)
-    with pytest.raises(SynthesisError):
-        with handler(UnsafeEvalProvider()):
+    with pytest.raises(TypeError):
+        with handler(eval_provider):
             enc.decode(code)
 
 
-def test_type_decode_undefined_base_class():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_undefined_base_class(eval_provider):
     """Code references an undefined base class not in context."""
     code = SynthesizedType(
         type_name="Child",
         module_code="class Child(UndefinedBase):\n    pass\n",
     )
     enc = Encodable.define(type, {})
-    with pytest.raises(SynthesisError):
-        with handler(UnsafeEvalProvider()):
+    with pytest.raises((ValueError, TypeError)):
+        with handler(eval_provider):
             enc.decode(code)
 
 
-def test_type_decode_runtime_error_in_class_body():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_runtime_error_in_class_body(eval_provider):
     """Class body raises an error during execution."""
     code = SynthesizedType(
         type_name="Broken",
         module_code="class Broken:\n    x = 1 / 0\n",
     )
     enc = Encodable.define(type)
-    with pytest.raises(SynthesisError, match="Evaluation failed"):
-        with handler(UnsafeEvalProvider()):
+    with pytest.raises((ValueError, ZeroDivisionError)):
+        with handler(eval_provider):
             enc.decode(code)
 
 
-def test_type_decode_type_check_catches_bad_method_types():
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+def test_type_decode_type_check_catches_bad_method_types(eval_provider):
     """type_check rejects a class with mistyped method (returns str, annotation says int)."""
     code = SynthesizedType(
         type_name="BadTypes",
@@ -865,8 +869,8 @@ def test_type_decode_type_check_catches_bad_method_types():
         ),
     )
     enc = Encodable.define(type)
-    with pytest.raises((TypeError, SynthesisError)):
-        with handler(UnsafeEvalProvider()):
+    with pytest.raises(TypeError):
+        with handler(eval_provider):
             enc.decode(code)
 
 
