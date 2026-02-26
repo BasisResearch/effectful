@@ -685,6 +685,7 @@ def test_callable_encode_no_source_no_docstring():
 # Type: roundtrip, type_check pass/fail, serialize/deserialize
 # ============================================================================
 
+
 class SimplePoint:
     def make(self, x: int, y: int) -> "SimplePoint":
         self.x = x
