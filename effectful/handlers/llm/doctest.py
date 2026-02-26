@@ -116,15 +116,6 @@ class DoctestHandler(ObjectInterpretation):
 
         return pos_args, kw_args
 
-    def _get_doctests(self, template: Template) -> tuple[str, list[doctest.Example]]:
-        """Return cached ``(stripped_template, examples)`` for *template*."""
-        try:
-            return self._extraction_cache[template]
-        except KeyError:
-            result = self.extract_doctests(template.__prompt_template__)
-            self._extraction_cache[template] = result
-            return result
-
     @contextlib.contextmanager
     def _bind_history(
         self,
@@ -158,7 +149,11 @@ class DoctestHandler(ObjectInterpretation):
         *_args: P.args,
         **_kwargs: P.kwargs,
     ) -> T:
-        _, examples = self._get_doctests(template)
+        if template not in self._extraction_cache:
+            self._extraction_cache[template] = self.extract_doctests(
+                template.__prompt_template__
+            )
+        _, examples = self._extraction_cache[template]
 
         if not examples:
             return fwd()

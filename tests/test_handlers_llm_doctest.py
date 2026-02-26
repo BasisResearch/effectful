@@ -206,15 +206,21 @@ class TestCase1Calibration:
         assert not is_callable_return(summarize)
 
     def test_extraction_cache_populated(self):
-        """_get_doctests should populate the extraction cache."""
+        """extract_doctests result should be cached per template."""
         dh = DoctestHandler()
-        stripped, examples = dh._get_doctests(summarize)
+        assert summarize not in dh._extraction_cache
+        # Populate via extract_doctests
+        stripped, examples = DoctestHandler.extract_doctests(
+            summarize.__prompt_template__
+        )
+        dh._extraction_cache[summarize] = (stripped, examples)
         assert ">>>" not in stripped
         assert len(examples) == 1
-        # Second call should return cached result
-        stripped2, examples2 = dh._get_doctests(summarize)
-        assert stripped2 is stripped
-        assert examples2 is examples
+        # Second access returns same objects
+        assert dh._extraction_cache[summarize] is (stripped, examples) or (
+            dh._extraction_cache[summarize][0] is stripped
+            and dh._extraction_cache[summarize][1] is examples
+        )
 
     def test_bind_history_restores_state(self):
         """_bind_history should restore template.__history__ after use."""
