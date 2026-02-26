@@ -233,7 +233,7 @@ class TestCase1Calibration:
 
         history = collections.OrderedDict()
         with dh._bind_history(summarize, history):
-            assert summarize.__history__ is history  # type: ignore[attr-defined]
+            assert getattr(summarize, "__history__") is history
 
         # Cleaned up after context exit
         assert not hasattr(summarize, "__history__")
