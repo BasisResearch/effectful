@@ -1,0 +1,44 @@
+{
+  "id": "chatcmpl-D3t0CeUsrUYRG4uFENTc97eSR8dNV",
+  "created": 1769818784,
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_1590f93f9d",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"module_code\":\"def is_even(number: int) -> bool:\\n    return number % 2 == 0\\n\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 32,
+    "prompt_tokens": 603,
+    "total_tokens": 635,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+}

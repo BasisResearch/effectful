@@ -10,7 +10,11 @@ import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
+<<<<<<< HEAD
 from effectful.handlers.llm.providers import LiteLLMProvider, completion
+=======
+from effectful.handlers.llm.completions import LiteLLMProvider, call_assistant
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -36,7 +40,11 @@ class LimitLLMCallsHandler(ObjectInterpretation):
     max_calls: int = 10
     call_count: int = 0
 
+<<<<<<< HEAD
     @implements(completion)
+=======
+    @implements(call_assistant)
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
     def _completion(self, *args, **kwargs):
         self.call_count += 1
         if self.call_count > self.max_calls:
@@ -98,17 +106,29 @@ def get_book_recommendation(user_preference: str) -> BookRecommendation:
 
 class TestPydanticBaseModelToolCalls:
     @pytest.mark.parametrize(
+<<<<<<< HEAD
         "model_name",
+=======
+        "model",
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         [
             pytest.param("gpt-5-nano", marks=requires_openai),
             pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
         ],
     )
+<<<<<<< HEAD
     def test_pydantic_basemodel_tool_calling(self, model_name):
         """Test that templates with tools work with Pydantic BaseModel."""
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
             handler(LiteLLMProvider(model_name=model_name)),
+=======
+    def test_pydantic_basemodel_tool_calling(self, model):
+        """Test that templates with tools work with Pydantic BaseModel."""
+        book_rec_ctx = LoggingBookRecommendationInterpretation()
+        with (
+            handler(LiteLLMProvider(model=model)),
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(book_rec_ctx),
         ):

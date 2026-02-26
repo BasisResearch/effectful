@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import inspect
 import types
 import typing
@@ -7,6 +8,20 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 from effectful.ops.types import INSTANCE_OP_PREFIX, Annotation, NotHandled, Operation
+=======
+import abc
+import functools
+import inspect
+import re
+import string
+import types
+import typing
+from collections import ChainMap, OrderedDict
+from collections.abc import Callable, Mapping, MutableMapping
+from typing import Annotated, Any
+
+from effectful.ops.types import Annotation, Operation
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
 
 class _IsRecursiveAnnotation(Annotation):
@@ -105,11 +120,14 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
+<<<<<<< HEAD
 @dataclass
 class _BoundInstance[T]:
     instance: T
 
 
+=======
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 class Template[**P, T](Tool[P, T]):
     """A :class:`Template` is a function that is implemented by a large language model.
 
@@ -170,6 +188,47 @@ class Template[**P, T](Tool[P, T]):
     """
 
     __context__: ChainMap[str, Any]
+<<<<<<< HEAD
+=======
+    __system_prompt__: str
+
+    @classmethod
+    def _validate_prompt(
+        cls,
+        template: "Template",
+        context: ChainMap[str, Any],
+    ) -> None:
+        """Validate that all format string variables in the docstring
+        refer to names resolvable at call time.
+
+        Each variable must be either a parameter in the signature
+        or a name captured in the lexical context.
+
+        :raises TypeError: If any format string variable cannot be resolved.
+        """
+        doc = template.__prompt_template__
+        formatter = string.Formatter()
+        param_names = set(template.__signature__.parameters.keys())
+        context_keys = set(context.keys())
+        allowed_names = param_names | context_keys
+
+        unresolved: list[str] = []
+        for _, field_name, _, _ in formatter.parse(doc):
+            if field_name is None:
+                continue
+            # Extract root identifier from compound names like
+            match = re.match(r"^(\w+)", field_name)
+            root = match.group(1) if match else field_name
+            if root not in allowed_names:
+                unresolved.append(field_name)
+
+        if unresolved:
+            raise TypeError(
+                f"Template '{template.__name__}' docstring references undefined "
+                f"variables {list(sorted(unresolved))} that are not in the signature "
+                f"{{{template.__signature__}}} or lexical scope."
+            )
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
     @property
     def __prompt_template__(self) -> str:
@@ -183,6 +242,7 @@ class Template[**P, T](Tool[P, T]):
         is_recursive = _is_recursive_signature(self.__signature__)
 
         for name, obj in self.__context__.items():
+<<<<<<< HEAD
             if obj is self and not is_recursive:
                 continue
             # Collect tools in context
@@ -200,6 +260,32 @@ class Template[**P, T](Tool[P, T]):
                     instance_obj = getattr(obj.instance, instance_name)
                     if isinstance(instance_obj, Tool):
                         result[instance_name] = instance_obj
+=======
+            # Collect tools directly in context
+            if isinstance(obj, Tool):
+                result[name] = obj
+
+            # Collect tools as methods on Agent instances in context
+            elif isinstance(obj, Agent):
+                for cls in type(obj).__mro__:
+                    for attr_name in vars(cls):
+                        if isinstance(getattr(obj, attr_name), Tool):
+                            result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
+
+        # Deduplicate by tool identity and remove self-references.
+        #
+        # The same Tool can appear under multiple names when it is both
+        # visible in the enclosing scope *and* discovered via an Agent
+        # instance's MRO.  Since Tools are hashable Operations and
+        # instance-method Tools are cached per instance, we keep only
+        # the last name for each unique tool object.  We also remove
+        # the template itself from the tool map unless it is explicitly
+        # marked as recursive (see test_template_method, test_template_method_nested_class).
+        tool2name = {tool: name for name, tool in sorted(result.items())}
+        for name, tool in tuple(result.items()):
+            if tool2name[tool] != name or (tool is self and not is_recursive):
+                del result[name]
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 
         return result
 
@@ -211,8 +297,23 @@ class Template[**P, T](Tool[P, T]):
 
         result = super().__get__(instance, owner)
         self_param_name = list(self.__signature__.parameters.keys())[0]
+<<<<<<< HEAD
         self_context = {self_param_name: _BoundInstance(instance)}
         result.__context__ = self.__context__.new_child(self_context)
+=======
+        result.__context__ = self.__context__.new_child({self_param_name: instance})
+        if isinstance(instance, Agent):
+            assert isinstance(result, Template) and not hasattr(result, "__history__")
+            result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__system_prompt__ = "\n\n".join(
+                part
+                for part in (
+                    getattr(result, "__system_prompt__", ""),
+                    instance.__system_prompt__,
+                )
+                if part
+            )
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         return result
 
     @classmethod
@@ -233,6 +334,7 @@ class Template[**P, T](Tool[P, T]):
         frame = frame.f_back
         assert frame is not None
 
+<<<<<<< HEAD
         # Check if we're in a class definition by looking for __qualname__
         qualname = frame.f_locals.get("__qualname__")
         n_frames = 1
@@ -255,10 +357,48 @@ class Template[**P, T](Tool[P, T]):
             contexts.append(locals_proxy)
             frame = frame.f_back
 
+=======
+        # Skip class body frames: in Python, class bodies are not lexical
+        # scopes for methods, so their locals should not be captured.
+        qualname = frame.f_locals.get("__qualname__")
+        if qualname is not None:
+            for name in reversed(qualname.split(".")):
+                if name == "<locals>":
+                    break
+                assert frame is not None
+                frame = frame.f_back
+
+        # Use the qualname of the decorated function to identify which
+        # frames are *lexical* enclosers (as opposed to dynamic callers).
+        # A segment preceding "<locals>" in the qualname is an enclosing
+        # function; everything else (class names, the function itself) is not.
+        assert frame is not None
+        _fn = default
+        if isinstance(_fn, staticmethod | classmethod):
+            _fn = _fn.__func__
+        parts = _fn.__qualname__.split(".")
+        enclosing_fns = [
+            parts[i] for i in range(len(parts) - 1) if parts[i + 1] == "<locals>"
+        ]
+        enclosing_fns.reverse()  # innermost first for frame walking
+
+        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+            frame.f_globals
+        )
+        contexts: list[types.MappingProxyType[str, Any]] = []
+        for fn_name in enclosing_fns:
+            while frame is not None and frame.f_locals is not frame.f_globals:
+                if frame.f_code.co_name == fn_name:
+                    contexts.append(types.MappingProxyType(frame.f_locals))
+                    frame = frame.f_back
+                    break
+                frame = frame.f_back
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         contexts.append(globals_proxy)
         context: ChainMap[str, Any] = ChainMap(
             *typing.cast(list[MutableMapping[str, Any]], contexts)
         )
+<<<<<<< HEAD
 
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
@@ -286,3 +426,72 @@ class Template[**P, T](Tool[P, T]):
         op = Template(signature, name, default)
         op.__context__ = self.__context__
         return op
+=======
+        op = super().define(default, *args, **kwargs)
+        op.__context__ = context  # type: ignore[attr-defined]
+        mod = inspect.getmodule(_fn)
+        op.__system_prompt__ = inspect.getdoc(mod) if mod is not None else ""  # type: ignore[attr-defined]
+        # Keep validation on original define-time callables, but skip the bound wrapper path.
+        # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
+        is_bound_wrapper = (
+            isinstance(default, types.MethodType) and default.__self__ is not None
+        )
+        if not isinstance(op, staticmethod | classmethod) and not is_bound_wrapper:
+            cls._validate_prompt(typing.cast(Template, op), context)
+
+        return typing.cast(Template[Q, V], op)
+
+
+class Agent(abc.ABC):
+    """Mixin that gives each instance a persistent LLM message history.
+
+    Subclass and decorate methods with :func:`Template.define`.
+    Each instance accumulates messages across calls so the LLM sees
+    prior conversation context.
+
+    Agents compose freely with :func:`dataclasses.dataclass` and other
+    base classes.  Instance attributes are available in template
+    docstrings via ``{self.attr}``.
+
+    Example::
+
+        import dataclasses
+        from effectful.handlers.llm import Agent, Template
+        from effectful.handlers.llm.completions import LiteLLMProvider
+        from effectful.ops.semantics import handler
+        from effectful.ops.types import NotHandled
+
+        @dataclasses.dataclass
+        class ChatBot(Agent):
+            bot_name: str = dataclasses.field(default="ChatBot")
+
+            @Template.define
+            def send(self, user_input: str) -> str:
+                \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
+                raise NotHandled
+
+        provider = LiteLLMProvider()
+        chatbot = ChatBot()
+
+        with handler(provider):
+            chatbot.send("Hi! How are you? I am in France.")
+            chatbot.send("Remind me again, where am I?")  # sees prior context
+
+    """
+
+    __history__: OrderedDict[str, Mapping[str, Any]]
+    __system_prompt__: str
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if not hasattr(cls, "__history__"):
+            prop = functools.cached_property(lambda _: OrderedDict())
+            prop.__set_name__(cls, "__history__")
+            cls.__history__ = prop
+        if not hasattr(cls, "__system_prompt__"):
+            sp = functools.cached_property(
+                lambda self: inspect.getdoc(type(self)) or ""
+            )
+            sp.__set_name__(cls, "__system_prompt__")
+            cls.__system_prompt__ = sp
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8

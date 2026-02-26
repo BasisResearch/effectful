@@ -1,9 +1,18 @@
 {
+<<<<<<< HEAD
+=======
+  "id": "chatcmpl-b08c0c1f-3fd9-45eb-834a-73fe347714ee",
+  "created": 1769812544,
+  "model": "claude-haiku-4-5-20251001",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
+<<<<<<< HEAD
         "content": "Testing is a critical process that helps identify bugs, verify functionality, and ensure that software meets quality standards before deployment.",
         "function_call": null,
         "provider_specific_fields": {
@@ -38,5 +47,33 @@
       "text_tokens": null
     },
     "total_tokens": 1171
+=======
+        "content": "{\"value\": \"Testing is a crucial process that ensures software quality, identifies bugs, and validates that systems work as intended before deployment to users.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": null
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 56,
+    "prompt_tokens": 1179,
+    "total_tokens": 1235,
+    "completion_tokens_details": null,
+    "prompt_tokens_details": {
+      "audio_tokens": null,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null,
+      "cache_creation_tokens": 0,
+      "cache_creation_token_details": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      }
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   }
 }

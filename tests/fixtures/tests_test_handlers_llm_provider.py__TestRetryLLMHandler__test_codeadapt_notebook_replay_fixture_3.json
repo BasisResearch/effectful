@@ -1,0 +1,44 @@
+{
+  "id": "chatcmpl-D6JLu2tQyitxJHHtmEEWHaGuWVkCl",
+  "created": 1770396730,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_ad98c18a04",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":{\"module_code\":\"def solution() -> str:\\n    return \\\"The moon hung low in the midnight sky with a mysterious glow, inviting all to take a long walk. Shadows danced across the street, tumbling with every breeze that whispered secrets. Somewhere in the distance, there was the sound of another, an echo of a life unknown. In the middle of it all, the unmistakable laugh of a lunatic rang out, sending chills down spines.\\\"\"}}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 100,
+    "prompt_tokens": 30657,
+    "total_tokens": 30757,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 15872,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+}

@@ -8,6 +8,7 @@ Table of Contents
    getting_started
    introduction
    named_tensor_notation
+   llm
 
 .. toctree::
    :maxdepth: 1

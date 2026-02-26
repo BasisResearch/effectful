@@ -1,21 +1,40 @@
 {
+<<<<<<< HEAD
+=======
+  "id": "chatcmpl-D3rNYTWIcoJmMGU1mjErSsz4rJgM6",
+  "created": 1769812544,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
+<<<<<<< HEAD
         "annotations": [],
         "content": "{\"value\":{\"genre\":\"action\",\"explanation\":\"The story centers on a rogue cop confronting an organized threat in a high-stakes, high-adrenaline setting (a skyscraper), with emphasis on pursuits, gunfights, and stunts typical of action films.\"}}",
+=======
+        "content": "{\"value\": {\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop taking on an evil group to stop them from taking over a skyscraper, featuring high-stakes conflict and action-oriented sequences typical of the action genre.\"}}",
+        "role": "assistant",
+        "tool_calls": null,
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
+<<<<<<< HEAD
         "role": "assistant",
         "tool_calls": null
+=======
+        "annotations": []
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
       },
       "provider_specific_fields": {}
     }
   ],
+<<<<<<< HEAD
   "created": 1767182732,
   "id": "chatcmpl-CspFEhYoCToW0c9B0GjXeKbjiIn0K",
   "model": "gpt-5-nano-2025-08-07",
@@ -41,4 +60,26 @@
     },
     "total_tokens": 992
   }
+=======
+  "usage": {
+    "completion_tokens": 384,
+    "prompt_tokens": 457,
+    "total_tokens": 841,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 320,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 }

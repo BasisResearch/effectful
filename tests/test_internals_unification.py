@@ -1,6 +1,7 @@
 import collections.abc
 import inspect
 import typing
+from typing import Literal
 
 import pytest
 
@@ -115,6 +116,11 @@ def test_canonicalize_1():
         pass
 
     assert canonicalize(GenericClass[int]) == GenericClass[int]
+
+    assert canonicalize(Literal["read", "write"]) == str
+    assert canonicalize(Literal[200, 404]) == int
+    assert canonicalize(Literal[True]) == bool
+    assert canonicalize(Literal[1, "a"]) == (int | str)
 
 
 @pytest.mark.parametrize(
@@ -327,6 +333,13 @@ def test_substitute(
             {},
             {K: str, T: int, V: bool},
         ),
+        # Literal type unification
+        (Literal["read", "write"], str, {}, {}),
+        (Literal[200, 404], int, {}, {}),
+        (Literal[True], bool, {}, {}),
+        (T, Literal["read", "write"], {}, {T: str}),
+        (T, Literal[1, 2, 3], {}, {T: int}),
+        (list[T], list[Literal["a", "b"]], {}, {T: str}),
     ],
 )
 def test_unify_success(

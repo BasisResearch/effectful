@@ -1,21 +1,40 @@
 {
+<<<<<<< HEAD
+=======
+  "id": "chatcmpl-D3rNPzidwbTkz4hc0mGchwjqbvlq9",
+  "created": 1769812535,
+  "model": "gpt-4o-mini-2024-07-18",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_1590f93f9d",
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
+<<<<<<< HEAD
         "annotations": [],
         "content": "Testing is a crucial process that ensures the quality and functionality of a product or system before its release.",
+=======
+        "content": "{\"value\":\"Testing is the process of evaluating a system or component to ensure it meets specified requirements and functions correctly.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
+<<<<<<< HEAD
         "role": "assistant",
         "tool_calls": null
+=======
+        "annotations": []
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
       },
       "provider_specific_fields": {}
     }
   ],
+<<<<<<< HEAD
   "created": 1767182727,
   "id": "chatcmpl-CspF9mdsKgygvf8Pogy7DCFgjydme",
   "model": "gpt-4o-mini-2024-07-18",
@@ -41,4 +60,26 @@
     },
     "total_tokens": 334
   }
+=======
+  "usage": {
+    "completion_tokens": 28,
+    "prompt_tokens": 262,
+    "total_tokens": 290,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 }

@@ -1,11 +1,15 @@
 from collections.abc import Callable
 from typing import Annotated
 
+<<<<<<< HEAD
 import pytest
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.providers import RetryLLMHandler
 from effectful.handlers.llm.synthesis import ProgramSynthesis
+=======
+from effectful.handlers.llm import Template
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -120,6 +124,7 @@ def test_primes_decode_int():
         assert isinstance(result, int)
 
 
+<<<<<<< HEAD
 @pytest.mark.xfail(reason="Synthesis handler not yet implemented")
 def test_count_char_with_program_synthesis():
     """Test the count_char template with program synthesis."""
@@ -136,6 +141,8 @@ def count_occurrences(s):
         assert count_a("cherry") == 0
 
 
+=======
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 class FailingThenSucceedingProvider[T](ObjectInterpretation):
     """Mock provider that fails a specified number of times before succeeding."""
 
@@ -167,6 +174,7 @@ class FailingThenSucceedingProvider[T](ObjectInterpretation):
         return self.success_response
 
 
+<<<<<<< HEAD
 def test_retry_handler_succeeds_after_failures():
     """Test that RetryLLMHandler retries and eventually succeeds."""
     provider = FailingThenSucceedingProvider(
@@ -249,6 +257,8 @@ def test_retry_handler_with_error_feedback():
     assert "First attempt failed" in call_prompts[1]
 
 
+=======
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 def test_template_captures_other_templates_in_lexical_context():
     """Test that Templates defined in lexical scope are captured (orchestrator pattern)."""
 

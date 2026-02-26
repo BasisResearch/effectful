@@ -1,21 +1,40 @@
 {
+<<<<<<< HEAD
+=======
+  "id": "chatcmpl-D3rNhHv6KxKgfgH1DTBqe9gLaNzpU",
+  "created": 1769812553,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_eadf229d54",
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
+<<<<<<< HEAD
         "annotations": [],
         "content": "The image appears to depict a simple, pixelated smiley face with two rectangular eyes and a wide, curved mouth, giving a cheerful expression.",
+=======
+        "content": "{\"value\":\"The image is a simple pixel art of a smiley face. It features two square white eyes and a wide white smile set against a black background.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
         },
+<<<<<<< HEAD
         "role": "assistant",
         "tool_calls": null
+=======
+        "annotations": []
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
       },
       "provider_specific_fields": {}
     }
   ],
+<<<<<<< HEAD
   "created": 1767182821,
   "id": "chatcmpl-CspGfBSEI7umvGbclbA4o1OsXZsil",
   "model": "gpt-4o-2024-08-06",
@@ -41,4 +60,26 @@
     },
     "total_tokens": 597
   }
+=======
+  "usage": {
+    "completion_tokens": 38,
+    "prompt_tokens": 492,
+    "total_tokens": 530,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+>>>>>>> 68d7645f081b17247fde3494e548fd16f92694e8
 }
