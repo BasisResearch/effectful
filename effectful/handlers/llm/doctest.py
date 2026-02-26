@@ -6,8 +6,8 @@ docstrings as semantic constraints rather than literal prompts.
 **Case 1 (tool-calling)**: When the template returns a non-Callable type, a
 calibration loop runs the doctest inputs through the LLM once per template
 definition and caches the entire conversation (including any incorrect
-attempts) as a few-shot prefix for future calls, emulating a learning
-process.
+attempts) as a few-shot prefix for future calls, emulating a mini ReAct
+agent that learns from its mistakes.
 
 **Case 2 (code generation)**: When the template returns a ``Callable`` type,
 the generated code is required to pass the doctests as post-hoc validation.
@@ -18,7 +18,7 @@ so it cannot memorise the expected outputs.
 
 import ast
 import collections
-import collections.abc
+import contextlib
 import doctest
 import typing
 from collections.abc import Mapping
@@ -27,52 +27,15 @@ from typing import Any
 from effectful.handlers.llm.completions import (
     Message,
     _make_message,
-    append_message,
     call_user,
 )
+from effectful.handlers.llm.encoding import CallableEncodable, Encodable
 from effectful.handlers.llm.evaluation import test
 from effectful.handlers.llm.template import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 _SENTINEL = object()
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
-
-
-def extract_doctests(docstring: str) -> tuple[str, list[doctest.Example]]:
-    """Separate a docstring into text-without-examples and a list of examples.
-
-    Uses :class:`doctest.DocTestParser` to identify ``>>>`` blocks, then
-    reconstructs the docstring with those blocks removed.
-
-    Returns ``(stripped_text, examples)`` where *stripped_text* is the
-    docstring with all interactive examples removed.
-    """
-    parser = doctest.DocTestParser()
-    parts = parser.parse(docstring)
-    text_parts = [p for p in parts if isinstance(p, str)]
-    examples = [p for p in parts if isinstance(p, doctest.Example)]
-    return "".join(text_parts), examples
-
-
-# ---------------------------------------------------------------------------
-# Handler
-# ---------------------------------------------------------------------------
-
-
-def _is_callable_return(template: Template) -> bool:
-    """Return ``True`` if *template* synthesises a ``Callable``."""
-    ret = template.__signature__.return_annotation
-    origin = typing.get_origin(ret)
-    if origin is not None:
-        # e.g. Callable[[str], int] -> origin is collections.abc.Callable
-        return origin is collections.abc.Callable
-    if isinstance(ret, type):
-        return issubclass(ret, collections.abc.Callable)  # type: ignore[arg-type]
-    return False
 
 
 class DoctestHandler(ObjectInterpretation):
@@ -91,9 +54,6 @@ class DoctestHandler(ObjectInterpretation):
     # Case 2: per-call cached doctest examples for test() validation.
     _doctest_stack: list[list[doctest.Example]]
 
-    # Case 1: prefix messages to inject before the next call_user.
-    _pending_prefix: list[Message] | None
-
     # Re-entrancy guard: set of templates currently being calibrated.
     _calibrating: set[Template]
 
@@ -101,33 +61,112 @@ class DoctestHandler(ObjectInterpretation):
         self._extraction_cache = {}
         self._doctest_stack = []
         self._prefix_cache = {}
-        self._pending_prefix = None
         self._calibrating = set()
 
     # -- helpers ------------------------------------------------------------
+
+    @classmethod
+    def extract_doctests(cls, docstring: str) -> tuple[str, list[doctest.Example]]:
+        """Separate a docstring into text-without-examples and a list of examples.
+
+        Uses :class:`doctest.DocTestParser` to identify ``>>>`` blocks, then
+        reconstructs the docstring with those blocks removed.
+
+        Returns ``(stripped_text, examples)`` where *stripped_text* is the
+        docstring with all interactive examples removed.
+        """
+        parser = doctest.DocTestParser()
+        parts = parser.parse(docstring)
+        text_parts = [p for p in parts if isinstance(p, str)]
+        examples = [p for p in parts if isinstance(p, doctest.Example)]
+        return "".join(text_parts), examples
+
+    @staticmethod
+    def _parse_template_call(
+        example: doctest.Example, template_name: str
+    ) -> tuple[list[Any] | None, dict[str, Any] | None]:
+        """Extract positional and keyword args from a doctest example.
+
+        Returns ``(args, kwargs)`` if the example is a call to
+        *template_name*, or ``(None, None)`` otherwise.
+        """
+        source = example.source.strip()
+        try:
+            tree = ast.parse(source, mode="eval")
+        except SyntaxError:
+            return None, None
+
+        expr = tree.body
+        if not isinstance(expr, ast.Call):
+            return None, None
+        if not isinstance(expr.func, ast.Name):
+            return None, None
+        if expr.func.id != template_name:
+            return None, None
+
+        try:
+            pos_args = [ast.literal_eval(a) for a in expr.args]
+            kw_args = {
+                kw.arg: ast.literal_eval(kw.value)
+                for kw in expr.keywords
+                if kw.arg is not None
+            }
+        except (ValueError, TypeError):
+            return None, None
+
+        return pos_args, kw_args
 
     def _get_doctests(self, template: Template) -> tuple[str, list[doctest.Example]]:
         """Return cached ``(stripped_template, examples)`` for *template*."""
         try:
             return self._extraction_cache[template]
         except KeyError:
-            result = extract_doctests(template.__prompt_template__)
+            result = self.extract_doctests(template.__prompt_template__)
             self._extraction_cache[template] = result
             return result
+
+    @contextlib.contextmanager
+    def _bind_history(
+        self,
+        template: Template,
+        history: collections.OrderedDict[str, Message],
+    ):
+        """Temporarily bind *history* to ``template.__history__``.
+
+        Uses the same attribute that :class:`Agent` binds via ``__get__``.
+        The provider reads and writes back to it, so messages accumulate.
+        """
+        old = getattr(template, "__history__", _SENTINEL)
+        template.__history__ = history  # type: ignore[attr-defined]
+        try:
+            yield
+        finally:
+            if old is _SENTINEL:
+                try:
+                    del template.__history__  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass
+            else:
+                template.__history__ = old  # type: ignore[attr-defined]
+
+    # -- Template.__apply__ -------------------------------------------------
 
     @implements(Template.__apply__)
     def _handle_template[**P, T](
         self,
         template: Template[P, T],
-        *args: P.args,
-        **kwargs: P.kwargs,
+        *_args: P.args,
+        **_kwargs: P.kwargs,
     ) -> T:
         _, examples = self._get_doctests(template)
 
         if not examples:
             return fwd()
 
-        if _is_callable_return(template):
+        if isinstance(
+            Encodable.define(template.__signature__.return_annotation),
+            CallableEncodable,
+        ):
             # Case 2 – code generation: push cached examples for test().
             self._doctest_stack.append(examples)
             return fwd()
@@ -136,18 +175,21 @@ class DoctestHandler(ObjectInterpretation):
         if template not in self._calibrating and template not in self._prefix_cache:
             self._calibrate(template, examples)
 
-        if template in self._prefix_cache and self._prefix_cache[template]:
-            # Schedule prefix injection for _strip_prompt, which runs
-            # after call_system (so the system message is already first).
-            self._pending_prefix = self._prefix_cache[template]
-            try:
+        prefix = self._prefix_cache.get(template, [])
+        if prefix:
+            # Pre-populate history with the cached calibration prefix
+            # (Agent-style); the provider will copy it and prepend the
+            # system message, so the LLM sees:
+            #   system → prefix user/assistant turns → actual user message.
+            prefix_history: collections.OrderedDict[str, Message] = (
+                collections.OrderedDict((m["id"], m) for m in prefix)
+            )
+            with self._bind_history(template, prefix_history):
                 return fwd()
-            finally:
-                self._pending_prefix = None
 
         return fwd()
 
-    # -- call_user (stateless stripping) ------------------------------------
+    # -- call_user ----------------------------------------------------------
 
     @implements(call_user)
     def _strip_prompt(
@@ -155,20 +197,8 @@ class DoctestHandler(ObjectInterpretation):
         template: str,
         env: Mapping[str, Any],
     ) -> Message:
-        """Strip ``>>>`` examples and inject any pending calibration prefix.
-
-        This runs after ``call_system`` has already appended the system
-        message, so injecting prefix messages here keeps the correct order:
-        system → prefix user/assistant turns → actual user message.
-        """
-        # Inject cached calibration prefix (Case 1) into the message
-        # sequence before the actual user message.
-        if self._pending_prefix is not None:
-            for msg in self._pending_prefix:
-                append_message(msg)
-            self._pending_prefix = None
-
-        stripped, _ = extract_doctests(template)
+        """Strip ``>>>`` examples from the prompt before the LLM sees it."""
+        stripped, _ = self.extract_doctests(template)
         return fwd(stripped, env)
 
     # -- test (Case 2 validation) -------------------------------------------
@@ -208,6 +238,7 @@ class DoctestHandler(ObjectInterpretation):
             raise TypeError(f"doctest failed:\n{report}")
 
     # -- Case 1 calibration -------------------------------------------------
+
     def _calibrate(
         self,
         template: Template,
@@ -225,97 +256,51 @@ class DoctestHandler(ObjectInterpretation):
         """
         self._calibrating.add(template)
 
-        # Agent-style history: a single OrderedDict shared across all
-        # calibration examples, exactly like Agent.__history__.
         shared_history: collections.OrderedDict[str, Message] = (
             collections.OrderedDict()
         )
 
-        # Temporarily bind the shared history to the template, using the
-        # same mechanism Agent.__get__ uses.
-        old_history = getattr(template, "__history__", _SENTINEL)
-        template.__history__ = shared_history  # type: ignore[attr-defined]
-
-        try:
-            for example in examples:
-                call_args, call_kwargs = _parse_template_call(
-                    example, template.__name__
-                )
-                if call_args is None or call_kwargs is None:
-                    continue  # not a call to this template
-
-                # Call the template; the provider reads template.__history__
-                # and writes back after completion, so messages naturally
-                # accumulate in shared_history.
-                result = template(*call_args, **call_kwargs)
-
-                # Check output; append corrective feedback if wrong so
-                # subsequent examples benefit from the correction.
-                checker = doctest.OutputChecker()
-                actual = repr(result) + "\n"
-                optionflags = 0
-                for flag, val in example.options.items():
-                    if val:
-                        optionflags |= flag
-                if not checker.check_output(example.want, actual, optionflags):
-                    feedback = _make_message(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"That was incorrect. "
-                                f"Expected {example.want.strip()!r} "
-                                f"but got {repr(result)!r}."
-                            ),
-                        }
+        with self._bind_history(template, shared_history):
+            try:
+                for example in examples:
+                    self._run_calibration_example(
+                        template, example, shared_history
                     )
-                    shared_history[feedback["id"]] = feedback
-        finally:
-            self._calibrating.discard(template)
-            # Restore original state.
-            if old_history is _SENTINEL:
-                try:
-                    del template.__history__  # type: ignore[attr-defined]
-                except AttributeError:
-                    pass
-            else:
-                template.__history__ = old_history  # type: ignore[attr-defined]
+            finally:
+                self._calibrating.discard(template)
 
-        # Cache non-system messages as the prefix for future calls.
         self._prefix_cache[template] = [
             m for m in shared_history.values() if m["role"] != "system"
         ]
 
+    def _run_calibration_example(
+        self,
+        template: Template,
+        example: doctest.Example,
+        history: collections.OrderedDict[str, Message],
+    ) -> None:
+        """Evaluate one doctest example and append corrective feedback."""
+        call_args, call_kwargs = self._parse_template_call(
+            example, template.__name__
+        )
+        if call_args is None or call_kwargs is None:
+            return
 
-def _parse_template_call(
-    example: doctest.Example, template_name: str
-) -> tuple[list[Any] | None, dict[str, Any] | None]:
-    """Extract positional and keyword args from a doctest example.
+        result = template(*call_args, **call_kwargs)
 
-    Returns ``(args, kwargs)`` if the example is a call to *template_name*,
-    or ``(None, None)`` otherwise.
-    """
-    source = example.source.strip()
-    try:
-        tree = ast.parse(source, mode="eval")
-    except SyntaxError:
-        return None, None
+        checker = doctest.OutputChecker()
+        actual = repr(result) + "\n"
+        optionflags = sum(f for f, v in example.options.items() if v)
 
-    expr = tree.body
-    if not isinstance(expr, ast.Call):
-        return None, None
-    if not isinstance(expr.func, ast.Name):
-        return None, None
-    if expr.func.id != template_name:
-        return None, None
-
-    try:
-        pos_args = [ast.literal_eval(a) for a in expr.args]
-        kw_args = {
-            kw.arg: ast.literal_eval(kw.value)
-            for kw in expr.keywords
-            if kw.arg is not None
-        }
-    except (ValueError, TypeError):
-        return None, None
-
-    return pos_args, kw_args
+        if not checker.check_output(example.want, actual, optionflags):
+            feedback = _make_message(
+                {
+                    "role": "user",
+                    "content": (
+                        f"That was incorrect. "
+                        f"Expected {example.want.strip()!r} "
+                        f"but got {repr(result)!r}."
+                    ),
+                }
+            )
+            history[feedback["id"]] = feedback

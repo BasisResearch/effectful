@@ -10,7 +10,7 @@ from effectful.handlers.llm.completions import (
     ResultDecodingError,
     call_user,
 )
-from effectful.handlers.llm.doctest import DoctestHandler, extract_doctests
+from effectful.handlers.llm.doctest import DoctestHandler
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import NotHandled, handler
@@ -61,13 +61,13 @@ def synthesize_outer(char: str) -> Callable[[str], int]:
 
 
 class TestExtractDoctests:
-    """Tests for the extract_doctests utility."""
+    """Tests for the DoctestHandler.extract_doctests classmethod."""
 
     def test_strips_examples(self):
         docstring = (
             "Compute something.\n\n    >>> foo(1)\n    2\n    >>> foo(3)\n    4\n"
         )
-        stripped, examples = extract_doctests(docstring)
+        stripped, examples = DoctestHandler.extract_doctests(docstring)
         assert ">>>" not in stripped
         assert len(examples) == 2
         assert examples[0].source.strip() == "foo(1)"
@@ -77,13 +77,13 @@ class TestExtractDoctests:
 
     def test_no_examples(self):
         docstring = "Just a description.\nNo examples here.\n"
-        stripped, examples = extract_doctests(docstring)
+        stripped, examples = DoctestHandler.extract_doctests(docstring)
         assert stripped == docstring
         assert examples == []
 
     def test_preserves_non_example_text(self):
         docstring = "Title.\n\nSome details.\n\n    >>> f(1)\n    42\n\nMore text.\n"
-        stripped, examples = extract_doctests(docstring)
+        stripped, examples = DoctestHandler.extract_doctests(docstring)
         assert "Title." in stripped
         assert "Some details." in stripped
         assert "More text." in stripped
@@ -194,10 +194,16 @@ class TestCase1Calibration:
 
     def test_callable_detection(self):
         """Templates returning Callable should be Case 2, others Case 1."""
-        from effectful.handlers.llm.doctest import _is_callable_return
+        from effectful.handlers.llm.encoding import CallableEncodable, Encodable
 
-        assert _is_callable_return(synthesize_counter_with_doctest) is True
-        assert _is_callable_return(summarize) is False
+        def is_callable_return(t):
+            return isinstance(
+                Encodable.define(t.__signature__.return_annotation),
+                CallableEncodable,
+            )
+
+        assert is_callable_return(synthesize_counter_with_doctest)
+        assert not is_callable_return(summarize)
 
     def test_extraction_cache_populated(self):
         """_get_doctests should populate the extraction cache."""
@@ -210,21 +216,21 @@ class TestCase1Calibration:
         assert stripped2 is stripped
         assert examples2 is examples
 
-    def test_calibration_uses_shared_history(self):
-        """Calibration should accumulate messages in a shared history
-        (Agent-style OrderedDict) rather than isolated per-example sequences."""
-        from effectful.handlers.llm.doctest import _SENTINEL
+    def test_bind_history_restores_state(self):
+        """_bind_history should restore template.__history__ after use."""
+        import collections
 
         dh = DoctestHandler()
 
-        # Verify template starts without __history__
+        # Template starts without __history__
         assert not hasattr(summarize, "__history__")
 
-        # After calibration, __history__ should be cleaned up
-        # (We can't run full calibration without a provider, but we can
-        # verify the sentinel-based save/restore mechanism.)
-        old = getattr(summarize, "__history__", _SENTINEL)
-        assert old is _SENTINEL
+        history = collections.OrderedDict()
+        with dh._bind_history(summarize, history):
+            assert summarize.__history__ is history  # type: ignore[attr-defined]
+
+        # Cleaned up after context exit
+        assert not hasattr(summarize, "__history__")
 
     @requires_openai
     def test_case1_calibration_integration(self):
