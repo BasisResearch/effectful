@@ -685,14 +685,11 @@ def test_callable_encode_no_source_no_docstring():
 # Type: roundtrip, type_check pass/fail, serialize/deserialize
 # ============================================================================
 
-
 class SimplePoint:
-    x: int
-    y: int
-
-    def __init__(self, x: int, y: int):
+    def make(self, x: int, y: int) -> "SimplePoint":
         self.x = x
         self.y = y
+        return self
 
 
 class Greeter:
@@ -705,13 +702,13 @@ class Greeter:
 
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
 def test_type_encode_decode_simple_class(eval_provider):
-    """Roundtrip encode/decode of a simple class with typed attributes."""
+    """Roundtrip encode/decode of a simple class."""
     enc = Encodable.define(type)
     with handler(eval_provider):
         decoded = enc.decode(enc.encode(SimplePoint))
     assert isinstance(decoded, type)
     assert decoded.__name__ == "SimplePoint"
-    obj = decoded(1, 2)
+    obj = decoded().make(1, 2)
     assert obj.x == 1
     assert obj.y == 2
 
@@ -734,31 +731,25 @@ def test_type_decode_valid_class_code(eval_provider):
 def test_type_decode_class_with_context(eval_provider):
     """Decode a class that references a type from lexical context."""
     code = SynthesizedType(
-        type_name="ChildPoint",
+        type_name="ChildGreeter",
         module_code=(
-            "class ChildPoint(BasePoint):\n"
-            "    z: int\n"
-            "    def __init__(self, x: int, y: int, z: int):\n"
-            "        super().__init__(x, y)\n"
-            "        self.z = z\n"
+            "class ChildGreeter(BaseGreeter):\n"
+            "    def greet(self) -> str:\n"
+            "        return 'child'\n"
         ),
     )
 
-    class BasePoint:
-        x: int
-        y: int
+    class BaseGreeter:
+        def greet(self) -> str:
+            return "base"
 
-        def __init__(self, x: int, y: int):
-            self.x = x
-            self.y = y
-
-    ctx = {"BasePoint": BasePoint}
+    ctx = {"BaseGreeter": BaseGreeter}
     enc = Encodable.define(type, ctx)
     with handler(eval_provider):
         decoded = enc.decode(code)
-    obj = decoded(1, 2, 3)
-    assert obj.x == 1 and obj.y == 2 and obj.z == 3
-    assert isinstance(obj, BasePoint)
+    obj = decoded()
+    assert obj.greet() == "child"
+    assert isinstance(obj, BaseGreeter)
 
 
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)

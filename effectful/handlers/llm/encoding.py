@@ -1,7 +1,6 @@
 import ast
 import base64
 import collections
-import ctypes
 import functools
 import inspect
 import io
@@ -597,16 +596,6 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
-class _PyMappingProxyObject(ctypes.Structure):
-    """Internal ctypes structure to access the underlying dict of a mappingproxy."""
-
-    _fields_ = [
-        ("ob_refcnt", ctypes.c_ssize_t),
-        ("ob_type", ctypes.py_object),
-        ("mapping", ctypes.py_object),
-    ]
-
-
 class SynthesizedType(pydantic.BaseModel):
     """Structured output for type/class synthesis.
 
@@ -677,21 +666,6 @@ class TypeEncodable(Encodable[type, SynthesizedType]):
             # Type-check the synthesized module
             evaluation.type_check(tree, self.ctx, None, type)
 
-            # Inject __firstlineno__ into class bodies for Python 3.13+ compatibility
-            # inspect.getsource() looks for __firstlineno__ in vars(cls),
-            # which requires it to be in the class's __dict__.
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    assign = ast.Assign(
-                        targets=[ast.Name(id="__firstlineno__", ctx=ast.Store())],
-                        value=ast.Constant(value=node.lineno),
-                        lineno=node.lineno,
-                        col_offset=0,
-                    )
-                    ast.fix_missing_locations(assign)
-                    node.body.insert(0, assign)
-            ast.fix_missing_locations(tree)
-
             # Compile and execute via evaluation effects
             code_obj = evaluation.compile(tree, filename)
             evaluation.exec(code_obj, g)
@@ -715,23 +689,6 @@ class TypeEncodable(Encodable[type, SynthesizedType]):
         synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
         synthesized_type.__synthesized__ = encoded_value  # type: ignore[attr-defined]
         synthesized_type.__module__ = module_name
-
-        # NOTE: Set __firstlineno__ AFTER __module__ assignment!
-        # In Python 3.13, setting __module__ clears __firstlineno__ from vars().
-        # We use ctypes to directly inject it into __dict__ for inspect.getsource().
-        if "__firstlineno__" not in vars(synthesized_type):
-            firstlineno = next(
-                (
-                    n.lineno
-                    for n in ast.walk(ast.parse(module_code))
-                    if isinstance(n, ast.ClassDef) and n.name == type_name
-                ),
-                1,
-            )
-            inner_dict = _PyMappingProxyObject.from_address(
-                id(vars(synthesized_type))
-            ).mapping
-            inner_dict["__firstlineno__"] = firstlineno
 
         return synthesized_type
 
