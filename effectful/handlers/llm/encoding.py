@@ -31,7 +31,7 @@ from litellm import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Agent, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import _simple_type
 from effectful.ops.syntax import _CustomSingleDispatchCallable
@@ -975,3 +975,40 @@ def _encodable_tool_call[T](
 ) -> Encodable[DecodedToolCall[T], ChatCompletionMessageToolCall]:
     ctx = ctx or {}
     return ToolCallEncodable(ty, ChatCompletionMessageToolCall, ctx)
+
+
+@dataclass
+class AgentEncodable[T: Agent](Encodable[T, str]):
+    base: type[T]
+    enc: type[str]
+    ctx: Mapping[str, Any]
+
+    def encode(self, value: T) -> str:
+        parts = [f"Agent: {type(value).__name__}"]
+        parts.append(f"Description: {inspect.getdoc(type(value))}")
+        methods = []
+        for cls in type(value).__mro__:
+            for attr_name in vars(cls):
+                attr = getattr(value, attr_name, None)
+                if isinstance(attr, Tool):
+                    sig = inspect.signature(attr)
+                    methods.append(f"  - {attr_name}{sig}")
+        if methods:
+            parts.append("Available methods:\n" + "\n".join(methods))
+        return "\n".join(parts)
+
+    def decode(self, encoded_value: str) -> T:
+        raise TypeError("Agents cannot be decoded from LLM responses")
+
+    def serialize(self, encoded_value: str) -> Sequence[ChatCompletionTextObject]:
+        return [{"type": "text", "text": encoded_value}]
+
+    def deserialize(self, serialized_value: str) -> str:
+        raise TypeError("Agents cannot be deserialized from LLM responses")
+
+
+@Encodable.define.register(Agent)
+def _encodable_agent[T: Agent](
+    ty: type[T], ctx: Mapping[str, Any] | None
+) -> Encodable[T, str]:
+    return AgentEncodable(ty, str, ctx or {})

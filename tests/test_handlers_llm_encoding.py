@@ -19,12 +19,13 @@ from litellm import ChatCompletionMessageToolCall
 from PIL import Image
 
 from effectful.handlers.llm.encoding import (
+    AgentEncodable,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Agent, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
@@ -472,6 +473,66 @@ def test_encode_idempotent(ty, value, ctx):
 def test_define_raises_for_invalid_types(ty):
     with pytest.raises(TypeError):
         Encodable.define(ty)
+
+
+# ============================================================================
+# Agent-specific: encode/serialize succeed, decode/deserialize raise TypeError
+# ============================================================================
+
+
+class _TestAgent(Agent):
+    """A test agent for encoding."""
+
+    @Template.define
+    def greet(self, name: str) -> str:
+        """Greet {name}."""
+        raise NotImplementedError
+
+    @Tool.define
+    def lookup(self, key: str) -> str:
+        """Look up a key."""
+        return key
+
+
+def test_agent_encodable_dispatches():
+    enc = Encodable.define(type(_TestAgent()))
+    assert isinstance(enc, AgentEncodable)
+
+
+def test_agent_encode_contains_class_name_and_doc():
+    agent = _TestAgent()
+    enc = Encodable.define(type(agent))
+    text = enc.encode(agent)
+    assert "Agent: _TestAgent" in text
+    assert "A test agent for encoding." in text
+
+
+def test_agent_encode_lists_methods():
+    agent = _TestAgent()
+    enc = Encodable.define(type(agent))
+    text = enc.encode(agent)
+    assert "greet" in text
+    assert "lookup" in text
+
+
+def test_agent_serialize_returns_text_block():
+    agent = _TestAgent()
+    enc = Encodable.define(type(agent))
+    blocks = enc.serialize(enc.encode(agent))
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+
+
+def test_agent_decode_raises():
+    enc = Encodable.define(type(_TestAgent()))
+    with pytest.raises(TypeError):
+        enc.decode("anything")
+
+
+def test_agent_deserialize_raises():
+    enc = Encodable.define(type(_TestAgent()))
+    with pytest.raises(TypeError):
+        enc.deserialize("anything")
 
 
 # ============================================================================
