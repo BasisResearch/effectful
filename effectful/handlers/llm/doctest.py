@@ -207,8 +207,7 @@ class DoctestHandler(ObjectInterpretation):
             return
 
         name = (
-            f"{getattr(obj, '__name__', obj.__class__.__name__)}"
-            ".__template_doctest__"
+            f"{getattr(obj, '__name__', obj.__class__.__name__)}.__template_doctest__"
         )
         test_case = doctest.DocTest(
             examples=examples,
@@ -258,9 +257,7 @@ class DoctestHandler(ObjectInterpretation):
         with self._bind_history(template, shared_history):
             try:
                 for example in examples:
-                    self._run_calibration_example(
-                        template, example, shared_history
-                    )
+                    self._run_calibration_example(template, example, shared_history)
             finally:
                 self._calibrating.discard(template)
 
@@ -275,9 +272,7 @@ class DoctestHandler(ObjectInterpretation):
         history: collections.OrderedDict[str, Message],
     ) -> None:
         """Evaluate one doctest example and append corrective feedback."""
-        call_args, call_kwargs = self._parse_template_call(
-            example, template.__name__
-        )
+        call_args, call_kwargs = self._parse_template_call(example, template.__name__)
         if call_args is None or call_kwargs is None:
             return
 
