@@ -1,8 +1,10 @@
 import ast
 import base64
+import collections
 import functools
 import inspect
 import io
+import sys
 import textwrap
 import types
 import typing
@@ -594,6 +596,123 @@ class CallableEncodable(Encodable[Callable, SynthesizedFunction]):
         return SynthesizedFunction.model_validate_json(serialized_value)
 
 
+class SynthesizedType(pydantic.BaseModel):
+    """Structured output for type/class synthesis.
+
+    Pydantic model representing synthesized class code with type name and module code.
+    """
+
+    type_name: str = pydantic.Field(
+        ...,
+        description="The name of the class that satisfies the specification",
+    )
+    module_code: str = pydantic.Field(
+        ...,
+        description="Complete Python module code with the class definition (no imports needed)",
+    )
+
+
+@dataclass
+class TypeEncodable(Encodable[type, SynthesizedType]):
+    base: type[type]
+    enc: type[SynthesizedType]
+    ctx: Mapping[str, Any]
+
+    _decode_counter: typing.ClassVar[int] = 0
+
+    def encode(self, value: type) -> SynthesizedType:
+        type_name = value.__name__
+        try:
+            source = inspect.getsource(value)
+        except (OSError, TypeError):
+            source = f"class {type_name}: pass  # Source unavailable"
+
+        return SynthesizedType(
+            type_name=type_name, module_code=textwrap.dedent(source).strip()
+        )
+
+    def decode(self, encoded_value: SynthesizedType) -> type:
+        """Decode a SynthesizedType to a type.
+
+        Executes the module code and returns the named class.
+        """
+        type_name = encoded_value.type_name
+        module_code = textwrap.dedent(encoded_value.module_code).strip() + "\n"
+
+        TypeEncodable._decode_counter += 1
+        module_name = (
+            f"_llm_effectful_synthesized_types.{type_name}"
+            f".{TypeEncodable._decode_counter}"
+        )
+        filename = f"<synthesized_type:{module_name}>"
+
+        # Create a real module and put it to sys.modules
+        mod = types.ModuleType(module_name)
+        mod.__file__ = filename
+        sys.modules[module_name] = mod
+
+        # globals = module.__dict__ + context
+        g = mod.__dict__
+        g.update({"collections": collections})
+        if self.ctx:
+            g.update(self.ctx)
+        g.update({"__name__": module_name, "__file__": filename})
+        g.setdefault("__package__", module_name.rpartition(".")[0])
+
+        try:
+            # Parse via evaluation effect (also registers source in linecache)
+            tree = evaluation.parse(module_code, filename)
+
+            # Type-check the synthesized module
+            evaluation.type_check(tree, self.ctx, None, type)
+
+            # Compile and execute via evaluation effects
+            code_obj = evaluation.compile(tree, filename)
+            evaluation.exec(code_obj, g)
+        except SyntaxError as exc:
+            raise ValueError(f"Syntax error in generated code: {exc}") from exc
+
+        if type_name not in g:
+            raise ValueError(
+                f"Type '{type_name}' not found after execution. "
+                f"Available names: {[k for k in g.keys() if not k.startswith('_')]}"
+            )
+
+        synthesized_type = g[type_name]
+
+        if not isinstance(synthesized_type, type):
+            raise ValueError(
+                f"'{type_name}' is not a type, got {type(synthesized_type).__name__}"
+            )
+
+        # Attach source code and module name
+        synthesized_type.__source__ = module_code  # type: ignore[attr-defined]
+        synthesized_type.__synthesized__ = encoded_value  # type: ignore[attr-defined]
+        synthesized_type.__module__ = module_name
+
+        # Set __firstlineno__ for Python 3.13+ (inspect.getsource requires it).
+        # Must be set AFTER __module__ since __module__ assignment can clear it.
+        firstlineno = next(
+            (
+                n.lineno
+                for n in ast.walk(ast.parse(module_code))
+                if isinstance(n, ast.ClassDef) and n.name == type_name
+            ),
+            1,
+        )
+        synthesized_type.__firstlineno__ = firstlineno  # type: ignore[attr-defined]
+
+        return synthesized_type
+
+    def serialize(
+        self, encoded_value: SynthesizedType
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        return [{"type": "text", "text": encoded_value.model_dump_json()}]
+
+    def deserialize(self, serialized_value: str) -> SynthesizedType:
+        return SynthesizedType.model_validate_json(serialized_value)
+
+
 def _param_model(sig: inspect.Signature) -> type[pydantic.BaseModel]:
     return pydantic.create_model(
         "Params",
@@ -958,6 +1077,14 @@ def _encodable_callable(
         expected_params = list(param_types)
 
     return CallableEncodable(ty, typed_enc, ctx, expected_params, expected_return)
+
+
+@Encodable.define.register(type)
+def _encodable_type(
+    ty: type, ctx: Mapping[str, Any] | None
+) -> Encodable[type, SynthesizedType]:
+    ctx = ctx or {}
+    return TypeEncodable(ty, SynthesizedType, ctx)
 
 
 @Encodable.define.register(Tool)
