@@ -9,6 +9,7 @@ import functools
 import inspect
 import json
 import os
+import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 import litellm
 import pytest
 import tenacity
+from litellm import ChatCompletionMessageToolCall
 from litellm.caching.caching import Cache
 from litellm.files.main import ModelResponse
 from PIL import Image
@@ -176,6 +178,18 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+class _ToolNameAgent(Agent):
+    @Template.define
+    def helper(self) -> str:
+        """Return the literal string 'ok'."""
+        raise NotHandled
+
+    @Template.define
+    def ask(self, prompt: str) -> str:
+        """Answer briefly: {prompt}"""
+        raise NotHandled
+
+
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
@@ -249,6 +263,29 @@ class TestLiteLLMProvider:
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
+
+
+@requires_openai
+def test_agent_tool_names_are_openai_compatible_integration():
+    agent = _ToolNameAgent()
+    template = agent.ask
+    tools = template.tools
+    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    assert tools
+    assert expected_helper_tool_name in tools
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+
+    # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
+    with (
+        handler(
+            LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)
+        ),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
+
+    assert isinstance(result, str)
+    assert result
 
 
 def smiley_face() -> Image.Image:
@@ -492,7 +529,7 @@ class TestRetryLLMHandler:
     def test_retry_handler_succeeds_on_first_attempt(self):
         """Test that RetryLLMHandler passes through when no error occurs."""
         # Response with valid tool call
-        responses = [make_text_response('{"value": "hello"}')]
+        responses = [make_text_response("hello")]
 
         mock_handler = MockCompletionHandler(responses)
 
@@ -522,7 +559,7 @@ class TestRetryLLMHandler:
             make_tool_call_response(
                 "add_numbers", '{"a": "not_an_int", "b": 2}'
             ),  # Invalid
-            make_text_response('{"value": "success"}'),  # Valid
+            make_text_response("success"),  # Valid
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -554,7 +591,7 @@ class TestRetryLLMHandler:
         # First response has unknown tool, second has valid response
         responses = [
             make_tool_call_response("unknown_tool", '{"x": 1}'),  # Unknown tool
-            make_text_response('{"value": "success"}'),  # Valid
+            make_text_response("success"),  # Valid
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -589,7 +626,7 @@ class TestRetryLLMHandler:
             id1={"id": "id1", "role": "user", "content": "test"},
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
-        with pytest.raises(Exception):  # Will raise the underlying decoding error
+        with pytest.raises(ToolCallDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
@@ -616,7 +653,7 @@ class TestRetryLLMHandler:
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
-        with pytest.raises(Exception):
+        with pytest.raises(ToolCallDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
                 handler(mock_handler),
@@ -631,7 +668,9 @@ class TestRetryLLMHandler:
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+            make_tool_call_response(
+                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
+            ),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -705,7 +744,7 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler retries when result decoding fails."""
         # First response has invalid JSON, second has valid response
         responses = [
-            make_text_response('{"value": "not valid for int"}'),  # Invalid for int
+            make_text_response('"not valid for int"'),  # Invalid for int
             make_text_response('{"value": 42}'),  # Valid
         ]
 
@@ -737,7 +776,7 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler raises after exhausting retries on result decoding."""
         # All responses have invalid results for int type
         responses = [
-            make_text_response('{"value": "not an int"}'),
+            make_text_response('"not an int"'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -746,7 +785,7 @@ class TestRetryLLMHandler:
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
-        with pytest.raises(Exception):  # Will raise the underlying decoding error
+        with pytest.raises(ResultDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
@@ -786,15 +825,15 @@ class TestRetryLLMHandler:
                 )
 
         error = exc_info.value
-        assert error.tool_name == "add_numbers"
-        assert error.tool_call_id == "call_1"
+        assert error.raw_tool_call.function.name == "add_numbers"
+        assert error.raw_tool_call.id == "call_1"
         assert error.raw_message is not None
         assert "add_numbers" in str(error)
 
     def test_retry_handler_raises_result_decoding_error(self):
         """Test that RetryLLMHandler raises ResultDecodingError with correct attributes."""
         responses = [
-            make_text_response('{"value": "not an int"}'),
+            make_text_response('"not an int"'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -823,7 +862,7 @@ class TestRetryLLMHandler:
         """Test that error feedback messages contain the tool name."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -853,7 +892,7 @@ class TestRetryLLMHandler:
         """Test that unknown tool errors contain the tool name in the feedback."""
         responses = [
             make_tool_call_response("nonexistent_tool", '{"x": 1}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -883,7 +922,7 @@ class TestRetryLLMHandler:
         """Test that include_traceback=True adds traceback to error messages."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -914,7 +953,7 @@ class TestRetryLLMHandler:
         """Test that include_traceback=False doesn't add traceback."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -967,7 +1006,7 @@ class TestToolExecutionErrorHandling:
         # Create a decoded tool call for failing_tool
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=42)
-        tool_call = DecodedToolCall(failing_tool, bound_args, "call_1")
+        tool_call = DecodedToolCall(failing_tool, bound_args, "call_1", "failing_tool")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -984,7 +1023,7 @@ class TestToolExecutionErrorHandling:
 
         sig = inspect.signature(divide_tool)
         bound_args = sig.bind(a=10, b=0)
-        tool_call = DecodedToolCall(divide_tool, bound_args, "call_div")
+        tool_call = DecodedToolCall(divide_tool, bound_args, "call_div", "divide_tool")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -999,7 +1038,7 @@ class TestToolExecutionErrorHandling:
 
         sig = inspect.signature(add_numbers)
         bound_args = sig.bind(a=3, b=4)
-        tool_call = DecodedToolCall(add_numbers, bound_args, "call_add")
+        tool_call = DecodedToolCall(add_numbers, bound_args, "call_add", "add_numbers")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -1017,8 +1056,8 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": 42}'),
-            make_text_response('{"value": "handled the error"}'),
+            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_text_response("handled the error"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -1061,8 +1100,17 @@ class TestErrorClasses:
     def test_tool_call_decoding_error_string_representation(self):
         """Test ToolCallDecodingError string includes relevant info."""
         original = ValueError("invalid value")
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_abc",
+                "function": {"name": "my_function", "arguments": "{}"},
+            }
+        )
         error = ToolCallDecodingError(
-            "my_function", "call_abc", original, raw_message={"role": "assistant"}
+            original_error=original,
+            raw_message={"role": "assistant"},
+            raw_tool_call=raw_tool_call,
         )
 
         error_str = str(error)
@@ -1082,8 +1130,19 @@ class TestErrorClasses:
         """Test that all error classes preserve the original exception."""
         original = TypeError("type mismatch")
         mock_message = {"role": "assistant", "content": "test"}
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "id",
+                "function": {"name": "fn", "arguments": "{}"},
+            }
+        )
 
-        tool_decode_err = ToolCallDecodingError("fn", "id", original, mock_message)
+        tool_decode_err = ToolCallDecodingError(
+            original_error=original,
+            raw_message=mock_message,
+            raw_tool_call=raw_tool_call,
+        )
         assert tool_decode_err.original_error is original
 
         result_decode_err = ResultDecodingError(original, mock_message)
@@ -1092,7 +1151,18 @@ class TestErrorClasses:
     def test_tool_call_decoding_error_includes_raw_message(self):
         """Test that ToolCallDecodingError includes the raw message."""
         mock_message = {"role": "assistant", "content": "test"}
-        error = ToolCallDecodingError("fn", "id", ValueError("test"), mock_message)
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "id",
+                "function": {"name": "fn", "arguments": "{}"},
+            }
+        )
+        error = ToolCallDecodingError(
+            original_error=ValueError("test"),
+            raw_message=mock_message,
+            raw_tool_call=raw_tool_call,
+        )
         assert error.raw_message == mock_message
 
 
@@ -1297,6 +1367,7 @@ class TestMessageSequence:
             tool=add_numbers,
             bound_args=inspect.signature(add_numbers).bind(1, 2),
             id="tc_1",
+            name="add_numbers",
         )
 
         with (
@@ -1526,21 +1597,21 @@ class TestCallToolWrapsExecutionError:
         """call_tool wraps tool runtime errors in ToolCallExecutionError."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=7)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_wrap_1")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_wrap_1", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError) as exc_info:
             call_tool(tc)
 
         err = exc_info.value
-        assert err.tool_name == "failing_tool"
-        assert err.tool_call_id == "call_wrap_1"
+        assert err.raw_tool_call.name == "failing_tool"
+        assert err.raw_tool_call.id == "call_wrap_1"
         assert isinstance(err.original_error, ValueError)
 
     def test_call_tool_preserves_cause_chain(self):
         """ToolCallExecutionError should chain from the original exception."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_chain")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_chain", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError) as exc_info:
             call_tool(tc)
@@ -1551,7 +1622,7 @@ class TestCallToolWrapsExecutionError:
         """Successful tool calls should not raise ToolCallExecutionError."""
         sig = inspect.signature(add_numbers)
         bound_args = sig.bind(a=3, b=4)
-        tc = DecodedToolCall(add_numbers, bound_args, "call_ok")
+        tc = DecodedToolCall(add_numbers, bound_args, "call_ok", "add_numbers")
 
         result = call_tool(tc)
         assert result["role"] == "tool"
@@ -1565,7 +1636,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """When original_error matches catch_tool_errors, return error feedback."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_match")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_match", "flaky_tool")
 
         with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
             result = call_tool(tc)
@@ -1579,7 +1650,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """When original_error doesn't match catch_tool_errors, re-raise ToolCallExecutionError."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_no_match")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_no_match", "flaky_tool")
 
         # catch_tool_errors=TypeError, but tool raises ConnectionError
         with pytest.raises(ToolCallExecutionError) as exc_info:
@@ -1592,7 +1663,9 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """Default catch_tool_errors=Exception catches all standard exceptions."""
         sig = inspect.signature(type_error_tool)
         bound_args = sig.bind(x=5)
-        tc = DecodedToolCall(type_error_tool, bound_args, "call_default")
+        tc = DecodedToolCall(
+            type_error_tool, bound_args, "call_default", "type_error_tool"
+        )
 
         with handler(RetryLLMHandler()):
             result = call_tool(tc)
@@ -1604,7 +1677,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """catch_tool_errors accepts a tuple of exception types."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_tuple")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_tuple", "flaky_tool")
 
         with handler(
             RetryLLMHandler(
@@ -1620,7 +1693,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """Without RetryLLMHandler, ToolCallExecutionError propagates directly."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_no_retry")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_no_retry", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError):
             call_tool(tc)
@@ -1633,7 +1706,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": 1}'),
+            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1682,7 +1755,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": 1}'),
+            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1709,10 +1782,14 @@ class TestLiteLLMProviderMessagePruning:
 
     def test_successful_call_preserves_messages(self):
         """A successful top-level template call should write messages back to Agent history."""
-        responses = [make_text_response('{"value": "done"}')]
+        responses = [make_text_response("done")]
         mock_handler = MockCompletionHandler(responses)
 
         class SimpleAgent(Agent):
+            """You are a persistence-check test agent.
+            Your goal is to complete `simple_task` and persist successful history.
+            """
+
             @Template.define
             def simple_task(self, instruction: str) -> str:
                 """Do: {instruction}"""
@@ -1753,6 +1830,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class TestAgent(Agent):
+            """You are a cross-template recovery test agent.
+            Your goal is to recover from failed tool calls across template methods.
+            """
+
             @Template.define
             def step_with_tool(self, task: str) -> str:
                 """Use bad_service for: {task}"""
@@ -1766,7 +1847,7 @@ class TestAgentCrossTemplateRecovery:
         # Step 1: LLM calls bad_service → tool error propagates
         tool_call_response = make_tool_call_response("bad_service", "{}")
         # Step 2: Simple text response for the second template
-        text_response = make_text_response('{"value": "summary result"}')
+        text_response = make_text_response("summary result")
 
         call_count = 0
 
@@ -1822,6 +1903,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class CleanupAgent(Agent):
+            """You are an error-cleanup test agent.
+            Your goal is to ensure failed calls do not persist message history.
+            """
+
             @Template.define
             def do_work(self, task: str) -> str:
                 """Do: {task}"""
@@ -1845,12 +1930,16 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class SuccessAgent(Agent):
+            """You are a success-history test agent.
+            Your goal is to preserve message history for successful calls.
+            """
+
             @Template.define
             def greet(self, name: str) -> str:
                 """Say hello to {name}."""
                 raise NotHandled
 
-        responses = [make_text_response('{"value": "Hello!"}')]
+        responses = [make_text_response("Hello!")]
         mock = MockCompletionHandler(responses)
         agent = SuccessAgent()
 
@@ -1868,6 +1957,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class ChatAgent(Agent):
+            """You are a multi-call history test agent.
+            Your goal is to accumulate conversation history across successful calls.
+            """
+
             @Template.define
             def chat(self, msg: str) -> str:
                 """Respond to: {msg}"""
@@ -1880,7 +1973,7 @@ class TestAgentCrossTemplateRecovery:
             def _completion(self, model, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
-                return make_text_response(f'{{"value": "reply {call_count}"}}')
+                return make_text_response(f"reply {call_count}")
 
         agent = ChatAgent()
 
@@ -1905,6 +1998,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class RecoveryAgent(Agent):
+            """You are a failure-recovery test agent.
+            Your goal is to recover after a failed call and retain only successful history.
+            """
+
             @Template.define
             def risky(self, task: str) -> str:
                 """Do risky: {task}"""
@@ -1924,7 +2021,7 @@ class TestAgentCrossTemplateRecovery:
                 call_count += 1
                 if call_count == 1:
                     return make_tool_call_response("broken_tool", "{}")
-                return make_text_response('{"value": "safe result"}')
+                return make_text_response("safe result")
 
         agent = RecoveryAgent()
 

@@ -168,6 +168,7 @@ class Template[**P, T](Tool[P, T]):
     """
 
     __context__: ChainMap[str, Any]
+    __system_prompt__: str
 
     @classmethod
     def _validate_prompt(
@@ -227,7 +228,7 @@ class Template[**P, T](Tool[P, T]):
                 for cls in type(obj).__mro__:
                     for attr_name in vars(cls):
                         if isinstance(getattr(obj, attr_name), Tool):
-                            result[attr_name] = getattr(obj, attr_name)
+                            result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
 
         # Deduplicate by tool identity and remove self-references.
         #
@@ -257,6 +258,14 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__system_prompt__ = "\n\n".join(
+                part
+                for part in (
+                    getattr(result, "__system_prompt__", ""),
+                    instance.__system_prompt__,
+                )
+                if part
+            )
         return result
 
     @classmethod
@@ -318,7 +327,8 @@ class Template[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
-
+        mod = inspect.getmodule(_fn)
+        op.__system_prompt__ = inspect.getdoc(mod) if mod is not None else ""  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
@@ -368,6 +378,7 @@ class Agent(abc.ABC):
     """
 
     __history__: OrderedDict[str, Mapping[str, Any]]
+    __system_prompt__: str
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -375,3 +386,9 @@ class Agent(abc.ABC):
             prop = functools.cached_property(lambda _: OrderedDict())
             prop.__set_name__(cls, "__history__")
             cls.__history__ = prop
+        if not hasattr(cls, "__system_prompt__"):
+            sp = functools.cached_property(
+                lambda self: inspect.getdoc(type(self)) or ""
+            )
+            sp.__set_name__(cls, "__system_prompt__")
+            cls.__system_prompt__ = sp
