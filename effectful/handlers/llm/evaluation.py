@@ -564,12 +564,11 @@ def mypy_type_check(
     if not module.body:
         raise TypeError("mypy_type_check: module.body is empty")
     last = module.body[-1]
-    if not isinstance(last, ast.FunctionDef):
+    if not isinstance(last, ast.FunctionDef | ast.ClassDef):
         raise TypeError(
-            f"mypy_type_check: last statement must be a function definition, "
+            f"mypy_type_check: last statement must be a function or class definition, "
             f"got {type(last).__name__}"
         )
-    func_name = last.name
 
     imports = collect_imports(ctx)
     # Ensure annotations in the postlude can be resolved (e.g. collections.abc.Callable, typing)
@@ -614,33 +613,42 @@ def mypy_type_check(
         stub_module_body = ast.Module(body=module_body, type_ignores=[])
         _RenameTransformer(rename_map).visit(stub_module_body)
         module_body = stub_module_body.body
-        tc_func_name = rename_map.get(func_name, func_name)
     else:
         module_body = list(module.body)
-        tc_func_name = func_name
 
-    param_types = expected_params
-    expected_callable_type: type = typing.cast(
-        type,
-        collections.abc.Callable[param_types, expected_return]
-        if expected_params is not None
-        else collections.abc.Callable[..., expected_return],
-    )
+    postlude: list[ast.stmt] = []
+    if isinstance(last, ast.FunctionDef):
+        func_name = last.name
+        tc_func_name = (
+            rename_map.get(func_name, func_name)
+            if colliding_names
+            else func_name
+        )
+        param_types = expected_params
+        expected_callable_type: type = typing.cast(
+            type,
+            collections.abc.Callable[param_types, expected_return]
+            if expected_params is not None
+            else collections.abc.Callable[..., expected_return],
+        )
+        expected_callable_ast = type_to_ast(expected_callable_type)
+        postlude = [
+            ast.AnnAssign(
+                target=ast.Name(id="_synthesized_check", ctx=ast.Store()),
+                annotation=expected_callable_ast,
+                value=ast.Name(id=tc_func_name, ctx=ast.Load()),
+                simple=1,
+            )
+        ]
+    # For ClassDef: no postlude needed, mypy checks the class body directly.
 
-    expected_callable_ast = type_to_ast(expected_callable_type)
-    postlude = ast.AnnAssign(
-        target=ast.Name(id="_synthesized_check", ctx=ast.Store()),
-        annotation=expected_callable_ast,
-        value=ast.Name(id=tc_func_name, ctx=ast.Load()),
-        simple=1,
-    )
     full_body = (
         baseline_imports
         + list(imports)
         + list(stubs)
         + list(variables)
         + module_body
-        + [postlude]
+        + postlude
     )
     stub_module = ast.Module(body=full_body, type_ignores=[])
     source = ast.unparse(ast.fix_missing_locations(stub_module))

@@ -682,6 +682,9 @@ class TypeEncodable(Encodable[type, SynthesizedType]):
             # Parse via evaluation effect (also registers source in linecache)
             tree = evaluation.parse(module_code, filename)
 
+            # Type-check the synthesized module
+            evaluation.type_check(tree, self.ctx, None, type)
+
             # Inject __firstlineno__ into class bodies for Python 3.13+ compatibility
             # inspect.getsource() looks for __firstlineno__ in vars(cls),
             # which requires it to be in the class's __dict__.
