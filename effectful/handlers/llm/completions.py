@@ -30,7 +30,12 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.template import (
+    Agent,
+    Template,
+    Tool,
+    _is_recursive_signature,
+)
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -165,6 +170,37 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
+def _collect_tools(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> collections.abc.Mapping[str, Tool]:
+    """Operations and Templates available as tools. Auto-capture from lexical context."""
+    result = {}
+
+    for name, obj in env.items():
+        # Collect tools directly in context
+        if isinstance(obj, Tool):
+            result[name] = obj
+
+        # Collect tools as methods on Agent instances in context
+        elif isinstance(obj, Agent):
+            for cls in type(obj).__mro__:
+                for attr_name in vars(cls):
+                    if isinstance(getattr(obj, attr_name), Tool):
+                        result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
+
+    # The same Tool can appear under multiple names when it is both
+    # visible in the enclosing scope *and* discovered via an Agent
+    # instance's MRO.  Since Tools are hashable Operations and
+    # instance-method Tools are cached per instance, we keep only
+    # the last name for each unique tool object.
+    tool2name = {tool: name for name, tool in sorted(result.items())}
+    for name, tool in tuple(result.items()):
+        if tool2name[tool] != name:
+            del result[name]
+
+    return result
+
+
 @Operation.define
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> typing.Any:
@@ -179,7 +215,7 @@ def completion(*args, **kwargs) -> typing.Any:
 
 @Operation.define
 def call_assistant[T](
-    tools: collections.abc.Mapping[str, Tool],
+    env: collections.abc.Mapping[str, typing.Any],
     response_format: pydantic.TypeAdapter[T],
     model: str,
     **kwargs,
@@ -195,6 +231,7 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    tools = _collect_tools(env)
     tool_specs = {
         k: pydantic.TypeAdapter(Encodable[type(t)]).dump_python(
             t, mode="json", context=tools
@@ -245,7 +282,7 @@ def call_assistant[T](
         try:
             result = response_format.validate_python(
                 json.loads(serialized_result),
-                context=tools,  # TODO must be full context
+                context=env,
             )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -416,7 +453,7 @@ class RetryLLMHandler(ObjectInterpretation):
     @implements(call_assistant)
     def _call_assistant[T](
         self,
-        tools: collections.abc.Mapping[str, Tool],
+        env: collections.abc.Mapping[str, typing.Any],
         response_format: pydantic.TypeAdapter[T],
         model: str,
         **kwargs,
@@ -468,6 +505,9 @@ class LiteLLMProvider(ObjectInterpretation):
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
 
+        if not _is_recursive_signature(template.__signature__):
+            env = env.new_child({k: None for k, v in env.items() if v is template})
+
         # Create response_model with env so tools passed as arguments are available
         response_model: pydantic.TypeAdapter[T] = pydantic.TypeAdapter(
             Encodable[template.__signature__.return_annotation]
@@ -488,7 +528,7 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    template.tools, response_model, **self.config
+                    env, response_model, **self.config
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
