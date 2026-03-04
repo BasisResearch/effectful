@@ -395,7 +395,7 @@ class TestSystemPromptInvariant:
     def test_nested_agent_flow_has_one_system_message_per_round(self):
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -639,7 +639,7 @@ class TestNestedTemplateCalling:
         """The scenario from issue #560 completes without error."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("check passed"),
                 make_text_response("all good"),
             ]
@@ -655,7 +655,7 @@ class TestNestedTemplateCalling:
         """Inner template's messages are absent from agent.__history__."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -679,7 +679,7 @@ class TestNestedTemplateCalling:
         not the outer template's in-flight messages."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -703,7 +703,7 @@ class TestNestedTemplateCalling:
                 # First call: direct answer (no tool call)
                 make_text_response("first"),
                 # Second call: tool → nested → final
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("second"),
             ]
@@ -729,7 +729,7 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 # First call: tool → nested → final
-                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("first"),
                 # Second call: direct answer
@@ -782,11 +782,11 @@ def test_template_method():
 
     a = A(0)
     assert isinstance(a.f, Template)
-    assert "random" in a.f.tools
+    assert a.random in a.f.tools.values()
     # f is the template itself — found via self but correctly removed (non-recursive)
-    assert "f" not in a.f.tools
+    assert a.f not in a.f.tools.values()
     assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
-    assert a.f.tools["random"]() == 4
+    assert any(t() == 4 for t in a.f.tools.values() if t is a.random)
 
     class B(A):
         """You are a derived template-method test agent.
@@ -800,8 +800,8 @@ def test_template_method():
 
     b = B(1)
     assert isinstance(b.f, Template)
-    assert "random" in b.f.tools
-    assert "reverse" in b.f.tools
+    assert b.random in b.f.tools.values()
+    assert b.reverse in b.f.tools.values()
     assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
 
 
@@ -939,9 +939,9 @@ class TestLexicalScopeCollection:
                 raise NotHandled
 
         w = Widget()
-        assert "measure" in w.describe.tools
+        assert w.measure in w.describe.tools.values()
         # The template itself is not in tools (non-recursive)
-        assert "describe" not in w.describe.tools
+        assert w.describe not in w.describe.tools.values()
 
     def test_inherited_tools_visible(self):
         """Tools from a base Agent class are visible through the instance."""
@@ -967,7 +967,7 @@ class TestLexicalScopeCollection:
                 raise NotHandled
 
         d = Derived()
-        assert "base_tool" in d.ask.tools
+        assert d.base_tool in d.ask.tools.values()
 
     def test_tool_in_enclosing_function_visible_through_class(self):
         """function -> class -> Template.define: tool in the function is visible."""

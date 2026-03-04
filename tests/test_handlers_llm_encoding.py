@@ -295,6 +295,8 @@ ROUNDTRIP_CASES = [
     pytest.param(tuple[int, str], (1, "hello"), None, id="tuple-int-str"),
     pytest.param(tuple[int, str, bool], (42, "hello", True), None, id="tuple-three"),
     pytest.param(tuple[()], (), None, id="tuple-empty"),
+    pytest.param(tuple, (1, "hello", True), None, id="tuple-bare"),
+    pytest.param(tuple[int, ...], (1, 2, 3), None, id="tuple-variadic"),
     # --- list ---
     pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
     pytest.param(list[str], ["hello", "world"], None, id="list-str"),
@@ -516,6 +518,27 @@ def test_to_content_blocks_maximal_extraction(ty, value, ctx):
         "".join(b["text"] if b["type"] == "text" else "null" for b in blocks)
     )
     assert not _has_content_block(skeleton)
+
+
+# ============================================================================
+# Tuple-specific: error cases
+# ============================================================================
+
+TUPLE_SCHEMA_CASES = [
+    pytest.param(tuple[int, str], id="tuple-int-str"),
+    pytest.param(tuple[int, str, bool], id="tuple-three"),
+    pytest.param(tuple[()], id="tuple-empty"),
+]
+
+
+@pytest.mark.parametrize("ty", TUPLE_SCHEMA_CASES)
+def test_tuple_schema_no_prefix_items(ty):
+    """Finitary tuple schemas use properties/required, not prefixItems."""
+    enc = Encodable.define(ty)
+    schema = pydantic.TypeAdapter(enc.enc).json_schema()
+    assert "prefixItems" not in str(schema), (
+        f"Schema for {ty} should not contain prefixItems: {schema}"
+    )
 
 
 # ============================================================================
