@@ -217,7 +217,7 @@ class Template[**P, T](Tool[P, T]):
         """Operations and Templates available as tools. Auto-capture from lexical context."""
         from effectful.handlers.llm.completions import _collect_tools
 
-        result = dict(_collect_tools(self.__context__))
+        result = _collect_tools(self.__context__)
 
         # We remove the template itself from the tool map unless it is explicitly
         # marked as recursive (see test_template_method, test_template_method_nested_class).
