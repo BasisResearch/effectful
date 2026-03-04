@@ -354,7 +354,7 @@ class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
 class MutableSequenceEncodable[T](SequenceEncodable[T]):
     """Mutable sequence (list) — same as SequenceEncodable but returns a list."""
 
-    def encode(self, value: MutableSequence[T]) -> typing.Any:
+    def encode(self, value: Sequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
             raise TypeError(f"Expected MutableSequence, got {type(value)}")
         return [self.element_encoder.encode(elem) for elem in value]
