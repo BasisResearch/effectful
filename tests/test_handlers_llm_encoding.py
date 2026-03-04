@@ -1,8 +1,8 @@
 """
 Law-based test suite for effectful.handlers.llm.encoding.
 
-Each test function verifies a single equational law of the Encodable[T, U]
-interface, parametrized over many types and values.
+Each test function verifies a single equational law of the Encodable[T]
+type-level encoding, parametrized over many types and values.
 """
 
 import inspect
@@ -31,7 +31,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 
-CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
+CHEAP_MODEL = "gpt-4-mini"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -226,7 +226,7 @@ def _make_dtc(tool, kwargs, call_id):
 # ---------------------------------------------------------------------------
 
 # (type_annotation, value, ctx) triples — reused across law tests.
-# ctx=None means Encodable.define(ty), otherwise Encodable.define(ty, ctx).
+# ctx=None means no context, otherwise passed as context to dump_python/validate_python.
 ROUNDTRIP_CASES = [
     # --- str ---
     pytest.param(str, "hello", None, id="str-hello"),
@@ -406,8 +406,9 @@ ROUNDTRIP_CASES = [
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_decode_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    assert enc.decode(enc.encode(value)) == value
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    assert enc.validate_python(encoded, context=ctx or {}) == value
 
 
 # ============================================================================
@@ -417,8 +418,8 @@ def test_encode_decode_roundtrip(ty, value, ctx):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_serialize_deserialize_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
     assert json.loads(json.dumps(encoded)) == encoded
 
 
@@ -429,9 +430,11 @@ def test_serialize_deserialize_roundtrip(ty, value, ctx):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_full_pipeline_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
-    assert enc.decode(json.loads(json.dumps(encoded))) == value
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    assert (
+        enc.validate_python(json.loads(json.dumps(encoded)), context=ctx or {}) == value
+    )
 
 
 # ============================================================================
@@ -441,8 +444,12 @@ def test_full_pipeline_roundtrip(ty, value, ctx):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_idempotent(ty, value, ctx):
-    once = Encodable.define(ty, ctx).encode(value)
-    twice = Encodable.define(nested_type(once).value, ctx).encode(once)
+    once = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
+    twice = pydantic.TypeAdapter(Encodable[nested_type(once).value]).dump_python(
+        once, mode="json", context=ctx or {}
+    )
     assert once == twice
 
 
@@ -475,8 +482,9 @@ def _has_content_block(v):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_to_content_blocks_linearization(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
+    encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
     if isinstance(encoded, str):
         # Bare strings are emitted without JSON quoting for natural template rendering
         assert _linearize(to_content_blocks(encoded)) == encoded
@@ -492,13 +500,13 @@ def test_to_content_blocks_linearization(ty, value, ctx):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_to_content_blocks_full_pipeline(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
     linearized = _linearize(to_content_blocks(encoded))
     if isinstance(encoded, str):
-        assert enc.decode(linearized) == value
+        assert enc.validate_python(linearized, context=ctx or {}) == value
     else:
-        assert enc.decode(json.loads(linearized)) == value
+        assert enc.validate_python(json.loads(linearized), context=ctx or {}) == value
 
 
 # ============================================================================
@@ -508,8 +516,9 @@ def test_to_content_blocks_full_pipeline(ty, value, ctx):
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_to_content_blocks_maximal_extraction(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
+    encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
     if isinstance(encoded, str):
         # Bare strings are emitted unquoted; they can't contain content blocks
         return
@@ -534,8 +543,7 @@ TUPLE_SCHEMA_CASES = [
 @pytest.mark.parametrize("ty", TUPLE_SCHEMA_CASES)
 def test_tuple_schema_no_prefix_items(ty):
     """Finitary tuple schemas use properties/required, not prefixItems."""
-    enc = Encodable.define(ty)
-    schema = enc.enc.json_schema()
+    schema = pydantic.TypeAdapter(Encodable[ty]).json_schema()
     assert "prefixItems" not in str(schema), (
         f"Schema for {ty} should not contain prefixItems: {schema}"
     )
@@ -596,9 +604,10 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
             "function": {"name": tool_name, "arguments": args_json},
         }
     )
-    enc = Encodable.define(DecodedToolCall, ctx)
     with pytest.raises(exc_type):
-        enc.decode(tool_call)
+        pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
+            tool_call, context=ctx
+        )
 
 
 # ============================================================================
@@ -647,9 +656,11 @@ def test_callable_encode_decode_behavioral(
     ty, func, ctx, args, expected, eval_provider
 ):
     """Decoded callable is behaviorally equivalent to the original."""
-    enc = Encodable.define(ty, ctx)
+    enc = pydantic.TypeAdapter(Encodable[ty])
     with handler(eval_provider):
-        decoded = enc.decode(enc.encode(func))
+        decoded = enc.validate_python(
+            enc.dump_python(func, mode="json", context=ctx), context=ctx
+        )
         assert decoded(*args) == expected
 
 
@@ -659,10 +670,10 @@ def test_callable_full_pipeline_behavioral(
     ty, func, ctx, args, expected, eval_provider
 ):
     """Full encode->serialize->deserialize->decode pipeline is behaviorally equivalent."""
-    enc = Encodable.define(ty, ctx)
-    text = json.dumps(enc.encode(func))
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    text = json.dumps(enc.dump_python(func, mode="json", context=ctx))
     with handler(eval_provider):
-        decoded = enc.decode(json.loads(text))
+        decoded = enc.validate_python(json.loads(text), context=ctx)
     assert decoded(*args) == expected
 
 
@@ -704,16 +715,16 @@ CALLABLE_ERROR_CASES = [
 @pytest.mark.parametrize("ty,ctx,source,exc_type", CALLABLE_ERROR_CASES)
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
 def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provider):
-    enc = Encodable.define(ty, ctx)
     with pytest.raises(exc_type):
         with handler(eval_provider):
-            enc.decode(source)
+            pydantic.TypeAdapter(Encodable[ty]).validate_python(source, context=ctx)
 
 
 def test_callable_encode_non_callable():
-    enc = Encodable.define(Callable[..., int], {})
     with pytest.raises(Exception):
-        enc.encode("not a callable")
+        pydantic.TypeAdapter(Encodable[Callable[..., int]]).dump_python(
+            "not a callable", mode="json", context={}
+        )
 
 
 def test_callable_encode_no_source_no_docstring():
@@ -725,9 +736,10 @@ def test_callable_encode_no_source_no_docstring():
         def __call__(self):
             pass
 
-    enc = Encodable.define(Callable[..., int], {})
     with pytest.raises(ValueError):
-        enc.encode(_NoDocCallable())
+        pydantic.TypeAdapter(Encodable[Callable[..., int]]).dump_python(
+            _NoDocCallable(), mode="json", context={}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -769,12 +781,12 @@ PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
-    enc = Encodable.define(ty, ctx)
+    enc = pydantic.TypeAdapter(Encodable[ty])
     response = litellm.completion(
         model=CHEAP_MODEL,
         response_format={
             "type": "json_schema",
-            "schema": enc.enc.json_schema(),
+            "schema": enc.json_schema(),
             "strict": True,
         },
         messages=[
@@ -793,8 +805,8 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     )
 
     deserialized = json.loads(content)
-    decoded = enc.decode(deserialized)
-    pydantic.TypeAdapter(enc.base).validate_python(decoded)
+    decoded = enc.validate_python(deserialized, context=ctx or {})
+    pydantic.TypeAdapter(ty).validate_python(decoded)
 
 
 # @requires_openai
@@ -812,11 +824,11 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     _fn.__annotations__ = {"value": ty, "return": None}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc = Encodable.define(type(tool), ctx)
+    enc = pydantic.TypeAdapter(Encodable[type(tool)])
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[enc.encode(tool)],
+        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
         tool_choice="none",
         max_tokens=400,
     )
@@ -838,11 +850,11 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     _fn.__annotations__ = {"return": ty}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc = Encodable.define(type(tool), ctx)
+    enc = pydantic.TypeAdapter(Encodable[type(tool)])
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[enc.encode(tool)],
+        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
         tool_choice="none",
         max_tokens=400,
     )

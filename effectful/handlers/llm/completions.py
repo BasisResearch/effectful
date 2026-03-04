@@ -27,7 +27,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
-    _Encodable,
+    Encodable,
     to_content_blocks,
 )
 from effectful.handlers.llm.template import Template, Tool
@@ -196,7 +196,7 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {
-        k: pydantic.TypeAdapter(_Encodable[type(t)]).dump_python(
+        k: pydantic.TypeAdapter(Encodable[type(t)]).dump_python(
             t, mode="json", context=tools
         )
         for k, t in tools.items()
@@ -223,7 +223,7 @@ def call_assistant[T](
 
     tool_calls: list[DecodedToolCall] = []
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
-        _Encodable[DecodedToolCall]
+        Encodable[DecodedToolCall]
     )
     for raw_tool_call in message.get("tool_calls") or []:
         try:
@@ -268,7 +268,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = pydantic.TypeAdapter(_Encodable[nested_type(result).value])
+    return_type = pydantic.TypeAdapter(Encodable[nested_type(result).value])
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
     )
@@ -308,7 +308,7 @@ def call_user(
 
         obj, _ = formatter.get_field(field_name, (), env)
         encoder: pydantic.TypeAdapter = pydantic.TypeAdapter(
-            _Encodable[nested_type(obj).value]
+            Encodable[nested_type(obj).value]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
@@ -470,7 +470,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
         # Create response_model with env so tools passed as arguments are available
         response_model: pydantic.TypeAdapter[T] = pydantic.TypeAdapter(
-            _Encodable[template.__signature__.return_annotation]
+            Encodable[template.__signature__.return_annotation]
         )
 
         history: collections.OrderedDict[str, Message] = getattr(

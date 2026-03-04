@@ -6,13 +6,13 @@ import inspect
 import io
 import json
 import textwrap
+import types
 import typing
 from collections.abc import (
     Callable,
     Mapping,
     MutableMapping,
 )
-from types import CodeType
 from typing import Any
 
 import litellm
@@ -104,37 +104,12 @@ class DecodedToolCall[T]:
 
 
 if typing.TYPE_CHECKING:
-    type _Encodable[T] = typing.Annotated[T, "encoded"]
+    type Encodable[T] = typing.Annotated[T, "encoded"]
 else:
 
-    class _Encodable:
+    class Encodable:
         def __class_getitem__(cls, item):
             return TypeToPydanticType().evaluate(item)
-
-
-@dataclasses.dataclass
-class Encodable[T]:
-    base: type[T]
-    ctx: Mapping[str, Any] = dataclasses.field(default_factory=dict)
-
-    @functools.cached_property
-    def enc(self) -> pydantic.TypeAdapter[T]:
-        return pydantic.TypeAdapter(TypeToPydanticType().evaluate(self.base))
-
-    def encode(self, value: T) -> Mapping[str, Any]:
-        return self.enc.dump_python(value, mode="json", context=self.ctx)
-
-    def decode(self, encoded_value: Mapping[str, Any]) -> T:
-        return self.enc.validate_python(encoded_value, context=self.ctx)
-
-    @typing.final
-    @classmethod
-    def define(
-        cls: type[typing.Self],
-        t: type[T],
-        ctx: Mapping[str, Any] | None = None,
-    ) -> typing.Self:
-        return cls(t, ctx or {})
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -385,7 +360,7 @@ def _pydantic_callable(callable_type: Any) -> Any:
 
         g: MutableMapping[str, Any] = {}
         g.update(ctx)
-        bytecode: CodeType = evaluation.compile(module, filename)
+        bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
         func_name = last_stmt.name
@@ -506,7 +481,7 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc = pydantic.TypeAdapter(_Encodable[param.annotation])
+        arg_enc = pydantic.TypeAdapter(Encodable[param.annotation])
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
         tool=tool,
@@ -522,7 +497,9 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter = pydantic.TypeAdapter(_Encodable[nested_type(v).value])
+        v_enc: pydantic.TypeAdapter = pydantic.TypeAdapter(
+            Encodable[nested_type(v).value]
+        )
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return ChatCompletionMessageToolCall.model_validate(
         {
