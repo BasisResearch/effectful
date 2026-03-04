@@ -514,8 +514,8 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc = Encodable.define(nested_type(v).value, ctx)
-        encoded_args[k] = v_enc.encode(v)
+        v_enc = Encodable.define(nested_type(v).value).enc
+        encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return ChatCompletionMessageToolCall.model_validate(
         {
             "type": "tool_call",

@@ -196,7 +196,7 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {
-        k: Encodable.define(type(t), tools).encode(t)
+        k: Encodable.define(type(t)).enc.dump_python(t, mode="json", context=tools)
         for k, t in tools.items()
     }
     messages = list(_get_history().values())
@@ -262,8 +262,8 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(nested_type(result).value)  # type: ignore
-    encoded_result = to_content_blocks(return_type.encode(result))
+    return_type = Encodable.define(nested_type(result).value).enc  # type: ignore
+    encoded_result = to_content_blocks(return_type.dump_python(result, mode="json", context={}))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -299,11 +299,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(nested_type(obj).value, env)  # type: ignore
-        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = to_content_blocks(
-            encoder.encode(obj)
-        )
-        for part in encoded_obj:
+        encoder: pydantic.TypeAdapter = Encodable.define(nested_type(obj).value, env).enc
+        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
+        for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":
                 text = (
                     formatter.convert_field(part["text"], conversion)
