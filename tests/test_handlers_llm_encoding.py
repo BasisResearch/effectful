@@ -294,6 +294,8 @@ ROUNDTRIP_CASES = [
     pytest.param(tuple[int, str], (1, "hello"), None, id="tuple-int-str"),
     pytest.param(tuple[int, str, bool], (42, "hello", True), None, id="tuple-three"),
     pytest.param(tuple[()], (), None, id="tuple-empty"),
+    pytest.param(tuple, (1, "hello", True), None, id="tuple-bare"),
+    pytest.param(tuple[int, ...], (1, 2, 3), None, id="tuple-variadic"),
     # --- list ---
     pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
     pytest.param(list[str], ["hello", "world"], None, id="list-str"),
@@ -477,6 +479,23 @@ def test_define_raises_for_invalid_types(ty):
 # ============================================================================
 # Image-specific: deserialize raises, decode rejects invalid URLs
 # ============================================================================
+
+
+TUPLE_SCHEMA_CASES = [
+    pytest.param(tuple[int, str], id="tuple-int-str"),
+    pytest.param(tuple[int, str, bool], id="tuple-three"),
+    pytest.param(tuple[()], id="tuple-empty"),
+]
+
+
+@pytest.mark.parametrize("ty", TUPLE_SCHEMA_CASES)
+def test_tuple_schema_no_prefix_items(ty):
+    """Finitary tuple schemas use properties/required, not prefixItems."""
+    enc = Encodable.define(ty)
+    schema = pydantic.TypeAdapter(enc.enc).json_schema()
+    assert "prefixItems" not in str(schema), (
+        f"Schema for {ty} should not contain prefixItems: {schema}"
+    )
 
 
 def test_image_deserialize_raises():
@@ -684,9 +703,6 @@ def test_callable_encode_no_source_no_docstring():
 # Provider integration tests
 # ---------------------------------------------------------------------------
 
-_tuple_schema_bug_xfail = pytest.mark.xfail(
-    reason="Known tuple schema bug; expected to fail until fixed."
-)
 _provider_response_format_xfail = pytest.mark.xfail(
     reason="Known OpenAI/LiteLLM response_format limitation for this type."
 )
@@ -694,12 +710,6 @@ _provider_response_format_xfail = pytest.mark.xfail(
 
 def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
-    if case_id.startswith("tuple-") or case_id in {
-        "dc-with-tuple",
-        "nt-coord",
-        "nt-person",
-    }:
-        marks.append(_tuple_schema_bug_xfail)
     if case_id.startswith(("list-", "img-", "tool-", "dtc-")):
         marks.append(_provider_response_format_xfail)
     return marks
