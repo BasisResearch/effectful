@@ -227,8 +227,16 @@ class ImageEncodable(Encodable[Image.Image, pydantic.BaseModel]):
 
 @dataclass
 class TupleEncodable[T](Encodable[T, typing.Any]):
+    """Encodes fixed-length heterogeneous tuples (e.g. ``tuple[int, str]``).
+
+    ``model_cls`` is a dynamic pydantic model (``TupleItems``) with one field
+    per position, producing an object JSON schema that OpenAI accepts
+    (unlike the ``prefixItems`` schema from native tuple types).
+    """
+
     base: type[T]
     enc: type[typing.Any]
+    model_cls: type[pydantic.BaseModel]
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoders: list[Encodable]
@@ -241,43 +249,47 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
                 f"Tuple length {len(value)} does not match expected length {len(self.element_encoders)}"
             )
         return tuple(
-            [enc.encode(elem) for enc, elem in zip(self.element_encoders, value)]
+            enc.encode(elem) for enc, elem in zip(self.element_encoders, value)
         )
 
     def decode(self, encoded_value: typing.Any) -> T:
-        if len(encoded_value) != len(self.element_encoders):
+        # Pydantic validation produces a TupleItems model instance;
+        # extract the positional fields back into a sequence.
+        if isinstance(encoded_value, pydantic.BaseModel):
+            items = list(encoded_value.model_dump().values())
+        else:
+            items = list(encoded_value)
+        if len(items) != len(self.element_encoders):
             raise ValueError(
-                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
+                f"tuple length {len(items)} does not match expected length {len(self.element_encoders)}"
             )
-        decoded_elements: list[typing.Any] = [
-            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
-        ]
-        return typing.cast(T, tuple(decoded_elements))
+        return typing.cast(
+            T,
+            tuple(enc.decode(elem) for enc, elem in zip(self.element_encoders, items)),
+        )
 
     def serialize(
         self, encoded_value: typing.Any
     ) -> Sequence[OpenAIMessageContentListBlock]:
         if self.has_image:
-            # If tuple contains images, serialize each element and flatten the results
             result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, tuple):
-                raise TypeError(f"Expected tuple, got {type(encoded_value)}")
-            if len(encoded_value) != len(self.element_encoders):
-                raise ValueError(
-                    f"Tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
-                )
             for enc, elem in zip(self.element_encoders, encoded_value):
                 result.extend(enc.serialize(elem))
             return result
-        else:
-            # Use base serialization for non-image tuples
-            adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
-            json_str = adapter.dump_json(encoded_value).decode("utf-8")
-            return [{"type": "text", "text": json_str}]
+        model_instance = self.model_cls(
+            **{f"item_{i}": v for i, v in enumerate(encoded_value)}
+        )
+        json_str = model_instance.model_dump_json()
+        return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
-        adapter: pydantic.TypeAdapter[tuple] = pydantic.TypeAdapter(self.enc)
-        return adapter.validate_json(serialized_value)
+        model = self.model_cls.model_validate_json(serialized_value)
+        # Return raw field values (preserving nested pydantic models).
+        # Use tuple to be compatible with SequenceEncodable (which also
+        # produces tuples), ensuring encode idempotency via nested_type.
+        return tuple(
+            getattr(model, f"item_{i}") for i in range(len(self.element_encoders))
+        )
 
 
 @dataclass
@@ -285,25 +297,66 @@ class NamedTupleEncodable[T](TupleEncodable[T]):
     """Tuple encodable that reconstructs the original NamedTuple type on decode."""
 
     def decode(self, encoded_value: typing.Any) -> T:
-        if len(encoded_value) != len(self.element_encoders):
+        if isinstance(encoded_value, pydantic.BaseModel):
+            items = list(encoded_value.model_dump().values())
+        else:
+            items = list(encoded_value)
+        if len(items) != len(self.element_encoders):
             raise ValueError(
-                f"tuple length {len(encoded_value)} does not match expected length {len(self.element_encoders)}"
+                f"tuple length {len(items)} does not match expected length {len(self.element_encoders)}"
             )
         decoded_elements: list[typing.Any] = [
-            enc.decode(elem) for enc, elem in zip(self.element_encoders, encoded_value)
+            enc.decode(elem) for enc, elem in zip(self.element_encoders, items)
         ]
         return typing.cast(T, self.base(*decoded_elements))
 
 
 @dataclass
-class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
-    base: type[MutableSequence[T]]
+class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
+    """Variable-length sequence encoded as a JSON array, decoded back to tuple."""
+
+    base: type[typing.Any]
     enc: type[typing.Any]
     ctx: Mapping[str, Any]
     has_image: bool
     element_encoder: Encodable[T, typing.Any]
 
-    def encode(self, value: MutableSequence[T]) -> typing.Any:
+    def encode(self, value: Sequence[T]) -> typing.Any:
+        # Return a tuple so that nested_type routes back through the tuple
+        # dispatcher, preserving encode idempotency.
+        return tuple(self.element_encoder.encode(elem) for elem in value)
+
+    def decode(self, encoded_value: typing.Any) -> Sequence[T]:
+        return typing.cast(
+            Sequence[T],
+            tuple(self.element_encoder.decode(elem) for elem in encoded_value),
+        )
+
+    def serialize(
+        self, encoded_value: typing.Any
+    ) -> Sequence[OpenAIMessageContentListBlock]:
+        if self.has_image:
+            result: list[OpenAIMessageContentListBlock] = []
+            for elem in encoded_value:
+                result.extend(self.element_encoder.serialize(elem))
+            return result
+        adapter = pydantic.TypeAdapter(self.enc)
+        # Convert to list for pydantic serialization (enc is list[...])
+        json_str = adapter.dump_json(list(encoded_value)).decode("utf-8")
+        return [{"type": "text", "text": json_str}]
+
+    def deserialize(self, serialized_value: str) -> typing.Any:
+        adapter = pydantic.TypeAdapter(self.enc)
+        # validate_json returns a list; convert back to tuple for
+        # compatibility with SequenceEncodable (which uses tuples).
+        return tuple(adapter.validate_json(serialized_value))
+
+
+@dataclass
+class MutableSequenceEncodable[T](SequenceEncodable[T]):
+    """Mutable sequence (list) — same as SequenceEncodable but returns a list."""
+
+    def encode(self, value: Sequence[T]) -> typing.Any:
         if not isinstance(value, MutableSequence):
             raise TypeError(f"Expected MutableSequence, got {type(value)}")
         return [self.element_encoder.encode(elem) for elem in value]
@@ -313,23 +366,6 @@ class MutableSequenceEncodable[T](Encodable[MutableSequence[T], typing.Any]):
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
         return typing.cast(MutableSequence[T], decoded_elements)
-
-    def serialize(
-        self, encoded_value: typing.Any
-    ) -> Sequence[OpenAIMessageContentListBlock]:
-        if self.has_image:
-            # If list contains images, serialize each element and flatten the results
-            result: list[OpenAIMessageContentListBlock] = []
-            if not isinstance(encoded_value, MutableSequence):
-                raise TypeError(f"Expected MutableSequence, got {type(encoded_value)}")
-            for elem in encoded_value:
-                result.extend(self.element_encoder.serialize(elem))
-            return result
-        else:
-            # Use base serialization for non-image lists
-            adapter = pydantic.TypeAdapter(self.enc)
-            json_str = adapter.dump_json(encoded_value).decode("utf-8")
-            return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
@@ -923,64 +959,116 @@ def _encodable_image(
 def _encodable_tuple[T, U](
     ty: type[T], ctx: Mapping[str, Any] | None
 ) -> Encodable[T, U]:
+    """Dispatch for ``tuple`` types.
+
+    * Bare ``tuple`` (no type params) or ``tuple[T, ...]``
+      (variadic) to :class:`SequenceEncodable` (JSON array).
+    * Named-tuples (subclasses with ``_fields``) → :class:`NamedTupleEncodable`.
+    * Finitary forms (``tuple[()]``, ``tuple[T]``, ``tuple[T1, T2]``, ...)
+      to :class:`TupleEncodable` (JSON object with positional fields).
+
+    https://docs.python.org/3/library/typing.html#annotating-tuples
+    """
+
     def _is_namedtuple_type(ty: type[Any]) -> bool:
         return isinstance(ty, type) and issubclass(ty, tuple) and hasattr(ty, "_fields")
 
     args = typing.get_args(ty)
     ctx = {} if ctx is None else ctx
 
-    # Handle plain tuple runtime type explicitly.
-    if ty is tuple:
-        return typing.cast(
-            Encodable[T, U],
-            TupleEncodable(ty, ty, ctx, False, []),
-        )
-
-    # NamedTuple handling is routed through tuple logic, but decoded back into
-    # the concrete NamedTuple class.
-    origin = typing.get_origin(ty)
-    is_namedtuple = origin is None and _is_namedtuple_type(ty)
-    if origin is None:
-        if is_namedtuple:
+    if typing.get_origin(ty) is None:
+        if ty is tuple:
+            # Bare tuple — treat as tuple[Any, ...].
+            element_encoder = Encodable.define(typing.cast(type, typing.Any), ctx)
+            encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
+            return typing.cast(
+                Encodable[T, U],
+                SequenceEncodable(ty, encoded_ty, ctx, False, element_encoder),
+            )
+        if _is_namedtuple_type(ty):
+            # NamedTuple — route through tuple logic but decode back into
+            # the concrete NamedTuple class.
             hints = typing.get_type_hints(ty)
             tuple_field_types: list[type[Any]] = list(hints.values())
             if not tuple_field_types:
                 tuple_field_types = [typing.Any] * len(getattr(ty, "_fields", ()))
-        else:
-            tuple_field_types = []
-    else:
-        tuple_field_types = list(args)
+            if not tuple_field_types:
+                # Empty namedtuple.
+                empty_model = pydantic.create_model(
+                    "TupleItems", __config__={"extra": "forbid"}
+                )
+                return typing.cast(
+                    Encodable[T, U],
+                    NamedTupleEncodable(ty, empty_model, empty_model, ctx, False, []),
+                )
+            element_encoders = [Encodable.define(arg, ctx) for arg in tuple_field_types]
+            has_image = any(arg is Image.Image for arg in tuple_field_types)
+            model_cls = pydantic.create_model(  # type: ignore[call-overload]
+                "TupleItems",
+                __config__={"extra": "forbid"},
+                **{
+                    f"item_{i}": (enc.enc, ...)
+                    for i, enc in enumerate(element_encoders)
+                },
+            )
+            return typing.cast(
+                Encodable[T, U],
+                NamedTupleEncodable(
+                    ty, model_cls, model_cls, ctx, has_image, element_encoders
+                ),
+            )
+        # Other tuple subclass — delegate to object.
+        return _encodable_object(ty, ctx)
 
-    if not tuple_field_types:
-        # Non-parameterized tuple subclasses still use object fallback.
-        if not is_namedtuple:
-            return _encodable_object(ty, ctx)
-        # Empty namedtuple; keep tuple identity behavior.
-        return typing.cast(Encodable[T, U], NamedTupleEncodable(ty, ty, ctx, False, []))
-
-    # Handle empty tuple annotation (tuple[()]).
-    if tuple_field_types == [()] or args == ((),):
-        return TupleEncodable(ty, ty, ctx, False, [])
-
-    element_encoders = [Encodable.define(arg, ctx) for arg in tuple_field_types]
-    has_image = any(arg is Image.Image for arg in tuple_field_types)
-    encoded_ty: type[typing.Any] = typing.cast(
-        type[typing.Any],
-        tuple[*(enc.enc for enc in element_encoders)],  # type: ignore
-    )
-
-    if is_namedtuple:
+    # tuple[T, ...] — variable-length, encode as JSON array.
+    if len(args) == 2 and args[1] is Ellipsis:
+        element_ty = args[0]
+        element_encoder = Encodable.define(element_ty, ctx)
+        has_image = element_ty is Image.Image
+        encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
         return typing.cast(
             Encodable[T, U],
-            NamedTupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
+            SequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
         )
 
-    if origin is None:
-        return _encodable_object(ty, ctx)
+    # Finitary tuple — fixed-length positional struct.
+    # Build a pydantic model with item_0, item_1, ... fields so the JSON
+    # schema uses "properties"/"required" (accepted by OpenAI), not
+    # "prefixItems" (rejected by OpenAI).
+    effective_args = [] if (not args or args == ((),)) else list(args)
+    element_encoders = [Encodable.define(arg, ctx) for arg in effective_args]
+    has_image = any(arg is Image.Image for arg in effective_args)
+    model_cls = pydantic.create_model(  # type: ignore[call-overload]
+        "TupleItems",
+        __config__={"extra": "forbid"},
+        **{f"item_{i}": (enc.enc, ...) for i, enc in enumerate(element_encoders)},
+    )
 
     return typing.cast(
         Encodable[T, U],
-        TupleEncodable(ty, encoded_ty, ctx, has_image, element_encoders),
+        TupleEncodable(ty, model_cls, model_cls, ctx, has_image, element_encoders),
+    )
+
+
+@Encodable.define.register(Sequence)
+def _encodable_sequence[T, U](
+    ty: type[Sequence[T]], ctx: Mapping[str, Any] | None
+) -> Encodable[T, U]:
+    """Dispatch for ``Sequence[T]`` — immutable variable-length sequence."""
+    args = typing.get_args(ty)
+    ctx = {} if ctx is None else ctx
+
+    if not args:
+        return _encodable_object(ty, ctx)
+
+    element_ty = args[0]
+    element_encoder = Encodable.define(element_ty, ctx)
+    has_image = element_ty is Image.Image
+    encoded_ty = typing.cast(type[typing.Any], list[element_encoder.enc])  # type: ignore
+
+    return typing.cast(
+        Encodable[T, U],
+        SequenceEncodable(ty, encoded_ty, ctx, has_image, element_encoder),
     )
 
 
