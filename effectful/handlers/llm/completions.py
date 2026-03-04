@@ -221,10 +221,10 @@ def call_assistant[T](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    encoding = Encodable.define(DecodedToolCall, tools)
+    encoding = Encodable.define(DecodedToolCall).enc
     for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.decode(raw_tool_call)]
+            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -240,7 +240,9 @@ def call_assistant[T](
             "final response from the model should be a string"
         )
         try:
-            result = response_format.decode(json.loads(serialized_result))
+            result = response_format.enc.validate_python(
+                json.loads(serialized_result), context=response_format.ctx
+            )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -263,7 +265,9 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     return_type = Encodable.define(nested_type(result).value).enc  # type: ignore
-    encoded_result = to_content_blocks(return_type.dump_python(result, mode="json", context={}))
+    encoded_result = to_content_blocks(
+        return_type.dump_python(result, mode="json", context={})
+    )
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -299,7 +303,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder: pydantic.TypeAdapter = Encodable.define(nested_type(obj).value, env).enc
+        encoder: pydantic.TypeAdapter = Encodable.define(
+            nested_type(obj).value, env
+        ).enc
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":

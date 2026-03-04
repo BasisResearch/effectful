@@ -22,7 +22,6 @@ from litellm import (
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolParam,
-    OpenAIMessageContent,
     OpenAIMessageContentListBlock,
 )
 from PIL import Image
@@ -498,8 +497,8 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc = Encodable.define(param.annotation, ctx)
-        decoded_args[name] = arg_enc.decode(raw_arg)
+        arg_enc = Encodable.define(param.annotation).enc
+        decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
         tool=tool,
         bound_args=sig.bind(**decoded_args),
@@ -514,7 +513,7 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc = Encodable.define(nested_type(v).value).enc
+        v_enc: pydantic.TypeAdapter = Encodable.define(nested_type(v).value).enc
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return ChatCompletionMessageToolCall.model_validate(
         {
