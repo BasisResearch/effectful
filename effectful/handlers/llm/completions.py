@@ -25,7 +25,11 @@ from litellm import (
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
+from effectful.handlers.llm.encoding import (
+    DecodedToolCall,
+    Encodable,
+    to_content_blocks,
+)
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
@@ -192,7 +196,7 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {
-        k: Encodable.define(type(t), tools).encode(t)  # type: ignore
+        k: Encodable.define(type(t), tools).encode(t)
         for k, t in tools.items()
     }
     messages = list(_get_history().values())
@@ -259,7 +263,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     return_type = Encodable.define(nested_type(result).value)  # type: ignore
-    encoded_result = return_type.serialize(return_type.encode(result))
+    encoded_result = to_content_blocks(return_type.encode(result))
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -296,7 +300,7 @@ def call_user(
 
         obj, _ = formatter.get_field(field_name, (), env)
         encoder = Encodable.define(nested_type(obj).value, env)  # type: ignore
-        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
+        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = to_content_blocks(
             encoder.encode(obj)
         )
         for part in encoded_obj:

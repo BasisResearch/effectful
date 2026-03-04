@@ -114,13 +114,10 @@ class Encodable[T]:
         return pydantic.TypeAdapter(TypeToPydanticType().evaluate(self.base))
 
     def encode(self, value: T) -> Mapping[str, Any]:
-        return self.enc.dump_python(value, context=self.ctx, mode="json")
+        return self.enc.dump_python(value, mode="json", context=self.ctx)
 
     def decode(self, encoded_value: Mapping[str, Any]) -> T:
         return self.enc.validate_python(encoded_value, context=self.ctx)
-
-    def serialize(self, encoded_value: Mapping[str, Any]) -> OpenAIMessageContent:
-        return to_content_blocks(encoded_value)
 
     @typing.final
     @classmethod
