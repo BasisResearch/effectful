@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def is_even(number: int) -> bool:\\n    return number % 2 == 0\\n\"}}",
+        "content": "{\"module_code\":\"def is_even(number: int) -> bool:\\n    return number % 2 == 0\\n\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
