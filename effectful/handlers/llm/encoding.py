@@ -339,12 +339,15 @@ class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
                 result.extend(self.element_encoder.serialize(elem))
             return result
         adapter = pydantic.TypeAdapter(self.enc)
-        json_str = adapter.dump_json(encoded_value).decode("utf-8")
+        # Convert to list for pydantic serialization (enc is list[...])
+        json_str = adapter.dump_json(list(encoded_value)).decode("utf-8")
         return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
-        return adapter.validate_json(serialized_value)
+        # validate_json returns a list; convert back to tuple for
+        # compatibility with SequenceEncodable (which uses tuples).
+        return tuple(adapter.validate_json(serialized_value))
 
 
 @dataclass
@@ -361,6 +364,10 @@ class MutableSequenceEncodable[T](SequenceEncodable[T]):
             self.element_encoder.decode(elem) for elem in encoded_value
         ]
         return typing.cast(MutableSequence[T], decoded_elements)
+
+    def deserialize(self, serialized_value: str) -> typing.Any:
+        adapter = pydantic.TypeAdapter(self.enc)
+        return adapter.validate_json(serialized_value)
 
 
 @dataclass
