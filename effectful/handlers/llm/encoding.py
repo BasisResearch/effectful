@@ -887,11 +887,16 @@ def _encodable_tuple[T, U](
             model_cls = pydantic.create_model(  # type: ignore[call-overload]
                 "TupleItems",
                 __config__={"extra": "forbid"},
-                **{f"item_{i}": (enc.enc, ...) for i, enc in enumerate(element_encoders)},
+                **{
+                    f"item_{i}": (enc.enc, ...)
+                    for i, enc in enumerate(element_encoders)
+                },
             )
             return typing.cast(
                 Encodable[T, U],
-                NamedTupleEncodable(ty, model_cls, model_cls, ctx, has_image, element_encoders),
+                NamedTupleEncodable(
+                    ty, model_cls, model_cls, ctx, has_image, element_encoders
+                ),
             )
         # Other tuple subclass — delegate to object.
         return _encodable_object(ty, ctx)
