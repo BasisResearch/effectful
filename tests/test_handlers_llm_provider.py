@@ -545,7 +545,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
+                env={},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -575,7 +575,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -607,7 +607,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -634,7 +634,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
+                    env={"add_numbers": add_numbers},
                     response_format=pydantic.TypeAdapter(Encodable[str]),
                     model="test-model",
                 )
@@ -661,7 +661,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
+                    env={"add_numbers": add_numbers},
                     response_format=pydantic.TypeAdapter(Encodable[str]),
                     model="test-model",
                 )
@@ -686,7 +686,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -761,7 +761,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
+                env={},
                 response_format=pydantic.TypeAdapter(Encodable[int]),
                 model="test-model",
             )
@@ -793,7 +793,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
+                    env={},
                     response_format=pydantic.TypeAdapter(Encodable[int]),
                     model="test-model",
                 )
@@ -820,7 +820,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
+                    env={"add_numbers": add_numbers},
                     response_format=pydantic.TypeAdapter(Encodable[str]),
                     model="test-model",
                 )
@@ -850,7 +850,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
+                    env={},
                     response_format=pydantic.TypeAdapter(Encodable[int]),
                     model="test-model",
                 )
@@ -878,7 +878,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -908,7 +908,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -938,7 +938,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -969,7 +969,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
+                env={"add_numbers": add_numbers},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -1070,8 +1070,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, tools, response_format, model, **kwargs):
-                return fwd(tools, response_format, model, **kwargs)
+            def _call_assistant(self, env, response_format, model, **kwargs):
+                return fwd(env, response_format, model, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1080,7 +1080,7 @@ class TestToolExecutionErrorHandling:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"failing_tool": failing_tool},
+                env={"failing_tool": failing_tool},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -1413,7 +1413,7 @@ class TestMessageSequence:
             handler({_get_history: lambda: message_sequence}),
         ):
             call_assistant(
-                tools={},
+                env={},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -1455,13 +1455,13 @@ class TestMessageSequence:
         ):
             # First call: input is the latest message (msg_user)
             resp1, _, _ = call_assistant(
-                tools={},
+                env={},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
             # Second call: input is the first response
             resp2, _, _ = call_assistant(
-                tools={},
+                env={},
                 response_format=pydantic.TypeAdapter(Encodable[str]),
                 model="test-model",
             )
@@ -1494,7 +1494,7 @@ class TestMessageSequence:
             ):
                 call_assistant(
                     messages=[msg],
-                    tools={},
+                    env={},
                     response_format=pydantic.TypeAdapter(Encodable[str]),
                     model="test-model",
                 )
