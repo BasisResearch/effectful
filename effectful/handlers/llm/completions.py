@@ -27,7 +27,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
-    Encodable,
+    _Encodable,
     to_content_blocks,
 )
 from effectful.handlers.llm.template import Template, Tool
@@ -180,7 +180,7 @@ def completion(*args, **kwargs) -> typing.Any:
 @Operation.define
 def call_assistant[T](
     tools: collections.abc.Mapping[str, Tool],
-    response_format: Encodable[T],
+    response_format: pydantic.TypeAdapter[T],
     model: str,
     **kwargs,
 ) -> MessageResult[T]:
@@ -196,16 +196,17 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
     tool_specs = {
-        k: Encodable.define(type(t)).enc.dump_python(t, mode="json", context=tools)
+        k: pydantic.TypeAdapter(_Encodable[type(t)]).dump_python(
+            t, mode="json", context=tools
+        )
         for k, t in tools.items()
     }
-    messages = list(_get_history().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
-        messages=list(messages),
+        messages=list(_get_history().values()),
         response_format={
             "type": "json_schema",
-            "schema": response_format.enc.json_schema(),
+            "schema": response_format.json_schema(),
             "strict": True,
         },
         tools=list(tool_specs.values()),
@@ -221,7 +222,9 @@ def call_assistant[T](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    encoding = Encodable.define(DecodedToolCall).enc
+    encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
+        _Encodable[DecodedToolCall]
+    )
     for raw_tool_call in message.get("tool_calls") or []:
         try:
             tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
@@ -240,8 +243,9 @@ def call_assistant[T](
             "final response from the model should be a string"
         )
         try:
-            result = response_format.enc.validate_python(
-                json.loads(serialized_result), context=response_format.ctx
+            result = response_format.validate_python(
+                json.loads(serialized_result),
+                context=tools,  # TODO must be full context
             )
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -264,7 +268,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(nested_type(result).value).enc  # type: ignore
+    return_type = pydantic.TypeAdapter(_Encodable[nested_type(result).value])
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
     )
@@ -303,9 +307,9 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder: pydantic.TypeAdapter = Encodable.define(
-            nested_type(obj).value, env
-        ).enc
+        encoder: pydantic.TypeAdapter = pydantic.TypeAdapter(
+            _Encodable[nested_type(obj).value]
+        )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":
@@ -413,17 +417,14 @@ class RetryLLMHandler(ObjectInterpretation):
     def _call_assistant[T](
         self,
         tools: collections.abc.Mapping[str, Tool],
-        response_format: Encodable[T],
+        response_format: pydantic.TypeAdapter[T],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
         _message_sequence = _get_history().copy()
 
-        def _attempt() -> MessageResult[T]:
-            return fwd(tools, response_format, model, **kwargs)
-
         with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result = self.call_assistant_retryer(_attempt)
+            message, tool_calls, result = self.call_assistant_retryer(fwd)
 
         append_message(message)
         return (message, tool_calls, result)
@@ -468,7 +469,9 @@ class LiteLLMProvider(ObjectInterpretation):
         env = template.__context__.new_child(bound_args.arguments)
 
         # Create response_model with env so tools passed as arguments are available
-        response_model = Encodable.define(template.__signature__.return_annotation, env)
+        response_model: pydantic.TypeAdapter[T] = pydantic.TypeAdapter(
+            _Encodable[template.__signature__.return_annotation]
+        )
 
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()

@@ -103,6 +103,15 @@ class DecodedToolCall[T]:
     name: str
 
 
+if typing.TYPE_CHECKING:
+    type _Encodable[T] = typing.Annotated[T, "encoded"]
+else:
+
+    class _Encodable:
+        def __class_getitem__(cls, item):
+            return TypeToPydanticType().evaluate(item)
+
+
 @dataclasses.dataclass
 class Encodable[T]:
     base: type[T]
@@ -497,7 +506,7 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc = Encodable.define(param.annotation).enc
+        arg_enc = pydantic.TypeAdapter(_Encodable[param.annotation])
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
         tool=tool,
@@ -513,7 +522,7 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter = Encodable.define(nested_type(v).value).enc
+        v_enc: pydantic.TypeAdapter = pydantic.TypeAdapter(_Encodable[nested_type(v).value])
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return ChatCompletionMessageToolCall.model_validate(
         {
