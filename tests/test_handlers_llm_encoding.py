@@ -31,7 +31,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 
-CHEAP_MODEL = "gpt-4o-mini"
+CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -535,7 +535,7 @@ TUPLE_SCHEMA_CASES = [
 def test_tuple_schema_no_prefix_items(ty):
     """Finitary tuple schemas use properties/required, not prefixItems."""
     enc = Encodable.define(ty)
-    schema = pydantic.TypeAdapter(enc.enc).json_schema()
+    schema = enc.enc.json_schema()
     assert "prefixItems" not in str(schema), (
         f"Schema for {ty} should not contain prefixItems: {schema}"
     )
