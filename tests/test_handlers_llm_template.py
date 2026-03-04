@@ -4,6 +4,7 @@ import collections
 import dataclasses
 import inspect
 from dataclasses import dataclass
+from typing import Annotated
 
 import pytest
 from litellm import ModelResponse
@@ -13,9 +14,15 @@ from effectful.handlers.llm.completions import (
     DEFAULT_SYSTEM_PROMPT,
     LiteLLMProvider,
     RetryLLMHandler,
+    ToolCallDecodingError,
+    _get_history,
+    call_assistant,
+    call_tool,
     call_user,
     completion,
 )
+from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
+from effectful.handlers.llm.template import IsFinal
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1518,3 +1525,262 @@ def test_validate_format_spec_on_undefined_var():
         def bad(x: int) -> str:
             """Value: {x} and {missing:.2f}."""
             raise NotHandled
+
+
+# ---------------------------------------------------------------------------
+# IsFinal annotation tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsFinalCompletionLoop:
+    """Tests for IsFinal through the full completion loop."""
+
+    def test_final_answer_tool_skips_final_llm_call(self):
+        """When LLM calls a final-answer tool, result is returned
+        directly without a second call_assistant invocation."""
+
+        @Tool.define
+        def compute(x: int) -> Annotated[int, IsFinal]:
+            """Compute and return the result directly."""
+            return x * 10
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call compute with {n}."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("compute", '{"x": {"value": 7}}')]
+        )
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = task(7)
+
+        assert result == 70
+        # Only 1 call_assistant, not 2 (no final LLM round-trip)
+        assert mock.call_count == 1
+
+    def test_agent_history_valid_after_final_answer(self):
+        """Agent history has no orphaned tool_calls after IsFinal."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[int, IsFinal]:
+            """Return final answer."""
+            return x
+
+        @dataclasses.dataclass
+        class MyAgent(Agent):
+            @Template.define
+            def do_work(self, n: int) -> int:
+                """Process {n}."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("final_tool", '{"x": {"value": 5}}')]
+        )
+        agent = MyAgent()
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = agent.do_work(5)
+
+        assert result == 5
+
+        # Verify no orphaned tool_calls in history
+        for msg in agent.__history__.values():
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    tc_id = tc["id"] if isinstance(tc, dict) else tc.id
+                    has_response = any(
+                        m.get("tool_call_id") == tc_id
+                        for m in agent.__history__.values()
+                        if m.get("role") == "tool"
+                    )
+                    assert has_response, f"Orphaned tool_call {tc_id} in history"
+
+    def test_agent_subsequent_call_after_final_answer(self):
+        """A follow-up call on the same Agent works after IsFinal."""
+
+        @Tool.define
+        def final_tool() -> Annotated[str, IsFinal]:
+            """Return final answer."""
+            return "direct result"
+
+        @dataclasses.dataclass
+        class MyAgent(Agent):
+            @Template.define
+            def step(self, msg: str) -> str:
+                """Do: {msg}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class PhaseHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return make_tool_call_response("final_tool", "{}")
+                return make_text_response("llm result")
+
+        agent = MyAgent()
+
+        with handler(LiteLLMProvider()), handler(PhaseHandler()):
+            r1 = agent.step("first")
+            r2 = agent.step("second")
+
+        assert r1 == "direct result"
+        assert r2 == "llm result"
+
+    def test_final_answer_with_retry_handler_active(self):
+        """IsFinal works correctly with RetryLLMHandler."""
+
+        @Tool.define
+        def final_tool(x: int) -> Annotated[int, IsFinal]:
+            """Return final answer."""
+            return x * 3
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call final_tool with {n}."""
+            raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_tool_call_response("final_tool", '{"x": {"value": 4}}')]
+        )
+
+        with (
+            handler(LiteLLMProvider()),
+            handler(RetryLLMHandler()),
+            handler(mock),
+        ):
+            result = task(4)
+
+        assert result == 12
+        assert mock.call_count == 1
+
+    def test_retry_handler_error_on_final_tool_does_not_produce_final_answer(self):
+        """When RetryLLMHandler catches an error on an is_final tool,
+        the error feedback goes back to the LLM instead of None being
+        returned as the final answer."""
+        call_count = 0
+
+        @Tool.define
+        def flaky_final(x: int) -> Annotated[int, IsFinal]:
+            """Return a final answer, but fail on first call."""
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("transient failure")
+            return x * 10
+
+        @Template.define
+        def task(n: int) -> int:
+            """Call flaky_final with {n}."""
+            raise NotHandled
+
+        # Round 1: LLM calls flaky_final → error caught by RetryLLMHandler
+        # Round 2: LLM calls flaky_final again → succeeds
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("flaky_final", '{"x": {"value": 5}}'),
+                make_tool_call_response("flaky_final", '{"x": {"value": 5}}'),
+            ]
+        )
+
+        with (
+            handler(LiteLLMProvider()),
+            handler(RetryLLMHandler()),
+            handler(mock),
+        ):
+            result = task(5)
+
+        assert result == 50  # NOT None
+        assert call_count == 2
+        assert mock.call_count == 2
+
+    def test_call_tool_returns_is_final_false_on_retry_handler_error(self):
+        """call_tool returns is_final=False when RetryLLMHandler catches
+        an error on an is_final tool."""
+
+        @Tool.define
+        def failing_final(x: int) -> Annotated[int, IsFinal]:
+            """Return a final answer."""
+            raise ValueError("boom")
+
+        sig = inspect.signature(failing_final)
+        bound_args = sig.bind(x=1)
+        tc = DecodedToolCall(
+            failing_final, bound_args, id="call_err", name="failing_final"
+        )
+
+        with handler(RetryLLMHandler()):
+            message, raw_result, is_final = call_tool(tc)
+
+        assert message["role"] == "tool"
+        assert message["content"]  # non-empty error feedback
+        assert raw_result is None
+        assert is_final is False
+
+    def test_mismatched_return_type_raises_tool_call_decoding_error(self):
+        """IsFinal tool returning str when template expects int is rejected."""
+
+        @Tool.define
+        def wrong_type_tool(x: int) -> Annotated[str, IsFinal]:
+            """Return a string, but template expects int."""
+            return str(x)
+
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("wrong_type_tool", '{"x": {"value": 5}}'),
+            ]
+        )
+
+        with (
+            handler(mock),
+            handler({_get_history: lambda: message_sequence}),
+        ):
+            with pytest.raises(ToolCallDecodingError) as exc_info:
+                call_assistant(
+                    tools={"wrong_type_tool": wrong_type_tool},
+                    response_format=Encodable.define(int),
+                    model="test-model",
+                )
+
+        assert isinstance(exc_info.value.original_error, TypeError)
+
+    def test_matching_return_type_passes_validation(self):
+        """IsFinal tool with matching return type is accepted."""
+
+        @Tool.define
+        def correct_tool(x: int) -> Annotated[int, IsFinal]:
+            """Return an int matching template."""
+            return x * 2
+
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("correct_tool", '{"x": {"value": 5}}'),
+            ]
+        )
+
+        with (
+            handler(mock),
+            handler({_get_history: lambda: message_sequence}),
+        ):
+            _, tool_calls, _, is_final = call_assistant(
+                tools={"correct_tool": correct_tool},
+                response_format=Encodable.define(int),
+                model="test-model",
+            )
+
+        assert len(tool_calls) == 1
+        assert is_final is True

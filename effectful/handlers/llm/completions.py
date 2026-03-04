@@ -27,7 +27,7 @@ from litellm import (
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import nested_type
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import _simple_type, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -157,7 +157,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
         )
 
 
-type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None, bool]
 
 
 @Operation.define
@@ -217,6 +217,24 @@ def call_assistant[T, U](
     for raw_tool_call in raw_tool_calls:
         try:
             tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
+            if tool_calls[-1].is_final:
+                if len(raw_tool_calls) > 1:
+                    raise ValueError(
+                        f"IsFinal tool '{raw_tool_call.function.name}' must be the "
+                        f"only tool call in a round, but {len(raw_tool_calls)} tool calls "
+                        f"were generated."
+                    )
+                # Validate that the tool's return type matches the template's.
+                tool_sig = inspect.signature(tool_calls[-1].tool)
+                return_annotation = typing.get_args(tool_sig.return_annotation)[0]
+                if not issubclass(
+                    _simple_type(return_annotation), response_format.base
+                ):
+                    raise TypeError(
+                        f"IsFinal tool '{raw_tool_call.function.name}' has signature "
+                        f"{tool_sig!r}, but the enclosing template expects "
+                        f"{response_format.base!r}."
+                    )
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -238,33 +256,35 @@ def call_assistant[T, U](
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
-    return (raw_message, tool_calls, result)
+    is_final = any(tc.is_final for tc in tool_calls) or not tool_calls
+    return (raw_message, tool_calls, result, is_final)
 
 
 @Operation.define
-def call_tool(tool_call: DecodedToolCall) -> Message:
-    """Implements a roundtrip call to a python function. Input is a json
-    string representing an LLM tool call request parameters. The output is
-    the serialised response to the model.
+def call_tool[T](tool_call: DecodedToolCall[T]) -> tuple[Message, T | None, bool]:
+    """Execute a tool and return the serialised message, the raw result, and
+    whether this result is a final answer.
 
+    Returns:
+        A 3-tuple ``(message, result, is_final)``.  ``message`` is appended
+        to the conversation history.  When ``is_final`` is ``True`` the
+        completion loop uses ``result`` directly as the template return value.
     """
     # call tool with python types
     try:
-        result = tool_call.tool(
+        result: T = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(
-        typing.cast(type[typing.Any], nested_type(result).value)
-    )
-    encoded_result = return_type.serialize(return_type.encode(result))
+    return_type = Encodable.define(nested_type(result).value)  # type: ignore
+    encoded_result = return_type.serialize(return_type.encode(result))  # type: ignore
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
     append_message(message)
-    return message
+    return message, result, tool_call.is_final
 
 
 @Operation.define
@@ -417,18 +437,24 @@ class RetryLLMHandler(ObjectInterpretation):
             return fwd(tools, response_format, model, **kwargs)
 
         with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result = self.call_assistant_retryer(_attempt)
+            message, tool_calls, result, is_final = self.call_assistant_retryer(
+                _attempt
+            )
 
         append_message(message)
-        return (message, tool_calls, result)
+        return (message, tool_calls, result, is_final)
 
     @implements(call_tool)
-    def _call_tool(self, tool_call: DecodedToolCall) -> Message:
+    def _call_tool[T](
+        self, tool_call: DecodedToolCall[T]
+    ) -> tuple[Message, T | None, bool]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as
         error messages to the LLM. Only exceptions matching `catch_tool_errors`
-        are caught; others propagate up.
+        are caught; others propagate up.  When an error is caught,
+        ``is_final`` is always ``False`` so the error feedback goes back
+        to the LLM rather than being mistaken for a final answer.
         """
         try:
             return fwd(tool_call)
@@ -436,7 +462,7 @@ class RetryLLMHandler(ObjectInterpretation):
             if isinstance(e.original_error, self.catch_tool_errors):
                 message = e.to_feedback_message(self.include_traceback)
                 append_message(message)
-                return message
+                return message, None, False
             else:
                 raise
 
@@ -477,12 +503,13 @@ class LiteLLMProvider(ObjectInterpretation):
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
             result: T | None = None
-            while message["role"] != "assistant" or tool_calls:
-                message, tool_calls, result = call_assistant(
+            is_final: bool = False
+            while not is_final:
+                message, tool_calls, result, is_final = call_assistant(
                     template.tools, response_model, **self.config
                 )
                 for tool_call in tool_calls:
-                    message = call_tool(tool_call)
+                    message, result, is_final = call_tool(tool_call)
 
         try:
             _get_history()
