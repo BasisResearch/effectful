@@ -875,7 +875,7 @@ def _encodable_tuple[T, U](
                 tuple_field_types = [typing.Any] * len(getattr(ty, "_fields", ()))
             if not tuple_field_types:
                 # Empty namedtuple.
-                empty_model = pydantic.create_model(  # type: ignore[call-overload]
+                empty_model = pydantic.create_model(
                     "TupleItems", __config__={"extra": "forbid"}
                 )
                 return typing.cast(
