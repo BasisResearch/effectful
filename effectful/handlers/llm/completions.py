@@ -274,15 +274,6 @@ def call_assistant[T](
     message: litellm.Message = choice.message
     assert message.role == "assistant"
 
-    # Transparently unwrap the {"value": ...} envelope so the rest of the
-    # pipeline (including message history and validation) never sees it.
-    if _needs_wrap and message.get("content"):
-        try:
-            message["content"] = json.dumps(json.loads(message["content"])["value"])
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            raw_message = _make_message({**message.model_dump(mode="json")})
-            raise ResultDecodingError(e, raw_message=raw_message) from e
-
     raw_message = _make_message({**message.model_dump(mode="json")})
     append_message(raw_message)
 
@@ -309,8 +300,17 @@ def call_assistant[T](
         )
         try:
             decoded = serialized_result if _is_str else json.loads(serialized_result)
+            # Unwrap the {"value": ...} envelope for non-object schemas
+            if _needs_wrap:
+                decoded = typing.cast(dict[str, typing.Any], decoded)["value"]
             result = response_format.validate_python(decoded, context=env)
-        except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
+        except (
+            pydantic.ValidationError,
+            TypeError,
+            ValueError,
+            SyntaxError,
+            KeyError,
+        ) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
