@@ -277,9 +277,7 @@ def call_assistant[T](
     # Transparently unwrap the {"value": ...} envelope so the rest of the
     # pipeline (including message history and validation) never sees it.
     if _needs_wrap and message.get("content") is not None:
-        message["content"] = json.dumps(
-            json.loads(message["content"])["value"]
-        )
+        message["content"] = json.dumps(json.loads(message["content"])["value"])
 
     raw_message = _make_message({**message.model_dump(mode="json")})
     append_message(raw_message)
