@@ -413,7 +413,7 @@ def signature_to_ast(name: str, sig: inspect.Signature) -> ast.FunctionDef:
                 cause=None,
             )
         ],
-        decorator_list=[],
+        decorator_list=typing.cast(list[ast.expr], []),
         returns=returns,
     )
     return ast.fix_missing_locations(node)
