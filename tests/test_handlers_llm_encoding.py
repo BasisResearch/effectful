@@ -787,8 +787,11 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         model=CHEAP_MODEL,
         response_format={
             "type": "json_schema",
-            "schema": enc.json_schema(),
-            "strict": True,
+            "json_schema": {
+                "name": "response",
+                "schema": enc.json_schema(),
+                "strict": True,
+            },
         },
         messages=[
             {

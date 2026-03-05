@@ -258,8 +258,11 @@ def call_assistant[T](
         if _is_str
         else {
             "type": "json_schema",
-            "schema": _wire_schema,
-            "strict": True,
+            "json_schema": {
+                "name": "response",
+                "schema": _wire_schema,
+                "strict": True,
+            },
         },
         tools=list(tool_specs.values()),
         **kwargs,
