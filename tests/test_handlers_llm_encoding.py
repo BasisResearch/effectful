@@ -31,7 +31,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 
-CHEAP_MODEL = "lm_studio/openai/gpt-oss-120b"
+CHEAP_MODEL = "gpt-4-mini"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -776,7 +776,6 @@ def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
 PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 
 
-# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
@@ -811,7 +810,6 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     pydantic.TypeAdapter(ty).validate_python(decoded)
 
 
-# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
@@ -839,7 +837,6 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     assert isinstance(response, litellm.ModelResponse)
 
 
-# @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
