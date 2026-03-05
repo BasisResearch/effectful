@@ -233,9 +233,10 @@ def call_assistant[T](
     """
     tools = _collect_tools(env)
     tool_specs = {
-        k: pydantic.TypeAdapter(Encodable[type(t)]).dump_python(
-            t, mode="json", context=tools
-        )
+        k: typing.cast(
+            pydantic.TypeAdapter[typing.Any],
+            pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
+        ).dump_python(t, mode="json", context=tools)
         for k, t in tools.items()
     }
     _is_str = response_format.json_schema().get("type") == "string"
@@ -306,7 +307,9 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = pydantic.TypeAdapter(Encodable[nested_type(result).value])
+    return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        Encodable[nested_type(result).value]  # type: ignore[misc]
+    )
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
     )
@@ -345,8 +348,8 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder: pydantic.TypeAdapter = pydantic.TypeAdapter(
-            Encodable[nested_type(obj).value]
+        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(obj).value]  # type: ignore[misc]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
@@ -511,7 +514,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
         # Create response_model with env so tools passed as arguments are available
         response_model: pydantic.TypeAdapter[T] = pydantic.TypeAdapter(
-            Encodable[template.__signature__.return_annotation]
+            Encodable[template.__signature__.return_annotation]  # type: ignore[name-defined]
         )
 
         history: collections.OrderedDict[str, Message] = getattr(

@@ -131,7 +131,7 @@ class TypeEvaluator(abc.ABC):
     @evaluate.register
     def _(self, typ: GenericAlias):
         origin, args = typing.get_origin(typ), typing.get_args(typ)
-        return origin[self.evaluate(args)]
+        return origin[self.evaluate(args)]  # type: ignore[index]
 
     @evaluate.register
     def _(self, typ: UnionType):
@@ -152,7 +152,7 @@ class TypeEvaluator(abc.ABC):
         return typ
 
     @evaluate.register
-    def _(self, typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):  # type: ignore
+    def _(self, typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):
         return typ
 
     @evaluate.register
@@ -170,7 +170,7 @@ class TypeEvaluator(abc.ABC):
 
     @evaluate.register
     def _(self, typ: typing.NewType):
-        return typing.NewType(typ.__name__, self.evaluate(typ.__supertype__))
+        return typing.NewType(typ.__name__, self.evaluate(typ.__supertype__))  # type: ignore[attr-defined]
 
     @evaluate.register
     def _(self, typ: typing.TypeAliasType):

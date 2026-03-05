@@ -536,13 +536,14 @@ def _validate_tool(
 
 
 def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+    fields: dict[str, Any] = {
+        name: TypeToPydanticType().evaluate(param.annotation)
+        for name, param in inspect.signature(value).parameters.items()
+    }
     sig_model = pydantic.create_model(
         "Params",
         __config__={"extra": "forbid"},
-        **{
-            name: TypeToPydanticType().evaluate(param.annotation)
-            for name, param in inspect.signature(value).parameters.items()
-        },  # type: ignore
+        **fields,
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
@@ -588,7 +589,9 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc = pydantic.TypeAdapter(Encodable[param.annotation])
+        arg_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+            Encodable[param.annotation]  # type: ignore[name-defined]
+        )
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
         tool=tool,
@@ -604,8 +607,8 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter = pydantic.TypeAdapter(
-            Encodable[nested_type(v).value]
+        v_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(v).value]  # type: ignore[misc]
         )
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return ChatCompletionMessageToolCall.model_validate(

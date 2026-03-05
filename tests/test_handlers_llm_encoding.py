@@ -781,7 +781,7 @@ PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
-    enc = pydantic.TypeAdapter(Encodable[ty])
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[ty])
     response = litellm.completion(
         model=CHEAP_MODEL,
         response_format={
@@ -799,7 +799,9 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     )
     assert isinstance(response, litellm.ModelResponse)
 
-    content = response.choices[0].message.content
+    choice = response.choices[0]
+    assert isinstance(choice, litellm.Choices)
+    content = choice.message.content
     assert content is not None, (
         f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
     )
@@ -824,7 +826,9 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     _fn.__annotations__ = {"value": ty, "return": None}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc = pydantic.TypeAdapter(Encodable[type(tool)])
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        Encodable[type(tool)]  # type: ignore[misc]
+    )
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
@@ -850,7 +854,9 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     _fn.__annotations__ = {"return": ty}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc = pydantic.TypeAdapter(Encodable[type(tool)])
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        Encodable[type(tool)]  # type: ignore[misc]
+    )
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
