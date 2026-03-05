@@ -238,10 +238,13 @@ def call_assistant[T](
         )
         for k, t in tools.items()
     }
+    _is_str = response_format.json_schema().get("type") == "string"
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(_get_history().values()),
-        response_format={
+        response_format=None
+        if _is_str
+        else {
             "type": "json_schema",
             "schema": response_format.json_schema(),
             "strict": True,
@@ -280,10 +283,8 @@ def call_assistant[T](
             "final response from the model should be a string"
         )
         try:
-            result = response_format.validate_python(
-                json.loads(serialized_result),
-                context=env,
-            )
+            decoded = serialized_result if _is_str else json.loads(serialized_result)
+            result = response_format.validate_python(decoded, context=env)
         except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 

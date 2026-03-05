@@ -136,18 +136,19 @@ def _define_scoped_templates():
 
 
 def make_text_response(content: object) -> ModelResponse:
-    """Create a ModelResponse with JSON-encoded content.
+    """Create a ModelResponse mimicking real LLM output.
 
-    ``call_assistant`` does ``json.loads(message["content"])``, so the
-    content must be valid JSON.  Pass a Python value and it will be
-    ``json.dumps``'d automatically.
+    For ``str`` content the LLM returns plain text (``response_format=None``).
+    For non-``str`` content the LLM returns JSON (``response_format`` is set),
+    so the value is ``json.dumps``'d automatically.
     """
+    encoded = content if isinstance(content, str) else json.dumps(content)
     return ModelResponse(
         id="test",
         choices=[
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": json.dumps(content)},
+                "message": {"role": "assistant", "content": encoded},
                 "finish_reason": "stop",
             }
         ],

@@ -150,6 +150,87 @@ def _pydantic_type_base[T](ty: type[T]) -> type[T]:
     return ty
 
 
+class _ComplexModel(typing.TypedDict):
+    real: float
+    imag: float
+
+
+@pydantic.validate_call(validate_return=True)
+def _validate_complex(value: _ComplexModel) -> complex:
+    return complex(value["real"], value["imag"])
+
+
+@pydantic.validate_call(validate_return=True)
+def _serialize_complex(value: complex) -> _ComplexModel:
+    return {"real": value.real, "imag": value.imag}
+
+
+@TypeToPydanticType.register(complex)
+def _pydantic_type_complex(ty):
+    """Encode ``complex`` as ``{"real": float, "imag": float}``."""
+
+    adapted_schema = pydantic.TypeAdapter(_ComplexModel).json_schema()
+
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_complex),
+        pydantic.PlainSerializer(_serialize_complex),
+        pydantic.WithJsonSchema(adapted_schema),
+    ]
+
+
+@TypeToPydanticType.register(tuple)
+def _pydantic_type_tuple(ty):
+    """Convert finitary tuples to object-based schemas (``properties/required``).
+
+    OpenAI's strict mode rejects the ``prefixItems`` array schema that Pydantic
+    emits for fixed-length tuples.  We convert them to a Pydantic model with
+    positional ``item_0``, ``item_1``, … fields instead.
+
+    Bare ``tuple`` and variadic ``tuple[T, ...]`` are passed through unchanged.
+    """
+    args = typing.get_args(ty)
+
+    # Bare tuple or tuple[T, ...] — Pydantic's native handling is fine.
+    # Note: tuple[()] also has get_args() == (), but has origin=tuple.
+    if (not args and typing.get_origin(ty) is None) or (
+        len(args) == 2 and args[1] is Ellipsis
+    ):
+        return ty
+
+    # tuple[()] (empty args with origin) maps to zero fields; otherwise use args.
+    effective: list[typing.Any] = list(args)
+
+    adapters = [pydantic.TypeAdapter(a) for a in effective]
+
+    model = pydantic.create_model(
+        "TupleItems",
+        __config__={"extra": "forbid"},
+        **{f"item_{i}": (a, ...) for i, a in enumerate(effective)},
+    )
+
+    def _validate(value, info: pydantic.ValidationInfo):
+        if isinstance(value, tuple | list):
+            value = {f"item_{i}": v for i, v in enumerate(value)}
+        return tuple(
+            adapters[i].validate_python(value[f"item_{i}"], context=info.context)
+            for i in range(len(effective))
+        )
+
+    def _serialize(value, info: pydantic.SerializationInfo):
+        return {
+            f"item_{i}": adapters[i].dump_python(v, mode="json", context=info.context)
+            for i, v in enumerate(value)
+        }
+
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(_serialize),
+        pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
+    ]
+
+
 @TypeToPydanticType.register(Term)
 def _pydantic_type_term(ty: type[Term]):
     raise TypeError("Terms cannot be converted to Pydantic types.")
@@ -180,6 +261,30 @@ def _serialize_image(value: Image.Image) -> ChatCompletionImageObject:
     )
 
 
+def _inline_refs(schema: dict) -> dict:
+    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
+
+    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
+    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
+    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
+    causes a ``KeyError`` when the annotated type is composed into a model.
+    """
+    defs = schema.get("$defs", {})
+
+    def _resolve(obj):
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                ref_name = obj["$ref"].split("/")[-1]
+                if ref_name in defs:
+                    return _resolve(defs[ref_name])
+            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
+        if isinstance(obj, list):
+            return [_resolve(item) for item in obj]
+        return obj
+
+    return _resolve(schema)
+
+
 @TypeToPydanticType.register(Image.Image)
 def _pydantic_type_image(ty: type[Image.Image]):
     adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
@@ -187,7 +292,7 @@ def _pydantic_type_image(ty: type[Image.Image]):
         ty,
         pydantic.PlainValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(adapter.json_schema()),
+        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
 
 
@@ -413,7 +518,9 @@ def _pydantic_callable(callable_type: Any) -> Any:
         callable_type,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(pydantic.TypeAdapter(typed_enc).json_schema()),
+        pydantic.WithJsonSchema(
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+        ),
     ]
 
 
@@ -460,7 +567,7 @@ def _pydantic_type_tool(ty: type[Tool]):
         ty,
         pydantic.PlainValidator(_validate_tool),
         pydantic.PlainSerializer(_serialize_tool),
-        pydantic.WithJsonSchema(adapter.json_schema()),
+        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
 
 
@@ -519,5 +626,7 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         ty,
         pydantic.PlainValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
-        pydantic.WithJsonSchema(ChatCompletionMessageToolCall.model_json_schema()),
+        pydantic.WithJsonSchema(
+            _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
+        ),
     ]

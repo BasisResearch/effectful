@@ -810,7 +810,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 
 # @requires_openai
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
