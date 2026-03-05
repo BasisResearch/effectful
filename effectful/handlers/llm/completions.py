@@ -12,6 +12,7 @@ import typing
 import uuid
 
 import litellm
+import openai.lib._pydantic
 import pydantic
 import tenacity
 from litellm import (
@@ -239,7 +240,7 @@ def call_assistant[T](
         ).dump_python(t, mode="json", context=tools)
         for k, t in tools.items()
     }
-    _schema = response_format.json_schema()
+    _schema = openai.lib._pydantic.to_strict_json_schema(response_format)
     _is_str = _schema.get("type") == "string"
     _needs_wrap = not _is_str and _schema.get("type") != "object"
     if _needs_wrap:
