@@ -138,9 +138,8 @@ def _define_scoped_templates():
 def make_text_response(content: object) -> ModelResponse:
     """Create a ModelResponse mimicking real LLM output.
 
-    For ``str`` content the LLM returns plain text (``response_format=None``).
-    For non-``str`` content the LLM returns JSON (``response_format`` is set),
-    so the value is ``json.dumps``'d automatically.
+    For ``str`` content the LLM returns plain text (no JSON wrapping).
+    For non-``str`` content the LLM returns JSON.
     """
     encoded = content if isinstance(content, str) else json.dumps(content)
     return ModelResponse(

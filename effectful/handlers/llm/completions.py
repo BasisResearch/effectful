@@ -239,7 +239,18 @@ def call_assistant[T](
         ).dump_python(t, mode="json", context=tools)
         for k, t in tools.items()
     }
-    _is_str = response_format.json_schema().get("type") == "string"
+    _schema = response_format.json_schema()
+    _is_str = _schema.get("type") == "string"
+    _needs_wrap = not _is_str and _schema.get("type") != "object"
+    if _needs_wrap:
+        _wire_schema: dict[str, typing.Any] = {
+            "type": "object",
+            "properties": {"value": _schema},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+    else:
+        _wire_schema = _schema
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(_get_history().values()),
@@ -247,7 +258,7 @@ def call_assistant[T](
         if _is_str
         else {
             "type": "json_schema",
-            "schema": response_format.json_schema(),
+            "schema": _wire_schema,
             "strict": True,
         },
         tools=list(tool_specs.values()),
@@ -258,6 +269,11 @@ def call_assistant[T](
 
     message: litellm.Message = choice.message
     assert message.role == "assistant"
+
+    # Transparently unwrap the {"value": ...} envelope so the rest of the
+    # pipeline (including message history and validation) never sees it.
+    if _needs_wrap:
+        message["content"] = json.dumps(json.loads(message["content"])["value"])
 
     raw_message = _make_message({**message.model_dump(mode="json")})
     append_message(raw_message)

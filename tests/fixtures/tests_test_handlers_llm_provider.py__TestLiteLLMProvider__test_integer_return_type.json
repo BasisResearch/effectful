@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":73}",
+        "content": "73",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

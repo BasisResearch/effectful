@@ -39,7 +39,7 @@ from effectful.handlers.llm.completions import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -503,14 +503,15 @@ def make_tool_call_response(
     )
 
 
-def make_text_response(content: str) -> ModelResponse:
+def make_text_response(content: object) -> ModelResponse:
     """Create a ModelResponse with text content."""
+    encoded = content if isinstance(content, str) else json.dumps(content)
     return ModelResponse(
         id="test",
         choices=[
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
+                "message": {"role": "assistant", "content": encoded},
                 "finish_reason": "stop",
             }
         ],
@@ -743,8 +744,8 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler retries when result decoding fails."""
         # First response has invalid JSON, second has valid response
         responses = [
-            make_text_response('"not valid for int"'),  # Invalid for int
-            make_text_response("42"),  # Valid
+            make_text_response("not_valid_for_int"),  # Invalid for int
+            make_text_response(42),  # Valid
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -775,7 +776,7 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler raises after exhausting retries on result decoding."""
         # All responses have invalid results for int type
         responses = [
-            make_text_response('"not an int"'),
+            make_text_response("not_an_int"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -832,7 +833,7 @@ class TestRetryLLMHandler:
     def test_retry_handler_raises_result_decoding_error(self):
         """Test that RetryLLMHandler raises ResultDecodingError with correct attributes."""
         responses = [
-            make_text_response('"not an int"'),
+            make_text_response("not_an_int"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -1281,8 +1282,8 @@ class TestCallableSynthesis:
             # Encode it back to SynthesizedFunction
             enc = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
             encoded = enc.dump_python(add_func, mode="json", context={})
-            assert isinstance(encoded, SynthesizedFunction)
-            assert "def " in encoded.module_code
+            assert isinstance(encoded, dict)
+            assert "def " in encoded["module_code"]
 
             # Decode it again and verify it still works
             decoded = enc.validate_python(encoded, context={})

@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are a versatile and nutritious fruit, enjoyed in a variety of dishes worldwide.\"}",
+        "content": "Apples are a versatile and nutritious fruit, enjoyed in a variety of dishes worldwide.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

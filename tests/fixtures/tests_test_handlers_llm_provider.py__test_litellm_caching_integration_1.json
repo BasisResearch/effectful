@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are crisp, juicy fruits that come in a variety of colors, offering a sweet or tart flavor profile perfect for snacking or baking.\"}",
+        "content": "Apples are crisp, juicy fruits that come in a variety of colors, offering a sweet or tart flavor profile perfect for snacking or baking.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
