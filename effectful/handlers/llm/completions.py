@@ -276,8 +276,12 @@ def call_assistant[T](
 
     # Transparently unwrap the {"value": ...} envelope so the rest of the
     # pipeline (including message history and validation) never sees it.
-    if _needs_wrap and message.get("content") is not None:
-        message["content"] = json.dumps(json.loads(message["content"])["value"])
+    if _needs_wrap and message.get("content"):
+        try:
+            message["content"] = json.dumps(json.loads(message["content"])["value"])
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            raw_message = _make_message({**message.model_dump(mode="json")})
+            raise ResultDecodingError(e, raw_message=raw_message) from e
 
     raw_message = _make_message({**message.model_dump(mode="json")})
     append_message(raw_message)

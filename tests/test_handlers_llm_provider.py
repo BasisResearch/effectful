@@ -745,7 +745,7 @@ class TestRetryLLMHandler:
         # First response has invalid JSON, second has valid response
         responses = [
             make_text_response("not_valid_for_int"),  # Invalid for int
-            make_text_response(42),  # Valid
+            make_text_response({"value": 42}),  # Valid (wrapped for non-object types)
         ]
 
         mock_handler = MockCompletionHandler(responses)
