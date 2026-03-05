@@ -361,16 +361,22 @@ class Scoped(Annotation):
                 elif param_ordinal:  # Only process if there's a Scoped annotation
                     # We can't use flatten here because we want to be able
                     # to see dict keys
-                    def extract_operations(obj):
+                    def extract_operations(obj, _seen=None):
+                        if _seen is None:
+                            _seen = set()
+                        obj_id = id(obj)
+                        if obj_id in _seen:
+                            return
+                        _seen.add(obj_id)
                         if isinstance(obj, Operation):
                             param_bound_vars.add(obj)
                         elif isinstance(obj, dict):
                             for k, v in obj.items():
-                                extract_operations(k)
-                                extract_operations(v)
+                                extract_operations(k, _seen)
+                                extract_operations(v, _seen)
                         elif isinstance(obj, list | set | tuple):
                             for v in obj:
-                                extract_operations(v)
+                                extract_operations(v, _seen)
 
                     extract_operations(param_value)
 
