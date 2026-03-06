@@ -12,7 +12,6 @@ import typing
 import uuid
 
 import litellm
-import openai.lib._pydantic
 import pydantic
 import tenacity
 from litellm import (
@@ -70,15 +69,23 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class _NoActiveHistoryException(Exception):
+    """Raised when there is no active message history to append to."""
+
+
 @Operation.define
 def _get_history() -> collections.OrderedDict[str, Message]:
-    raise NotImplementedError
+    raise _NoActiveHistoryException(
+        "No active message history. This operation should only be used within a handler that provides a message history."
+    )
 
 
-def append_message(message: Message):
+def append_message(message: Message, last: bool = True) -> None:
     try:
         _get_history()[message["id"]] = message
-    except NotImplementedError:
+        if not last:
+            _get_history().move_to_end(message["id"], last=False)
+    except _NoActiveHistoryException:
         pass
 
 
@@ -179,7 +186,7 @@ def _collect_tools(
 
     for name, obj in env.items():
         # Collect tools directly in context
-        if isinstance(obj, Tool):
+        if isinstance(obj, Tool | Template):
             result[name] = obj
 
         # Collect tools as methods on Agent instances in context
@@ -214,10 +221,14 @@ def completion(*args, **kwargs) -> typing.Any:
     return litellm.completion(*args, **kwargs)
 
 
+class _BoxedResponse[T](pydantic.BaseModel):
+    value: T
+
+
 @Operation.define
 def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
-    response_format: pydantic.TypeAdapter[T],
+    response_type: type[T],
     model: str,
     **kwargs,
 ) -> MessageResult[T]:
@@ -237,34 +248,23 @@ def call_assistant[T](
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],
             pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
-        ).dump_python(t, mode="json", context=tools)
+        ).dump_python(t, mode="json", context={k: t})
         for k, t in tools.items()
     }
-    _schema = openai.lib._pydantic.to_strict_json_schema(response_format)
-    _is_str = _schema.get("type") == "string"
-    _needs_wrap = not _is_str and _schema.get("type") != "object"
-    if _needs_wrap:
-        _wire_schema: dict[str, typing.Any] = {
-            "type": "object",
-            "properties": {"value": _schema},
-            "required": ["value"],
-            "additionalProperties": False,
-        }
-    else:
-        _wire_schema = _schema
+
+    # The OpenAI API requires a wrapper object for non-object structured output types,
+    # so we create one on the fly here. Using a Pydantic model offloads JSON schema
+    # generation and validation logic to litellm, and offers better error messages.
+    response_format: type[_BoxedResponse[T]] = pydantic.create_model(
+        "BoxedResponse",
+        value=Encodable[response_type],  # type: ignore[valid-type]
+        __base__=_BoxedResponse,
+    )
+
     response: litellm.types.utils.ModelResponse = completion(
         model,
         messages=list(_get_history().values()),
-        response_format=None
-        if _is_str
-        else {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "response",
-                "schema": _wire_schema,
-                "strict": True,
-            },
-        },
+        response_format=None if response_type is str else response_format,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -298,20 +298,15 @@ def call_assistant[T](
         assert isinstance(serialized_result, str), (
             "final response from the model should be a string"
         )
-        try:
-            decoded = serialized_result if _is_str else json.loads(serialized_result)
-            # Unwrap the {"value": ...} envelope for non-object schemas
-            if _needs_wrap:
-                decoded = typing.cast(dict[str, typing.Any], decoded)["value"]
-            result = response_format.validate_python(decoded, context=env)
-        except (
-            pydantic.ValidationError,
-            TypeError,
-            ValueError,
-            SyntaxError,
-            KeyError,
-        ) as e:
-            raise ResultDecodingError(e, raw_message=raw_message) from e
+        if response_type is str:
+            result = typing.cast(T, serialized_result)
+        else:
+            try:
+                result = response_format.model_validate(
+                    json.loads(serialized_result), context=env
+                ).value
+            except Exception as e:
+                raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
 
@@ -402,21 +397,8 @@ def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
     message = _make_message(dict(role="system", content=system_prompt))
-    try:
-        history: collections.OrderedDict[str, Message] = _get_history()
-        if any(m["role"] == "system" for m in history.values()):
-            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
-                "There should be at most one system message in the history"
-            )
-            assert history[next(iter(history))]["role"] == "system", (
-                "The system message should be the first message in the history"
-            )
-            history.popitem(last=False)  # remove existing system message
-        history[message["id"]] = message
-        history.move_to_end(message["id"], last=False)
-        return message
-    except NotImplementedError:
-        return message
+    append_message(message, last=False)
+    return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -482,7 +464,7 @@ class RetryLLMHandler(ObjectInterpretation):
     def _call_assistant[T](
         self,
         env: collections.abc.Mapping[str, typing.Any],
-        response_format: pydantic.TypeAdapter[T],
+        response_type: type[T],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
@@ -536,18 +518,17 @@ class LiteLLMProvider(ObjectInterpretation):
         if not _is_recursive_signature(template.__signature__):
             env = env.new_child({k: None for k, v in env.items() if v is template})
 
-        # Create response_model with env so tools passed as arguments are available
-        response_model: pydantic.TypeAdapter[T] = pydantic.TypeAdapter(
-            Encodable[template.__signature__.return_annotation]  # type: ignore[name-defined]
-        )
-
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
         )  # type: ignore
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
-            call_system(template)
+            if (
+                not _get_history()
+                or next(iter(_get_history().values()))["role"] != "system"
+            ):
+                call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
 
@@ -556,13 +537,13 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    env, response_model, **self.config
+                    env, template.__signature__.return_annotation, **self.config
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
         try:
             _get_history()
-        except NotImplementedError:
+        except _NoActiveHistoryException:
             history.update(history_copy)
         return typing.cast(T, result)

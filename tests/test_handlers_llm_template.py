@@ -422,7 +422,7 @@ class TestSystemPromptInvariant:
         mock = MockCompletionHandler(
             [
                 make_text_response("not_an_int"),
-                make_text_response(7),
+                make_text_response({"value": 7}),
             ]
         )
 
@@ -593,7 +593,7 @@ class TestAgentWithRetryHandler:
                 # First attempt: invalid result for int
                 make_text_response("not_an_int"),
                 # Retry: valid
-                make_text_response(42),
+                make_text_response({"value": 42}),
             ]
         )
 

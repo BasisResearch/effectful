@@ -360,18 +360,10 @@ class Agent(abc.ABC):
 
     """
 
-    __history__: OrderedDict[str, Mapping[str, Any]]
-    __system_prompt__: str
+    @functools.cached_property
+    def __history__(self) -> OrderedDict[str, Mapping[str, Any]]:
+        return OrderedDict()
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "__history__"):
-            prop = functools.cached_property(lambda _: OrderedDict())
-            prop.__set_name__(cls, "__history__")
-            cls.__history__ = prop
-        if not hasattr(cls, "__system_prompt__"):
-            sp = functools.cached_property(
-                lambda self: inspect.getdoc(type(self)) or ""
-            )
-            sp.__set_name__(cls, "__system_prompt__")
-            cls.__system_prompt__ = sp
+    @functools.cached_property
+    def __system_prompt__(self) -> str:
+        return inspect.getdoc(type(self)) or ""
