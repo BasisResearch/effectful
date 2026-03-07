@@ -58,7 +58,7 @@ docs = [
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
-    "sphinx_autodoc_typehints",
+    "sphinx_autodoc_typehints>=3.6,<3.9",
     "pypandoc_binary<1.16",
 ]
 test = [

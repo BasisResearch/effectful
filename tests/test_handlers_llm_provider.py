@@ -2038,3 +2038,161 @@ class TestAgentCrossTemplateRecovery:
         # Only messages from the successful call should be in history
         assert len(agent.__history__) >= 2
         assert len(agent.__history__) > history_after_error
+
+
+class TestAgentSystemMessageDeduplication:
+    """Regression tests for system message duplication bug.
+
+    When LiteLLMProvider._call copies the history, call_system replaces the
+    system message in the copy. Previously, history.update(history_copy) was
+    used to merge back, which is additive — it didn't remove the stale system
+    message key deleted from the copy. This caused multiple system messages to
+    accumulate, triggering an assertion on the 3rd+ call.
+
+    The fix is history.clear() before history.update(history_copy).
+    """
+
+    def test_three_consecutive_calls_no_system_message_duplication(self):
+        """Three consecutive agent calls should not fail with duplicate system messages."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class ThreeCallAgent(Agent):
+            """You are a test agent for system message deduplication."""
+
+            @Template.define
+            def ask(self, question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class CountingHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"answer {call_count}")
+
+        agent = ThreeCallAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(CountingHandler()):
+            r1 = agent.ask("q1")
+            r2 = agent.ask("q2")
+            r3 = agent.ask("q3")
+
+        assert r1 == "answer 1"
+        assert r2 == "answer 2"
+        assert r3 == "answer 3"
+
+    def test_history_has_exactly_one_system_message_after_multiple_calls(self):
+        """After multiple calls, the agent history should contain exactly one system message."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class SystemMsgAgent(Agent):
+            """You are a system message count test agent."""
+
+            @Template.define
+            def do(self, task: str) -> str:
+                """Do: {task}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class MultiHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"done {call_count}")
+
+        agent = SystemMsgAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(MultiHandler()):
+            agent.do("a")
+            agent.do("b")
+            agent.do("c")
+            agent.do("d")
+
+        system_msgs = [m for m in agent.__history__.values() if m["role"] == "system"]
+        assert len(system_msgs) == 1, (
+            f"Expected exactly 1 system message, got {len(system_msgs)}"
+        )
+
+    def test_conversation_history_preserved_across_calls(self):
+        """Earlier user/assistant messages should persist across multiple calls."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class MemoryAgent(Agent):
+            """You are a memory test agent."""
+
+            @Template.define
+            def chat(self, msg: str) -> str:
+                """User says: {msg}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class MemoryHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                # Verify that previous messages are visible to later calls
+                if call_count == 3:
+                    # Third call should see messages from calls 1 and 2
+                    user_msgs = [m for m in messages if m["role"] == "user"]
+                    assert len(user_msgs) == 3, (
+                        f"Third call should see 3 user messages, got {len(user_msgs)}"
+                    )
+                return make_text_response(f"reply {call_count}")
+
+        agent = MemoryAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(MemoryHandler()):
+            agent.chat("first")
+            agent.chat("second")
+            agent.chat("third")
+
+        # History should have: 1 system + 3 user + 3 assistant = 7
+        assert len(agent.__history__) == 7
+        roles = [m["role"] for m in agent.__history__.values()]
+        assert roles.count("system") == 1
+        assert roles.count("user") == 3
+        assert roles.count("assistant") == 3
+
+    def test_system_message_is_always_first(self):
+        """The system message should remain the first message after multiple calls."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class OrderAgent(Agent):
+            """You are a message order test agent."""
+
+            @Template.define
+            def step(self, n: int) -> str:
+                """Step {n}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class OrderHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"step {call_count}")
+
+        agent = OrderAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(OrderHandler()):
+            agent.step(1)
+            agent.step(2)
+            agent.step(3)
+
+        messages = list(agent.__history__.values())
+        assert messages[0]["role"] == "system", (
+            "System message should be the first message in history"
+        )
