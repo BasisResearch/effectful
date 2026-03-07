@@ -545,5 +545,6 @@ class LiteLLMProvider(ObjectInterpretation):
         try:
             _get_history()
         except _NoActiveHistoryException:
+            history.clear()
             history.update(history_copy)
         return typing.cast(T, result)
