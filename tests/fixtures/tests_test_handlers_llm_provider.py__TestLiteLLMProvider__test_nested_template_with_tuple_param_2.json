@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"To find nearby restaurants, use the search tool with query='nearby restaurants' and max_results=10. This will return a list of relevant restaurant options.\"}",
+        "content": "To find nearby restaurants, use the search tool with query='nearby restaurants' and max_results=10. This will return a list of relevant restaurant options.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

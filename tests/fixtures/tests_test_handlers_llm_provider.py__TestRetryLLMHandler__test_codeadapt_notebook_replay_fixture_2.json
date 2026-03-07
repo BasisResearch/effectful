@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def solution() -> str:\\n    return \\\"The moon hung low in the midnight sky with a mysterious glow, inviting all to take a long walk. Shadows danced across the street, tumbling with every breeze that whispered secrets. Somewhere in the distance, there was the sound of another, an echo of a life unknown. In the middle of it all, the unmistakable laugh of a lunatic rang out, sending chills down spines.\\\"\"}}",
+        "content": "{\"module_code\": \"def solution() -> str:\\n    return \\\"The moon hung low in the midnight sky with a mysterious glow, inviting all to take a long walk. Shadows danced across the street, tumbling with every breeze that whispered secrets. Somewhere in the distance, there was the sound of another, an echo of a life unknown. In the middle of it all, the unmistakable laugh of a lunatic rang out, sending chills down spines.\\\"\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

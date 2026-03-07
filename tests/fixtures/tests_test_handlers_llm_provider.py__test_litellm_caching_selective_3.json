@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are a popular and nutritious fruit, known for their crisp texture and a range of flavors from sweet to tart.\"}",
+        "content": "Apples are a popular and nutritious fruit, known for their crisp texture and a range of flavors from sweet to tart.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

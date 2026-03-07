@@ -1,4 +1,6 @@
 import collections.abc
+import dataclasses
+import functools
 import inspect
 import typing
 from typing import Literal
@@ -7,6 +9,10 @@ import pytest
 
 from effectful.internals.unification import (
     Box,
+    Substitutions,
+    TypeEvaluator,
+    TypeExpressions,
+    TypeVariable,
     canonicalize,
     freetypevars,
     nested_type,
@@ -28,8 +34,58 @@ else:
     W = typing.TypeVar("W")
 
 
+@dataclasses.dataclass
+class _Substitute(TypeEvaluator):
+    """
+    Helper class to perform substitution using TypeEvaluator.
+    Used to test TypeEvaluator's traversal logic against the ground-truth ``substitute``
+    """
+
+    subs: Substitutions
+
+    @classmethod
+    def substitute(cls, typ: TypeExpressions, subs: Substitutions) -> TypeExpressions:
+        return cls(subs).evaluate(typ)
+
+    @functools.singledispatchmethod
+    def evaluate(self, typ: TypeExpressions) -> TypeExpressions:
+        return super().evaluate(typ)
+
+    @evaluate.register
+    def _(self, typ: TypeVariable):
+        if typ in self.subs:
+            return self.evaluate(self.subs[typ])
+        else:
+            return super().evaluate(typ)
+
+
+@dataclasses.dataclass
+class _FreeTypeVars(TypeEvaluator):
+    """
+    Helper class to perform free variable collection using TypeEvaluator.
+    Used to test TypeEvaluator's traversal logic against the ground-truth ``freetypevars``
+    """
+
+    fvs: set[TypeVariable] = dataclasses.field(default_factory=set)
+
+    @classmethod
+    def freetypevars(cls, typ: TypeExpressions) -> collections.abc.Set[TypeVariable]:
+        evaluator = cls()
+        evaluator.evaluate(typ)
+        return evaluator.fvs
+
+    @functools.singledispatchmethod
+    def evaluate(self, typ: TypeExpressions) -> TypeExpressions:
+        return super().evaluate(typ)
+
+    @evaluate.register
+    def _(self, typ: TypeVariable):
+        self.fvs.add(typ)
+        return super().evaluate(typ)
+
+
 @pytest.mark.parametrize(
-    "typ,fvs",
+    "typ,expected",
     [
         # Basic cases
         (T, {T}),
@@ -79,8 +135,17 @@ else:
         # (collections.abc.Callable[typing.ParamSpec("P"), T], {T}),  # Would need to handle ParamSpec
     ],
 )
-def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
-    assert freetypevars(typ) == fvs
+@pytest.mark.parametrize(
+    "freetypevars_impl", [freetypevars, _FreeTypeVars.freetypevars]
+)
+def test_freetypevars(
+    freetypevars_impl: collections.abc.Callable[
+        [TypeExpressions], collections.abc.Set[TypeVariable]
+    ],
+    typ: TypeExpressions,
+    expected: collections.abc.Set[typing.TypeVar],
+):
+    assert freetypevars_impl(typ) == expected
 
 
 def test_canonicalize_1():
@@ -249,10 +314,16 @@ def test_canonicalize_1():
         ),
     ],
 )
+@pytest.mark.parametrize("substitute_impl", [substitute, _Substitute.substitute])
 def test_substitute(
-    typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
+    substitute_impl: collections.abc.Callable[
+        [TypeExpressions, Substitutions], TypeExpressions
+    ],
+    typ: TypeExpressions,
+    subs: Substitutions,
+    expected: TypeExpressions,
 ):
-    assert substitute(typ, subs) == expected  # type: ignore
+    assert substitute_impl(typ, subs) == expected
 
 
 @pytest.mark.parametrize(

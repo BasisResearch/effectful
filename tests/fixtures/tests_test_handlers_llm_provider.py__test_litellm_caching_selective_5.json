@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are nutritious fruits that come in a variety of colors and flavors, offering a refreshing and naturally sweet snack.\"}",
+        "content": "Apples are nutritious fruits that come in a variety of colors and flavors, offering a refreshing and naturally sweet snack.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
