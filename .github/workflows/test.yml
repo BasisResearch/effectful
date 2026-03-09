@@ -17,10 +17,14 @@ jobs:
         test-group:
           - name: indexed
             paths: tests/test_handlers_indexed*.py
-          - name: torch-pyro
-            paths: tests/test_handlers_torch*.py tests/test_handlers_pyro*.py
-          - name: jax-numpyro
-            paths: tests/test_handlers_jax*.py tests/test_handlers_numpyro*.py
+          - name: torch
+            paths: tests/test_handlers_torch*.py
+          - name: pyro
+            paths: tests/test_handlers_pyro*.py
+          - name: jax
+            paths: tests/test_handlers_jax*.py
+          - name: numpyro
+            paths: tests/test_handlers_numpyro*.py
           - name: llm
             paths: tests/test_handlers_llm*.py
           - name: examples
