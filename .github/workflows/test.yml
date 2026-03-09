@@ -16,9 +16,17 @@ jobs:
         python-version: ["'<3.13'", "'3.13'"]
         test-group:
           - name: indexed
-            paths: tests/test_handlers_indexed.py
-          - name: other
-            paths: effectful/ tests/ --ignore=tests/test_handlers_indexed.py
+            paths: tests/test_handlers_indexed*.py
+          - name: torch-pyro
+            paths: tests/test_handlers_torch*.py tests/test_handlers_pyro*.py
+          - name: jax-numpyro
+            paths: tests/test_handlers_jax*.py tests/test_handlers_numpyro*.py
+          - name: llm
+            paths: tests/test_handlers_llm*.py
+          - name: examples
+            paths: tests/test_examples_*.py
+          - name: core
+            paths: effectful/ tests/test_ops_*.py tests/test_internals_*.py
     name: "${{ matrix.test-group.name }} (py ${{ matrix.python-version }})"
     steps:
       - uses: actions/checkout@v4
