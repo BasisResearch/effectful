@@ -740,6 +740,13 @@ def test_arithmetic_5():
         assert syntactic_eq(Let(x, x() + 3, Let(x, x() + 4, x() + y())), x() + y() + 7)
 
 
+def test_arithmetic_6():
+    assert isinstance(defop(int)() > 1, Term)
+    assert isinstance(defop(int)() < 1, Term)
+    assert isinstance(defop(int)() >= 1, Term)
+    assert isinstance(defop(int)() <= 1, Term)
+
+
 def test_defun_1():
     x, y = defop(int), defop(int)
 
@@ -1000,9 +1007,9 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            SubOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled SubOperation: {op} {x}"
+            SubOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled SubOperation: {op} {x}"
+            )
         }
     ):
         assert sub_op(3) == f"handled SubOperation: {sub_op} 3"
@@ -1010,9 +1017,9 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            BaseOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled BaseOperation: {op} {x}"
+            BaseOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled BaseOperation: {op} {x}"
+            )
         }
     ):
         assert sub_op(4) == f"handled BaseOperation: {sub_op} 4"
@@ -1020,12 +1027,12 @@ def test_operation_subclass_inheritance():
 
     with handler(
         {
-            SubOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled SubOperation: {op} {x}",
-            BaseOperation.__apply__: lambda op,
-            x,
-            **kwargs: f"handled BaseOperation: {op} {x}",
+            SubOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled SubOperation: {op} {x}"
+            ),
+            BaseOperation.__apply__: lambda op, x, **kwargs: (
+                f"handled BaseOperation: {op} {x}"
+            ),
         }
     ):
         assert sub_op(6) == f"handled SubOperation: {sub_op} 6"

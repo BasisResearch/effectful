@@ -5,7 +5,6 @@ import inspect
 import numbers
 import operator
 import typing
-import warnings
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
 
@@ -325,7 +324,7 @@ class Scoped(Annotation):
         The :func:`analyze` methods of :class:`Scoped` annotations that appear on
         the signature of an :class:`Operation` are used by :func:`defop` to generate
         implementations of :func:`Operation.__fvs_rule__` underlying alpha-renaming
-        in :func:`defterm` and :func:`defdata` and free variable sets in :func:`fvsof` .
+        in :func:`evaluate` and :func:`defdata` and free variable sets in :func:`fvsof` .
 
         Specifically, the :func:`analyze` method of the :class:`Scoped` annotation
         of a parameter computes the set of bound variables in that parameter's value.
@@ -419,26 +418,12 @@ def deffn[T, A, B](
 
     .. note::
 
-      In general, avoid using :func:`deffn` directly. Instead, use
-      :func:`defterm` to convert a function to a term because it will
-      automatically create the right free variables.
+      In general, avoid using :func:`deffn` directly. Instead, use :func:`trace`
+      to convert a function to a term because it will automatically create the
+      right free variables.
 
     """
     raise NotHandled
-
-
-@_CustomSingleDispatchCallable
-def defterm[T](__dispatch: Callable[[type], Callable[[T], Expr[T]]], value: T):
-    """Convert a value to a term, using the type of the value to dispatch.
-
-    :param value: The value to convert.
-    :returns: A term.
-    """
-    from effectful.ops.semantics import evaluate
-
-    warnings.warn("defterm is replaced by evaluate", DeprecationWarning)
-
-    return evaluate(value)
 
 
 @_CustomSingleDispatchCallable
@@ -981,7 +966,6 @@ def implements[**P, V](op: Operation[P, V]):
 
 
 @defdata.register(numbers.Number)
-@functools.total_ordering
 class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __init__(self, ty, op, *args, **kwargs):
         super().__init__(op, *args, **kwargs)
@@ -1111,6 +1095,27 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __lt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__lt__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __gt__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__gt__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __le__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__le__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __ge__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__ge__(other)
         else:
             raise NotHandled
 

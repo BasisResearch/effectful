@@ -9,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("PyTorch is required to use effectful.handlers.torch")
 
-import tree
+import torch.utils._pytree as pytree
 
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
@@ -91,7 +91,7 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
         isinstance(t, Term)
         and all(
             isinstance(a, torch.Tensor) or not isinstance(a, Term) or a.op in sized_fvs
-            for a in tree.flatten((t.args, t.kwargs))
+            for a in pytree.tree_flatten((t.args, t.kwargs))[0]
         )
     ):
         return t
@@ -126,7 +126,7 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
         result = t.reshape(inds[0].shape + t.shape[1:])
         return torch_getitem(result, tuple(k() for k in sized_fvs.keys()))
 
-    result = tree.map_structure(reindex_flat_tensor, flat_result)
+    result = pytree.tree_map(reindex_flat_tensor, flat_result)
     return result
 
 
@@ -135,9 +135,7 @@ def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
 def bind_dims[
     A,
     B,
-    HasDims: torch.Tensor
-    | torch.distributions.Distribution
-    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+    HasDims: pytree.PyTree | torch.Tensor | torch.distributions.Distribution,
 ](
     value: Annotated[HasDims, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
@@ -157,8 +155,8 @@ def bind_dims[
     >>> bind_dims(t[a(), b()], b, a).shape
     torch.Size([3, 2])
     """
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: bind_dims(v, *names), value)
+    if not pytree.tree_is_leaf(value):
+        return pytree.tree_map(lambda v: bind_dims(v, *names), value)
     raise NotHandled
 
 
@@ -209,15 +207,13 @@ def _bind_dims_tensor(
 def unbind_dims[
     A,
     B,
-    HasDims: torch.Tensor
-    | torch.distributions.Distribution
-    | tree.Structure[torch.Tensor | torch.distributions.Distribution],
+    HasDims: pytree.PyTree | torch.Tensor | torch.distributions.Distribution,
 ](
     value: Annotated[HasDims, Scoped[A | B]],
     *names: Annotated[Operation[[], torch.Tensor], Scoped[B]],
 ) -> Annotated[HasDims, Scoped[A | B]]:
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: unbind_dims(v, *names), value)
+    if not pytree.tree_is_leaf(value):
+        return pytree.tree_map(lambda v: unbind_dims(v, *names), value)
     raise NotHandled
 
 
@@ -256,9 +252,9 @@ def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
             # which partial_eval handles.
             return typing.cast(torch.Tensor, _partial_eval(tm))
         elif not any(
-            tree.flatten(
-                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
-            )
+            pytree.tree_flatten(
+                pytree.tree_map(lambda x: isinstance(x, Term), (args, kwargs))
+            )[0]
         ):
             return typing.cast(torch.Tensor, torch_fn(*args, **kwargs))
         else:
@@ -600,7 +596,7 @@ def _indexed_func_wrapper[**P, S, T](
     # index expressions for the result of the function
     indexes = None
 
-    # hide index lists from tree.map_structure
+    # hide index lists from pytree.tree_map
     class Indexes:
         def __init__(self, sizes):
             self.sizes = sizes
@@ -616,8 +612,8 @@ def _indexed_func_wrapper[**P, S, T](
             return t_
 
         ret = func(*args, **kwargs)
-        indexes = tree.map_structure(lambda t: Indexes(sizesof(t)), ret)
-        tensors = tree.map_structure(lambda t, i: deindex_tensor(t, i), ret, indexes)
+        indexes = pytree.tree_map(lambda t: Indexes(sizesof(t)), ret)
+        tensors = pytree.tree_map(lambda t, i: deindex_tensor(t, i), ret, indexes)
         return tensors
 
     # reapply the stored indexes to a result
@@ -625,8 +621,8 @@ def _indexed_func_wrapper[**P, S, T](
         def index_expr(i):
             return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
 
-        if tree.is_nested(ret):
-            indexed_ret = tree.map_structure(
+        if not pytree.tree_is_leaf(ret):
+            indexed_ret = pytree.tree_map(
                 lambda t, i: torch_getitem(t, index_expr(i)), ret, indexes
             )
         else:
@@ -677,7 +673,7 @@ def jvp(func, *args, **kwargs):
     # hide deindexed_func from _register_torch_op
     jvp_func = functools.partial(torch.func.jvp, deindexed_func)
     ret = _register_torch_op(jvp_func)(*args, **kwargs)
-    return tree.map_structure(reindex, ret)
+    return pytree.tree_map(reindex, ret)
 
 
 @functools.wraps(torch.func.vjp)
@@ -699,7 +695,7 @@ def vjp(func, *indexed_primals, **kwargs):
     def wrapper(*primals):
         nonlocal indexed_result
         indexed_result = func(*repack_primals(primals))
-        return tree.map_structure(
+        return pytree.tree_map(
             lambda t: bind_dims(t, *list(sizesof(t).keys())), indexed_result
         )
 
@@ -707,7 +703,7 @@ def vjp(func, *indexed_primals, **kwargs):
     _, vjpfunc = torch.func.vjp(wrapper, *unindexed_primals, **kwargs)
 
     def vjpfunc_wrapper(*tangents):
-        unindexed_tangents = tree.map_structure(
+        unindexed_tangents = pytree.tree_map(
             lambda t: bind_dims(t, *list(sizesof(t).keys())), tangents
         )
         grads = vjpfunc(*unindexed_tangents)

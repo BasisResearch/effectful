@@ -10,8 +10,6 @@ try:
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
-import tree
-
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
@@ -93,7 +91,7 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
 
     if not (
         isinstance(t, Term)
-        and all(_is_eager(a) for a in tree.flatten((t.args, t.kwargs)))
+        and all(_is_eager(a) for a in jax.tree.flatten((t.args, t.kwargs))[0])
     ):
         return t
 
@@ -118,7 +116,7 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
         result = jnp.reshape(t, result_shape)
         return jax_getitem(result, tuple(k() for k in sized_fvs.keys()))
 
-    result = tree.map_structure(reindex_flat_array, flat_result)
+    result = jax.tree.map(reindex_flat_array, flat_result)
     return result
 
 
@@ -146,9 +144,9 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             # which partial_eval handles.
             return typing.cast(jax.Array, _partial_eval(tm))
         elif not any(
-            tree.flatten(
-                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
-            )
+            jax.tree.flatten(
+                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
+            )[0]
         ):
             return typing.cast(jax.Array, jax_fn(*args, **kwargs))
         else:
@@ -165,9 +163,9 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
     @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
         if not any(
-            tree.flatten(
-                tree.map_structure(lambda x: isinstance(x, Term), (args, kwargs))
-            )
+            jax.tree.flatten(
+                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
+            )[0]
         ):
             return typing.cast(jax.Array, jax_fn(*args, **kwargs))
         else:
@@ -210,11 +208,9 @@ def bind_dims[T, A, B](
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: bind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
+    if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
+        return __dispatch(typeof(value))(value, *names)
+    return jax.tree.map(lambda v: bind_dims(v, *names), value)
 
 
 @defop
@@ -225,11 +221,9 @@ def unbind_dims[T, A, B](
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
-    if tree.is_nested(value):
-        return tree.map_structure(lambda v: unbind_dims(v, *names), value)
-
-    semantic_type = typeof(value)
-    return __dispatch(semantic_type)(value, *names)
+    if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
+        return __dispatch(typeof(value))(value, *names)
+    return jax.tree.map(lambda v: unbind_dims(v, *names), value)
 
 
 def jit(f, *args, **kwargs):
@@ -244,7 +238,7 @@ def _indexed_func_wrapper[**P, S, T](
     # index expressions for the result of the function
     indexes = None
 
-    # hide index lists from tree.map_structure
+    # hide index lists from jax.tree.mapping
     class Indexes:
         def __init__(self, sizes):
             self.sizes = sizes
@@ -260,8 +254,8 @@ def _indexed_func_wrapper[**P, S, T](
             return t_
 
         ret = func(*args, **kwargs)
-        indexes = tree.map_structure(lambda t: Indexes(sizesof(t)), ret)
-        tensors = tree.map_structure(lambda t, i: deindex_tensor(t, i), ret, indexes)
+        indexes = jax.tree.map(lambda t: Indexes(sizesof(t)), ret)
+        tensors = jax.tree.map(lambda t, i: deindex_tensor(t, i), ret, indexes)
         return tensors
 
     # reapply the stored indexes to a result
@@ -269,12 +263,7 @@ def _indexed_func_wrapper[**P, S, T](
         def index_expr(i):
             return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
 
-        if tree.is_nested(ret):
-            indexed_ret = tree.map_structure(
-                lambda t, i: getitem(t, index_expr(i)), ret, indexes
-            )
-        else:
-            indexed_ret = getitem(ret, index_expr(indexes))
+        indexed_ret = jax.tree.map(lambda t, i: getitem(t, index_expr(i)), ret, indexes)
 
         return indexed_ret
 

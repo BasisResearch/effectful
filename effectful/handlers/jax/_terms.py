@@ -4,7 +4,6 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 import jax
-import tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
@@ -432,7 +431,8 @@ class _EagerArrayTerm(_ArrayTerm):
         return len(self.shape)
 
 
-@bind_dims.register  # type: ignore
+@bind_dims.register(jax.Array)  # type: ignore
+@bind_dims.register(jax._src.core.Tracer)  # type: ignore
 def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     """Convert named dimensions to positional dimensions.
 
@@ -454,10 +454,10 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
 
     def _evaluate(expr):
         if isinstance(expr, Term):
-            (args, kwargs) = tree.map_structure(_evaluate, (expr.args, expr.kwargs))
+            (args, kwargs) = jax.tree.map(_evaluate, (expr.args, expr.kwargs))
             return _partial_eval(expr)
-        if tree.is_nested(expr):
-            return tree.map_structure(_evaluate, expr)
+        if not jax.tree_util.treedef_is_leaf(jax.tree.structure(expr)):
+            return jax.tree.map(_evaluate, expr)
         return expr
 
     if not isinstance(t, Term):
@@ -501,6 +501,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     return reindexed
 
 
-@unbind_dims.register  # type: ignore
+@unbind_dims.register(jax.Array)  # type: ignore
+@unbind_dims.register(jax._src.core.Tracer)  # type: ignore
 def _unbind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array:
     return jax_getitem(t, tuple(n() for n in args))

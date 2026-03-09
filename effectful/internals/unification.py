@@ -541,7 +541,14 @@ def _(typ: typing._SpecialGenericAlias):  # type: ignore
 
 @canonicalize.register
 def _(typ: typing._LiteralGenericAlias):  # type: ignore
-    return canonicalize(nested_type(typing.get_args(typ)[0]))
+    args = typing.get_args(typ)
+    if not args:
+        raise TypeError(
+            "Literal annotations must be supplied with at least one argument"
+        )
+    return functools.reduce(
+        operator.or_, (canonicalize(nested_type(arg).value) for arg in args)
+    )
 
 
 @canonicalize.register

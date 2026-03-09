@@ -1,0 +1,44 @@
+{
+  "id": "chatcmpl-D9hhLJOHKOw4k9zRbHsj0gQ83wHo4",
+  "created": 1771205299,
+  "model": "gpt-5-nano-2025-08-07",
+  "object": "chat.completion",
+  "system_fingerprint": null,
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"title\":\"Harry Potter and the Philosopher's Stone\",\"rating\":5,\"summary\":\"A wonderfully inviting entry to a long-running fantasy saga. It follows a boy who discovers he is a wizard and begins at Hogwarts, where magic, friendship, and danger intertwine. The book shines with imaginative world-building, endearing characters, and themes of courage, loyalty, and self-discovery. While aimed at younger readers, its charm and sense of wonder appeal to all ages and set the standard for modern fantasy.\"}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 1268,
+    "prompt_tokens": 923,
+    "total_tokens": 2191,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 1152,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null
+    }
+  },
+  "service_tier": "default"
+}

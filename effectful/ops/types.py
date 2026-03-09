@@ -4,7 +4,6 @@ import functools
 import inspect
 import types
 import typing
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
@@ -62,7 +61,9 @@ class _ClassMethodOpDescriptor(classmethod):
             return bound_op
 
 
-@functools.total_ordering
+INSTANCE_OP_PREFIX = "__instanceop"
+
+
 class Operation[**Q, V]:
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -91,6 +92,21 @@ class Operation[**Q, V]:
         if not isinstance(other, Operation):
             return NotImplemented
         return id(self) < id(other)
+
+    def __gt__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) > id(other)
+
+    def __le__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) <= id(other)
+
+    def __ge__(self, other):
+        if not isinstance(other, Operation):
+            return NotImplemented
+        return id(self) >= id(other)
 
     def __hash__(self):
         return hash(self.__default__)
@@ -341,14 +357,7 @@ class Operation[**Q, V]:
         If no default rule is supplied, the free rule is used instead.
         """
         try:
-            try:
-                return self.__default__(*args, **kwargs)
-            except NotImplementedError:
-                warnings.warn(
-                    "Operations should raise effectful.ops.types.NotHandled instead of NotImplementedError.",
-                    DeprecationWarning,
-                )
-                raise NotHandled
+            return self.__default__(*args, **kwargs)
         except NotHandled:
             from effectful.ops.syntax import defdata
 
@@ -442,7 +451,7 @@ class Operation[**Q, V]:
     def __set_name__[T](self, owner: type[T], name: str) -> None:
         if not issubclass(owner, Term):
             assert not hasattr(self, "_name_on_instance"), "should only be called once"
-            self._name_on_instance: str = f"__instanceop_{name}"
+            self._name_on_instance: str = f"{INSTANCE_OP_PREFIX}_{name}"
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):

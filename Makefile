@@ -1,3 +1,5 @@
+.PHONY: lint format test test-notebooks rebuild-fixtures FORCE
+
 lint: FORCE
 	./scripts/lint.sh
 
@@ -9,5 +11,8 @@ test: lint FORCE
 
 test-notebooks: lint FORCE
 	./scripts/test_notebooks.sh
+
+rebuild-fixtures:
+	REBUILD_FIXTURES=true uv run pytest tests/test_handlers_llm_provider.py
 
 FORCE:
