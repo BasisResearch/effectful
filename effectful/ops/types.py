@@ -83,7 +83,7 @@ class Operation[**Q, V]:
         self.__default__ = default
         self.__name__ = name or default.__name__
 
-    @functools.cached_property
+    @property
     def __signature__(self):
         # Resolve forward references (e.g. -> "MyClass") using the
         # default function's __globals__.  This handles module-level
