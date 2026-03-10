@@ -74,19 +74,30 @@ class Operation[**Q, V]:
 
     """
 
-    __signature__: inspect.Signature
     __name__: str
     __default__: Callable[Q, V]
     __apply__: typing.ClassVar["Operation"]
 
-    def __init__(
-        self, signature: inspect.Signature, name: str, default: Callable[Q, V]
-    ):
+    def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
-
-        self.__signature__ = signature
-        self.__name__ = name
         self.__default__ = default
+        self.__name__ = name or default.__name__
+
+    @property
+    def __signature__(self):
+        # Resolve forward references (e.g. -> "MyClass") using the
+        # default function's __globals__.  This handles module-level
+        # forward refs; local forward refs will raise NameError.
+        # Python 3.14's annotationlib.get_annotations(format=FORWARDREF)
+        # could resolve local refs too via PEP 649 __annotate__ functions.
+        annots = typing.get_type_hints(self.__default__, include_extras=True)
+        sig = inspect.signature(self.__default__)
+        updated_params = [
+            p.replace(annotation=annots[p.name]) if p.name in annots else p
+            for p in sig.parameters.values()
+        ]
+        updated_ret = annots.get("return", sig.return_annotation)
+        return sig.replace(parameters=updated_params, return_annotation=updated_ret)
 
     def __eq__(self, other):
         if not isinstance(other, Operation):
@@ -267,8 +278,7 @@ class Operation[**Q, V]:
 
             op = cls.define(func, name=name)
         else:
-            name = name or t.__name__
-            op = cls(inspect.signature(t), name, t)  # type: ignore[arg-type]
+            op = cls(t, name=name)  # type: ignore[arg-type]
 
         return op  # type: ignore[return-value]
 

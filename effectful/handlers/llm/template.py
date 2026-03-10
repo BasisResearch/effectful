@@ -90,13 +90,14 @@ class Tool[**P, T](Operation[P, T]):
 
     """
 
-    def __init__(
-        self, signature: inspect.Signature, name: str, default: Callable[P, T]
-    ):
+    def __init__(self, default: Callable[P, T], name: str | None = None):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
-        signature = IsRecursive.infer_annotations(signature)
-        super().__init__(signature, name, default)
+        super().__init__(default, name=name)
+
+    @property
+    def __signature__(self):
+        return IsRecursive.infer_annotations(super().__signature__)
 
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
