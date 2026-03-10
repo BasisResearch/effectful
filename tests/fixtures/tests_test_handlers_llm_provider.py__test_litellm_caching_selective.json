@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are crisp, juicy fruits that come in a variety of colors and flavors, often enjoyed fresh or used in delicious recipes.\"}",
+        "content": "Apples are crisp, juicy fruits that come in a variety of colors and flavors, often enjoyed fresh or used in delicious recipes.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

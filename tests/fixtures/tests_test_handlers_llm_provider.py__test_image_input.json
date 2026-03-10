@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"The image is a simple pixel art of a smiley face. It features two square white eyes and a wide white smile set against a black background.\"}",
+        "content": "The image is a simple pixel art of a smiley face. It features two square white eyes and a wide white smile set against a black background.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

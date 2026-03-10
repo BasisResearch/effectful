@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing helps catch mistakes before they reach users.\"}",
+        "content": "Testing helps catch mistakes before they reach users.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

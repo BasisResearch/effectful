@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"A deterministic test consistently produces the same output for a given input, ensuring reliability and repeatability in its results.\"}",
+        "content": "A deterministic test consistently produces the same output for a given input, ensuring reliability and repeatability in its results.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

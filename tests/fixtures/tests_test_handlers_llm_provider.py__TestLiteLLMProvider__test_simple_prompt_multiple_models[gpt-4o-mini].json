@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing is the process of evaluating a system or component to ensure it meets specified requirements and functions correctly.\"}",
+        "content": "Testing is the process of evaluating a system or component to ensure it meets specified requirements and functions correctly.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
