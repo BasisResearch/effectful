@@ -5,6 +5,7 @@ import copy
 import inspect
 import keyword
 import linecache
+import operator
 import random
 import string
 import sys
@@ -718,6 +719,26 @@ class UnsafeEvalProvider(ObjectInterpretation):
         builtins.exec(bytecode, env, env)
 
 
+_INPLACE_OPS: dict[str, Any] = {
+    "+=": operator.iadd,
+    "-=": operator.isub,
+    "*=": operator.imul,
+    "/=": operator.itruediv,
+    "//=": operator.ifloordiv,
+    "%=": operator.imod,
+    "**=": operator.ipow,
+    "<<=": operator.ilshift,
+    ">>=": operator.irshift,
+    "&=": operator.iand,
+    "^=": operator.ixor,
+    "|=": operator.ior,
+}
+
+
+def protected_inplacevar(op: str, x: Any, y: Any) -> Any:
+    return _INPLACE_OPS[op](x, y)
+
+
 class RestrictedEvalProvider(ObjectInterpretation):
     """
     Safer provider using RestrictedPython.
@@ -778,6 +799,37 @@ class RestrictedEvalProvider(ObjectInterpretation):
         # Build restricted globals from RestrictedPython's defaults
         rglobals: dict[str, Any] = safe_globals.copy()
 
+        # safe_builtins is intentionally minimal; add common builtins that
+        # generated code is likely to need.
+        _extra_builtins = [
+            "all",
+            "any",
+            "ascii",
+            "bin",
+            "dict",
+            "dir",
+            "enumerate",
+            "filter",
+            "format",
+            "frozenset",
+            "iter",
+            "list",
+            "map",
+            "max",
+            "min",
+            "next",
+            "object",
+            "print",
+            "reversed",
+            "set",
+            "sum",
+            "type",
+        ]
+        restricted_builtins = dict(rglobals.get("__builtins__", {}))
+        for name in _extra_builtins:
+            restricted_builtins.setdefault(name, getattr(builtins, name))
+        rglobals["__builtins__"] = restricted_builtins
+
         # Enable class definitions (required for Python 3)
         rglobals["__metaclass__"] = type
         rglobals["__name__"] = "restricted"
@@ -789,10 +841,15 @@ class RestrictedEvalProvider(ObjectInterpretation):
         rglobals["_getiter_"] = Eval.default_guarded_getiter
         # Enable sequence unpacking in comprehensions and for loops
         rglobals["_iter_unpack_sequence_"] = Guards.guarded_iter_unpack_sequence
+        # Enable sequence unpacking in assignments (e.g. a, b = ...)
+        rglobals["_unpack_sequence_"] = Guards.guarded_unpack_sequence
 
         rglobals["getattr"] = Guards.safer_getattr
         rglobals["setattr"] = Guards.guarded_setattr
         rglobals["_write_"] = lambda x: x
+        rglobals["_getitem_"] = Eval.default_guarded_getitem
+        # Enable in-place operators (e.g. n += 1 becomes _inplacevar_("+=", n, 1))
+        rglobals["_inplacevar_"] = protected_inplacevar
 
         # Track keys before execution to identify new definitions
         keys_before = set(rglobals.keys())
