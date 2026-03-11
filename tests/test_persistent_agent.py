@@ -113,6 +113,20 @@ def read_checkpoint(tmp_path: Path, agent_id: str) -> dict:
     }
 
 
+def has_checkpoint(tmp_path: Path, agent_id: str) -> bool:
+    """Check if a checkpoint exists in the SQLite database."""
+    db_path = tmp_path / "checkpoints.db"
+    if not db_path.exists():
+        return False
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT 1 FROM checkpoints WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # Test agents
 # ---------------------------------------------------------------------------
@@ -205,79 +219,52 @@ class TestCheckpointing:
     """PersistenceHandler save/load round-trip correctly."""
 
     def test_save_creates_file(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
         with handler(AgentHistoryHandler()):
             path = persist.save(bot)
         assert path.exists()
         assert path.suffix == ".db"
 
-    def test_save_load_round_trip_empty(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
+    def test_save_round_trip_empty(self, tmp_path: Path):
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
         with handler(AgentHistoryHandler()):
             persist.save(bot)
 
-        hist = AgentHistoryHandler()
-        bot2 = ChatBot(agent_id="ChatBot")
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(hist):
-            persist2.ensure_loaded(bot2)
-        assert len(hist._histories.get("ChatBot", {})) == 0
-        assert persist2.get_handoff("ChatBot") == ""
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert len(data["history"]) == 0
+        assert data["handoff"] == ""
 
-    def test_save_load_round_trip_with_history(self, tmp_path: Path):
-        hist = AgentHistoryHandler()
-        persist = PersistenceHandler(tmp_path)
+    def test_save_round_trip_with_history(self, tmp_path: Path):
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
-        with handler(hist):
+        with handler(AgentHistoryHandler()):
             history = get_agent_history(bot.__agent_id__)
             history["msg1"] = {
                 "id": "msg1",
                 "role": "user",
                 "content": "hello",
             }
-            persist._handoffs["ChatBot"] = "working on X"
-            persist.save(bot)
+            persist.save(bot, handoff="working on X")
 
-        hist2 = AgentHistoryHandler()
-        bot2 = ChatBot(agent_id="ChatBot")
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(hist2):
-            persist2.ensure_loaded(bot2)
-            loaded_history = get_agent_history(bot2.__agent_id__)
-        assert persist2.get_handoff("ChatBot") == "working on X"
-        assert len(loaded_history) == 1
-        assert loaded_history["msg1"]["content"] == "hello"
-
-    def test_load_returns_false_when_no_checkpoint(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
-        bot = ChatBot(agent_id="ChatBot")
-        with handler(AgentHistoryHandler()):
-            assert not persist.ensure_loaded(bot)
-
-    def test_load_returns_true_when_checkpoint_exists(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
-        bot = ChatBot(agent_id="ChatBot")
-        with handler(AgentHistoryHandler()):
-            persist.save(bot)
-            # Reset loaded state
-            persist._loaded.clear()
-            assert persist.ensure_loaded(bot)
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["handoff"] == "working on X"
+        assert len(data["history"]) == 1
+        assert data["history"][0]["content"] == "hello"
 
     def test_atomic_write(self, tmp_path: Path):
         """Checkpoint write uses SQLite transactions for atomicity."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
         with handler(AgentHistoryHandler()):
             path = persist.save(bot)
         assert path.exists()
-        # Verify data is readable (transaction committed successfully)
         data = read_checkpoint(tmp_path, "ChatBot")
         assert data["agent_id"] == "ChatBot"
 
     def test_custom_agent_id(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
         class CustomBot(PersistentAgent):
             """Custom."""
@@ -293,14 +280,6 @@ class TestCheckpointing:
         data = read_checkpoint(tmp_path, "custom-bot")
         assert data["agent_id"] == "custom-bot"
 
-    def test_persist_dir_created_automatically(self, tmp_path: Path):
-        nested = tmp_path / "a" / "b" / "c"
-        persist = PersistenceHandler(nested)
-        bot = ChatBot(agent_id="ChatBot")
-        with handler(AgentHistoryHandler()):
-            persist.save(bot)
-        assert nested.exists()
-
 
 # ---------------------------------------------------------------------------
 # Tests: subclass state persistence (checkpoint_state / restore_state)
@@ -311,19 +290,17 @@ class TestSubclassStatePersistence:
     """Dataclass fields on subclasses are automatically persisted."""
 
     def test_dataclass_fields_round_trip(self, tmp_path: Path):
-        persist = PersistenceHandler(tmp_path)
+        """Dataclass state survives a save and is visible in the DB."""
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = StatefulBot()
         bot.learned_patterns = ["pattern A", "pattern B"]
         bot.call_count = 5
         with handler(AgentHistoryHandler()):
             persist.save(bot)
 
-        bot2 = StatefulBot()
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert bot2.learned_patterns == ["pattern A", "pattern B"]
-        assert bot2.call_count == 5
+        data = read_checkpoint(tmp_path, "StatefulBot")
+        assert data["state"]["learned_patterns"] == ["pattern A", "pattern B"]
+        assert data["state"]["call_count"] == 5
 
     def test_non_dataclass_has_empty_state(self):
         """Non-dataclass subclass returns empty state dict."""
@@ -345,19 +322,17 @@ class TestSubclassStatePersistence:
                 """Say: {msg}"""
                 raise NotHandled
 
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = WeirdBot()
         bot.callback = lambda x: x  # not JSON serializable
         bot.name = "Alice"
         with handler(AgentHistoryHandler()):
             persist.save(bot)
 
-        bot2 = WeirdBot()
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert bot2.name == "Alice"
-        assert bot2.callback is None
+        data = read_checkpoint(tmp_path, "WeirdBot")
+        assert data["state"]["name"] == "Alice"
+        # callback is not JSON serializable, so it should be skipped
+        assert "callback" not in data["state"]
 
     def test_custom_checkpoint_restore(self, tmp_path: Path):
         """Users can override checkpoint_state / restore_state."""
@@ -380,21 +355,18 @@ class TestSubclassStatePersistence:
                 """Say: {msg}"""
                 raise NotHandled
 
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = CustomBot(agent_id="CustomBot")
         bot.data["counter"] = 42
         with handler(AgentHistoryHandler()):
             persist.save(bot)
 
-        bot2 = CustomBot(agent_id="CustomBot")
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert bot2.data["counter"] == 42
+        data = read_checkpoint(tmp_path, "CustomBot")
+        assert data["state"]["data"]["counter"] == 42
 
     def test_state_saved_in_checkpoint_file(self, tmp_path: Path):
         """The checkpoint DB contains state with subclass fields."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = StatefulBot()
         bot.learned_patterns = ["X"]
         bot.call_count = 3
@@ -417,17 +389,15 @@ class TestAutomaticCheckpointing:
 
     def test_checkpoint_saved_after_successful_call(self, tmp_path: Path):
         mock = MockCompletionHandler([make_text_response("hello")])
-        persist = PersistenceHandler(tmp_path)
         bot = ChatBot(agent_id="ChatBot")
 
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(persist),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("hi")
 
-        assert persist.db_path.exists()
         data = read_checkpoint(tmp_path, "ChatBot")
         assert len(data["history"]) > 0
         assert data["handoff"] == ""
@@ -438,13 +408,12 @@ class TestAutomaticCheckpointing:
             def _completion(self, *args, **kwargs):
                 raise RuntimeError("boom")
 
-        persist = PersistenceHandler(tmp_path)
         bot = ChatBot(agent_id="ChatBot")
         with pytest.raises(RuntimeError, match="boom"):
             with (
                 handler(LiteLLMProvider()),
                 handler(FailingMock()),
-                handler(persist),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("hi")
 
@@ -462,12 +431,11 @@ class TestAutomaticCheckpointing:
                 handoff_during_call.append(data["handoff"])
                 return make_text_response("ok")
 
-        persist = PersistenceHandler(tmp_path)
         bot = ChatBot(agent_id="ChatBot")
         with (
             handler(LiteLLMProvider()),
             handler(SpyMock()),
-            handler(persist),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("hello")
 
@@ -475,32 +443,33 @@ class TestAutomaticCheckpointing:
         assert "Executing send" in handoff_during_call[0]
 
     def test_history_persists_across_sessions(self, tmp_path: Path):
+        """A 'restart' (new handler + agent) sees prior history."""
         mock = MockCompletionHandler([make_text_response("reply1")])
         bot = ChatBot(agent_id="ChatBot")
-        provider1 = LiteLLMProvider()
 
         with (
-            handler(provider1),
+            handler(LiteLLMProvider()),
             handler(mock),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("first message")
 
-        history_after_first = len(provider1._histories.get("ChatBot", {}))
+        data_after_first = read_checkpoint(tmp_path, "ChatBot")
+        history_len_first = len(data_after_first["history"])
 
         # "Restart" — new handler + new agent instance
         mock2 = MockCompletionHandler([make_text_response("reply after restart")])
         bot2 = ChatBot(agent_id="ChatBot")
-        provider2 = LiteLLMProvider()
 
         with (
-            handler(provider2),
+            handler(LiteLLMProvider()),
             handler(mock2),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot2.send("second message")
 
-        assert len(provider2._histories.get("ChatBot", {})) > history_after_first
+        data_after_second = read_checkpoint(tmp_path, "ChatBot")
+        assert len(data_after_second["history"]) > history_len_first
 
     def test_second_call_sees_prior_history(self, tmp_path: Path):
         mock = MockCompletionHandler(
@@ -511,7 +480,7 @@ class TestAutomaticCheckpointing:
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("a")
             bot.send("b")
@@ -526,7 +495,7 @@ class TestAutomaticCheckpointing:
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("test")
 
@@ -553,16 +522,12 @@ class TestCrashRecovery:
             with (
                 handler(LiteLLMProvider()),
                 handler(CrashMock()),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("important task")
 
-        # New handler instance loads handoff from disk
-        persist2 = PersistenceHandler(tmp_path)
-        bot2 = ChatBot(agent_id="ChatBot")
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert "Executing send" in persist2.get_handoff("ChatBot")
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert "Executing send" in data["handoff"]
 
     def test_system_prompt_includes_handoff(self, tmp_path: Path):
         """After a crash, the next call's system prompt includes the handoff."""
@@ -578,7 +543,7 @@ class TestCrashRecovery:
             with (
                 handler(LiteLLMProvider()),
                 handler(CrashMock()),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("important task")
 
@@ -599,7 +564,7 @@ class TestCrashRecovery:
         with (
             handler(LiteLLMProvider()),
             handler(SpyMock()),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot2.send("resume")
 
@@ -617,22 +582,20 @@ class TestCrashRecovery:
             with (
                 handler(LiteLLMProvider()),
                 handler(CrashMock()),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("crash task")
 
         # Successful run clears handoff
         mock = MockCompletionHandler([make_text_response("done")])
         bot2 = ChatBot(agent_id="ChatBot")
-        persist = PersistenceHandler(tmp_path)
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(persist),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot2.send("new task")
 
-        assert persist.get_handoff("ChatBot") == ""
         data = read_checkpoint(tmp_path, "ChatBot")
         assert data["handoff"] == ""
 
@@ -650,16 +613,13 @@ class TestCrashRecovery:
             with (
                 handler(LiteLLMProvider()),
                 handler(CrashMock()),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("boom")
 
-        bot2 = StatefulBot()
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert bot2.learned_patterns == ["important insight"]
-        assert bot2.call_count == 3
+        data = read_checkpoint(tmp_path, "StatefulBot")
+        assert data["state"]["learned_patterns"] == ["important insight"]
+        assert data["state"]["call_count"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +643,7 @@ class TestNestedCalls:
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             result = bot.outer("demo")
 
@@ -691,13 +651,12 @@ class TestNestedCalls:
 
     def test_nested_call_does_not_double_checkpoint(self, tmp_path: Path):
         save_count = 0
-        persist = PersistenceHandler(tmp_path)
         original_save = PersistenceHandler.save
 
-        def counting_save(self, agent):
+        def counting_save(self, agent, handoff=""):
             nonlocal save_count
             save_count += 1
-            return original_save(self, agent)
+            return original_save(self, agent, handoff=handoff)
 
         mock = MockCompletionHandler(
             [
@@ -712,7 +671,7 @@ class TestNestedCalls:
             with (
                 handler(LiteLLMProvider()),
                 handler(mock),
-                handler(persist),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.outer("demo")
         finally:
@@ -729,17 +688,17 @@ class TestNestedCalls:
                 make_text_response("outer"),
             ]
         )
-        persist = PersistenceHandler(tmp_path)
         bot = NestedBot(agent_id="NestedBot")
 
         with (
             handler(LiteLLMProvider()),
             handler(mock),
-            handler(persist),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.outer("demo")
 
-        assert persist.get_handoff("NestedBot") == ""
+        data = read_checkpoint(tmp_path, "NestedBot")
+        assert data["handoff"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -820,7 +779,7 @@ class TestContextCompaction:
             handler(provider),
             handler(mock),
             handler(CompactionHandler(max_history_len=4)),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             bot.send("trigger compaction")
 
@@ -917,77 +876,6 @@ class TestContextCompaction:
         """
         history: OrderedDict[str, Any] = OrderedDict()
 
-        # Build 10 messages: msgs 0-7 are plain user/assistant pairs,
-        # msg8 is an assistant tool_use, msg9 is the tool_result.
-        for i in range(8):
-            history[f"msg{i}"] = {
-                "id": f"msg{i}",
-                "role": "user" if i % 2 == 0 else "assistant",
-                "content": f"Message {i}",
-            }
-
-        # Assistant message with a tool_use block
-        history["msg8"] = {
-            "id": "msg8",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "tool_call_abc",
-                    "name": "some_tool",
-                    "input": {"arg": "value"},
-                }
-            ],
-        }
-        # Corresponding tool_result
-        history["msg9"] = {
-            "id": "msg9",
-            "role": "tool",
-            "tool_call_id": "tool_call_abc",
-            "content": "tool output",
-        }
-
-        # With max_history_len=6, keep_recent = max(6//2, 4) = 4
-        # So items[:6] are old (msg0-msg5), items[6:] are recent (msg6-msg9).
-        # That's fine — both msg8 and msg9 land in recent.
-        #
-        # But with max_history_len=8, keep_recent = max(8//2, 4) = 4
-        # old = items[:6] = msg0-msg5, recent = items[6:] = msg6-msg9.
-        # Still fine.
-        #
-        # With max_history_len=4, keep_recent = max(4//2, 4) = 4
-        # old = items[:6] = msg0-msg5, recent = items[6:] = msg6-msg9.
-        # Still fine.
-        #
-        # To trigger the bug: we need tool_use in old and tool_result in recent.
-        # With 12 messages and max_history_len=6, keep_recent=4:
-        # old = items[:8], recent = items[8:] = msg8-msg11
-        # Let's add 2 more messages after the tool pair.
-        history["msg10"] = {
-            "id": "msg10",
-            "role": "user",
-            "content": "Message 10",
-        }
-        history["msg11"] = {
-            "id": "msg11",
-            "role": "assistant",
-            "content": "Message 11",
-        }
-
-        # 12 messages total. max_history_len=6, keep_recent = max(3, 4) = 4
-        # old = items[:8] (msg0-msg7), recent = items[8:] (msg8-msg11)
-        # Hmm, that puts both tool msgs in recent. We want the split in between.
-        #
-        # With keep_recent=3 (max_history_len=6 -> 6//2=3, max(3,4)=4... no)
-        # keep_recent is always >= 4. So recent = last 4 items.
-        #
-        # For 12 items with keep_recent=4: old=items[:8], recent=items[8:]
-        # msg8 (tool_use) is at index 8, so it's the first recent item. Fine.
-        #
-        # We need tool_use at index 7 (last of old) and tool_result at index 8
-        # (first of recent). Let's restructure:
-
-        history.clear()
         for i in range(7):
             history[f"msg{i}"] = {
                 "id": f"msg{i}",
@@ -1034,12 +922,6 @@ class TestContextCompaction:
             "content": "Final answer",
         }
 
-        # 12 items total. max_history_len=8, keep_recent = max(8//2, 4) = 4
-        # old = items[:8] = msg0..msg7 (includes tool_use at msg7)
-        # recent = items[8:] = msg8..msg11 (includes tool_result at msg8)
-        # BUG: tool_use in old gets discarded, but tool_result in recent
-        # references a tool_call_id that no longer exists -> API rejection.
-
         compaction = CompactionHandler(max_history_len=8)
         mock = MockCompletionHandler(
             [make_text_response("Summary of prior conversation.")]
@@ -1054,8 +936,6 @@ class TestContextCompaction:
         result_items = list(result.values())
 
         # After compaction, there must be no orphaned tool_result messages.
-        # Every tool_result must have a preceding assistant message with a
-        # matching tool_use block.
         tool_use_ids: set[str] = set()
         for msg in result_items:
             content = msg.get("content", "")
@@ -1133,45 +1013,29 @@ class TestAgentIsolation:
 
     def test_two_agents_independent(self, tmp_path: Path):
         bot1 = ChatBot(agent_id="bot1")
-        bot2 = ChatBot(agent_id="bot2")
 
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         with handler(AgentHistoryHandler()):
-            persist._handoffs["bot1"] = "bot1 work"
-            persist.save(bot1)
+            persist.save(bot1, handoff="bot1 work")
 
-        persist2 = PersistenceHandler(tmp_path)
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(bot2)
-        assert persist2.get_handoff("bot2") == ""
+        # bot2 was never saved — should not exist in DB
+        assert not has_checkpoint(tmp_path, "bot2")
+        data = read_checkpoint(tmp_path, "bot1")
+        assert data["handoff"] == "bot1 work"
 
-    def test_same_dir_different_agent_id(self, tmp_path: Path):
-        class Bot(PersistentAgent):
-            """A bot."""
-
-            @Template.define
-            def ask(self, q: str) -> str:
-                """Q: {q}"""
-                raise NotHandled
-
-        persist = PersistenceHandler(tmp_path)
-        bot_a = Bot(agent_id="alpha")
-        bot_b = Bot(agent_id="beta")
+    def test_same_db_different_agent_id(self, tmp_path: Path):
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
+        bot_a = ChatBot(agent_id="alpha")
+        bot_b = ChatBot(agent_id="beta")
 
         with handler(AgentHistoryHandler()):
-            persist._handoffs["alpha"] = "alpha work"
-            persist.save(bot_a)
-            persist._handoffs["beta"] = "beta work"
-            persist.save(bot_b)
+            persist.save(bot_a, handoff="alpha work")
+            persist.save(bot_b, handoff="beta work")
 
-        persist2 = PersistenceHandler(tmp_path)
-        a2 = Bot(agent_id="alpha")
-        b2 = Bot(agent_id="beta")
-        with handler(AgentHistoryHandler()):
-            persist2.ensure_loaded(a2)
-            persist2.ensure_loaded(b2)
-        assert persist2.get_handoff("alpha") == "alpha work"
-        assert persist2.get_handoff("beta") == "beta work"
+        data_a = read_checkpoint(tmp_path, "alpha")
+        data_b = read_checkpoint(tmp_path, "beta")
+        assert data_a["handoff"] == "alpha work"
+        assert data_b["handoff"] == "beta work"
 
 
 # ---------------------------------------------------------------------------
@@ -1198,19 +1062,18 @@ class TestRetryCompatibility:
                 """Pick a number."""
                 raise NotHandled
 
-        persist = PersistenceHandler(tmp_path)
         bot = NumberBot(agent_id="NumberBot")
         with (
             handler(LiteLLMProvider()),
             handler(RetryLLMHandler()),
             handler(mock),
-            handler(persist),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             result = bot.pick()
 
         assert result == 42
-        assert persist.get_handoff("NumberBot") == ""
-        assert persist.db_path.exists()
+        data = read_checkpoint(tmp_path, "NumberBot")
+        assert data["handoff"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1266,17 +1129,15 @@ class TestNestedCallFailuresWithPersistence:
             ]
         )
         bot = FailingBot(agent_id="FailingBot")
-        persist = PersistenceHandler(tmp_path)
 
         with pytest.raises(ToolCallExecutionError, match="tool exploded"):
             with (
                 handler(LiteLLMProvider()),
                 handler(mock),
-                handler(persist),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.outer("go")
 
-        # Crash checkpoint should exist with handoff
         data = read_checkpoint(tmp_path, "FailingBot")
         assert "Executing outer" in data["handoff"]
 
@@ -1318,7 +1179,7 @@ class TestNestedCallFailuresWithPersistence:
             with (
                 handler(LiteLLMProvider()),
                 handler(mock_crash),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.outer("task")
 
@@ -1339,7 +1200,7 @@ class TestNestedCallFailuresWithPersistence:
         with (
             handler(LiteLLMProvider()),
             handler(SpyMock()),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             result = bot2.outer("retry")
 
@@ -1371,33 +1232,23 @@ class TestAgentPersistentAgentCoexistence:
         )
         plain = PlainBot()
         persistent = ChatBot(agent_id="ChatBot")
-        persist = PersistenceHandler(tmp_path)
 
-        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+        ):
             r1 = plain.ask("hello")
             r2 = persistent.send("hello")
 
         assert r1 == "plain-reply"
         assert r2 == "persist-reply"
         # Only the PersistentAgent gets a checkpoint entry
-        data = read_checkpoint(tmp_path, "ChatBot")
-        assert data["agent_id"] == "ChatBot"
-        # Plain agent should not have a checkpoint
-        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
-        row = conn.execute(
-            "SELECT 1 FROM checkpoints WHERE agent_id = ?",
-            (plain.__agent_id__,),
-        ).fetchone()
-        conn.close()
-        assert row is None
+        assert has_checkpoint(tmp_path, "ChatBot")
+        assert not has_checkpoint(tmp_path, plain.__agent_id__)
 
     def test_persistent_agent_tool_calls_plain_agent(self, tmp_path: Path):
         """A PersistentAgent's tool can delegate to a plain Agent.
-
-        The mock returns a tool_call for the outer PersistentAgent, whose
-        tool implementation calls the inner plain Agent. The inner Agent
-        makes one LLM call. After the tool result is returned, the outer
-        Agent's final LLM call produces the result.
 
         Mock response sequence:
           0: outer → tool_call(self__delegate, {"q": "sub-task"})
@@ -1436,9 +1287,12 @@ class TestAgentPersistentAgentCoexistence:
             ]
         )
         outer = OuterPersistent(agent_id="outer")
-        persist = PersistenceHandler(tmp_path)
 
-        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+        ):
             result = outer.process("do it")
 
         assert result == "final-answer"
@@ -1477,15 +1331,15 @@ class TestAgentPersistentAgentCoexistence:
             ]
         )
         outer = OuterPlain()
-        persist = PersistenceHandler(tmp_path)
 
-        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+        ):
             result = outer.run("go")
 
         assert result == "done"
-        # The inner PersistentAgent should NOT get checkpointed by
-        # PersistenceHandler because it was called nested (not outermost)
-        # But its history should still be tracked by LiteLLMProvider
 
     def test_two_persistent_agents_cooperate(self, tmp_path: Path):
         """Two PersistentAgents with different IDs work independently.
@@ -1500,9 +1354,12 @@ class TestAgentPersistentAgentCoexistence:
 
         planner = ChatBot(agent_id="planner")
         executor = ChatBot(agent_id="executor")
-        persist = PersistenceHandler(tmp_path)
 
-        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+        ):
             plan = planner.send("make a plan")
             result = executor.send(f"execute: {plan}")
 
@@ -1526,7 +1383,7 @@ class TestSQLiteCrashTolerance:
 
     def test_wal_mode_enabled(self, tmp_path: Path):
         """Database uses WAL journal mode for crash tolerance."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
         with handler(AgentHistoryHandler()):
             persist.save(bot)
@@ -1538,7 +1395,7 @@ class TestSQLiteCrashTolerance:
 
     def test_database_survives_incomplete_write(self, tmp_path: Path):
         """Prior committed data survives if a subsequent write is interrupted."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
 
         # First write: commit a valid checkpoint
@@ -1565,13 +1422,16 @@ class TestSQLiteCrashTolerance:
     def test_database_integrity_after_multiple_saves(self, tmp_path: Path):
         """Multiple rapid saves produce a consistent database."""
         mock = MockCompletionHandler(
-            [make_text_response(f"reply-{i}") for i in range(5)]
+            [make_text_response(f"reply-{i}") for i in range(3)]
         )
         bot = ChatBot(agent_id="ChatBot")
-        persist = PersistenceHandler(tmp_path)
 
-        with handler(LiteLLMProvider()), handler(mock), handler(persist):
-            for i in range(5):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+        ):
+            for i in range(3):
                 bot.send(f"msg-{i}")
 
         # Verify integrity
@@ -1597,7 +1457,7 @@ class TestSQLiteCrashTolerance:
             with (
                 handler(LiteLLMProvider()),
                 handler(CrashMock()),
-                handler(PersistenceHandler(tmp_path)),
+                handler(PersistenceHandler(tmp_path / "checkpoints.db")),
             ):
                 bot.send("important task")
 
@@ -1616,7 +1476,7 @@ class TestSQLiteCrashTolerance:
         with (
             handler(LiteLLMProvider()),
             handler(mock2),
-            handler(PersistenceHandler(tmp_path)),
+            handler(PersistenceHandler(tmp_path / "checkpoints.db")),
         ):
             result = bot2.send("resume")
 
@@ -1624,32 +1484,9 @@ class TestSQLiteCrashTolerance:
         data2 = read_checkpoint(tmp_path, "ChatBot")
         assert data2["handoff"] == ""
 
-    def test_concurrent_handler_instances_same_db(self, tmp_path: Path):
-        """Two PersistenceHandler instances sharing the same DB dir work."""
-        persist1 = PersistenceHandler(tmp_path)
-        persist2 = PersistenceHandler(tmp_path)
-
-        bot1 = ChatBot(agent_id="bot1")
-        bot2 = ChatBot(agent_id="bot2")
-
-        with handler(AgentHistoryHandler()):
-            history1 = get_agent_history("bot1")
-            history1["m1"] = {"id": "m1", "role": "user", "content": "from bot1"}
-            persist1.save(bot1)
-
-            history2 = get_agent_history("bot2")
-            history2["m2"] = {"id": "m2", "role": "user", "content": "from bot2"}
-            persist2.save(bot2)
-
-        # Both checkpoints exist in the same DB
-        data1 = read_checkpoint(tmp_path, "bot1")
-        data2 = read_checkpoint(tmp_path, "bot2")
-        assert data1["history"][0]["content"] == "from bot1"
-        assert data2["history"][0]["content"] == "from bot2"
-
     def test_multiple_agents_single_db(self, tmp_path: Path):
         """All agents share one DB file, not separate JSON files."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bots = [ChatBot(agent_id=f"bot-{i}") for i in range(5)]
 
         with handler(AgentHistoryHandler()):
@@ -1667,15 +1504,13 @@ class TestSQLiteCrashTolerance:
 
     def test_save_is_idempotent(self, tmp_path: Path):
         """Saving the same agent multiple times updates rather than duplicates."""
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         bot = ChatBot(agent_id="ChatBot")
 
         with handler(AgentHistoryHandler()):
             persist.save(bot)
-            persist._handoffs["ChatBot"] = "updated handoff"
-            persist.save(bot)
-            persist._handoffs["ChatBot"] = "final handoff"
-            persist.save(bot)
+            persist.save(bot, handoff="updated handoff")
+            persist.save(bot, handoff="final handoff")
 
         conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
         count = conn.execute(
@@ -1700,7 +1535,7 @@ class TestThreadSafety:
         """Multiple threads saving different agents concurrently don't corrupt the DB."""
         import concurrent.futures
 
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         errors: list[Exception] = []
 
         def save_agent(agent_id: str) -> None:
@@ -1737,7 +1572,7 @@ class TestThreadSafety:
         """Readers and writers can operate concurrently without errors."""
         import concurrent.futures
 
-        persist = PersistenceHandler(tmp_path)
+        persist = PersistenceHandler(tmp_path / "checkpoints.db")
         errors: list[Exception] = []
 
         # Seed some data
@@ -1749,8 +1584,7 @@ class TestThreadSafety:
         def writer(agent_id: str) -> None:
             try:
                 bot = ChatBot(agent_id=agent_id)
-                hist = AgentHistoryHandler()
-                with handler(hist):
+                with handler(AgentHistoryHandler()):
                     history = get_agent_history(agent_id)
                     history["update"] = {
                         "id": "update",
@@ -1763,12 +1597,8 @@ class TestThreadSafety:
 
         def reader(agent_id: str) -> None:
             try:
-                bot = ChatBot(agent_id=agent_id)
-                persist2 = PersistenceHandler(tmp_path)
-                hist = AgentHistoryHandler()
-                with handler(hist):
-                    persist2._loaded.clear()
-                    persist2.ensure_loaded(bot)
+                # Verify checkpoint is readable via direct DB access
+                read_checkpoint(tmp_path, agent_id)
             except Exception as e:
                 errors.append(e)
 

@@ -58,7 +58,7 @@ class PersistentAgent(Agent):
 
         bot = ResearchBot(agent_id="research-bot")
 
-        with handler(LiteLLMProvider()), handler(PersistenceHandler(Path("./state"))):
+        with handler(LiteLLMProvider()), handler(PersistenceHandler(Path("./state/checkpoints.db"))):
             bot.ask("What is the capital of France?")
             # Kill process here, restart, and the bot resumes with context.
     """
@@ -116,16 +116,19 @@ def _init_db(conn: sqlite3.Connection) -> None:
 class PersistenceHandler(ObjectInterpretation):
     """Handler that persists :class:`PersistentAgent` history to a SQLite database.
 
-    All persistence state (handoff notes, loaded flags) lives here, not on
-    the agent.  Install alongside
+    Install alongside
     :class:`~effectful.handlers.llm.completions.LiteLLMProvider`::
 
-        with handler(LiteLLMProvider()), handler(PersistenceHandler(Path("./state"))):
+        with handler(LiteLLMProvider()), handler(PersistenceHandler(Path("./state/checkpoints.db"))):
             bot.ask("question")
 
-    The database file is stored at ``{persist_dir}/checkpoints.db`` using
-    SQLite WAL mode for crash tolerance.  If the process is killed mid-write,
-    SQLite's journal-based recovery ensures the database remains consistent.
+    Uses SQLite WAL mode for crash tolerance.  If the process is killed
+    mid-write, SQLite's journal-based recovery ensures the database
+    remains consistent.
+
+    All state is read from and written to the database directly — no
+    in-memory caching.  This makes the handler stateless (aside from
+    nesting depth tracking) and easy to reason about.
 
     **Automatic checkpointing**:
 
@@ -148,15 +151,53 @@ class PersistenceHandler(ObjectInterpretation):
             handler(LiteLLMProvider()),
             handler(RetryLLMHandler()),
             handler(CompactionHandler()),
-            handler(PersistenceHandler(Path("./state"))),
+            handler(PersistenceHandler(Path("./state/checkpoints.db"))),
         ):
             bot.ask("question")
+
+    **Crash recovery example**::
+
+        from pathlib import Path
+        from effectful.handlers.llm.persistence import PersistentAgent, PersistenceHandler
+        from effectful.handlers.llm import Template
+        from effectful.handlers.llm.completions import LiteLLMProvider
+        from effectful.ops.semantics import handler
+        from effectful.ops.types import NotHandled
+
+        class Bot(PersistentAgent):
+            \"""You are a helpful assistant.\"""
+
+            @Template.define
+            def work(self, task: str) -> str:
+                \"""Do: {task}\"""
+                raise NotHandled
+
+        bot = Bot(agent_id="worker")
+        persist = PersistenceHandler(Path("./state/checkpoints.db"))
+
+        # Session 1 — process crashes mid-call
+        with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(persist):
+            bot.work("step 1")  # completes, checkpointed
+            bot.work("step 2")  # process killed here
+
+        # Session 2 — restart with the same db_path
+        bot2 = Bot(agent_id="worker")
+        persist2 = PersistenceHandler(Path("./state/checkpoints.db"))
+        with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(persist2):
+            # History from session 1 is restored automatically.
+            # The handoff note "Executing work ..." tells the LLM what
+            # was in progress when the crash occurred.
+            bot2.work("step 2")  # resumes with full context
+
+    Use :meth:`save` for manual checkpointing outside the automatic flow
+    (e.g. after initialising agent state in a choreography).
+
+    Args:
+        db_path: Path to the SQLite database file.
     """
 
-    def __init__(self, persist_dir: Path) -> None:
-        self._persist_dir = Path(persist_dir)
-        self._handoffs: dict[str, str] = {}
-        self._loaded: set[str] = set()
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = Path(db_path)
         self._tls = threading.local()
         self._db_lock = threading.Lock()
         self._db_initialized = False
@@ -168,8 +209,8 @@ class PersistenceHandler(ObjectInterpretation):
         any thread.  WAL mode and table creation are applied once on the
         first call (guarded by ``_db_lock``).
         """
-        self._persist_dir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("PRAGMA busy_timeout=5000")
         if not self._db_initialized:
             with self._db_lock:
                 if not self._db_initialized:
@@ -180,23 +221,18 @@ class PersistenceHandler(ObjectInterpretation):
     @property
     def db_path(self) -> Path:
         """Path to the SQLite database file."""
-        return self._persist_dir / "checkpoints.db"
+        return self._db_path
 
     def _get_depths(self) -> dict[str, int]:
         if not hasattr(self._tls, "depths"):
             self._tls.depths = {}
         return self._tls.depths
 
-    def ensure_loaded(self, agent: PersistentAgent) -> bool:
-        """Load an agent's checkpoint from the database if not already loaded.
+    def _load_row(self, agent_id: str) -> tuple[str, str, str] | None:
+        """Read a checkpoint row from the database.
 
-        Returns ``True`` if a checkpoint was found and loaded.
+        Returns ``(handoff, state_json, history_json)`` or ``None``.
         """
-        agent_id = agent.__agent_id__
-        if agent_id in self._loaded:
-            return False
-        self._loaded.add(agent_id)
-
         conn = self._connect()
         try:
             row = conn.execute(
@@ -205,23 +241,43 @@ class PersistenceHandler(ObjectInterpretation):
             ).fetchone()
         finally:
             conn.close()
+        return row
 
+    def _ensure_loaded(self, agent: PersistentAgent) -> bool:
+        """Load an agent's checkpoint from the database into the in-process history.
+
+        Safe to call multiple times — only loads once per agent (tracked
+        via thread-local ``_loaded`` set to avoid re-seeding history that
+        is already live in memory).
+
+        Returns ``True`` if a checkpoint was found and loaded.
+        """
+        agent_id = agent.__agent_id__
+        loaded = self._get_loaded()
+        if agent_id in loaded:
+            return False
+        loaded.add(agent_id)
+
+        row = self._load_row(agent_id)
         if row is None:
             return False
 
-        handoff, state_json, history_json = row
-        self._handoffs[agent_id] = handoff
+        _handoff, state_json, history_json = row
         agent.restore_state(json.loads(state_json))
         stored = get_agent_history(agent_id)
         stored.clear()
         stored.update({msg["id"]: msg for msg in json.loads(history_json)})
         return True
 
-    def save(self, agent: PersistentAgent) -> Path:
+    def _get_loaded(self) -> set[str]:
+        if not hasattr(self._tls, "loaded"):
+            self._tls.loaded = set()
+        return self._tls.loaded
+
+    def save(self, agent: PersistentAgent, handoff: str = "") -> Path:
         """Write an agent's current state to the database and return the db path."""
         agent_id = agent.__agent_id__
         history = get_agent_history(agent_id)
-        handoff = self._handoffs.get(agent_id, "")
         state_json = json.dumps(agent.checkpoint_state(), default=str)
         history_json = json.dumps(list(history.values()), default=str)
 
@@ -244,9 +300,12 @@ class PersistenceHandler(ObjectInterpretation):
 
         return self.db_path
 
-    def get_handoff(self, agent_id: str) -> str:
-        """Return the current handoff note for *agent_id*."""
-        return self._handoffs.get(agent_id, "")
+    def _get_handoff(self, agent_id: str) -> str:
+        """Return the current handoff note for *agent_id* (reads from DB)."""
+        row = self._load_row(agent_id)
+        if row is None:
+            return ""
+        return row[0]
 
     @implements(Template.__apply__)
     def _call[**P, T](
@@ -257,7 +316,7 @@ class PersistenceHandler(ObjectInterpretation):
             return fwd(template, *args, **kwargs)
 
         agent_id = agent.__agent_id__
-        self.ensure_loaded(agent)
+        self._ensure_loaded(agent)
 
         # Nesting: only checkpoint for outermost call per agent
         depths = self._get_depths()
@@ -268,7 +327,7 @@ class PersistenceHandler(ObjectInterpretation):
         try:
             if is_outermost:
                 # Inject prior-session handoff into system prompt
-                prior_handoff = self._handoffs.get(agent_id, "")
+                prior_handoff = self._get_handoff(agent_id)
                 if prior_handoff:
                     template.__system_prompt__ = (
                         f"{template.__system_prompt__}\n\n"
@@ -276,21 +335,21 @@ class PersistenceHandler(ObjectInterpretation):
                     )
 
                 # Record current call as handoff for crash recovery
-                self._handoffs[agent_id] = (
+                current_handoff = (
                     f"Executing {template.__name__} with args={repr(args)[:200]}"
                 )
-                self.save(agent)
+                self.save(agent, handoff=current_handoff)
 
             result = fwd(template, *args, **kwargs)
 
             if is_outermost:
-                self._handoffs[agent_id] = ""
-                self.save(agent)
+                self.save(agent, handoff="")
 
             return result
         except BaseException:
             if is_outermost:
-                self.save(agent)
+                # Preserve handoff so next session knows what was in progress
+                self.save(agent, handoff=current_handoff)
             raise
         finally:
             depths[agent_id] = depth

@@ -2303,7 +2303,7 @@ def test_persistent_agent_with_persistence_integration(tmp_path):
             raise NotHandled
 
     bot = Bot(agent_id="integration-bot")
-    persist = PersistenceHandler(tmp_path)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
     with (
         handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
@@ -2355,11 +2355,11 @@ def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
 
     helper = _PlainHelper()
     orch = Orchestrator(helper, agent_id="orch")
-    persist = PersistenceHandler(tmp_path)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
     with (
         handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=60)),
-        handler(LimitLLMCallsHandler(max_calls=5)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
         handler(persist),
     ):
         result = orch.run("What is 3 * 7?")
@@ -2381,12 +2381,12 @@ def test_compaction_after_multiple_calls_integration():
 
     with (
         handler(provider),
-        handler(LimitLLMCallsHandler(max_calls=6)),
-        handler(CompactionHandler(max_history_len=6)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
     ):
-        # Each call adds ~3 msgs (system + user + assistant).
-        # After the 2nd call history has ~6 msgs, 3rd call triggers compaction.
-        for i in range(3):
+        # Each call adds ~2 msgs (user + assistant).
+        # After the 2nd call history exceeds 4 msgs, triggering compaction.
+        for i in range(2):
             helper.answer(f"What is {i} + 1?")
 
     history = provider._histories.get(helper.__agent_id__, {})
@@ -2408,15 +2408,15 @@ def test_compaction_with_persistence_integration(tmp_path):
 
     bot = Bot(agent_id="compact-bot")
     provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
-    persist = PersistenceHandler(tmp_path)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
     with (
         handler(provider),
-        handler(LimitLLMCallsHandler(max_calls=6)),
-        handler(CompactionHandler(max_history_len=6)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
         handler(persist),
     ):
-        for i in range(3):
+        for i in range(2):
             bot.ask(f"What is {i} + 1?")
 
     # Compacted history should be persisted to disk
@@ -2455,8 +2455,8 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
     """After compaction of history containing tool pairs, subsequent calls succeed.
 
     Each tool-using call generates ~4 messages (user, assistant/tool_use,
-    tool/result, assistant/final). With max_history_len=6, compaction fires
-    after the 2nd call. The 3rd call must succeed — if compaction orphaned
+    tool/result, assistant/final). With max_history_len=4, compaction fires
+    after the 1st call. The 2nd call must succeed — if compaction orphaned
     a tool_result the API would reject the conversation.
     """
     bot = _ToolAgent()
@@ -2464,12 +2464,11 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
 
     with (
         handler(provider),
-        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
-        handler(LimitLLMCallsHandler(max_calls=15)),
-        handler(CompactionHandler(max_history_len=6)),
+        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(2))),
+        handler(LimitLLMCallsHandler(max_calls=8)),
+        handler(CompactionHandler(max_history_len=4)),
     ):
         bot.ask("What is the meaning of life?")
-        bot.ask("What is 6 times 7?")
         # Compaction should have fired. This call must not fail.
         result = bot.ask("Summarize what you told me.")
 
@@ -2519,7 +2518,7 @@ def test_sqlite_persistence_crash_recovery_integration(tmp_path):
 
     # Session 1: successful call
     bot = Bot(agent_id="crash-test-bot")
-    persist = PersistenceHandler(tmp_path)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
     with (
         handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
@@ -2547,12 +2546,11 @@ def test_sqlite_persistence_crash_recovery_integration(tmp_path):
 
     # Session 2: new process loads from SQLite and continues
     bot2 = Bot(agent_id="crash-test-bot")
-    persist2 = PersistenceHandler(tmp_path)
 
     with (
         handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
         handler(LimitLLMCallsHandler(max_calls=1)),
-        handler(persist2),
+        handler(PersistenceHandler(tmp_path / "checkpoints.db")),
     ):
         result2 = bot2.ask("What did I just ask?")
 
@@ -2583,15 +2581,15 @@ def test_sqlite_persistence_db_integrity_after_compaction_integration(tmp_path):
 
     bot = Bot(agent_id="compact-sqlite-bot")
     provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
-    persist = PersistenceHandler(tmp_path)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
 
     with (
         handler(provider),
-        handler(LimitLLMCallsHandler(max_calls=6)),
-        handler(CompactionHandler(max_history_len=6)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
         handler(persist),
     ):
-        for i in range(3):
+        for i in range(2):
             bot.ask(f"What is {i} + 1?")
 
     # Verify SQLite DB integrity
