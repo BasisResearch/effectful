@@ -88,11 +88,11 @@ Example — sequential choreography with a review loop::
     choreo = Choreography(
         build_codebase,
         agents=[architect, coder, reviewer],
-        queue=PersistentTaskQueue(Path("./state/choreo_queue")),
+        queue=PersistentTaskQueue(Path("./state/task_queue.db")),
         handlers=[
             LiteLLMProvider(model="gpt-4o-mini"),
             RetryLLMHandler(),
-            PersistenceHandler(Path("./state")),
+            PersistenceHandler(Path("./state/checkpoints.db")),
         ],
     )
     # Kill at any point, restart, and it resumes where it left off.
@@ -129,7 +129,7 @@ Example — parallel scatter across multiple coders::
     choreo = Choreography(
         build_parallel,
         agents=[architect, coder1, coder2, coder3, reviewer],
-        queue=PersistentTaskQueue(Path("./state/choreo_queue")),
+        queue=PersistentTaskQueue(Path("./state/task_queue.db")),
         handlers=[LiteLLMProvider(model="gpt-4o-mini"), RetryLLMHandler()],
     )
     # Pass coder as a list — scatter distributes across all three
@@ -145,6 +145,7 @@ Example — parallel scatter across multiple coders::
 import abc
 import contextlib
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -329,28 +330,69 @@ class InMemoryTaskQueue(TaskQueue):
             )
 
 
-class PersistentTaskQueue(TaskQueue):
-    """File-based task queue with claim-based ownership.
+def _init_queue_db(conn: sqlite3.Connection) -> None:
+    """Create the tasks table and configure WAL mode for crash tolerance."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tasks (
+            id      TEXT PRIMARY KEY,
+            type    TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            status  TEXT NOT NULL DEFAULT 'pending',
+            owner   TEXT NOT NULL DEFAULT '',
+            result  TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status_type ON tasks(status, type)"
+    )
+    conn.commit()
 
-    Each task is a JSON file in *queue_dir*.  Claiming a task
-    atomically renames it from ``<id>.pending.json`` to
-    ``<id>.claimed.<owner>.json``, preventing double-claiming even
+
+class PersistentTaskQueue(TaskQueue):
+    """SQLite-backed task queue with claim-based ownership.
+
+    All task state is stored in a single SQLite database using WAL
+    journal mode for crash tolerance.  If the process is killed
+    mid-transaction, SQLite's journal-based recovery ensures the
+    database remains consistent.
+
+    Claiming a task atomically updates its status from ``pending`` to
+    ``claimed`` inside a transaction, preventing double-claiming even
     across process restarts.
 
     The queue is fully crash-tolerant: call
     :meth:`release_stale_claims` on restart to reclaim work from a
     prior crashed session.
+
+    Args:
+        db_path: Path to the SQLite database file.
     """
 
-    def __init__(self, queue_dir: Path):
-        self.queue_dir = queue_dir
-        self.queue_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: Path):
+        self._db_path = Path(db_path)
         self._lock = threading.Lock()
+        self._db_initialized = False
+        self._init_lock = threading.Lock()
 
-    def _task_path(self, task_id: str, status: str, owner: str = "") -> Path:
-        if owner:
-            return self.queue_dir / f"{task_id}.{status}.{owner}.json"
-        return self.queue_dir / f"{task_id}.{status}.json"
+    @property
+    def db_path(self) -> Path:
+        """Path to the SQLite database file."""
+        return self._db_path
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn.execute("PRAGMA busy_timeout=5000")
+        if not self._db_initialized:
+            with self._init_lock:
+                if not self._db_initialized:
+                    _init_queue_db(conn)
+                    self._db_initialized = True
+        return conn
 
     def submit(
         self,
@@ -360,119 +402,171 @@ class PersistentTaskQueue(TaskQueue):
     ) -> str:
         if task_id is None:
             task_id = str(uuid.uuid4())[:8]
-        with self._lock:
-            if list(self.queue_dir.glob(f"{task_id}.*")):
-                return task_id
-            task = {
-                "id": task_id,
-                "type": task_type,
-                "payload": payload,
-                "status": TaskStatus.PENDING,
-                "owner": "",
-                "result": None,
-            }
-            path = self._task_path(task_id, TaskStatus.PENDING)
-            path.write_text(json.dumps(task, indent=2, default=str))
-            return task_id
+        payload_json = json.dumps(payload, default=str)
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tasks (id, type, payload, status, owner, result)
+                VALUES (?, ?, ?, ?, '', NULL)
+                """,
+                (task_id, task_type, payload_json, TaskStatus.PENDING),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return task_id
 
     def claim(self, task_type: str, owner: str) -> dict | None:
         with self._lock:
-            for path in sorted(self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json")):
-                task = json.loads(path.read_text())
-                if task["type"] != task_type:
-                    continue
-                task["status"] = TaskStatus.CLAIMED
-                task["owner"] = owner
-                claimed = self._task_path(task["id"], TaskStatus.CLAIMED, owner)
-                try:
-                    path.rename(claimed)
-                except FileNotFoundError:
-                    continue  # another thread claimed it
-                claimed.write_text(json.dumps(task, indent=2, default=str))
-                return task
-        return None
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id, type, payload, status, owner, result
+                    FROM tasks
+                    WHERE status = ? AND type = ?
+                    ORDER BY id LIMIT 1
+                    """,
+                    (TaskStatus.PENDING, task_type),
+                ).fetchone()
+                if row is None:
+                    return None
+                task_id = row[0]
+                conn.execute(
+                    "UPDATE tasks SET status = ?, owner = ? WHERE id = ?",
+                    (TaskStatus.CLAIMED, owner, task_id),
+                )
+                conn.commit()
+                return {
+                    "id": task_id,
+                    "type": row[1],
+                    "payload": json.loads(row[2]),
+                    "status": TaskStatus.CLAIMED,
+                    "owner": owner,
+                    "result": json.loads(row[5]) if row[5] is not None else None,
+                }
+            finally:
+                conn.close()
 
     def claim_by_prefix(self, prefix: str, owner: str) -> dict | None:
         with self._lock:
-            for path in sorted(self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json")):
-                fname = path.name.split(".")[0]
-                if not fname.startswith(prefix):
-                    continue
-                task = json.loads(path.read_text())
-                task["status"] = TaskStatus.CLAIMED
-                task["owner"] = owner
-                claimed = self._task_path(task["id"], TaskStatus.CLAIMED, owner)
-                try:
-                    path.rename(claimed)
-                except FileNotFoundError:
-                    continue
-                claimed.write_text(json.dumps(task, indent=2, default=str))
-                return task
-        return None
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT id, type, payload, status, owner, result
+                    FROM tasks
+                    WHERE status = ? AND id LIKE ?
+                    ORDER BY id LIMIT 1
+                    """,
+                    (TaskStatus.PENDING, prefix + "%"),
+                ).fetchone()
+                if row is None:
+                    return None
+                task_id = row[0]
+                conn.execute(
+                    "UPDATE tasks SET status = ?, owner = ? WHERE id = ?",
+                    (TaskStatus.CLAIMED, owner, task_id),
+                )
+                conn.commit()
+                return {
+                    "id": task_id,
+                    "type": row[1],
+                    "payload": json.loads(row[2]),
+                    "status": TaskStatus.CLAIMED,
+                    "owner": owner,
+                    "result": json.loads(row[5]) if row[5] is not None else None,
+                }
+            finally:
+                conn.close()
 
     def complete(self, task_id: str, owner: str, result: Any = None) -> None:
-        claimed = self._task_path(task_id, TaskStatus.CLAIMED, owner)
-        if not claimed.exists():
-            return
-        task = json.loads(claimed.read_text())
-        task["status"] = TaskStatus.DONE
-        task["result"] = result
-        done = self._task_path(task_id, TaskStatus.DONE)
-        tmp = done.with_suffix(".tmp")
-        tmp.write_text(json.dumps(task, indent=2, default=str))
-        tmp.replace(done)
+        result_json = json.dumps(result, default=str)
+        conn = self._connect()
         try:
-            claimed.unlink()
-        except FileNotFoundError:
-            pass
+            conn.execute(
+                """
+                UPDATE tasks SET status = ?, result = ?
+                WHERE id = ? AND status = ?
+                """,
+                (TaskStatus.DONE, result_json, task_id, TaskStatus.CLAIMED),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def fail(self, task_id: str, owner: str, error: str) -> None:
-        claimed = self._task_path(task_id, TaskStatus.CLAIMED, owner)
-        if not claimed.exists():
-            return
-        task = json.loads(claimed.read_text())
-        task["status"] = TaskStatus.FAILED
-        task["result"] = {"error": error}
-        failed = self._task_path(task_id, TaskStatus.FAILED)
-        claimed.rename(failed)
-        failed.write_text(json.dumps(task, indent=2, default=str))
+        error_json = json.dumps({"error": error}, default=str)
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE tasks SET status = ?, result = ?
+                WHERE id = ? AND status = ?
+                """,
+                (TaskStatus.FAILED, error_json, task_id, TaskStatus.CLAIMED),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def get_result(self, task_id: str) -> Any | None:
-        done = self._task_path(task_id, TaskStatus.DONE)
-        if done.exists():
-            task = json.loads(done.read_text())
-            return task.get("result")
-        return None
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT result FROM tasks WHERE id = ? AND status = ?",
+                (task_id, TaskStatus.DONE),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0]) if row[0] is not None else None
+        finally:
+            conn.close()
 
     def release_stale_claims(self, owner: str) -> int:
-        count = 0
         with self._lock:
-            for path in self.queue_dir.glob(f"*.{TaskStatus.CLAIMED}.{owner}.json"):
-                task = json.loads(path.read_text())
-                task["status"] = TaskStatus.PENDING
-                task["owner"] = ""
-                pending = self._task_path(task["id"], TaskStatus.PENDING)
-                path.rename(pending)
-                pending.write_text(json.dumps(task, indent=2, default=str))
-                count += 1
-        return count
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE tasks SET status = ?, owner = ''
+                    WHERE status = ? AND owner = ?
+                    """,
+                    (TaskStatus.PENDING, TaskStatus.CLAIMED, owner),
+                )
+                conn.commit()
+                return cursor.rowcount
+            finally:
+                conn.close()
 
     def pending_count(self, task_type: str | None = None) -> int:
-        count = 0
-        for path in self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json"):
+        conn = self._connect()
+        try:
             if task_type is None:
-                count += 1
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = ?",
+                    (TaskStatus.PENDING,),
+                ).fetchone()
             else:
-                task = json.loads(path.read_text())
-                if task["type"] == task_type:
-                    count += 1
-        return count
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = ? AND type = ?",
+                    (TaskStatus.PENDING, task_type),
+                ).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
 
     def all_done(self) -> bool:
-        for status in (TaskStatus.PENDING, TaskStatus.CLAIMED):
-            if list(self.queue_dir.glob(f"*.{status}*")):
-                return False
-        return True
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status IN (?, ?)",
+                (TaskStatus.PENDING, TaskStatus.CLAIMED),
+            ).fetchone()
+            return row[0] == 0 if row else True
+        finally:
+            conn.close()
 
 
 # ── scatter ────────────────────────────────────────────────────────
@@ -684,11 +778,11 @@ class Choreography:
         choreo = Choreography(
             build_codebase,
             agents=[architect, coder, reviewer],
-            queue=PersistentTaskQueue(Path("./state/choreo_queue")),
+            queue=PersistentTaskQueue(Path("./state/task_queue.db")),
             handlers=[
                 LiteLLMProvider(model="gpt-4o-mini"),
                 RetryLLMHandler(),
-                PersistenceHandler(Path("./state")),
+                PersistenceHandler(Path("./state/checkpoints.db")),
             ],
         )
         result = choreo.run(

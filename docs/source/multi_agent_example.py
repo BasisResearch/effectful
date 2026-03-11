@@ -277,11 +277,11 @@ def main() -> None:
     choreo = Choreography(
         build_project,
         agents=[architect, coder1, coder2, reviewer1, reviewer2],
-        queue=PersistentTaskQueue(STATE_DIR / "choreo_queue"),
+        queue=PersistentTaskQueue(STATE_DIR / "task_queue.db"),
         handlers=[
             LiteLLMProvider(model=MODEL),
             RetryLLMHandler(),
-            PersistenceHandler(STATE_DIR),
+            PersistenceHandler(STATE_DIR / "checkpoints.db"),
         ],
     )
 

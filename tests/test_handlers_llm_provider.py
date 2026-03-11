@@ -2700,14 +2700,15 @@ def test_multi_agent_choreography_integration(tmp_path):
     from effectful.handlers.llm.multi import PersistentTaskQueue
 
     state_dir = tmp_path / "state"
+    state_dir.mkdir()
     choreo = Choreography(
         build_project,
         agents=[architect, coder1, reviewer],
-        queue=PersistentTaskQueue(state_dir / "choreo_queue"),
+        queue=PersistentTaskQueue(state_dir / "task_queue.db"),
         handlers=[
-            LiteLLMProvider(model="gpt-4o-mini", max_tokens=300),
-            LimitLLMCallsHandler(max_calls=15),
-            PersistenceHandler(state_dir),
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=200),
+            LimitLLMCallsHandler(max_calls=8),
+            PersistenceHandler(state_dir / "checkpoints.db"),
         ],
         poll_interval=0.05,
     )
@@ -2724,3 +2725,79 @@ def test_multi_agent_choreography_integration(tmp_path):
     for r in reviews:
         assert r["verdict"] in ("PASS", "NEEDS_FIXES")
         assert isinstance(r["feedback"], str)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: SQLite task queue crash tolerance
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_sqlite_task_queue_crash_recovery_integration(tmp_path):
+    """Choreography with SQLite queue: completed steps survive restart."""
+    from effectful.handlers.llm.multi import Choreography, PersistentTaskQueue
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def step1(self, q: str) -> str:
+            """Answer briefly: {q}"""
+            raise NotHandled
+
+        @Template.define
+        def step2(self, context: str) -> str:
+            """Given context, reply in one word: {context}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="crash-q-bot")
+
+    db_path = tmp_path / "task_queue.db"
+
+    # Run 1: complete full choreography
+    def two_step(bot):
+        r1 = bot.step1("What is 2+2?")
+        return bot.step2(r1)
+
+    choreo1 = Choreography(
+        two_step,
+        agents=[bot],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=3),
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result1 = choreo1.run(bot=bot)
+    assert isinstance(result1, str)
+
+    # Verify SQLite DB exists and has task data
+    conn = sqlite3.connect(str(db_path))
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert integrity == "ok"
+    done_count = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'done'"
+    ).fetchone()[0]
+    conn.close()
+    assert done_count == 2  # step-0000 and step-0001
+
+    # Run 2: new Choreography on same DB — steps return cached results
+    bot2 = Bot(agent_id="crash-q-bot")
+    choreo2 = Choreography(
+        two_step,
+        agents=[bot2],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=0),  # no LLM calls allowed — must use cache
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result2 = choreo2.run(bot=bot2)
+    assert result2 == result1  # exact same cached result

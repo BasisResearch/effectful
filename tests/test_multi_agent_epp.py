@@ -166,7 +166,7 @@ _ptq_counter = 0
 def _make_persistent_queue():
     global _ptq_counter
     _ptq_counter += 1
-    return PersistentTaskQueue(STATE_DIR / f"q-{_ptq_counter}")
+    return PersistentTaskQueue(STATE_DIR / f"q-{_ptq_counter}.db")
 
 
 @pytest.fixture(params=["persistent", "in_memory"])
@@ -993,7 +993,7 @@ class TestChoreography:
             return coder.implement(plan)
 
         # Shared persistent queue survives across Choreography instances
-        shared_queue = PersistentTaskQueue(STATE_DIR / "restart_q")
+        shared_queue = PersistentTaskQueue(STATE_DIR / "restart_q.db")
 
         mock1 = MockLLM({"plan": "plan-v1", "implement": "code-v1"})
         c1 = Choreography(
@@ -1038,3 +1038,215 @@ class TestChoreography:
         )
         result = c.run(items=["A", "B", "C"], coders=[c1, c2])
         assert result == ["code", "code", "code"]
+
+
+# ── SQLite crash tolerance tests ─────────────────────────────────
+
+
+class TestSQLiteTaskQueueCrashTolerance:
+    """Tests that verify SQLite-specific crash tolerance properties."""
+
+    def test_wal_mode_enabled(self):
+        """WAL journal mode is enabled for crash tolerance."""
+        import sqlite3
+
+        tq = PersistentTaskQueue(STATE_DIR / "wal_test.db")
+        tq.submit("work", {}, task_id="t1")
+
+        conn = sqlite3.connect(str(tq.db_path))
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        conn.close()
+        assert mode == "wal"
+
+    def test_db_integrity_after_operations(self):
+        """Database passes integrity check after various operations."""
+        import sqlite3
+
+        tq = PersistentTaskQueue(STATE_DIR / "integrity_test.db")
+
+        # Submit, claim, complete, fail
+        tq.submit("work", {"data": "a"}, task_id="t1")
+        tq.submit("work", {"data": "b"}, task_id="t2")
+        tq.claim("work", "w1")
+        tq.complete("t1", "w1", {"result": "done"})
+        tq.claim("work", "w1")
+        tq.fail("t2", "w1", "boom")
+
+        conn = sqlite3.connect(str(tq.db_path))
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        conn.close()
+        assert result == "ok"
+
+    def test_persistence_across_instances(self):
+        """Data survives creating a new PersistentTaskQueue on same db."""
+        db_path = STATE_DIR / "persist_test.db"
+
+        # Instance 1: submit and complete
+        tq1 = PersistentTaskQueue(db_path)
+        tq1.submit("work", {"key": "value"}, task_id="t1")
+        tq1.claim("work", "w1")
+        tq1.complete("t1", "w1", "result-1")
+
+        # Instance 2: verify result survives
+        tq2 = PersistentTaskQueue(db_path)
+        assert tq2.get_result("t1") == "result-1"
+        assert tq2.all_done()
+
+    def test_stale_claims_survive_restart(self):
+        """Claimed-but-not-completed tasks are recoverable after restart."""
+        db_path = STATE_DIR / "stale_test.db"
+
+        # Instance 1: submit and claim (simulating crash before completion)
+        tq1 = PersistentTaskQueue(db_path)
+        tq1.submit("work", {"data": "x"}, task_id="t1")
+        tq1.submit("work", {"data": "y"}, task_id="t2")
+        tq1.claim("work", "crashed_worker")
+        tq1.claim("work", "crashed_worker")
+
+        # Instance 2: restart, release stale claims, re-claim
+        tq2 = PersistentTaskQueue(db_path)
+        assert tq2.pending_count() == 0  # both are claimed
+        released = tq2.release_stale_claims("crashed_worker")
+        assert released == 2
+        assert tq2.pending_count() == 2
+
+        # Can re-claim and complete
+        task = tq2.claim("work", "new_worker")
+        assert task is not None
+        tq2.complete(task["id"], "new_worker", "recovered")
+        assert tq2.get_result(task["id"]) == "recovered"
+
+    def test_partial_choreography_restart(self):
+        """Choreography can resume from a partially completed state."""
+        db_path = STATE_DIR / "partial_choreo.db"
+        arch = Architect(agent_id="arch")
+        coder = Coder(agent_id="coder")
+
+        # "Run 1": complete step 0 (plan), simulate crash before step 1
+        tq1 = PersistentTaskQueue(db_path)
+        tq1.submit("plan", {"agent": "arch"}, task_id="step-0000")
+        tq1.claim("plan", "arch")
+        tq1.complete("step-0000", "arch", "the-plan")
+        # step 1 never submitted (crash)
+
+        # "Run 2": restart with same db — step 0 cached, step 1 fresh
+        tq2 = PersistentTaskQueue(db_path)
+
+        def choreo(arch, coder):
+            plan = arch.plan("spec")
+            return coder.implement(plan)
+
+        ids = frozenset(["arch", "coder"])
+        results: dict[str, Any] = {}
+        errors: list = []
+        lock = threading.Lock()
+
+        def run(agent):
+            try:
+                mock = MockLLM({"plan": "SHOULD-NOT-RUN", "implement": "fresh-code"})
+                tq2.release_stale_claims(agent.__agent_id__)
+                epp = EndpointProjection(agent, tq2, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(arch=arch, coder=coder)
+                    with lock:
+                        results[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in [arch, coder]])
+
+        assert not errors, errors
+        # Step 0 was cached as "the-plan", step 1 ran fresh
+        assert results["arch"] == "fresh-code"
+        assert results["coder"] == "fresh-code"
+
+    def test_concurrent_claims_across_connections(self):
+        """Multiple threads with separate connections cannot double-claim."""
+        db_path = STATE_DIR / "concurrent_conn.db"
+        tq = PersistentTaskQueue(db_path)
+
+        n_tasks = 20
+        for i in range(n_tasks):
+            tq.submit("work", {"i": i}, task_id=f"t{i:03d}")
+
+        claimed: list[dict] = []
+        lock = threading.Lock()
+
+        def claimer(owner):
+            while True:
+                task = tq.claim("work", owner)
+                if task is None:
+                    break
+                with lock:
+                    claimed.append(task)
+
+        _run_threads_with_timeout([lambda w=f"w{i}": claimer(w) for i in range(5)])
+
+        ids = [t["id"] for t in claimed]
+        assert len(ids) == n_tasks
+        assert len(set(ids)) == n_tasks
+
+    def test_scatter_crash_recovery_sqlite(self):
+        """Scatter with SQLite queue: cached items survive restart."""
+        db_path = STATE_DIR / "scatter_crash.db"
+
+        # "Run 1": complete scatter items 0 and 1
+        tq1 = PersistentTaskQueue(db_path)
+        for i in range(2):
+            step = f"step-0000:{i:04d}"
+            tq1.submit("scatter-step-0000", {"item_index": i}, task_id=step)
+            tq1.claim("scatter-step-0000", "prior-worker")
+            tq1.complete(step, "prior-worker", f"cached-{i}")
+
+        # "Run 2": scatter should pick up cached items 0,1 and run 2,3 fresh
+        tq2 = PersistentTaskQueue(db_path)
+        c1 = Coder(agent_id="c1")
+        c2 = Coder(agent_id="c2")
+        items = ["A", "B", "C", "D"]
+
+        def choreo(items, coders):
+            return scatter(items, coders, lambda c, m: c.implement(m))
+
+        ids = frozenset(["c1", "c2"])
+        results: dict[str, Any] = {}
+        errors: list = []
+        lock = threading.Lock()
+
+        def run(agent):
+            try:
+                mock = MockLLM({"implement": "fresh"})
+                tq2.release_stale_claims(agent.__agent_id__)
+                epp = EndpointProjection(agent, tq2, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(items, [c1, c2])
+                    with lock:
+                        results[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in [c1, c2]])
+
+        assert not errors, errors
+        r = results["c1"]
+        assert r[0] == "cached-0"
+        assert r[1] == "cached-1"
+        assert r[2] == "fresh"
+        assert r[3] == "fresh"
+
+    def test_idempotent_submit_across_restarts(self):
+        """Re-submitting existing task_id after restart is a no-op."""
+        db_path = STATE_DIR / "idempotent_restart.db"
+
+        tq1 = PersistentTaskQueue(db_path)
+        tq1.submit("work", {"original": True}, task_id="t1")
+
+        tq2 = PersistentTaskQueue(db_path)
+        tq2.submit("work", {"duplicate": True}, task_id="t1")  # should be ignored
+        assert tq2.pending_count() == 1
+
+        # Verify original payload preserved
+        task = tq2.claim("work", "w1")
+        assert task is not None
+        assert task["payload"] == {"original": True}
