@@ -286,8 +286,15 @@ class CompactionHandler(ObjectInterpretation):
         if len(items) <= keep_recent:
             return
 
-        old_items = items[:-keep_recent]
-        recent_items = items[-keep_recent:]
+        split = len(items) - keep_recent
+        # Never split between a tool_use and its tool_result(s).
+        while split > 0 and items[split][1].get("role") == "tool":
+            split -= 1
+        if split <= 0:
+            return
+
+        old_items = items[:split]
+        recent_items = items[split:]
 
         old_text_parts: list[str] = []
         for _, msg in old_items:

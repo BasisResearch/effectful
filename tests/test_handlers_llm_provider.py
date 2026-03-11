@@ -2414,3 +2414,68 @@ def test_compaction_with_persistence_integration(tmp_path):
     data = json.loads((tmp_path / "compact-bot.json").read_text())
     first_msg = data["history"][0]
     assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+class _ToolAgent(Agent):
+    """You are a concise assistant. Answer in at most 10 words."""
+
+    @Tool.define
+    def lookup(self, query: str) -> str:
+        """Look up factual information about a topic."""
+        return f"Result: The answer to '{query}' is 42."
+
+    @Template.define
+    def ask(self, question: str) -> str:
+        """Answer: {question}. You MUST use the lookup tool first."""
+        raise NotHandled
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("gpt-4o-mini", marks=requires_openai),
+        pytest.param("claude-haiku-4-5-20251001", marks=requires_anthropic),
+    ],
+)
+def test_compaction_with_tool_calls_does_not_break_api(model):
+    """After compaction of history containing tool pairs, subsequent calls succeed.
+
+    Each tool-using call generates ~4 messages (user, assistant/tool_use,
+    tool/result, assistant/final). With max_history_len=6, compaction fires
+    after the 2nd call. The 3rd call must succeed — if compaction orphaned
+    a tool_result the API would reject the conversation.
+    """
+    from effectful.handlers.llm.persistence import CompactionHandler
+
+    bot = _ToolAgent()
+    provider = LiteLLMProvider(model=model, max_tokens=60)
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=15)),
+        handler(CompactionHandler(max_history_len=6)),
+    ):
+        bot.ask("What is the meaning of life?")
+        bot.ask("What is 6 times 7?")
+        # Compaction should have fired. This call must not fail.
+        result = bot.ask("Summarize what you told me.")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+    # Verify no orphaned tool_result messages in final history.
+    history = provider._histories.get(bot.__agent_id__, {})
+    tool_use_ids: set[str] = set()
+    for msg in history.values():
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_use_ids.add(block["id"])
+
+    for msg in history.values():
+        if msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            assert tc_id in tool_use_ids, (
+                f"Orphaned tool_result with tool_call_id={tc_id!r}"
+            )

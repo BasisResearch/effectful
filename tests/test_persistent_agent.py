@@ -883,6 +883,173 @@ class TestContextCompaction:
         first_msg = next(iter(history.values()))
         assert "CONTEXT SUMMARY" in first_msg["content"]
 
+    def test_compaction_does_not_split_tool_use_tool_result_pairs(self):
+        """Compaction must not split tool_use/tool_result message pairs.
+
+        If the cut point falls between an assistant message with tool_use
+        blocks and the corresponding tool_result message, the Anthropic API
+        rejects the conversation.  This test constructs a history where the
+        naive positional split would do exactly that and asserts that both
+        messages end up on the same side of the cut.
+        """
+        history: OrderedDict[str, Any] = OrderedDict()
+
+        # Build 10 messages: msgs 0-7 are plain user/assistant pairs,
+        # msg8 is an assistant tool_use, msg9 is the tool_result.
+        for i in range(8):
+            history[f"msg{i}"] = {
+                "id": f"msg{i}",
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"Message {i}",
+            }
+
+        # Assistant message with a tool_use block
+        history["msg8"] = {
+            "id": "msg8",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool_call_abc",
+                    "name": "some_tool",
+                    "input": {"arg": "value"},
+                }
+            ],
+        }
+        # Corresponding tool_result
+        history["msg9"] = {
+            "id": "msg9",
+            "role": "tool",
+            "tool_call_id": "tool_call_abc",
+            "content": "tool output",
+        }
+
+        # With max_history_len=6, keep_recent = max(6//2, 4) = 4
+        # So items[:6] are old (msg0-msg5), items[6:] are recent (msg6-msg9).
+        # That's fine — both msg8 and msg9 land in recent.
+        #
+        # But with max_history_len=8, keep_recent = max(8//2, 4) = 4
+        # old = items[:6] = msg0-msg5, recent = items[6:] = msg6-msg9.
+        # Still fine.
+        #
+        # With max_history_len=4, keep_recent = max(4//2, 4) = 4
+        # old = items[:6] = msg0-msg5, recent = items[6:] = msg6-msg9.
+        # Still fine.
+        #
+        # To trigger the bug: we need tool_use in old and tool_result in recent.
+        # With 12 messages and max_history_len=6, keep_recent=4:
+        # old = items[:8], recent = items[8:] = msg8-msg11
+        # Let's add 2 more messages after the tool pair.
+        history["msg10"] = {
+            "id": "msg10",
+            "role": "user",
+            "content": "Message 10",
+        }
+        history["msg11"] = {
+            "id": "msg11",
+            "role": "assistant",
+            "content": "Message 11",
+        }
+
+        # 12 messages total. max_history_len=6, keep_recent = max(3, 4) = 4
+        # old = items[:8] (msg0-msg7), recent = items[8:] (msg8-msg11)
+        # Hmm, that puts both tool msgs in recent. We want the split in between.
+        #
+        # With keep_recent=3 (max_history_len=6 -> 6//2=3, max(3,4)=4... no)
+        # keep_recent is always >= 4. So recent = last 4 items.
+        #
+        # For 12 items with keep_recent=4: old=items[:8], recent=items[8:]
+        # msg8 (tool_use) is at index 8, so it's the first recent item. Fine.
+        #
+        # We need tool_use at index 7 (last of old) and tool_result at index 8
+        # (first of recent). Let's restructure:
+
+        history.clear()
+        for i in range(7):
+            history[f"msg{i}"] = {
+                "id": f"msg{i}",
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"Message {i}",
+            }
+
+        # msg7: assistant with tool_use (will be last item in old_items)
+        history["msg7"] = {
+            "id": "msg7",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool_call_xyz",
+                    "name": "check_tool",
+                    "input": {"payload": "test"},
+                }
+            ],
+        }
+
+        # msg8: tool_result (will be first item in recent_items)
+        history["msg8"] = {
+            "id": "msg8",
+            "role": "tool",
+            "tool_call_id": "tool_call_xyz",
+            "content": "tool result here",
+        }
+
+        # msg9, msg10, msg11: padding so recent has 4 items
+        history["msg9"] = {
+            "id": "msg9",
+            "role": "assistant",
+            "content": "Response after tool",
+        }
+        history["msg10"] = {
+            "id": "msg10",
+            "role": "user",
+            "content": "Follow up question",
+        }
+        history["msg11"] = {
+            "id": "msg11",
+            "role": "assistant",
+            "content": "Final answer",
+        }
+
+        # 12 items total. max_history_len=8, keep_recent = max(8//2, 4) = 4
+        # old = items[:8] = msg0..msg7 (includes tool_use at msg7)
+        # recent = items[8:] = msg8..msg11 (includes tool_result at msg8)
+        # BUG: tool_use in old gets discarded, but tool_result in recent
+        # references a tool_call_id that no longer exists -> API rejection.
+
+        compaction = CompactionHandler(max_history_len=8)
+        mock = MockCompletionHandler(
+            [make_text_response("Summary of prior conversation.")]
+        )
+        provider = LiteLLMProvider()
+        with handler(provider), handler(mock):
+            stored = get_agent_history("ToolPairBot")
+            stored.update(history)
+            compaction._compact("ToolPairBot", stored)
+
+        result = provider._histories["ToolPairBot"]
+        result_items = list(result.values())
+
+        # After compaction, there must be no orphaned tool_result messages.
+        # Every tool_result must have a preceding assistant message with a
+        # matching tool_use block.
+        tool_use_ids: set[str] = set()
+        for msg in result_items:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_use_ids.add(block["id"])
+
+        for msg in result_items:
+            if msg.get("role") == "tool":
+                tc_id = msg.get("tool_call_id", "")
+                assert tc_id in tool_use_ids, (
+                    f"Orphaned tool_result with tool_call_id={tc_id!r} after "
+                    f"compaction — the matching tool_use was discarded. "
+                    f"Remaining messages: {[m.get('id') for m in result_items]}"
+                )
+
     def test_compaction_on_plain_agent_preserves_functionality(self):
         """After compaction, the plain Agent still works for subsequent calls."""
 
