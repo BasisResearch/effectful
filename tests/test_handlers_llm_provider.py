@@ -2464,6 +2464,7 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
 
     with (
         handler(provider),
+        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=15)),
         handler(CompactionHandler(max_history_len=6)),
     ):
