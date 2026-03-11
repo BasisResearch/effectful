@@ -88,7 +88,7 @@ Example — sequential choreography with a review loop::
     choreo = Choreography(
         build_codebase,
         agents=[architect, coder, reviewer],
-        state_dir=Path("./state"),
+        queue=PersistentTaskQueue(Path("./state/choreo_queue")),
         handlers=[
             LiteLLMProvider(model="gpt-4o-mini"),
             RetryLLMHandler(),
@@ -105,7 +105,7 @@ Example — sequential choreography with a review loop::
 
 Example — parallel scatter across multiple coders::
 
-    from effectful.handlers.llm.multi import Choreography, scatter
+    from effectful.handlers.llm.multi import Choreography, PersistentTaskQueue, scatter
 
     def build_parallel(
         project_spec: str,
@@ -129,7 +129,7 @@ Example — parallel scatter across multiple coders::
     choreo = Choreography(
         build_parallel,
         agents=[architect, coder1, coder2, coder3, reviewer],
-        state_dir=Path("./state"),
+        queue=PersistentTaskQueue(Path("./state/choreo_queue")),
         handlers=[LiteLLMProvider(model="gpt-4o-mini"), RetryLLMHandler()],
     )
     # Pass coder as a list — scatter distributes across all three
@@ -142,6 +142,7 @@ Example — parallel scatter across multiple coders::
 
 """
 
+import abc
 import contextlib
 import json
 import threading
@@ -167,7 +168,168 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
 
 
-class TaskQueue:
+class TaskQueue(abc.ABC):
+    """Abstract task queue with claim-based ownership.
+
+    Subclasses implement persistent (file-based) or in-memory storage.
+    All methods are thread-safe.
+    """
+
+    @abc.abstractmethod
+    def submit(
+        self,
+        task_type: str,
+        payload: dict,
+        task_id: str | None = None,
+    ) -> str:
+        """Add a new task.  Returns the task ID.
+
+        Idempotent when *task_id* is specified: if a task with that ID
+        already exists (in any state), the call is a no-op.
+        """
+
+    @abc.abstractmethod
+    def claim(self, task_type: str, owner: str) -> dict | None:
+        """Atomically claim the next pending task of the given type.
+
+        Returns the task dict if one was claimed, or ``None``.
+        """
+
+    @abc.abstractmethod
+    def claim_by_prefix(self, prefix: str, owner: str) -> dict | None:
+        """Claim any pending task whose ID starts with *prefix*."""
+
+    @abc.abstractmethod
+    def complete(self, task_id: str, owner: str, result: Any = None) -> None:
+        """Mark a claimed task as done with *result*."""
+
+    @abc.abstractmethod
+    def fail(self, task_id: str, owner: str, error: str) -> None:
+        """Mark a claimed task as failed."""
+
+    @abc.abstractmethod
+    def get_result(self, task_id: str) -> Any | None:
+        """Return the result of a completed task, or ``None``."""
+
+    @abc.abstractmethod
+    def release_stale_claims(self, owner: str) -> int:
+        """Release tasks claimed by *owner* back to pending.
+
+        Call on startup to reclaim work from a prior crashed session.
+        """
+
+    @abc.abstractmethod
+    def pending_count(self, task_type: str | None = None) -> int:
+        """Count pending tasks, optionally filtered by type."""
+
+    @abc.abstractmethod
+    def all_done(self) -> bool:
+        """``True`` if no pending or claimed tasks remain."""
+
+
+class InMemoryTaskQueue(TaskQueue):
+    """In-memory task queue for testing or ephemeral workflows.
+
+    Not crash-tolerant — all state is lost when the process exits.
+    Thread-safe via a single lock.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tasks: dict[str, dict] = {}  # task_id -> task dict
+
+    def submit(
+        self,
+        task_type: str,
+        payload: dict,
+        task_id: str | None = None,
+    ) -> str:
+        if task_id is None:
+            task_id = str(uuid.uuid4())[:8]
+        with self._lock:
+            if task_id in self._tasks:
+                return task_id
+            self._tasks[task_id] = {
+                "id": task_id,
+                "type": task_type,
+                "payload": payload,
+                "status": TaskStatus.PENDING,
+                "owner": "",
+                "result": None,
+            }
+            return task_id
+
+    def claim(self, task_type: str, owner: str) -> dict | None:
+        with self._lock:
+            for task_id in sorted(self._tasks):
+                task = self._tasks[task_id]
+                if task["status"] == TaskStatus.PENDING and task["type"] == task_type:
+                    task["status"] = TaskStatus.CLAIMED
+                    task["owner"] = owner
+                    return dict(task)
+            return None
+
+    def claim_by_prefix(self, prefix: str, owner: str) -> dict | None:
+        with self._lock:
+            for task_id in sorted(self._tasks):
+                task = self._tasks[task_id]
+                if task["status"] == TaskStatus.PENDING and task_id.startswith(prefix):
+                    task["status"] = TaskStatus.CLAIMED
+                    task["owner"] = owner
+                    return dict(task)
+            return None
+
+    def complete(self, task_id: str, owner: str, result: Any = None) -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task["status"] != TaskStatus.CLAIMED:
+                return
+            task["status"] = TaskStatus.DONE
+            task["result"] = result
+
+    def fail(self, task_id: str, owner: str, error: str) -> None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task["status"] != TaskStatus.CLAIMED:
+                return
+            task["status"] = TaskStatus.FAILED
+            task["result"] = {"error": error}
+
+    def get_result(self, task_id: str) -> Any | None:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is not None and task["status"] == TaskStatus.DONE:
+                return task["result"]
+            return None
+
+    def release_stale_claims(self, owner: str) -> int:
+        count = 0
+        with self._lock:
+            for task in self._tasks.values():
+                if task["status"] == TaskStatus.CLAIMED and task["owner"] == owner:
+                    task["status"] = TaskStatus.PENDING
+                    task["owner"] = ""
+                    count += 1
+        return count
+
+    def pending_count(self, task_type: str | None = None) -> int:
+        with self._lock:
+            return sum(
+                1
+                for t in self._tasks.values()
+                if t["status"] == TaskStatus.PENDING
+                and (task_type is None or t["type"] == task_type)
+            )
+
+    def all_done(self) -> bool:
+        with self._lock:
+            return not any(
+                t["status"] in (TaskStatus.PENDING, TaskStatus.CLAIMED)
+                for t in self._tasks.values()
+            )
+
+
+class PersistentTaskQueue(TaskQueue):
     """File-based task queue with claim-based ownership.
 
     Each task is a JSON file in *queue_dir*.  Claiming a task
@@ -196,11 +358,6 @@ class TaskQueue:
         payload: dict,
         task_id: str | None = None,
     ) -> str:
-        """Add a new task.  Returns the task ID.
-
-        Idempotent when *task_id* is specified: if a task with that ID
-        already exists (in any state), the call is a no-op.
-        """
         if task_id is None:
             task_id = str(uuid.uuid4())[:8]
         with self._lock:
@@ -219,10 +376,6 @@ class TaskQueue:
             return task_id
 
     def claim(self, task_type: str, owner: str) -> dict | None:
-        """Atomically claim the next pending task of the given type.
-
-        Returns the task dict if one was claimed, or ``None``.
-        """
         with self._lock:
             for path in sorted(self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json")):
                 task = json.loads(path.read_text())
@@ -240,7 +393,6 @@ class TaskQueue:
         return None
 
     def claim_by_prefix(self, prefix: str, owner: str) -> dict | None:
-        """Claim any pending task whose ID starts with *prefix*."""
         with self._lock:
             for path in sorted(self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json")):
                 fname = path.name.split(".")[0]
@@ -259,7 +411,6 @@ class TaskQueue:
         return None
 
     def complete(self, task_id: str, owner: str, result: Any = None) -> None:
-        """Mark a claimed task as done with *result*."""
         claimed = self._task_path(task_id, TaskStatus.CLAIMED, owner)
         if not claimed.exists():
             return
@@ -276,7 +427,6 @@ class TaskQueue:
             pass
 
     def fail(self, task_id: str, owner: str, error: str) -> None:
-        """Mark a claimed task as failed."""
         claimed = self._task_path(task_id, TaskStatus.CLAIMED, owner)
         if not claimed.exists():
             return
@@ -288,7 +438,6 @@ class TaskQueue:
         failed.write_text(json.dumps(task, indent=2, default=str))
 
     def get_result(self, task_id: str) -> Any | None:
-        """Return the result of a completed task, or ``None``."""
         done = self._task_path(task_id, TaskStatus.DONE)
         if done.exists():
             task = json.loads(done.read_text())
@@ -296,10 +445,6 @@ class TaskQueue:
         return None
 
     def release_stale_claims(self, owner: str) -> int:
-        """Release tasks claimed by *owner* back to pending.
-
-        Call on startup to reclaim work from a prior crashed session.
-        """
         count = 0
         with self._lock:
             for path in self.queue_dir.glob(f"*.{TaskStatus.CLAIMED}.{owner}.json"):
@@ -313,7 +458,6 @@ class TaskQueue:
         return count
 
     def pending_count(self, task_type: str | None = None) -> int:
-        """Count pending tasks, optionally filtered by type."""
         count = 0
         for path in self.queue_dir.glob(f"*.{TaskStatus.PENDING}.json"):
             if task_type is None:
@@ -325,7 +469,6 @@ class TaskQueue:
         return count
 
     def all_done(self) -> bool:
-        """``True`` if no pending or claimed tasks remain."""
         for status in (TaskStatus.PENDING, TaskStatus.CLAIMED):
             if list(self.queue_dir.glob(f"*.{status}*")):
                 return False
@@ -479,7 +622,10 @@ class EndpointProjection(ObjectInterpretation):
         agents = agent if isinstance(agent, list) else [agent]
         scatter_ids = {a.__agent_id__ for a in agents}
 
-        # Submit one task per item
+        # Submit one task per item.  All agent threads execute this
+        # loop, but submit() is idempotent on task_id — the
+        # deterministic ID (step_id:index) ensures each task is
+        # created exactly once regardless of how many threads call it.
         for i in range(len(items)):
             self._queue.submit(
                 task_type=f"scatter-{step_id}",
@@ -512,7 +658,7 @@ class EndpointProjection(ObjectInterpretation):
 
 
 class Choreography:
-    """Run a choreographic program with crash-tolerant endpoint projection.
+    """Run a choreographic program with endpoint projection.
 
     Each agent gets its own thread.  Template calls are routed via
     the :class:`TaskQueue`: the owning agent claims and executes,
@@ -524,7 +670,9 @@ class Choreography:
             this same function; EPP makes each thread behave
             differently.
         agents: The agents participating in the choreography.
-        state_dir: Directory for the persistent task queue.
+        queue: The task queue to use.  Defaults to
+            :class:`InMemoryTaskQueue` if not provided.  Pass a
+            :class:`PersistentTaskQueue` for crash tolerance.
         handlers: Handler instances to install per-thread beneath
             the EPP handler (e.g. LLM provider, retry handler,
             persistence handler).
@@ -536,7 +684,7 @@ class Choreography:
         choreo = Choreography(
             build_codebase,
             agents=[architect, coder, reviewer],
-            state_dir=Path("./state"),
+            queue=PersistentTaskQueue(Path("./state/choreo_queue")),
             handlers=[
                 LiteLLMProvider(model="gpt-4o-mini"),
                 RetryLLMHandler(),
@@ -555,16 +703,15 @@ class Choreography:
         self,
         program: Callable[..., Any],
         agents: Sequence[Agent],
-        state_dir: Path,
+        queue: TaskQueue | None = None,
         handlers: Sequence[Interpretation | ObjectInterpretation] | None = None,
         poll_interval: float = 0.1,
     ) -> None:
         self.program = program
         self.agents = list(agents)
-        self.state_dir = Path(state_dir)
         self.handlers = list(handlers or [])
         self.poll_interval = poll_interval
-        self._queue = TaskQueue(self.state_dir / "choreo_queue")
+        self._queue = queue if queue is not None else InMemoryTaskQueue()
 
     @property
     def queue(self) -> TaskQueue:

@@ -2697,11 +2697,13 @@ def test_multi_agent_choreography_integration(tmp_path):
     coder1 = Coder(agent_id="coder-1")
     reviewer = Reviewer(agent_id="reviewer")
 
+    from effectful.handlers.llm.multi import PersistentTaskQueue
+
     state_dir = tmp_path / "state"
     choreo = Choreography(
         build_project,
         agents=[architect, coder1, reviewer],
-        state_dir=state_dir,
+        queue=PersistentTaskQueue(state_dir / "choreo_queue"),
         handlers=[
             LiteLLMProvider(model="gpt-4o-mini", max_tokens=300),
             LimitLLMCallsHandler(max_calls=15),

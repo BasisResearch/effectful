@@ -33,7 +33,12 @@ from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.handlers.llm.multi import Choreography, ChoreographyError, scatter
+from effectful.handlers.llm.multi import (
+    Choreography,
+    ChoreographyError,
+    PersistentTaskQueue,
+    scatter,
+)
 from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
 from effectful.ops.types import NotHandled
 
@@ -272,7 +277,7 @@ def main() -> None:
     choreo = Choreography(
         build_project,
         agents=[architect, coder1, coder2, reviewer1, reviewer2],
-        state_dir=STATE_DIR,
+        queue=PersistentTaskQueue(STATE_DIR / "choreo_queue"),
         handlers=[
             LiteLLMProvider(model=MODEL),
             RetryLLMHandler(),

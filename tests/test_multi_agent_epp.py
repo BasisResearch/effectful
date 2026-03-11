@@ -1,7 +1,6 @@
 """Tests for effectful.handlers.llm.multi — choreographic EPP with TaskQueue."""
 
 import itertools
-import json
 import shutil
 import threading
 import time
@@ -15,7 +14,8 @@ from effectful.handlers.llm.multi import (
     Choreography,
     ChoreographyError,
     EndpointProjection,
-    TaskQueue,
+    InMemoryTaskQueue,
+    PersistentTaskQueue,
     TaskStatus,
     scatter,
 )
@@ -159,10 +159,28 @@ class Reviewer(PersistentAgent):
 
 # ── TaskQueue tests ───────────────────────────────────────────────
 
+# Counter to avoid directory collisions between parametrized persistent tests.
+_ptq_counter = 0
+
+
+def _make_persistent_queue():
+    global _ptq_counter
+    _ptq_counter += 1
+    return PersistentTaskQueue(STATE_DIR / f"q-{_ptq_counter}")
+
+
+@pytest.fixture(params=["persistent", "in_memory"])
+def make_queue(request):
+    """Parametrized fixture — runs each test against both queue backends."""
+    if request.param == "persistent":
+        return _make_persistent_queue
+    else:
+        return InMemoryTaskQueue
+
 
 class TestTaskQueue:
-    def test_submit_and_claim(self):
-        tq = TaskQueue(STATE_DIR / "q")
+    def test_submit_and_claim(self, make_queue):
+        tq = make_queue()
         tid = tq.submit("code", {"file": "main.py"}, task_id="t1")
         assert tid == "t1"
 
@@ -174,21 +192,21 @@ class TestTaskQueue:
         # Can't claim again
         assert tq.claim("code", "worker2") is None
 
-    def test_idempotent_submit(self):
-        tq = TaskQueue(STATE_DIR / "q")
+    def test_idempotent_submit(self, make_queue):
+        tq = make_queue()
         tq.submit("code", {}, task_id="t1")
         tq.submit("code", {}, task_id="t1")  # no-op
         assert tq.pending_count() == 1
 
-    def test_complete_and_get_result(self):
-        tq = TaskQueue(STATE_DIR / "q")
+    def test_complete_and_get_result(self, make_queue):
+        tq = make_queue()
         tq.submit("code", {}, task_id="t1")
         tq.claim("code", "w1")
         tq.complete("t1", "w1", {"output": "hello"})
         assert tq.get_result("t1") == {"output": "hello"}
 
-    def test_release_stale_claims(self):
-        tq = TaskQueue(STATE_DIR / "q")
+    def test_release_stale_claims(self, make_queue):
+        tq = make_queue()
         tq.submit("code", {}, task_id="t1")
         tq.claim("code", "crashed_worker")
         assert tq.pending_count() == 0
@@ -201,8 +219,8 @@ class TestTaskQueue:
         task = tq.claim("code", "new_worker")
         assert task is not None
 
-    def test_claim_by_prefix(self):
-        tq = TaskQueue(STATE_DIR / "q")
+    def test_claim_by_prefix(self, make_queue):
+        tq = make_queue()
         tq.submit("scatter", {}, task_id="step-0001:0000")
         tq.submit("scatter", {}, task_id="step-0001:0001")
         tq.submit("other", {}, task_id="step-0002")
@@ -216,6 +234,58 @@ class TestTaskQueue:
         assert task2["id"] != task["id"]
 
         assert tq.claim_by_prefix("step-0001:", "w1") is None
+
+    def test_all_done(self, make_queue):
+        tq = make_queue()
+        assert tq.all_done()
+
+        tq.submit("code", {}, task_id="t1")
+        assert not tq.all_done()
+
+        tq.claim("code", "w1")
+        assert not tq.all_done()  # claimed but not done
+
+        tq.complete("t1", "w1", "result")
+        assert tq.all_done()
+
+    def test_fail(self, make_queue):
+        tq = make_queue()
+        tq.submit("code", {}, task_id="t1")
+        tq.claim("code", "w1")
+        tq.fail("t1", "w1", "boom")
+        # Failed tasks are not pending/claimed, so all_done is True
+        assert tq.all_done()
+        # get_result returns None for failed tasks
+        assert tq.get_result("t1") is None
+
+    def test_concurrent_claims(self, make_queue):
+        """Multiple threads claiming — no double claims."""
+        tq = make_queue()
+        n_tasks = 20
+        for i in range(n_tasks):
+            tq.submit("work", {"i": i}, task_id=f"t{i:03d}")
+
+        claimed: list[dict] = []
+        lock = threading.Lock()
+
+        def claimer(owner):
+            while True:
+                task = tq.claim("work", owner)
+                if task is None:
+                    break
+                with lock:
+                    claimed.append(task)
+
+        threads = [threading.Thread(target=claimer, args=(f"w{i}",)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=THREAD_TIMEOUT)
+
+        # Each task claimed exactly once
+        ids = [t["id"] for t in claimed]
+        assert len(ids) == n_tasks
+        assert len(set(ids)) == n_tasks
 
 
 # ── EPP tests ─────────────────────────────────────────────────────
@@ -237,7 +307,7 @@ class TestEndpointProjection:
         *mock_cls* can be a callable ``(responses) -> ObjectInterpretation``
         to inject custom mock behaviour (e.g. delays).
         """
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         ids = frozenset(a.__agent_id__ for a in agents)
         results: dict[str, Any] = {}
         llm_calls: dict[str, list[str]] = {}
@@ -348,7 +418,7 @@ class TestEndpointProjection:
                     return code
                 code = coder.implement(verdict)
 
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         ids = frozenset(["arch", "coder", "rev"])
         results: dict[str, Any] = {}
         errors: list = []
@@ -370,13 +440,10 @@ class TestEndpointProjection:
 
         assert not errors, errors
         assert all(r == results["arch"] for r in results.values())
-        # Should have 5 persisted steps: plan, implement, review, implement, review
-        done_files = list(tq.queue_dir.glob(f"*.{TaskStatus.DONE}.json"))
-        assert len(done_files) == 5
 
     def test_crash_recovery(self):
         """Pre-cache step 0, restart: step 0 from cache, step 1 fresh."""
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         arch = Architect(agent_id="arch")
         coder = Coder(agent_id="coder")
 
@@ -436,7 +503,7 @@ class TestOrderingPermutations:
         # Give each agent a staggered delay: first in ordering gets 0,
         # second gets a small delay, etc.
         delays = {agent.__agent_id__: i * 0.03 for i, agent in enumerate(ordering)}
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         ids = frozenset(a.__agent_id__ for a in agents)
         results: dict[str, Any] = {}
         errors: list[tuple[str, Exception]] = []
@@ -471,10 +538,6 @@ class TestOrderingPermutations:
 
         all_results = []
         for perm in itertools.permutations(agents):
-            # Each permutation needs a fresh queue directory
-            q_dir = STATE_DIR / "q"
-            if q_dir.exists():
-                shutil.rmtree(q_dir)
             results, errors = self._run_with_ordering(
                 agents,
                 choreo,
@@ -505,9 +568,6 @@ class TestOrderingPermutations:
 
         expected = "PASS"
         for perm in itertools.permutations(agents):
-            q_dir = STATE_DIR / "q"
-            if q_dir.exists():
-                shutil.rmtree(q_dir)
             results, errors = self._run_with_ordering(
                 agents,
                 choreo,
@@ -537,9 +597,6 @@ class TestOrderingPermutations:
             return [reviewer.review(c) for c in codes]
 
         for perm in itertools.permutations(agents):
-            q_dir = STATE_DIR / "q"
-            if q_dir.exists():
-                shutil.rmtree(q_dir)
             results, errors = self._run_with_ordering(
                 agents,
                 choreo,
@@ -564,7 +621,7 @@ class TestRaceConditions:
     def test_concurrent_claims_no_double_execution(self):
         """Multiple workers racing to claim the same task type —
         exactly one wins, no double execution."""
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         tq.submit("work", {"data": "x"}, task_id="t1")
 
         claimed_by: list[str] = []
@@ -583,7 +640,7 @@ class TestRaceConditions:
 
     def test_concurrent_submit_idempotent(self):
         """Multiple threads submitting the same task_id — only one task created."""
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         barrier = threading.Barrier(5)
 
         def submit(i):
@@ -607,7 +664,7 @@ class TestRaceConditions:
             def _call(self, template, *args, **kwargs):
                 return "result"
 
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         ids = frozenset(["arch", "coder"])
 
         def run_agent(agent):
@@ -638,7 +695,7 @@ class TestRaceConditions:
         c = Choreography(
             choreo,
             agents=coders,
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
@@ -661,7 +718,7 @@ class TestEdgeCases:
         c = Choreography(
             choreo,
             agents=[coder],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
@@ -680,7 +737,7 @@ class TestEdgeCases:
         c = Choreography(
             choreo,
             agents=[c1, c2],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
@@ -703,7 +760,7 @@ class TestEdgeCases:
         c = Choreography(
             choreo,
             agents=[arch, coder],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
@@ -730,7 +787,7 @@ class TestEdgeCases:
         c = Choreography(
             choreo,
             agents=[coder],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[CountingMock()],
             poll_interval=0.02,
         )
@@ -754,7 +811,7 @@ class TestEdgeCases:
         c = Choreography(
             choreo,
             agents=[c1],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[ScatterFailMock()],
             poll_interval=0.02,
         )
@@ -764,7 +821,7 @@ class TestEdgeCases:
     def test_result_none_vs_not_done(self):
         """get_result returns None for non-existent tasks, not for tasks
         whose result *is* None — ensuring poll loops don't confuse the two."""
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         # Non-existent task
         assert tq.get_result("nonexistent") is None
 
@@ -792,7 +849,7 @@ class TestEdgeCases:
             c = Choreography(
                 choreo,
                 agents=[arch, coder],
-                state_dir=STATE_DIR,
+                queue=InMemoryTaskQueue(),
                 handlers=[mock],
                 poll_interval=0.02,
             )
@@ -811,7 +868,7 @@ class TestScatter:
         c2 = Coder(agent_id="c2")
         rev = Reviewer(agent_id="rev")
 
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         ids = frozenset(["c1", "c2", "rev"])
         items = ["A", "B", "C", "D"]
 
@@ -852,27 +909,18 @@ class TestScatter:
 
     def test_scatter_crash_recovery(self):
         """Scatter with some items cached: only remaining items executed."""
-        tq = TaskQueue(STATE_DIR / "q")
+        tq = InMemoryTaskQueue()
         c1 = Coder(agent_id="c1")
         c2 = Coder(agent_id="c2")
 
         items = ["A", "B", "C", "D"]
 
-        # Pre-cache items 0 and 1
+        # Pre-cache items 0 and 1 via submit/claim/complete
         for i in range(2):
             step = f"step-0000:{i:04d}"
-            done = tq._task_path(step, TaskStatus.DONE)
-            done.write_text(
-                json.dumps(
-                    {
-                        "id": step,
-                        "type": "scatter-step-0000",
-                        "status": "done",
-                        "result": f"cached-{items[i]}",
-                        "payload": {"item_index": i},
-                    }
-                )
-            )
+            tq.submit("scatter-step-0000", {"item_index": i}, task_id=step)
+            tq.claim("scatter-step-0000", "prior-worker")
+            tq.complete(step, "prior-worker", f"cached-{items[i]}")
 
         def choreo(items, coders):
             return scatter(items, coders, lambda c, m: c.implement(m))
@@ -928,7 +976,7 @@ class TestChoreography:
         c = Choreography(
             choreo,
             agents=[arch, coder],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
@@ -944,24 +992,27 @@ class TestChoreography:
             plan = arch.plan("spec")
             return coder.implement(plan)
 
+        # Shared persistent queue survives across Choreography instances
+        shared_queue = PersistentTaskQueue(STATE_DIR / "restart_q")
+
         mock1 = MockLLM({"plan": "plan-v1", "implement": "code-v1"})
         c1 = Choreography(
             choreo,
             agents=[arch, coder],
-            state_dir=STATE_DIR,
+            queue=shared_queue,
             handlers=[mock1],
             poll_interval=0.02,
         )
         result1 = c1.run(arch=arch, coder=coder)
         assert result1 == "code-v1"
 
-        # "Restart" — new Choreography, same state_dir
+        # "Restart" — new Choreography, same persistent queue
         # Even with different responses, should use cached
         mock2 = MockLLM({"plan": "plan-v2", "implement": "code-v2"})
         c2 = Choreography(
             choreo,
             agents=[arch, coder],
-            state_dir=STATE_DIR,
+            queue=shared_queue,
             handlers=[mock2],
             poll_interval=0.02,
         )
@@ -981,7 +1032,7 @@ class TestChoreography:
         c = Choreography(
             choreo,
             agents=[c1, c2],
-            state_dir=STATE_DIR,
+            queue=InMemoryTaskQueue(),
             handlers=[mock],
             poll_interval=0.02,
         )
