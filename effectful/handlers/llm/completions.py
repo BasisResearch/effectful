@@ -505,6 +505,9 @@ class LiteLLMProvider(ObjectInterpretation):
             history = get_agent_history(agent.__agent_id__)
         else:
             history = collections.OrderedDict()
+        # Copy so nested calls on the same agent don't see in-flight messages;
+        # only the outermost call's history is written back.
+        # See: TestNestedTemplateCalling.test_only_outermost_writes_to_history
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
@@ -522,7 +525,7 @@ class LiteLLMProvider(ObjectInterpretation):
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-        # Write back history
+        # Write back: outermost call's copy overwrites canonical history
         if agent is not None:
             history.clear()
             history.update(history_copy)
