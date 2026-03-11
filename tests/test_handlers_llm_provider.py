@@ -2467,11 +2467,17 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
     history = provider._histories.get(bot.__agent_id__, {})
     tool_use_ids: set[str] = set()
     for msg in history.values():
+        # Anthropic format: tool_use blocks in content
         content = msg.get("content", "")
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     tool_use_ids.add(block["id"])
+        # OpenAI format: tool_calls field on assistant messages
+        for tc in msg.get("tool_calls") or []:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tc_id:
+                tool_use_ids.add(tc_id)
 
     for msg in history.values():
         if msg.get("role") == "tool":
