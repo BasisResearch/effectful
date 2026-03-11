@@ -801,7 +801,9 @@ class TestContextCompaction:
         ):
             bot.send("trigger compaction")
 
-        result = provider._histories.get("ChatBot", {})
+        result: OrderedDict[str, Any] = provider._histories.get(
+            "ChatBot", OrderedDict()
+        )
         assert len(result) <= 4 + 4
 
     def test_compaction_works_on_plain_agent(self):
