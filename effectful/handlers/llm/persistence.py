@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import sqlite3
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -27,7 +28,7 @@ class PersistentAgent(Agent):
     """An :class:`Agent` whose history can be persisted by :class:`PersistenceHandler`.
 
     This is a lightweight marker class. All persistence *behaviour*
-    (checkpointing, handoff, file I/O) lives in :class:`PersistenceHandler`,
+    (checkpointing, handoff, DB I/O) lives in :class:`PersistenceHandler`,
     a composable handler following the same pattern as
     :class:`~effectful.handlers.llm.completions.RetryLLMHandler`.
 
@@ -95,15 +96,36 @@ class PersistentAgent(Agent):
             setattr(self, key, value)
 
 
-class PersistenceHandler(ObjectInterpretation):
-    """Handler that persists :class:`PersistentAgent` history to disk.
+def _init_db(conn: sqlite3.Connection) -> None:
+    """Create the checkpoints table and configure WAL mode for crash tolerance."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            agent_id TEXT PRIMARY KEY,
+            handoff  TEXT NOT NULL DEFAULT '',
+            state    TEXT NOT NULL DEFAULT '{}',
+            history  TEXT NOT NULL DEFAULT '[]'
+        )
+        """
+    )
+    conn.commit()
 
-    All persistence state (handoff notes, loaded flags, file paths) lives
-    here, not on the agent.  Install alongside
+
+class PersistenceHandler(ObjectInterpretation):
+    """Handler that persists :class:`PersistentAgent` history to a SQLite database.
+
+    All persistence state (handoff notes, loaded flags) lives here, not on
+    the agent.  Install alongside
     :class:`~effectful.handlers.llm.completions.LiteLLMProvider`::
 
         with handler(LiteLLMProvider()), handler(PersistenceHandler(Path("./state"))):
             bot.ask("question")
+
+    The database file is stored at ``{persist_dir}/checkpoints.db`` using
+    SQLite WAL mode for crash tolerance.  If the process is killed mid-write,
+    SQLite's journal-based recovery ensures the database remains consistent.
 
     **Automatic checkpointing**:
 
@@ -136,17 +158,37 @@ class PersistenceHandler(ObjectInterpretation):
         self._handoffs: dict[str, str] = {}
         self._loaded: set[str] = set()
         self._tls = threading.local()
+        self._db_lock = threading.Lock()
+        self._db_initialized = False
+
+    def _connect(self) -> sqlite3.Connection:
+        """Open a new SQLite connection to the checkpoint database.
+
+        Each call returns a fresh connection, making it safe to use from
+        any thread.  WAL mode and table creation are applied once on the
+        first call (guarded by ``_db_lock``).
+        """
+        self._persist_dir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path))
+        if not self._db_initialized:
+            with self._db_lock:
+                if not self._db_initialized:
+                    _init_db(conn)
+                    self._db_initialized = True
+        return conn
+
+    @property
+    def db_path(self) -> Path:
+        """Path to the SQLite database file."""
+        return self._persist_dir / "checkpoints.db"
 
     def _get_depths(self) -> dict[str, int]:
         if not hasattr(self._tls, "depths"):
             self._tls.depths = {}
         return self._tls.depths
 
-    def _checkpoint_path(self, agent_id: str) -> Path:
-        return self._persist_dir / f"{agent_id}.json"
-
     def ensure_loaded(self, agent: PersistentAgent) -> bool:
-        """Load an agent's checkpoint from disk if not already loaded.
+        """Load an agent's checkpoint from the database if not already loaded.
 
         Returns ``True`` if a checkpoint was found and loaded.
         """
@@ -154,33 +196,53 @@ class PersistenceHandler(ObjectInterpretation):
         if agent_id in self._loaded:
             return False
         self._loaded.add(agent_id)
-        path = self._checkpoint_path(agent_id)
-        if not path.exists():
+
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT handoff, state, history FROM checkpoints WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
             return False
-        data = json.loads(path.read_text())
-        self._handoffs[agent_id] = data.get("handoff", "")
-        agent.restore_state(data.get("state", {}))
+
+        handoff, state_json, history_json = row
+        self._handoffs[agent_id] = handoff
+        agent.restore_state(json.loads(state_json))
         stored = get_agent_history(agent_id)
         stored.clear()
-        stored.update({msg["id"]: msg for msg in data.get("history", [])})
+        stored.update({msg["id"]: msg for msg in json.loads(history_json)})
         return True
 
     def save(self, agent: PersistentAgent) -> Path:
-        """Write an agent's current state to disk and return the path."""
+        """Write an agent's current state to the database and return the db path."""
         agent_id = agent.__agent_id__
-        self._persist_dir.mkdir(parents=True, exist_ok=True)
         history = get_agent_history(agent_id)
-        data = {
-            "agent_id": agent_id,
-            "handoff": self._handoffs.get(agent_id, ""),
-            "state": agent.checkpoint_state(),
-            "history": list(history.values()),
-        }
-        path = self._checkpoint_path(agent_id)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str))
-        tmp.replace(path)
-        return path
+        handoff = self._handoffs.get(agent_id, "")
+        state_json = json.dumps(agent.checkpoint_state(), default=str)
+        history_json = json.dumps(list(history.values()), default=str)
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO checkpoints (agent_id, handoff, state, history)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    handoff = excluded.handoff,
+                    state   = excluded.state,
+                    history = excluded.history
+                """,
+                (agent_id, handoff, state_json, history_json),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return self.db_path
 
     def get_handoff(self, agent_id: str) -> str:
         """Return the current handoff note for *agent_id*."""

@@ -6,6 +6,7 @@ persistence, and system prompt augmentation.
 
 import dataclasses
 import json
+import sqlite3
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,25 @@ class MockCompletionHandler(ObjectInterpretation):
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
         return response
+
+
+def read_checkpoint(tmp_path: Path, agent_id: str) -> dict:
+    """Read a checkpoint from the SQLite database."""
+    db_path = tmp_path / "checkpoints.db"
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT handoff, state, history FROM checkpoints WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        raise FileNotFoundError(f"No checkpoint for {agent_id}")
+    return {
+        "agent_id": agent_id,
+        "handoff": row[0],
+        "state": json.loads(row[1]),
+        "history": json.loads(row[2]),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +210,7 @@ class TestCheckpointing:
         with handler(AgentHistoryHandler()):
             path = persist.save(bot)
         assert path.exists()
-        assert path.suffix == ".json"
+        assert path.suffix == ".db"
 
     def test_save_load_round_trip_empty(self, tmp_path: Path):
         persist = PersistenceHandler(tmp_path)
@@ -246,12 +266,15 @@ class TestCheckpointing:
             assert persist.ensure_loaded(bot)
 
     def test_atomic_write(self, tmp_path: Path):
-        """Checkpoint write uses tmp + rename for atomicity."""
+        """Checkpoint write uses SQLite transactions for atomicity."""
         persist = PersistenceHandler(tmp_path)
         bot = ChatBot(agent_id="ChatBot")
         with handler(AgentHistoryHandler()):
             path = persist.save(bot)
-        assert not path.with_suffix(".tmp").exists()
+        assert path.exists()
+        # Verify data is readable (transaction committed successfully)
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["agent_id"] == "ChatBot"
 
     def test_custom_agent_id(self, tmp_path: Path):
         persist = PersistenceHandler(tmp_path)
@@ -267,7 +290,8 @@ class TestCheckpointing:
         bot = CustomBot(agent_id="custom-bot")
         with handler(AgentHistoryHandler()):
             persist.save(bot)
-        assert (tmp_path / "custom-bot.json").exists()
+        data = read_checkpoint(tmp_path, "custom-bot")
+        assert data["agent_id"] == "custom-bot"
 
     def test_persist_dir_created_automatically(self, tmp_path: Path):
         nested = tmp_path / "a" / "b" / "c"
@@ -369,7 +393,7 @@ class TestSubclassStatePersistence:
         assert bot2.data["counter"] == 42
 
     def test_state_saved_in_checkpoint_file(self, tmp_path: Path):
-        """The checkpoint JSON contains a 'state' key with subclass fields."""
+        """The checkpoint DB contains state with subclass fields."""
         persist = PersistenceHandler(tmp_path)
         bot = StatefulBot()
         bot.learned_patterns = ["X"]
@@ -377,7 +401,7 @@ class TestSubclassStatePersistence:
         with handler(AgentHistoryHandler()):
             persist.save(bot)
 
-        data = json.loads((tmp_path / "StatefulBot.json").read_text())
+        data = read_checkpoint(tmp_path, "StatefulBot")
         assert "state" in data
         assert data["state"]["learned_patterns"] == ["X"]
         assert data["state"]["call_count"] == 3
@@ -403,9 +427,8 @@ class TestAutomaticCheckpointing:
         ):
             bot.send("hi")
 
-        cp = tmp_path / "ChatBot.json"
-        assert cp.exists()
-        data = json.loads(cp.read_text())
+        assert persist.db_path.exists()
+        data = read_checkpoint(tmp_path, "ChatBot")
         assert len(data["history"]) > 0
         assert data["handoff"] == ""
 
@@ -425,7 +448,7 @@ class TestAutomaticCheckpointing:
             ):
                 bot.send("hi")
 
-        data = json.loads((tmp_path / "ChatBot.json").read_text())
+        data = read_checkpoint(tmp_path, "ChatBot")
         assert "Executing send" in data["handoff"]
 
     def test_handoff_describes_current_call(self, tmp_path: Path):
@@ -435,7 +458,7 @@ class TestAutomaticCheckpointing:
         class SpyMock(ObjectInterpretation):
             @implements(completion)
             def _completion(self_, model, messages=None, **kwargs):
-                data = json.loads((tmp_path / "ChatBot.json").read_text())
+                data = read_checkpoint(tmp_path, "ChatBot")
                 handoff_during_call.append(data["handoff"])
                 return make_text_response("ok")
 
@@ -507,7 +530,7 @@ class TestAutomaticCheckpointing:
         ):
             bot.send("test")
 
-        data = json.loads((tmp_path / "StatefulBot.json").read_text())
+        data = read_checkpoint(tmp_path, "StatefulBot")
         assert data["state"]["call_count"] == 7
 
 
@@ -610,7 +633,7 @@ class TestCrashRecovery:
             bot2.send("new task")
 
         assert persist.get_handoff("ChatBot") == ""
-        data = json.loads((tmp_path / "ChatBot.json").read_text())
+        data = read_checkpoint(tmp_path, "ChatBot")
         assert data["handoff"] == ""
 
     def test_dataclass_state_survives_crash(self, tmp_path: Path):
@@ -1187,7 +1210,7 @@ class TestRetryCompatibility:
 
         assert result == 42
         assert persist.get_handoff("NumberBot") == ""
-        assert (tmp_path / "NumberBot.json").exists()
+        assert persist.db_path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1254,7 +1277,7 @@ class TestNestedCallFailuresWithPersistence:
                 bot.outer("go")
 
         # Crash checkpoint should exist with handoff
-        data = json.loads((tmp_path / "FailingBot.json").read_text())
+        data = read_checkpoint(tmp_path, "FailingBot")
         assert "Executing outer" in data["handoff"]
 
     def test_nested_tool_failure_then_recovery(self, tmp_path: Path):
@@ -1356,9 +1379,17 @@ class TestAgentPersistentAgentCoexistence:
 
         assert r1 == "plain-reply"
         assert r2 == "persist-reply"
-        # Only the PersistentAgent gets a checkpoint file
-        assert (tmp_path / "ChatBot.json").exists()
-        assert not list(tmp_path.glob(f"{plain.__agent_id__}*"))
+        # Only the PersistentAgent gets a checkpoint entry
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["agent_id"] == "ChatBot"
+        # Plain agent should not have a checkpoint
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        row = conn.execute(
+            "SELECT 1 FROM checkpoints WHERE agent_id = ?",
+            (plain.__agent_id__,),
+        ).fetchone()
+        conn.close()
+        assert row is None
 
     def test_persistent_agent_tool_calls_plain_agent(self, tmp_path: Path):
         """A PersistentAgent's tool can delegate to a plain Agent.
@@ -1411,7 +1442,8 @@ class TestAgentPersistentAgentCoexistence:
             result = outer.process("do it")
 
         assert result == "final-answer"
-        assert (tmp_path / "outer.json").exists()
+        data = read_checkpoint(tmp_path, "outer")
+        assert data["agent_id"] == "outer"
 
     def test_plain_agent_tool_calls_persistent_agent(self, tmp_path: Path):
         """A plain Agent's tool can delegate to a PersistentAgent.
@@ -1476,11 +1508,275 @@ class TestAgentPersistentAgentCoexistence:
 
         assert plan == "the plan"
         assert result == "executed"
-        assert (tmp_path / "planner.json").exists()
-        assert (tmp_path / "executor.json").exists()
 
         # Each has independent history
-        planner_data = json.loads((tmp_path / "planner.json").read_text())
-        executor_data = json.loads((tmp_path / "executor.json").read_text())
+        planner_data = read_checkpoint(tmp_path, "planner")
+        executor_data = read_checkpoint(tmp_path, "executor")
         assert len(planner_data["history"]) > 0
         assert len(executor_data["history"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: SQLite crash tolerance
+# ---------------------------------------------------------------------------
+
+
+class TestSQLiteCrashTolerance:
+    """SQLite-backed persistence is crash tolerant and restartable."""
+
+    def test_wal_mode_enabled(self, tmp_path: Path):
+        """Database uses WAL journal mode for crash tolerance."""
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
+
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        conn.close()
+        assert mode == "wal"
+
+    def test_database_survives_incomplete_write(self, tmp_path: Path):
+        """Prior committed data survives if a subsequent write is interrupted."""
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+
+        # First write: commit a valid checkpoint
+        with handler(AgentHistoryHandler()):
+            history = get_agent_history(bot.__agent_id__)
+            history["msg1"] = {"id": "msg1", "role": "user", "content": "hello"}
+            persist.save(bot)
+
+        # Simulate an interrupted write by opening a connection, beginning
+        # a write, then rolling back (mimicking a crash before commit).
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        conn.execute(
+            "UPDATE checkpoints SET handoff = 'interrupted' WHERE agent_id = ?",
+            ("ChatBot",),
+        )
+        # Do NOT commit — simulate crash by closing without commit
+        conn.close()
+
+        # The prior committed data should still be intact
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["handoff"] == ""
+        assert len(data["history"]) == 1
+
+    def test_database_integrity_after_multiple_saves(self, tmp_path: Path):
+        """Multiple rapid saves produce a consistent database."""
+        mock = MockCompletionHandler(
+            [make_text_response(f"reply-{i}") for i in range(5)]
+        )
+        bot = ChatBot(agent_id="ChatBot")
+        persist = PersistenceHandler(tmp_path)
+
+        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+            for i in range(5):
+                bot.send(f"msg-{i}")
+
+        # Verify integrity
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        conn.close()
+        assert result == "ok"
+
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["handoff"] == ""
+        assert len(data["history"]) > 0
+
+    def test_recovery_from_crash_mid_template_call(self, tmp_path: Path):
+        """After a crash mid-call, the DB has a handoff and can be reloaded."""
+
+        class CrashMock(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, *args, **kwargs):
+                raise RuntimeError("process killed")
+
+        bot = ChatBot(agent_id="ChatBot")
+        with pytest.raises(RuntimeError):
+            with (
+                handler(LiteLLMProvider()),
+                handler(CrashMock()),
+                handler(PersistenceHandler(tmp_path)),
+            ):
+                bot.send("important task")
+
+        # Verify the DB is consistent and has the crash handoff
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        assert result == "ok"
+        conn.close()
+
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert "Executing send" in data["handoff"]
+
+        # New process can load and resume
+        mock2 = MockCompletionHandler([make_text_response("recovered")])
+        bot2 = ChatBot(agent_id="ChatBot")
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock2),
+            handler(PersistenceHandler(tmp_path)),
+        ):
+            result = bot2.send("resume")
+
+        assert result == "recovered"
+        data2 = read_checkpoint(tmp_path, "ChatBot")
+        assert data2["handoff"] == ""
+
+    def test_concurrent_handler_instances_same_db(self, tmp_path: Path):
+        """Two PersistenceHandler instances sharing the same DB dir work."""
+        persist1 = PersistenceHandler(tmp_path)
+        persist2 = PersistenceHandler(tmp_path)
+
+        bot1 = ChatBot(agent_id="bot1")
+        bot2 = ChatBot(agent_id="bot2")
+
+        with handler(AgentHistoryHandler()):
+            history1 = get_agent_history("bot1")
+            history1["m1"] = {"id": "m1", "role": "user", "content": "from bot1"}
+            persist1.save(bot1)
+
+            history2 = get_agent_history("bot2")
+            history2["m2"] = {"id": "m2", "role": "user", "content": "from bot2"}
+            persist2.save(bot2)
+
+        # Both checkpoints exist in the same DB
+        data1 = read_checkpoint(tmp_path, "bot1")
+        data2 = read_checkpoint(tmp_path, "bot2")
+        assert data1["history"][0]["content"] == "from bot1"
+        assert data2["history"][0]["content"] == "from bot2"
+
+    def test_multiple_agents_single_db(self, tmp_path: Path):
+        """All agents share one DB file, not separate JSON files."""
+        persist = PersistenceHandler(tmp_path)
+        bots = [ChatBot(agent_id=f"bot-{i}") for i in range(5)]
+
+        with handler(AgentHistoryHandler()):
+            for bot in bots:
+                persist.save(bot)
+
+        # Only one DB file, no JSON files
+        assert (tmp_path / "checkpoints.db").exists()
+        assert not list(tmp_path.glob("*.json"))
+
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        count = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
+        conn.close()
+        assert count == 5
+
+    def test_save_is_idempotent(self, tmp_path: Path):
+        """Saving the same agent multiple times updates rather than duplicates."""
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
+            persist._handoffs["ChatBot"] = "updated handoff"
+            persist.save(bot)
+            persist._handoffs["ChatBot"] = "final handoff"
+            persist.save(bot)
+
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE agent_id = ?", ("ChatBot",)
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1
+
+        data = read_checkpoint(tmp_path, "ChatBot")
+        assert data["handoff"] == "final handoff"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Thread safety
+# ---------------------------------------------------------------------------
+
+
+class TestThreadSafety:
+    """PersistenceHandler is safe to use from multiple threads."""
+
+    def test_concurrent_saves_from_threads(self, tmp_path: Path):
+        """Multiple threads saving different agents concurrently don't corrupt the DB."""
+        import concurrent.futures
+
+        persist = PersistenceHandler(tmp_path)
+        errors: list[Exception] = []
+
+        def save_agent(agent_id: str) -> None:
+            try:
+                bot = ChatBot(agent_id=agent_id)
+                hist = AgentHistoryHandler()
+                with handler(hist):
+                    history = get_agent_history(agent_id)
+                    for j in range(3):
+                        history[f"{agent_id}-msg{j}"] = {
+                            "id": f"{agent_id}-msg{j}",
+                            "role": "user",
+                            "content": f"msg {j} from {agent_id}",
+                        }
+                    persist.save(bot)
+            except Exception as e:
+                errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(save_agent, f"agent-{i}") for i in range(8)]
+            concurrent.futures.wait(futures)
+
+        assert errors == [], f"Thread errors: {errors}"
+
+        # Verify DB integrity and all agents saved
+        conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        assert result == "ok"
+        count = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
+        conn.close()
+        assert count == 8
+
+    def test_concurrent_reads_and_writes(self, tmp_path: Path):
+        """Readers and writers can operate concurrently without errors."""
+        import concurrent.futures
+
+        persist = PersistenceHandler(tmp_path)
+        errors: list[Exception] = []
+
+        # Seed some data
+        with handler(AgentHistoryHandler()):
+            for i in range(4):
+                bot = ChatBot(agent_id=f"agent-{i}")
+                persist.save(bot)
+
+        def writer(agent_id: str) -> None:
+            try:
+                bot = ChatBot(agent_id=agent_id)
+                hist = AgentHistoryHandler()
+                with handler(hist):
+                    history = get_agent_history(agent_id)
+                    history["update"] = {
+                        "id": "update",
+                        "role": "user",
+                        "content": "updated",
+                    }
+                    persist.save(bot)
+            except Exception as e:
+                errors.append(e)
+
+        def reader(agent_id: str) -> None:
+            try:
+                bot = ChatBot(agent_id=agent_id)
+                persist2 = PersistenceHandler(tmp_path)
+                hist = AgentHistoryHandler()
+                with handler(hist):
+                    persist2._loaded.clear()
+                    persist2.ensure_loaded(bot)
+            except Exception as e:
+                errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = []
+            for i in range(4):
+                futures.append(pool.submit(writer, f"agent-{i}"))
+                futures.append(pool.submit(reader, f"agent-{i}"))
+            concurrent.futures.wait(futures)
+
+        assert errors == [], f"Thread errors: {errors}"

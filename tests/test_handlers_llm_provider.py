@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import re
+import sqlite3
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -41,6 +42,11 @@ from effectful.handlers.llm.completions import (
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.persistence import (
+    CompactionHandler,
+    PersistenceHandler,
+    PersistentAgent,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -2287,7 +2293,6 @@ def test_agent_nested_tool_call_integration():
 @requires_openai
 def test_persistent_agent_with_persistence_integration(tmp_path):
     """PersistentAgent checkpoints to disk after a real LLM call."""
-    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
 
     class Bot(PersistentAgent):
         """You are a concise assistant. Reply in at most 10 words."""
@@ -2308,10 +2313,17 @@ def test_persistent_agent_with_persistence_integration(tmp_path):
         result = bot.ask("Say hello")
 
     assert isinstance(result, str)
-    assert (tmp_path / "integration-bot.json").exists()
-    data = json.loads((tmp_path / "integration-bot.json").read_text())
-    assert len(data["history"]) > 0
-    assert data["handoff"] == ""
+    db_path = tmp_path / "checkpoints.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT handoff, history FROM checkpoints WHERE agent_id = ?",
+        ("integration-bot",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert len(json.loads(row[1])) > 0
+    assert row[0] == ""
 
 
 @requires_openai
@@ -2321,7 +2333,6 @@ def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
     The persistent orchestrator calls ask_helper (a plain Agent) via a tool.
     LimitLLMCallsHandler caps calls at 5 to prevent runaway tool loops.
     """
-    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
 
     class Orchestrator(PersistentAgent):
         """You orchestrate tasks. Use `ask_helper` exactly once, then
@@ -2354,14 +2365,17 @@ def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
         result = orch.run("What is 3 * 7?")
 
     assert isinstance(result, str)
-    assert (tmp_path / "orch.json").exists()
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    row = conn.execute(
+        "SELECT 1 FROM checkpoints WHERE agent_id = ?", ("orch",)
+    ).fetchone()
+    conn.close()
+    assert row is not None
 
 
 @requires_openai
 def test_compaction_after_multiple_calls_integration():
     """History is compacted after enough calls exceed the threshold."""
-    from effectful.handlers.llm.persistence import CompactionHandler
-
     helper = _PlainHelper()
     provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
 
@@ -2383,11 +2397,6 @@ def test_compaction_after_multiple_calls_integration():
 @requires_openai
 def test_compaction_with_persistence_integration(tmp_path):
     """Compaction and persistence compose: compacted history is checkpointed."""
-    from effectful.handlers.llm.persistence import (
-        CompactionHandler,
-        PersistenceHandler,
-        PersistentAgent,
-    )
 
     class Bot(PersistentAgent):
         """You are a concise assistant. Reply in at most 10 words."""
@@ -2411,8 +2420,13 @@ def test_compaction_with_persistence_integration(tmp_path):
             bot.ask(f"What is {i} + 1?")
 
     # Compacted history should be persisted to disk
-    data = json.loads((tmp_path / "compact-bot.json").read_text())
-    first_msg = data["history"][0]
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?", ("compact-bot",)
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    first_msg = history[0]
     assert "CONTEXT SUMMARY" in first_msg["content"]
 
 
@@ -2445,8 +2459,6 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
     after the 2nd call. The 3rd call must succeed — if compaction orphaned
     a tool_result the API would reject the conversation.
     """
-    from effectful.handlers.llm.persistence import CompactionHandler
-
     bot = _ToolAgent()
     provider = LiteLLMProvider(model=model, max_tokens=60)
 
@@ -2485,3 +2497,111 @@ def test_compaction_with_tool_calls_does_not_break_api(model):
             assert tc_id in tool_use_ids, (
                 f"Orphaned tool_result with tool_call_id={tc_id!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: SQLite persistence
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_sqlite_persistence_crash_recovery_integration(tmp_path):
+    """After a simulated crash, a new session resumes from the SQLite checkpoint."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    # Session 1: successful call
+    bot = Bot(agent_id="crash-test-bot")
+    persist = PersistenceHandler(tmp_path)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(persist),
+    ):
+        result1 = bot.ask("What is 2+2?")
+
+    assert isinstance(result1, str)
+
+    # Verify SQLite DB exists and has data
+    db_path = tmp_path / "checkpoints.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert result == "ok"
+    row = conn.execute(
+        "SELECT handoff, history FROM checkpoints WHERE agent_id = ?",
+        ("crash-test-bot",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == ""  # handoff cleared after success
+    assert len(json.loads(row[1])) > 0
+
+    # Session 2: new process loads from SQLite and continues
+    bot2 = Bot(agent_id="crash-test-bot")
+    persist2 = PersistenceHandler(tmp_path)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(persist2),
+    ):
+        result2 = bot2.ask("What did I just ask?")
+
+    assert isinstance(result2, str)
+
+    # History should have grown (session 2 sees session 1 messages)
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?",
+        ("crash-test-bot",),
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    assert len(history) > 3  # at least system + user + assistant from each session
+
+
+@requires_openai
+def test_sqlite_persistence_db_integrity_after_compaction_integration(tmp_path):
+    """Compacted history is correctly persisted to SQLite."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="compact-sqlite-bot")
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+    persist = PersistenceHandler(tmp_path)
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=6)),
+        handler(CompactionHandler(max_history_len=6)),
+        handler(persist),
+    ):
+        for i in range(3):
+            bot.ask(f"What is {i} + 1?")
+
+    # Verify SQLite DB integrity
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert result == "ok"
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?",
+        ("compact-sqlite-bot",),
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    first_msg = history[0]
+    assert "CONTEXT SUMMARY" in first_msg["content"]
