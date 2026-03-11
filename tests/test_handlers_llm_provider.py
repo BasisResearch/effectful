@@ -2355,3 +2355,62 @@ def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
 
     assert isinstance(result, str)
     assert (tmp_path / "orch.json").exists()
+
+
+@requires_openai
+def test_compaction_after_multiple_calls_integration():
+    """History is compacted after enough calls exceed the threshold."""
+    from effectful.handlers.llm.persistence import CompactionHandler
+
+    helper = _PlainHelper()
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=6)),
+        handler(CompactionHandler(max_history_len=6)),
+    ):
+        # Each call adds ~3 msgs (system + user + assistant).
+        # After the 2nd call history has ~6 msgs, 3rd call triggers compaction.
+        for i in range(3):
+            helper.answer(f"What is {i} + 1?")
+
+    history = provider._histories.get(helper.__agent_id__, {})
+    first_msg = next(iter(history.values()))
+    assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+@requires_openai
+def test_compaction_with_persistence_integration(tmp_path):
+    """Compaction and persistence compose: compacted history is checkpointed."""
+    from effectful.handlers.llm.persistence import (
+        CompactionHandler,
+        PersistenceHandler,
+        PersistentAgent,
+    )
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="compact-bot")
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+    persist = PersistenceHandler(tmp_path)
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=6)),
+        handler(CompactionHandler(max_history_len=6)),
+        handler(persist),
+    ):
+        for i in range(3):
+            bot.ask(f"What is {i} + 1?")
+
+    # Compacted history should be persisted to disk
+    data = json.loads((tmp_path / "compact-bot.json").read_text())
+    first_msg = data["history"][0]
+    assert "CONTEXT SUMMARY" in first_msg["content"]

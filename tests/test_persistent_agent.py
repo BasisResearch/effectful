@@ -837,7 +837,10 @@ class TestContextCompaction:
         ):
             bot.send("trigger")
 
-        result = provider._histories.get("PlainBot", {})
+        result = provider._histories.get(bot.__agent_id__, {})
+        assert len(result) > 0, "history should not be empty after compaction"
+        first_msg = next(iter(result.values()))
+        assert "CONTEXT SUMMARY" in first_msg["content"]
         assert len(result) <= 4 + 4
 
     def test_compaction_triggered_naturally_on_plain_agent(self):

@@ -6,6 +6,7 @@ import functools
 import inspect
 import string
 import textwrap
+import threading
 import traceback
 import typing
 import uuid
@@ -480,6 +481,12 @@ class LiteLLMProvider(ObjectInterpretation):
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
         self._histories: dict[str, collections.OrderedDict[str, Message]] = {}
+        self._tls = threading.local()
+
+    def _get_depths(self) -> dict[str, int]:
+        if not hasattr(self._tls, "depths"):
+            self._tls.depths = {}
+        return self._tls.depths
 
     @implements(get_agent_history)
     def _get_agent_history(
@@ -502,31 +509,47 @@ class LiteLLMProvider(ObjectInterpretation):
         # Get history: from agent history handler if bound to an agent, else fresh
         agent = get_bound_agent(template)
         if agent is not None:
-            history = get_agent_history(agent.__agent_id__)
+            agent_id = agent.__agent_id__
+            history = get_agent_history(agent_id)
         else:
+            agent_id = None
             history = collections.OrderedDict()
-        # Copy so nested calls on the same agent don't see in-flight messages;
-        # only the outermost call's history is written back.
+
+        # Track nesting depth per agent so only the outermost call writes back.
+        # Inner calls work on their own copy but discard it on return.
         # See: TestNestedTemplateCalling.test_only_outermost_writes_to_history
+        depths = self._get_depths()
+        if agent_id is not None:
+            depth = depths.get(agent_id, 0)
+            depths[agent_id] = depth + 1
+            is_outermost = depth == 0
+        else:
+            depth = 0
+            is_outermost = False
+
         history_copy = history.copy()
 
-        with handler({_get_history: lambda: history_copy}):
-            call_system(template)
+        try:
+            with handler({_get_history: lambda: history_copy}):
+                call_system(template)
 
-            message: Message = call_user(template.__prompt_template__, env)
+                message: Message = call_user(template.__prompt_template__, env)
 
-            # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-            tool_calls: list[DecodedToolCall] = []
-            result: T | None = None
-            while message["role"] != "assistant" or tool_calls:
-                message, tool_calls, result = call_assistant(
-                    template.tools, response_model, **self.config
-                )
-                for tool_call in tool_calls:
-                    message = call_tool(tool_call)
+                # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
+                tool_calls: list[DecodedToolCall] = []
+                result: T | None = None
+                while message["role"] != "assistant" or tool_calls:
+                    message, tool_calls, result = call_assistant(
+                        template.tools, response_model, **self.config
+                    )
+                    for tool_call in tool_calls:
+                        message = call_tool(tool_call)
 
-        # Write back: outermost call's copy overwrites canonical history
-        if agent is not None:
-            history.clear()
-            history.update(history_copy)
-        return typing.cast(T, result)
+            # Only outermost call writes back to canonical history
+            if is_outermost:
+                history.clear()
+                history.update(history_copy)
+            return typing.cast(T, result)
+        finally:
+            if agent_id is not None:
+                depths[agent_id] = depth

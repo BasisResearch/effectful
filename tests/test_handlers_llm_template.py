@@ -14,11 +14,12 @@ from effectful.handlers.llm.completions import (
     AgentHistoryHandler,
     LiteLLMProvider,
     RetryLLMHandler,
+    call_assistant,
     call_user,
     completion,
     get_agent_history,
 )
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
@@ -760,6 +761,44 @@ class TestNestedTemplateCalling:
         assert len(mock.received_messages[3]) > len(mock.received_messages[0])
         second_call_roles = [m["role"] for m in mock.received_messages[3]]
         assert second_call_roles.count("assistant") >= 2  # from first call's history
+
+    def test_inner_success_outer_failure_no_history_leak(self):
+        """When inner call succeeds but outer fails, canonical history must
+        not be left with inner call's stale messages."""
+
+        class LimitCallsHandler(ObjectInterpretation):
+            def __init__(self, max_calls):
+                self.max_calls = max_calls
+                self.count = 0
+
+            @implements(call_assistant)
+            def _call(self, *args, **kwargs):
+                self.count += 1
+                if self.count > self.max_calls:
+                    raise RuntimeError(f"Exceeded {self.max_calls} calls")
+                return fwd()
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_text_response("inner"),
+                make_text_response("outer"),  # won't be reached
+            ]
+        )
+        agent = _DesignerAgent()
+        provider = LiteLLMProvider()
+        # Allow 2 calls: outer's first + inner's. Outer's 2nd call (#3) fails.
+        limiter = LimitCallsHandler(max_calls=2)
+
+        with pytest.raises(RuntimeError, match="Exceeded"):
+            with handler(provider), handler(mock), handler(limiter):
+                agent.outer("demo")
+
+        with handler(provider):
+            history = get_agent_history(agent.__agent_id__)
+        # Canonical history should be empty — outer never completed.
+        # It must NOT contain inner call's system/user/assistant.
+        assert len(history) == 0
 
 
 # ---------------------------------------------------------------------------
