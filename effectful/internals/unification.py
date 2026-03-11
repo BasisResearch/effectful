@@ -94,6 +94,60 @@ TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
 
 
+def _has_typing_self(typ) -> bool:
+    """Check if typing.Self appears anywhere in a type expression."""
+    if typ is typing.Self:
+        return True
+    if isinstance(typ, inspect.Signature):
+        if _has_typing_self(typ.return_annotation):
+            return True
+        for p in typ.parameters.values():
+            if _has_typing_self(p.annotation):
+                return True
+        return False
+    if isinstance(typ, list):
+        return any(_has_typing_self(item) for item in typ)
+    for arg in typing.get_args(typ):
+        if _has_typing_self(arg):
+            return True
+    return False
+
+
+def _replace_self(typ, self_tv: typing.TypeVar):
+    """Replace all occurrences of typing.Self with the given TypeVar."""
+    if typ is typing.Self:
+        return self_tv
+    elif isinstance(typ, inspect.Signature):
+        new_params = []
+        for i, p in enumerate(typ.parameters.values()):
+            if _has_typing_self(p.annotation):
+                new_params.append(
+                    p.replace(annotation=_replace_self(p.annotation, self_tv))
+                )
+            elif i == 0 and p.annotation is inspect.Parameter.empty:
+                new_params.append(p.replace(annotation=self_tv))
+            else:
+                new_params.append(p)
+        new_ret = (
+            _replace_self(typ.return_annotation, self_tv)
+            if _has_typing_self(typ.return_annotation)
+            else typ.return_annotation
+        )
+        return typ.replace(parameters=new_params, return_annotation=new_ret)
+    elif isinstance(typ, list):
+        return [_replace_self(item, self_tv) for item in typ]
+    args = typing.get_args(typ)
+    if not args:
+        return typ
+    new_args = tuple(_replace_self(a, self_tv) for a in args)
+    if new_args == args:
+        return typ
+    origin = typing.get_origin(typ)
+    if origin is not None:
+        return origin[new_args]
+    return typ
+
+
 @dataclass
 class Box[T]:
     """Boxed types. Prevents confusion between types computed by __type_rule__
@@ -346,6 +400,12 @@ def _unify_signature(
 ) -> Substitutions:
     if typ != subtyp.signature:
         raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
+
+    if _has_typing_self(typ):
+        self_tv = typing.TypeVar("Self")
+        typ = _replace_self(typ, self_tv)
+        subtyp = typ.bind(*subtyp.args, **subtyp.kwargs)
+        return {**unify(typ, subtyp, subs), typing.Self: self_tv}  # type: ignore
 
     for name, param in typ.parameters.items():
         if param.annotation is inspect.Parameter.empty:
@@ -913,6 +973,9 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         >>> substitute(int, {T: str})
         <class 'int'>
     """
+    if typing.Self in subs and _has_typing_self(typ):
+        return substitute(_replace_self(typ, subs[typing.Self]), subs)
+
     if isinstance(typ, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
         return substitute(subs[typ], subs) if typ in subs else typ
     elif isinstance(typ, list | tuple):
