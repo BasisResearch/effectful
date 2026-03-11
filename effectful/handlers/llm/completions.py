@@ -25,7 +25,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.template import Template, Tool, get_bound_agent
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -69,6 +69,44 @@ def append_message(message: Message):
         _get_history()[message["id"]] = message
     except NotImplementedError:
         pass
+
+
+@Operation.define
+def get_agent_history(agent_id: str) -> collections.OrderedDict[str, Message]:
+    """Get the message history for an agent. Returns empty OrderedDict by default."""
+    return collections.OrderedDict()
+
+
+@Operation.define
+def set_agent_history(
+    agent_id: str, history: collections.OrderedDict[str, Message]
+) -> None:
+    """Set the message history for an agent."""
+    pass
+
+
+class AgentHistoryHandler(ObjectInterpretation):
+    """Handler that stores per-agent message histories in memory.
+
+    Install this handler to give :class:`Agent` instances persistent
+    in-memory histories across template calls::
+
+        with handler(AgentHistoryHandler()), handler(LiteLLMProvider()):
+            bot.ask("question")  # history accumulates across calls
+    """
+
+    def __init__(self) -> None:
+        self._histories: dict[str, collections.OrderedDict[str, Message]] = {}
+
+    @implements(get_agent_history)
+    def _get(self, agent_id: str) -> collections.OrderedDict[str, Message]:
+        return self._histories.setdefault(agent_id, collections.OrderedDict())
+
+    @implements(set_agent_history)
+    def _set(
+        self, agent_id: str, history: collections.OrderedDict[str, Message]
+    ) -> None:
+        self._histories[agent_id] = history
 
 
 def _make_message(content: dict) -> Message:
@@ -442,7 +480,11 @@ class RetryLLMHandler(ObjectInterpretation):
 
 
 class LiteLLMProvider(ObjectInterpretation):
-    """Implements templates using the LiteLLM API."""
+    """Implements templates using the LiteLLM API.
+
+    Also provides per-agent message history storage via
+    :func:`get_agent_history` / :func:`set_agent_history`.
+    """
 
     config: collections.abc.Mapping[str, typing.Any]
 
@@ -451,6 +493,19 @@ class LiteLLMProvider(ObjectInterpretation):
             "model": model,
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
+        self._histories: dict[str, collections.OrderedDict[str, Message]] = {}
+
+    @implements(get_agent_history)
+    def _get_agent_history(
+        self, agent_id: str
+    ) -> collections.OrderedDict[str, Message]:
+        return self._histories.setdefault(agent_id, collections.OrderedDict())
+
+    @implements(set_agent_history)
+    def _set_agent_history(
+        self, agent_id: str, history: collections.OrderedDict[str, Message]
+    ) -> None:
+        self._histories[agent_id] = history
 
     @implements(Template.__apply__)
     def _call[**P, T](
@@ -464,9 +519,12 @@ class LiteLLMProvider(ObjectInterpretation):
         # Create response_model with env so tools passed as arguments are available
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
-        history: collections.OrderedDict[str, Message] = getattr(
-            template, "__history__", collections.OrderedDict()
-        )  # type: ignore
+        # Get history: from agent history handler if bound to an agent, else fresh
+        agent = get_bound_agent(template)
+        if agent is not None:
+            history = get_agent_history(agent.__agent_id__)
+        else:
+            history = collections.OrderedDict()
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
@@ -484,9 +542,7 @@ class LiteLLMProvider(ObjectInterpretation):
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-        try:
-            _get_history()
-        except NotImplementedError:
-            history.clear()
-            history.update(history_copy)
+        # Write back history
+        if agent is not None:
+            set_agent_history(agent.__agent_id__, history_copy)
         return typing.cast(T, result)

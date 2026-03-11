@@ -5,7 +5,7 @@ import re
 import string
 import types
 import typing
-from collections import ChainMap, OrderedDict
+from collections import ChainMap
 from collections.abc import Callable, Mapping, MutableMapping
 from typing import Annotated, Any
 
@@ -257,8 +257,6 @@ class Template[**P, T](Tool[P, T]):
         self_param_name = list(self.__signature__.parameters.keys())[0]
         result.__context__ = self.__context__.new_child({self_param_name: instance})
         if isinstance(instance, Agent):
-            assert isinstance(result, Template) and not hasattr(result, "__history__")
-            result.__history__ = instance.__history__  # type: ignore[attr-defined]
             result.__system_prompt__ = "\n\n".join(
                 part
                 for part in (
@@ -378,18 +376,31 @@ class Agent(abc.ABC):
 
     """
 
-    __history__: OrderedDict[str, Mapping[str, Any]]
     __system_prompt__: str
+
+    @functools.cached_property
+    def __agent_id__(self) -> str:
+        return str(id(self))
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "__history__"):
-            prop = functools.cached_property(lambda _: OrderedDict())
-            prop.__set_name__(cls, "__history__")
-            cls.__history__ = prop
         if not hasattr(cls, "__system_prompt__"):
             sp = functools.cached_property(
                 lambda self: inspect.getdoc(type(self)) or ""
             )
             sp.__set_name__(cls, "__system_prompt__")
             cls.__system_prompt__ = sp
+
+
+def get_bound_agent(template: Template) -> "Agent | None":
+    """Extract the bound :class:`Agent` instance from a template, if any.
+
+    Bound method templates have a first context map with exactly one entry
+    (``{self_param_name: instance}``), while standalone templates have a
+    larger map (module globals).
+    """
+    ctx = getattr(template, "__context__", None)
+    if ctx is None or not ctx.maps or len(ctx.maps[0]) != 1:
+        return None
+    val = next(iter(ctx.maps[0].values()))
+    return val if isinstance(val, Agent) else None

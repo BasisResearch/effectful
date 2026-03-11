@@ -1,21 +1,33 @@
-"""Tests for PersistentAgent — checkpointing, compaction, crash recovery,
-nested calls, subclass state persistence, and system prompt augmentation.
+"""Tests for PersistentAgent + PersistenceHandler + CompactionHandler.
+
+Checkpointing, compaction, crash recovery, nested calls, subclass state
+persistence, and system prompt augmentation.
 """
 
 import dataclasses
 import json
+from collections import OrderedDict
 from pathlib import Path
+from typing import Any
 
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
+    AgentHistoryHandler,
     LiteLLMProvider,
     RetryLLMHandler,
     completion,
+    get_agent_history,
+    set_agent_history,
 )
-from effectful.handlers.llm.persistence import PersistentAgent
+from effectful.handlers.llm.persistence import (
+    CompactionHandler,
+    PersistenceHandler,
+    PersistentAgent,
+)
+from effectful.handlers.llm.template import get_bound_agent
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -99,7 +111,8 @@ class ChatBot(PersistentAgent):
 class StatefulBot(PersistentAgent):
     """You are a stateful bot that tracks learned patterns."""
 
-    persist_dir: Path = dataclasses.field(default=Path("."))
+    __agent_id__ = "StatefulBot"
+
     learned_patterns: list[str] = dataclasses.field(default_factory=list)
     call_count: int = 0
 
@@ -129,68 +142,139 @@ class NestedBot(PersistentAgent):
 
 
 # ---------------------------------------------------------------------------
-# Tests: basic persistence
+# Tests: Agent.__agent_id__
+# ---------------------------------------------------------------------------
+
+
+class TestAgentId:
+    """All Agent subclasses get agent_id."""
+
+    def test_plain_agent_defaults_to_id(self):
+        class PlainAgent(Agent):
+            """Plain."""
+
+            @Template.define
+            def ask(self, q: str) -> str:
+                """Q: {q}"""
+                raise NotHandled
+
+        agent = PlainAgent()
+        assert agent.__agent_id__ == str(id(agent))
+
+    def test_persistent_agent_requires_agent_id(self):
+        bot = ChatBot(agent_id="my-chatbot")
+        assert bot.__agent_id__ == "my-chatbot"
+
+    def test_dataclass_class_level_id(self):
+        """Dataclass subclasses can set __agent_id__ as a class attribute."""
+        bot = StatefulBot()
+        assert bot.__agent_id__ == "StatefulBot"
+
+    def test_bound_template_has_agent_via_context(self):
+        bot = ChatBot(agent_id="ChatBot")
+        bound = bot.send
+        assert get_bound_agent(bound) is bot
+
+
+# ---------------------------------------------------------------------------
+# Tests: basic persistence (PersistenceHandler)
 # ---------------------------------------------------------------------------
 
 
 class TestCheckpointing:
-    """save_checkpoint / load_checkpoint round-trip correctly."""
+    """PersistenceHandler save/load round-trip correctly."""
 
     def test_save_creates_file(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        path = bot.save_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            path = persist.save(bot)
         assert path.exists()
         assert path.suffix == ".json"
 
     def test_save_load_round_trip_empty(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.save_checkpoint()
-        bot2 = ChatBot(persist_dir=tmp_path)
-        assert len(bot2.__history__) == 0
-        assert bot2.handoff == ""
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
+
+        hist = AgentHistoryHandler()
+        bot2 = ChatBot(agent_id="ChatBot")
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(hist):
+            persist2.ensure_loaded(bot2)
+        assert len(hist._histories.get("ChatBot", {})) == 0
+        assert persist2.get_handoff("ChatBot") == ""
 
     def test_save_load_round_trip_with_history(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.set_handoff("working on X")
-        bot.__history__["msg1"] = {
-            "id": "msg1",
-            "role": "user",
-            "content": "hello",
-        }
-        bot.save_checkpoint()
+        hist = AgentHistoryHandler()
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(hist):
+            history = get_agent_history(bot.__agent_id__)
+            history["msg1"] = {
+                "id": "msg1",
+                "role": "user",
+                "content": "hello",
+            }
+            persist._handoffs["ChatBot"] = "working on X"
+            persist.save(bot)
 
-        bot2 = ChatBot(persist_dir=tmp_path)
-        assert bot2.handoff == "working on X"
-        assert len(bot2.__history__) == 1
-        assert bot2.__history__["msg1"]["content"] == "hello"
+        hist2 = AgentHistoryHandler()
+        bot2 = ChatBot(agent_id="ChatBot")
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(hist2):
+            persist2.ensure_loaded(bot2)
+            loaded_history = get_agent_history(bot2.__agent_id__)
+        assert persist2.get_handoff("ChatBot") == "working on X"
+        assert len(loaded_history) == 1
+        assert loaded_history["msg1"]["content"] == "hello"
 
     def test_load_returns_false_when_no_checkpoint(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        assert not bot.load_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            assert not persist.ensure_loaded(bot)
 
     def test_load_returns_true_when_checkpoint_exists(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.save_checkpoint()
-        bot2 = ChatBot(persist_dir=tmp_path)
-        # Constructor calls load_checkpoint; call again to test return value
-        assert bot2.load_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
+            # Reset loaded state
+            persist._loaded.clear()
+            assert persist.ensure_loaded(bot)
 
     def test_atomic_write(self, tmp_path: Path):
         """Checkpoint write uses tmp + rename for atomicity."""
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.save_checkpoint()
-        # No .tmp file should remain
-        assert not bot._checkpoint_path.with_suffix(".tmp").exists()
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            path = persist.save(bot)
+        assert not path.with_suffix(".tmp").exists()
 
     def test_custom_agent_id(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path, agent_id="custom-bot")
-        bot.save_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+
+        class CustomBot(PersistentAgent):
+            """Custom."""
+
+            @Template.define
+            def ask(self, q: str) -> str:
+                """Q: {q}"""
+                raise NotHandled
+
+        bot = CustomBot(agent_id="custom-bot")
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
         assert (tmp_path / "custom-bot.json").exists()
 
     def test_persist_dir_created_automatically(self, tmp_path: Path):
         nested = tmp_path / "a" / "b" / "c"
-        bot = ChatBot(persist_dir=nested)
-        bot.save_checkpoint()
+        persist = PersistenceHandler(nested)
+        bot = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
         assert nested.exists()
 
 
@@ -203,18 +287,23 @@ class TestSubclassStatePersistence:
     """Dataclass fields on subclasses are automatically persisted."""
 
     def test_dataclass_fields_round_trip(self, tmp_path: Path):
-        bot = StatefulBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = StatefulBot()
         bot.learned_patterns = ["pattern A", "pattern B"]
         bot.call_count = 5
-        bot.save_checkpoint()
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
 
-        bot2 = StatefulBot(persist_dir=tmp_path)
+        bot2 = StatefulBot()
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
         assert bot2.learned_patterns == ["pattern A", "pattern B"]
         assert bot2.call_count == 5
 
-    def test_non_dataclass_has_empty_state(self, tmp_path: Path):
+    def test_non_dataclass_has_empty_state(self):
         """Non-dataclass subclass returns empty state dict."""
-        bot = ChatBot(persist_dir=tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
         assert bot.checkpoint_state() == {}
 
     def test_non_serializable_fields_skipped(self, tmp_path: Path):
@@ -222,7 +311,8 @@ class TestSubclassStatePersistence:
         class WeirdBot(PersistentAgent):
             """Bot with a non-serializable field."""
 
-            persist_dir: Path = dataclasses.field(default=Path("."))
+            __agent_id__ = "WeirdBot"
+
             callback: object = dataclasses.field(default=None)
             name: str = "test"
 
@@ -231,13 +321,17 @@ class TestSubclassStatePersistence:
                 """Say: {msg}"""
                 raise NotHandled
 
-        bot = WeirdBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = WeirdBot()
         bot.callback = lambda x: x  # not JSON serializable
         bot.name = "Alice"
-        bot.save_checkpoint()
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
 
-        bot2 = WeirdBot(persist_dir=tmp_path)
-        # name was serializable → restored; callback was not → stays default
+        bot2 = WeirdBot()
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
         assert bot2.name == "Alice"
         assert bot2.callback is None
 
@@ -247,9 +341,9 @@ class TestSubclassStatePersistence:
         class CustomBot(PersistentAgent):
             """Custom serialisation bot."""
 
-            def __init__(self, persist_dir, **kwargs):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
                 self.data = {"counter": 0}
-                super().__init__(persist_dir, **kwargs)
 
             def checkpoint_state(self):
                 return {"data": self.data}
@@ -262,21 +356,28 @@ class TestSubclassStatePersistence:
                 """Say: {msg}"""
                 raise NotHandled
 
-        bot = CustomBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = CustomBot(agent_id="CustomBot")
         bot.data["counter"] = 42
-        bot.save_checkpoint()
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
 
-        bot2 = CustomBot(persist_dir=tmp_path)
+        bot2 = CustomBot(agent_id="CustomBot")
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
         assert bot2.data["counter"] == 42
 
     def test_state_saved_in_checkpoint_file(self, tmp_path: Path):
         """The checkpoint JSON contains a 'state' key with subclass fields."""
-        bot = StatefulBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = StatefulBot()
         bot.learned_patterns = ["X"]
         bot.call_count = 3
-        bot.save_checkpoint()
+        with handler(AgentHistoryHandler()):
+            persist.save(bot)
 
-        data = json.loads(bot._checkpoint_path.read_text())
+        data = json.loads((tmp_path / "StatefulBot.json").read_text())
         assert "state" in data
         assert data["state"]["learned_patterns"] == ["X"]
         assert data["state"]["call_count"] == 3
@@ -288,35 +389,43 @@ class TestSubclassStatePersistence:
 
 
 class TestAutomaticCheckpointing:
-    """Template calls on PersistentAgent trigger save_checkpoint."""
+    """Template calls on PersistentAgent trigger auto-checkpointing."""
 
     def test_checkpoint_saved_after_successful_call(self, tmp_path: Path):
         mock = MockCompletionHandler([make_text_response("hello")])
-        bot = ChatBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(persist),
+        ):
             bot.send("hi")
 
-        assert bot._checkpoint_path.exists()
-        data = json.loads(bot._checkpoint_path.read_text())
+        cp = tmp_path / "ChatBot.json"
+        assert cp.exists()
+        data = json.loads(cp.read_text())
         assert len(data["history"]) > 0
-        # Handoff should be cleared after successful call
         assert data["handoff"] == ""
 
     def test_checkpoint_saved_on_exception(self, tmp_path: Path):
-        """Even if the LLM call fails, checkpoint with handoff is saved."""
-
         class FailingMock(ObjectInterpretation):
             @implements(completion)
             def _completion(self, *args, **kwargs):
                 raise RuntimeError("boom")
 
-        bot = ChatBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
         with pytest.raises(RuntimeError, match="boom"):
-            with handler(LiteLLMProvider()), handler(FailingMock()):
+            with (
+                handler(LiteLLMProvider()),
+                handler(FailingMock()),
+                handler(persist),
+            ):
                 bot.send("hi")
 
-        data = json.loads(bot._checkpoint_path.read_text())
+        data = json.loads((tmp_path / "ChatBot.json").read_text())
         assert "Executing send" in data["handoff"]
 
     def test_handoff_describes_current_call(self, tmp_path: Path):
@@ -326,60 +435,79 @@ class TestAutomaticCheckpointing:
         class SpyMock(ObjectInterpretation):
             @implements(completion)
             def _completion(self_, model, messages=None, **kwargs):
-                # Read the checkpoint mid-call
-                data = json.loads(bot._checkpoint_path.read_text())
+                data = json.loads((tmp_path / "ChatBot.json").read_text())
                 handoff_during_call.append(data["handoff"])
                 return make_text_response("ok")
 
-        bot = ChatBot(persist_dir=tmp_path)
-        with handler(LiteLLMProvider()), handler(SpyMock()):
+        persist = PersistenceHandler(tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with (
+            handler(LiteLLMProvider()),
+            handler(SpyMock()),
+            handler(persist),
+        ):
             bot.send("hello")
 
         assert len(handoff_during_call) == 1
         assert "Executing send" in handoff_during_call[0]
 
     def test_history_persists_across_sessions(self, tmp_path: Path):
-        mock = MockCompletionHandler(
-            [make_text_response("reply1"), make_text_response("reply2")]
-        )
-        bot = ChatBot(persist_dir=tmp_path)
+        mock = MockCompletionHandler([make_text_response("reply1")])
+        bot = ChatBot(agent_id="ChatBot")
+        provider1 = LiteLLMProvider()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(provider1),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             bot.send("first message")
 
-        # "Restart" — new instance, same persist_dir
-        mock2 = MockCompletionHandler([make_text_response("reply after restart")])
-        bot2 = ChatBot(persist_dir=tmp_path)
+        history_after_first = len(provider1._histories.get("ChatBot", {}))
 
-        with handler(LiteLLMProvider()), handler(mock2):
+        # "Restart" — new handler + new agent instance
+        mock2 = MockCompletionHandler([make_text_response("reply after restart")])
+        bot2 = ChatBot(agent_id="ChatBot")
+        provider2 = LiteLLMProvider()
+
+        with (
+            handler(provider2),
+            handler(mock2),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             bot2.send("second message")
 
-        # Second bot should see prior history + new messages
-        assert len(bot2.__history__) > len(bot.__history__)
+        assert len(provider2._histories.get("ChatBot", {})) > history_after_first
 
     def test_second_call_sees_prior_history(self, tmp_path: Path):
         mock = MockCompletionHandler(
             [make_text_response("r1"), make_text_response("r2")]
         )
-        bot = ChatBot(persist_dir=tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             bot.send("a")
             bot.send("b")
 
-        # Second call should have seen the first call's messages
         assert len(mock.received_messages[1]) > len(mock.received_messages[0])
 
     def test_dataclass_state_saved_around_template_calls(self, tmp_path: Path):
-        """Dataclass fields are included in the automatic checkpoint."""
         mock = MockCompletionHandler([make_text_response("ok")])
-        bot = StatefulBot(persist_dir=tmp_path)
+        bot = StatefulBot()
         bot.call_count = 7
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             bot.send("test")
 
-        data = json.loads(bot._checkpoint_path.read_text())
+        data = json.loads((tmp_path / "StatefulBot.json").read_text())
         assert data["state"]["call_count"] == 7
 
 
@@ -397,52 +525,116 @@ class TestCrashRecovery:
             def _completion(self, *args, **kwargs):
                 raise RuntimeError("process killed")
 
-        bot = ChatBot(persist_dir=tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
         with pytest.raises(RuntimeError):
-            with handler(LiteLLMProvider()), handler(CrashMock()):
+            with (
+                handler(LiteLLMProvider()),
+                handler(CrashMock()),
+                handler(PersistenceHandler(tmp_path)),
+            ):
                 bot.send("important task")
 
-        # New instance should see the handoff
-        bot2 = ChatBot(persist_dir=tmp_path)
-        assert "Executing send" in bot2.handoff
-        assert "[HANDOFF" in bot2.__system_prompt__
+        # New handler instance loads handoff from disk
+        persist2 = PersistenceHandler(tmp_path)
+        bot2 = ChatBot(agent_id="ChatBot")
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
+        assert "Executing send" in persist2.get_handoff("ChatBot")
 
     def test_system_prompt_includes_handoff(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.set_handoff("Was processing query about France")
-        assert "[HANDOFF FROM PRIOR SESSION]" in bot.__system_prompt__
-        assert "France" in bot.__system_prompt__
+        """After a crash, the next call's system prompt includes the handoff."""
 
-    def test_handoff_cleared_on_success(self, tmp_path: Path):
-        mock = MockCompletionHandler([make_text_response("done")])
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.set_handoff("leftover from last crash")
-
-        with handler(LiteLLMProvider()), handler(mock):
-            bot.send("new task")
-
-        assert bot.handoff == ""
-        data = json.loads(bot._checkpoint_path.read_text())
-        assert data["handoff"] == ""
-
-    def test_dataclass_state_survives_crash(self, tmp_path: Path):
-        """Subclass state is preserved in the crash checkpoint."""
-
+        # Simulate crash
         class CrashMock(ObjectInterpretation):
             @implements(completion)
             def _completion(self, *args, **kwargs):
                 raise RuntimeError("crash")
 
-        bot = StatefulBot(persist_dir=tmp_path)
+        bot = ChatBot(agent_id="ChatBot")
+        with pytest.raises(RuntimeError):
+            with (
+                handler(LiteLLMProvider()),
+                handler(CrashMock()),
+                handler(PersistenceHandler(tmp_path)),
+            ):
+                bot.send("important task")
+
+        # Next session: spy on system prompt
+        system_prompts = []
+
+        class SpyMock(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self_, model, messages=None, **kwargs):
+                system_prompts.extend(
+                    m.get("content", "")
+                    for m in (messages or [])
+                    if m.get("role") == "system"
+                )
+                return make_text_response("resumed")
+
+        bot2 = ChatBot(agent_id="ChatBot")
+        with (
+            handler(LiteLLMProvider()),
+            handler(SpyMock()),
+            handler(PersistenceHandler(tmp_path)),
+        ):
+            bot2.send("resume")
+
+        assert any("[HANDOFF FROM PRIOR SESSION]" in p for p in system_prompts)
+
+    def test_handoff_cleared_on_success(self, tmp_path: Path):
+        # Create crash checkpoint
+        class CrashMock(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, *a, **kw):
+                raise RuntimeError("crash")
+
+        bot = ChatBot(agent_id="ChatBot")
+        with pytest.raises(RuntimeError):
+            with (
+                handler(LiteLLMProvider()),
+                handler(CrashMock()),
+                handler(PersistenceHandler(tmp_path)),
+            ):
+                bot.send("crash task")
+
+        # Successful run clears handoff
+        mock = MockCompletionHandler([make_text_response("done")])
+        bot2 = ChatBot(agent_id="ChatBot")
+        persist = PersistenceHandler(tmp_path)
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(persist),
+        ):
+            bot2.send("new task")
+
+        assert persist.get_handoff("ChatBot") == ""
+        data = json.loads((tmp_path / "ChatBot.json").read_text())
+        assert data["handoff"] == ""
+
+    def test_dataclass_state_survives_crash(self, tmp_path: Path):
+        class CrashMock(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, *a, **kw):
+                raise RuntimeError("crash")
+
+        bot = StatefulBot()
         bot.learned_patterns = ["important insight"]
         bot.call_count = 3
 
         with pytest.raises(RuntimeError):
-            with handler(LiteLLMProvider()), handler(CrashMock()):
+            with (
+                handler(LiteLLMProvider()),
+                handler(CrashMock()),
+                handler(PersistenceHandler(tmp_path)),
+            ):
                 bot.send("boom")
 
-        # Restore and check subclass state survived
-        bot2 = StatefulBot(persist_dir=tmp_path)
+        bot2 = StatefulBot()
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
         assert bot2.learned_patterns == ["important insight"]
         assert bot2.call_count == 3
 
@@ -463,22 +655,26 @@ class TestNestedCalls:
                 make_text_response("outer result"),
             ]
         )
-        bot = NestedBot(persist_dir=tmp_path)
+        bot = NestedBot(agent_id="NestedBot")
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             result = bot.outer("demo")
 
         assert result == "outer result"
 
     def test_nested_call_does_not_double_checkpoint(self, tmp_path: Path):
-        """Inner template call should not trigger extra checkpointing."""
         save_count = 0
-        original_save = PersistentAgent.save_checkpoint
+        persist = PersistenceHandler(tmp_path)
+        original_save = PersistenceHandler.save
 
-        def counting_save(self):
+        def counting_save(self, agent):
             nonlocal save_count
             save_count += 1
-            return original_save(self)
+            return original_save(self, agent)
 
         mock = MockCompletionHandler(
             [
@@ -487,13 +683,17 @@ class TestNestedCalls:
                 make_text_response("outer"),
             ]
         )
-        bot = NestedBot(persist_dir=tmp_path)
-        PersistentAgent.save_checkpoint = counting_save  # type: ignore[method-assign]
+        bot = NestedBot(agent_id="NestedBot")
+        PersistenceHandler.save = counting_save  # type: ignore[method-assign]
         try:
-            with handler(LiteLLMProvider()), handler(mock):
+            with (
+                handler(LiteLLMProvider()),
+                handler(mock),
+                handler(persist),
+            ):
                 bot.outer("demo")
         finally:
-            PersistentAgent.save_checkpoint = original_save  # type: ignore[method-assign]
+            PersistenceHandler.save = original_save  # type: ignore[method-assign]
 
         # Should be exactly 2: one before call, one after
         assert save_count == 2
@@ -506,92 +706,137 @@ class TestNestedCalls:
                 make_text_response("outer"),
             ]
         )
-        bot = NestedBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = NestedBot(agent_id="NestedBot")
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(LiteLLMProvider()),
+            handler(mock),
+            handler(persist),
+        ):
             bot.outer("demo")
 
-        assert bot.handoff == ""
+        assert persist.get_handoff("NestedBot") == ""
 
 
 # ---------------------------------------------------------------------------
-# Tests: context compaction
+# Tests: context compaction (CompactionHandler)
 # ---------------------------------------------------------------------------
 
 
 class TestContextCompaction:
-    """History compaction replaces old messages with a summary."""
+    """CompactionHandler compacts agent history after template calls."""
 
-    def test_compact_reduces_history(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path, max_history_len=6)
-
-        # Manually populate history with more messages than max_history_len
+    def test_compact_reduces_history(self):
+        history: OrderedDict[str, Any] = OrderedDict()
         for i in range(10):
-            bot.__history__[f"msg{i}"] = {
+            history[f"msg{i}"] = {
                 "id": f"msg{i}",
                 "role": "user" if i % 2 == 0 else "assistant",
                 "content": f"Message {i}",
             }
 
-        # Mock the compaction LLM call
+        compaction = CompactionHandler(max_history_len=6)
         mock = MockCompletionHandler(
             [make_text_response("Summary of prior conversation.")]
         )
-        with handler(LiteLLMProvider()), handler(mock):
-            bot._compact_history()
+        provider = LiteLLMProvider()
+        with handler(provider), handler(mock):
+            set_agent_history("PlainBot", history)
+            compaction._compact("PlainBot", history)
 
-        # History should be reduced
-        assert len(bot.__history__) < 10
-        # Should contain a compaction summary message
-        first_msg = next(iter(bot.__history__.values()))
+        result = provider._histories["PlainBot"]
+        assert len(result) < 10
+        first_msg = next(iter(result.values()))
         assert "CONTEXT SUMMARY" in first_msg["content"]
 
-    def test_compaction_preserves_recent_messages(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path, max_history_len=6)
-        keep_recent = max(6 // 2, 4)
-
+    def test_compaction_preserves_recent_messages(self):
+        history: OrderedDict[str, Any] = OrderedDict()
         for i in range(10):
-            bot.__history__[f"msg{i}"] = {
+            history[f"msg{i}"] = {
                 "id": f"msg{i}",
                 "role": "user" if i % 2 == 0 else "assistant",
                 "content": f"Message {i}",
             }
 
+        compaction = CompactionHandler(max_history_len=6)
+        keep_recent = max(6 // 2, 4)
         mock = MockCompletionHandler([make_text_response("Summary.")])
-        with handler(LiteLLMProvider()), handler(mock):
-            bot._compact_history()
+        provider = LiteLLMProvider()
+        with handler(provider), handler(mock):
+            set_agent_history("ChatBot", history)
+            compaction._compact("ChatBot", history)
 
-        # Recent messages should still be present
-        remaining_ids = list(bot.__history__.keys())
-        # The last `keep_recent` original messages should be there
+        result = provider._histories["ChatBot"]
+        remaining_ids = list(result.keys())
         for i in range(10 - keep_recent, 10):
             assert f"msg{i}" in remaining_ids
 
     def test_compaction_triggered_by_template_call(self, tmp_path: Path):
-        # Use a small max_history_len so compaction triggers
-        bot = ChatBot(persist_dir=tmp_path, max_history_len=4)
+        bot = ChatBot(agent_id="ChatBot")
+        provider = LiteLLMProvider()
 
-        # Pre-populate with enough history to trigger compaction
-        for i in range(6):
-            bot.__history__[f"old{i}"] = {
-                "id": f"old{i}",
-                "role": "user" if i % 2 == 0 else "assistant",
-                "content": f"Old message {i}",
-            }
+        with handler(provider):
+            history = get_agent_history(bot.__agent_id__)
+            for i in range(6):
+                history[f"old{i}"] = {
+                    "id": f"old{i}",
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"Old message {i}",
+                }
 
-        # The template call adds more messages; after it, compaction should trigger
-        # We need 2 mock responses: one for the template call, one for compaction
         mock = MockCompletionHandler(
             [
                 make_text_response("new reply"),
                 make_text_response("Summary of old conversation."),
             ]
         )
-        with handler(LiteLLMProvider()), handler(mock):
+        with (
+            handler(provider),
+            handler(mock),
+            handler(CompactionHandler(max_history_len=4)),
+            handler(PersistenceHandler(tmp_path)),
+        ):
             bot.send("trigger compaction")
 
-        # Compaction should have run, reducing history
-        assert len(bot.__history__) <= bot.max_history_len + 4
+        result = provider._histories.get("ChatBot", {})
+        assert len(result) <= 4 + 4
+
+    def test_compaction_works_on_plain_agent(self):
+        """CompactionHandler works on any Agent, not just PersistentAgent."""
+
+        class PlainBot(Agent):
+            """Plain bot."""
+
+            @Template.define
+            def send(self, msg: str) -> str:
+                """Say: {msg}"""
+                raise NotHandled
+
+        bot = PlainBot()
+        provider = LiteLLMProvider()
+
+        with handler(provider):
+            history = get_agent_history(bot.__agent_id__)
+            for i in range(10):
+                history[f"msg{i}"] = {
+                    "id": f"msg{i}",
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "content": f"Message {i}",
+                }
+
+        mock = MockCompletionHandler(
+            [make_text_response("reply"), make_text_response("Summary.")]
+        )
+        with (
+            handler(provider),
+            handler(mock),
+            handler(CompactionHandler(max_history_len=4)),
+        ):
+            bot.send("trigger")
+
+        result = provider._histories.get("PlainBot", {})
+        assert len(result) <= 4 + 4
 
 
 # ---------------------------------------------------------------------------
@@ -600,23 +845,15 @@ class TestContextCompaction:
 
 
 class TestSystemPrompt:
-    """System prompt is augmented with handoff."""
+    """System prompt of PersistentAgent includes class docstring."""
 
-    def test_base_docstring_used(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
+    def test_base_docstring_used(self):
+        bot = ChatBot(agent_id="ChatBot")
         assert "persistent chat bot" in bot.__system_prompt__
 
-    def test_handoff_appended(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        bot.set_handoff("Processing query #42")
-        prompt = bot.__system_prompt__
-        assert "[HANDOFF FROM PRIOR SESSION]" in prompt
-        assert "Processing query #42" in prompt
-
-    def test_clean_prompt_no_extras(self, tmp_path: Path):
-        bot = ChatBot(persist_dir=tmp_path)
-        prompt = bot.__system_prompt__
-        assert "[HANDOFF" not in prompt
+    def test_no_handoff_initially(self):
+        bot = ChatBot(agent_id="ChatBot")
+        assert "[HANDOFF" not in bot.__system_prompt__
 
 
 # ---------------------------------------------------------------------------
@@ -625,36 +862,49 @@ class TestSystemPrompt:
 
 
 class TestAgentIsolation:
-    """Multiple PersistentAgent instances with different persist_dirs
-    are fully independent."""
+    """Multiple PersistentAgent instances are independent in the handler."""
 
     def test_two_agents_independent(self, tmp_path: Path):
-        dir1 = tmp_path / "bot1"
-        dir2 = tmp_path / "bot2"
-        bot1 = ChatBot(persist_dir=dir1)
-        ChatBot(persist_dir=dir2)  # create bot2's state dir
+        bot1 = ChatBot(agent_id="bot1")
+        bot2 = ChatBot(agent_id="bot2")
 
-        bot1.set_handoff("bot1 work")
-        bot1.save_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist._handoffs["bot1"] = "bot1 work"
+            persist.save(bot1)
 
-        bot2_restored = ChatBot(persist_dir=dir2)
-        assert bot2_restored.handoff == ""
+        persist2 = PersistenceHandler(tmp_path)
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(bot2)
+        assert persist2.get_handoff("bot2") == ""
 
     def test_same_dir_different_agent_id(self, tmp_path: Path):
-        bot1 = ChatBot(persist_dir=tmp_path, agent_id="alpha")
-        bot2 = ChatBot(persist_dir=tmp_path, agent_id="beta")
+        class Bot(PersistentAgent):
+            """A bot."""
 
-        bot1.set_handoff("alpha work")
-        bot1.save_checkpoint()
+            @Template.define
+            def ask(self, q: str) -> str:
+                """Q: {q}"""
+                raise NotHandled
 
-        bot2.set_handoff("beta work")
-        bot2.save_checkpoint()
+        persist = PersistenceHandler(tmp_path)
+        bot_a = Bot(agent_id="alpha")
+        bot_b = Bot(agent_id="beta")
 
-        # Reload
-        r1 = ChatBot(persist_dir=tmp_path, agent_id="alpha")
-        r2 = ChatBot(persist_dir=tmp_path, agent_id="beta")
-        assert r1.handoff == "alpha work"
-        assert r2.handoff == "beta work"
+        with handler(AgentHistoryHandler()):
+            persist._handoffs["alpha"] = "alpha work"
+            persist.save(bot_a)
+            persist._handoffs["beta"] = "beta work"
+            persist.save(bot_b)
+
+        persist2 = PersistenceHandler(tmp_path)
+        a2 = Bot(agent_id="alpha")
+        b2 = Bot(agent_id="beta")
+        with handler(AgentHistoryHandler()):
+            persist2.ensure_loaded(a2)
+            persist2.ensure_loaded(b2)
+        assert persist2.get_handoff("alpha") == "alpha work"
+        assert persist2.get_handoff("beta") == "beta work"
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +913,7 @@ class TestAgentIsolation:
 
 
 class TestRetryCompatibility:
-    """PersistentAgent works with RetryLLMHandler."""
+    """PersistentAgent works with RetryLLMHandler and PersistenceHandler."""
 
     def test_retry_then_success(self, tmp_path: Path):
         mock = MockCompletionHandler(
@@ -681,14 +931,34 @@ class TestRetryCompatibility:
                 """Pick a number."""
                 raise NotHandled
 
-        bot = NumberBot(persist_dir=tmp_path)
+        persist = PersistenceHandler(tmp_path)
+        bot = NumberBot(agent_id="NumberBot")
         with (
             handler(LiteLLMProvider()),
             handler(RetryLLMHandler()),
             handler(mock),
+            handler(persist),
         ):
             result = bot.pick()
 
         assert result == 42
-        assert bot.handoff == ""
-        assert bot._checkpoint_path.exists()
+        assert persist.get_handoff("NumberBot") == ""
+        assert (tmp_path / "NumberBot.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Tests: PersistenceHandler is optional
+# ---------------------------------------------------------------------------
+
+
+class TestWithoutHandler:
+    """PersistentAgent works without PersistenceHandler — no auto-checkpointing."""
+
+    def test_agent_works_without_persistence_handler(self):
+        mock = MockCompletionHandler([make_text_response("hello")])
+        bot = ChatBot(agent_id="ChatBot")
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = bot.send("hi")
+
+        assert result == "hello"

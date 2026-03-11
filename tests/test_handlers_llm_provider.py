@@ -37,6 +37,7 @@ from effectful.handlers.llm.completions import (
     call_assistant,
     call_tool,
     completion,
+    get_agent_history,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
@@ -1797,17 +1798,17 @@ class TestLiteLLMProviderMessagePruning:
 
         agent = SimpleAgent()
 
-        # No outer _get_history handler: LiteLLMProvider._call detects this is the
-        # outermost template and writes back to the agent's __history__.
+        provider = LiteLLMProvider(model="test")
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(provider),
             handler(mock_handler),
         ):
             result = agent.simple_task("go")
 
         assert result == "done"
-        # Agent's __history__ should have messages written back (system + user + assistant)
-        assert len(agent.__history__) >= 2
+        # Agent's history should have messages written back (system + user + assistant)
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2
 
 
 class TestAgentCrossTemplateRecovery:
@@ -1862,8 +1863,9 @@ class TestAgentCrossTemplateRecovery:
 
         agent = TestAgent()
 
-        with handler(TwoPhaseCompletionHandler()):
-            with handler(LiteLLMProvider(model="test")):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider):
+            with handler(TwoPhaseCompletionHandler()):
                 # First call should fail with tool execution error
                 with pytest.raises(ToolCallExecutionError):
                     agent.step_with_tool("stage 1")
@@ -1874,7 +1876,7 @@ class TestAgentCrossTemplateRecovery:
 
         assert result == "summary result"
         # Verify history doesn't contain messages from the failed call
-        history = agent.__history__
+        history = provider._histories.get(agent.__agent_id__, {})
         for msg in history.values():
             tool_calls = msg.get("tool_calls")
             if tool_calls:
@@ -1916,12 +1918,14 @@ class TestAgentCrossTemplateRecovery:
         mock = MockCompletionHandler(responses)
         agent = CleanupAgent()
 
+        provider = LiteLLMProvider(model="test")
         with pytest.raises(ToolCallExecutionError):
-            with handler(LiteLLMProvider(model="test")), handler(mock):
+            with handler(provider), handler(mock):
                 agent.do_work("go")
 
         # Agent history should be empty — all messages from failed call pruned
-        assert len(agent.__history__) == 0
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) == 0
 
     def test_agent_history_preserved_for_successful_calls(self):
         """Successful calls should leave messages in agent history."""
@@ -1943,12 +1947,14 @@ class TestAgentCrossTemplateRecovery:
         mock = MockCompletionHandler(responses)
         agent = SuccessAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(mock):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(mock):
             result = agent.greet("world")
 
         assert result == "Hello!"
         # History should contain messages from the successful call
-        assert len(agent.__history__) >= 2  # user + assistant at minimum
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2  # user + assistant at minimum
 
     def test_agent_multiple_successful_calls_accumulate_history(self):
         """Multiple successful calls should accumulate in agent history."""
@@ -1977,14 +1983,16 @@ class TestAgentCrossTemplateRecovery:
 
         agent = ChatAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MultiResponseHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MultiResponseHandler()):
             r1 = agent.chat("first")
             r2 = agent.chat("second")
 
         assert r1 == "reply 1"
         assert r2 == "reply 2"
         # History should have messages from both calls
-        assert len(agent.__history__) >= 4  # 2 * (user + assistant)
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 4  # 2 * (user + assistant)
 
     def test_agent_error_then_success_accumulates_only_success(self):
         """After a failed call, only the subsequent successful call's messages remain."""
@@ -2025,19 +2033,21 @@ class TestAgentCrossTemplateRecovery:
 
         agent = RecoveryAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(PhaseHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(PhaseHandler()):
             with pytest.raises(ToolCallExecutionError):
                 agent.risky("step 1")
 
-            history_after_error = len(agent.__history__)
+            history_after_error = len(get_agent_history(agent.__agent_id__))
             assert history_after_error == 0
 
             result = agent.safe("step 2")
 
         assert result == "safe result"
         # Only messages from the successful call should be in history
-        assert len(agent.__history__) >= 2
-        assert len(agent.__history__) > history_after_error
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2
+        assert len(history) > history_after_error
 
 
 class TestAgentSystemMessageDeduplication:
@@ -2109,13 +2119,15 @@ class TestAgentSystemMessageDeduplication:
 
         agent = SystemMsgAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MultiHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MultiHandler()):
             agent.do("a")
             agent.do("b")
             agent.do("c")
             agent.do("d")
 
-        system_msgs = [m for m in agent.__history__.values() if m["role"] == "system"]
+        history = provider._histories.get(agent.__agent_id__, {})
+        system_msgs = [m for m in history.values() if m["role"] == "system"]
         assert len(system_msgs) == 1, (
             f"Expected exactly 1 system message, got {len(system_msgs)}"
         )
@@ -2151,14 +2163,16 @@ class TestAgentSystemMessageDeduplication:
 
         agent = MemoryAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MemoryHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MemoryHandler()):
             agent.chat("first")
             agent.chat("second")
             agent.chat("third")
 
         # History should have: 1 system + 3 user + 3 assistant = 7
-        assert len(agent.__history__) == 7
-        roles = [m["role"] for m in agent.__history__.values()]
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) == 7
+        roles = [m["role"] for m in history.values()]
         assert roles.count("system") == 1
         assert roles.count("user") == 3
         assert roles.count("assistant") == 3
@@ -2187,12 +2201,14 @@ class TestAgentSystemMessageDeduplication:
 
         agent = OrderAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(OrderHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(OrderHandler()):
             agent.step(1)
             agent.step(2)
             agent.step(3)
 
-        messages = list(agent.__history__.values())
+        history = provider._histories.get(agent.__agent_id__, {})
+        messages = list(history.values())
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )

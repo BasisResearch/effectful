@@ -11,10 +11,12 @@ from litellm import ModelResponse
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
     DEFAULT_SYSTEM_PROMPT,
+    AgentHistoryHandler,
     LiteLLMProvider,
     RetryLLMHandler,
     call_user,
     completion,
+    get_agent_history,
 )
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -281,10 +283,10 @@ class TestAgentHistoryAccumulation:
             bot.send("a")
             bot.send("b")
 
-        # After two complete calls the history should have:
-        #   call 1: system, user, assistant  (3)
-        #   call 2: system, user, assistant  (3)
-        assert len(bot.__history__) >= 4
+            # After two complete calls the history should have:
+            #   call 1: system, user, assistant  (3)
+            #   call 2: system, user, assistant  (3)
+            assert len(get_agent_history(bot.__agent_id__)) >= 4
 
     def test_message_ids_are_unique(self):
         mock = MockCompletionHandler(
@@ -299,8 +301,8 @@ class TestAgentHistoryAccumulation:
             bot.send("a")
             bot.send("b")
 
-        ids = list(bot.__history__.keys())
-        assert len(ids) == len(set(ids)), "message IDs must be unique"
+            ids = list(get_agent_history(bot.__agent_id__).keys())
+            assert len(ids) == len(set(ids)), "message IDs must be unique"
 
 
 class TestAgentIsolation:
@@ -314,20 +316,24 @@ class TestAgentIsolation:
             ]
         )
         bot1 = ChatBot()
+        bot1.__agent_id__ = "bot1"
         bot2 = ChatBot()
+        bot2.__agent_id__ = "bot2"
 
         with handler(LiteLLMProvider()), handler(mock):
             bot1.send("msg for bot1")
             bot2.send("msg for bot2")
 
-        # bot2's call should NOT contain bot1's messages — only system + user
-        assert len(mock.received_messages[1]) == len(mock.received_messages[0])
+            # bot2's call should NOT contain bot1's messages — only system + user
+            assert len(mock.received_messages[1]) == len(mock.received_messages[0])
 
-        # Each bot made exactly one call, so their histories should be equal in size
-        assert len(bot1.__history__) == len(bot2.__history__)
+            # Each bot made exactly one call, so their histories should be equal in size
+            h1 = get_agent_history(bot1.__agent_id__)
+            h2 = get_agent_history(bot2.__agent_id__)
+            assert len(h1) == len(h2)
 
-        # Histories share no message IDs
-        assert set(bot1.__history__.keys()).isdisjoint(set(bot2.__history__.keys()))
+            # Histories share no message IDs
+            assert set(h1.keys()).isdisjoint(set(h2.keys()))
 
     def test_non_agent_template_gets_fresh_sequence(self):
         @Template.define
@@ -494,13 +500,13 @@ class TestAgentDocstringFallback:
         )
 
 
-class TestAgentCachedProperty:
-    """__history__ is lazily created per instance without requiring __init__."""
+class TestAgentHistoryViaHandler:
+    """History is managed via AgentHistoryHandler, not as a cached property."""
 
-    def test_no_init_required(self):
+    def test_history_defaults_to_empty(self):
         class MinimalAgent(Agent):
-            """You are a minimal cached-property test agent.
-            Your goal is to expose lazily initialized Agent state.
+            """You are a minimal history-handler test agent.
+            Your goal is to expose handler-managed Agent history.
             """
 
             @Template.define
@@ -509,9 +515,10 @@ class TestAgentCachedProperty:
                 raise NotHandled
 
         agent = MinimalAgent()
-        # Should be an OrderedDict, created on first access
-        assert isinstance(agent.__history__, collections.OrderedDict)
-        assert len(agent.__history__) == 0
+        with handler(AgentHistoryHandler()):
+            history = get_agent_history(agent.__agent_id__)
+            assert isinstance(history, collections.OrderedDict)
+            assert len(history) == 0
 
     def test_subclass_with_own_init(self):
         class CustomAgent(Agent):
@@ -529,13 +536,20 @@ class TestAgentCachedProperty:
 
         agent = CustomAgent("Alice")
         assert agent.name == "Alice"
-        assert isinstance(agent.__history__, collections.OrderedDict)
+        with handler(AgentHistoryHandler()):
+            assert isinstance(
+                get_agent_history(agent.__agent_id__), collections.OrderedDict
+            )
 
     def test_history_is_per_instance(self):
         a = ChatBot()
+        a.__agent_id__ = "a"
         b = ChatBot()
-        a.__history__["fake"] = {"id": "fake", "role": "user", "content": "x"}
-        assert "fake" not in b.__history__
+        b.__agent_id__ = "b"
+        with handler(AgentHistoryHandler()):
+            hist_a = get_agent_history(a.__agent_id__)
+            hist_a["fake"] = {"id": "fake", "role": "user", "content": "x"}
+            assert "fake" not in get_agent_history(b.__agent_id__)
 
 
 class TestAgentWithToolCalls:
@@ -570,13 +584,13 @@ class TestAgentWithToolCalls:
         with handler(LiteLLMProvider()), handler(mock):
             result = agent.compute("what is 2+3?")
 
-        assert result == "The answer is 5"
+            assert result == "The answer is 5"
 
-        # History should contain: system, user, assistant (tool_call),
-        # tool (result), assistant (final)
-        roles = [m["role"] for m in agent.__history__.values()]
-        assert "tool" in roles
-        assert roles.count("assistant") == 2
+            # History should contain: system, user, assistant (tool_call),
+            # tool (result), assistant (final)
+            roles = [m["role"] for m in get_agent_history(agent.__agent_id__).values()]
+            assert "tool" in roles
+            assert roles.count("assistant") == 2
 
 
 class TestAgentWithRetryHandler:
@@ -611,13 +625,13 @@ class TestAgentWithRetryHandler:
         ):
             result = agent.pick_number()
 
-        assert result == 42
+            assert result == 42
 
-        # The malformed assistant message and error feedback from the retry
-        # should NOT appear in the agent's history. Only the final successful
-        # assistant message should be there.
-        roles = {m["role"] for m in agent.__history__.values()}
-        assert {"user", "assistant"} == roles - {"system"}
+            # The malformed assistant message and error feedback from the retry
+            # should NOT appear in the agent's history. Only the final successful
+            # assistant message should be there.
+            roles = {m["role"] for m in get_agent_history(agent.__agent_id__).values()}
+            assert {"user", "assistant"} == roles - {"system"}
 
 
 class TestNestedTemplateCalling:
@@ -626,7 +640,7 @@ class TestNestedTemplateCalling:
     When a Template triggers a tool call whose implementation invokes
     another Template on the same Agent, the inner call must:
     - work on a fresh copy of the agent's history
-    - NOT write its messages back to agent.__history__
+    - NOT write its messages back to the agent's history
     - return its result correctly so the outer template can continue
     """
 
@@ -647,7 +661,7 @@ class TestNestedTemplateCalling:
         assert result == "all good"
 
     def test_only_outermost_writes_to_history(self):
-        """Inner template's messages are absent from agent.__history__."""
+        """Inner template's messages are absent from agent history."""
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
@@ -660,14 +674,14 @@ class TestNestedTemplateCalling:
         with handler(LiteLLMProvider()), handler(mock):
             agent.outer("demo")
 
-        roles = [m["role"] for m in agent.__history__.values()]
-        # Outer call produces: user, assistant(tool_call), tool, assistant(final)
-        # Inner call's user + assistant are NOT written back
-        assert set(roles) <= {"system", "user", "assistant", "tool"}
-        assert roles.count("system") == 1
-        assert roles.count("user") == 1
-        assert roles.count("assistant") == 2  # tool_call + final
-        assert roles.count("tool") == 1
+            roles = [m["role"] for m in get_agent_history(agent.__agent_id__).values()]
+            # Outer call produces: user, assistant(tool_call), tool, assistant(final)
+            # Inner call's user + assistant are NOT written back
+            assert set(roles) <= {"system", "user", "assistant", "tool"}
+            assert roles.count("system") == 1
+            assert roles.count("user") == 1
+            assert roles.count("assistant") == 2  # tool_call + final
+            assert roles.count("tool") == 1
 
     def test_inner_template_gets_fresh_messages(self):
         """The nested template's LLM call sees only its own system + user,
@@ -709,7 +723,7 @@ class TestNestedTemplateCalling:
             agent.outer("first")
             agent.outer("second")
 
-        # After first call, agent.__history__ has 2 messages (user + assistant).
+        # After first call, agent history has 2 messages (user + assistant).
         # Second outer call (call 1): starts from history(2) + own user = 3.
         # Inner call (call 2): starts from history(2) + own user = 3.
         # Both see the same base history. If inner saw the outer's in-flight
@@ -1185,8 +1199,6 @@ class TestStaticAndClassMethodTemplates:
         # static_method remains a plain Template accessible on class and instance
         assert isinstance(MyAgent.static_method, Template)
         assert isinstance(agent.static_method, Template)
-        # static_method should NOT have __history__ set
-        assert not hasattr(MyAgent.static_method, "__history__")
 
     def test_agent_skips_classmethod_template(self):
         """Agent.__init_subclass__ does not wrap classmethod Templates
@@ -1211,8 +1223,6 @@ class TestStaticAndClassMethodTemplates:
         agent = MyAgent()
         assert isinstance(agent.instance_method, Template)
         assert isinstance(MyAgent.class_method, Template)
-        # class_method should NOT have __history__ set
-        assert not hasattr(MyAgent.class_method, "__history__")
 
 
 def test_template_formatting_scoped():

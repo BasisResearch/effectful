@@ -37,7 +37,7 @@ from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.handlers.llm.persistence import PersistentAgent
+from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
 
@@ -261,8 +261,8 @@ class ArchitectAgent(PersistentAgent):
     Be concrete and specific — the coder will follow your spec exactly.
     """
 
-    def __init__(self, persist_dir: Path):
-        super().__init__(persist_dir=persist_dir, agent_id="architect")
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self._output_dir = OUTPUT_DIR
 
     @Tool.define
@@ -294,8 +294,8 @@ class CoderAgent(PersistentAgent):
     test files. Output ONLY the Python source code, no markdown fences.
     """
 
-    def __init__(self, persist_dir: Path):
-        super().__init__(persist_dir=persist_dir, agent_id="coder")
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self._output_dir = OUTPUT_DIR
 
     @Tool.define
@@ -331,8 +331,8 @@ class ReviewerAgent(PersistentAgent):
     about issues and provide actionable feedback.
     """
 
-    def __init__(self, persist_dir: Path):
-        super().__init__(persist_dir=persist_dir, agent_id="reviewer")
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self._output_dir = OUTPUT_DIR
 
     @Tool.define
@@ -361,10 +361,11 @@ _shutdown = threading.Event()
 def architect_worker(queue: TaskQueue) -> None:
     """Pull 'plan' tasks from the queue, generate module specs, submit
     'code' tasks for each module."""
-    agent = ArchitectAgent(persist_dir=STATE_DIR)
+    agent = ArchitectAgent(agent_id="architect")
     queue.release_stale_claims("architect")
 
     provider = LiteLLMProvider(model=MODEL)
+    persist = PersistenceHandler(STATE_DIR)
 
     while not _shutdown.is_set():
         task = queue.claim("plan", "architect")
@@ -374,7 +375,7 @@ def architect_worker(queue: TaskQueue) -> None:
 
         try:
             payload: PlanTaskPayload = task["payload"]
-            with handler(provider), handler(RetryLLMHandler()):
+            with handler(provider), handler(RetryLLMHandler()), handler(persist):
                 plan = agent.plan_modules(payload["project_spec"])
 
             for mod in plan["modules"]:
@@ -388,10 +389,11 @@ def architect_worker(queue: TaskQueue) -> None:
 
 def coder_worker(queue: TaskQueue) -> None:
     """Pull 'code' tasks, write modules and tests, submit 'review' tasks."""
-    agent = CoderAgent(persist_dir=STATE_DIR)
+    agent = CoderAgent(agent_id="coder")
     queue.release_stale_claims("coder")
 
     provider = LiteLLMProvider(model=MODEL)
+    persist = PersistenceHandler(STATE_DIR)
 
     while not _shutdown.is_set():
         task = queue.claim("code", "coder")
@@ -402,7 +404,7 @@ def coder_worker(queue: TaskQueue) -> None:
         try:
             payload: CodeTaskPayload = task["payload"]
             spec = json.dumps(payload, indent=2)
-            with handler(provider), handler(RetryLLMHandler()):
+            with handler(provider), handler(RetryLLMHandler()), handler(persist):
                 agent.implement_module(spec)
 
             queue.submit(
@@ -420,10 +422,11 @@ def coder_worker(queue: TaskQueue) -> None:
 
 def reviewer_worker(queue: TaskQueue) -> None:
     """Pull 'review' tasks, review code, submit 'fix' tasks if needed."""
-    agent = ReviewerAgent(persist_dir=STATE_DIR)
+    agent = ReviewerAgent(agent_id="reviewer")
     queue.release_stale_claims("reviewer")
 
     provider = LiteLLMProvider(model=MODEL)
+    persist = PersistenceHandler(STATE_DIR)
 
     while not _shutdown.is_set():
         task = queue.claim("review", "reviewer")
@@ -433,7 +436,7 @@ def reviewer_worker(queue: TaskQueue) -> None:
 
         try:
             payload: ReviewTaskPayload = task["payload"]
-            with handler(provider), handler(RetryLLMHandler()):
+            with handler(provider), handler(RetryLLMHandler()), handler(persist):
                 review = agent.review_module(
                     payload["module_path"],
                     payload.get("test_path", ""),
