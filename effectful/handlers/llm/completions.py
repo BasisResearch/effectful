@@ -77,14 +77,6 @@ def get_agent_history(agent_id: str) -> collections.OrderedDict[str, Message]:
     return collections.OrderedDict()
 
 
-@Operation.define
-def set_agent_history(
-    agent_id: str, history: collections.OrderedDict[str, Message]
-) -> None:
-    """Set the message history for an agent."""
-    pass
-
-
 class AgentHistoryHandler(ObjectInterpretation):
     """Handler that stores per-agent message histories in memory.
 
@@ -101,12 +93,6 @@ class AgentHistoryHandler(ObjectInterpretation):
     @implements(get_agent_history)
     def _get(self, agent_id: str) -> collections.OrderedDict[str, Message]:
         return self._histories.setdefault(agent_id, collections.OrderedDict())
-
-    @implements(set_agent_history)
-    def _set(
-        self, agent_id: str, history: collections.OrderedDict[str, Message]
-    ) -> None:
-        self._histories[agent_id] = history
 
 
 def _make_message(content: dict) -> Message:
@@ -483,7 +469,7 @@ class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API.
 
     Also provides per-agent message history storage via
-    :func:`get_agent_history` / :func:`set_agent_history`.
+    :func:`get_agent_history`.
     """
 
     config: collections.abc.Mapping[str, typing.Any]
@@ -500,12 +486,6 @@ class LiteLLMProvider(ObjectInterpretation):
         self, agent_id: str
     ) -> collections.OrderedDict[str, Message]:
         return self._histories.setdefault(agent_id, collections.OrderedDict())
-
-    @implements(set_agent_history)
-    def _set_agent_history(
-        self, agent_id: str, history: collections.OrderedDict[str, Message]
-    ) -> None:
-        self._histories[agent_id] = history
 
     @implements(Template.__apply__)
     def _call[**P, T](
@@ -544,5 +524,6 @@ class LiteLLMProvider(ObjectInterpretation):
 
         # Write back history
         if agent is not None:
-            set_agent_history(agent.__agent_id__, history_copy)
+            history.clear()
+            history.update(history_copy)
         return typing.cast(T, result)

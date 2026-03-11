@@ -5,7 +5,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from effectful.handlers.llm.completions import get_agent_history, set_agent_history
+from effectful.handlers.llm.completions import get_agent_history
 from effectful.handlers.llm.template import Agent, Template, get_bound_agent
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -160,10 +160,9 @@ class PersistenceHandler(ObjectInterpretation):
         data = json.loads(path.read_text())
         self._handoffs[agent_id] = data.get("handoff", "")
         agent.restore_state(data.get("state", {}))
-        history = OrderedDict()
-        for msg in data.get("history", []):
-            history[msg["id"]] = msg
-        set_agent_history(agent_id, history)
+        stored = get_agent_history(agent_id)
+        stored.clear()
+        stored.update({msg["id"]: msg for msg in data.get("history", [])})
         return True
 
     def save(self, agent: PersistentAgent) -> Path:
@@ -306,13 +305,12 @@ class CompactionHandler(ObjectInterpretation):
 
         summary = summarize_context(old_transcript)
 
-        new_history: OrderedDict[str, Any] = OrderedDict()
         summary_msg: dict[str, Any] = {
             "id": f"compaction-{agent_id}",
             "role": "user",
             "content": f"[CONTEXT SUMMARY FROM PRIOR CONVERSATION]\n{summary}",
         }
-        new_history[summary_msg["id"]] = summary_msg
+        history.clear()
+        history[summary_msg["id"]] = summary_msg
         for key, msg in recent_items:
-            new_history[key] = msg
-        set_agent_history(agent_id, new_history)
+            history[key] = msg

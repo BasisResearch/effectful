@@ -2212,3 +2212,146 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: Agent & PersistentAgent with real LLM
+# ---------------------------------------------------------------------------
+
+
+class _PlainHelper(Agent):
+    """You are a concise helper. Reply with at most 10 words."""
+
+    @Template.define
+    def answer(self, q: str) -> str:
+        """Answer concisely: {q}"""
+        raise NotHandled
+
+
+class _PersistentOrchestrator(Agent):
+    """You are an orchestrator. Use `ask_helper` to get answers.
+
+    Reply with the helper's answer verbatim — do NOT call the tool more
+    than once.
+    """
+
+    def __init__(self, helper: _PlainHelper):
+        self._helper = helper
+
+    @Tool.define
+    def ask_helper(self, question: str) -> str:
+        """Ask the helper agent a question. Call this exactly once."""
+        return self._helper.answer(question)
+
+    @Template.define
+    def orchestrate(self, task: str) -> str:
+        """Task: {task}. Call `ask_helper` once, then return the answer."""
+        raise NotHandled
+
+
+@requires_openai
+def test_plain_agent_simple_call_integration():
+    """Plain Agent makes a single LLM call and returns a string."""
+    helper = _PlainHelper()
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = helper.answer("What is 2+2?")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+@requires_openai
+def test_agent_nested_tool_call_integration():
+    """An Agent delegates to another Agent via a tool call.
+
+    The orchestrator calls ask_helper (one tool round-trip) then returns.
+    LimitLLMCallsHandler caps total LLM calls at 4 to prevent runaway
+    recursion.
+    """
+    helper = _PlainHelper()
+    orchestrator = _PersistentOrchestrator(helper)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=60)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+    ):
+        result = orchestrator.orchestrate("What is the capital of France?")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+@requires_openai
+def test_persistent_agent_with_persistence_integration(tmp_path):
+    """PersistentAgent checkpoints to disk after a real LLM call."""
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="integration-bot")
+    persist = PersistenceHandler(tmp_path)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(persist),
+    ):
+        result = bot.ask("Say hello")
+
+    assert isinstance(result, str)
+    assert (tmp_path / "integration-bot.json").exists()
+    data = json.loads((tmp_path / "integration-bot.json").read_text())
+    assert len(data["history"]) > 0
+    assert data["handoff"] == ""
+
+
+@requires_openai
+def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
+    """A plain Agent and PersistentAgent work together via tool delegation.
+
+    The persistent orchestrator calls ask_helper (a plain Agent) via a tool.
+    LimitLLMCallsHandler caps calls at 5 to prevent runaway tool loops.
+    """
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class Orchestrator(PersistentAgent):
+        """You orchestrate tasks. Use `ask_helper` exactly once, then
+        return the helper's answer verbatim. Do NOT call tools more than once.
+        """
+
+        def __init__(self, helper_agent: _PlainHelper, **kwargs):
+            super().__init__(**kwargs)
+            self._helper = helper_agent
+
+        @Tool.define
+        def ask_helper(self, question: str) -> str:
+            """Ask the helper a question. Call exactly once."""
+            return self._helper.answer(question)
+
+        @Template.define
+        def run(self, task: str) -> str:
+            """Task: {task}. Use `ask_helper` once, then return the result."""
+            raise NotHandled
+
+    helper = _PlainHelper()
+    orch = Orchestrator(helper, agent_id="orch")
+    persist = PersistenceHandler(tmp_path)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=60)),
+        handler(LimitLLMCallsHandler(max_calls=5)),
+        handler(persist),
+    ):
+        result = orch.run("What is 3 * 7?")
+
+    assert isinstance(result, str)
+    assert (tmp_path / "orch.json").exists()

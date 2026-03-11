@@ -686,7 +686,6 @@ def test_callable_encode_non_callable():
 
 
 def test_callable_encode_no_source_no_docstring():
-
     class _NoDocCallable:
         __name__ = "nodoc"
         __doc__ = None

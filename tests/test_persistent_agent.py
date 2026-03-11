@@ -18,9 +18,9 @@ from effectful.handlers.llm.completions import (
     AgentHistoryHandler,
     LiteLLMProvider,
     RetryLLMHandler,
+    ToolCallExecutionError,
     completion,
     get_agent_history,
-    set_agent_history,
 )
 from effectful.handlers.llm.persistence import (
     CompactionHandler,
@@ -742,8 +742,9 @@ class TestContextCompaction:
         )
         provider = LiteLLMProvider()
         with handler(provider), handler(mock):
-            set_agent_history("PlainBot", history)
-            compaction._compact("PlainBot", history)
+            stored = get_agent_history("PlainBot")
+            stored.update(history)
+            compaction._compact("PlainBot", stored)
 
         result = provider._histories["PlainBot"]
         assert len(result) < 10
@@ -764,8 +765,9 @@ class TestContextCompaction:
         mock = MockCompletionHandler([make_text_response("Summary.")])
         provider = LiteLLMProvider()
         with handler(provider), handler(mock):
-            set_agent_history("ChatBot", history)
-            compaction._compact("ChatBot", history)
+            stored = get_agent_history("ChatBot")
+            stored.update(history)
+            compaction._compact("ChatBot", stored)
 
         result = provider._histories["ChatBot"]
         remaining_ids = list(result.keys())
@@ -837,6 +839,76 @@ class TestContextCompaction:
 
         result = provider._histories.get("PlainBot", {})
         assert len(result) <= 4 + 4
+
+    def test_compaction_triggered_naturally_on_plain_agent(self):
+        """CompactionHandler compacts after enough calls accumulate history.
+
+        Makes multiple template calls on a plain Agent so that history
+        exceeds max_history_len, then verifies compaction fires and
+        produces a summary message.
+        """
+
+        class PlainBot(Agent):
+            """Plain bot."""
+
+            @Template.define
+            def send(self, msg: str) -> str:
+                """Say: {msg}"""
+                raise NotHandled
+
+        # 4 calls × ~3 msgs each (system+user+assistant) = ~12 msgs
+        # Compaction threshold is 6, so it should trigger.
+        responses = [make_text_response(f"reply-{i}") for i in range(4)]
+        # Extra response for the summarize_context call during compaction
+        responses.append(make_text_response("Summary of conversation."))
+        mock = MockCompletionHandler(responses)
+
+        bot = PlainBot()
+        provider = LiteLLMProvider()
+        with (
+            handler(provider),
+            handler(mock),
+            handler(CompactionHandler(max_history_len=6)),
+        ):
+            for i in range(4):
+                bot.send(f"message-{i}")
+
+        history = provider._histories.get(bot.__agent_id__, {})
+        # Should have been compacted: summary + recent messages
+        first_msg = next(iter(history.values()))
+        assert "CONTEXT SUMMARY" in first_msg["content"]
+
+    def test_compaction_on_plain_agent_preserves_functionality(self):
+        """After compaction, the plain Agent still works for subsequent calls."""
+
+        class PlainBot(Agent):
+            """Plain bot."""
+
+            @Template.define
+            def send(self, msg: str) -> str:
+                """Say: {msg}"""
+                raise NotHandled
+
+        responses = [make_text_response(f"reply-{i}") for i in range(4)]
+        # Compaction summary call fires after the 4th reply
+        responses.append(make_text_response("Summary."))
+        # Then the 5th send() call
+        responses.append(make_text_response("reply-4"))
+        mock = MockCompletionHandler(responses)
+
+        bot = PlainBot()
+        provider = LiteLLMProvider()
+        with (
+            handler(provider),
+            handler(mock),
+            handler(CompactionHandler(max_history_len=6)),
+        ):
+            for i in range(4):
+                bot.send(f"msg-{i}")
+            # This call happens after compaction
+            result = bot.send("after-compaction")
+
+        assert result == "reply-4"
 
 
 # ---------------------------------------------------------------------------
@@ -962,3 +1034,281 @@ class TestWithoutHandler:
             result = bot.send("hi")
 
         assert result == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Tests: nested calls with failures + persistence
+# ---------------------------------------------------------------------------
+
+
+class TestNestedCallFailuresWithPersistence:
+    """Nested tool calls that fail should not corrupt persistence state."""
+
+    def test_nested_tool_failure_still_checkpoints(self, tmp_path: Path):
+        """If a nested tool raises, the outermost handler saves a crash checkpoint."""
+
+        class FailingBot(PersistentAgent):
+            """Bot whose tool always fails."""
+
+            @Template.define
+            def inner(self, payload: str) -> str:
+                """Check: {payload}"""
+                raise NotHandled
+
+            @Tool.define
+            def failing_tool(self, payload: str) -> str:
+                """Check payload — always raises."""
+                raise RuntimeError("tool exploded")
+
+            @Template.define
+            def outer(self, payload: str) -> str:
+                """Call `failing_tool` for: {payload}."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("self__failing_tool", '{"payload": "boom"}'),
+            ]
+        )
+        bot = FailingBot(agent_id="FailingBot")
+        persist = PersistenceHandler(tmp_path)
+
+        with pytest.raises(ToolCallExecutionError, match="tool exploded"):
+            with (
+                handler(LiteLLMProvider()),
+                handler(mock),
+                handler(persist),
+            ):
+                bot.outer("go")
+
+        # Crash checkpoint should exist with handoff
+        data = json.loads((tmp_path / "FailingBot.json").read_text())
+        assert "Executing outer" in data["handoff"]
+
+    def test_nested_tool_failure_then_recovery(self, tmp_path: Path):
+        """After a nested tool failure, next session resumes with handoff."""
+        mock_crash = MockCompletionHandler(
+            [
+                make_tool_call_response("self__check_tool", '{"payload": "crash"}'),
+            ]
+        )
+
+        class CrashInnerBot(PersistentAgent):
+            """Bot with crashing inner tool."""
+
+            call_count = 0
+
+            @Template.define
+            def inner_check(self, payload: str) -> str:
+                """Check: {payload}"""
+                raise NotHandled
+
+            @Tool.define
+            def check_tool(self, payload: str) -> str:
+                """Check payload."""
+                self.call_count += 1
+                if self.call_count == 1:
+                    raise RuntimeError("first call fails")
+                return self.inner_check(payload)
+
+            @Template.define
+            def outer(self, payload: str) -> str:
+                """Call `check_tool` for: {payload}, then return answer."""
+                raise NotHandled
+
+        bot = CrashInnerBot(agent_id="CrashInnerBot")
+
+        # Session 1: crash
+        with pytest.raises(ToolCallExecutionError, match="first call fails"):
+            with (
+                handler(LiteLLMProvider()),
+                handler(mock_crash),
+                handler(PersistenceHandler(tmp_path)),
+            ):
+                bot.outer("task")
+
+        # Session 2: successful recovery
+        system_prompts: list[str] = []
+
+        class SpyMock(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self_, model, messages=None, **kwargs):
+                system_prompts.extend(
+                    m.get("content", "")
+                    for m in (messages or [])
+                    if m.get("role") == "system"
+                )
+                return make_text_response("recovered")
+
+        bot2 = CrashInnerBot(agent_id="CrashInnerBot")
+        with (
+            handler(LiteLLMProvider()),
+            handler(SpyMock()),
+            handler(PersistenceHandler(tmp_path)),
+        ):
+            result = bot2.outer("retry")
+
+        assert result == "recovered"
+        assert any("[HANDOFF FROM PRIOR SESSION]" in p for p in system_prompts)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Agent and PersistentAgent coexistence
+# ---------------------------------------------------------------------------
+
+
+class TestAgentPersistentAgentCoexistence:
+    """Plain Agent and PersistentAgent work side-by-side."""
+
+    def test_plain_and_persistent_agent_in_same_handler(self, tmp_path: Path):
+        """Both agent types work under the same LiteLLMProvider."""
+
+        class PlainBot(Agent):
+            """Plain bot."""
+
+            @Template.define
+            def ask(self, q: str) -> str:
+                """Q: {q}"""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [make_text_response("plain-reply"), make_text_response("persist-reply")]
+        )
+        plain = PlainBot()
+        persistent = ChatBot(agent_id="ChatBot")
+        persist = PersistenceHandler(tmp_path)
+
+        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+            r1 = plain.ask("hello")
+            r2 = persistent.send("hello")
+
+        assert r1 == "plain-reply"
+        assert r2 == "persist-reply"
+        # Only the PersistentAgent gets a checkpoint file
+        assert (tmp_path / "ChatBot.json").exists()
+        assert not list(tmp_path.glob(f"{plain.__agent_id__}*"))
+
+    def test_persistent_agent_tool_calls_plain_agent(self, tmp_path: Path):
+        """A PersistentAgent's tool can delegate to a plain Agent.
+
+        The mock returns a tool_call for the outer PersistentAgent, whose
+        tool implementation calls the inner plain Agent. The inner Agent
+        makes one LLM call. After the tool result is returned, the outer
+        Agent's final LLM call produces the result.
+
+        Mock response sequence:
+          0: outer → tool_call(self__delegate, {"q": "sub-task"})
+          1: inner plain agent → "inner-answer"
+          2: outer → "final-answer" (after getting tool result)
+        """
+
+        class InnerPlainAgent(Agent):
+            """Inner helper agent."""
+
+            @Template.define
+            def answer(self, q: str) -> str:
+                """Answer: {q}"""
+                raise NotHandled
+
+        inner = InnerPlainAgent()
+
+        class OuterPersistent(PersistentAgent):
+            """Outer persistent agent that delegates via tool."""
+
+            @Tool.define
+            def delegate(self, q: str) -> str:
+                """Delegate a sub-question to an inner agent."""
+                return inner.answer(q)
+
+            @Template.define
+            def process(self, task: str) -> str:
+                """Process: {task}. Use `delegate` for sub-questions."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("self__delegate", '{"q": "sub-task"}'),
+                make_text_response("inner-answer"),
+                make_text_response("final-answer"),
+            ]
+        )
+        outer = OuterPersistent(agent_id="outer")
+        persist = PersistenceHandler(tmp_path)
+
+        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+            result = outer.process("do it")
+
+        assert result == "final-answer"
+        assert (tmp_path / "outer.json").exists()
+
+    def test_plain_agent_tool_calls_persistent_agent(self, tmp_path: Path):
+        """A plain Agent's tool can delegate to a PersistentAgent.
+
+        Mock response sequence:
+          0: outer plain → tool_call(self__delegate, {"q": "sub"})
+          1: inner persistent → "persisted-answer"
+          2: outer plain → "done" (after getting tool result)
+        """
+
+        inner = ChatBot(agent_id="inner-bot")
+
+        class OuterPlain(Agent):
+            """Plain agent that delegates to a persistent agent."""
+
+            @Tool.define
+            def delegate(self, q: str) -> str:
+                """Delegate to persistent bot."""
+                return inner.send(q)
+
+            @Template.define
+            def run(self, task: str) -> str:
+                """Run: {task}. Use `delegate` for sub-tasks."""
+                raise NotHandled
+
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("self__delegate", '{"q": "sub"}'),
+                make_text_response("persisted-answer"),
+                make_text_response("done"),
+            ]
+        )
+        outer = OuterPlain()
+        persist = PersistenceHandler(tmp_path)
+
+        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+            result = outer.run("go")
+
+        assert result == "done"
+        # The inner PersistentAgent should NOT get checkpointed by
+        # PersistenceHandler because it was called nested (not outermost)
+        # But its history should still be tracked by LiteLLMProvider
+
+    def test_two_persistent_agents_cooperate(self, tmp_path: Path):
+        """Two PersistentAgents with different IDs work independently.
+
+        Mock response sequence:
+          0: planner → "the plan"
+          1: executor → "executed"
+        """
+        mock = MockCompletionHandler(
+            [make_text_response("the plan"), make_text_response("executed")]
+        )
+
+        planner = ChatBot(agent_id="planner")
+        executor = ChatBot(agent_id="executor")
+        persist = PersistenceHandler(tmp_path)
+
+        with handler(LiteLLMProvider()), handler(mock), handler(persist):
+            plan = planner.send("make a plan")
+            result = executor.send(f"execute: {plan}")
+
+        assert plan == "the plan"
+        assert result == "executed"
+        assert (tmp_path / "planner.json").exists()
+        assert (tmp_path / "executor.json").exists()
+
+        # Each has independent history
+        planner_data = json.loads((tmp_path / "planner.json").read_text())
+        executor_data = json.loads((tmp_path / "executor.json").read_text())
+        assert len(planner_data["history"]) > 0
+        assert len(executor_data["history"]) > 0
