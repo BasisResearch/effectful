@@ -17,6 +17,7 @@ from effectful.handlers.llm.multi import (
     InMemoryTaskQueue,
     PersistentTaskQueue,
     TaskStatus,
+    fan_out,
     scatter,
 )
 from effectful.handlers.llm.persistence import PersistentAgent
@@ -154,6 +155,24 @@ class Reviewer(PersistentAgent):
     @Template.define
     def review(self, code: str) -> str:
         """Review: {code}"""
+        raise NotHandled
+
+
+class TesterAgent(PersistentAgent):
+    """Writes tests."""
+
+    @Template.define
+    def write_tests(self, spec: str) -> str:
+        """Write tests for: {spec}"""
+        raise NotHandled
+
+
+class Prover(PersistentAgent):
+    """Proves theorems."""
+
+    @Template.define
+    def prove(self, spec: str) -> str:
+        """Prove: {spec}"""
         raise NotHandled
 
 
@@ -1250,3 +1269,523 @@ class TestSQLiteTaskQueueCrashTolerance:
         task = tq2.claim("work", "w1")
         assert task is not None
         assert task["payload"] == {"original": True}
+
+
+# ── fan_out tests ─────────────────────────────────────────────────
+
+
+class TestFanOutDefault:
+    """fan_out without EPP handler — sequential fallback."""
+
+    def test_default_sequential(self):
+        """Default fan_out runs groups sequentially."""
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+
+        mock = MockLLM(
+            {
+                "c1.implement": "code-result",
+                "t1.write_tests": "test-result",
+            }
+        )
+        with handler(mock):
+            results = fan_out(
+                [
+                    (["a", "b"], coder, lambda c, m: c.implement(m)),
+                    (["x"], tester, lambda t, m: t.write_tests(m)),
+                ]
+            )
+        assert len(results) == 2
+        assert results[0] == ["code-result", "code-result"]
+        assert results[1] == ["test-result"]
+
+    def test_default_empty_groups(self):
+        """fan_out with empty item lists returns empty lists."""
+        coder = Coder(agent_id="c1")
+        results = fan_out(
+            [
+                ([], coder, lambda c, m: c.implement(m)),
+            ]
+        )
+        assert results == [[]]
+
+    def test_default_no_groups(self):
+        """fan_out with no groups returns empty list."""
+        results = fan_out([])
+        assert results == []
+
+
+class TestFanOutEPP:
+    """fan_out under EndpointProjection — concurrent execution."""
+
+    def test_concurrent_different_agent_types(self):
+        """Three different agent types work concurrently via fan_out."""
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+        prover = Prover(agent_id="p1")
+
+        mock = MockLLM(
+            {
+                "c1.implement": "impl-result",
+                "t1.write_tests": "test-result",
+                "p1.prove": "proof-result",
+            }
+        )
+        queue = InMemoryTaskQueue()
+        agents = [coder, tester, prover]
+        ids = frozenset(a.__agent_id__ for a in agents)
+
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def choreo(c, t, p):
+            return fan_out(
+                [
+                    (["a", "b"], c, lambda c, m: c.implement(m)),
+                    (["x", "y", "z"], t, lambda t, m: t.write_tests(m)),
+                    (["th1"], p, lambda p, m: p.prove(m)),
+                ]
+            )
+
+        def run(agent):
+            try:
+                epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(coder, tester, prover)
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        # All agents compute same result
+        for aid in ["c1", "t1", "p1"]:
+            r = results_map[aid]
+            assert r[0] == ["impl-result", "impl-result"]
+            assert r[1] == ["test-result", "test-result", "test-result"]
+            assert r[2] == ["proof-result"]
+
+    def test_fan_out_with_multiple_workers_per_group(self):
+        """fan_out with multiple coders in one group, single tester in another."""
+        c1 = Coder(agent_id="c1")
+        c2 = Coder(agent_id="c2")
+        t1 = TesterAgent(agent_id="t1")
+
+        execution_log: list[str] = []
+        log_lock = threading.Lock()
+
+        class TrackingMockLLM(ObjectInterpretation):
+            @implements(Template.__apply__)
+            def _call(self, template, *args, **kwargs):
+                bound = get_bound_agent(template)
+                key = f"{bound.__agent_id__}.{template.__name__}" if bound else ""
+                with log_lock:
+                    execution_log.append(key)
+                return f"result-{key}"
+
+        mock = TrackingMockLLM()
+        queue = InMemoryTaskQueue()
+        agents = [c1, c2, t1]
+        ids = frozenset(a.__agent_id__ for a in agents)
+
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def choreo(coders, tester):
+            return fan_out(
+                [
+                    (["m1", "m2", "m3", "m4"], coders, lambda c, m: c.implement(m)),
+                    (["t1", "t2"], tester, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        def run(agent):
+            try:
+                epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo([c1, c2], t1)
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        # Coders split the 4 items; tester handles 2 items
+        r = results_map["c1"]
+        assert len(r[0]) == 4  # 4 code results
+        assert len(r[1]) == 2  # 2 test results
+        # Both coders should have executed some implement calls
+        coder_calls = [c for c in execution_log if c.endswith(".implement")]
+        tester_calls = [c for c in execution_log if c.endswith(".write_tests")]
+        assert len(coder_calls) == 4
+        assert len(tester_calls) == 2
+
+    def test_fan_out_empty_group_no_hang(self):
+        """Empty items in one group don't cause hangs."""
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+
+        mock = MockLLM({"c1.implement": "code", "t1.write_tests": "test"})
+        queue = InMemoryTaskQueue()
+        agents = [coder, tester]
+        ids = frozenset(a.__agent_id__ for a in agents)
+
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def choreo(c, t):
+            return fan_out(
+                [
+                    ([], c, lambda c, m: c.implement(m)),  # empty!
+                    (["x"], t, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        def run(agent):
+            try:
+                epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(coder, tester)
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        r = results_map["c1"]
+        assert r[0] == []
+        assert r[1] == ["test"]
+
+    def test_fan_out_step_counter_sync(self):
+        """fan_out consumes exactly one step ID across all agent threads."""
+        coder = Coder(agent_id="c1")
+        reviewer = Reviewer(agent_id="r1")
+
+        mock = MockLLM(
+            {
+                "c1.implement": "code",
+                "r1.review": "lgtm",
+            }
+        )
+        queue = InMemoryTaskQueue()
+        agents = [coder, reviewer]
+        ids = frozenset(a.__agent_id__ for a in agents)
+
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def choreo(c, r):
+            # fan_out uses 1 step, then review uses 1 step
+            fan_results = fan_out(
+                [
+                    (["a"], c, lambda c, m: c.implement(m)),
+                ]
+            )
+            verdict = r.review(str(fan_results))
+            return verdict
+
+        def run(agent):
+            try:
+                epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(coder, reviewer)
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        # Both agents compute the same final result
+        assert results_map["c1"] == "lgtm"
+        assert results_map["r1"] == "lgtm"
+
+    def test_fan_out_error_in_one_group(self):
+        """Error in one group's fn propagates as ChoreographyError."""
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+
+        class ErrorMockLLM(ObjectInterpretation):
+            @implements(Template.__apply__)
+            def _call(self, template, *args, **kwargs):
+                bound = get_bound_agent(template)
+                key = f"{bound.__agent_id__}.{template.__name__}" if bound else ""
+                if key == "t1.write_tests":
+                    raise RuntimeError("test failure!")
+                return "ok"
+
+        mock = ErrorMockLLM()
+
+        def program(c, t):
+            return fan_out(
+                [
+                    (["a"], c, lambda c, m: c.implement(m)),
+                    (["x"], t, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        choreo = Choreography(
+            program,
+            agents=[coder, tester],
+            handlers=[mock],
+        )
+        with pytest.raises(ChoreographyError, match="test failure"):
+            choreo.run(c=coder, t=tester)
+
+    def test_fan_out_all_orderings_agree(self):
+        """All thread scheduling orderings produce the same result."""
+        for delays in [
+            {"c1": 0.0, "t1": 0.05},
+            {"c1": 0.05, "t1": 0.0},
+            {"c1": 0.0, "t1": 0.0},
+        ]:
+            coder = Coder(agent_id="c1")
+            tester = TesterAgent(agent_id="t1")
+
+            mock = DelayedMockLLM(
+                {"c1.implement": "code", "t1.write_tests": "test"},
+                delays,
+            )
+            queue = InMemoryTaskQueue()
+            agents = [coder, tester]
+            ids = frozenset(a.__agent_id__ for a in agents)
+
+            results_map: dict[str, Any] = {}
+            errors: list[Exception] = []
+            lock = threading.Lock()
+
+            def choreo(c, t):
+                return fan_out(
+                    [
+                        (["a", "b"], c, lambda c, m: c.implement(m)),
+                        (["x"], t, lambda t, m: t.write_tests(m)),
+                    ]
+                )
+
+            def run(agent):
+                try:
+                    epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                    with handler(mock), handler(epp):
+                        r = choreo(coder, tester)
+                        with lock:
+                            results_map[agent.__agent_id__] = r
+                except Exception as e:
+                    with lock:
+                        errors.append(e)
+
+            _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+            assert not errors, errors
+            assert results_map["c1"] == results_map["t1"]
+
+
+class TestFanOutChoreography:
+    """fan_out via the high-level Choreography runner."""
+
+    def test_choreography_fan_out(self):
+        """fan_out works through Choreography.run()."""
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+
+        mock = MockLLM({"c1.implement": "code-out", "t1.write_tests": "test-out"})
+
+        def program(c, t):
+            return fan_out(
+                [
+                    (["a", "b"], c, lambda c, m: c.implement(m)),
+                    (["x"], t, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        choreo = Choreography(
+            program,
+            agents=[coder, tester],
+            handlers=[mock],
+        )
+        result = choreo.run(c=coder, t=tester)
+        assert result == [["code-out", "code-out"], ["test-out"]]
+
+    def test_choreography_fan_out_with_scatter(self):
+        """fan_out and scatter can be mixed in the same choreography."""
+        architect = Architect(agent_id="arch")
+        coder = Coder(agent_id="c1")
+        tester = TesterAgent(agent_id="t1")
+        reviewer = Reviewer(agent_id="r1")
+
+        mock = MockLLM(
+            {
+                "arch.plan": "plan-result",
+                "c1.implement": "code",
+                "t1.write_tests": "test",
+                "r1.review": "lgtm",
+            }
+        )
+
+        def program(arch, c, t, r):
+            plan = arch.plan("project")
+            # fan_out: code and test in parallel
+            code_results, test_results = fan_out(
+                [
+                    (["m1", "m2"], c, lambda c, m: c.implement(m)),
+                    (["t1"], t, lambda t, m: t.write_tests(m)),
+                ]
+            )
+            # Then scatter reviews sequentially
+            reviews = scatter(code_results, r, lambda r, code: r.review(code))
+            return {"plan": plan, "reviews": reviews, "tests": test_results}
+
+        choreo = Choreography(
+            program,
+            agents=[architect, coder, tester, reviewer],
+            handlers=[mock],
+        )
+        result = choreo.run(arch=architect, c=coder, t=tester, r=reviewer)
+        assert result["plan"] == "plan-result"
+        assert result["reviews"] == ["lgtm", "lgtm"]
+        assert result["tests"] == ["test"]
+
+
+class TestFanOutCrashTolerance:
+    """fan_out crash recovery with PersistentTaskQueue."""
+
+    def test_fan_out_crash_recovery_with_cached_results(self):
+        """Pre-cached fan_out items are reused on restart."""
+        db_path = STATE_DIR / "fan_out_crash.db"
+
+        # "Run 1": simulate partial completion
+        tq1 = PersistentTaskQueue(db_path)
+        # Pre-cache group 0 items
+        tq1.submit(
+            "fan-step-0000:g0",
+            {"group": 0, "item_index": 0},
+            task_id="step-0000:g0:0000",
+        )
+        tq1.claim_by_prefix("step-0000:g0:0000", "prior-worker")
+        tq1.complete("step-0000:g0:0000", "prior-worker", "cached-code")
+
+        tq1.submit(
+            "fan-step-0000:g1",
+            {"group": 1, "item_index": 0},
+            task_id="step-0000:g1:0000",
+        )
+        tq1.claim_by_prefix("step-0000:g1:0000", "prior-worker")
+        tq1.complete("step-0000:g1:0000", "prior-worker", "cached-test")
+
+        # "Run 2": restart with one uncached item per group
+        tq2 = PersistentTaskQueue(db_path)
+        c1 = Coder(agent_id="c1")
+        t1 = TesterAgent(agent_id="t1")
+
+        mock = MockLLM({"c1.implement": "fresh-code", "t1.write_tests": "fresh-test"})
+
+        def choreo(c, t):
+            return fan_out(
+                [
+                    (["A", "B"], c, lambda c, m: c.implement(m)),
+                    (["X", "Y"], t, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        agents = [c1, t1]
+        ids = frozenset(a.__agent_id__ for a in agents)
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def run(agent):
+            try:
+                tq2.release_stale_claims(agent.__agent_id__)
+                epp = EndpointProjection(agent, tq2, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo(c1, t1)
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        r = results_map["c1"]
+        assert r[0][0] == "cached-code"
+        assert r[0][1] == "fresh-code"
+        assert r[1][0] == "cached-test"
+        assert r[1][1] == "fresh-test"
+
+    def test_fan_out_concurrent_no_double_execution(self):
+        """No item is executed twice even under concurrent claiming."""
+        c1 = Coder(agent_id="c1")
+        c2 = Coder(agent_id="c2")
+        t1 = TesterAgent(agent_id="t1")
+        t2 = TesterAgent(agent_id="t2")
+
+        executed: list[str] = []
+        exec_lock = threading.Lock()
+
+        class TrackingMock(ObjectInterpretation):
+            @implements(Template.__apply__)
+            def _call(self, template, *args, **kwargs):
+                bound = get_bound_agent(template)
+                key = f"{bound.__agent_id__}.{template.__name__}" if bound else ""
+                with exec_lock:
+                    executed.append(key)
+                return f"result-{key}"
+
+        mock = TrackingMock()
+        queue = InMemoryTaskQueue()
+        agents = [c1, c2, t1, t2]
+        ids = frozenset(a.__agent_id__ for a in agents)
+
+        results_map: dict[str, Any] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        items_code = [f"mod-{i}" for i in range(10)]
+        items_test = [f"test-{i}" for i in range(8)]
+
+        def choreo(coders, testers):
+            return fan_out(
+                [
+                    (items_code, coders, lambda c, m: c.implement(m)),
+                    (items_test, testers, lambda t, m: t.write_tests(m)),
+                ]
+            )
+
+        def run(agent):
+            try:
+                epp = EndpointProjection(agent, queue, ids, poll_interval=0.02)
+                with handler(mock), handler(epp):
+                    r = choreo([c1, c2], [t1, t2])
+                    with lock:
+                        results_map[agent.__agent_id__] = r
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        _run_threads_with_timeout([lambda a=a: run(a) for a in agents])
+
+        assert not errors, errors
+        # Exactly 10 implement + 8 write_tests calls
+        impl_calls = [c for c in executed if ".implement" in c]
+        test_calls = [c for c in executed if ".write_tests" in c]
+        assert len(impl_calls) == 10
+        assert len(test_calls) == 8
+        # All agents see the same result
+        for aid in ["c1", "c2", "t1", "t2"]:
+            assert results_map[aid] == results_map["c1"]

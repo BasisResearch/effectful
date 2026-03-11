@@ -594,6 +594,46 @@ def scatter(items: list, agent: Agent, fn: Callable) -> list:
     return [fn(agent, item) for item in items]
 
 
+@Operation.define
+def fan_out(groups: list[tuple[list, Agent, Callable]]) -> list[list]:
+    """Run multiple scatter-like operations concurrently.
+
+    Each element of *groups* is a ``(items, agent, fn)`` triple — the
+    same arguments you would pass to :func:`scatter`.  Returns a list
+    of result lists, one per group, in the same order as *groups*.
+
+    **Default** (no EPP handler): sequential execution of each group::
+
+        [
+            [fn(agent, item) for item in items]
+            for items, agent, fn in groups
+        ]
+
+    **Under** :class:`EndpointProjection`: all groups' items are
+    submitted as tasks under a single step ID.  Agents from *every*
+    group claim and execute work concurrently, so a spec-writer,
+    tester, and prover can all be working at the same time rather
+    than waiting for the previous scatter to finish.
+
+    Example::
+
+        spec_results, test_results, proof_results = fan_out([
+            (spec_tasks, spec_writer,
+             lambda w, b: w.write_spec(json.dumps(b, indent=2))),
+            (test_tasks, tester,
+             lambda t, b: t.write_tests_and_validate(json.dumps(b, indent=2))),
+            (proof_tasks, prover,
+             lambda p, b: p.prove_theorem(json.dumps(b, indent=2))),
+        ])
+
+    .. warning::
+
+        ``fn`` should only call templates on the assigned agent.
+        Cross-agent template calls inside fan_out are not supported.
+    """
+    return [[fn(agent, item) for item in items] for items, agent, fn in groups]
+
+
 # ── Endpoint Projection ───────────────────────────────────────────
 
 
@@ -746,6 +786,61 @@ class EndpointProjection(ObjectInterpretation):
 
         # Gather all results (blocking until done)
         return [self._wait_result(f"{step_id}:{i:04d}") for i in range(len(items))]
+
+    @implements(fan_out)
+    def _fan_out(self, groups: list[tuple[list, Agent, Callable]]) -> list[list]:
+        step_id = self._next_step()
+
+        # For each group, normalize agents and build a mapping from
+        # agent_id → list of (group_index, items, fn) so each agent
+        # knows which groups it participates in.
+        group_agents: list[set[str]] = []
+        group_fns: list[Callable] = []
+        group_items: list[list] = []
+
+        for g, (items, agent, fn) in enumerate(groups):
+            agents = agent if isinstance(agent, list) else [agent]
+            group_agents.append({a.__agent_id__ for a in agents})
+            group_fns.append(fn)
+            group_items.append(items)
+
+        # Submit all tasks across all groups.  Deterministic IDs:
+        # {step_id}:g{group}:{item_index}
+        for g in range(len(groups)):
+            for i in range(len(group_items[g])):
+                self._queue.submit(
+                    task_type=f"fan-{step_id}:g{g}",
+                    payload={"group": g, "item_index": i},
+                    task_id=f"{step_id}:g{g}:{i:04d}",
+                )
+
+        # Claim and execute tasks from my groups
+        my_groups = [g for g in range(len(groups)) if self._agent_id in group_agents[g]]
+        for g in my_groups:
+            prefix = f"{step_id}:g{g}:"
+            while True:
+                task = self._queue.claim_by_prefix(prefix, self._agent_id)
+                if task is None:
+                    break
+                idx = task["payload"]["item_index"]
+                self._in_scatter = True
+                try:
+                    result = group_fns[g](self._agent, group_items[g][idx])
+                    self._queue.complete(task["id"], self._agent_id, result)
+                except Exception as e:
+                    self._queue.fail(task["id"], self._agent_id, str(e))
+                    raise
+                finally:
+                    self._in_scatter = False
+
+        # Gather results per group (blocking)
+        return [
+            [
+                self._wait_result(f"{step_id}:g{g}:{i:04d}")
+                for i in range(len(group_items[g]))
+            ]
+            for g in range(len(groups))
+        ]
 
 
 # ── Choreography runner ───────────────────────────────────────────
