@@ -175,17 +175,20 @@ def _add_cache_control_to_history(
     """
     if not history:
         return
-    key = next(reversed(history))
-    msg = history[key]
-    if msg["role"] not in ("user", "tool", "assistant"):
-        return
-    content = msg.get("content")
-    if isinstance(content, list) and content:
-        last_block = content[-1]
-        if isinstance(last_block, dict) and "cache_control" not in last_block:
-            new_content = list(content)
-            new_content[-1] = {**last_block, "cache_control": CACHE_CONTROL_EPHEMERAL}
-            history[key] = typing.cast(Message, {**msg, "content": new_content})
+    for key in history:
+        msg = history[key]
+        if msg["role"] not in ("user", "tool", "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict) and "cache_control" not in last_block:
+                new_content = list(content)
+                new_content[-1] = {
+                    **last_block,
+                    "cache_control": CACHE_CONTROL_EPHEMERAL,
+                }
+                history[key] = typing.cast(Message, {**msg, "content": new_content})
 
 
 @Operation.define
