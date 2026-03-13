@@ -177,7 +177,7 @@ def _add_cache_control_to_history(
         return
     key = next(reversed(history))
     msg = history[key]
-    if msg["role"] not in ("user", "tool"):
+    if msg["role"] not in ("user", "tool", "assistant"):
         return
     content = msg.get("content")
     if isinstance(content, list) and content:
