@@ -52,6 +52,20 @@ HAS_ANTHROPIC_KEY = (
     "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
 )
 
+try:
+    from effectful.handlers.llm.anthropic import (
+        AnthropicProvider,
+        _get_oauth_token_from_keychain,
+    )
+
+    HAS_ANTHROPIC_SDK = True
+except ImportError:
+    HAS_ANTHROPIC_SDK = False
+    _get_oauth_token_from_keychain = lambda: None  # noqa: E731
+
+HAS_CLAUDE_MAX = HAS_ANTHROPIC_SDK and _get_oauth_token_from_keychain() is not None
+HAS_ANTHROPIC_AUTH = HAS_ANTHROPIC_KEY or HAS_CLAUDE_MAX
+
 # Pytest markers for skipping tests based on API key availability
 requires_openai = pytest.mark.skipif(
     not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
@@ -59,6 +73,13 @@ requires_openai = pytest.mark.skipif(
 requires_anthropic = pytest.mark.skipif(
     not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
 )
+requires_anthropic_sdk = pytest.mark.skipif(
+    not HAS_ANTHROPIC_SDK or not HAS_ANTHROPIC_AUTH,
+    reason="anthropic package not installed or no auth available",
+)
+
+_ANTHROPIC_SDK_MODEL = "claude-haiku-4-5" if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY) else "claude-haiku-4-5-20250514"
+_USE_MAX = HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
@@ -222,6 +243,58 @@ class TestLiteLLMProvider:
             assert isinstance(result, str)
             assert len(result) > 0
 
+
+@requires_anthropic_sdk
+class TestAnthropicProvider:
+    """Tests for AnthropicProvider basic functionality."""
+
+    def test_simple_prompt(self):
+        with (
+            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            result = simple_prompt("testing")
+            assert isinstance(result, str)
+            assert len(result) > 0
+
+    def test_structured_output(self):
+        plot = "A rogue cop must stop an evil group from taking over a skyscraper."
+        with (
+            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(RetryLLMHandler()),
+            handler(LimitLLMCallsHandler(max_calls=5)),
+        ):
+            classification = classify_genre(plot)
+            assert isinstance(classification, MovieClassification)
+            assert isinstance(classification.genre, MovieGenre)
+            assert classification.genre == MovieGenre.ACTION
+
+    def test_integer_return_type(self):
+        with (
+            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(RetryLLMHandler()),
+            handler(LimitLLMCallsHandler(max_calls=5)),
+        ):
+            result = generate_number(100)
+            assert isinstance(result, int)
+            assert 1 <= result <= 100
+
+    def test_pydantic_basemodel_return(self):
+        plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
+        with (
+            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(RetryLLMHandler()),
+            handler(LimitLLMCallsHandler(max_calls=8)),
+        ):
+            review = review_book(plot)
+            assert isinstance(review, BookReview)
+            assert isinstance(review.title, str)
+            assert 1 <= review.rating <= 5
+
+
+class TestLiteLLMProviderStructured:
+    """LiteLLMProvider structured output and config tests."""
+
     @requires_openai
     def test_structured_output(self, request):
         """Test LiteLLMProvider with structured Pydantic output."""
@@ -283,6 +356,29 @@ def test_agent_tool_names_are_openai_compatible_integration():
         handler(LimitLLMCallsHandler(max_calls=1)),
     ):
         result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
+
+    assert isinstance(result, str)
+    assert result
+
+
+@requires_anthropic_sdk
+def test_agent_tool_names_are_anthropic_compatible_integration():
+    agent = _ToolNameAgent()
+    tools = agent.ask.tools
+    assert tools
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+
+    with (
+        handler(
+            AnthropicProvider(
+                model=_ANTHROPIC_SDK_MODEL,
+                max_subscription=_USE_MAX,
+            )
+        ),
+        handler(RetryLLMHandler()),
+        handler(LimitLLMCallsHandler(max_calls=5)),
+    ):
+        result = agent.ask("Reply with exactly 'ok'. Do not call any tools.")
 
     assert isinstance(result, str)
     assert result

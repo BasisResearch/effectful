@@ -50,6 +50,10 @@ llm = [
   "typing_extensions",
   "restrictedpython>=8.1"
 ]
+anthropic = [
+  "effectful[llm]",
+  "anthropic>=0.40.0",
+]
 prettyprinter = ["prettyprinter"]
 docs = [
     "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",

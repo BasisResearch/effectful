@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, call_assistant
+from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler, call_assistant
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -21,12 +21,33 @@ HAS_ANTHROPIC_KEY = (
     "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
 )
 
+try:
+    from effectful.handlers.llm.anthropic import (
+        AnthropicProvider,
+        _get_oauth_token_from_keychain,
+    )
+
+    HAS_ANTHROPIC_SDK = True
+except ImportError:
+    HAS_ANTHROPIC_SDK = False
+    _get_oauth_token_from_keychain = lambda: None  # noqa: E731
+
+HAS_CLAUDE_MAX = HAS_ANTHROPIC_SDK and _get_oauth_token_from_keychain() is not None
+HAS_ANTHROPIC_AUTH = HAS_ANTHROPIC_KEY or HAS_CLAUDE_MAX
+
 requires_openai = pytest.mark.skipif(
     not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
 )
 requires_anthropic = pytest.mark.skipif(
     not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
 )
+requires_anthropic_sdk = pytest.mark.skipif(
+    not HAS_ANTHROPIC_SDK or not HAS_ANTHROPIC_AUTH,
+    reason="anthropic package not installed or no auth available",
+)
+
+_ANTHROPIC_SDK_MODEL = "claude-haiku-4-5" if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY) else "claude-haiku-4-5-20250514"
+_USE_MAX = HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY
 
 
 @dataclass
@@ -98,18 +119,32 @@ def get_book_recommendation(user_preference: str) -> BookRecommendation:
 
 class TestPydanticBaseModelToolCalls:
     @pytest.mark.parametrize(
-        "model",
+        "provider",
         [
-            pytest.param("gpt-5-nano", marks=requires_openai),
-            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
+            pytest.param(
+                lambda: LiteLLMProvider(model="gpt-5-nano"),
+                marks=requires_openai,
+                id="litellm-gpt-5-nano",
+            ),
+            pytest.param(
+                lambda: LiteLLMProvider(model="claude-sonnet-4-5-20250929"),
+                marks=requires_anthropic,
+                id="litellm-claude-sonnet",
+            ),
+            pytest.param(
+                lambda: AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX),
+                marks=requires_anthropic_sdk,
+                id="anthropic-claude-haiku",
+            ),
         ],
     )
-    def test_pydantic_basemodel_tool_calling(self, model):
+    def test_pydantic_basemodel_tool_calling(self, provider):
         """Test that templates with tools work with Pydantic BaseModel."""
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
-            handler(LiteLLMProvider(model=model)),
-            handler(LimitLLMCallsHandler(max_calls=4)),
+            handler(provider()),
+            handler(RetryLLMHandler()),
+            handler(LimitLLMCallsHandler(max_calls=6)),
             handler(book_rec_ctx),
         ):
             recommendation = get_book_recommendation("I love fantasy novels")
