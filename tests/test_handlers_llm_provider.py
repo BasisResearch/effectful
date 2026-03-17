@@ -78,7 +78,11 @@ requires_anthropic_sdk = pytest.mark.skipif(
     reason="anthropic package not installed or no auth available",
 )
 
-_ANTHROPIC_SDK_MODEL = "claude-haiku-4-5" if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY) else "claude-haiku-4-5-20250514"
+_ANTHROPIC_SDK_MODEL = (
+    "claude-haiku-4-5"
+    if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY)
+    else "claude-haiku-4-5-20250514"
+)
 _USE_MAX = HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
@@ -250,7 +254,9 @@ class TestAnthropicProvider:
 
     def test_simple_prompt(self):
         with (
-            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(
+                AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)
+            ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -260,7 +266,9 @@ class TestAnthropicProvider:
     def test_structured_output(self):
         plot = "A rogue cop must stop an evil group from taking over a skyscraper."
         with (
-            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(
+                AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)
+            ),
             handler(RetryLLMHandler()),
             handler(LimitLLMCallsHandler(max_calls=5)),
         ):
@@ -271,7 +279,9 @@ class TestAnthropicProvider:
 
     def test_integer_return_type(self):
         with (
-            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(
+                AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)
+            ),
             handler(RetryLLMHandler()),
             handler(LimitLLMCallsHandler(max_calls=5)),
         ):
@@ -282,7 +292,9 @@ class TestAnthropicProvider:
     def test_pydantic_basemodel_return(self):
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
         with (
-            handler(AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)),
+            handler(
+                AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX)
+            ),
             handler(RetryLLMHandler()),
             handler(LimitLLMCallsHandler(max_calls=8)),
         ):

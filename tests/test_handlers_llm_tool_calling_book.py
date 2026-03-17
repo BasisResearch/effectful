@@ -10,7 +10,11 @@ import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler, call_assistant
+from effectful.handlers.llm.completions import (
+    LiteLLMProvider,
+    RetryLLMHandler,
+    call_assistant,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -46,7 +50,11 @@ requires_anthropic_sdk = pytest.mark.skipif(
     reason="anthropic package not installed or no auth available",
 )
 
-_ANTHROPIC_SDK_MODEL = "claude-haiku-4-5" if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY) else "claude-haiku-4-5-20250514"
+_ANTHROPIC_SDK_MODEL = (
+    "claude-haiku-4-5"
+    if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY)
+    else "claude-haiku-4-5-20250514"
+)
 _USE_MAX = HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY
 
 
@@ -132,7 +140,9 @@ class TestPydanticBaseModelToolCalls:
                 id="litellm-claude-sonnet",
             ),
             pytest.param(
-                lambda: AnthropicProvider(model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX),
+                lambda: AnthropicProvider(
+                    model=_ANTHROPIC_SDK_MODEL, max_subscription=_USE_MAX
+                ),
                 marks=requires_anthropic_sdk,
                 id="anthropic-claude-haiku",
             ),

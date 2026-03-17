@@ -48,12 +48,20 @@ requires_anthropic_sdk = pytest.mark.skipif(
 )
 
 # Claude Max uses short model IDs; API key uses full dated IDs
-ANTHROPIC_MODEL = "claude-haiku-4-5" if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY) else "claude-haiku-4-5-20250514"
+ANTHROPIC_MODEL = (
+    "claude-haiku-4-5"
+    if (HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY)
+    else "claude-haiku-4-5-20250514"
+)
 _USE_MAX = HAS_CLAUDE_MAX and not HAS_ANTHROPIC_KEY
 
 
 def _provider(**overrides):
-    kwargs = {"model": ANTHROPIC_MODEL, "max_tokens": 1024, "max_subscription": _USE_MAX}
+    kwargs = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 1024,
+        "max_subscription": _USE_MAX,
+    }
     kwargs.update(overrides)
     return AnthropicProvider(**kwargs)
 
@@ -78,7 +86,6 @@ class ChatBot(Agent):
 
 @requires_anthropic_sdk
 class TestAnthropicAgent:
-
     def test_agent_remembers_conversation_history(self):
         with (
             handler(_provider()),
@@ -98,7 +105,6 @@ class TestAnthropicAgent:
 
 @requires_anthropic_sdk
 class TestAnthropicHandlerComposition:
-
     def test_coproduct_with_retry(self):
         with handler(coproduct(_provider(), RetryLLMHandler())):
             result = simple_prompt("hello")

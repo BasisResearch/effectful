@@ -2,7 +2,6 @@ import collections
 import collections.abc
 import inspect
 import json
-import textwrap
 import typing
 import uuid
 
@@ -44,7 +43,13 @@ def _get_oauth_token_from_keychain() -> str | None:
     if system == "Darwin":
         try:
             result = subprocess.run(
-                ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                [
+                    "security",
+                    "find-generic-password",
+                    "-s",
+                    "Claude Code-credentials",
+                    "-w",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -122,16 +127,18 @@ def _tools_to_anthropic_format(
     tool_specs = []
     for name, tool_obj in tools.items():
         # Use the existing ToolEncodable to get the OpenAI-format tool spec
-        encoded = Encodable.define(type(tool_obj), tools).encode(tool_obj)
-        spec = encoded.model_dump(exclude_none=True)
+        encoded = Encodable.define(type(tool_obj), tools).encode(tool_obj)  # type: ignore[arg-type]
+        spec = encoded.model_dump(exclude_none=True)  # type: ignore[attr-defined]
         # Convert from OpenAI format {"type": "function", "function": {...}}
         # to Anthropic format {"name": ..., "description": ..., "input_schema": ...}
         func = spec.get("function", {})
-        tool_specs.append({
-            "name": func.get("name", name),
-            "description": func.get("description", ""),
-            "input_schema": func.get("parameters", {}),
-        })
+        tool_specs.append(
+            {
+                "name": func.get("name", name),
+                "description": func.get("description", ""),
+                "input_schema": func.get("parameters", {}),
+            }
+        )
     return tool_specs
 
 
@@ -142,7 +149,7 @@ def _resolve_refs(schema: typing.Any, defs: dict[str, typing.Any]) -> typing.Any
             ref_path = schema["$ref"]
             # Handle #/$defs/Name format
             if ref_path.startswith("#/$defs/"):
-                ref_name = ref_path[len("#/$defs/"):]
+                ref_name = ref_path[len("#/$defs/") :]
                 if ref_name in defs:
                     return _resolve_refs(defs[ref_name], defs)
             return schema
@@ -187,36 +194,54 @@ def _messages_to_anthropic_format(
                     elif part.get("type") == "image_url":
                         # Convert to Anthropic image format
                         image_url = part.get("image_url", {})
-                        url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                        url = (
+                            image_url.get("url", "")
+                            if isinstance(image_url, dict)
+                            else ""
+                        )
                         if url.startswith("data:"):
                             media_type, _, data = url.partition(";base64,")
                             media_type = media_type.replace("data:", "")
-                            blocks.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": data,
-                                },
-                            })
+                            blocks.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": data,
+                                    },
+                                }
+                            )
 
             # Include tool_calls as tool_use blocks
-            tool_calls = msg.get("tool_calls", [])
+            tool_calls = msg.get("tool_calls") or []
             if tool_calls:
-                for tc in tool_calls:
-                    fn = tc if isinstance(tc, dict) else tc.model_dump() if hasattr(tc, "model_dump") else vars(tc)
+                for tc in tool_calls:  # type: ignore[attr-defined]
+                    fn = (
+                        tc
+                        if isinstance(tc, dict)
+                        else tc.model_dump()
+                        if hasattr(tc, "model_dump")
+                        else vars(tc)
+                    )
                     func = fn.get("function", {})
                     args_str = func.get("arguments", "{}")
                     try:
-                        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        args = (
+                            json.loads(args_str)
+                            if isinstance(args_str, str)
+                            else args_str
+                        )
                     except json.JSONDecodeError:
                         args = {}
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": fn.get("id", str(uuid.uuid4())),
-                        "name": func.get("name", ""),
-                        "input": args,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": fn.get("id", str(uuid.uuid4())),
+                            "name": func.get("name", ""),
+                            "input": args,
+                        }
+                    )
 
             if blocks:
                 anthropic_messages.append({"role": "assistant", "content": blocks})
@@ -231,31 +256,41 @@ def _messages_to_anthropic_format(
                         blocks.append({"type": "text", "text": part.get("text", "")})
                     elif part.get("type") == "image_url":
                         image_url = part.get("image_url", {})
-                        url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                        url = (
+                            image_url.get("url", "")
+                            if isinstance(image_url, dict)
+                            else ""
+                        )
                         if url.startswith("data:"):
                             media_type, _, data = url.partition(";base64,")
                             media_type = media_type.replace("data:", "")
-                            blocks.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": data,
-                                },
-                            })
+                            blocks.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": data,
+                                    },
+                                }
+                            )
                 anthropic_messages.append({"role": "user", "content": blocks})
 
         elif role == "tool":
             tool_call_id = msg.get("tool_call_id", "")
             tool_content = content if isinstance(content, str) else json.dumps(content)
-            anthropic_messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": tool_content,
-                }],
-            })
+            anthropic_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": tool_content,
+                        }
+                    ],
+                }
+            )
 
     return system_prompt, anthropic_messages
 
@@ -328,7 +363,7 @@ class AnthropicProvider(ObjectInterpretation):
 
         response_model = Encodable.define(template.__signature__.return_annotation, env)
 
-        history: collections.OrderedDict[str, Message] = getattr(
+        history: collections.OrderedDict[str, Message] = getattr(  # type: ignore[assignment]
             template, "__history__", collections.OrderedDict()
         )
         history_copy = history.copy()
@@ -394,11 +429,13 @@ class AnthropicProvider(ObjectInterpretation):
                     for k, v in result_schema.get("properties", {}).items()
                 }
                 del result_schema["$defs"]
-            all_tools.append({
-                "name": "_respond",
-                "description": "Return the final structured response. Call this when you are ready to answer.",
-                "input_schema": result_schema,
-            })
+            all_tools.append(
+                {
+                    "name": "_respond",
+                    "description": "Return the final structured response. Call this when you are ready to answer.",
+                    "input_schema": result_schema,
+                }
+            )
             has_respond_tool = True
             # Force _respond when no other tools are defined
             if not tool_specs:
@@ -419,11 +456,13 @@ class AnthropicProvider(ObjectInterpretation):
                 text_content += block.text
                 content_parts.append({"type": "text", "text": block.text})
             elif block.type == "tool_use":
-                raw_tool_calls.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.input,
-                })
+                raw_tool_calls.append(
+                    {
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    }
+                )
 
         # Check if _respond tool was called (structured output)
         respond_call = None
@@ -438,18 +477,22 @@ class AnthropicProvider(ObjectInterpretation):
         if respond_call is not None:
             respond_input = respond_call["input"]
             result_value = respond_input.get("value", respond_input)
-            serialized = json.dumps(result_value) if not isinstance(result_value, str) else result_value
+            serialized = (
+                json.dumps(result_value)
+                if not isinstance(result_value, str)
+                else result_value
+            )
 
-            raw_message = _make_message({
-                "role": "assistant",
-                "content": serialized,
-            })
+            raw_message = _make_message(
+                {
+                    "role": "assistant",
+                    "content": serialized,
+                }
+            )
             append_message(raw_message)
 
             try:
-                result = response_format.decode(
-                    response_format.deserialize(serialized)
-                )
+                result = response_format.decode(response_format.deserialize(serialized))
             except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
                 raise ResultDecodingError(e, raw_message=raw_message) from e
 
@@ -463,16 +506,17 @@ class AnthropicProvider(ObjectInterpretation):
             raw_msg_content = content_parts
 
         # Build tool_calls in litellm-compatible format for the raw message
-        litellm_tool_calls = []
-        for tc in other_tool_calls:
-            litellm_tool_calls.append({
+        litellm_tool_calls = [
+            {
                 "id": tc["id"],
                 "type": "function",
                 "function": {
                     "name": tc["name"],
                     "arguments": json.dumps(tc["input"]),
                 },
-            })
+            }
+            for tc in other_tool_calls
+        ]
 
         raw_message_dict: dict[str, typing.Any] = {
             "role": "assistant",
@@ -488,8 +532,9 @@ class AnthropicProvider(ObjectInterpretation):
         # Anthropic returns raw values matching the schema, but the effectful
         # encoding system may wrap types in _BoxEncoding ({"value": ...}).
         # We wrap the raw input to match what ToolCallEncodable.decode expects.
-        from effectful.handlers.llm.encoding import BaseEncodable, _BoxEncoding
-        tool_call_encoding = Encodable.define(DecodedToolCall, dict(tools))
+        from effectful.handlers.llm.encoding import BaseEncodable
+
+        tool_call_encoding = Encodable.define(DecodedToolCall, dict(tools))  # type: ignore[arg-type]
 
         tool_calls: list[DecodedToolCall] = []
         for tc in other_tool_calls:
@@ -509,37 +554,44 @@ class AnthropicProvider(ObjectInterpretation):
                                 wrapped_input[pname] = {"value": raw_input[pname]}
                             else:
                                 wrapped_input[pname] = raw_input[pname]
-                        elif pname not in raw_input and param.default is not inspect.Parameter.empty:
+                        elif (
+                            pname not in raw_input
+                            and param.default is not inspect.Parameter.empty
+                        ):
                             pass  # optional param not provided
                     raw_input = wrapped_input
 
-                litellm_tc = ChatCompletionMessageToolCall.model_validate({
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": json.dumps(raw_input),
-                    },
-                })
-                tool_calls.append(tool_call_encoding.decode(litellm_tc))
+                litellm_tc = ChatCompletionMessageToolCall.model_validate(
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(raw_input),
+                        },
+                    }
+                )
+                tool_calls.append(tool_call_encoding.decode(litellm_tc))  # type: ignore[arg-type]
             except Exception as e:
                 from litellm import ChatCompletionMessageToolCall
 
-                mock_tc = ChatCompletionMessageToolCall.model_validate({
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": json.dumps(tc["input"]),
-                    },
-                })
+                mock_tc = ChatCompletionMessageToolCall.model_validate(
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["input"]),
+                        },
+                    }
+                )
                 raise ToolCallDecodingError(
                     raw_tool_call=mock_tc,
                     original_error=e,
                     raw_message=raw_message,
                 ) from e
 
-        result = None
+        result = None  # type: ignore[assignment]
         if not tool_calls:
             serialized_result = text_content
             assert isinstance(serialized_result, str), (
