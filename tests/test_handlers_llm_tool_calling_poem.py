@@ -20,17 +20,11 @@ from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
-# Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-HAS_ANTHROPIC_KEY = (
-    "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
-)
+# Model name for LLM integration tests, configured via environment variable.
+LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "")
 
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
-)
-requires_anthropic = pytest.mark.skipif(
-    not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
+requires_llm = pytest.mark.skipif(
+    not LLM_MODEL, reason="EFFECTFUL_LLM_MODEL environment variable not set"
 )
 
 
@@ -114,18 +108,12 @@ def generate_good_poem(topic: str) -> Poem:
 class TestToolCalling:
     """Tests for templates with tool calling functionality."""
 
-    @pytest.mark.parametrize(
-        "model",
-        [
-            pytest.param("gpt-5-nano", marks=requires_openai),
-            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
-        ],
-    )
-    def test_tool_calling(self, model):
-        """Test that templates with tools work with openai."""
+    @requires_llm
+    def test_tool_calling(self):
+        """Test that templates with tools work with the configured model."""
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
-            handler(LiteLLMProvider(model=model)),
+            handler(LiteLLMProvider(model=LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):

@@ -446,7 +446,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
     config: collections.abc.Mapping[str, typing.Any]
 
-    def __init__(self, model="gpt-4o", **config):
+    def __init__(self, model, **config):
         self.config = {
             "model": model,
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
