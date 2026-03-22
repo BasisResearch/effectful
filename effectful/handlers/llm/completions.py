@@ -4,7 +4,6 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
-import os
 import string
 import textwrap
 import traceback
@@ -447,7 +446,7 @@ class LiteLLMProvider(ObjectInterpretation):
 
     config: collections.abc.Mapping[str, typing.Any]
 
-    def __init__(self, model=os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4o"), **config):
+    def __init__(self, model="gpt-4o", **config):
         self.config = {
             "model": model,
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
