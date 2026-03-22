@@ -1,4 +1,14 @@
+import os
+
 import pytest
+
+# Model name for live LLM integration tests, configured via environment variable.
+# Set EFFECTFUL_LLM_MODEL to run live tests; unset to skip them.
+LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "")
+
+requires_llm = pytest.mark.skipif(
+    not LLM_MODEL, reason="EFFECTFUL_LLM_MODEL environment variable not set"
+)
 
 UNIMPLEMENTED_SUBSTRINGS = [
     "infer.JitTrace_ELBO",

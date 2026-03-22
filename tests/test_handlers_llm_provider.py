@@ -43,7 +43,7 @@ from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests._llm_helpers import LLM_MODEL, requires_llm
+from tests.conftest import LLM_MODEL, requires_llm
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
