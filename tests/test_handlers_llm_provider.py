@@ -180,24 +180,34 @@ class _ToolNameAgent(Agent):
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
-    @requires_llm
-    def test_simple_prompt(self, request):
-        """Test that LiteLLMProvider works with the configured model."""
+    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-5-nano"])
+    def test_simple_prompt_multiple_models(self, request, model_name):
+        """Test that LiteLLMProvider works with different model configurations."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
             assert isinstance(result, str)
             assert len(result) > 0
 
-    @requires_llm
+    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "claude-haiku-4-5"])
+    def test_simple_prompt_cross_endpoint(self, request, model_name):
+        """Test that ReplayLiteLLMProvider works across different API endpoints."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model=model_name)),
+            handler(LimitLLMCallsHandler(max_calls=1)),
+        ):
+            result = simple_prompt("testing")
+            assert isinstance(result, str)
+            assert len(result) > 0
+
     def test_structured_output(self, request):
         """Test LiteLLMProvider with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -208,11 +218,10 @@ class TestLiteLLMProvider:
             assert isinstance(classification.explanation, str)
             assert len(classification.explanation) > 0
 
-    @requires_llm
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -220,13 +229,12 @@ class TestLiteLLMProvider:
             assert isinstance(result, int)
             assert 1 <= result <= 100
 
-    @requires_llm
     def test_with_config_params(self, request):
         """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(request, model=LLM_MODEL, temperature=0.1)
+                ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -246,9 +254,7 @@ def test_agent_tool_names_are_valid_integration():
 
     # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
-        handler(
-            LiteLLMProvider(model=LLM_MODEL, tool_choice="none", max_tokens=16)
-        ),
+        handler(LiteLLMProvider(model=LLM_MODEL, tool_choice="none", max_tokens=16)),
         handler(LimitLLMCallsHandler(max_calls=1)),
     ):
         result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
@@ -283,13 +289,9 @@ def categorise_image(image: Image.Image) -> str:
     raise NotHandled
 
 
-@pytest.mark.skipif(
-    not LLM_MODEL or not litellm.supports_vision(LLM_MODEL),
-    reason=f"Model {LLM_MODEL!r} does not support vision",
-)
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -319,17 +321,13 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     raise NotHandled
 
 
-@pytest.mark.skipif(
-    not LLM_MODEL or not litellm.supports_vision(LLM_MODEL),
-    reason=f"Model {LLM_MODEL!r} does not support vision",
-)
 def test_list_image_input(request):
     """Regression test for GitHub issue #552: list[Image.Image] in templates."""
     img_red = Image.new("RGB", (64, 64), (255, 0, 0))
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
     with (
-        handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
         handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -357,12 +355,11 @@ def review_book(plot: str) -> BookReview:
 
 
 class TestPydanticBaseModelReturn:
-    @requires_llm
     def test_pydantic_basemodel_return(self, request):
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -378,7 +375,7 @@ class TestPydanticBaseModelReturn:
 
 def test_litellm_caching_integration(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         p3 = simple_prompt("oranges")
@@ -390,14 +387,14 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model=LLM_MODEL, caching=False)):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o", caching=False)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
 
 
 def test_litellm_caching_selective(request):
-    with handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)):
+    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"
@@ -670,7 +667,6 @@ class TestRetryLLMHandler:
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
 
-    @requires_llm
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 
@@ -708,7 +704,7 @@ class TestRetryLLMHandler:
 
         with (
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
             handler(UnsafeEvalProvider()),
         ):
             result = codeadapt("generate_paragraph")
@@ -1193,11 +1189,10 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
-    @requires_llm
     def test_synthesize_adder_function(self, request):
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1209,11 +1204,10 @@ class TestCallableSynthesis:
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 
-    @requires_llm
     def test_synthesize_string_processor(self, request):
         """Test that LLM can synthesize a string processing function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1225,11 +1219,10 @@ class TestCallableSynthesis:
             assert "HELLO" in result
             assert "!" in result
 
-    @requires_llm
     def test_synthesize_counter_with_parameter(self, request):
         """Test that LLM can synthesize a parameterized counting function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1241,12 +1234,11 @@ class TestCallableSynthesis:
             assert count_a("aardvark") == 3
             assert count_a("AAA") == 0  # case-sensitive
 
-    @requires_llm
     def test_synthesized_function_roundtrip(self, request):
         """Test that a synthesized function can be encoded and decoded."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1265,12 +1257,11 @@ class TestCallableSynthesis:
             assert callable(decoded)
             assert decoded(5, 7) == 12
 
-    @requires_llm
     def test_synthesize_bool_return_type(self, request):
         """Test that LLM respects bool return type in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1287,12 +1278,11 @@ class TestCallableSynthesis:
             assert is_even(0) is True
             assert is_even(-4) is True
 
-    @requires_llm
     def test_synthesize_three_params(self, request):
         """Test that LLM respects the exact number of parameters in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1503,13 +1493,12 @@ class MessageSequenceTracker(ObjectInterpretation):
 class TestMessageSequenceReplay:
     """Fixture-based tests verifying message sequence invariants through the full provider stack."""
 
-    @requires_llm
     def test_simple_prompt_unique_message_ids(self, request):
         """A no-tool prompt should produce a single call_assistant with unique message IDs."""
         tracker = MessageSequenceTracker()
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -1519,14 +1508,13 @@ class TestMessageSequenceReplay:
         ids = tracker.call_log[0]
         assert len(ids) == len(set(ids)), "message IDs should be unique"
 
-    @requires_llm
     def test_tool_calling_no_duplicate_message_ids(self, request):
         """Tool-calling prompts should accumulate messages without duplicates across calls."""
         tracker = MessageSequenceTracker()
 
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model=LLM_MODEL)),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
             result = compute_sum(3, 5)

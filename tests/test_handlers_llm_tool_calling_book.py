@@ -5,7 +5,6 @@ This module is separate to avoid lexical context pollution from other templates.
 
 from dataclasses import dataclass
 
-import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool

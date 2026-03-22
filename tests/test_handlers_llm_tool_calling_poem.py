@@ -6,7 +6,6 @@ This module is separate to avoid lexical context pollution from other templates.
 from dataclasses import dataclass
 from enum import StrEnum
 
-import pytest
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
