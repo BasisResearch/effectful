@@ -28,15 +28,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
-
-import os
-
-# Model name for LLM integration tests, configured via environment variable.
-LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "")
-
-requires_llm = pytest.mark.skipif(
-    not LLM_MODEL, reason="EFFECTFUL_LLM_MODEL environment variable not set"
-)
+from tests.conftest import LLM_MODEL, requires_llm
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions

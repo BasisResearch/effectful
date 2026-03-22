@@ -46,12 +46,7 @@ from effectful.ops.types import NotHandled
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
-# Model name for LLM integration tests, configured via environment variable.
-LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "")
-
-requires_llm = pytest.mark.skipif(
-    not LLM_MODEL, reason="EFFECTFUL_LLM_MODEL environment variable not set"
-)
+from tests.conftest import LLM_MODEL, requires_llm
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
@@ -241,7 +236,7 @@ class TestLiteLLMProvider:
 
 
 @requires_llm
-def test_agent_tool_names_are_openai_compatible_integration():
+def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
     template = agent.ask
     tools = template.tools
@@ -250,7 +245,7 @@ def test_agent_tool_names_are_openai_compatible_integration():
     assert expected_helper_tool_name in tools
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
 
-    # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
+    # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
         handler(
             LiteLLMProvider(model=LLM_MODEL, tool_choice="none", max_tokens=16)
