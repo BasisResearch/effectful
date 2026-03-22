@@ -28,7 +28,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
-from tests.conftest import LLM_MODEL, requires_llm
+from tests._llm_helpers import LLM_MODEL, requires_llm
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions

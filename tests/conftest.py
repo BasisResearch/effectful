@@ -1,14 +1,4 @@
-import os
-
 import pytest
-
-# Model name for LLM integration tests, configured via environment variable.
-# All LLM test files import these from here to avoid duplication.
-LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "")
-
-requires_llm = pytest.mark.skipif(
-    not LLM_MODEL, reason="EFFECTFUL_LLM_MODEL environment variable not set"
-)
 
 UNIMPLEMENTED_SUBSTRINGS = [
     "infer.JitTrace_ELBO",

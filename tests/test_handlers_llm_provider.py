@@ -43,10 +43,9 @@ from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+from tests._llm_helpers import LLM_MODEL, requires_llm
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
-from tests.conftest import LLM_MODEL, requires_llm
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
@@ -284,7 +283,6 @@ def categorise_image(image: Image.Image) -> str:
     raise NotHandled
 
 
-@requires_llm
 @pytest.mark.skipif(
     not LLM_MODEL or not litellm.supports_vision(LLM_MODEL),
     reason=f"Model {LLM_MODEL!r} does not support vision",
@@ -321,7 +319,6 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     raise NotHandled
 
 
-@requires_llm
 @pytest.mark.skipif(
     not LLM_MODEL or not litellm.supports_vision(LLM_MODEL),
     reason=f"Model {LLM_MODEL!r} does not support vision",
