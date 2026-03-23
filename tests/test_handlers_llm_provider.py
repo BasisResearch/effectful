@@ -712,7 +712,7 @@ class TestRetryLLMHandler:
 
         with (
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
-            handler(make_provider(request, model="gpt-4o")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
             handler(UnsafeEvalProvider()),
         ):
             result = codeadapt("generate_paragraph")
@@ -1200,7 +1200,7 @@ class TestCallableSynthesis:
     def test_synthesize_adder_function(self, request):
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1215,7 +1215,7 @@ class TestCallableSynthesis:
     def test_synthesize_string_processor(self, request):
         """Test that LLM can synthesize a string processing function."""
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1230,7 +1230,7 @@ class TestCallableSynthesis:
     def test_synthesize_counter_with_parameter(self, request):
         """Test that LLM can synthesize a parameterized counting function."""
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1246,7 +1246,7 @@ class TestCallableSynthesis:
         """Test that a synthesized function can be encoded and decoded."""
 
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1269,7 +1269,7 @@ class TestCallableSynthesis:
         """Test that LLM respects bool return type in signature."""
 
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1290,7 +1290,7 @@ class TestCallableSynthesis:
         """Test that LLM respects the exact number of parameters in signature."""
 
         with (
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1506,7 +1506,7 @@ class TestMessageSequenceReplay:
         tracker = MessageSequenceTracker()
         with (
             handler(tracker),
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -1522,7 +1522,7 @@ class TestMessageSequenceReplay:
 
         with (
             handler(tracker),
-            handler(make_provider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
             result = compute_sum(3, 5)
