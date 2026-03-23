@@ -40,6 +40,33 @@ from effectful.ops.types import Operation, Term
 type ToolCallID = str
 
 
+class _TupleSafeJsonSchema(pydantic.json_schema.GenerateJsonSchema):
+    """JSON schema generator that converts tuple ``prefixItems`` arrays
+    into object schemas with ``item_0``, ``item_1``, ... properties.
+
+    OpenAI's structured output API rejects ``prefixItems``; this produces
+    the same ``properties``/``required`` layout that :class:`TupleEncodable`
+    uses for standalone tuple types.
+    """
+
+    def tuple_schema(
+        self, schema: pydantic.json_schema.core_schema.TupleSchema
+    ) -> pydantic.json_schema.JsonSchemaValue:
+        if "variadic_item_index" in schema:
+            # Variable-length tuple — fall back to default array schema.
+            return super().tuple_schema(schema)
+        items = schema.get("items_schema", [])
+        properties = {
+            f"item_{i}": self.generate_inner(item) for i, item in enumerate(items)
+        }
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+
+
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
@@ -103,7 +130,13 @@ class Encodable[T, U](ABC):
 
 
 class _BoxEncoding[T](pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(json_schema_mode_override="serialization")
     value: T
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("schema_generator", _TupleSafeJsonSchema)
+        return super().model_json_schema(*args, **kwargs)
 
 
 @dataclass
@@ -246,15 +279,21 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
             raise ValueError(
                 f"Tuple length {len(value)} does not match expected length {len(self.element_encoders)}"
             )
-        return tuple(
-            enc.encode(elem) for enc, elem in zip(self.element_encoders, value)
+        return self.model_cls(
+            **{
+                f"item_{i}": enc.encode(elem)
+                for i, (enc, elem) in enumerate(zip(self.element_encoders, value))
+            }
         )
 
     def decode(self, encoded_value: typing.Any) -> T:
         # Pydantic validation produces a TupleItems model instance;
         # extract the positional fields back into a sequence.
         if isinstance(encoded_value, pydantic.BaseModel):
-            items = list(encoded_value.model_dump().values())
+            items = [
+                getattr(encoded_value, f"item_{i}")
+                for i in range(len(self.element_encoders))
+            ]
         else:
             items = list(encoded_value)
         if len(items) != len(self.element_encoders):
@@ -270,24 +309,22 @@ class TupleEncodable[T](Encodable[T, typing.Any]):
         self, encoded_value: typing.Any
     ) -> Sequence[OpenAIMessageContentListBlock]:
         if self.has_image:
+            items = [
+                getattr(encoded_value, f"item_{i}")
+                for i in range(len(self.element_encoders))
+            ]
             result: list[OpenAIMessageContentListBlock] = []
-            for enc, elem in zip(self.element_encoders, encoded_value):
+            for enc, elem in zip(self.element_encoders, items):
                 result.extend(enc.serialize(elem))
             return result
-        model_instance = self.model_cls(
-            **{f"item_{i}": v for i, v in enumerate(encoded_value)}
-        )
-        json_str = model_instance.model_dump_json()
+        json_str = encoded_value.model_dump_json()
         return [{"type": "text", "text": json_str}]
 
     def deserialize(self, serialized_value: str) -> typing.Any:
-        model = self.model_cls.model_validate_json(serialized_value)
-        # Return raw field values (preserving nested pydantic models).
-        # Use tuple to be compatible with SequenceEncodable (which also
-        # produces tuples), ensuring encode idempotency via nested_type.
-        return tuple(
-            getattr(model, f"item_{i}") for i in range(len(self.element_encoders))
-        )
+        # Return the TupleItems model instance directly so that
+        # pydantic.TypeAdapter(enc.enc).validate_python(deserialized) works.
+        # decode() already handles model instances (line 256-257).
+        return self.model_cls.model_validate_json(serialized_value)
 
 
 @dataclass
@@ -296,7 +333,10 @@ class NamedTupleEncodable[T](TupleEncodable[T]):
 
     def decode(self, encoded_value: typing.Any) -> T:
         if isinstance(encoded_value, pydantic.BaseModel):
-            items = list(encoded_value.model_dump().values())
+            items = [
+                getattr(encoded_value, f"item_{i}")
+                for i in range(len(self.element_encoders))
+            ]
         else:
             items = list(encoded_value)
         if len(items) != len(self.element_encoders):
@@ -320,9 +360,9 @@ class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
     element_encoder: Encodable[T, typing.Any]
 
     def encode(self, value: Sequence[T]) -> typing.Any:
-        # Return a tuple so that nested_type routes back through the tuple
-        # dispatcher, preserving encode idempotency.
-        return tuple(self.element_encoder.encode(elem) for elem in value)
+        # Return a list so that nested_type routes to the sequence dispatcher
+        # (not the tuple dispatcher), preserving encode idempotency.
+        return list(self.element_encoder.encode(elem) for elem in value)
 
     def decode(self, encoded_value: typing.Any) -> Sequence[T]:
         return typing.cast(
@@ -345,9 +385,7 @@ class SequenceEncodable[T](Encodable[Sequence[T], typing.Any]):
 
     def deserialize(self, serialized_value: str) -> typing.Any:
         adapter = pydantic.TypeAdapter(self.enc)
-        # validate_json returns a list; convert back to tuple for
-        # compatibility with SequenceEncodable (which uses tuples).
-        return tuple(adapter.validate_json(serialized_value))
+        return list(adapter.validate_json(serialized_value))
 
 
 @dataclass
