@@ -108,69 +108,6 @@ def _safe_tuple_type(ty: type) -> Any:
     ]
 
 
-def _rewrite_tuple_annotations(ty: type) -> Any:
-    """Recursively rewrite fixed-length tuple annotations using ``_safe_tuple_type``.
-
-    For standalone tuples, applies ``_safe_tuple_type`` directly.
-    For dataclasses containing tuple fields, creates an ``Annotated`` type
-    with a Pydantic model proxy that uses safe tuple annotations.
-    """
-    import dataclasses as dc
-
-    origin = typing.get_origin(ty)
-
-    # Direct tuple type
-    if origin is tuple:
-        return _safe_tuple_type(ty)
-
-    # Dataclass with typed fields — check for tuple fields
-    if dc.is_dataclass(ty) and isinstance(ty, type):
-        hints = typing.get_type_hints(ty)
-        rewritten = {
-            name: _rewrite_tuple_annotations(ann) for name, ann in hints.items()
-        }
-        if rewritten == hints:
-            return ty  # no tuple fields, no change needed
-
-        # Build a Pydantic model with safe tuple annotations
-        fields: dict[str, Any] = {}
-        for f in dc.fields(ty):
-            fields[f.name] = (rewritten[f.name], ...)
-        proxy_model = pydantic.create_model(
-            ty.__name__,
-            __config__={"extra": "forbid"},
-            **fields,
-        )
-
-        original_ty = ty
-
-        def _validate(value: Any, info: pydantic.ValidationInfo) -> Any:
-            if isinstance(value, dict):
-                validated = proxy_model.model_validate(value)
-                # Extract field values directly (not model_dump which re-serializes)
-                return original_ty(
-                    **{
-                        f.name: getattr(validated, f.name)
-                        for f in dc.fields(original_ty)
-                    }
-                )
-            return value
-
-        def _serialize(value: Any, info: pydantic.SerializationInfo) -> Any:
-            return proxy_model(
-                **{f.name: getattr(value, f.name) for f in dc.fields(original_ty)}
-            ).model_dump(mode="json")
-
-        return typing.Annotated[
-            ty,
-            pydantic.PlainValidator(_validate),
-            pydantic.PlainSerializer(_serialize),
-            pydantic.WithJsonSchema(_inline_refs(proxy_model.model_json_schema())),
-        ]
-
-    return ty
-
-
 def _pil_image_to_base64_data(pil_image: Image.Image) -> str:
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
@@ -261,12 +198,11 @@ class BaseEncodable[T](Encodable[T, _BoxEncoding[T]]):
     @functools.cache
     def wrapped_model(ty: Hashable) -> type[_BoxEncoding[Any]]:
         scalar_ty = typing.cast(type[Any], ty)
-        safe_ty = _rewrite_tuple_annotations(scalar_ty)
         return typing.cast(
             type[_BoxEncoding[Any]],
             pydantic.create_model(
                 f"Response_{getattr(scalar_ty, '__name__', 'scalar')}",
-                value=(safe_ty, ...),
+                value=(scalar_ty, ...),
                 __base__=_BoxEncoding,
                 __config__={"extra": "forbid"},
             ),
@@ -788,7 +724,9 @@ class ToolEncodable[**P, T](Encodable[Tool[P, T], pydantic.BaseModel]):
                         value.__name__,
                     ),
                     "description": textwrap.dedent(value.__default__.__doc__),
-                    "parameters": response_format["json_schema"]["schema"],
+                    "parameters": _inline_refs(
+                        response_format["json_schema"]["schema"]
+                    ),
                     "strict": True,
                 },
             }

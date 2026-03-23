@@ -710,6 +710,16 @@ def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
     if case_id.startswith(("list-", "img-", "tool-", "dtc-")):
         marks.append(_provider_response_format_xfail)
+    # Dataclass with tuple field: Pydantic produces prefixItems schema that
+    # OpenAI rejects. Proper fix requires recursive type rewriting (#584).
+    if case_id == "dc-with-tuple":
+        marks.append(_provider_response_format_xfail)
+    # SequenceEncodable.enc is a generic alias, not a BaseModel — litellm rejects it.
+    if case_id in ("tuple-bare", "tuple-variadic"):
+        marks.append(_provider_response_format_xfail)
+    # LLM may return a URL instead of base64 for image tuples.
+    if case_id == "tuple-img-str":
+        marks.append(_provider_response_format_xfail)
     return marks
 
 
