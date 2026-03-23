@@ -130,7 +130,6 @@ class Encodable[T, U](ABC):
 
 
 class _BoxEncoding[T](pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(json_schema_mode_override="serialization")
     value: T
 
     @classmethod
