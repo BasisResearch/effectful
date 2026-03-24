@@ -380,6 +380,7 @@ class Operation[**Q, V]:
 
         """
         from effectful.internals.unification import (
+            _has_typing_self,
             freetypevars,
             nested_type,
             substitute,
@@ -394,7 +395,7 @@ class Operation[**Q, V]:
             return typing.cast(type[V], object)
         elif return_anno is None:
             return type(None)  # type: ignore
-        elif not freetypevars(return_anno):
+        elif not freetypevars(return_anno) and not _has_typing_self(return_anno):
             return return_anno
 
         type_args = tuple(nested_type(a).value for a in args)

@@ -2,6 +2,7 @@ import contextlib
 import functools
 import itertools
 import logging
+import typing
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal, Union
 
@@ -863,3 +864,86 @@ def test_typeof_literal():
 
     with pytest.raises(TypeError, match="Union types are not supported"):
         typeof(get_mixed())
+
+
+# --- Module-level classes for typing.Self tests ---
+# Must be at module level so @defop can resolve annotations via get_type_hints.
+
+
+class _SelfA:
+    @defop
+    def ret_self(self, x: int) -> typing.Self:
+        raise NotHandled
+
+    @defop
+    def ret_list_self(self, x: int) -> list[typing.Self]:
+        raise NotHandled
+
+    @defop
+    def annotated_self(self: typing.Self, x: int) -> typing.Self:
+        raise NotHandled
+
+    @defop
+    def ret_self_or_none(self, x: int) -> typing.Self | None:
+        raise NotHandled
+
+
+class _SelfB:
+    @defop
+    def ret_self(self, x: int) -> typing.Self:
+        raise NotHandled
+
+
+def test_typeof_self_basic():
+    """typeof resolves typing.Self to the type of the first argument."""
+    obj = _SelfA()
+    assert typeof(_SelfA.ret_self(obj, 42)) is _SelfA
+
+
+def test_typeof_self_list():
+    """typeof resolves list[Self] to list (origin type)."""
+    obj = _SelfA()
+    assert typeof(_SelfA.ret_list_self(obj, 42)) is list
+
+
+def test_typeof_self_annotated_param():
+    """Self as both the self-parameter annotation and return type."""
+    obj = _SelfA()
+    assert typeof(_SelfA.annotated_self(obj, 42)) is _SelfA
+
+
+def test_typeof_self_two_classes():
+    """Self resolves independently per class."""
+    a, b = _SelfA(), _SelfB()
+    assert typeof(_SelfA.ret_self(a, 42)) is _SelfA
+    assert typeof(_SelfB.ret_self(b, 42)) is _SelfB
+
+
+def test_typeof_self_nested_polymorphic():
+    """Self composes with a polymorphic identity operation."""
+
+    @defop
+    def identity[T](x: T) -> T:
+        raise NotHandled
+
+    obj = _SelfA()
+    assert typeof(identity(_SelfA.ret_self(obj, 42))) is _SelfA
+
+
+@pytest.mark.xfail(reason="Union types are not yet supported")
+def test_typeof_self_union():
+    """Self | None is a union return type — unsupported."""
+    obj = _SelfA()
+    typeof(_SelfA.ret_self_or_none(obj, 42))
+
+
+class _SelfClassmethod:
+    @defop
+    @classmethod
+    def cls_ret(cls) -> typing.Self:
+        raise NotHandled
+
+
+def test_typeof_self_classmethod():
+    """Classmethod with Self — cls is stripped so Self is unresolved but does not crash."""
+    typeof(_SelfClassmethod.cls_ret())
