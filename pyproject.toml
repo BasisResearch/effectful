@@ -41,7 +41,7 @@ pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
 numpyro = ["numpyro>=0.19"]
 llm = [
-  "litellm",
+  "litellm<1.82.7",
   "tenacity",
   "mypy",
   "autoflake",
