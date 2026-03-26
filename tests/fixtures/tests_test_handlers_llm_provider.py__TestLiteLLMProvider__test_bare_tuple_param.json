@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"The items include apples, bananas, and cherries.\"}",
+        "content": "The items include apples, bananas, and cherries.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

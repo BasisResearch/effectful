@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are crisp, sweet fruits that come in a variety of colors and are packed with essential vitamins and fiber.\"}",
+        "content": "Apples are crisp, sweet fruits that come in a variety of colors and are packed with essential vitamins and fiber.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

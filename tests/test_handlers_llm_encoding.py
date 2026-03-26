@@ -1,12 +1,13 @@
 """
 Law-based test suite for effectful.handlers.llm.encoding.
 
-Each test function verifies a single equational law of the Encodable[T, U]
-interface, parametrized over many types and values.
+Each test function verifies a single equational law of the Encodable[T]
+type-level encoding, parametrized over many types and values.
 """
 
 import inspect
 import io
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -15,22 +16,23 @@ from typing import Annotated, Any, NamedTuple, TypedDict
 import litellm
 import pydantic
 import pytest
-from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
 from effectful.handlers.llm.encoding import (
+    CONTENT_BLOCK_TYPES,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
+    to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
-from effectful.ops.types import Operation, Term
 from tests.test_handlers_llm_tool_calling_book import requires_openai
 
-CHEAP_MODEL = "gpt-4o-mini"
+CHEAP_MODEL = "gpt-4-mini"
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -225,7 +227,7 @@ def _make_dtc(tool, kwargs, call_id):
 # ---------------------------------------------------------------------------
 
 # (type_annotation, value, ctx) triples — reused across law tests.
-# ctx=None means Encodable.define(ty), otherwise Encodable.define(ty, ctx).
+# ctx=None means no context, otherwise passed as context to dump_python/validate_python.
 ROUNDTRIP_CASES = [
     # --- str ---
     pytest.param(str, "hello", None, id="str-hello"),
@@ -318,6 +320,12 @@ ROUNDTRIP_CASES = [
         id="tuple-img-str",
     ),
     pytest.param(
+        tuple[str, Image.Image, str],
+        ("before", _make_png_image("RGB", (5, 5), "green"), "after"),
+        None,
+        id="tuple-str-img-str",
+    ),
+    pytest.param(
         list[Image.Image],
         [
             _make_png_image("RGB", (10, 10), "red"),
@@ -326,12 +334,39 @@ ROUNDTRIP_CASES = [
         None,
         id="list-img",
     ),
+    # --- deeper generic composition with Image ---
+    pytest.param(
+        list[tuple[str, Image.Image]],
+        [
+            ("first", _make_png_image("RGB", (4, 4), "red")),
+            ("second", _make_png_image("RGB", (4, 4), "blue")),
+        ],
+        None,
+        id="list-tuple-str-img",
+    ),
     # --- Tool ---
-    pytest.param(type(_tool_add), _tool_add, None, id="tool-add"),
-    pytest.param(type(_tool_greet), _tool_greet, None, id="tool-greet"),
-    pytest.param(type(_tool_process), _tool_process, None, id="tool-process"),
-    pytest.param(type(_tool_get_value), _tool_get_value, None, id="tool-no-params"),
-    pytest.param(type(_tool_distance), _tool_distance, None, id="tool-pydantic-param"),
+    pytest.param(type(_tool_add), _tool_add, {"_tool_add": _tool_add}, id="tool-add"),
+    pytest.param(
+        type(_tool_greet), _tool_greet, {"_tool_greet": _tool_greet}, id="tool-greet"
+    ),
+    pytest.param(
+        type(_tool_process),
+        _tool_process,
+        {"_tool_process": _tool_process},
+        id="tool-process",
+    ),
+    pytest.param(
+        type(_tool_get_value),
+        _tool_get_value,
+        {"_tool_get_value": _tool_get_value},
+        id="tool-no-params",
+    ),
+    pytest.param(
+        type(_tool_distance),
+        _tool_distance,
+        {"_tool_distance": _tool_distance},
+        id="tool-pydantic-param",
+    ),
     # --- DecodedToolCall ---
     pytest.param(
         DecodedToolCall,
@@ -365,88 +400,42 @@ ROUNDTRIP_CASES = [
     ),
 ]
 
-# Filter ID sets
-_IMAGE_IDS = frozenset({"img-red", "img-blue-alpha", "tuple-img-str", "list-img"})
-_TOOL_IDS = frozenset(
-    {"tool-add", "tool-greet", "tool-process", "tool-no-params", "tool-pydantic-param"}
-)
-
-_tool_decode_xfail = pytest.mark.xfail(
-    raises=NotImplementedError, reason="Tool.decode not yet implemented"
-)
-
-
-def _xfail_tools(cases):
-    """Add xfail mark to Tool cases (whose decode raises NotImplementedError)."""
-    return [
-        pytest.param(*c.values, marks=[*c.marks, _tool_decode_xfail], id=c.id)
-        if c.id in _TOOL_IDS
-        else c
-        for c in cases
-    ]
-
-
-# Derived case lists
-# decode: Tool cases are xfail (decode raises NotImplementedError)
-DECODE_CASES = _xfail_tools(ROUNDTRIP_CASES)
-
-# Text-serializable: everything except Image-containing types
-TEXT_CASES = [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
-
-# Full pipeline (encode→serialize→deserialize→decode): needs both text and decode
-FULL_PIPELINE_CASES = _xfail_tools(
-    [c for c in ROUNDTRIP_CASES if c.id not in _IMAGE_IDS]
-)
-
-
 # ============================================================================
 # Law 1: decode(encode(v)) == v
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty,value,ctx", DECODE_CASES)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_decode_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    assert enc.decode(enc.encode(value)) == value
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    assert enc.validate_python(encoded, context=ctx or {}) == value
 
 
 # ============================================================================
-# Law 2: deserialize(serialize(encode(v))[0]["text"]) == encode(v)
-# ============================================================================
-
-
-@pytest.mark.parametrize("ty,value,ctx", TEXT_CASES)
-def test_serialize_deserialize_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
-    blocks = enc.serialize(encoded)
-    assert len(blocks) == 1
-    assert blocks[0]["type"] == "text"
-    assert enc.deserialize(blocks[0]["text"]) == encoded
-
-
-# ============================================================================
-# Law 3: decode(deserialize(serialize(encode(v))[0]["text"])) == v
-# ============================================================================
-
-
-@pytest.mark.parametrize("ty,value,ctx", FULL_PIPELINE_CASES)
-def test_full_pipeline_roundtrip(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    encoded = enc.encode(value)
-    text = enc.serialize(encoded)[0]["text"]
-    assert enc.decode(enc.deserialize(text)) == value
-
-
-# ============================================================================
-# Law 4: serialize(encode(v)) succeeds
+# Law 2: json.loads(json.dumps(encode(v))) == encode(v)
 # ============================================================================
 
 
 @pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
-def test_serialize_succeeds(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    enc.serialize(enc.encode(value))
+def test_serialize_deserialize_roundtrip(ty, value, ctx):
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    assert json.loads(json.dumps(encoded)) == encoded
+
+
+# ============================================================================
+# Law 3: decode(json.loads(json.dumps(encode(v)))) == v
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_full_pipeline_roundtrip(ty, value, ctx):
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    assert (
+        enc.validate_python(json.loads(json.dumps(encoded)), context=ctx or {}) == value
+    )
 
 
 # ============================================================================
@@ -454,32 +443,96 @@ def test_serialize_succeeds(ty, value, ctx):
 # ============================================================================
 
 
-@pytest.mark.parametrize(
-    "ty,value,ctx",
-    ROUNDTRIP_CASES,
-)
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
 def test_encode_idempotent(ty, value, ctx):
-    enc = Encodable.define(ty, ctx)
-    once = enc.encode(value)
-    twice = Encodable.define(nested_type(once).value, ctx).encode(once)
+    once = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
+    twice = pydantic.TypeAdapter(Encodable[nested_type(once).value]).dump_python(
+        once, mode="json", context=ctx or {}
+    )
     assert once == twice
 
 
 # ============================================================================
-# Term-specific: Encodable.define raises TypeError for Term and Operation
+# to_content_blocks helpers
 # ============================================================================
 
 
-@pytest.mark.parametrize("ty", [Term, Operation])
-def test_define_raises_for_invalid_types(ty):
-    with pytest.raises(TypeError):
-        Encodable.define(ty)
+def _linearize(blocks: list[OpenAIMessageContentListBlock]) -> str:
+    """Concatenate content blocks back into a JSON string."""
+    return "".join(b["text"] if b["type"] == "text" else json.dumps(b) for b in blocks)
+
+
+def _has_content_block(v):
+    """Recursively check whether v contains any content-block-shaped dicts."""
+    if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
+        return True
+    if isinstance(v, dict):
+        return any(_has_content_block(val) for val in v.values())
+    if isinstance(v, list):
+        return any(_has_content_block(item) for item in v)
+    return False
 
 
 # ============================================================================
-# Image-specific: deserialize raises, decode rejects invalid URLs
+# Law 6: linearize(to_content_blocks(encode(v))) == json.dumps(encode(v))
+#         (for non-string encoded values; bare strings are emitted unquoted)
 # ============================================================================
 
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_linearization(ty, value, ctx):
+    encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
+    if isinstance(encoded, str):
+        # Bare strings are emitted without JSON quoting for natural template rendering
+        assert _linearize(to_content_blocks(encoded)) == encoded
+    else:
+        assert _linearize(to_content_blocks(encoded)) == json.dumps(encoded)
+
+
+# ============================================================================
+# Law 7: decode(json.loads(linearize(to_content_blocks(encode(v))))) == v
+#         (for non-string encoded values; bare strings roundtrip directly)
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_full_pipeline(ty, value, ctx):
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    encoded = enc.dump_python(value, mode="json", context=ctx or {})
+    linearized = _linearize(to_content_blocks(encoded))
+    if isinstance(encoded, str):
+        assert enc.validate_python(linearized, context=ctx or {}) == value
+    else:
+        assert enc.validate_python(json.loads(linearized), context=ctx or {}) == value
+
+
+# ============================================================================
+# Law 8: no content blocks hidden in text (maximal extraction)
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_to_content_blocks_maximal_extraction(ty, value, ctx):
+    encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
+    if isinstance(encoded, str):
+        # Bare strings are emitted unquoted; they can't contain content blocks
+        return
+    blocks = to_content_blocks(encoded)
+    skeleton = json.loads(
+        "".join(b["text"] if b["type"] == "text" else "null" for b in blocks)
+    )
+    assert not _has_content_block(skeleton)
+
+
+# ============================================================================
+# Tuple-specific: error cases
+# ============================================================================
 
 TUPLE_SCHEMA_CASES = [
     pytest.param(tuple[int, str], id="tuple-int-str"),
@@ -491,23 +544,10 @@ TUPLE_SCHEMA_CASES = [
 @pytest.mark.parametrize("ty", TUPLE_SCHEMA_CASES)
 def test_tuple_schema_no_prefix_items(ty):
     """Finitary tuple schemas use properties/required, not prefixItems."""
-    enc = Encodable.define(ty)
-    schema = pydantic.TypeAdapter(enc.enc).json_schema()
+    schema = pydantic.TypeAdapter(Encodable[ty]).json_schema()
     assert "prefixItems" not in str(schema), (
         f"Schema for {ty} should not contain prefixItems: {schema}"
     )
-
-
-def test_image_deserialize_raises():
-    enc = Encodable.define(Image.Image)
-    with pytest.raises(NotImplementedError):
-        enc.deserialize("anything")
-
-
-def test_image_decode_rejects_non_data_uri():
-    enc = Encodable.define(Image.Image)
-    with pytest.raises(TypeError):
-        enc.decode({"url": "http://example.com/image.png", "detail": "auto"})
 
 
 # ============================================================================
@@ -565,9 +605,10 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
             "function": {"name": tool_name, "arguments": args_json},
         }
     )
-    enc = Encodable.define(DecodedToolCall, ctx)
     with pytest.raises(exc_type):
-        enc.decode(tool_call)
+        pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
+            tool_call, context=ctx
+        )
 
 
 # ============================================================================
@@ -616,9 +657,11 @@ def test_callable_encode_decode_behavioral(
     ty, func, ctx, args, expected, eval_provider
 ):
     """Decoded callable is behaviorally equivalent to the original."""
-    enc = Encodable.define(ty, ctx)
+    enc = pydantic.TypeAdapter(Encodable[ty])
     with handler(eval_provider):
-        decoded = enc.decode(enc.encode(func))
+        decoded = enc.validate_python(
+            enc.dump_python(func, mode="json", context=ctx), context=ctx
+        )
         assert decoded(*args) == expected
 
 
@@ -628,10 +671,10 @@ def test_callable_full_pipeline_behavioral(
     ty, func, ctx, args, expected, eval_provider
 ):
     """Full encode->serialize->deserialize->decode pipeline is behaviorally equivalent."""
-    enc = Encodable.define(ty, ctx)
-    text = enc.serialize(enc.encode(func))[0]["text"]
+    enc = pydantic.TypeAdapter(Encodable[ty])
+    text = json.dumps(enc.dump_python(func, mode="json", context=ctx))
     with handler(eval_provider):
-        decoded = enc.decode(enc.deserialize(text))
+        decoded = enc.validate_python(json.loads(text), context=ctx)
     assert decoded(*args) == expected
 
 
@@ -673,16 +716,16 @@ CALLABLE_ERROR_CASES = [
 @pytest.mark.parametrize("ty,ctx,source,exc_type", CALLABLE_ERROR_CASES)
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
 def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provider):
-    enc = Encodable.define(ty, ctx)
     with pytest.raises(exc_type):
         with handler(eval_provider):
-            enc.decode(source)
+            pydantic.TypeAdapter(Encodable[ty]).validate_python(source, context=ctx)
 
 
 def test_callable_encode_non_callable():
-    enc = Encodable.define(Callable[..., int], {})
-    with pytest.raises(TypeError):
-        enc.encode("not a callable")
+    with pytest.raises(Exception):
+        pydantic.TypeAdapter(Encodable[Callable[..., int]]).dump_python(
+            "not a callable", mode="json", context={}
+        )
 
 
 def test_callable_encode_no_source_no_docstring():
@@ -694,9 +737,10 @@ def test_callable_encode_no_source_no_docstring():
         def __call__(self):
             pass
 
-    enc = Encodable.define(Callable[..., int], {})
     with pytest.raises(ValueError):
-        enc.encode(_NoDocCallable())
+        pydantic.TypeAdapter(Encodable[Callable[..., int]]).dump_python(
+            _NoDocCallable(), mode="json", context={}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +754,7 @@ _provider_response_format_xfail = pytest.mark.xfail(
 
 def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
-    if case_id.startswith(("list-", "img-", "tool-", "dtc-")):
+    if "img" in case_id or "tool" in case_id or "dtc" in case_id:
         marks.append(_provider_response_format_xfail)
     return marks
 
@@ -733,52 +777,46 @@ def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
 PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
 
 
-def _encode_tool_spec(tool: Tool[..., Any]) -> dict[str, Any]:
-    tool_ty: type[Any] = type(tool)
-    tool_enc: Encodable[Any, Any] = Encodable.define(tool_ty)
-    tool_spec_obj = tool_enc.encode(tool)
-    if isinstance(tool_spec_obj, Mapping):
-        return dict(tool_spec_obj)
-    elif hasattr(tool_spec_obj, "model_dump"):
-        return dict(tool_spec_obj.model_dump())
-    raise TypeError(f"Unexpected encoded tool spec type: {type(tool_spec_obj)}")
-
-
 @requires_openai
 @pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
-    enc = Encodable.define(ty, ctx)
-    kwargs: dict[str, Any] = {
-        "model": CHEAP_MODEL,
-        "messages": [
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[ty])
+    response = litellm.completion(
+        model=CHEAP_MODEL,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "response",
+                "schema": enc.json_schema(),
+                "strict": True,
+            },
+        },
+        messages=[
             {
                 "role": "user",
                 "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
             }
         ],
-        "max_tokens": 200,
-    }
-    if enc.enc is not str:
-        kwargs["response_format"] = enc.enc
-    response = litellm.completion(**kwargs)
-    assert response is not None
+        max_tokens=400,
+    )
+    assert isinstance(response, litellm.ModelResponse)
 
-    content = response.choices[0].message.content
+    choice = response.choices[0]
+    assert isinstance(choice, litellm.Choices)
+    content = choice.message.content
     assert content is not None, (
         f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
     )
 
-    deserialized = enc.deserialize(content)
-    pydantic.TypeAdapter(enc.enc).validate_python(deserialized)
-
-    decoded = enc.decode(deserialized)
-    pydantic.TypeAdapter(enc.base).validate_python(decoded)
+    deserialized = json.loads(content)
+    decoded = enc.validate_python(deserialized, context=ctx or {})
+    pydantic.TypeAdapter(ty).validate_python(decoded)
 
 
 @requires_openai
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
@@ -792,18 +830,21 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     _fn.__annotations__ = {"value": ty, "return": None}
 
     tool: Tool[..., Any] = Tool.define(_fn)
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        Encodable[type(tool)]  # type: ignore[misc]
+    )
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[_encode_tool_spec(tool)],
+        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
         tool_choice="none",
-        max_tokens=200,
+        max_tokens=400,
     )
-    assert response is not None
+    assert isinstance(response, litellm.ModelResponse)
 
 
 @requires_openai
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
@@ -817,11 +858,14 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     _fn.__annotations__ = {"return": ty}
 
     tool: Tool[..., Any] = Tool.define(_fn)
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        Encodable[type(tool)]  # type: ignore[misc]
+    )
     response = litellm.completion(
         model=CHEAP_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[_encode_tool_spec(tool)],
+        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
         tool_choice="none",
-        max_tokens=200,
+        max_tokens=400,
     )
-    assert response is not None
+    assert isinstance(response, litellm.ModelResponse)

@@ -14,7 +14,7 @@
         "tool_calls": [
           {
             "function": {
-              "arguments": "{\"a\":{\"value\":3},\"b\":{\"value\":5}}",
+              "arguments": "{\"a\":3,\"b\":5}",
               "name": "add_numbers"
             },
             "id": "call_Enwfy9ZeiH3Oj5TTAad5owj6",

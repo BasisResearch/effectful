@@ -216,34 +216,17 @@ class Template[**P, T](Tool[P, T]):
     @property
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools. Auto-capture from lexical context."""
-        result = {}
-        is_recursive = _is_recursive_signature(self.__signature__)
+        from effectful.handlers.llm.completions import _collect_tools
 
-        for name, obj in self.__context__.items():
-            # Collect tools directly in context
-            if isinstance(obj, Tool):
-                result[name] = obj
+        result = _collect_tools(self.__context__)
 
-            # Collect tools as methods on Agent instances in context
-            elif isinstance(obj, Agent):
-                for cls in type(obj).__mro__:
-                    for attr_name in vars(cls):
-                        if isinstance(getattr(obj, attr_name), Tool):
-                            result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-
-        # Deduplicate by tool identity and remove self-references.
-        #
-        # The same Tool can appear under multiple names when it is both
-        # visible in the enclosing scope *and* discovered via an Agent
-        # instance's MRO.  Since Tools are hashable Operations and
-        # instance-method Tools are cached per instance, we keep only
-        # the last name for each unique tool object.  We also remove
-        # the template itself from the tool map unless it is explicitly
+        # We remove the template itself from the tool map unless it is explicitly
         # marked as recursive (see test_template_method, test_template_method_nested_class).
-        tool2name = {tool: name for name, tool in sorted(result.items())}
-        for name, tool in tuple(result.items()):
-            if tool2name[tool] != name or (tool is self and not is_recursive):
-                del result[name]
+        if not _is_recursive_signature(self.__signature__):
+            result = dict(result)  # copy to allow mutation
+            for name, tool in tuple(result.items()):
+                if tool is self:
+                    del result[name]
 
         return result
 
@@ -378,18 +361,10 @@ class Agent(abc.ABC):
 
     """
 
-    __history__: OrderedDict[str, Mapping[str, Any]]
-    __system_prompt__: str
+    @functools.cached_property
+    def __history__(self) -> OrderedDict[str, Mapping[str, Any]]:
+        return OrderedDict()
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "__history__"):
-            prop = functools.cached_property(lambda _: OrderedDict())
-            prop.__set_name__(cls, "__history__")
-            cls.__history__ = prop
-        if not hasattr(cls, "__system_prompt__"):
-            sp = functools.cached_property(
-                lambda self: inspect.getdoc(type(self)) or ""
-            )
-            sp.__set_name__(cls, "__system_prompt__")
-            cls.__system_prompt__ = sp
+    @functools.cached_property
+    def __system_prompt__(self) -> str:
+        return inspect.getdoc(type(self)) or ""

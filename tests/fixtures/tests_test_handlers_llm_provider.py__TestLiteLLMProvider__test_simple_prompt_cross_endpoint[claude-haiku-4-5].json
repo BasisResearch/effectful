@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\": \"Testing is a crucial process that ensures software quality, identifies bugs, and validates that systems work as intended before deployment to users.\"}",
+        "content": "Testing is a crucial process that ensures software quality, identifies bugs, and validates that systems work as intended before deployment to users.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing is essential to ensure the quality and reliability of software before its release.\"}",
+        "content": "Testing is essential to ensure the quality and reliability of software before its release.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
