@@ -2196,3 +2196,149 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ============================================================================
+# Prompt Caching Tests
+# ============================================================================
+
+
+def _has_cache_control(msg: dict) -> bool:
+    """Check if a message dict contains cache_control in any content block."""
+    content = msg.get("content")
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and "cache_control" in b for b in content)
+    return False
+
+
+class CachingAgent(Agent):
+    """A test agent with persistent history."""
+
+    @Template.define
+    def ask(self, question: str) -> str:
+        """You are a helpful assistant. Answer concisely: {question}"""
+        raise NotHandled
+
+
+class TestPromptCaching:
+    """Tests that cache_control is present in messages sent to litellm."""
+
+    def test_system_message_has_cache_control(self):
+        """System message should include cache_control for prompt caching."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        msgs = capture.received_messages[0]
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert _has_cache_control(system_msgs[0]), (
+            f"System message should have cache_control. Got: {system_msgs[0]}"
+        )
+
+    def test_agent_user_message_has_cache_control(self):
+        """Agent calls should add cache_control to the last user message."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+        agent = CachingAgent()
+
+        with handler(provider), handler(capture):
+            agent.ask("What is 2+2?")
+
+        msgs = capture.received_messages[0]
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        content = user_msgs[0]["content"]
+        assert isinstance(content, list)
+        assert "cache_control" in content[-1], (
+            f"Agent user message should have cache_control. Got: {content[-1]}"
+        )
+
+    def test_non_agent_user_message_no_cache_control(self):
+        """Non-agent calls should NOT add cache_control to user messages."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        msgs = capture.received_messages[0]
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        content = user_msgs[0]["content"]
+        assert isinstance(content, list)
+        assert "cache_control" not in content[-1], (
+            "Non-agent user messages should NOT have cache_control"
+        )
+
+    def test_cache_control_format_is_ephemeral(self):
+        """cache_control should use the ephemeral type."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        for msg in capture.received_messages[0]:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and "cache_control" in block:
+                        assert block["cache_control"] == {"type": "ephemeral"}
+
+    def test_litellm_strips_cache_control_for_openai(self):
+        """Verify litellm strips cache_control when transforming for OpenAI."""
+        from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
+
+        msgs = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ]
+        config = OpenAIGPTConfig()
+        transformed = config.transform_request(
+            model="gpt-4o",
+            messages=msgs,
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+        for msg in transformed["messages"]:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    assert "cache_control" not in block
+
+    @requires_openai
+    def test_openai_accepts_cache_control_via_litellm(self):
+        """OpenAI works fine with cache_control (litellm strips it)."""
+        provider = LiteLLMProvider(model="gpt-4o-mini")
+        with handler(provider):
+            result = simple_prompt("math")
+        assert isinstance(result, str)
+
+    @requires_anthropic
+    def test_anthropic_accepts_cache_control(self):
+        """Anthropic should accept messages with cache_control."""
+        provider = LiteLLMProvider(model="claude-opus-4-6", max_tokens=20)
+        with handler(provider):
+            result = simple_prompt("math")
+        assert isinstance(result, str)
