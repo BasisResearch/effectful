@@ -14,6 +14,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["'3.13'"]
+        model: ["gpt-4o-mini"]
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +35,8 @@ jobs:
 
       - name: Run LLM integration tests
         env:
+          EFFECTFUL_LLM_MODEL: ${{ matrix.model }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          uv run pytest tests/test_handlers_llm_provider.py -v --tb=short
+          uv run pytest tests/test_handlers_llm_provider.py tests/test_handlers_llm_tool_calling_poem.py tests/test_handlers_llm_tool_calling_book.py -v --tb=short
