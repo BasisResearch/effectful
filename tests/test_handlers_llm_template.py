@@ -1518,3 +1518,18 @@ def test_validate_format_spec_on_undefined_var():
         def bad(x: int) -> str:
             """Value: {x} and {missing:.2f}."""
             raise NotHandled
+
+
+# Forward ref through Tool subclass of Operation.
+# Use types Pydantic can serialize (not arbitrary classes) to avoid
+# PydanticSchemaGenerationError when other tests build tool schemas.
+@Tool.define
+def _tool_forward_ref(x: "int") -> "str":
+    """A tool with forward-referenced parameter and return types."""
+    raise NotHandled
+
+
+def test_tool_forward_ref():
+    sig = inspect.signature(_tool_forward_ref)
+    assert sig.parameters["x"].annotation is int
+    assert sig.return_annotation is str
