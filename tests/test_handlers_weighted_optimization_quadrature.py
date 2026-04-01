@@ -11,7 +11,7 @@ from effectful.ops.weighted.jax import reals
 from effectful.ops.weighted.sugar import Sum
 
 
-def test_quadrature():
+def test_quadrature() -> None:
     x = defop(jax.Array, name="x")
     polynomial = 2 * x() + x() ** 2
     mu, sigma = 2.5, 5.0
@@ -24,10 +24,11 @@ def test_quadrature():
         expr = evaluate(expr)
 
     expected = 2 * mu + mu**2 + sigma**2
+    assert isinstance(expr, jax.Array)
     assert allclose(expr, expected)
 
 
-def test_bivariate_quadrature():
+def test_bivariate_quadrature() -> None:
     x = defop(jax.Array, name="x")
     y = defop(jax.Array, name="y")
     mu_x, sigma_x = 5.0, 3.0
@@ -46,4 +47,5 @@ def test_bivariate_quadrature():
         expr = evaluate(expr)
 
     expected = 2 * mu_x + mu_y**2 + sigma_y**2
+    assert isinstance(expr, jax.Array)
     assert allclose(expr, expected)

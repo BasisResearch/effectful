@@ -54,7 +54,7 @@ def sparse_to_tensor(sparse):
 
 
 @parameterize_intp
-def test_batched_matmul(intp):
+def test_batched_matmul(intp) -> None:
     key = jax.random.PRNGKey(0)
     # Define dimensions
     B, I, J, K = 2, 3, 4, 5
@@ -82,7 +82,7 @@ def test_batched_matmul(intp):
 
 
 @parameterize_intp
-def test_log_matmul(intp):
+def test_log_matmul(intp) -> None:
     key = jax.random.PRNGKey(0)
     I, J, K = 2, 3, 4
 
@@ -110,7 +110,7 @@ def test_log_matmul(intp):
 
 
 @parameterize_intp
-def test_linalg_reduces(intp):
+def test_linalg_reduces(intp) -> None:
     x, y, z = (
         defop(jax.Array, name="x"),
         defop(jax.Array, name="y"),
@@ -146,7 +146,7 @@ def test_linalg_reduces(intp):
 
 
 @parameterize_intp
-def test_linalg_reduces_named(intp):
+def test_linalg_reduces_named(intp) -> None:
     key = jax.random.PRNGKey(0)
     (x, y) = (defop(jax.Array, name="x"), defop(jax.Array, name="y"))
     A = random.normal(key, (3, 3))
@@ -161,7 +161,7 @@ def test_linalg_reduces_named(intp):
 
 
 @parameterize_intp
-def test_basic_min_reduces(intp):
+def test_basic_min_reduces(intp) -> None:
     """Test basic Min reduce operations."""
     x = defop(jax.Array, name="x")
 
@@ -188,7 +188,7 @@ def test_basic_min_reduces(intp):
 
 
 @parameterize_intp
-def test_arg_min_reduces(intp):
+def test_arg_min_reduces(intp) -> None:
     """Test ArgMin reduce operations."""
     x = defop(jax.Array, name="x")
 
@@ -207,7 +207,7 @@ def test_arg_min_reduces(intp):
 
 
 @parameterize_intp
-def test_multi_variable_min_reduces(intp):
+def test_multi_variable_min_reduces(intp) -> None:
     """Test Min reduce operations with multiple variables."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
@@ -224,7 +224,7 @@ def test_multi_variable_min_reduces(intp):
 
 
 @parameterize_intp
-def test_multi_variable_arg_min_reduces(intp):
+def test_multi_variable_arg_min_reduces(intp) -> None:
     """Test ArgMin reduce operations with multiple variables."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 
@@ -240,7 +240,7 @@ def test_multi_variable_arg_min_reduces(intp):
 
 
 @parameterize_intp
-def test_complex_arg_min_reduces(intp):
+def test_complex_arg_min_reduces(intp) -> None:
     """Test complex ArgMin reduce operations with three variables."""
     x, y, z = (
         defop(jax.Array, name="x"),
@@ -262,7 +262,7 @@ def test_complex_arg_min_reduces(intp):
 
 
 @parameterize_intp
-def test_nested_reduces(intp):
+def test_nested_reduces(intp) -> None:
     """Test nested reduces over jnp.arange to verify they work correctly."""
     a, b, c = (
         defop(jax.Array, name="a"),
@@ -322,7 +322,7 @@ def test_nested_reduces(intp):
 
 
 @parameterize_intp
-def test_partial_eval(intp):
+def test_partial_eval(intp) -> None:
     """Reduce over arrays with named dimensions."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
@@ -345,7 +345,7 @@ def test_partial_eval(intp):
 
 @parameterize_intp
 @parameterize_ops
-def test_dependent_reduces(intp, weighted_op, python_op):
+def test_dependent_reduces(intp, weighted_op, python_op) -> None:
     """Test reduces where indices depend on other indices within the same reduce."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
@@ -367,7 +367,7 @@ def test_dependent_reduces(intp, weighted_op, python_op):
 
 
 @parameterize_intp
-def test_dependent_reduces_unused(intp):
+def test_dependent_reduces_unused(intp) -> None:
     """Test a dependent reduce with an unused stream whose length depends on another stream."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
@@ -381,7 +381,7 @@ def test_dependent_reduces_unused(intp):
 
 
 @parameterize_intp
-def test_cyclic_dependent_reduces(intp):
+def test_cyclic_dependent_reduces(intp) -> None:
     """Test a dependent reduce where two streams depend on each other."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
@@ -392,7 +392,7 @@ def test_cyclic_dependent_reduces(intp):
 
 
 @parameterize_intp
-def test_dependent_partial_reduces(intp):
+def test_dependent_partial_reduces(intp) -> None:
     """Test reduces of parts of the indices that depend on other indices within the same reduce."""
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
     I, J = 3, 4
@@ -414,7 +414,7 @@ def test_dependent_partial_reduces(intp):
 
 
 @parameterize_intp
-def test_doubly_dependent_partial_reduces(intp):
+def test_doubly_dependent_partial_reduces(intp) -> None:
     i, j, k = (
         defop(jax.Array, name="i"),
         defop(jax.Array, name="j"),
@@ -458,7 +458,7 @@ def dependency_graph_of_streams(streams):
 
 
 @parameterize_intp
-def test_reduce_chain(intp):
+def test_reduce_chain(intp) -> None:
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -484,11 +484,12 @@ def test_reduce_chain(intp):
     with handler(intp):
         result = evaluate(new_reduce)
 
+    assert isinstance(result, jax.Array)
     assert allclose(result, jnp.array([5, 6, 7]))
 
 
 @parameterize_intp
-def test_reduce_chain_named(intp):
+def test_reduce_chain_named(intp) -> None:
     def f(x):
         return jnp.expand_dims(x + 1, 0)
 
@@ -530,7 +531,7 @@ class Point:
     "pytree_constr",
     [lambda x, y: (x, y), lambda x, y: Point(x=x, y=y), lambda x, y: [x, y]],  # type: ignore
 )
-def test_pytree_reduce(weighted_op, python_op, pytree_constr):
+def test_pytree_reduce(weighted_op, python_op, pytree_constr) -> None:
     """A reduce where the body is a pytree and the reduce indices are arrays should
     produce a pytree of arrays.
 
@@ -558,7 +559,7 @@ def test_pytree_reduce(weighted_op, python_op, pytree_constr):
         assert jax.tree.all(jax.tree.map(lambda a, e: (a == e).all(), actual, expected))
 
 
-def test_gradient_optimization_init():
+def test_gradient_optimization_init() -> None:
     """Test that GradientOptimizationReduce uses initialization values correctly."""
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 

@@ -10,7 +10,7 @@ from effectful.ops.weighted.jax import reals
 from effectful.ops.weighted.sugar import ArgMax, Max
 
 
-def test_flip_optimization_max():
+def test_flip_optimization_max() -> None:
     """Test the FlipOptimizationReduce handler for converting Max to Min problems."""
     x = defop(jax.Array, name="x")
 
@@ -21,7 +21,7 @@ def test_flip_optimization_max():
         assert f_max[()] == 3  # max of -x² is 0 at x=0
 
 
-def test_flip_optimization_max_real():
+def test_flip_optimization_max_real() -> None:
     x = defop(jax.Array, name="x")
 
     # Test with MaxAlg
@@ -35,7 +35,7 @@ def test_flip_optimization_max_real():
         assert f_max[()] == 3  # max of -x² is 0 at x=0
 
 
-def test_flip_optimization_argmax():
+def test_flip_optimization_argmax() -> None:
     # Test with ArgMaxAlg
     x, y = defop(jax.Array, name="x"), defop(jax.Array, name="y")
 

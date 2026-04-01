@@ -65,7 +65,7 @@ def run_svi(data):
     return inferred_prob
 
 
-def test_svi():
+def test_svi() -> None:
     """Implementation of the SVI example from Pyro's documentation (https://pyro.ai/examples/svi_part_i.html)"""
     # Generate data from a biased coin
     key = jax.random.key(0)

@@ -41,7 +41,7 @@ from effectful.ops.weighted.sugar import ArgMin, Sum
 # )
 
 
-def test_sampling():
+def test_sampling() -> None:
     n_samples = 1
     key = jax.random.key(0)
 
@@ -60,7 +60,7 @@ def test_sampling():
     assert isinstance(s3, jax.Array)
 
 
-def test_stream_chain_reduce():
+def test_stream_chain_reduce() -> None:
     x = defop(tuple, name="x")
     y = defop(tuple, name="y")
     streams = {x: (1, 2, 3), y: (4, 5)}
@@ -70,7 +70,7 @@ def test_stream_chain_reduce():
     assert list(expr) == expected
 
 
-def test_maximum_marginal_likelihood_smoke():
+def test_maximum_marginal_likelihood_smoke() -> None:
     data = jnp.exp(jax.random.normal(jax.random.key(0), (10,)))
 
     loc_z = defop(jax.Array, name="loc_z")
@@ -114,7 +114,7 @@ def run_expectation():
         return Sum({(x, w): dist.Normal(loc, scale)}, jnp.exp(w()) * f(x()))
 
 
-def test_interpretation_body():
+def test_interpretation_body() -> None:
     with handler(BaselineReduce()):
         Sum2 = functools.partial(reduce, promote(SumMonoid))
         w, x, y, z = (
@@ -183,7 +183,7 @@ def test_interpretation_body():
             evaluate(z(), intp=intp_circular)
 
 
-def test_integration():
+def test_integration() -> None:
     intg = run_expectation()
     assert isinstance(intg, jax.Array)
     assert isclose(intg, jnp.array(0.5), atol=1e-1)
@@ -193,9 +193,9 @@ def test_integration():
     assert isclose(intg, jnp.array(0.5), atol=1e-1)
 
 
-def test_integration_benchmark(benchmark):
+def test_integration_benchmark(benchmark) -> None:
     benchmark(run_expectation)
 
 
-def test_integration_jit_benchmark(benchmark):
+def test_integration_jit_benchmark(benchmark) -> None:
     benchmark(jax.jit(run_expectation))

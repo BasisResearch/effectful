@@ -14,7 +14,7 @@ def assert_no_base_case(*args, **kwargs):
     assert False, "vectorized reduce missed a case"
 
 
-def test_opt():
+def test_opt() -> None:
     def loss(theta):
         return (theta() - 5.0) ** 2
 
@@ -27,7 +27,7 @@ def test_opt():
     assert min_loss[()] < 1e-3
 
 
-def test_batched_matmul():
+def test_batched_matmul() -> None:
     """Fit a line to noisy data using gradient descent."""
     key = jax.random.PRNGKey(0)
     expected_w = 3.0

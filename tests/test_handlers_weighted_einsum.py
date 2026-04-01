@@ -53,7 +53,7 @@ parameterize_intp = pytest.mark.parametrize(
 
 def get_op(name: str) -> tuple:
     name = str(name)
-    return name, defop(jax.Array, name=name)()  # type: ignore
+    return name, defop(jax.Array, name=name)()
 
 
 def parse_equation(equation: str):
@@ -103,7 +103,7 @@ def einsum_weighted(
 
 @pytest.mark.parametrize("equation", EINSUM_EXAMPLES)
 @parameterize_intp
-def test_einsum_optimize(intp, equation: str):
+def test_einsum_optimize(intp, equation: str) -> None:
     sizes, operands = make_einsum_example(equation)
     expected = jnp.einsum(equation, *operands)
     result = einsum_weighted(equation, operands, sizes, intp)
