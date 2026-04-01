@@ -54,7 +54,8 @@ weighted = [
   "jax",
   "optax",
   "scipy",
-  "islpy"
+  "islpy",
+  "chex",
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
