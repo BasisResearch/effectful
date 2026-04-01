@@ -43,7 +43,7 @@ from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests.conftest import _HAS_LLM_API_KEY, EFFECTFUL_LLM_MODEL, requires_llm
+from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm, requires_vision
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -54,13 +54,6 @@ REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 # Test Fixtures and Mock Data
 # ============================================================================
 
-
-def make_provider(request, model=None, **kwargs):
-    """Return a live LiteLLMProvider when API keys are available, else a ReplayLiteLLMProvider."""
-    model = model or EFFECTFUL_LLM_MODEL
-    if _HAS_LLM_API_KEY:
-        return LiteLLMProvider(model=model, **kwargs)
-    return ReplayLiteLLMProvider(request, model=model, **kwargs)
 
 
 def retry_on_error(error: type[Exception], n: int):
@@ -190,22 +183,10 @@ class _ToolNameAgent(Agent):
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
-    @pytest.mark.parametrize("model_name", [EFFECTFUL_LLM_MODEL])
-    def test_simple_prompt_multiple_models(self, request, model_name):
-        """Test that LiteLLMProvider works with different model configurations."""
+    def test_simple_prompt(self, request):
+        """Test that LiteLLMProvider returns a non-empty string."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            result = simple_prompt("testing")
-            assert isinstance(result, str)
-            assert len(result) > 0
-
-    @pytest.mark.parametrize("model_name", [EFFECTFUL_LLM_MODEL])
-    def test_simple_prompt_cross_endpoint(self, request, model_name):
-        """Test that ReplayLiteLLMProvider works across different API endpoints."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -217,7 +198,7 @@ class TestLiteLLMProvider:
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(make_provider(request)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -231,7 +212,7 @@ class TestLiteLLMProvider:
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(make_provider(request)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -243,7 +224,7 @@ class TestLiteLLMProvider:
         """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
-            handler(make_provider(request, temperature=0.1)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, temperature=0.1)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
@@ -297,9 +278,10 @@ def categorise_image(image: Image.Image) -> str:
     raise NotHandled
 
 
+@requires_vision
 def test_image_input(request):
     with (
-        handler(make_provider(request)),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -329,13 +311,14 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     raise NotHandled
 
 
+@requires_vision
 def test_list_image_input(request):
     """Regression test for GitHub issue #552: list[Image.Image] in templates."""
     img_red = Image.new("RGB", (64, 64), (255, 0, 0))
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
     with (
-        handler(make_provider(request)),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -367,7 +350,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(make_provider(request)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)

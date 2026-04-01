@@ -14,6 +14,11 @@ requires_llm = pytest.mark.skipif(
     reason=f"No API key configured for model {EFFECTFUL_LLM_MODEL}",
 )
 
+requires_vision = pytest.mark.skipif(
+    not litellm.supports_vision(model=EFFECTFUL_LLM_MODEL),
+    reason=f"Model {EFFECTFUL_LLM_MODEL} does not support vision",
+)
+
 UNIMPLEMENTED_SUBSTRINGS = [
     "infer.JitTrace_ELBO",
     "the event_dim arg",
