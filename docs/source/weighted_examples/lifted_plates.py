@@ -2,17 +2,17 @@ import jax
 import pyro
 from jax import random
 from torch import tensor
-from weighted.handlers.jax import DenseTensorReduce
-from weighted.handlers.optimization import ReduceDistributeTerm
-from weighted.handlers.optimization.cartesian_product import (
-    ReduceDistributeCartesianProduct,
-)
-from weighted.handlers.optimization.reorder import ReduceNoStreams
-from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.weighted.jax import DenseTensorReduce
+from effectful.handlers.weighted.optimization import ReduceDistributeTerm
+from effectful.handlers.weighted.optimization.cartesian_product import (
+    ReduceDistributeCartesianProduct,
+)
+from effectful.handlers.weighted.optimization.reorder import ReduceNoStreams
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 """
 Example for a plated factor graph (taken from Example 3.1. in [1]).

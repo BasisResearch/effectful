@@ -1,15 +1,15 @@
 import functools
 
-import weighted.ops.reduce as ops
 from scipy.cluster.hierarchy import DisjointSet
-from weighted.handlers.optimization.utils import (
+
+import effectful.handlers.jax.numpy as jnp
+import effectful.ops.weighted.reduce as ops
+from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.weighted.optimization.utils import (
     parse_terms,
     parse_with_op,
     partition_streams,
 )
-
-import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term

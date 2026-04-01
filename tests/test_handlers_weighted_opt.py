@@ -1,13 +1,13 @@
 import jax
-from weighted.handlers.jax import GradientOptimizationReduce
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.jax import reals
-from weighted.ops.sugar import ArgMin, Min, Sum
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import unbind_dims
+from effectful.handlers.weighted.jax import GradientOptimizationReduce
+from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.sugar import ArgMin, Min, Sum
 
 
 def assert_no_base_case(*args, **kwargs):

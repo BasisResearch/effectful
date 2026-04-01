@@ -2,17 +2,17 @@ import functools
 
 import jax
 from scipy.special import roots_hermite
-from weighted.handlers.optimization.utils import parse_terms
-from weighted.ops.jax import reals
-from weighted.ops.monoid import SumMonoid
-from weighted.ops.reduce import reduce
 
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.weighted.optimization.utils import parse_terms
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.monoid import SumMonoid
+from effectful.ops.weighted.reduce import reduce
 
 
 class GaussHermiteQuadrature(ObjectInterpretation):

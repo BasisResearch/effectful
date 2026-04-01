@@ -2,10 +2,8 @@ import functools
 import itertools
 
 import jax
-import weighted.ops.reduce as ops
-from weighted.ops.monoid import JaxCartesianProdMonoid
-from weighted.ops.reduce import order_streams
 
+import effectful.ops.weighted.reduce as ops
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import evaluate, fvsof, fwd
@@ -17,6 +15,8 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Term
+from effectful.ops.weighted.monoid import JaxCartesianProdMonoid
+from effectful.ops.weighted.reduce import order_streams
 
 
 def unify_streams(streams1: dict, streams2: dict) -> dict | None:

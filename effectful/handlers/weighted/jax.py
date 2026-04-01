@@ -6,18 +6,6 @@ import jax
 import optax
 import tree
 from numpyro.distributions import Distribution
-from weighted.ops.distribution import D
-from weighted.ops.jax import key, reals
-from weighted.ops.monoid import (
-    ArgMaxMonoid,
-    ArgMinMonoid,
-    LogSumMonoid,
-    MaxMonoid,
-    MinMonoid,
-    ProdMonoid,
-    SumMonoid,
-)
-from weighted.ops.reduce import order_streams, reduce
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
@@ -39,6 +27,18 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.weighted.distribution import D
+from effectful.ops.weighted.jax import key, reals
+from effectful.ops.weighted.monoid import (
+    ArgMaxMonoid,
+    ArgMinMonoid,
+    LogSumMonoid,
+    MaxMonoid,
+    MinMonoid,
+    ProdMonoid,
+    SumMonoid,
+)
+from effectful.ops.weighted.reduce import order_streams, reduce
 
 logger = logging.getLogger(__name__)
 

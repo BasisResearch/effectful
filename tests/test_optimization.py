@@ -2,31 +2,34 @@ import jax
 from jax import random
 from jax.numpy import allclose
 from pytest import mark, param
-from weighted.handlers.jax import DenseTensorReduce
-from weighted.handlers.optimization import ReducePropagateUnusedStreams
-from weighted.handlers.optimization.cartesian_product import (
-    ReduceDistributeCartesianProduct,
-    unify_streams,
-)
-from weighted.handlers.optimization.distribution import (
-    NormalVerticalFusion,
-    SampleAddNormalFusion,
-    SampleMulConstantFusion,
-)
-from weighted.handlers.optimization.distribution import (
-    interpretation as simplify_normals_intp,
-)
-from weighted.handlers.optimization.polyhedral import ReduceLinearIndexer
-from weighted.handlers.optimization.reorder import ReduceDistributeTerm, ReduceNoStreams
-from weighted.ops.monoid import mul
-from weighted.ops.reduce import BaselineReduce, reduce
-from weighted.ops.sugar import CartesianProd, Max, Prod, Sum
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import jax_getitem, unbind_dims
+from effectful.handlers.weighted.jax import DenseTensorReduce
+from effectful.handlers.weighted.optimization import ReducePropagateUnusedStreams
+from effectful.handlers.weighted.optimization.cartesian_product import (
+    ReduceDistributeCartesianProduct,
+    unify_streams,
+)
+from effectful.handlers.weighted.optimization.distribution import (
+    NormalVerticalFusion,
+    SampleAddNormalFusion,
+    SampleMulConstantFusion,
+)
+from effectful.handlers.weighted.optimization.distribution import (
+    interpretation as simplify_normals_intp,
+)
+from effectful.handlers.weighted.optimization.polyhedral import ReduceLinearIndexer
+from effectful.handlers.weighted.optimization.reorder import (
+    ReduceDistributeTerm,
+    ReduceNoStreams,
+)
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop, syntactic_eq
+from effectful.ops.weighted.monoid import mul
+from effectful.ops.weighted.reduce import BaselineReduce, reduce
+from effectful.ops.weighted.sugar import CartesianProd, Max, Prod, Sum
 from tests.utils import REDUCE_TRANSFORMS
 
 parameterize_base_intp = mark.parametrize(

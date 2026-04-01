@@ -1,19 +1,19 @@
 import jax
 import matplotlib.pyplot as plt
 import pandas as pd
-from weighted.handlers.jax import GradientOptimizationReduce, reals
-from weighted.handlers.jax import interpretation as jax_reduce
-from weighted.handlers.optimization.distribution import (
-    interpretation as simplify_normals,
-)
-from weighted.ops.reduce import defop
-from weighted.ops.sugar import ArgMin
 
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.numpyro import Normal
+from effectful.handlers.weighted.jax import GradientOptimizationReduce, reals
+from effectful.handlers.weighted.jax import interpretation as jax_reduce
+from effectful.handlers.weighted.optimization.distribution import (
+    interpretation as simplify_normals,
+)
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn
+from effectful.ops.weighted.reduce import defop
+from effectful.ops.weighted.sugar import ArgMin
 
 
 def get_dataset():

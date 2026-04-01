@@ -1,10 +1,14 @@
-from weighted.ops.distribution import D
-from weighted.ops.monoid import ArgMaxMonoid, ArgMinMonoid, MaxMonoid, MinMonoid
-from weighted.ops.reduce import reduce
-
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
+from effectful.ops.weighted.distribution import D
+from effectful.ops.weighted.monoid import (
+    ArgMaxMonoid,
+    ArgMinMonoid,
+    MaxMonoid,
+    MinMonoid,
+)
+from effectful.ops.weighted.reduce import reduce
 
 
 class FlipOptimizationReduce(ObjectInterpretation):

@@ -1,14 +1,14 @@
 import jax
 from jax.numpy import allclose
-from weighted.handlers.jax import DenseTensorReduce
-from weighted.handlers.optimization.quadrature import GaussHermiteQuadrature
-from weighted.ops.jax import reals
-from weighted.ops.sugar import Sum
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
+from effectful.handlers.weighted.jax import DenseTensorReduce
+from effectful.handlers.weighted.optimization.quadrature import GaussHermiteQuadrature
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.sugar import Sum
 
 
 def test_quadrature():

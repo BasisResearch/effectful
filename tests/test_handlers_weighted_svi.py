@@ -1,18 +1,18 @@
 import jax
 from jax.numpy import isclose
-from weighted.handlers.jax import (
-    GradientOptimizationReduce,
-    LikelihoodWeightingReduce,
-)
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.jax import reals
-from weighted.ops.sugar import ArgMin, Sum
 
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import sizesof
+from effectful.handlers.weighted.jax import (
+    GradientOptimizationReduce,
+    LikelihoodWeightingReduce,
+)
+from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.sugar import ArgMin, Sum
 
 
 def run_svi(data):

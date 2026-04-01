@@ -11,17 +11,17 @@ import optax
 from jax import random
 from matplotlib.animation import FuncAnimation
 from tqdm import tqdm
-from weighted.handlers.jax import D, ScanReduce, key
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.monoid import add, mul
-from weighted.ops.sugar import ArgMax, Sum
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
+from effectful.handlers.weighted.jax import D, ScanReduce, key
+from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.ops.semantics import fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
+from effectful.ops.weighted.monoid import add, mul
+from effectful.ops.weighted.sugar import ArgMax, Sum
 
 
 @dataclass(frozen=True)

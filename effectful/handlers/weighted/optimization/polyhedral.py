@@ -1,13 +1,13 @@
 import numbers
 
 import islpy as isl
-from weighted.ops.reduce import reduce
 
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Term
+from effectful.ops.weighted.reduce import reduce
 
 
 def _intp_add(lhs, rhs):

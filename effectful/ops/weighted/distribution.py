@@ -1,11 +1,11 @@
 import jax
 from numpyro.distributions import Distribution
-from weighted.ops.jax import reals
-from weighted.ops.sugar import Sum
 
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled, Operation
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.sugar import Sum
 
 
 @defop

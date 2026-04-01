@@ -1,15 +1,15 @@
 import jax
 from jax import random
-from weighted.handlers.jax import DenseTensorReduce
-from weighted.handlers.optimization.cartesian_product import (
+
+from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.weighted.jax import DenseTensorReduce
+from effectful.handlers.weighted.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
     SplitCartesianProductReduce,
 )
-from weighted.ops.sugar import CartesianProd, Prod, Sum
-
-from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 """
 Simplest plated factor graph that is not liftable

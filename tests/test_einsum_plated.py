@@ -6,18 +6,21 @@ import jax
 import pyro.ops.contract
 import pytest
 from torch import tensor
-from weighted.handlers.optimization import ReduceDistributeTerm, ReduceReorderReduction
-from weighted.handlers.optimization.cartesian_product import (
-    ReduceDistributeCartesianProduct,
-    SplitCartesianProductReduce,
-)
-from weighted.ops.reduce import BaselineReduce
-from weighted.ops.sugar import CartesianProd, Prod, Sum
 
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.weighted.optimization import (
+    ReduceDistributeTerm,
+    ReduceReorderReduction,
+)
+from effectful.handlers.weighted.optimization.cartesian_product import (
+    ReduceDistributeCartesianProduct,
+    SplitCartesianProductReduce,
+)
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.weighted.reduce import BaselineReduce
+from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 PLATED_EINSUM_EXAMPLES = [
     ("i->", "i"),

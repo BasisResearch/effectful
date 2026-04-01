@@ -1,12 +1,11 @@
 import functools
 
-from weighted.ops.distribution import D
-from weighted.ops.reduce import reduce
-
 from effectful.handlers.jax import bind_dims, jax_getitem
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
+from effectful.ops.weighted.distribution import D
+from effectful.ops.weighted.reduce import reduce
 
 
 def eliminate_d(monoid, streams, indices, body):

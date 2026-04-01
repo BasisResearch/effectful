@@ -4,13 +4,13 @@ from operator import mul
 
 import jax
 import pytest
-from weighted.handlers.jax import D
-from weighted.ops.sugar import Sum
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
+from effectful.handlers.weighted.jax import D
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.weighted.sugar import Sum
 from tests.utils import (
     DEFAULT_TEST_REDUCE_INTP,
 )

@@ -5,23 +5,23 @@ import jax
 import pytest
 from jax import random as random
 from jax.numpy import allclose, isclose
-from weighted.handlers.jax import (
+
+import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.weighted.jax import (
     DenseTensorReduce,
     GradientOptimizationReduce,
     PytreeMapReduce,
     ScanReduce,
 )
-from weighted.ops.distribution import D
-from weighted.ops.jax import reals
-from weighted.ops.reduce import reduce
-from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
-
-import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
+from effectful.ops.weighted.distribution import D
+from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.reduce import reduce
+from effectful.ops.weighted.sugar import ArgMin, LogSum, Max, Min, Sum
 from tests.utils import DEFAULT_TEST_REDUCE_INTP
 
 parameterize_intp = pytest.mark.parametrize(
