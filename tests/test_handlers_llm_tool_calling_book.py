@@ -3,10 +3,8 @@
 This module is separate to avoid lexical context pollution from other templates.
 """
 
-import os
 from dataclasses import dataclass
 
-import pytest
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
@@ -14,19 +12,7 @@ from effectful.handlers.llm.completions import LiteLLMProvider, call_assistant
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-
-# Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-HAS_ANTHROPIC_KEY = (
-    "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
-)
-
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
-)
-requires_anthropic = pytest.mark.skipif(
-    not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
-)
+from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm
 
 
 @dataclass
@@ -97,18 +83,12 @@ def get_book_recommendation(user_preference: str) -> BookRecommendation:
 
 
 class TestPydanticBaseModelToolCalls:
-    @pytest.mark.parametrize(
-        "model",
-        [
-            pytest.param("gpt-5-nano", marks=requires_openai),
-            pytest.param("claude-sonnet-4-5-20250929", marks=requires_anthropic),
-        ],
-    )
-    def test_pydantic_basemodel_tool_calling(self, model):
+    @requires_llm
+    def test_pydantic_basemodel_tool_calling(self):
         """Test that templates with tools work with Pydantic BaseModel."""
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
-            handler(LiteLLMProvider(model=model)),
+            handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(book_rec_ctx),
         ):
