@@ -28,7 +28,7 @@ from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
-from tests.conftest import LLM_MODEL, requires_llm
+from tests.conftest import EFFECTFUL_EFFECTFUL_LLM_MODEL, requires_llm
 
 # ---------------------------------------------------------------------------
 # Module-level type definitions
@@ -749,7 +749,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 ) -> None:
     enc = Encodable.define(ty, ctx)
     kwargs: dict[str, Any] = {
-        "model": LLM_MODEL,
+        "model": EFFECTFUL_LLM_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -791,7 +791,7 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
 
     tool: Tool[..., Any] = Tool.define(_fn)
     response = litellm.completion(
-        model=LLM_MODEL,
+        model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[_encode_tool_spec(tool)],
         tool_choice="none",
@@ -816,7 +816,7 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
 
     tool: Tool[..., Any] = Tool.define(_fn)
     response = litellm.completion(
-        model=LLM_MODEL,
+        model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[_encode_tool_spec(tool)],
         tool_choice="none",

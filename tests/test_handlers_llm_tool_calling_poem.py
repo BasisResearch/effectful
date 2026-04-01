@@ -17,7 +17,7 @@ from effectful.handlers.llm.completions import (
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests.conftest import LLM_MODEL, requires_llm
+from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm
 
 
 @dataclass
@@ -105,7 +105,7 @@ class TestToolCalling:
         """Test that templates with tools work with the configured model."""
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
-            handler(LiteLLMProvider(model=LLM_MODEL)),
+            handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):
