@@ -55,7 +55,6 @@ REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 # ============================================================================
 
 
-
 def retry_on_error(error: type[Exception], n: int):
     def decorator(func):
         @functools.wraps(func)
@@ -224,7 +223,11 @@ class TestLiteLLMProvider:
         """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, temperature=0.1)),
+            handler(
+                ReplayLiteLLMProvider(
+                    request, model=EFFECTFUL_LLM_MODEL, temperature=0.1
+                )
+            ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
@@ -243,7 +246,11 @@ def test_agent_tool_names_are_valid_integration():
 
     # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
-        handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=16)),
+        handler(
+            LiteLLMProvider(
+                model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=16
+            )
+        ),
         handler(LimitLLMCallsHandler(max_calls=1)),
     ):
         result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
@@ -378,7 +385,9 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)):
+    with handler(
+        ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
+    ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
