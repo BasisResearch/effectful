@@ -6,12 +6,24 @@ Table of Contents
    :caption: Getting Started
 
    getting_started
+   introduction
+   named_tensor_notation
+   llm
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Examples
+
+   minipyro_example
+   lambda_example
+   semi_ring_example
+   beam_search_example
 
 .. toctree::
    :maxdepth: 2
    :caption: Documentation
 
-   module
+   effectful
 
 Indices and Tables
 ==================

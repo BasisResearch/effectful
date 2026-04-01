@@ -1,44 +1,74 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "weighted"
-version = "0.0.1"
+name = "effectful"
+version = "0.3.1"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
-license = {text = "Apache 2.0"}
 authors = [
-    {name = "Basis"}
+    { name = "Basis" },
 ]
-keywords = ["machine learning", "statistics", "probabilistic programming", "bayesian modeling", "pytorch"]
+keywords = [
+    "machine learning",
+    "statistics",
+    "probabilistic programming",
+    "bayesian modeling",
+    "pytorch",
+]
 classifiers = [
     "Intended Audience :: Developers",
-    "Intended Audience :: Education", 
+    "Intended Audience :: Education",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS :: MacOS X",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11"
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
-dependencies = [
-    "effectful[jax,numpyro]@git+https://github.com/BasisResearch/effectful.git",
-    "jax",
-    "optax",
-    "scipy",
-    "islpy",
-]
+dependencies = []
 
-[dependency-groups]
-dev = [
-    "setuptools",
+[project.urls]
+Homepage = "https://www.basis.ai/"
+Source = "https://github.com/BasisResearch/effectful"
+"Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
+
+[project.optional-dependencies]
+torch = ["torch"]
+pyro = ["pyro-ppl>=1.9.1"]
+jax = ["jax"]
+numpyro = ["numpyro>=0.19"]
+llm = [
+  "litellm<1.82.7",
+  "tenacity",
+  "mypy",
+  "autoflake",
+  "pillow",
+  "pydantic",
+  "typing_extensions",
+  "restrictedpython>=8.1"
+]
+weighted = [
+  "jax",
+  "optax",
+  "scipy",
+  "islpy"
+]
+prettyprinter = ["prettyprinter"]
+docs = [
+    "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
     "sphinx",
-    "sphinxcontrib-bibtex", 
+    "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
+    "sphinx_autodoc_typehints>=3.6,<3.9",
+    "pypandoc_binary<1.16",
+]
+test = [
+    "effectful[torch,pyro,jax,numpyro,docs,prettyprinter]",
     "pytest",
     "pytest-cov",
     "pytest-xdist",
@@ -47,48 +77,22 @@ dev = [
     "ruff",
     "nbval",
     "nbqa",
-    "prettyprinter>=0.18.0",
 ]
 
+[dependency-groups]
+dev = ["effectful[torch,pyro,jax,numpyro,llm,docs,test]"]
 
-[project.optional-dependencies]
-docs = [
-    "setuptools",
-    "sphinx",
-    "sphinxcontrib-bibtex",
-    "sphinx_rtd_theme",
-    "myst-parser",
-    "nbsphinx",
-    "matplotlib",
-    "pyro-ppl",
-    "flax",
-    "pandas",
-    "torchvision",
-]
+[tool.ruff]
+target-version = "py312"
 
-[project.urls]
-Source = "https://github.com/BasisResearch/weighted"
-
-[tool.setuptools]
-packages = ["weighted"]
-package-data = {"weighted" = ["py.typed"]}
+[tool.ruff.lint]
+select = ["F", "I", "PERF", "UP"]
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules"
-testpaths = ["./tests"]
+testpaths = ["./effectful", "./tests"]
 
 [tool.mypy]
 ignore_missing_imports = true
 warn_unused_ignores = true
-exclude = ["build"]
-
-[tool.ruff]
-line-length = 90
-target-version = "py312"
-
-[tool.ruff.format]
-quote-style = "double"
-
-[tool.ruff.lint]
-select = ["F", "I", "PERF", "UP", "B", "SIM", "C4", "T10", "FURB", "PLE"]
-extend-ignore = ["E203", "E741", "B011", "FURB136"]
+exclude = "build"
