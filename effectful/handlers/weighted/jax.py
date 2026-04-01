@@ -3,8 +3,8 @@ import logging
 import operator
 
 import jax
+import jax.tree as tree
 import optax
-import tree
 from numpyro.distributions import Distribution
 
 import effectful.handlers.jax.numpy as jnp
@@ -324,7 +324,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
         keys = jax.random.split(key(), self.steps)
         for i in steps_iter:
             grads = list(loss_grad(keys[i], *param_values))
-            assert all(isinstance(g, jax.Array) for g in tree.flatten(grads))
+            assert all(isinstance(g, jax.Array) for g in tree.flatten(grads)[0])
             updates, opt_state = optimizer.update(grads, opt_state)
             param_values = optax.apply_updates(param_values, updates)
 

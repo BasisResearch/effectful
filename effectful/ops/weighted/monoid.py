@@ -6,7 +6,7 @@ from collections.abc import Callable, Generator, Mapping
 from typing import Any
 
 import jax
-import tree
+import jax.tree as tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
