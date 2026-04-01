@@ -2,18 +2,18 @@ import functools
 import itertools
 from operator import mul
 
-import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
+from weighted.handlers.jax import D
+from weighted.ops.sugar import Sum
+
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
-
 from tests.utils import (
     DEFAULT_TEST_REDUCE_INTP,
 )
-from weighted.handlers.jax import D
-from weighted.ops.sugar import Sum
 
 EINSUM_EXAMPLES = [
     # vector operations

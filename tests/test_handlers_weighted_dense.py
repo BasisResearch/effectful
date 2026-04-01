@@ -1,18 +1,10 @@
 from graphlib import TopologicalSorter
 
 import chex
-import effectful.handlers.jax.numpy as jnp
 import jax
 import pytest
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.handlers.jax._handlers import is_eager_array
-from effectful.ops.semantics import evaluate, fvsof, handler
-from effectful.ops.syntax import defop
-from effectful.ops.types import Term
 from jax import random as random
 from jax.numpy import allclose, isclose
-
-from tests.utils import DEFAULT_TEST_REDUCE_INTP
 from weighted.handlers.jax import (
     DenseTensorReduce,
     GradientOptimizationReduce,
@@ -23,6 +15,14 @@ from weighted.ops.distribution import D
 from weighted.ops.jax import reals
 from weighted.ops.reduce import reduce
 from weighted.ops.sugar import ArgMin, LogSum, Max, Min, Sum
+
+import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax._handlers import is_eager_array
+from effectful.ops.semantics import evaluate, fvsof, handler
+from effectful.ops.syntax import defop
+from effectful.ops.types import Term
+from tests.utils import DEFAULT_TEST_REDUCE_INTP
 
 parameterize_intp = pytest.mark.parametrize(
     "intp",

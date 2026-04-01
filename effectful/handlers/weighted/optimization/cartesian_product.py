@@ -2,6 +2,10 @@ import functools
 import itertools
 
 import jax
+import weighted.ops.reduce as ops
+from weighted.ops.monoid import JaxCartesianProdMonoid
+from weighted.ops.reduce import order_streams
+
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import evaluate, fvsof, fwd
@@ -13,10 +17,6 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Term
-
-import weighted.ops.reduce as ops
-from weighted.ops.monoid import JaxCartesianProdMonoid
-from weighted.ops.reduce import order_streams
 
 
 def unify_streams(streams1: dict, streams2: dict) -> dict | None:
@@ -120,7 +120,8 @@ class SplitCartesianProductReduce(ObjectInterpretation):
                     _monoid is JaxCartesianProdMonoid
                 ):
                     if not all(
-                        isinstance(stream, jax.Array) for stream in cart_streams.values()
+                        isinstance(stream, jax.Array)
+                        for stream in cart_streams.values()
                     ):
                         continue  # cartesian streams need to be ground
 

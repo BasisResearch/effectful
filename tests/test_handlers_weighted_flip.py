@@ -1,13 +1,13 @@
-import effectful.handlers.jax.numpy as jnp
 import jax
-from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
-
 from weighted.handlers.jax import GradientOptimizationReduce
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.handlers.optimization import FlipOptimizationReduce
 from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMax, Max
+
+import effectful.handlers.jax.numpy as jnp
+from effectful.ops.semantics import handler
+from effectful.ops.syntax import defop
 
 
 def test_flip_optimization_max():

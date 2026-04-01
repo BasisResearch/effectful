@@ -1,14 +1,14 @@
 import jax
+from weighted.handlers.jax import GradientOptimizationReduce, reals
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.handlers.optimization import ReduceReorderReduction
+from weighted.handlers.optimization.plates import plated
+from weighted.ops.sugar import ArgMax, Sum
+
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-from weighted.handlers.optimization.plates import plated
-
-from weighted.handlers.jax import GradientOptimizationReduce, reals
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.handlers.optimization import ReduceReorderReduction
-from weighted.ops.sugar import ArgMax, Sum
 
 """
 Consider the following classic POMDP example [1].

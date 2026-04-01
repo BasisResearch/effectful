@@ -1,13 +1,13 @@
 import numbers
 
 import islpy as isl
+from weighted.ops.reduce import reduce
+
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Term
-
-from weighted.ops.reduce import reduce
 
 
 def _intp_add(lhs, rhs):
@@ -57,7 +57,9 @@ class ReduceLinearIndexer(ObjectInterpretation):
     def reduce(self, monoid, streams, body):
         stream_vars = set(streams.keys())
         linear_streams = {
-            k: v for k, v in streams.items() if isinstance(v, Term) and v.op is jnp.arange
+            k: v
+            for k, v in streams.items()
+            if isinstance(v, Term) and v.op is jnp.arange
         }
         if len(linear_streams) == 0:
             return fwd()

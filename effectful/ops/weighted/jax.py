@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 
 import jax
+
 from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled
 

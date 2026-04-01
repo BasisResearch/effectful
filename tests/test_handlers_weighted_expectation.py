@@ -1,13 +1,8 @@
 import functools
 
-import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numpyro as dist
 import jax
 import pytest
-from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import deffn, defop
 from jax.numpy import isclose
-
 from weighted.handlers.jax import (
     GradientOptimizationReduce,
     LikelihoodWeightingReduce,
@@ -17,6 +12,11 @@ from weighted.ops.jax import reals
 from weighted.ops.monoid import StreamChainMonoid, SumMonoid, promote
 from weighted.ops.reduce import BaselineReduce, reduce
 from weighted.ops.sugar import ArgMin, Sum
+
+import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numpyro as dist
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import deffn, defop
 
 # Expectation(
 #     f(x)
@@ -127,8 +127,12 @@ def test_interpretation_body():
         intp = Sum2(
             {x: [1, 2, 3], y: (x() + 1,)}, {z: deffn(x() + y()), w: deffn(x() * y())}
         )
-        assert evaluate(z(), intp=intp) == sum(x + y for x in [1, 2, 3] for y in [x + 1])
-        assert evaluate(w(), intp=intp) == sum(x * y for x in [1, 2, 3] for y in [x + 1])
+        assert evaluate(z(), intp=intp) == sum(
+            x + y for x in [1, 2, 3] for y in [x + 1]
+        )
+        assert evaluate(w(), intp=intp) == sum(
+            x * y for x in [1, 2, 3] for y in [x + 1]
+        )
 
         intp = Sum2(
             {x: [1, 2, 3], y: (x() + 1,)}, {z: lambda: x() + y(), w: lambda: z() + 2}

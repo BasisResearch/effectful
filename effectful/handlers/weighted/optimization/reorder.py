@@ -1,18 +1,18 @@
 import functools
 
-import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax._handlers import is_eager_array
-from effectful.ops.semantics import fvsof, fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
-from effectful.ops.types import Term
-from scipy.cluster.hierarchy import DisjointSet
-
 import weighted.ops.reduce as ops
+from scipy.cluster.hierarchy import DisjointSet
 from weighted.handlers.optimization.utils import (
     parse_terms,
     parse_with_op,
     partition_streams,
 )
+
+import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.jax._handlers import is_eager_array
+from effectful.ops.semantics import fvsof, fwd
+from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Term
 
 
 class ReduceNoStreams(ObjectInterpretation):

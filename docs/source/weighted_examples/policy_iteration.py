@@ -4,24 +4,24 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import chex
-import effectful.handlers.jax.numpy as jnp
 import flax.nnx as nnx
 import jax
 import matplotlib.pyplot as plt
 import optax
+from jax import random
+from matplotlib.animation import FuncAnimation
+from tqdm import tqdm
+from weighted.handlers.jax import D, ScanReduce, key
+from weighted.handlers.jax import interpretation as jax_intp
+from weighted.ops.monoid import add, mul
+from weighted.ops.sugar import ArgMax, Sum
+
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation, Term
-from jax import random
-from matplotlib.animation import FuncAnimation
-from tqdm import tqdm
-
-from weighted.handlers.jax import D, ScanReduce, key
-from weighted.handlers.jax import interpretation as jax_intp
-from weighted.ops.monoid import add, mul
-from weighted.ops.sugar import ArgMax, Sum
 
 
 @dataclass(frozen=True)
@@ -193,7 +193,9 @@ def policy_of_value(
     next_state = dynamics(state, a())
     next_value = value(next_state)
     discounted_value = mul(discount_factor, next_value)
-    best_action = ArgMax({a: actions()}, (add(reward(state, a()), discounted_value), a()))
+    best_action = ArgMax(
+        {a: actions()}, (add(reward(state, a()), discounted_value), a())
+    )
     result = tuple_getitem(best_action, 1)
     return result
 
@@ -209,7 +211,9 @@ def value_of_policy(
         for i in range(horizon)
     ]
     bindings = {states[0]: jnp.expand_dims(initial, 0)} | {
-        states[i]: jnp.expand_dims(dynamics(states[i - 1](), policy(states[i - 1]())), 0)
+        states[i]: jnp.expand_dims(
+            dynamics(states[i - 1](), policy(states[i - 1]())), 0
+        )
         for i in range(1, horizon)
     }
 
@@ -302,9 +306,9 @@ class NNValueFn(ObjectInterpretation):
     def _generate_training_data(self, value_fn):
         """Generate training data by sampling random states and evaluating them."""
         keys = jax.random.split(key(), self.num_samples)
-        states = jax.vmap(lambda k: State.random(k, grid_size=self.grid_size).to_array())(
-            keys
-        )
+        states = jax.vmap(
+            lambda k: State.random(k, grid_size=self.grid_size).to_array()
+        )(keys)
         values = jax.vmap(value_fn)(states)
         assert isinstance(values, jax.Array) and values.shape == (self.num_samples,)
         return states, values

@@ -59,7 +59,9 @@ def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
 
 class BaselineReduce(ObjectInterpretation):
     @implements(reduce)
-    def reduce[T](self, monoid: Monoid[T], streams: Streams[T], body: Body[T]) -> Body[T]:
+    def reduce[T](
+        self, monoid: Monoid[T], streams: Streams[T], body: Body[T]
+    ) -> Body[T]:
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]

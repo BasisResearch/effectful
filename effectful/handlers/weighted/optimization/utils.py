@@ -1,9 +1,9 @@
 from collections.abc import Collection, Mapping
 from typing import Any
 
-from effectful.ops.types import Term
-
 from weighted.ops.monoid import Monoid
+
+from effectful.ops.types import Term
 
 """
 Parsing utilities for the program transforms.

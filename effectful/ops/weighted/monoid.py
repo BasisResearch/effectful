@@ -5,9 +5,10 @@ import numbers
 from collections.abc import Callable, Generator, Mapping
 from typing import Any
 
-import effectful.handlers.jax.numpy as jnp
 import jax
 import tree
+
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
@@ -150,9 +151,17 @@ def max[T](a: T, b: T) -> T:
 
 @defop
 def arg_min(a, b):
-    if isinstance(a, tuple) and isinstance(a[0], numbers.Number) and a[0] == float("inf"):
+    if (
+        isinstance(a, tuple)
+        and isinstance(a[0], numbers.Number)
+        and a[0] == float("inf")
+    ):
         return b
-    if isinstance(b, tuple) and isinstance(b[0], numbers.Number) and b[0] == float("inf"):
+    if (
+        isinstance(b, tuple)
+        and isinstance(b[0], numbers.Number)
+        and b[0] == float("inf")
+    ):
         return a
     if any(isinstance(x, Term) for x in tree.flatten((a, b))):
         raise NotHandled
@@ -237,9 +246,13 @@ MinMonoid: Monoid[float] = Monoid(min, float("inf"), "Min")
 
 MaxMonoid: Monoid[float] = Monoid(max, float("-inf"), "Max")
 
-ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(arg_min, (float("inf"), None), "ArgMin")
+ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(
+    arg_min, (float("inf"), None), "ArgMin"
+)
 
-ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(arg_max, (float("-inf"), None), "ArgMax")
+ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(
+    arg_max, (float("-inf"), None), "ArgMax"
+)
 
 JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid(
     jax_cartesian_prod, jnp.array([]), "JaxCartesianProd"
@@ -251,5 +264,7 @@ StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
 
 # note: empty tuple is not a valid identity
 StreamProdMonoid: Monoid[collections.abc.Generator] = Monoid(
-    lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)), (), name="StreamProd"
+    lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
+    (),
+    name="StreamProd",
 )

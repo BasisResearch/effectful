@@ -2,10 +2,24 @@ import functools
 import logging
 import operator
 
-import effectful.handlers.jax.numpy as jnp
 import jax
 import optax
 import tree
+from numpyro.distributions import Distribution
+from weighted.ops.distribution import D
+from weighted.ops.jax import key, reals
+from weighted.ops.monoid import (
+    ArgMaxMonoid,
+    ArgMinMonoid,
+    LogSumMonoid,
+    MaxMonoid,
+    MinMonoid,
+    ProdMonoid,
+    SumMonoid,
+)
+from weighted.ops.reduce import order_streams, reduce
+
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
@@ -25,20 +39,6 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Expr, Operation, Term
-from numpyro.distributions import Distribution
-
-from weighted.ops.distribution import D
-from weighted.ops.jax import key, reals
-from weighted.ops.monoid import (
-    ArgMaxMonoid,
-    ArgMinMonoid,
-    LogSumMonoid,
-    MaxMonoid,
-    MinMonoid,
-    ProdMonoid,
-    SumMonoid,
-)
-from weighted.ops.reduce import order_streams, reduce
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +437,9 @@ def scan(f, init, *args, **kwargs):
     def wrapped_f(pos_carry, x):
         carry = unbind_dims(pos_carry, *sizes.keys())
         next_carry, next_result = f(carry, x)
-        return bind_dims(next_carry, *sizes.keys()), bind_dims(next_result, *sizes.keys())
+        return bind_dims(next_carry, *sizes.keys()), bind_dims(
+            next_result, *sizes.keys()
+        )
 
     pos_carry, pos_result = jax.lax.scan(wrapped_f, pos_init, *args, **kwargs)
     carry = unbind_dims(pos_carry, *sizes.keys())

@@ -5,21 +5,21 @@ import flax.nnx as nnx
 import jax
 import optax
 import torch  # to download the MNIST dataset
-from effectful.handlers import numpyro as dist
-from effectful.handlers.jax import bind_dims, unbind_dims
-from effectful.handlers.jax import numpy as jnp
-from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
 from jax import random
 from jax.scipy.special import expit
 from matplotlib import pyplot as plt
 from torchvision import transforms
 from torchvision.datasets import MNIST
-
 from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import simplify_normals_intp
 from weighted.ops.distribution import kl_divergence
 from weighted.ops.sugar import Sum
+
+from effectful.handlers import numpyro as dist
+from effectful.handlers.jax import bind_dims, unbind_dims
+from effectful.handlers.jax import numpy as jnp
+from effectful.ops.semantics import handler
+from effectful.ops.syntax import defop
 
 REPO_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(REPO_PATH, "data")

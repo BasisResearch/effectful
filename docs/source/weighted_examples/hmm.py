@@ -1,13 +1,8 @@
 import argparse
 import time
 
-import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax
-from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import deffn, defop
 from jax import random
 from jax.numpy.linalg import norm
-
 from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import ReduceDistributeTerm
 from weighted.handlers.optimization.cartesian_product import SplitCartesianProductReduce
@@ -15,6 +10,11 @@ from weighted.handlers.optimization.jax import StackIndex
 from weighted.ops.monoid import mul
 from weighted.ops.reduce import BaselineReduce
 from weighted.ops.sugar import CartesianProd, Prod, Sum
+
+import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.jax import jax
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import deffn, defop
 
 
 def construct_hmm():

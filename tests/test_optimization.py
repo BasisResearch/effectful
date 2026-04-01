@@ -1,14 +1,7 @@
-import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numpyro as dist
 import jax
-from effectful.handlers.jax import jax_getitem, unbind_dims
-from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import deffn, defop, syntactic_eq
 from jax import random
 from jax.numpy import allclose
 from pytest import mark, param
-
-from tests.utils import REDUCE_TRANSFORMS
 from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import ReducePropagateUnusedStreams
 from weighted.handlers.optimization.cartesian_product import (
@@ -28,6 +21,13 @@ from weighted.handlers.optimization.reorder import ReduceDistributeTerm, ReduceN
 from weighted.ops.monoid import mul
 from weighted.ops.reduce import BaselineReduce, reduce
 from weighted.ops.sugar import CartesianProd, Max, Prod, Sum
+
+import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numpyro as dist
+from effectful.handlers.jax import jax_getitem, unbind_dims
+from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.syntax import deffn, defop, syntactic_eq
+from tests.utils import REDUCE_TRANSFORMS
 
 parameterize_base_intp = mark.parametrize(
     "base_intp",

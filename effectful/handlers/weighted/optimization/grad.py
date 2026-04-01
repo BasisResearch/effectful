@@ -1,10 +1,10 @@
-from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
-from effectful.ops.types import Term
-
 from weighted.ops.distribution import D
 from weighted.ops.monoid import ArgMaxMonoid, ArgMinMonoid, MaxMonoid, MinMonoid
 from weighted.ops.reduce import reduce
+
+from effectful.ops.semantics import fwd
+from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Term
 
 
 class FlipOptimizationReduce(ObjectInterpretation):
@@ -43,7 +43,9 @@ class FlipOptimizationReduce(ObjectInterpretation):
                 # For ArgMaxMonoid, negate the first element of the tuple (the value)
                 # but keep the second element (the arg) unchanged
                 if not (isinstance(value, tuple) and len(value) == 2):
-                    raise ValueError("Expected a tuple of (value, arg) for ArgMaxMonoid")
+                    raise ValueError(
+                        "Expected a tuple of (value, arg) for ArgMaxMonoid"
+                    )
                 val, arg = value
                 new_value = (-val, arg)
 

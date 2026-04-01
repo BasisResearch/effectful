@@ -1,5 +1,3 @@
-from effectful.ops.types import Term
-
 from weighted.ops.monoid import (
     ArgMaxMonoid,
     ArgMinMonoid,
@@ -11,6 +9,8 @@ from weighted.ops.monoid import (
     SumMonoid,
 )
 from weighted.ops.reduce import reduce
+
+from effectful.ops.types import Term
 
 
 def Exp(streams, body):

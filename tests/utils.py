@@ -1,7 +1,5 @@
 import functools
 
-from effectful.ops.semantics import coproduct
-
 from weighted.handlers.jax import DenseTensorReduce
 from weighted.handlers.optimization import (
     ReduceDistributeTerm,
@@ -13,6 +11,8 @@ from weighted.handlers.optimization import (
     ReduceSplit,
 )
 from weighted.ops.reduce import BaselineReduce
+
+from effectful.ops.semantics import coproduct
 
 JAX_INTP = DenseTensorReduce()
 BASELINE_INTP = BaselineReduce()

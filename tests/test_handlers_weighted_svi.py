@@ -1,11 +1,5 @@
-import effectful.handlers.jax.numpy as jnp
-import effectful.handlers.numpyro as dist
 import jax
-from effectful.handlers.jax import sizesof
-from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import deffn, defop
 from jax.numpy import isclose
-
 from weighted.handlers.jax import (
     GradientOptimizationReduce,
     LikelihoodWeightingReduce,
@@ -13,6 +7,12 @@ from weighted.handlers.jax import (
 from weighted.handlers.jax import interpretation as jax_intp
 from weighted.ops.jax import reals
 from weighted.ops.sugar import ArgMin, Sum
+
+import effectful.handlers.jax.numpy as jnp
+import effectful.handlers.numpyro as dist
+from effectful.handlers.jax import sizesof
+from effectful.ops.semantics import evaluate, handler
+from effectful.ops.syntax import deffn, defop
 
 
 def run_svi(data):
@@ -53,7 +53,9 @@ def run_svi(data):
         with handler({alpha_q: deffn(jnp.array(15.0)), beta_q: deffn(jnp.array(15.0))}):
             _sample = dist.Beta(alpha_q(), beta_q()).sample(jax.random.key(0), (1,))
             x = evaluate(elbo)
-            assert isinstance(x, jax.Array) and len(x.shape) == 0 and len(sizesof(x)) == 0
+            assert (
+                isinstance(x, jax.Array) and len(x.shape) == 0 and len(sizesof(x)) == 0
+            )
 
         (_, (alpha_est, beta_est)) = ArgMin(
             {alpha_q: reals(), beta_q: reals()}, (elbo, (alpha_q(), beta_q()))

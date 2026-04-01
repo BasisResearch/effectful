@@ -5,12 +5,7 @@ import operator
 import jax
 import pyro.ops.contract
 import pytest
-from effectful.handlers.jax import jax_getitem
-from effectful.handlers.jax import numpy as jnp
-from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import deffn, defop
 from torch import tensor
-
 from weighted.handlers.optimization import ReduceDistributeTerm, ReduceReorderReduction
 from weighted.handlers.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
@@ -18,6 +13,11 @@ from weighted.handlers.optimization.cartesian_product import (
 )
 from weighted.ops.reduce import BaselineReduce
 from weighted.ops.sugar import CartesianProd, Prod, Sum
+
+from effectful.handlers.jax import jax_getitem
+from effectful.handlers.jax import numpy as jnp
+from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.syntax import deffn, defop
 
 PLATED_EINSUM_EXAMPLES = [
     ("i->", "i"),
@@ -96,12 +96,16 @@ def make_plated_einsum_example(equation: str, plates: str, sizes=(2, 3)):
     return var_sizes, plate_sizes, operands
 
 
-def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, reduce_intp):
+def einsum_plated(
+    equation, plate_symbols, operands, var_sizes, plate_sizes, reduce_intp
+):
     symbols, inputs, outputs, plate_func = parse_equation(equation, plate_symbols)
     symbols = tuple(var_sizes.keys())
     symbol_ops = {s: defop(jax.Array, name=s) for s in symbols}
     plate_ops = {p: defop(jax.Array, name=p) for p in plate_sizes}
-    operand_ops = {f"m{i}": defop(jax.Array, name=f"m{i}") for i in range(len(operands))}
+    operand_ops = {
+        f"m{i}": defop(jax.Array, name=f"m{i}") for i in range(len(operands))
+    }
 
     input_terms = []
     for (dims, plts), operand_op in zip(inputs, operand_ops.values(), strict=False):
@@ -120,7 +124,9 @@ def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, red
 
     var_streams = {}
     for s in symbols:
-        plate_streams = {plate_ops[p]: jnp.arange(plate_sizes[p]) for p in plate_func[s]}
+        plate_streams = {
+            plate_ops[p]: jnp.arange(plate_sizes[p]) for p in plate_func[s]
+        }
         var_stream = jnp.arange(var_sizes[s])
         var_streams[symbol_ops[s]] = CartesianProd(plate_streams, var_stream)
 
@@ -140,7 +146,9 @@ def einsum_plated(equation, plate_symbols, operands, var_sizes, plate_sizes, red
 @parameterize_intp
 @pytest.mark.parametrize("equation,plate_symbols", PLATED_EINSUM_EXAMPLES)
 def test_plated_einsum_optimize(intp, equation: str, plate_symbols: str):
-    var_sizes, plate_sizes, operands = make_plated_einsum_example(equation, plate_symbols)
+    var_sizes, plate_sizes, operands = make_plated_einsum_example(
+        equation, plate_symbols
+    )
     result = einsum_plated(
         equation, plate_symbols, operands, var_sizes, plate_sizes, intp
     )
