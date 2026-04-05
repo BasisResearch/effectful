@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import re
+import sqlite3
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -37,9 +38,15 @@ from effectful.handlers.llm.completions import (
     call_assistant,
     call_tool,
     completion,
+    get_agent_history,
 )
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.persistence import (
+    CompactionHandler,
+    PersistenceHandler,
+    PersistentAgent,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1760,17 +1767,17 @@ class TestLiteLLMProviderMessagePruning:
 
         agent = SimpleAgent()
 
-        # No outer _get_history handler: LiteLLMProvider._call detects this is the
-        # outermost template and writes back to the agent's __history__.
+        provider = LiteLLMProvider(model="test")
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(provider),
             handler(mock_handler),
         ):
             result = agent.simple_task("go")
 
         assert result == "done"
-        # Agent's __history__ should have messages written back (system + user + assistant)
-        assert len(agent.__history__) >= 2
+        # Agent's history should have messages written back (system + user + assistant)
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2
 
 
 class TestAgentCrossTemplateRecovery:
@@ -1825,8 +1832,9 @@ class TestAgentCrossTemplateRecovery:
 
         agent = TestAgent()
 
-        with handler(TwoPhaseCompletionHandler()):
-            with handler(LiteLLMProvider(model="test")):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider):
+            with handler(TwoPhaseCompletionHandler()):
                 # First call should fail with tool execution error
                 with pytest.raises(ToolCallExecutionError):
                     agent.step_with_tool("stage 1")
@@ -1837,7 +1845,7 @@ class TestAgentCrossTemplateRecovery:
 
         assert result == "summary result"
         # Verify history doesn't contain messages from the failed call
-        history = agent.__history__
+        history = provider._histories.get(agent.__agent_id__, {})
         for msg in history.values():
             tool_calls = msg.get("tool_calls")
             if tool_calls:
@@ -1879,12 +1887,14 @@ class TestAgentCrossTemplateRecovery:
         mock = MockCompletionHandler(responses)
         agent = CleanupAgent()
 
+        provider = LiteLLMProvider(model="test")
         with pytest.raises(ToolCallExecutionError):
-            with handler(LiteLLMProvider(model="test")), handler(mock):
+            with handler(provider), handler(mock):
                 agent.do_work("go")
 
         # Agent history should be empty — all messages from failed call pruned
-        assert len(agent.__history__) == 0
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) == 0
 
     def test_agent_history_preserved_for_successful_calls(self):
         """Successful calls should leave messages in agent history."""
@@ -1906,12 +1916,14 @@ class TestAgentCrossTemplateRecovery:
         mock = MockCompletionHandler(responses)
         agent = SuccessAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(mock):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(mock):
             result = agent.greet("world")
 
         assert result == "Hello!"
         # History should contain messages from the successful call
-        assert len(agent.__history__) >= 2  # user + assistant at minimum
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2  # user + assistant at minimum
 
     def test_agent_multiple_successful_calls_accumulate_history(self):
         """Multiple successful calls should accumulate in agent history."""
@@ -1940,14 +1952,16 @@ class TestAgentCrossTemplateRecovery:
 
         agent = ChatAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MultiResponseHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MultiResponseHandler()):
             r1 = agent.chat("first")
             r2 = agent.chat("second")
 
         assert r1 == "reply 1"
         assert r2 == "reply 2"
         # History should have messages from both calls
-        assert len(agent.__history__) >= 4  # 2 * (user + assistant)
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 4  # 2 * (user + assistant)
 
     def test_agent_error_then_success_accumulates_only_success(self):
         """After a failed call, only the subsequent successful call's messages remain."""
@@ -1988,19 +2002,21 @@ class TestAgentCrossTemplateRecovery:
 
         agent = RecoveryAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(PhaseHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(PhaseHandler()):
             with pytest.raises(ToolCallExecutionError):
                 agent.risky("step 1")
 
-            history_after_error = len(agent.__history__)
+            history_after_error = len(get_agent_history(agent.__agent_id__))
             assert history_after_error == 0
 
             result = agent.safe("step 2")
 
         assert result == "safe result"
         # Only messages from the successful call should be in history
-        assert len(agent.__history__) >= 2
-        assert len(agent.__history__) > history_after_error
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) >= 2
+        assert len(history) > history_after_error
 
 
 class TestAgentSystemMessageDeduplication:
@@ -2072,13 +2088,15 @@ class TestAgentSystemMessageDeduplication:
 
         agent = SystemMsgAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MultiHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MultiHandler()):
             agent.do("a")
             agent.do("b")
             agent.do("c")
             agent.do("d")
 
-        system_msgs = [m for m in agent.__history__.values() if m["role"] == "system"]
+        history = provider._histories.get(agent.__agent_id__, {})
+        system_msgs = [m for m in history.values() if m["role"] == "system"]
         assert len(system_msgs) == 1, (
             f"Expected exactly 1 system message, got {len(system_msgs)}"
         )
@@ -2114,14 +2132,16 @@ class TestAgentSystemMessageDeduplication:
 
         agent = MemoryAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(MemoryHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(MemoryHandler()):
             agent.chat("first")
             agent.chat("second")
             agent.chat("third")
 
         # History should have: 1 system + 3 user + 3 assistant = 7
-        assert len(agent.__history__) == 7
-        roles = [m["role"] for m in agent.__history__.values()]
+        history = provider._histories.get(agent.__agent_id__, {})
+        assert len(history) == 7
+        roles = [m["role"] for m in history.values()]
         assert roles.count("system") == 1
         assert roles.count("user") == 3
         assert roles.count("assistant") == 3
@@ -2150,12 +2170,597 @@ class TestAgentSystemMessageDeduplication:
 
         agent = OrderAgent()
 
-        with handler(LiteLLMProvider(model="test")), handler(OrderHandler()):
+        provider = LiteLLMProvider(model="test")
+        with handler(provider), handler(OrderHandler()):
             agent.step(1)
             agent.step(2)
             agent.step(3)
 
-        messages = list(agent.__history__.values())
+        history = provider._histories.get(agent.__agent_id__, {})
+        messages = list(history.values())
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: Agent & PersistentAgent with real LLM
+# ---------------------------------------------------------------------------
+
+
+class _PlainHelper(Agent):
+    """You are a concise helper. Reply with at most 10 words."""
+
+    @Template.define
+    def answer(self, q: str) -> str:
+        """Answer concisely: {q}"""
+        raise NotHandled
+
+
+class _PersistentOrchestrator(Agent):
+    """You are an orchestrator. Use `ask_helper` to get answers.
+
+    Reply with the helper's answer verbatim — do NOT call the tool more
+    than once.
+    """
+
+    def __init__(self, helper: _PlainHelper):
+        self._helper = helper
+
+    @Tool.define
+    def ask_helper(self, question: str) -> str:
+        """Ask the helper agent a question. Call this exactly once."""
+        return self._helper.answer(question)
+
+    @Template.define
+    def orchestrate(self, task: str) -> str:
+        """Task: {task}. Call `ask_helper` once, then return the answer."""
+        raise NotHandled
+
+
+@requires_openai
+def test_plain_agent_simple_call_integration():
+    """Plain Agent makes a single LLM call and returns a string."""
+    helper = _PlainHelper()
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = helper.answer("What is 2+2?")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+@requires_openai
+def test_agent_nested_tool_call_integration():
+    """An Agent delegates to another Agent via a tool call.
+
+    The orchestrator calls ask_helper (one tool round-trip) then returns.
+    LimitLLMCallsHandler caps total LLM calls at 4 to prevent runaway
+    recursion.
+    """
+    helper = _PlainHelper()
+    orchestrator = _PersistentOrchestrator(helper)
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=60)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+    ):
+        result = orchestrator.orchestrate("What is the capital of France?")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+@requires_openai
+def test_persistent_agent_with_persistence_integration(tmp_path):
+    """PersistentAgent checkpoints to disk after a real LLM call."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="integration-bot")
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(persist),
+    ):
+        result = bot.ask("Say hello")
+
+    assert isinstance(result, str)
+    db_path = tmp_path / "checkpoints.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT handoff, history FROM checkpoints WHERE agent_id = ?",
+        ("integration-bot",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert len(json.loads(row[1])) > 0
+    assert row[0] == ""
+
+
+@requires_openai
+def test_persistent_and_plain_agent_cooperate_integration(tmp_path):
+    """A plain Agent and PersistentAgent work together via tool delegation.
+
+    The persistent orchestrator calls ask_helper (a plain Agent) via a tool.
+    LimitLLMCallsHandler caps calls at 5 to prevent runaway tool loops.
+    """
+
+    class Orchestrator(PersistentAgent):
+        """You orchestrate tasks. Use `ask_helper` exactly once, then
+        return the helper's answer verbatim. Do NOT call tools more than once.
+        """
+
+        def __init__(self, helper_agent: _PlainHelper, **kwargs):
+            super().__init__(**kwargs)
+            self._helper = helper_agent
+
+        @Tool.define
+        def ask_helper(self, question: str) -> str:
+            """Ask the helper a question. Call exactly once."""
+            return self._helper.answer(question)
+
+        @Template.define
+        def run(self, task: str) -> str:
+            """Task: {task}. Use `ask_helper` once, then return the result."""
+            raise NotHandled
+
+    helper = _PlainHelper()
+    orch = Orchestrator(helper, agent_id="orch")
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=60)),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(persist),
+    ):
+        result = orch.run("What is 3 * 7?")
+
+    assert isinstance(result, str)
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    row = conn.execute(
+        "SELECT 1 FROM checkpoints WHERE agent_id = ?", ("orch",)
+    ).fetchone()
+    conn.close()
+    assert row is not None
+
+
+@requires_openai
+def test_compaction_after_multiple_calls_integration():
+    """History is compacted after enough calls exceed the threshold."""
+    helper = _PlainHelper()
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
+    ):
+        # Each call adds ~2 msgs (user + assistant).
+        # After the 2nd call history exceeds 4 msgs, triggering compaction.
+        for i in range(2):
+            helper.answer(f"What is {i} + 1?")
+
+    history = provider._histories.get(helper.__agent_id__, {})
+    first_msg = next(iter(history.values()))
+    assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+@requires_openai
+def test_compaction_with_persistence_integration(tmp_path):
+    """Compaction and persistence compose: compacted history is checkpointed."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="compact-bot")
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
+        handler(persist),
+    ):
+        for i in range(2):
+            bot.ask(f"What is {i} + 1?")
+
+    # Compacted history should be persisted to disk
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?", ("compact-bot",)
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    first_msg = history[0]
+    assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+class _ToolAgent(Agent):
+    """You are a concise assistant. Answer in at most 10 words."""
+
+    @Tool.define
+    def lookup(self, query: str) -> str:
+        """Look up factual information about a topic."""
+        return f"Result: The answer to '{query}' is 42."
+
+    @Template.define
+    def ask(self, question: str) -> str:
+        """Answer: {question}. You MUST use the lookup tool first."""
+        raise NotHandled
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("gpt-4o-mini", marks=requires_openai),
+        pytest.param("claude-haiku-4-5-20251001", marks=requires_anthropic),
+    ],
+)
+def test_compaction_with_tool_calls_does_not_break_api(model):
+    """After compaction of history containing tool pairs, subsequent calls succeed.
+
+    Each tool-using call generates ~4 messages (user, assistant/tool_use,
+    tool/result, assistant/final). With max_history_len=4, compaction fires
+    after the 1st call. The 2nd call must succeed — if compaction orphaned
+    a tool_result the API would reject the conversation.
+    """
+    bot = _ToolAgent()
+    provider = LiteLLMProvider(model=model, max_tokens=60)
+
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(2))),
+        handler(LimitLLMCallsHandler(max_calls=8)),
+        handler(CompactionHandler(max_history_len=4)),
+    ):
+        bot.ask("What is the meaning of life?")
+        # Compaction should have fired. This call must not fail.
+        result = bot.ask("Summarize what you told me.")
+
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+    # Verify no orphaned tool_result messages in final history.
+    history = provider._histories.get(bot.__agent_id__, {})
+    tool_use_ids: set[str] = set()
+    for msg in history.values():
+        # Anthropic format: tool_use blocks in content
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_use_ids.add(block["id"])
+        # OpenAI format: tool_calls field on assistant messages
+        for tc in msg.get("tool_calls") or []:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tc_id:
+                tool_use_ids.add(tc_id)
+
+    for msg in history.values():
+        if msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            assert tc_id in tool_use_ids, (
+                f"Orphaned tool_result with tool_call_id={tc_id!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: SQLite persistence
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_sqlite_persistence_crash_recovery_integration(tmp_path):
+    """After a simulated crash, a new session resumes from the SQLite checkpoint."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    # Session 1: successful call
+    bot = Bot(agent_id="crash-test-bot")
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(persist),
+    ):
+        result1 = bot.ask("What is 2+2?")
+
+    assert isinstance(result1, str)
+
+    # Verify SQLite DB exists and has data
+    db_path = tmp_path / "checkpoints.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert result == "ok"
+    row = conn.execute(
+        "SELECT handoff, history FROM checkpoints WHERE agent_id = ?",
+        ("crash-test-bot",),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == ""  # handoff cleared after success
+    assert len(json.loads(row[1])) > 0
+
+    # Session 2: new process loads from SQLite and continues
+    bot2 = Bot(agent_id="crash-test-bot")
+
+    with (
+        handler(LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+        handler(PersistenceHandler(tmp_path / "checkpoints.db")),
+    ):
+        result2 = bot2.ask("What did I just ask?")
+
+    assert isinstance(result2, str)
+
+    # History should have grown (session 2 sees session 1 messages)
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?",
+        ("crash-test-bot",),
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    assert len(history) > 3  # at least system + user + assistant from each session
+
+
+@requires_openai
+def test_sqlite_persistence_db_integrity_after_compaction_integration(tmp_path):
+    """Compacted history is correctly persisted to SQLite."""
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def ask(self, q: str) -> str:
+            """Answer: {q}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="compact-sqlite-bot")
+    provider = LiteLLMProvider(model="gpt-4o-mini", max_tokens=30)
+    persist = PersistenceHandler(tmp_path / "checkpoints.db")
+
+    with (
+        handler(provider),
+        handler(LimitLLMCallsHandler(max_calls=4)),
+        handler(CompactionHandler(max_history_len=4)),
+        handler(persist),
+    ):
+        for i in range(2):
+            bot.ask(f"What is {i} + 1?")
+
+    # Verify SQLite DB integrity
+    conn = sqlite3.connect(str(tmp_path / "checkpoints.db"))
+    result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert result == "ok"
+    row = conn.execute(
+        "SELECT history FROM checkpoints WHERE agent_id = ?",
+        ("compact-sqlite-bot",),
+    ).fetchone()
+    conn.close()
+    history = json.loads(row[0])
+    first_msg = history[0]
+    assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: Multi-agent choreography (based on multi_agent_example.py)
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_multi_agent_choreography_integration(tmp_path):
+    """Multi-agent choreography: architect plans, coder implements, reviewer reviews.
+
+    Based on docs/source/multi_agent_example.py but with constrained scope
+    (one module, capped LLM calls) so the test completes quickly.
+    """
+    from typing import Literal, TypedDict
+
+    from effectful.handlers.llm.multi import Choreography, scatter
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class ModuleSpec(TypedDict):
+        module_path: str
+        description: str
+
+    class PlanResult(TypedDict):
+        modules: list[ModuleSpec]
+
+    class ReviewResult(TypedDict):
+        verdict: Literal["PASS", "NEEDS_FIXES"]
+        feedback: str
+
+    class Architect(PersistentAgent):
+        """You are a software architect. Given a project spec, output a plan
+        with a 'modules' list. Each module has module_path and description.
+        Output exactly ONE module."""
+
+        @Template.define
+        def plan_modules(self, project_spec: str) -> PlanResult:
+            """Plan modules for: {project_spec}. Return exactly one module."""
+            raise NotHandled
+
+    class Coder(PersistentAgent):
+        """You are a Python developer. Write clean code. Reply with ONLY
+        the Python source code, no markdown."""
+
+        @Template.define
+        def implement_module(self, module_spec: str) -> str:
+            """Implement: {module_spec}"""
+            raise NotHandled
+
+    class Reviewer(PersistentAgent):
+        """You are a code reviewer. Review for correctness and style."""
+
+        @Template.define
+        def review_code(self, code: str) -> ReviewResult:
+            """Review this code. Return verdict PASS or NEEDS_FIXES: {code}"""
+            raise NotHandled
+
+    MAX_REVIEW_ROUNDS = 3
+
+    def build_project(
+        project_spec: str,
+        architect: Architect,
+        coders: list[Coder],
+        reviewer: Reviewer,
+    ) -> list[ReviewResult]:
+        # Step 1: Architect plans modules
+        plan = architect.plan_modules(project_spec)
+
+        # Step 2: Scatter implementation across coders
+        codes = scatter(
+            plan["modules"],
+            coders,
+            lambda coder, mod: coder.implement_module(str(mod)),
+        )
+
+        # Step 3: Review each module; if NEEDS_FIXES, re-implement with feedback
+        reviews: list[ReviewResult] = []
+        for mod, code in zip(plan["modules"], codes):
+            for _round in range(MAX_REVIEW_ROUNDS):
+                review = reviewer.review_code(code)
+                if review["verdict"] == "PASS":
+                    break
+                # Re-implement with reviewer feedback
+                fix_spec = f"{mod}\nFix feedback: {review['feedback']}"
+                code = coders[0].implement_module(fix_spec)
+            reviews.append(review)
+
+        return reviews
+
+    architect = Architect(agent_id="architect")
+    coder1 = Coder(agent_id="coder-1")
+    reviewer = Reviewer(agent_id="reviewer")
+
+    from effectful.handlers.llm.multi import PersistentTaskQueue
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    choreo = Choreography(
+        build_project,
+        agents=[architect, coder1, reviewer],
+        queue=PersistentTaskQueue(state_dir / "task_queue.db"),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=200),
+            LimitLLMCallsHandler(max_calls=8),
+            PersistenceHandler(state_dir / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+
+    reviews = choreo.run(
+        project_spec="Build a single-function module: slugify(text) -> str",
+        architect=architect,
+        coders=[coder1],
+        reviewer=reviewer,
+    )
+
+    assert isinstance(reviews, list)
+    assert len(reviews) >= 1
+    for r in reviews:
+        assert r["verdict"] in ("PASS", "NEEDS_FIXES")
+        assert isinstance(r["feedback"], str)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: SQLite task queue crash tolerance
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_sqlite_task_queue_crash_recovery_integration(tmp_path):
+    """Choreography with SQLite queue: completed steps survive restart."""
+    from effectful.handlers.llm.multi import Choreography, PersistentTaskQueue
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def step1(self, q: str) -> str:
+            """Answer briefly: {q}"""
+            raise NotHandled
+
+        @Template.define
+        def step2(self, context: str) -> str:
+            """Given context, reply in one word: {context}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="crash-q-bot")
+
+    db_path = tmp_path / "task_queue.db"
+
+    # Run 1: complete full choreography
+    def two_step(bot):
+        r1 = bot.step1("What is 2+2?")
+        return bot.step2(r1)
+
+    choreo1 = Choreography(
+        two_step,
+        agents=[bot],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=3),
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result1 = choreo1.run(bot=bot)
+    assert isinstance(result1, str)
+
+    # Verify SQLite DB exists and has task data
+    conn = sqlite3.connect(str(db_path))
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert integrity == "ok"
+    done_count = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'done'"
+    ).fetchone()[0]
+    conn.close()
+    assert done_count == 2  # step-0000 and step-0001
+
+    # Run 2: new Choreography on same DB — steps return cached results
+    bot2 = Bot(agent_id="crash-q-bot")
+    choreo2 = Choreography(
+        two_step,
+        agents=[bot2],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=0),  # no LLM calls allowed — must use cache
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result2 = choreo2.run(bot=bot2)
+    assert result2 == result1  # exact same cached result
