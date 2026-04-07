@@ -1,15 +1,15 @@
-"""Custom effect handlers for the code agent.
+"""Observability handler.
 
-These compose with effectful's handler system to add logging, token budgets,
-tool confirmation, and other cross-cutting concerns without modifying agent code.
-
-Memory is modeled as algebraic effects: operations define the interface,
-FileMemoryHandler provides file-backed implementation. Swap handlers for
-testing, DB-backed storage, or remote memory.
+Composes with effectful's handler system to enable access to call
+traces and raw completion outputs. The exact logging behavior is
+specified by implementing a listener interface.
 """
 
+from abc import ABCMeta, abstractmethod
 import random
-from typing import Callable, Any
+from dataclasses import dataclass
+from typing import Callable, Any, cast, override
+
 from effectful.handlers.llm import Tool, Template
 from effectful.ops.types import NotHandled
 from effectful.handlers.llm.completions import completion
@@ -19,57 +19,132 @@ from effectful.handlers.llm.completions import (
     LiteLLMProvider,
 )
 
+from time import time
+
+
+# How does mro work? Should I call super?
+class ObservabilityListener(metaclass=ABCMeta):
+    def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
+        pass
+
+    def exit_tool_call[**P,Q](self, tool: Tool[P,Q], result: Q | None) -> None:
+        pass
+
+    def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
+        pass
+
+    def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
+        pass
+
+    def enter_completion(self) -> None:
+        pass
+
+    def exit_completion(self, resp: Any) -> None:
+        pass
+
+
+class EmptyCallStackException(Exception):
+    pass
+
+class CallStackListener(ObservabilityListener):
+    def __init__(self):
+        self.callstack: list[Any] = []
+
+    @override
+    def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
+        self.callstack.append(tool)
+
+    @override
+    def exit_tool_call[**P,Q](self, tool: Tool[P, Q], result: Q | None) -> None:
+        self.callstack.pop()
+
+    @override
+    def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
+        self.callstack.append(template)
+
+    @override
+    def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
+        assert(len(self.callstack)>0)
+        self.callstack.pop()
+
+    def current_function(self) -> Any:
+        try:
+            return self.callstack[-1]
+        except IndexError:
+            raise EmptyCallStackException()
+
+    def current_template(self) -> Any:
+        try:
+            return next(func for func in reversed(self.callstack) if
+                        isinstance(func, Template))
+        except IndexError:
+            raise EmptyCallStackException()
+
+class CompletionLogger(CallStackListener):
+    def __init__(self):
+        super().__init__()
+        self.timestack = []
+
+    @override
+    def enter_completion(self):
+        super().enter_completion()
+        print(f"{self.current_template()} is calling completion")
+        self.timestack.append(time())
+
+    @override
+    def exit_completion(self, resp: Any) -> None:
+        time_elapsed = time() - self.timestack[-1]
+        self.timestack.pop()
+        print(f"Completion for {self.current_template()} finished in {time_elapsed:.2f} seconds")
+        super().exit_completion(resp)
+
+
 
 class ObservabilityHandler(ObjectInterpretation):
     """Tracks the call stack of :class:`Tool` and invokes a callback
     function on the callstack paired with raw completion responses"""
 
-    def __init__[**P,T](self, resp_fn : Callable[[Any, Tool[P,T]],None]):
-        self.callstack = []
-        self.resp_fn = resp_fn
+    def __init__[**P,T](self, listener: ObservabilityListener):
+        self.listener = listener
 
     @implements(completion)
     def _observe_completion(self, *args, **kwargs) -> Any:
-        print("calling completion")
         model = kwargs.get("model", args[0] if args else "unknown")
-        old_stack = self.callstack.copy()
-        response = fwd(*args, **kwargs)
-        self.resp_fn(old_stack,response)
-        return response
+        self.listener.enter_completion()
+        response: Any = None
+        try:
+            response = fwd(*args, **kwargs)
+            return response
+        finally:
+            self.listener.exit_completion(response)
 
     @implements(Tool.__apply__)
     def _call_tool[**P,T](
         self, tool: Tool[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        print("calling _call_tool")
+        result_opt: T | None = None
         try:
-            # print(f"adding {tool} to {self.callstack}")
-            self.callstack.append(tool)
-            response = fwd(tool,*args,**kwargs)
+            self.listener.enter_tool_call(tool)
+            result = cast(T, fwd(tool,*args,**kwargs))
+            result_opt = result
+            return result
         finally:
-            # print(f"popping tool from {self.callstack}")
-            self.callstack.pop()
-            # print(f"and now we have {self.callstack}")
+            self.listener.exit_tool_call(tool, result_opt)
 
-
-        return response
 
     @implements(Template.__apply__)
     def _call_template[**P,T](
-        self, tool: Tool[P, T], *args: P.args, **kwargs: P.kwargs
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        print("calling _call_template")
+        result_opt: T | None = None
         try:
-            print(f"adding {tool} to {self.callstack}")
-            self.callstack.append(tool)
-            response = fwd(tool,*args,**kwargs)
+            self.listener.enter_template_call(template)
+            result = cast(T, fwd(template,*args,**kwargs))
+            result_opt = result
+            return result
         finally:
-            # print(f"popping tool from {self.callstack}")
-            self.callstack.pop()
-            # print(f"and now we have {self.callstack}")
+            self.listener.exit_template_call(template, result_opt)
 
-
-        return response
 
 
 # provider = LiteLLMProvider(
@@ -85,48 +160,25 @@ provider = LiteLLMProvider(
 )
 
 
-obsprovider = ObservabilityHandler(
-    resp_fn = lambda st,resp: print(f"{st.}>{resp}")
-)
+obsprovider = ObservabilityHandler(listener=CompletionLogger())
 
 themes = ['zombies', 'the universe', 'exorcism']
 
-# @Tool.define
-# def random_theme() -> str:
-#     """Don't take any argument. Return a randomly picked theme."""
-#     return random.choice(list(get_themes()))
-
-# @Tool.define
-# def get_themes() -> list[str]:
-#     """Don't take any argument. Return a list of 3 strings, each of which represents a movie genre."""
-#     raise NotHandled
-
-
-# @Template.define
-# def twosentencehorror() -> str:
-#     """Write a two-sentence horror story on a theme picked by the tool `random_theme`."""
-#     raise NotHandled
-
-# @Template.define
-# def pick_fruit() -> str:
-#     """Return the name of a fruit."""
-#     raise NotHandled
 
 @Template.define
 def find_treasure() -> str:
-    """Call the tool `bob` to find where the treasure is."""
+    """Ask Bob to find where the treasure is."""
     raise NotHandled
 
 @Template.define
 def bob() -> str:
-    """Call the tool `alice` to find where the treasure is."""
+    """Ask Alice to find where the treasure is."""
     raise NotHandled
-
 
 @Tool.define
 def alice() -> str:
     """Returns where the treasure is."""
-    return "hell"
+    return "school"
 
 combined_provider = coproduct(provider, obsprovider)
 
