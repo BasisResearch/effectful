@@ -146,7 +146,6 @@ class ObservabilityHandler(ObjectInterpretation):
 
     @implements(completion)
     def _observe_completion(self, *args, **kwargs) -> Any:
-        model = kwargs.get("model", args[0] if args else "unknown")
         self.listener.enter_completion()
         response: Any = None
         try:
