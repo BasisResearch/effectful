@@ -23,7 +23,7 @@ from time import time
 
 
 # How does mro work? Should I call super?
-class ObservabilityListener(metaclass=ABCMeta):
+class ObservabilityListener:
     def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
         pass
 
@@ -52,20 +52,25 @@ class CallStackListener(ObservabilityListener):
 
     @override
     def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
+        super().enter_tool_call(tool)
         self.callstack.append(tool)
 
     @override
     def exit_tool_call[**P,Q](self, tool: Tool[P, Q], result: Q | None) -> None:
+        assert len(self.callstack) > 0 and tool is self.callstack[-1]
         self.callstack.pop()
+        super().exit_tool_call(tool, result)
 
     @override
     def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
+        super().enter_template_call(template)
         self.callstack.append(template)
 
     @override
     def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
-        assert(len(self.callstack)>0)
+        assert len(self.callstack) > 0 and template is self.callstack[-1]
         self.callstack.pop()
+        super().exit_template_call(template, result)
 
     def current_function(self) -> Any:
         try:
@@ -77,8 +82,37 @@ class CallStackListener(ObservabilityListener):
         try:
             return next(func for func in reversed(self.callstack) if
                         isinstance(func, Template))
-        except IndexError:
+        except StopIteration:
             raise EmptyCallStackException()
+
+@dataclass
+class ThinkingRecord:
+    template: Any
+    reasoning_content: str | None
+    thinking_blocks: list[Any] | None
+
+
+class ThinkingListener(CallStackListener):
+    def __init__(self):
+        super().__init__()
+        self.thinking_records: list[ThinkingRecord] = []
+
+    @override
+    def exit_completion(self, resp: Any) -> None:
+        if resp is not None:
+            message = resp.choices[0].message
+            reasoning_content = message.get("reasoning_content")
+            thinking_blocks = message.get("thinking_blocks")
+            if reasoning_content or thinking_blocks:
+                self.thinking_records.append(
+                    ThinkingRecord(
+                        template=self.current_template(),
+                        reasoning_content=reasoning_content,
+                        thinking_blocks=thinking_blocks,
+                    )
+                )
+        super().exit_completion(resp)
+
 
 class CompletionLogger(CallStackListener):
     def __init__(self):
@@ -104,7 +138,7 @@ class ObservabilityHandler(ObjectInterpretation):
     """Tracks the call stack of :class:`Tool` and invokes a callback
     function on the callstack paired with raw completion responses"""
 
-    def __init__[**P,T](self, listener: ObservabilityListener):
+    def __init__(self, listener: ObservabilityListener):
         self.listener = listener
 
     @implements(completion)
