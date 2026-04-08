@@ -538,7 +538,7 @@ class ObservabilityHandler(ObjectInterpretation):
         self.listener = listener
 
     @implements(completion)
-    def _observe_completion(self, *args, **kwargs) -> typing.Any:
+    def _completion(self, *args, **kwargs) -> typing.Any:
         self.listener.enter_completion()
         response: typing.Any = None
         try:
@@ -583,6 +583,11 @@ class NoTemplateException(Exception):
     """Raised when accessing the call stack does not have a :class:`Template`."""
     pass
 
+@dataclasses.dataclass(frozen=True)
+class CallInfo[F : Tool[...,typing.Any]]:
+    func: F
+    info: dict[typing.Any,typing.Any]
+
 class CallStackListener(ObservabilityListener):
     """Listener that maintains a call stack of active Tool and Template calls.
 
@@ -594,12 +599,12 @@ class CallStackListener(ObservabilityListener):
     """
 
     def __init__(self) -> None:
-        self.callstack: list[Tool[...,typing.Any]] = []
+        self.callstack: list[CallInfo[Tool[...,typing.Any]]] = []
 
     @typing.override
     def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
         super().enter_tool_call(tool)
-        self.callstack.append(tool)
+        self.callstack.append(CallInfo(tool,{}))
 
     @typing.override
     def exit_tool_call[**P,Q](self, tool: Tool[P, Q], result: Q | None) -> None:
@@ -610,15 +615,15 @@ class CallStackListener(ObservabilityListener):
     @typing.override
     def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
         super().enter_template_call(template)
-        self.callstack.append(template)
+        self.callstack.append(CallInfo(template,{}))
 
     @typing.override
     def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
-        assert len(self.callstack) > 0 and template is self.callstack[-1]
+        assert len(self.callstack) > 0 and template is self.callstack[-1].func
         self.callstack.pop()
         super().exit_template_call(template, result)
 
-    def current_function(self) -> typing.Any:
+    def current_func_info(self) -> CallInfo[Tool[...,typing.Any]]:
         """Return the innermost active :class:`Tool` or :class:`Template`.
 
         :raises EmptyCallStackException: if the call stack is empty.
@@ -628,14 +633,16 @@ class CallStackListener(ObservabilityListener):
         except IndexError:
             raise EmptyCallStackException()
 
-    def current_template(self) -> typing.Any:
+    def current_template_info(self) -> CallInfo[Template[...,typing.Any]]:
         """Return the innermost active :class:`Template`, skipping any nested :class:`Tool`s.
 
         :raises NoTemplateException: if no :class:`Template` is on the stack.
         """
         try:
-            return next(func for func in reversed(self.callstack) if
-                        isinstance(func, Template))
+            # need to repack CallInfo to make the typechecker happy
+            return (next(CallInfo(ci.func,ci.info)
+                         for ci in reversed(self.callstack)
+                         if isinstance(ci.func, Template)))
         except StopIteration:
             raise NoTemplateException()
 
@@ -663,7 +670,7 @@ class ThinkingListener(CallStackListener):
             if reasoning_content or thinking_blocks:
                 self.thinking_records.append(
                     ThinkingRecord(
-                        template=self.current_template(),
+                        template=self.current_template_info().func,
                         reasoning_content=reasoning_content,
                         thinking_blocks=thinking_blocks,
                     )
@@ -671,23 +678,21 @@ class ThinkingListener(CallStackListener):
         super().exit_completion(resp)
 
 class ElapsedListener(CallStackListener):
-    """Tracks the elapsed time of each :class:`Template` call."""
+    """Tracks the elapsed time of each :class:`Tool` or :class:`Template` call."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.timestack: list[float] = []
         self.elapsed:collections.defaultdict[typing.Hashable,float] = collections.defaultdict(float)
 
     @typing.override
     def enter_completion(self):
         super().enter_completion()
-        self.timestack.append(time.time())
+        self.current_func_info().info['time'] = time.time()
 
     @typing.override
     def exit_completion(self, resp: typing.Any) -> None:
-        time_elapsed = time.time() - self.timestack[-1]
-        self.elapsed[self.current_template()] += time_elapsed
-        self.timestack.pop()
+        time_elapsed = time.time() - self.current_func_info().info['time']
+        self.elapsed[self.current_func_info().func] += time_elapsed
         super().exit_completion(resp)
 
 
