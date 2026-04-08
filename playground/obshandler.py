@@ -5,10 +5,8 @@ traces and raw completion outputs. The exact logging behavior is
 specified by implementing a listener interface.
 """
 
-from abc import ABCMeta, abstractmethod
-import random
 from dataclasses import dataclass
-from typing import Callable, Any, cast, override
+from typing import Any, cast, override
 
 from effectful.handlers.llm import Tool, Template
 from effectful.ops.types import NotHandled
@@ -194,7 +192,8 @@ provider = LiteLLMProvider(
 )
 
 
-obsprovider = ObservabilityHandler(listener=CompletionLogger())
+listener= ThinkingListener()
+obsprovider = ObservabilityHandler(listener)
 
 themes = ['zombies', 'the universe', 'exorcism']
 
@@ -214,8 +213,15 @@ def alice() -> str:
     """Returns where the treasure is."""
     return "school"
 
+@Template.define
+def pick_fruit() -> str:
+    """Return the name of a fruit."""
+    raise NotHandled
+
+
 combined_provider = coproduct(provider, obsprovider)
 
 def test_handler(provider):
     with handler(provider):
+        print(pick_fruit())
         print(find_treasure())
