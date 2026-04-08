@@ -5,8 +5,9 @@ traces and raw completion outputs. The exact logging behavior is
 specified by implementing a listener interface.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, cast, override
+from typing import Any, Hashable, cast, override
 
 from effectful.handlers.llm import Tool, Template
 from effectful.ops.types import NotHandled
@@ -16,11 +17,11 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
 )
+from functools import reduce
 
 from time import time
 
 
-# How does mro work? Should I call super?
 class ObservabilityListener:
     def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
         pass
@@ -111,30 +112,34 @@ class ThinkingListener(CallStackListener):
                 )
         super().exit_completion(resp)
 
+class ElapsedListener(CallStackListener):
+    """Tracks the elapsed time of each :class:`Tool` or
+    :class:`Template` call."""
 
-class CompletionLogger(CallStackListener):
     def __init__(self):
         super().__init__()
         self.timestack = []
+        self.elapsed:defaultdict[Hashable,float] = defaultdict(float)
 
     @override
     def enter_completion(self):
         super().enter_completion()
-        print(f"{self.current_template()} is calling completion")
         self.timestack.append(time())
 
     @override
     def exit_completion(self, resp: Any) -> None:
         time_elapsed = time() - self.timestack[-1]
+        self.elapsed[self.current_template()] += time_elapsed
         self.timestack.pop()
-        print(f"Completion for {self.current_template()} finished in {time_elapsed:.2f} seconds")
         super().exit_completion(resp)
 
 
 
 class ObservabilityHandler(ObjectInterpretation):
-    """Tracks the call stack of :class:`Tool` and invokes a callback
-    function on the callstack paired with raw completion responses"""
+    """Tracks the call stack of :class:`Tool` and :class:`Template`
+    and invokes a callback functions contained in an
+    :class:`ObservabilityListener`
+    """
 
     def __init__(self, listener: ObservabilityListener):
         self.listener = listener
@@ -152,7 +157,7 @@ class ObservabilityHandler(ObjectInterpretation):
 
     @implements(Tool.__apply__)
     def _call_tool[**P,T](
-        self, tool: Tool[P, T], *args: P.args, **kwargs: P.kwargs
+            self, tool: Tool[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         result_opt: T | None = None
         try:
@@ -166,7 +171,7 @@ class ObservabilityHandler(ObjectInterpretation):
 
     @implements(Template.__apply__)
     def _call_template[**P,T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+            self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         result_opt: T | None = None
         try:
@@ -177,25 +182,6 @@ class ObservabilityHandler(ObjectInterpretation):
         finally:
             self.listener.exit_template_call(template, result_opt)
 
-
-
-# provider = LiteLLMProvider(
-#     model='gpt-5.4'
-# )
-provider = LiteLLMProvider(
-    model='openai/gemma',
-    api_key='',
-    api_base='http://127.0.0.1:8080/',
-    temperature=1.0,
-    top_p=0.95,
-    top_k=64
-)
-
-
-listener= ThinkingListener()
-obsprovider = ObservabilityHandler(listener)
-
-themes = ['zombies', 'the universe', 'exorcism']
 
 
 @Template.define
@@ -219,9 +205,36 @@ def pick_fruit() -> str:
     raise NotHandled
 
 
-combined_provider = coproduct(provider, obsprovider)
+class ThinkingElapsedListener(ThinkingListener, ElapsedListener):
+    def __init__(self):
+        super().__init__()
 
-def test_handler(provider):
-    with handler(provider):
+
+def test_handler():
+# provider = LiteLLMProvider(
+#     model='anthropic/claude-sonnet-4-20250514',
+#     thinking={"type": "enabled", "budget_tokens": 1024}
+# )
+    provider = LiteLLMProvider(
+        model='openai/gemma',
+        api_key='',
+        api_base='http://127.0.0.1:8080/',
+        temperature=1.0,
+        top_p=0.95,
+        top_k=64
+    )
+
+    listener = ThinkingElapsedListener()
+    obsprovider = ObservabilityHandler(listener)
+
+    with handler(reduce(coproduct, [provider, obsprovider])):
         print(pick_fruit())
         print(find_treasure())
+
+        print('----------------------------------------')
+        for thinking in listener.thinking_records:
+            print(thinking)
+
+        print('----------------------------------------')
+        for func, time in listener.elapsed.items():
+            print(f"{func}:{time:.2f}s")
