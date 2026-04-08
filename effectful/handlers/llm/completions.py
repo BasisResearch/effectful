@@ -6,6 +6,7 @@ import functools
 import inspect
 import string
 import textwrap
+import time
 import traceback
 import typing
 import uuid
@@ -490,3 +491,207 @@ class LiteLLMProvider(ObjectInterpretation):
             history.clear()
             history.update(history_copy)
         return typing.cast(T, result)
+
+
+class ObservabilityListener(typing.Protocol):
+    """Interface for observing :class:`Tool`, :class:`Template`, and
+    completion call events.
+
+    All methods are no-ops by default, allowing subclasses to
+    subscribe to only the events they care about.
+    """
+
+    def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
+        # can't just `pass` because that would mark the method as abstract
+        return None
+
+    def exit_tool_call[**P,Q](self, tool: Tool[P,Q], result: Q | None) -> None:
+        return None
+
+    def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
+        return None
+
+    def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
+        return None
+
+    def enter_completion(self) -> None:
+        return None
+
+    def exit_completion(self, resp: typing.Any) -> None:
+        return None
+
+
+class ObservabilityHandler(ObjectInterpretation):
+    """Effect handler that wraps :class:`Tool`, :class:`Template`, and completion calls
+    and invokes callback functions registered in :attr:`listener`.
+
+    Compose with a provider via :func:`coproduct` or nested :func:`handler`
+    context managers to add observability without modifying the provider::
+
+        listener = ThinkingElapsedListener()
+        obs = ObservabilityHandler(listener)
+        with handler(provider), handler(obs):
+            result = my_template()
+    """
+
+    def __init__(self, listener: ObservabilityListener):
+        self.listener = listener
+
+    @implements(completion)
+    def _observe_completion(self, *args, **kwargs) -> typing.Any:
+        self.listener.enter_completion()
+        response: typing.Any = None
+        try:
+            response = fwd(*args, **kwargs)
+            return response
+        finally:
+            self.listener.exit_completion(response)
+
+    @implements(Tool.__apply__)
+    def _call_tool[**P,T](
+            self, tool: Tool[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        result_opt: T | None = None
+        try:
+            self.listener.enter_tool_call(tool)
+            result = typing.cast(T, fwd(tool,*args,**kwargs))
+            result_opt = result
+            return result
+        finally:
+            self.listener.exit_tool_call(tool, result_opt)
+
+
+    @implements(Template.__apply__)
+    def _call_template[**P,T](
+            self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        result_opt: T | None = None
+        try:
+            self.listener.enter_template_call(template)
+            result = typing.cast(T, fwd(template,*args,**kwargs))
+            result_opt = result
+            return result
+        finally:
+            self.listener.exit_template_call(template, result_opt)
+
+
+class EmptyCallStackException(Exception):
+    """Raised when accessing the call stack is empty."""
+    pass
+
+class NoTemplateException(Exception):
+    """Raised when accessing the call stack does not have a :class:`Template`."""
+    pass
+
+class CallStackListener(ObservabilityListener):
+    """Listener that maintains a call stack of active Tool and Template calls.
+
+    The call stack can be accessed directly through :attr:`callstack`.
+    The methods :meth:`current_function` and :meth:`current_template`
+    are provided for convenience to access the function (including
+    both templates and tools) or template that is currently executing
+    (i.e. on top of the call stack).
+    """
+
+    def __init__(self) -> None:
+        self.callstack: list[Tool[...,typing.Any]] = []
+
+    @typing.override
+    def enter_tool_call[**P,Q](self, tool: Tool[P,Q]) -> None:
+        super().enter_tool_call(tool)
+        self.callstack.append(tool)
+
+    @typing.override
+    def exit_tool_call[**P,Q](self, tool: Tool[P, Q], result: Q | None) -> None:
+        assert len(self.callstack) > 0 and tool is self.callstack[-1]
+        self.callstack.pop()
+        super().exit_tool_call(tool, result)
+
+    @typing.override
+    def enter_template_call[**P,Q](self, template: Template[P,Q]) -> None:
+        super().enter_template_call(template)
+        self.callstack.append(template)
+
+    @typing.override
+    def exit_template_call[**P,Q](self, template: Template[P,Q], result: Q | None) -> None:
+        assert len(self.callstack) > 0 and template is self.callstack[-1]
+        self.callstack.pop()
+        super().exit_template_call(template, result)
+
+    def current_function(self) -> typing.Any:
+        """Return the innermost active :class:`Tool` or :class:`Template`.
+
+        :raises EmptyCallStackException: if the call stack is empty.
+        """
+        try:
+            return self.callstack[-1]
+        except IndexError:
+            raise EmptyCallStackException()
+
+    def current_template(self) -> typing.Any:
+        """Return the innermost active :class:`Template`, skipping any nested :class:`Tool`s.
+
+        :raises NoTemplateException: if no :class:`Template` is on the stack.
+        """
+        try:
+            return next(func for func in reversed(self.callstack) if
+                        isinstance(func, Template))
+        except StopIteration:
+            raise NoTemplateException()
+
+@dataclasses.dataclass
+class ThinkingRecord:
+    """A single thinking/reasoning extraction paired with its source template."""
+    template: Template[...,typing.Any]
+    reasoning_content: str | None
+    thinking_blocks: list[typing.Any] | None
+
+
+class ThinkingListener(CallStackListener):
+    """Extracts thinking and reasoning content from litellm completion responses."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.thinking_records: list[ThinkingRecord] = []
+
+    @typing.override
+    def exit_completion(self, resp: typing.Any) -> None:
+        if resp is not None:
+            message = resp.choices[0].message
+            reasoning_content = message.get("reasoning_content")
+            thinking_blocks = message.get("thinking_blocks")
+            if reasoning_content or thinking_blocks:
+                self.thinking_records.append(
+                    ThinkingRecord(
+                        template=self.current_template(),
+                        reasoning_content=reasoning_content,
+                        thinking_blocks=thinking_blocks,
+                    )
+                )
+        super().exit_completion(resp)
+
+class ElapsedListener(CallStackListener):
+    """Tracks the elapsed time of each :class:`Template` call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timestack: list[float] = []
+        self.elapsed:collections.defaultdict[typing.Hashable,float] = collections.defaultdict(float)
+
+    @typing.override
+    def enter_completion(self):
+        super().enter_completion()
+        self.timestack.append(time.time())
+
+    @typing.override
+    def exit_completion(self, resp: typing.Any) -> None:
+        time_elapsed = time.time() - self.timestack[-1]
+        self.elapsed[self.current_template()] += time_elapsed
+        self.timestack.pop()
+        super().exit_completion(resp)
+
+
+class ThinkingElapsedListener(ThinkingListener, ElapsedListener):
+    """Combines thinking extraction and elapsed time tracking."""
+    def __init__(self):
+        super().__init__()
