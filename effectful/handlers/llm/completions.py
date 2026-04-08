@@ -608,7 +608,7 @@ class CallStackListener(ObservabilityListener):
 
     @typing.override
     def exit_tool_call[**P,Q](self, tool: Tool[P, Q], result: Q | None) -> None:
-        assert len(self.callstack) > 0 and tool is self.callstack[-1]
+        assert len(self.callstack) > 0 and tool is self.callstack[-1].func
         self.callstack.pop()
         super().exit_tool_call(tool, result)
 
@@ -645,58 +645,3 @@ class CallStackListener(ObservabilityListener):
                          if isinstance(ci.func, Template)))
         except StopIteration:
             raise NoTemplateException()
-
-@dataclasses.dataclass
-class ThinkingRecord:
-    """A single thinking/reasoning extraction paired with its source template."""
-    template: Template[...,typing.Any]
-    reasoning_content: str | None
-    thinking_blocks: list[typing.Any] | None
-
-
-class ThinkingListener(CallStackListener):
-    """Extracts thinking and reasoning content from litellm completion responses."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.thinking_records: list[ThinkingRecord] = []
-
-    @typing.override
-    def exit_completion(self, resp: typing.Any) -> None:
-        if resp is not None:
-            message = resp.choices[0].message
-            reasoning_content = message.get("reasoning_content")
-            thinking_blocks = message.get("thinking_blocks")
-            if reasoning_content or thinking_blocks:
-                self.thinking_records.append(
-                    ThinkingRecord(
-                        template=self.current_template_info().func,
-                        reasoning_content=reasoning_content,
-                        thinking_blocks=thinking_blocks,
-                    )
-                )
-        super().exit_completion(resp)
-
-class ElapsedListener(CallStackListener):
-    """Tracks the elapsed time of each :class:`Tool` or :class:`Template` call."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.elapsed:collections.defaultdict[typing.Hashable,float] = collections.defaultdict(float)
-
-    @typing.override
-    def enter_completion(self):
-        super().enter_completion()
-        self.current_func_info().info['time'] = time.time()
-
-    @typing.override
-    def exit_completion(self, resp: typing.Any) -> None:
-        time_elapsed = time.time() - self.current_func_info().info['time']
-        self.elapsed[self.current_func_info().func] += time_elapsed
-        super().exit_completion(resp)
-
-
-class ThinkingElapsedListener(ThinkingListener, ElapsedListener):
-    """Combines thinking extraction and elapsed time tracking."""
-    def __init__(self):
-        super().__init__()
