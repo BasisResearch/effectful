@@ -148,105 +148,95 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
     return ty
 
 
-@TypeToPydanticType.register(pydantic.BaseModel)
-def _pydantic_type_basemodel(ty: type[pydantic.BaseModel]) -> type:
+def _rewrite_fields(
+    ty: type,
+    field_names: list[str],
+    field_annotations: dict[str, Any],
+    field_defaults: dict[str, Any],
+    construct: Callable[..., Any],
+    extract: Callable[[Any, list[str]], dict[str, Any]],
+) -> Any:
+    """Build an Annotated wrapper that rewrites field annotations via a proxy model.
+
+    Shared implementation for dataclasses and BaseModels whose fields contain
+    types needing custom encoding (Callable, tuple, Image, etc.).
+    Returns the original type unchanged if no fields need rewriting.
+    """
     evaluator = TypeToPydanticType()
-    rewritten = {}
-    for name, field_info in ty.model_fields.items():
-        new_ann = evaluator.evaluate(field_info.annotation)
-        if new_ann is not field_info.annotation:
+    rewritten: dict[str, Any] = {}
+    for name, ann in field_annotations.items():
+        new_ann = evaluator.evaluate(ann)
+        if new_ann is not ann:
             rewritten[name] = new_ann
     if not rewritten:
         return ty
-    field_definitions: dict[str, Any] = {}
-    for name, field_info in ty.model_fields.items():
-        ann = rewritten.get(name, field_info.annotation)
-        field_definitions[name] = (ann, field_info)
-    proxy = pydantic.create_model(
-        ty.__name__, __base__=ty, __config__=ty.model_config, **field_definitions
-    )
+
+    proxy_fields = {
+        name: (rewritten.get(name, field_annotations[name]), field_defaults[name])
+        for name in field_names
+    }
+    proxy = pydantic.create_model(ty.__name__, **proxy_fields)  # type: ignore[call-overload]
     proxy_adapter = pydantic.TypeAdapter(proxy)
-
-    def _validate(v: Any, info: pydantic.ValidationInfo) -> Any:
-        if isinstance(v, ty) and not isinstance(v, proxy):
-            return v
-        ctx = info.context if info else {}
-        parsed = proxy_adapter.validate_python(v, context=ctx)
-        return ty(**{name: getattr(parsed, name) for name in ty.model_fields})
-
-    def _serialize(v: Any) -> Any:
-        return proxy_adapter.dump_python(
-            proxy(**{name: getattr(v, name) for name in ty.model_fields}),
-            mode="json",
-        )
-
-    return typing.Annotated[  # type: ignore[return-value]
-        ty,
-        pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(_inline_refs(proxy_adapter.json_schema())),
-    ]
-
-
-@TypeToPydanticType.register(object)
-def _pydantic_type_base[T](ty: type[T]) -> type[T]:
-    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
-        return _rewrite_dataclass(ty)
-    return ty
-
-
-def _rewrite_dataclass(ty: type) -> type:
-    """Rewrite dataclass field annotations so Pydantic can handle special types.
-
-    Uses a proxy Pydantic model for validation/serialization while preserving
-    the original dataclass type on output.
-    """
-    evaluator = TypeToPydanticType()
-    hints = typing.get_type_hints(ty)
-    rewritten: dict[str, Any] = {}
-    for field in dataclasses.fields(ty):
-        ann = hints.get(field.name, field.type)
-        new_ann = evaluator.evaluate(ann)
-        if new_ann is not ann:
-            rewritten[field.name] = new_ann
-    if not rewritten:
-        return ty
-
-    field_defs: dict[str, Any] = {}
-    for field in dataclasses.fields(ty):
-        ann = rewritten.get(field.name, hints.get(field.name, field.type))
-        if field.default is not dataclasses.MISSING:
-            field_defs[field.name] = (ann, field.default)
-        elif field.default_factory is not dataclasses.MISSING:
-            field_defs[field.name] = (
-                ann,
-                pydantic.Field(default_factory=field.default_factory),
-            )
-        else:
-            field_defs[field.name] = (ann, ...)
-    proxy = pydantic.create_model(ty.__name__, **field_defs)
-    proxy_adapter = pydantic.TypeAdapter(proxy)
-    field_names = [f.name for f in dataclasses.fields(ty)]
 
     def _validate(v: Any, info: pydantic.ValidationInfo) -> Any:
         if isinstance(v, ty):
             return v
         ctx = info.context if info else {}
         parsed = proxy_adapter.validate_python(v, context=ctx)
-        return ty(**{name: getattr(parsed, name) for name in field_names})
+        return construct(**{n: getattr(parsed, n) for n in field_names})
 
     def _serialize(v: Any) -> Any:
-        return proxy_adapter.dump_python(
-            proxy(**{f.name: getattr(v, f.name) for f in dataclasses.fields(ty)}),
-            mode="json",
-        )
+        return proxy_adapter.dump_python(proxy(**extract(v, field_names)), mode="json")
 
-    return typing.Annotated[  # type: ignore[return-value]
+    return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(_inline_refs(proxy_adapter.json_schema())),
+        pydantic.WithJsonSchema(
+            _strict_json_schema(_inline_refs(proxy_adapter.json_schema()))
+        ),
     ]
+
+
+@TypeToPydanticType.register(pydantic.BaseModel)
+def _pydantic_type_basemodel(ty: type[pydantic.BaseModel]) -> Any:
+    names = list(ty.model_fields)
+    annotations = {n: fi.annotation for n, fi in ty.model_fields.items()}
+    defaults = {n: fi for n, fi in ty.model_fields.items()}
+    return _rewrite_fields(
+        ty,
+        names,
+        annotations,
+        defaults,
+        construct=ty,
+        extract=lambda v, ns: {n: getattr(v, n) for n in ns},
+    )
+
+
+@TypeToPydanticType.register(object)
+def _pydantic_type_base(ty: type) -> Any:
+    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
+        hints = typing.get_type_hints(ty)
+        fields = dataclasses.fields(ty)
+        names = [f.name for f in fields]
+        annotations = {f.name: hints.get(f.name, f.type) for f in fields}
+        defaults: dict[str, Any] = {}
+        for f in fields:
+            if f.default is not dataclasses.MISSING:
+                defaults[f.name] = f.default
+            elif f.default_factory is not dataclasses.MISSING:
+                defaults[f.name] = pydantic.Field(default_factory=f.default_factory)
+            else:
+                defaults[f.name] = ...
+        return _rewrite_fields(
+            ty,
+            names,
+            annotations,
+            defaults,
+            construct=ty,
+            extract=lambda v, ns: {n: getattr(v, n) for n in ns},
+        )
+    return ty
 
 
 class _ComplexModel(typing.TypedDict):
@@ -294,16 +284,31 @@ def _inline_refs(schema: dict) -> dict:
                 ref_name = obj["$ref"].split("/")[-1]
                 if ref_name in defs:
                     return _resolve(defs[ref_name])
-            result = {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
-            # OpenAI strict mode requires additionalProperties: false on all objects
-            if result.get("type") == "object" and "properties" in result:
-                result.setdefault("additionalProperties", False)
-            return result
+            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
         if isinstance(obj, list):
             return [_resolve(item) for item in obj]
         return obj
 
     return _resolve(schema)
+
+
+def _strict_json_schema(schema: dict) -> dict:
+    """Add ``additionalProperties: false`` to all object schemas.
+
+    OpenAI's structured output strict mode requires this on every object node.
+    """
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            result = {k: _walk(v) for k, v in obj.items()}
+            if result.get("type") == "object" and "properties" in result:
+                result.setdefault("additionalProperties", False)
+            return result
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(schema)
 
 
 @TypeToPydanticType.register(tuple)
