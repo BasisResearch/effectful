@@ -191,7 +191,7 @@ def _pydantic_type_basemodel(ty: type[pydantic.BaseModel]) -> type:
 @TypeToPydanticType.register(object)
 def _pydantic_type_base[T](ty: type[T]) -> type[T]:
     if dataclasses.is_dataclass(ty) and isinstance(ty, type):
-        return _rewrite_dataclass(ty)  # type: ignore[return-value]
+        return _rewrite_dataclass(ty)
     return ty
 
 
