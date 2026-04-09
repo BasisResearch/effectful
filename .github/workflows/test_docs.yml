@@ -36,3 +36,7 @@ jobs:
       - name: Build docs
         run: |
           cd docs && uv run make html
+
+      - name: Generate LLM agent reference markdown
+        run: |
+          uv run jupyter nbconvert --to markdown docs/source/llm.ipynb --output llm.md --output-dir docs/build/html/
