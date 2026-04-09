@@ -264,7 +264,7 @@ def _pydantic_type_complex(ty):
         ty,
         pydantic.PlainValidator(_validate_complex),
         pydantic.PlainSerializer(_serialize_complex),
-        pydantic.WithJsonSchema(adapted_schema),
+        pydantic.WithJsonSchema(_strict_json_schema(adapted_schema)),
     ]
 
 
@@ -359,7 +359,9 @@ def _pydantic_type_tuple(ty):
         ty,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
+        pydantic.WithJsonSchema(
+            _strict_json_schema(_inline_refs(model.model_json_schema()))
+        ),
     ]
 
 
@@ -400,7 +402,9 @@ def _pydantic_type_image(ty: type[Image.Image]):
         ty,
         pydantic.PlainValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.WithJsonSchema(
+            _strict_json_schema(_inline_refs(adapter.json_schema()))
+        ),
     ]
 
 
@@ -627,7 +631,9 @@ def _pydantic_callable(callable_type: Any) -> Any:
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
         pydantic.WithJsonSchema(
-            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+            _strict_json_schema(
+                _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+            )
         ),
     ]
 
@@ -662,7 +668,9 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
             "function": {
                 "name": value.__name__,
                 "description": textwrap.dedent(value.__default__.__doc__),
-                "parameters": response_format["json_schema"]["schema"],
+                "parameters": _strict_json_schema(
+                    response_format["json_schema"]["schema"]
+                ),
                 "strict": True,
             },
         }
@@ -676,7 +684,9 @@ def _pydantic_type_tool(ty: type[Tool]):
         ty,
         pydantic.PlainValidator(_validate_tool),
         pydantic.PlainSerializer(_serialize_tool),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.WithJsonSchema(
+            _strict_json_schema(_inline_refs(adapter.json_schema()))
+        ),
     ]
 
 
@@ -738,6 +748,8 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         pydantic.PlainValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(
-            _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
+            _strict_json_schema(
+                _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
+            )
         ),
     ]
