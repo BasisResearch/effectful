@@ -314,9 +314,7 @@ def test_canonicalize_1():
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "substitute_impl", [substitute, _Substitute.substitute]
-)
+@pytest.mark.parametrize("substitute_impl", [substitute, _Substitute.substitute])
 def test_substitute(
     substitute_impl: collections.abc.Callable[
         [TypeExpressions, Substitutions], TypeExpressions

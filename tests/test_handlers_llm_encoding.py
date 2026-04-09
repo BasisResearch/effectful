@@ -101,9 +101,25 @@ class _Pair:
     count: int
 
 
+@dataclass
+class _WithCallable:
+    name: str
+    fn: Callable[[int], int]
+
+
 class _PointModel(pydantic.BaseModel):
     x: int
     y: int
+
+
+class _ModelWithTuple(pydantic.BaseModel):
+    coords: tuple[int, int]
+
+
+class _ModelWithCallable(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
+    name: str
+    transform: Callable[[str], str]
 
 
 class _PersonModel(pydantic.BaseModel):
@@ -290,6 +306,9 @@ ROUNDTRIP_CASES = [
         ),
         None,
         id="pm-nested",
+    ),
+    pytest.param(
+        _ModelWithTuple, _ModelWithTuple(coords=(1, 2)), None, id="pm-with-tuple"
     ),
     # --- tuple ---
     pytest.param(tuple[int, str], (1, "hello"), None, id="tuple-int-str"),
@@ -558,6 +577,48 @@ def test_tuple_schema_no_prefix_items(ty):
     assert "prefixItems" not in str(schema), (
         f"Schema for {ty} should not contain prefixItems: {schema}"
     )
+
+
+# ============================================================================
+# Composite types: dataclass/BaseModel with special fields (#626, #631)
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "ty",
+    [
+        pytest.param(_Pair, id="dc-tuple-field"),
+        pytest.param(_WithCallable, id="dc-callable-field"),
+        pytest.param(_ModelWithTuple, id="pm-tuple-field"),
+        pytest.param(_ModelWithCallable, id="pm-callable-field"),
+    ],
+)
+def test_composite_type_schema_generation(ty):
+    """Encodable[T] produces a valid JSON schema for composite types.
+
+    Regression tests for #626 (tuple fields) and #631 (Callable fields).
+    """
+    adapter = pydantic.TypeAdapter(Encodable[ty])
+    schema = adapter.json_schema()
+    assert isinstance(schema, dict)
+    assert "properties" in schema
+
+
+@pytest.mark.parametrize(
+    "ty,value",
+    [
+        pytest.param(_Pair, _Pair(values=(42, "hello"), count=2), id="dc-tuple-field"),
+        pytest.param(
+            _ModelWithTuple, _ModelWithTuple(coords=(1, 2)), id="pm-tuple-field"
+        ),
+    ],
+)
+def test_composite_type_roundtrip(ty, value):
+    """Composite types with tuple fields roundtrip through encode/decode."""
+    adapter = pydantic.TypeAdapter(Encodable[ty])
+    encoded = adapter.dump_python(value, mode="json")
+    decoded = adapter.validate_python(encoded)
+    assert decoded == value
 
 
 # ============================================================================

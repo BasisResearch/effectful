@@ -143,11 +143,110 @@ class TypeToPydanticType(TypeEvaluator):
             return app
 
 
-@TypeToPydanticType.register(object)
 @TypeToPydanticType.register(str)
-@TypeToPydanticType.register(pydantic.BaseModel)
-def _pydantic_type_base[T](ty: type[T]) -> type[T]:
+def _pydantic_type_str[T](ty: type[T]) -> type[T]:
     return ty
+
+
+@TypeToPydanticType.register(pydantic.BaseModel)
+def _pydantic_type_basemodel(ty: type[pydantic.BaseModel]) -> type:
+    evaluator = TypeToPydanticType()
+    rewritten = {}
+    for name, field_info in ty.model_fields.items():
+        new_ann = evaluator.evaluate(field_info.annotation)
+        if new_ann is not field_info.annotation:
+            rewritten[name] = new_ann
+    if not rewritten:
+        return ty
+    field_definitions: dict[str, Any] = {}
+    for name, field_info in ty.model_fields.items():
+        ann = rewritten.get(name, field_info.annotation)
+        field_definitions[name] = (ann, field_info)
+    proxy = pydantic.create_model(
+        ty.__name__, __base__=ty, __config__=ty.model_config, **field_definitions
+    )
+    proxy_adapter = pydantic.TypeAdapter(proxy)
+
+    def _validate(v: Any, info: pydantic.ValidationInfo) -> Any:
+        if isinstance(v, ty) and not isinstance(v, proxy):
+            return v
+        ctx = info.context if info else {}
+        parsed = proxy_adapter.validate_python(v, context=ctx)
+        return ty(**{name: getattr(parsed, name) for name in ty.model_fields})
+
+    def _serialize(v: Any) -> Any:
+        return proxy_adapter.dump_python(
+            proxy(**{name: getattr(v, name) for name in ty.model_fields}),
+            mode="json",
+        )
+
+    return typing.Annotated[  # type: ignore[return-value]
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(_serialize),
+        pydantic.WithJsonSchema(_inline_refs(proxy_adapter.json_schema())),
+    ]
+
+
+@TypeToPydanticType.register(object)
+def _pydantic_type_base[T](ty: type[T]) -> type[T]:
+    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
+        return _rewrite_dataclass(ty)  # type: ignore[return-value]
+    return ty
+
+
+def _rewrite_dataclass(ty: type) -> type:
+    """Rewrite dataclass field annotations so Pydantic can handle special types.
+
+    Uses a proxy Pydantic model for validation/serialization while preserving
+    the original dataclass type on output.
+    """
+    evaluator = TypeToPydanticType()
+    hints = typing.get_type_hints(ty)
+    rewritten: dict[str, Any] = {}
+    for field in dataclasses.fields(ty):
+        ann = hints.get(field.name, field.type)
+        new_ann = evaluator.evaluate(ann)
+        if new_ann is not ann:
+            rewritten[field.name] = new_ann
+    if not rewritten:
+        return ty
+
+    field_defs: dict[str, Any] = {}
+    for field in dataclasses.fields(ty):
+        ann = rewritten.get(field.name, hints.get(field.name, field.type))
+        if field.default is not dataclasses.MISSING:
+            field_defs[field.name] = (ann, field.default)
+        elif field.default_factory is not dataclasses.MISSING:
+            field_defs[field.name] = (
+                ann,
+                pydantic.Field(default_factory=field.default_factory),
+            )
+        else:
+            field_defs[field.name] = (ann, ...)
+    proxy = pydantic.create_model(ty.__name__, **field_defs)
+    proxy_adapter = pydantic.TypeAdapter(proxy)
+    field_names = [f.name for f in dataclasses.fields(ty)]
+
+    def _validate(v: Any, info: pydantic.ValidationInfo) -> Any:
+        if isinstance(v, ty):
+            return v
+        ctx = info.context if info else {}
+        parsed = proxy_adapter.validate_python(v, context=ctx)
+        return ty(**{name: getattr(parsed, name) for name in field_names})
+
+    def _serialize(v: Any) -> Any:
+        return proxy_adapter.dump_python(
+            proxy(**{f.name: getattr(v, f.name) for f in dataclasses.fields(ty)}),
+            mode="json",
+        )
+
+    return typing.Annotated[  # type: ignore[return-value]
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(_serialize),
+        pydantic.WithJsonSchema(_inline_refs(proxy_adapter.json_schema())),
+    ]
 
 
 class _ComplexModel(typing.TypedDict):
@@ -195,7 +294,11 @@ def _inline_refs(schema: dict) -> dict:
                 ref_name = obj["$ref"].split("/")[-1]
                 if ref_name in defs:
                     return _resolve(defs[ref_name])
-            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
+            result = {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
+            # OpenAI strict mode requires additionalProperties: false on all objects
+            if result.get("type") == "object" and "properties" in result:
+                result.setdefault("additionalProperties", False)
+            return result
         if isinstance(obj, list):
             return [_resolve(item) for item in obj]
         return obj
