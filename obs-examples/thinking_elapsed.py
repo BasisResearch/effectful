@@ -8,7 +8,7 @@ from typing import Any, Hashable, override
 from effectful.handlers.llm import Tool, Template
 from effectful.ops.types import NotHandled
 from effectful.handlers.llm.completions import (
-    LiteLLMProvider, ObservabilityHandler, ObservabilityListener,
+    LiteLLMProvider, LoggingHandler, LoggingListener,
     CallStackListener, CallInfo,
 )
 from effectful.ops.semantics import coproduct, handler
@@ -23,7 +23,7 @@ class ThinkingRecord:
     thinking_blocks: list[Any] | None
 
 
-class ThinkingListener(ObservabilityListener):
+class ThinkingListener(LoggingListener):
     """Extracts thinking and reasoning content from litellm completion responses."""
 
     def __init__(
@@ -49,7 +49,7 @@ class ThinkingListener(ObservabilityListener):
                 )
 
 
-class ElapsedListener(ObservabilityListener):
+class ElapsedListener(LoggingListener):
     """Tracks the elapsed time of each :class:`Template` call."""
 
     def __init__(
@@ -103,9 +103,9 @@ def test_handler():
 
     combined = reduce(coproduct, [
         provider,
-        ObservabilityHandler(thinking),
-        ObservabilityHandler(elapsed),
-        ObservabilityHandler(callstack),
+        LoggingHandler(thinking),
+        LoggingHandler(elapsed),
+        LoggingHandler(callstack),
     ])
 
     with handler(combined):

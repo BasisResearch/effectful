@@ -8,7 +8,7 @@ from effectful.ops.types import NotHandled
 from effectful.handlers.llm.completions import completion
 from effectful.ops.semantics import fwd, coproduct, handler
 from effectful.handlers.llm.completions import (
-    LiteLLMProvider, ObservabilityHandler, CallStackListener
+    LiteLLMProvider, LoggingHandler, CallStackListener
 )
 from time import time
 
@@ -96,7 +96,7 @@ def test_handler():
     )
 
     listener = ThinkingElapsedListener()
-    obsprovider = ObservabilityHandler(listener)
+    obsprovider = LoggingHandler(listener)
 
 
     with handler(provider), handler(obsprovider):

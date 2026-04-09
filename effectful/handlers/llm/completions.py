@@ -492,7 +492,7 @@ class LiteLLMProvider(ObjectInterpretation):
         return typing.cast(T, result)
 
 
-class ObservabilityListener(typing.Protocol):
+class LoggingListener(typing.Protocol):
     """Interface for observing :class:`Tool`, :class:`Template`, and
     completion call events.
 
@@ -522,20 +522,20 @@ class ObservabilityListener(typing.Protocol):
         return None
 
 
-class ObservabilityHandler(ObjectInterpretation):
+class LoggingHandler(ObjectInterpretation):
     """Effect handler that wraps :class:`Tool`, :class:`Template`, and completion calls
     and invokes callback functions registered in :attr:`listener`.
 
     Compose with a provider via :func:`coproduct` or nested :func:`handler`
-    context managers to add observability without modifying the provider::
+    context managers to add logging without modifying the provider logic::
 
         listener = ThinkingElapsedListener()
-        obs = ObservabilityHandler(listener)
+        obs = LoggingHandler(listener)
         with handler(provider), handler(obs):
             result = my_template()
     """
 
-    def __init__(self, listener: ObservabilityListener):
+    def __init__(self, listener: LoggingListener):
         self.listener = listener
 
     @implements(completion)
@@ -593,7 +593,7 @@ class CallInfo[F: Tool[..., typing.Any]]:
     info: dict[typing.Any, typing.Any]
 
 
-class CallStackListener(ObservabilityListener):
+class CallStackListener(LoggingListener):
     """Listener that maintains a call stack of active Tool and Template calls.
 
     The call stack can be accessed directly through :attr:`callstack`.
