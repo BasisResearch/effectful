@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import functools
 import itertools
 import logging
@@ -863,3 +864,16 @@ def test_typeof_literal():
 
     with pytest.raises(TypeError, match="Union types are not supported"):
         typeof(get_mixed())
+
+
+def test_fvsof_dataclass() -> None:
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+        def __init__(self, x: int):
+            assert x is not None
+            self.x = x
+
+    v = Operation.define(int)
+    assert fvsof(A(v())) == {v}
