@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D3rNYTWIcoJmMGU1mjErSsz4rJgM6",
-  "created": 1769812544,
-  "model": "gpt-5-nano-2025-08-07",
+  "id": "chatcmpl-DSsUFzhg59Zb6k5uRvmjSzFf13eUO",
+  "created": 1775775003,
+  "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_10ed490cb0",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\": {\"genre\": \"action\", \"explanation\": \"The plot centers on a rogue cop taking on an evil group to stop them from taking over a skyscraper, featuring high-stakes conflict and action-oriented sequences typical of the action genre.\"}}",
+        "content": "{\"value\":{\"genre\":\"action\",\"explanation\":\"The plot involves a rogue cop who is trying to stop an evil group, which indicates intense conflict and battles typical of action films. The setting in a skyscraper further suggests high-stakes scenarios and physical challenges that are hallmark features of the action genre.\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 384,
-    "prompt_tokens": 457,
-    "total_tokens": 841,
+    "completion_tokens": 67,
+    "prompt_tokens": 964,
+    "total_tokens": 1031,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "reasoning_tokens": 320,
+      "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

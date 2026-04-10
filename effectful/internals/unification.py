@@ -170,7 +170,7 @@ class TypeEvaluator(abc.ABC):
 
     @evaluate.register
     def _(self, typ: typing.NewType):
-        return typing.NewType(typ.__name__, self.evaluate(typ.__supertype__))  # type: ignore[attr-defined]
+        return typing.NewType(typ.__name__, self.evaluate(typ.__supertype__))
 
     @evaluate.register
     def _(self, typ: typing.TypeAliasType):

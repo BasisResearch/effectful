@@ -642,7 +642,7 @@ class TestRetryLLMHandler:
         """Test that valid tool calls are decoded and returned."""
         responses = [
             make_tool_call_response(
-                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
+                "add_numbers", '{"a": 1, "b": 2}'
             ),
         ]
 
@@ -1028,7 +1028,7 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_tool_call_response("failing_tool", '{"x": 42}'),
             make_text_response("handled the error"),
         ]
 
@@ -1041,8 +1041,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, tools, response_format, model, **kwargs):
-                return fwd(tools, response_format, model, **kwargs)
+            def _call_assistant(self, env, response_type, model, **kwargs):
+                return fwd(env, response_type, model, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1249,9 +1249,9 @@ class TestCallableSynthesis:
 
             # Encode it back to SynthesizedFunction
             adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
-            encoded = adapter.dump_python(add_func)
-            assert isinstance(encoded, SynthesizedFunction)
-            assert "def " in encoded.module_code
+            encoded = adapter.dump_python(add_func, mode="json")
+            assert isinstance(encoded, dict)
+            assert "def " in encoded["module_code"]
 
             # Decode it again and verify it still works
             decoded = adapter.validate_python(encoded)
@@ -1670,7 +1670,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1719,7 +1719,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
