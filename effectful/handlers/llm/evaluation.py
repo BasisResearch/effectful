@@ -96,6 +96,19 @@ def exec(
     )
 
 
+@defop
+def test(obj: object, ctx: typing.Mapping[str, Any]) -> None:
+    """
+    Run doctests for a synthesized program using the current doctest stack.
+
+    obj: The synthesized module object.
+    ctx: The namespace used to run doctest examples.
+
+    No-op by default; install a DoctestHandler to actually run doctests.
+    """
+    pass
+
+
 # Type checking implementation
 def type_to_ast(typ: Any) -> ast.expr:
     """Convert a Python type to an AST expression.
