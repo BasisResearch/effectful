@@ -83,7 +83,7 @@ target-version = "py312"
 select = ["F", "I", "PERF", "UP"]
 
 [tool.pytest.ini_options]
-addopts = "--doctest-modules"
+addopts = "--doctest-modules --dist loadgroup"
 testpaths = ["./effectful", "./tests"]
 
 [tool.mypy]

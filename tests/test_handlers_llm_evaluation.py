@@ -853,6 +853,7 @@ class TestTypeAliases:
         assert unparsed == "MyList"
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckE2E:
     """End-to-end stress tests for mypy_type_check with get_context and ast.parse. Never empty context."""
 
@@ -1002,6 +1003,7 @@ def f(x: Annotated[int, Tag]) -> int:
         mypy_type_check(module, ctx, [int], int)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckFailures:
     """Failure cases: mypy_type_check must raise TypeError with mypy report. All use get_context()."""
 
@@ -1275,6 +1277,7 @@ def outer(x: int) -> bool:
             mypy_type_check(module, ctx, [], MyErr)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckNameCollision:
     """Tests that mypy_type_check renames synthesized functions whose names
     collide with variable declarations or class stubs from the context."""
