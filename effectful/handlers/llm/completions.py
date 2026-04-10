@@ -160,8 +160,15 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
+# prevent :func:`functools.wraps` from copying over `litellm.completion`'s type annotations,
+# which contains unresolvable forward references without import aiohttp
+_assn_without_type = [
+    attr for attr in functools.WRAPPER_ASSIGNMENTS if attr != "__annotations__"
+]
+
+
 @Operation.define
-@functools.wraps(litellm.completion)
+@functools.wraps(litellm.completion, assigned=_assn_without_type)
 def completion(*args, **kwargs) -> typing.Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
@@ -170,6 +177,9 @@ def completion(*args, **kwargs) -> typing.Any:
 
     """
     return litellm.completion(*args, **kwargs)
+
+
+del _assn_without_type
 
 
 @Operation.define
