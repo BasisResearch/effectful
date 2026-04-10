@@ -826,7 +826,7 @@ _provider_response_format_xfail = pytest.mark.xfail(
 
 def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
-    if "img" in case_id or "tool" in case_id or "dtc" in case_id:
+    if case_id.startswith(("img-", "tool-", "dtc-")):
         marks.append(_provider_response_format_xfail)
     return marks
 

@@ -228,10 +228,26 @@ class _BoxedResponse[T](pydantic.BaseModel):
 def _strict_json_schema(schema: dict) -> dict:
     """Adapt a JSON schema for OpenAI's structured output strict mode.
 
-    Walks the schema tree and ensures every ``type: "object"`` node has
-    ``additionalProperties: false`` and a ``required`` list that includes
-    all property keys, as mandated by the OpenAI strict-mode API.
+    Applies all transformations required by the OpenAI strict-mode API:
+
+    * Inlines ``$ref``/``$defs`` (OpenAI does not support JSON Schema references).
+    * Adds ``additionalProperties: false`` to every ``type: "object"`` node.
+    * Ensures ``required`` lists every property key.
+    * Adds ``items: {}`` fallback for ``type: "array"`` nodes missing ``items``.
     """
+    from effectful.handlers.llm.encoding import _inline_refs
+
+    def _deep_inline(obj: typing.Any) -> typing.Any:
+        """Recursively inline $ref/$defs at every level of the schema."""
+        if isinstance(obj, dict):
+            if "$defs" in obj:
+                obj = _inline_refs(obj)
+            return {k: _deep_inline(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_deep_inline(item) for item in obj]
+        return obj
+
+    inlined = _deep_inline(schema)
 
     def _walk(obj: typing.Any) -> typing.Any:
         if isinstance(obj, dict):
@@ -240,12 +256,29 @@ def _strict_json_schema(schema: dict) -> dict:
                 result["additionalProperties"] = False
                 if "properties" in result:
                     result["required"] = sorted(result["properties"].keys())
+            if result.get("type") == "array" and (
+                "items" not in result or result.get("items") == {}
+            ):
+                # OpenAI requires 'items' on all array schemas.
+                # For prefixItems (fixed-length tuples), use anyOf over the
+                # prefix schemas so OpenAI accepts the schema while
+                # preserving array semantics for deserialization.
+                prefix = result.get("prefixItems")
+                if prefix and len(prefix) > 0:
+                    # Deduplicate: if all items have the same type, use that
+                    unique = {json.dumps(s, sort_keys=True) for s in prefix}
+                    if len(unique) == 1:
+                        result["items"] = prefix[0]
+                    else:
+                        result["items"] = {"anyOf": prefix}
+                else:
+                    result["items"] = {"type": "string"}
             return result
         if isinstance(obj, list):
             return [_walk(item) for item in obj]
         return obj
 
-    return _walk(schema)
+    return _walk(inlined)
 
 
 @Operation.define
