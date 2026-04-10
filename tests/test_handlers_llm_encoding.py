@@ -824,35 +824,43 @@ _provider_response_format_xfail = pytest.mark.xfail(
 )
 
 
-def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
-    marks: list[pytest.MarkDecorator] = []
-    # Image types can't roundtrip through LLM (returns URLs, not data URIs).
-    # Tool/DecodedToolCall types have schemas incompatible with OpenAI strict mode.
-    if case_id.startswith(("img-", "tool-", "dtc-")) or "-img" in case_id:
-        marks.append(_provider_response_format_xfail)
-    return marks
-
-
-def _cases_with_provider_xfails(cases: list[Any]) -> list[Any]:
+def _apply_xfails(
+    cases: list[Any],
+    should_xfail: Callable[[str], bool],
+) -> list[Any]:
     out: list[Any] = []
     for c in cases:
         case_id = c.id if isinstance(c.id, str) else None
-        if case_id is None:
+        if case_id is not None and should_xfail(case_id):
+            out.append(
+                pytest.param(
+                    *c.values,
+                    id=case_id,
+                    marks=[*c.marks, _provider_response_format_xfail],
+                )
+            )
+        else:
             out.append(c)
-            continue
-        marks = [*c.marks, *_provider_case_marks(case_id)]
-        if marks == list(c.marks):
-            out.append(c)
-            continue
-        out.append(pytest.param(*c.values, id=case_id, marks=marks))
     return out
 
 
-PROVIDER_CASES = _cases_with_provider_xfails(ROUNDTRIP_CASES)
+# response_model: image types can't roundtrip (LLM returns URLs, not data URIs),
+# and Tool/DecodedToolCall schemas are incompatible with OpenAI strict mode.
+RESPONSE_MODEL_CASES = _apply_xfails(
+    ROUNDTRIP_CASES,
+    lambda cid: cid.startswith(("img-", "tool-", "dtc-")) or "-img" in cid,
+)
+
+# tool-as-param: only Tool/DecodedToolCall schemas fail (nested function spec).
+# Image types produce valid tool parameter schemas.
+TOOL_PARAM_CASES = _apply_xfails(
+    ROUNDTRIP_CASES,
+    lambda cid: cid.startswith(("tool-", "dtc-")),
+)
 
 
 @requires_llm
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", RESPONSE_MODEL_CASES)
 def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
@@ -899,7 +907,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 
 @requires_llm
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", TOOL_PARAM_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
