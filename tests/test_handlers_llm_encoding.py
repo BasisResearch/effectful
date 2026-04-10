@@ -26,6 +26,7 @@ from effectful.handlers.llm.encoding import (
     SynthesizedFunction,
     to_content_blocks,
 )
+from effectful.handlers.llm.completions import _strict_json_schema
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
@@ -854,13 +855,20 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[ty])
+    inner_schema = enc.json_schema()
+    # OpenAI requires top-level response_format to be type: "object"
+    schema: dict[str, Any] = _strict_json_schema({
+        "type": "object",
+        "properties": {"value": inner_schema},
+        "required": ["value"],
+    })
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         response_format={
             "type": "json_schema",
             "json_schema": {
                 "name": "response",
-                "schema": enc.json_schema(),
+                "schema": schema,
                 "strict": True,
             },
         },
@@ -881,7 +889,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
     )
 
-    deserialized = json.loads(content)
+    deserialized = json.loads(content)["value"]
     decoded = enc.validate_python(deserialized, context=ctx or {})
     pydantic.TypeAdapter(ty).validate_python(decoded)
 
@@ -904,10 +912,11 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
         Encodable[type(tool)]  # type: ignore[misc]
     )
+    tool_spec = _strict_json_schema(enc.dump_python(tool, mode="json", context=ctx or {}))
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
+        tools=[tool_spec],
         tool_choice="none",
         max_tokens=400,
     )
@@ -932,10 +941,11 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
         Encodable[type(tool)]  # type: ignore[misc]
     )
+    tool_spec = _strict_json_schema(enc.dump_python(tool, mode="json", context=ctx or {}))
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
-        tools=[enc.dump_python(tool, mode="json", context=ctx or {})],
+        tools=[tool_spec],
         tool_choice="none",
         max_tokens=400,
     )

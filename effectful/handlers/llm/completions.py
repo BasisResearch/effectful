@@ -225,6 +225,29 @@ class _BoxedResponse[T](pydantic.BaseModel):
     value: T
 
 
+def _strict_json_schema(schema: dict) -> dict:
+    """Adapt a JSON schema for OpenAI's structured output strict mode.
+
+    Walks the schema tree and ensures every ``type: "object"`` node has
+    ``additionalProperties: false`` and a ``required`` list that includes
+    all property keys, as mandated by the OpenAI strict-mode API.
+    """
+
+    def _walk(obj: typing.Any) -> typing.Any:
+        if isinstance(obj, dict):
+            result = {k: _walk(v) for k, v in obj.items()}
+            if result.get("type") == "object":
+                result["additionalProperties"] = False
+                if "properties" in result:
+                    result["required"] = sorted(result["properties"].keys())
+            return result
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(schema)
+
+
 @Operation.define
 def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
@@ -245,10 +268,12 @@ def call_assistant[T](
     """
     tools = _collect_tools(env)
     tool_specs = {
-        k: typing.cast(
-            pydantic.TypeAdapter[typing.Any],
-            pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
-        ).dump_python(t, mode="json", context={k: t})
+        k: _strict_json_schema(
+            typing.cast(
+                pydantic.TypeAdapter[typing.Any],
+                pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
+            ).dump_python(t, mode="json", context={k: t})
+        )
         for k, t in tools.items()
     }
 
