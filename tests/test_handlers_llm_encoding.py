@@ -19,6 +19,7 @@ import pytest
 from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
+from effectful.handlers.llm.completions import _strict_json_schema
 from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
@@ -26,7 +27,6 @@ from effectful.handlers.llm.encoding import (
     SynthesizedFunction,
     to_content_blocks,
 )
-from effectful.handlers.llm.completions import _strict_json_schema
 from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
