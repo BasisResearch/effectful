@@ -930,7 +930,7 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
 
 
 @requires_llm
-@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
