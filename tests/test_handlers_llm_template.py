@@ -464,7 +464,9 @@ class TestSystemPromptInvariant:
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        assert mock.received_messages[0][0]["content"] == DEFAULT_SYSTEM_PROMPT
+        content = mock.received_messages[0][0]["content"]
+        # System message content is now a list of blocks with cache_control
+        assert content[0]["text"] == DEFAULT_SYSTEM_PROMPT
 
 
 class TestAgentDocstringFallback:
