@@ -826,7 +826,9 @@ _provider_response_format_xfail = pytest.mark.xfail(
 
 def _provider_case_marks(case_id: str) -> list[pytest.MarkDecorator]:
     marks: list[pytest.MarkDecorator] = []
-    if case_id.startswith(("img-", "tool-", "dtc-")):
+    # Image types can't roundtrip through LLM (returns URLs, not data URIs).
+    # Tool/DecodedToolCall types have schemas incompatible with OpenAI strict mode.
+    if case_id.startswith(("img-", "tool-", "dtc-")) or "-img" in case_id:
         marks.append(_provider_response_format_xfail)
     return marks
 
@@ -897,7 +899,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 
 @requires_llm
-@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
@@ -928,7 +930,7 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
 
 
 @requires_llm
-@pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
+@pytest.mark.parametrize("ty,_value,ctx", PROVIDER_CASES)
 def test_litellm_completion_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
