@@ -641,9 +641,7 @@ class TestRetryLLMHandler:
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response(
-                "add_numbers", '{"a": 1, "b": 2}'
-            ),
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
