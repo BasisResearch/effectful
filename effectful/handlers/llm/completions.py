@@ -4,6 +4,7 @@ import collections.abc
 import dataclasses
 import functools
 import inspect
+import json
 import string
 import textwrap
 import traceback
@@ -24,8 +25,17 @@ from litellm import (
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.encoding import (
+    DecodedToolCall,
+    Encodable,
+    to_content_blocks,
+)
+from effectful.handlers.llm.template import (
+    Agent,
+    Template,
+    Tool,
+    _is_recursive_signature,
+)
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -59,15 +69,23 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+class _NoActiveHistoryException(Exception):
+    """Raised when there is no active message history to append to."""
+
+
 @Operation.define
 def _get_history() -> collections.OrderedDict[str, Message]:
-    raise NotImplementedError
+    raise _NoActiveHistoryException(
+        "No active message history. This operation should only be used within a handler that provides a message history."
+    )
 
 
-def append_message(message: Message):
+def append_message(message: Message, last: bool = True) -> None:
     try:
         _get_history()[message["id"]] = message
-    except NotImplementedError:
+        if not last:
+            _get_history().move_to_end(message["id"], last=False)
+    except _NoActiveHistoryException:
         pass
 
 
@@ -160,6 +178,37 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
+def _collect_tools(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> collections.abc.Mapping[str, Tool]:
+    """Operations and Templates available as tools. Auto-capture from lexical context."""
+    result = {}
+
+    for name, obj in env.items():
+        # Collect tools directly in context
+        if isinstance(obj, Tool | Template):
+            result[name] = obj
+
+        # Collect tools as methods on Agent instances in context
+        elif isinstance(obj, Agent):
+            for cls in type(obj).__mro__:
+                for attr_name in vars(cls):
+                    if isinstance(getattr(obj, attr_name), Tool):
+                        result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
+
+    # The same Tool can appear under multiple names when it is both
+    # visible in the enclosing scope *and* discovered via an Agent
+    # instance's MRO.  Since Tools are hashable Operations and
+    # instance-method Tools are cached per instance, we keep only
+    # the last name for each unique tool object.
+    tool2name = {tool: name for name, tool in sorted(result.items())}
+    for name, tool in tuple(result.items()):
+        if tool2name[tool] != name:
+            del result[name]
+
+    return result
+
+
 @Operation.define
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> typing.Any:
@@ -172,10 +221,70 @@ def completion(*args, **kwargs) -> typing.Any:
     return litellm.completion(*args, **kwargs)
 
 
+class _BoxedResponse[T](pydantic.BaseModel):
+    value: T
+
+
+def _strict_json_schema(schema: dict) -> dict:
+    """Adapt a JSON schema for OpenAI's structured output strict mode.
+
+    Applies all transformations required by the OpenAI strict-mode API:
+
+    * Inlines ``$ref``/``$defs`` (OpenAI does not support JSON Schema references).
+    * Adds ``additionalProperties: false`` to every ``type: "object"`` node.
+    * Ensures ``required`` lists every property key.
+    * Adds ``items: {}`` fallback for ``type: "array"`` nodes missing ``items``.
+    """
+    from effectful.handlers.llm.encoding import _inline_refs
+
+    def _deep_inline(obj: typing.Any) -> typing.Any:
+        """Recursively inline $ref/$defs at every level of the schema."""
+        if isinstance(obj, dict):
+            if "$defs" in obj:
+                obj = _inline_refs(obj)
+            return {k: _deep_inline(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_deep_inline(item) for item in obj]
+        return obj
+
+    inlined = _deep_inline(schema)
+
+    def _walk(obj: typing.Any) -> typing.Any:
+        if isinstance(obj, dict):
+            result = {k: _walk(v) for k, v in obj.items()}
+            if result.get("type") == "object":
+                result["additionalProperties"] = False
+                if "properties" in result:
+                    result["required"] = sorted(result["properties"].keys())
+            if result.get("type") == "array" and (
+                "items" not in result or result.get("items") == {}
+            ):
+                # OpenAI requires 'items' on all array schemas.
+                # For prefixItems (fixed-length tuples), use anyOf over the
+                # prefix schemas so OpenAI accepts the schema while
+                # preserving array semantics for deserialization.
+                prefix = result.get("prefixItems")
+                if prefix and len(prefix) > 0:
+                    # Deduplicate: if all items have the same type, use that
+                    unique = {json.dumps(s, sort_keys=True) for s in prefix}
+                    if len(unique) == 1:
+                        result["items"] = prefix[0]
+                    else:
+                        result["items"] = {"anyOf": prefix}
+                else:
+                    result["items"] = {"type": "string"}
+            return result
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(inlined)
+
+
 @Operation.define
-def call_assistant[T, U](
-    tools: collections.abc.Mapping[str, Tool],
-    response_format: Encodable[T, U],
+def call_assistant[T](
+    env: collections.abc.Mapping[str, typing.Any],
+    response_type: type[T],
     model: str,
     **kwargs,
 ) -> MessageResult[T]:
@@ -190,15 +299,30 @@ def call_assistant[T, U](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    tools = _collect_tools(env)
     tool_specs = {
-        k: Encodable.define(type(t), tools).encode(t)  # type: ignore
+        k: _strict_json_schema(
+            typing.cast(
+                pydantic.TypeAdapter[typing.Any],
+                pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
+            ).dump_python(t, mode="json", context={k: t})
+        )
         for k, t in tools.items()
     }
-    messages = list(_get_history().values())
+
+    # The OpenAI API requires a wrapper object for non-object structured output types,
+    # so we create one on the fly here. Using a Pydantic model offloads JSON schema
+    # generation and validation logic to litellm, and offers better error messages.
+    response_format: type[_BoxedResponse[T]] = pydantic.create_model(
+        "BoxedResponse",
+        value=Encodable[response_type],  # type: ignore[valid-type]
+        __base__=_BoxedResponse,
+    )
+
     response: litellm.types.utils.ModelResponse = completion(
         model,
-        messages=list(messages),
-        response_format=None if response_format.enc is str else response_format.enc,
+        messages=list(_get_history().values()),
+        response_format=None if response_type is str else response_format,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -212,11 +336,12 @@ def call_assistant[T, U](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    raw_tool_calls = message.get("tool_calls") or []
-    encoding = Encodable.define(DecodedToolCall, tools)  # type: ignore
-    for raw_tool_call in raw_tool_calls:
+    encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
+        Encodable[DecodedToolCall]
+    )
+    for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.decode(raw_tool_call)]  # type: ignore
+            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -231,12 +356,15 @@ def call_assistant[T, U](
         assert isinstance(serialized_result, str), (
             "final response from the model should be a string"
         )
-        try:
-            result = response_format.decode(
-                response_format.deserialize(serialized_result)
-            )
-        except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
-            raise ResultDecodingError(e, raw_message=raw_message) from e
+        if response_type is str:
+            result = typing.cast(T, serialized_result)
+        else:
+            try:
+                result = response_format.model_validate(
+                    json.loads(serialized_result), context=env
+                ).value
+            except Exception as e:
+                raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
 
@@ -256,10 +384,12 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    return_type = Encodable.define(
-        typing.cast(type[typing.Any], nested_type(result).value)
+    return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        Encodable[nested_type(result).value]  # type: ignore[misc]
     )
-    encoded_result = return_type.serialize(return_type.encode(result))
+    encoded_result = to_content_blocks(
+        return_type.dump_python(result, mode="json", context={})
+    )
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -295,13 +425,11 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(
-            typing.cast(type[typing.Any], nested_type(obj).value), env
+        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(obj).value]  # type: ignore[misc]
         )
-        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
-            encoder.encode(obj)
-        )
-        for part in encoded_obj:
+        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
+        for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":
                 text = (
                     formatter.convert_field(part["text"], conversion)
@@ -327,21 +455,8 @@ def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
     message = _make_message(dict(role="system", content=system_prompt))
-    try:
-        history: collections.OrderedDict[str, Message] = _get_history()
-        if any(m["role"] == "system" for m in history.values()):
-            assert sum(1 for m in history.values() if m["role"] == "system") == 1, (
-                "There should be at most one system message in the history"
-            )
-            assert history[next(iter(history))]["role"] == "system", (
-                "The system message should be the first message in the history"
-            )
-            history.popitem(last=False)  # remove existing system message
-        history[message["id"]] = message
-        history.move_to_end(message["id"], last=False)
-        return message
-    except NotImplementedError:
-        return message
+    append_message(message, last=False)
+    return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -404,20 +519,17 @@ class RetryLLMHandler(ObjectInterpretation):
             self._user_before_sleep(retry_state)
 
     @implements(call_assistant)
-    def _call_assistant[T, U](
+    def _call_assistant[T](
         self,
-        tools: collections.abc.Mapping[str, Tool],
-        response_format: Encodable[T, U],
+        env: collections.abc.Mapping[str, typing.Any],
+        response_type: type[T],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
         _message_sequence = _get_history().copy()
 
-        def _attempt() -> MessageResult[T]:
-            return fwd(tools, response_format, model, **kwargs)
-
         with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result = self.call_assistant_retryer(_attempt)
+            message, tool_calls, result = self.call_assistant_retryer(fwd)
 
         append_message(message)
         return (message, tool_calls, result)
@@ -461,8 +573,8 @@ class LiteLLMProvider(ObjectInterpretation):
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
 
-        # Create response_model with env so tools passed as arguments are available
-        response_model = Encodable.define(template.__signature__.return_annotation, env)
+        if not _is_recursive_signature(template.__signature__):
+            env = env.new_child({k: None for k, v in env.items() if v is template})
 
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
@@ -470,7 +582,11 @@ class LiteLLMProvider(ObjectInterpretation):
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
-            call_system(template)
+            if (
+                not _get_history()
+                or next(iter(_get_history().values()))["role"] != "system"
+            ):
+                call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
 
@@ -479,14 +595,14 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    template.tools, response_model, **self.config
+                    env, template.__signature__.return_annotation, **self.config
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
         try:
             _get_history()
-        except NotImplementedError:
+        except _NoActiveHistoryException:
             history.clear()
             history.update(history_copy)
         return typing.cast(T, result)
