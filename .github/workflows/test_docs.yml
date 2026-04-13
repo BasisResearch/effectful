@@ -23,6 +23,9 @@ jobs:
         run: |
           sudo apt install -y pandoc
 
+      - name: Set up Python
+        run: uv python install
+
       - name: Install Python dependencies
         run: |
           uv sync --all-extras --dev
