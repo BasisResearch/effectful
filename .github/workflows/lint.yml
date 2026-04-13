@@ -31,3 +31,6 @@ jobs:
 
       - name: Lint
         run: uv run ./scripts/lint.sh
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci

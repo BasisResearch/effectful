@@ -54,3 +54,6 @@ jobs:
         env:
           MKL_NUM_THREADS: 1
         run: uv run pytest ${{ matrix.test-group.paths }} -n auto
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci

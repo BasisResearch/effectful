@@ -40,3 +40,6 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           uv run pytest tests/test_handlers_llm_provider.py tests/test_handlers_llm_tool_calling_poem.py tests/test_handlers_llm_tool_calling_book.py -v --tb=short
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci

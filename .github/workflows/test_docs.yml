@@ -40,3 +40,6 @@ jobs:
       - name: Generate LLM agent reference markdown
         run: |
           uv run jupyter nbconvert --to markdown docs/source/llm.ipynb --output llm.md --output-dir docs/build/html/
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
