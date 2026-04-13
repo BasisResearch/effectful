@@ -22,19 +22,13 @@ jobs:
         uses: ts-graphviz/setup-graphviz@v1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
       - name: Install pandoc
         run: |
           sudo apt install -y pandoc
-
-      - name: Cache virtual environment
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Install Python packages
         run: |
@@ -46,6 +40,3 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           uv run ./scripts/test_notebooks.sh
-
-      - name: Minimize uv cache
-        run: uv cache prune --ci
