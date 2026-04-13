@@ -19,7 +19,6 @@ import pytest
 from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
-from effectful.handlers.llm.completions import _strict_json_schema
 from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
@@ -97,30 +96,20 @@ class _ConfigTD(TypedDict, total=False):
 
 
 @dataclass
-class _Pair:
-    values: tuple[int, str]
+class _PairManual:
+    values: Encodable[tuple[int, str]]  # type: ignore[type-arg]
     count: int
 
 
 @dataclass
-class _WithCallable:
+class _WithCallableManual:
     name: str
-    fn: Callable[[int], int]
+    fn: Encodable[Callable[[int], int]]  # type: ignore[type-arg]
 
 
 class _PointModel(pydantic.BaseModel):
     x: int
     y: int
-
-
-class _ModelWithTuple(pydantic.BaseModel):
-    coords: tuple[int, int]
-
-
-class _ModelWithCallable(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
-    name: str
-    transform: Callable[[str], str]
 
 
 class _PersonModel(pydantic.BaseModel):
@@ -280,7 +269,12 @@ ROUNDTRIP_CASES = [
         id="dc-nested",
     ),
     pytest.param(_Container, _Container([1, 2, 3], "test"), None, id="dc-with-list"),
-    pytest.param(_Pair, _Pair(values=(42, "hello"), count=2), None, id="dc-with-tuple"),
+    pytest.param(
+        _PairManual,
+        _PairManual(values=(42, "hello"), count=2),
+        None,
+        id="dc-manual-tuple-field",
+    ),
     # --- NamedTuple ---
     pytest.param(_Coord, _Coord(3, 4), None, id="nt-coord"),
     pytest.param(_PersonNT, _PersonNT("Alice", 30), None, id="nt-person"),
@@ -307,9 +301,6 @@ ROUNDTRIP_CASES = [
         ),
         None,
         id="pm-nested",
-    ),
-    pytest.param(
-        _ModelWithTuple, _ModelWithTuple(coords=(1, 2)), None, id="pm-with-tuple"
     ),
     # --- tuple ---
     pytest.param(tuple[int, str], (1, "hello"), None, id="tuple-int-str"),
@@ -581,45 +572,40 @@ def test_tuple_schema_no_prefix_items(ty):
 
 
 # ============================================================================
-# Composite types: dataclass/BaseModel with special fields (#626, #631)
+# Regression tests: manual Encodable annotation on fields (#626, #631)
 # ============================================================================
 
 
-@pytest.mark.parametrize(
-    "ty",
-    [
-        pytest.param(_Pair, id="dc-tuple-field"),
-        pytest.param(_WithCallable, id="dc-callable-field"),
-        pytest.param(_ModelWithTuple, id="pm-tuple-field"),
-        pytest.param(_ModelWithCallable, id="pm-callable-field"),
-    ],
-)
-def test_composite_type_schema_generation(ty):
-    """Encodable[T] produces a valid JSON schema for composite types.
+def test_encodable_tuple_produces_object_schema_626():
+    """Encodable[tuple[int, str]] produces object-based schema, not prefixItems."""
+    adapter = pydantic.TypeAdapter(Encodable[tuple[int, str]])
+    schema = adapter.json_schema()
+    assert schema["type"] == "object"
+    assert "prefixItems" not in json.dumps(schema)
 
-    Regression tests for #626 (tuple fields) and #631 (Callable fields).
-    """
-    adapter = pydantic.TypeAdapter(Encodable[ty])
+
+def test_encodable_callable_produces_valid_schema_631():
+    """Encodable[Callable[[int], int]] produces valid JSON schema."""
+    adapter = pydantic.TypeAdapter(Encodable[Callable[[int], int]])
     schema = adapter.json_schema()
     assert isinstance(schema, dict)
     assert "properties" in schema
 
 
-@pytest.mark.parametrize(
-    "ty,value",
-    [
-        pytest.param(_Pair, _Pair(values=(42, "hello"), count=2), id="dc-tuple-field"),
-        pytest.param(
-            _ModelWithTuple, _ModelWithTuple(coords=(1, 2)), id="pm-tuple-field"
-        ),
-    ],
-)
-def test_composite_type_roundtrip(ty, value):
-    """Composite types with tuple fields roundtrip through encode/decode."""
-    adapter = pydantic.TypeAdapter(Encodable[ty])
-    encoded = adapter.dump_python(value, mode="json")
+def test_dataclass_with_encodable_tuple_field_626():
+    """Users annotate tuple fields with Encodable for OpenAI compatibility (#626)."""
+
+    @dataclass
+    class Pair:
+        values: Encodable[tuple[int, str]]  # type: ignore[type-arg]
+        count: int
+
+    adapter = pydantic.TypeAdapter(Pair)
+    val = Pair(values=(42, "hello"), count=2)
+    encoded = adapter.dump_python(val, mode="json")
     decoded = adapter.validate_python(encoded)
-    assert decoded == value
+    assert decoded == val
+    assert "prefixItems" not in json.dumps(adapter.json_schema())
 
 
 # ============================================================================
@@ -844,19 +830,14 @@ def _apply_xfails(
     return out
 
 
-# response_model: image types can't roundtrip (LLM returns URLs, not data URIs),
-# and Tool/DecodedToolCall schemas are incompatible with OpenAI strict mode.
+# response_model: image types can't roundtrip (LLM returns URLs, not data URIs).
 RESPONSE_MODEL_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
-    lambda cid: cid.startswith(("img-", "tool-", "dtc-")) or "-img" in cid,
+    lambda cid: cid.startswith("img-") or "-img" in cid,
 )
 
-# tool-as-param: only Tool/DecodedToolCall schemas fail (nested function spec).
-# Image types produce valid tool parameter schemas.
-TOOL_PARAM_CASES = _apply_xfails(
-    ROUNDTRIP_CASES,
-    lambda cid: cid.startswith(("tool-", "dtc-")),
-)
+# tool-as-param: all types should work.
+TOOL_PARAM_CASES = ROUNDTRIP_CASES
 
 
 @requires_llm
@@ -865,25 +846,14 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[ty])
-    inner_schema = enc.json_schema()
-    # OpenAI requires top-level response_format to be type: "object"
-    schema: dict[str, Any] = _strict_json_schema(
-        {
-            "type": "object",
-            "properties": {"value": inner_schema},
-            "required": ["value"],
-        }
+    # Use pydantic.create_model so litellm handles strictification
+    response_model: type[pydantic.BaseModel] = pydantic.create_model(
+        "Response", value=(Encodable[ty], ...)  # type: ignore[valid-type]
     )
+    response_format = litellm.utils.type_to_response_format_param(response_model)
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "response",
-                "schema": schema,
-                "strict": True,
-            },
-        },
+        response_format=response_format,
         messages=[
             {
                 "role": "user",
@@ -924,9 +894,7 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
         Encodable[type(tool)]  # type: ignore[misc]
     )
-    tool_spec = _strict_json_schema(
-        enc.dump_python(tool, mode="json", context=ctx or {})
-    )
+    tool_spec = enc.dump_python(tool, mode="json", context=ctx or {})
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
@@ -955,9 +923,7 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
         Encodable[type(tool)]  # type: ignore[misc]
     )
-    tool_spec = _strict_json_schema(
-        enc.dump_python(tool, mode="json", context=ctx or {})
-    )
+    tool_spec = enc.dump_python(tool, mode="json", context=ctx or {})
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],

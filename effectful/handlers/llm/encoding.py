@@ -148,94 +148,8 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
     return ty
 
 
-def _rewrite_fields(
-    ty: type,
-    field_names: list[str],
-    field_annotations: dict[str, Any],
-    field_defaults: dict[str, Any],
-    construct: Callable[..., Any],
-    extract: Callable[[Any, list[str]], dict[str, Any]],
-) -> Any:
-    """Build an Annotated wrapper that rewrites field annotations via a proxy model.
-
-    Shared implementation for dataclasses and BaseModels whose fields contain
-    types needing custom encoding (Callable, tuple, Image, etc.).
-    Returns the original type unchanged if no fields need rewriting.
-    """
-    evaluator = TypeToPydanticType()
-    rewritten: dict[str, Any] = {}
-    for name, ann in field_annotations.items():
-        new_ann = evaluator.evaluate(ann)
-        if new_ann is not ann:
-            rewritten[name] = new_ann
-    if not rewritten:
-        return ty
-
-    proxy_fields = {
-        name: (rewritten.get(name, field_annotations[name]), field_defaults[name])
-        for name in field_names
-    }
-    proxy = pydantic.create_model(ty.__name__, **proxy_fields)  # type: ignore[call-overload]
-    proxy_adapter = pydantic.TypeAdapter(proxy)
-
-    def _validate(v: Any, info: pydantic.ValidationInfo) -> Any:
-        if isinstance(v, ty):
-            return v
-        ctx = info.context if info else {}
-        parsed = proxy_adapter.validate_python(v, context=ctx)
-        return construct(**{n: getattr(parsed, n) for n in field_names})
-
-    def _serialize(v: Any) -> Any:
-        return proxy_adapter.dump_python(proxy(**extract(v, field_names)), mode="json")
-
-    return typing.Annotated[
-        ty,
-        pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(
-            _strict_json_schema(_inline_refs(proxy_adapter.json_schema()))
-        ),
-    ]
-
-
-@TypeToPydanticType.register(pydantic.BaseModel)
-def _pydantic_type_basemodel(ty: type[pydantic.BaseModel]) -> Any:
-    names = list(ty.model_fields)
-    annotations = {n: fi.annotation for n, fi in ty.model_fields.items()}
-    defaults = {n: fi for n, fi in ty.model_fields.items()}
-    return _rewrite_fields(
-        ty,
-        names,
-        annotations,
-        defaults,
-        construct=ty,
-        extract=lambda v, ns: {n: getattr(v, n) for n in ns},
-    )
-
-
 @TypeToPydanticType.register(object)
 def _pydantic_type_base(ty: type) -> Any:
-    if dataclasses.is_dataclass(ty) and isinstance(ty, type):
-        hints = typing.get_type_hints(ty)
-        fields = dataclasses.fields(ty)
-        names = [f.name for f in fields]
-        annotations = {f.name: hints.get(f.name, f.type) for f in fields}
-        defaults: dict[str, Any] = {}
-        for f in fields:
-            if f.default is not dataclasses.MISSING:
-                defaults[f.name] = f.default
-            elif f.default_factory is not dataclasses.MISSING:
-                defaults[f.name] = pydantic.Field(default_factory=f.default_factory)
-            else:
-                defaults[f.name] = ...
-        return _rewrite_fields(
-            ty,
-            names,
-            annotations,
-            defaults,
-            construct=ty,
-            extract=lambda v, ns: {n: getattr(v, n) for n in ns},
-        )
     return ty
 
 
@@ -264,7 +178,7 @@ def _pydantic_type_complex(ty):
         ty,
         pydantic.PlainValidator(_validate_complex),
         pydantic.PlainSerializer(_serialize_complex),
-        pydantic.WithJsonSchema(_strict_json_schema(adapted_schema)),
+        pydantic.WithJsonSchema({**adapted_schema, "additionalProperties": False}),
     ]
 
 
@@ -290,25 +204,6 @@ def _inline_refs(schema: dict) -> dict:
         return obj
 
     return _resolve(schema)
-
-
-def _strict_json_schema(schema: dict) -> dict:
-    """Add ``additionalProperties: false`` to all object schemas.
-
-    OpenAI's structured output strict mode requires this on every object node.
-    """
-
-    def _walk(obj):
-        if isinstance(obj, dict):
-            result = {k: _walk(v) for k, v in obj.items()}
-            if result.get("type") == "object" and "properties" in result:
-                result.setdefault("additionalProperties", False)
-            return result
-        if isinstance(obj, list):
-            return [_walk(item) for item in obj]
-        return obj
-
-    return _walk(schema)
 
 
 @TypeToPydanticType.register(tuple)
@@ -359,9 +254,7 @@ def _pydantic_type_tuple(ty):
         ty,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(
-            _strict_json_schema(_inline_refs(model.model_json_schema()))
-        ),
+        pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
     ]
 
 
@@ -402,9 +295,7 @@ def _pydantic_type_image(ty: type[Image.Image]):
         ty,
         pydantic.PlainValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(
-            _strict_json_schema(_inline_refs(adapter.json_schema()))
-        ),
+        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
 
 
@@ -631,9 +522,7 @@ def _pydantic_callable(callable_type: Any) -> Any:
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
         pydantic.WithJsonSchema(
-            _strict_json_schema(
-                _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
-            )
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
         ),
     ]
 
@@ -668,9 +557,7 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
             "function": {
                 "name": value.__name__,
                 "description": textwrap.dedent(value.__default__.__doc__),
-                "parameters": _strict_json_schema(
-                    response_format["json_schema"]["schema"]
-                ),
+                "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
             },
         }
@@ -684,9 +571,7 @@ def _pydantic_type_tool(ty: type[Tool]):
         ty,
         pydantic.PlainValidator(_validate_tool),
         pydantic.PlainSerializer(_serialize_tool),
-        pydantic.WithJsonSchema(
-            _strict_json_schema(_inline_refs(adapter.json_schema()))
-        ),
+        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
 
 
@@ -748,8 +633,6 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         pydantic.PlainValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(
-            _strict_json_schema(
-                _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
-            )
+            _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
         ),
     ]
