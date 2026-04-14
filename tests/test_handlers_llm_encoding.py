@@ -831,10 +831,6 @@ def _apply_xfails(
 
 
 # response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
-# Tool/DecodedToolCall schemas contain litellm's ChatCompletionToolParam which has
-# "additionalProperties": true on its parameters field — incompatible with OpenAI
-# strict mode; bare tuple has no type information.
-# response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
 # bare tuple has no type information for structured output.
 RESPONSE_MODEL_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
@@ -859,15 +855,23 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         "Response", value=(Encodable[ty], ...)
     )
     response_format = litellm.utils.type_to_response_format_param(response_model)
+    type_name = getattr(ty, "__name__", repr(ty))
+    prompt = f"Return an instance of {type_name}."
+    if ctx:
+        # Encode context values so the LLM can produce valid references.
+        # E.g. for DecodedToolCall the LLM needs real tool specs to use valid
+        # function names; for Tool it needs the tool name from the context.
+        encoded_ctx = {
+            k: pydantic.TypeAdapter(Encodable[type(v)]).dump_python(
+                v, mode="json", context=ctx
+            )
+            for k, v in ctx.items()
+        }
+        prompt += f" Use the following context: {json.dumps(encoded_ctx)}"
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         response_format=response_format,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
-            }
-        ],
+        messages=[{"role": "user", "content": prompt}],
         max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
