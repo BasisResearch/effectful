@@ -24,6 +24,7 @@ from litellm import (
     ChatCompletionToolParam,
     OpenAIMessageContentListBlock,
 )
+from openai.lib._pydantic import _ensure_strict_json_schema
 from openai.types.chat import (
     ChatCompletionMessageToolCall as OpenAIChatCompletionMessageToolCall,
 )
@@ -203,41 +204,6 @@ def _remove_additional_properties_true(schema: object) -> None:
         for item in schema:
             _remove_additional_properties_true(item)
 
-
-def _make_strict_safe(schema: object) -> None:
-    """Make a schema safe for OpenAI strict mode in-place.
-
-    OpenAI strict mode (and ``_ensure_strict_json_schema``) requires every
-    property to appear in ``required`` and ``additionalProperties: false`` on
-    every object.  For schemas with optional properties (e.g.
-    litellm's ``ChatCompletionToolParam``), simply forcing them into
-    ``required`` breaks validation.
-
-    This helper makes optional properties nullable (``type: [..., "null"]``
-    or wrapping in ``anyOf: [..., {"type": "null"}]``) so they can safely
-    be required, then sets ``additionalProperties: false`` and updates
-    ``required`` to include all property keys.  Applied recursively.
-    """
-    if isinstance(schema, dict):
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            required = set(schema.get("required", []))
-            for key, prop in props.items():
-                if key not in required:
-                    # Make the property nullable
-                    if isinstance(prop, dict) and "type" in prop:
-                        prop["type"] = [prop["type"], "null"]
-                    elif isinstance(prop, dict):
-                        props[key] = {"anyOf": [prop, {"type": "null"}]}
-                _make_strict_safe(prop)
-            schema["required"] = list(props.keys())
-            schema["additionalProperties"] = False
-        for v in schema.values():
-            if v is not props:
-                _make_strict_safe(v)
-    elif isinstance(schema, list):
-        for item in schema:
-            _make_strict_safe(item)
 
 
 def _inline_refs(schema: dict) -> dict:
@@ -664,7 +630,7 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
 def _pydantic_type_tool(ty: type[Tool]):
     schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
     _remove_additional_properties_true(schema)
-    _make_strict_safe(schema)
+    schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_tool),
@@ -730,7 +696,7 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
     # type) rather than litellm's (empty dict with extra="allow").
     schema = _inline_refs(OpenAIChatCompletionMessageToolCall.model_json_schema())
     _remove_additional_properties_true(schema)
-    _make_strict_safe(schema)
+    schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_tool_call),

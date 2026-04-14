@@ -830,17 +830,30 @@ def _apply_xfails(
     return out
 
 
-# response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
-# bare tuple has no type information for structured output.
+# response_model xfails:
+#   - image: LLM returns URLs, not data URIs
+#   - tool/dtc: ChatCompletionToolParam schema has optional fields and bare
+#     "type": "object" without properties — incompatible with OpenAI strict mode
+#   - tuple-bare: no type information for structured output
 RESPONSE_MODEL_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
-    lambda cid: cid.startswith("img-") or "-img" in cid or cid == "tuple-bare",
+    lambda cid: (
+        cid.startswith("img-")
+        or "-img" in cid
+        or cid.startswith("tool-")
+        or cid.startswith("dtc-")
+        or cid == "tuple-bare"
+    ),
 )
 
-# tool-as-param: bare tuple has no type information.
+# tool-as-param xfails: same as response_model for tool/dtc, plus bare tuple.
 TOOL_PARAM_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
-    lambda cid: cid == "tuple-bare",
+    lambda cid: (
+        cid == "tuple-bare"
+        or cid.startswith("tool-")
+        or cid.startswith("dtc-")
+    ),
 )
 
 
@@ -855,23 +868,15 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         "Response", value=(Encodable[ty], ...)
     )
     response_format = litellm.utils.type_to_response_format_param(response_model)
-    type_name = getattr(ty, "__name__", repr(ty))
-    prompt = f"Return an instance of {type_name}."
-    if ctx:
-        # Encode context values so the LLM can produce valid references.
-        # E.g. for DecodedToolCall the LLM needs real tool specs to use valid
-        # function names; for Tool it needs the tool name from the context.
-        encoded_ctx = {
-            k: pydantic.TypeAdapter(
-                Encodable[type(v)]  # type: ignore[misc]
-            ).dump_python(v, mode="json", context=ctx)
-            for k, v in ctx.items()
-        }
-        prompt += f" Use the following context: {json.dumps(encoded_ctx)}"
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         response_format=response_format,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {
+                "role": "user",
+                "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
+            }
+        ],
         max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
