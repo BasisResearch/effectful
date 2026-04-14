@@ -22,7 +22,18 @@ def _make_instrumented(op):
 
 
 class WeaveProvider(ObjectInterpretation):
+    """Traces Tool, Template, and message-level calls with Weights & Biases Weave.
+
+    Compose with a provider via :func:`~effectful.ops.semantics.handler`
+    to add tracing::
+
+        weave.init("my-project")
+        with handler(provider), handler(WeaveProvider()):
+            print(limerick(theme))
+    """
+
     def __init__(self):
+        # cache each template instead of repeatedly instrumenting it
         self._get_instrumented = functools.cache(_make_instrumented)
 
     @implements(call_user)

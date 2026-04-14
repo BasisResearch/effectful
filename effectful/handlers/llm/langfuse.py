@@ -46,8 +46,18 @@ def _make_instrumented(op, as_type):
 
 
 class LangfuseProvider(ObjectInterpretation):
+    """Traces Tool, Template, and completion calls with Langfuse.
+
+    Compose with a provider via :func:`~effectful.ops.semantics.handler`
+    to add tracing::
+
+        with handler(provider), handler(LangfuseProvider()):
+            print(limerick(theme))
+    """
+
     def __init__(self):
         self.langfuse = get_client()
+        # cache each template instead of repeatedly instrumenting it
         self._get_instrumented = functools.cache(_make_instrumented)
 
     @implements(completion)
