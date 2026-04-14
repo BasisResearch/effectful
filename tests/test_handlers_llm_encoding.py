@@ -850,9 +850,7 @@ RESPONSE_MODEL_CASES = _apply_xfails(
 TOOL_PARAM_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
     lambda cid: (
-        cid == "tuple-bare"
-        or cid.startswith("tool-")
-        or cid.startswith("dtc-")
+        cid == "tuple-bare" or cid.startswith("tool-") or cid.startswith("dtc-")
     ),
 )
 

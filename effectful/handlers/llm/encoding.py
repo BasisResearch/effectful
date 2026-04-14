@@ -186,8 +186,6 @@ def _pydantic_type_complex(ty):
     ]
 
 
-
-
 def _inline_refs(schema: dict) -> dict:
     """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
 
