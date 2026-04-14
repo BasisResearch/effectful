@@ -652,7 +652,7 @@ def _validate_tool_call(
     info: pydantic.ValidationInfo,
 ) -> DecodedToolCall:
     if isinstance(value, dict):
-        value = ChatCompletionMessageToolCall.model_validate(value)
+        value = OpenAIChatCompletionMessageToolCall.model_validate(value)
     ctx = info.context or {}
     assert value.function.name is not None
     tool = ctx[value.function.name]
@@ -686,13 +686,13 @@ def _serialize_tool_call(
             Encodable[nested_type(v).value]  # type: ignore[misc]
         )
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
-    return ChatCompletionMessageToolCall.model_validate(
+    return OpenAIChatCompletionMessageToolCall.model_validate(
         {
-            "type": "tool_call",
+            "type": "function",
             "id": value.id,
             "function": {
                 "name": value.tool.__name__,
-                "arguments": encoded_args,
+                "arguments": json.dumps(encoded_args),
             },
         }
     ).model_dump(mode="json")
