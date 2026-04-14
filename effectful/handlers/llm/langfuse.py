@@ -16,6 +16,8 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 
 
 def _extract_generation_meta(result) -> dict[str, typing.Any]:
+    # helper function for populating usage metadata so they render
+    # more nicely on langfuse
     usage = result.usage
     if usage is None:
         return {}
@@ -63,8 +65,19 @@ class LangfuseProvider(ObjectInterpretation):
     @implements(completion)
     @observe(as_type="generation")
     def completion(self, *args, **kwargs):
+        messages = kwargs.get("messages")
         result = fwd(*args, **kwargs)
-        self.langfuse.update_current_generation(**_extract_generation_meta(result))
+        meta = _extract_generation_meta(result)
+
+        # populate messages as part of the langfuse metadata so we get
+        # the nice rendering of "Assistant", "User", and "System"
+        # messages
+        if messages is not None:
+            meta["input"] = messages
+        choice = result.choices[0] if result.choices else None
+        if choice is not None:
+            meta["output"] = choice.message.model_dump(mode="json", exclude_none=True)
+        self.langfuse.update_current_generation(**meta)
         return result
 
     @implements(call_user)
