@@ -862,9 +862,9 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         # E.g. for DecodedToolCall the LLM needs real tool specs to use valid
         # function names; for Tool it needs the tool name from the context.
         encoded_ctx = {
-            k: pydantic.TypeAdapter(Encodable[type(v)]).dump_python(
-                v, mode="json", context=ctx
-            )
+            k: pydantic.TypeAdapter(
+                Encodable[type(v)]  # type: ignore[misc]
+            ).dump_python(v, mode="json", context=ctx)
             for k, v in ctx.items()
         }
         prompt += f" Use the following context: {json.dumps(encoded_ctx)}"
