@@ -215,8 +215,46 @@ def _pydantic_type_tuple(ty):
     emits for fixed-length tuples.  We convert them to a Pydantic model with
     positional ``item_0``, ``item_1``, … fields instead.
 
+    NamedTuples are handled similarly using their field names.
     Bare ``tuple`` and variadic ``tuple[T, ...]`` are passed through unchanged.
     """
+    # NamedTuple subclasses dispatch here via MRO; use field names.
+    if isinstance(ty, type) and hasattr(ty, "_fields"):
+        hints = typing.get_type_hints(ty)
+        nt_fields: list[str] = list(ty._fields)  # type: ignore[attr-defined]
+        nt_types = [hints.get(f, typing.Any) for f in nt_fields]
+        nt_adapters = [pydantic.TypeAdapter(t) for t in nt_types]
+        nt_model = pydantic.create_model(
+            ty.__name__,
+            __config__={"extra": "forbid"},
+            **{f: (t, ...) for f, t in zip(nt_fields, nt_types)},
+        )
+
+        def _nt_validate(value, info: pydantic.ValidationInfo):
+            if isinstance(value, tuple | list):
+                value = dict(zip(nt_fields, value))
+            return ty(
+                **{
+                    f: nt_adapters[i].validate_python(value[f], context=info.context)
+                    for i, f in enumerate(nt_fields)
+                }
+            )
+
+        def _nt_serialize(value, info: pydantic.SerializationInfo):
+            return {
+                f: nt_adapters[i].dump_python(
+                    getattr(value, f), mode="json", context=info.context
+                )
+                for i, f in enumerate(nt_fields)
+            }
+
+        return typing.Annotated[
+            ty,
+            pydantic.PlainValidator(_nt_validate),
+            pydantic.PlainSerializer(_nt_serialize),
+            pydantic.WithJsonSchema(_inline_refs(nt_model.model_json_schema())),
+        ]
+
     args = typing.get_args(ty)
 
     # Bare tuple or tuple[T, ...] — Pydantic's native handling is fine.

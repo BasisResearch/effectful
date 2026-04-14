@@ -831,21 +831,16 @@ def _apply_xfails(
 
 
 # response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
-# NamedTuple produces array schema missing items; bare tuple lacks type key.
-# These are genuine OpenAI strict-mode limitations with array-based schemas
-# that litellm's type_to_response_format_param does not fix.
+# bare tuple has no type information so its schema is rejected by OpenAI.
 RESPONSE_MODEL_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
-    lambda cid: (
-        cid.startswith(("img-", "nt-")) or "-img" in cid or cid == "tuple-bare"
-    ),
+    lambda cid: cid.startswith("img-") or "-img" in cid or cid == "tuple-bare",
 )
 
-# tool-as-param: NamedTuple and bare tuple produce array schemas
-# that OpenAI strict mode rejects (missing items / type key).
+# tool-as-param: bare tuple has no type information.
 TOOL_PARAM_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
-    lambda cid: cid.startswith("nt-") or cid == "tuple-bare",
+    lambda cid: cid == "tuple-bare",
 )
 
 
