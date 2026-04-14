@@ -186,24 +186,6 @@ def _pydantic_type_complex(ty):
     ]
 
 
-def _remove_additional_properties_true(schema: object) -> None:
-    """Remove ``additionalProperties: true`` so strict-mode post-processing can
-    apply ``false``.
-
-    Symmetric to ``litellm.utils._remove_additional_properties`` which removes
-    ``false`` for Vertex AI/Gemini compatibility.  Litellm and OpenAI models use
-    ``extra="allow"`` (Pydantic emits ``additionalProperties: true``) for
-    Python-side flexibility.
-    """
-    if isinstance(schema, dict):
-        if schema.get("additionalProperties") is True:
-            del schema["additionalProperties"]
-        for v in schema.values():
-            _remove_additional_properties_true(v)
-    elif isinstance(schema, list):
-        for item in schema:
-            _remove_additional_properties_true(item)
-
 
 
 def _inline_refs(schema: dict) -> dict:
@@ -629,7 +611,6 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
 @TypeToPydanticType.register(Tool)
 def _pydantic_type_tool(ty: type[Tool]):
     schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
-    _remove_additional_properties_true(schema)
     schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
@@ -695,7 +676,6 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
     # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
     # type) rather than litellm's (empty dict with extra="allow").
     schema = _inline_refs(OpenAIChatCompletionMessageToolCall.model_json_schema())
-    _remove_additional_properties_true(schema)
     schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
