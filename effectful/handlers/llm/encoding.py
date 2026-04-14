@@ -24,6 +24,7 @@ from litellm import (
     ChatCompletionToolParam,
     OpenAIMessageContentListBlock,
 )
+from openai.lib._pydantic import _ensure_strict_json_schema
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
@@ -295,7 +296,11 @@ def _pydantic_type_image(ty: type[Image.Image]):
         ty,
         pydantic.PlainValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.WithJsonSchema(
+            _ensure_strict_json_schema(
+                _inline_refs(adapter.json_schema()), path=(), root={}
+            )
+        ),
     ]
 
 
@@ -522,7 +527,11 @@ def _pydantic_callable(callable_type: Any) -> Any:
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
         pydantic.WithJsonSchema(
-            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+            _ensure_strict_json_schema(
+                _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+                path=(),
+                root={},
+            )
         ),
     ]
 
@@ -571,7 +580,11 @@ def _pydantic_type_tool(ty: type[Tool]):
         ty,
         pydantic.PlainValidator(_validate_tool),
         pydantic.PlainSerializer(_serialize_tool),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.WithJsonSchema(
+            _ensure_strict_json_schema(
+                _inline_refs(adapter.json_schema()), path=(), root={}
+            )
+        ),
     ]
 
 
@@ -633,6 +646,10 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         pydantic.PlainValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(
-            _inline_refs(ChatCompletionMessageToolCall.model_json_schema())
+            _ensure_strict_json_schema(
+                _inline_refs(ChatCompletionMessageToolCall.model_json_schema()),
+                path=(),
+                root={},
+            )
         ),
     ]
