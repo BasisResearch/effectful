@@ -25,6 +25,9 @@ from litellm import (
     OpenAIMessageContentListBlock,
 )
 from openai.lib._pydantic import _ensure_strict_json_schema
+from openai.types.chat import (
+    ChatCompletionMessageToolCall as OpenAIChatCompletionMessageToolCall,
+)
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
@@ -183,6 +186,26 @@ def _pydantic_type_complex(ty):
     ]
 
 
+def _remove_additional_properties_true(schema: object) -> None:
+    """Remove ``additionalProperties: true`` so ``_ensure_strict_json_schema`` can
+    apply ``false``.
+
+    Symmetric to ``litellm.utils._remove_additional_properties`` which removes
+    ``false`` for Vertex AI/Gemini compatibility.  Litellm and OpenAI models use
+    ``extra="allow"`` (Pydantic emits ``additionalProperties: true``) for
+    Python-side flexibility; ``_ensure_strict_json_schema`` only sets ``false``
+    when the key is *absent*, so we strip ``true`` first.
+    """
+    if isinstance(schema, dict):
+        if schema.get("additionalProperties") is True:
+            del schema["additionalProperties"]
+        for v in schema.values():
+            _remove_additional_properties_true(v)
+    elif isinstance(schema, list):
+        for item in schema:
+            _remove_additional_properties_true(item)
+
+
 def _inline_refs(schema: dict) -> dict:
     """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
 
@@ -221,7 +244,7 @@ def _pydantic_type_tuple(ty):
     # NamedTuple subclasses dispatch here via MRO; use field names.
     if isinstance(ty, type) and hasattr(ty, "_fields"):
         hints = typing.get_type_hints(ty)
-        nt_fields: list[str] = list(ty._fields)  # type: ignore[attr-defined]
+        nt_fields: list[str] = list(ty._fields)
         nt_types = [hints.get(f, typing.Any) for f in nt_fields]
         nt_adapters = [pydantic.TypeAdapter(t) for t in nt_types]
         nt_model = pydantic.create_model(
@@ -613,16 +636,14 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
 
 @TypeToPydanticType.register(Tool)
 def _pydantic_type_tool(ty: type[Tool]):
-    adapter = pydantic.TypeAdapter(ChatCompletionToolParam)
+    schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
+    _remove_additional_properties_true(schema)
+    schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_tool),
         pydantic.PlainSerializer(_serialize_tool),
-        pydantic.WithJsonSchema(
-            _ensure_strict_json_schema(
-                _inline_refs(adapter.json_schema()), path=(), root={}
-            )
-        ),
+        pydantic.WithJsonSchema(schema),
     ]
 
 
@@ -679,15 +700,14 @@ def _serialize_tool_call(
 
 @TypeToPydanticType.register(DecodedToolCall)
 def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
+    # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
+    # type) rather than litellm's (empty dict with extra="allow").
+    schema = _inline_refs(OpenAIChatCompletionMessageToolCall.model_json_schema())
+    _remove_additional_properties_true(schema)
+    schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
-        pydantic.WithJsonSchema(
-            _ensure_strict_json_schema(
-                _inline_refs(ChatCompletionMessageToolCall.model_json_schema()),
-                path=(),
-                root={},
-            )
-        ),
+        pydantic.WithJsonSchema(schema),
     ]

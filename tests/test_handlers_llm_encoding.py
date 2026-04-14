@@ -831,7 +831,11 @@ def _apply_xfails(
 
 
 # response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
-# bare tuple has no type information so its schema is rejected by OpenAI.
+# Tool/DecodedToolCall schemas contain litellm's ChatCompletionToolParam which has
+# "additionalProperties": true on its parameters field — incompatible with OpenAI
+# strict mode; bare tuple has no type information.
+# response_model: image types can't roundtrip (LLM returns URLs, not data URIs);
+# bare tuple has no type information for structured output.
 RESPONSE_MODEL_CASES = _apply_xfails(
     ROUNDTRIP_CASES,
     lambda cid: cid.startswith("img-") or "-img" in cid or cid == "tuple-bare",
