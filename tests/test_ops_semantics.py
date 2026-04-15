@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import functools
 import itertools
 import logging
@@ -940,3 +941,16 @@ def test_evaluate_dag_matches_tree():
 
     intp = {x: lambda: 3, mul: lambda a, b: a * b}
     assert evaluate(dag, intp=intp) == evaluate(tree, intp=intp) == (9, 9)
+
+
+def test_fvsof_dataclass() -> None:
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+        def __init__(self, x: int):
+            assert x is not None
+            self.x = x
+
+    v = Operation.define(int)
+    assert fvsof(A(v())) == {v}

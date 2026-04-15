@@ -9,6 +9,7 @@ import functools
 import inspect
 import json
 import os
+import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 import litellm
 import pytest
 import tenacity
+from litellm import ChatCompletionMessageToolCall
 from litellm.caching.caching import Cache
 from litellm.files.main import ModelResponse
 from PIL import Image
@@ -41,22 +43,9 @@ from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm, requires_vision
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
-# Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-HAS_ANTHROPIC_KEY = (
-    "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
-)
-
-# Pytest markers for skipping tests based on API key availability
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
-)
-requires_anthropic = pytest.mark.skipif(
-    not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
-)
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
@@ -64,6 +53,8 @@ REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 # ============================================================================
 # Test Fixtures and Mock Data
 # ============================================================================
+
+
 def retry_on_error(error: type[Exception], n: int):
     def decorator(func):
         @functools.wraps(func)
@@ -176,45 +167,37 @@ def create_function(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
+class _ToolNameAgent(Agent):
+    @Template.define
+    def helper(self) -> str:
+        """Return the literal string 'ok'."""
+        raise NotHandled
+
+    @Template.define
+    def ask(self, prompt: str) -> str:
+        """Answer briefly: {prompt}"""
+        raise NotHandled
+
+
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
-    @requires_openai
-    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-5-nano"])
-    def test_simple_prompt_multiple_models(self, request, model_name):
-        """Test that LiteLLMProvider works with different model configurations."""
+    def test_simple_prompt(self, request):
+        """Test that LiteLLMProvider returns a non-empty string."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
             assert isinstance(result, str)
             assert len(result) > 0
 
-    @pytest.mark.parametrize(
-        "model_name",
-        [
-            pytest.param("gpt-4o-mini", marks=requires_openai),
-            pytest.param("claude-haiku-4-5", marks=requires_anthropic),
-        ],
-    )
-    def test_simple_prompt_cross_endpoint(self, request, model_name):
-        """Test that ReplayLiteLLMProvider works across different API endpoints."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            result = simple_prompt("testing")
-            assert isinstance(result, str)
-            assert len(result) > 0
-
-    @requires_openai
     def test_structured_output(self, request):
         """Test LiteLLMProvider with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -225,11 +208,10 @@ class TestLiteLLMProvider:
             assert isinstance(classification.explanation, str)
             assert len(classification.explanation) > 0
 
-    @requires_openai
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -237,18 +219,44 @@ class TestLiteLLMProvider:
             assert isinstance(result, int)
             assert 1 <= result <= 100
 
-    @requires_openai
     def test_with_config_params(self, request):
         """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
+                ReplayLiteLLMProvider(
+                    request, model=EFFECTFUL_LLM_MODEL, temperature=0.1
+                )
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
             assert isinstance(result, str)
+
+
+@requires_llm
+def test_agent_tool_names_are_valid_integration():
+    agent = _ToolNameAgent()
+    template = agent.ask
+    tools = template.tools
+    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    assert tools
+    assert expected_helper_tool_name in tools
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+
+    # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
+    with (
+        handler(
+            LiteLLMProvider(
+                model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=16
+            )
+        ),
+        handler(LimitLLMCallsHandler(max_calls=1)),
+    ):
+        result = agent.ask("Reply with exactly 'ok'. Do not call tools.")
+
+    assert isinstance(result, str)
+    assert result
 
 
 def smiley_face() -> Image.Image:
@@ -277,10 +285,10 @@ def categorise_image(image: Image.Image) -> str:
     raise NotHandled
 
 
-@requires_openai
+@requires_vision
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -310,14 +318,14 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     raise NotHandled
 
 
-@requires_openai
+@requires_vision
 def test_list_image_input(request):
     """Regression test for GitHub issue #552: list[Image.Image] in templates."""
     img_red = Image.new("RGB", (64, 64), (255, 0, 0))
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
     with (
-        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -345,12 +353,11 @@ def review_book(plot: str) -> BookReview:
 
 
 class TestPydanticBaseModelReturn:
-    @requires_openai
     def test_pydantic_basemodel_return(self, request):
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -366,7 +373,7 @@ class TestPydanticBaseModelReturn:
 
 def test_litellm_caching_integration(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         p3 = simple_prompt("oranges")
@@ -378,14 +385,16 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o", caching=False)):
+    with handler(
+        ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
+    ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
 
 
 def test_litellm_caching_selective(request):
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"
@@ -492,7 +501,7 @@ class TestRetryLLMHandler:
     def test_retry_handler_succeeds_on_first_attempt(self):
         """Test that RetryLLMHandler passes through when no error occurs."""
         # Response with valid tool call
-        responses = [make_text_response('{"value": "hello"}')]
+        responses = [make_text_response("hello")]
 
         mock_handler = MockCompletionHandler(responses)
 
@@ -522,7 +531,7 @@ class TestRetryLLMHandler:
             make_tool_call_response(
                 "add_numbers", '{"a": "not_an_int", "b": 2}'
             ),  # Invalid
-            make_text_response('{"value": "success"}'),  # Valid
+            make_text_response("success"),  # Valid
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -554,7 +563,7 @@ class TestRetryLLMHandler:
         # First response has unknown tool, second has valid response
         responses = [
             make_tool_call_response("unknown_tool", '{"x": 1}'),  # Unknown tool
-            make_text_response('{"value": "success"}'),  # Valid
+            make_text_response("success"),  # Valid
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -589,7 +598,7 @@ class TestRetryLLMHandler:
             id1={"id": "id1", "role": "user", "content": "test"},
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
-        with pytest.raises(Exception):  # Will raise the underlying decoding error
+        with pytest.raises(ToolCallDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
@@ -616,7 +625,7 @@ class TestRetryLLMHandler:
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
-        with pytest.raises(Exception):
+        with pytest.raises(ToolCallDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
                 handler(mock_handler),
@@ -631,7 +640,9 @@ class TestRetryLLMHandler:
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+            make_tool_call_response(
+                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
+            ),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -656,7 +667,6 @@ class TestRetryLLMHandler:
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
 
-    @requires_openai
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 
@@ -694,7 +704,7 @@ class TestRetryLLMHandler:
 
         with (
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
         ):
             result = codeadapt("generate_paragraph")
@@ -705,7 +715,7 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler retries when result decoding fails."""
         # First response has invalid JSON, second has valid response
         responses = [
-            make_text_response('{"value": "not valid for int"}'),  # Invalid for int
+            make_text_response('"not valid for int"'),  # Invalid for int
             make_text_response('{"value": 42}'),  # Valid
         ]
 
@@ -737,7 +747,7 @@ class TestRetryLLMHandler:
         """Test that RetryLLMHandler raises after exhausting retries on result decoding."""
         # All responses have invalid results for int type
         responses = [
-            make_text_response('{"value": "not an int"}'),
+            make_text_response('"not an int"'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -746,7 +756,7 @@ class TestRetryLLMHandler:
         )
         message_sequence_provider = {_get_history: lambda: message_sequence}
 
-        with pytest.raises(Exception):  # Will raise the underlying decoding error
+        with pytest.raises(ResultDecodingError):
             with (
                 handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
                 handler(mock_handler),
@@ -786,15 +796,15 @@ class TestRetryLLMHandler:
                 )
 
         error = exc_info.value
-        assert error.tool_name == "add_numbers"
-        assert error.tool_call_id == "call_1"
+        assert error.raw_tool_call.function.name == "add_numbers"
+        assert error.raw_tool_call.id == "call_1"
         assert error.raw_message is not None
         assert "add_numbers" in str(error)
 
     def test_retry_handler_raises_result_decoding_error(self):
         """Test that RetryLLMHandler raises ResultDecodingError with correct attributes."""
         responses = [
-            make_text_response('{"value": "not an int"}'),
+            make_text_response('"not an int"'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -823,7 +833,7 @@ class TestRetryLLMHandler:
         """Test that error feedback messages contain the tool name."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -853,7 +863,7 @@ class TestRetryLLMHandler:
         """Test that unknown tool errors contain the tool name in the feedback."""
         responses = [
             make_tool_call_response("nonexistent_tool", '{"x": 1}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -883,7 +893,7 @@ class TestRetryLLMHandler:
         """Test that include_traceback=True adds traceback to error messages."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -914,7 +924,7 @@ class TestRetryLLMHandler:
         """Test that include_traceback=False doesn't add traceback."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": 2}'),
-            make_text_response('{"value": "success"}'),
+            make_text_response("success"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -967,7 +977,7 @@ class TestToolExecutionErrorHandling:
         # Create a decoded tool call for failing_tool
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=42)
-        tool_call = DecodedToolCall(failing_tool, bound_args, "call_1")
+        tool_call = DecodedToolCall(failing_tool, bound_args, "call_1", "failing_tool")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -984,7 +994,7 @@ class TestToolExecutionErrorHandling:
 
         sig = inspect.signature(divide_tool)
         bound_args = sig.bind(a=10, b=0)
-        tool_call = DecodedToolCall(divide_tool, bound_args, "call_div")
+        tool_call = DecodedToolCall(divide_tool, bound_args, "call_div", "divide_tool")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -999,7 +1009,7 @@ class TestToolExecutionErrorHandling:
 
         sig = inspect.signature(add_numbers)
         bound_args = sig.bind(a=3, b=4)
-        tool_call = DecodedToolCall(add_numbers, bound_args, "call_add")
+        tool_call = DecodedToolCall(add_numbers, bound_args, "call_add", "add_numbers")
 
         with handler(RetryLLMHandler()):
             result = call_tool(tool_call)
@@ -1017,8 +1027,8 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": 42}'),
-            make_text_response('{"value": "handled the error"}'),
+            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_text_response("handled the error"),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -1061,8 +1071,17 @@ class TestErrorClasses:
     def test_tool_call_decoding_error_string_representation(self):
         """Test ToolCallDecodingError string includes relevant info."""
         original = ValueError("invalid value")
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "call_abc",
+                "function": {"name": "my_function", "arguments": "{}"},
+            }
+        )
         error = ToolCallDecodingError(
-            "my_function", "call_abc", original, raw_message={"role": "assistant"}
+            original_error=original,
+            raw_message={"role": "assistant"},
+            raw_tool_call=raw_tool_call,
         )
 
         error_str = str(error)
@@ -1082,8 +1101,19 @@ class TestErrorClasses:
         """Test that all error classes preserve the original exception."""
         original = TypeError("type mismatch")
         mock_message = {"role": "assistant", "content": "test"}
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "id",
+                "function": {"name": "fn", "arguments": "{}"},
+            }
+        )
 
-        tool_decode_err = ToolCallDecodingError("fn", "id", original, mock_message)
+        tool_decode_err = ToolCallDecodingError(
+            original_error=original,
+            raw_message=mock_message,
+            raw_tool_call=raw_tool_call,
+        )
         assert tool_decode_err.original_error is original
 
         result_decode_err = ResultDecodingError(original, mock_message)
@@ -1092,7 +1122,18 @@ class TestErrorClasses:
     def test_tool_call_decoding_error_includes_raw_message(self):
         """Test that ToolCallDecodingError includes the raw message."""
         mock_message = {"role": "assistant", "content": "test"}
-        error = ToolCallDecodingError("fn", "id", ValueError("test"), mock_message)
+        raw_tool_call = ChatCompletionMessageToolCall.model_validate(
+            {
+                "type": "tool_call",
+                "id": "id",
+                "function": {"name": "fn", "arguments": "{}"},
+            }
+        )
+        error = ToolCallDecodingError(
+            original_error=ValueError("test"),
+            raw_message=mock_message,
+            raw_tool_call=raw_tool_call,
+        )
         assert error.raw_message == mock_message
 
 
@@ -1148,11 +1189,10 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
-    @requires_openai
     def test_synthesize_adder_function(self, request):
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1164,11 +1204,10 @@ class TestCallableSynthesis:
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 
-    @requires_openai
     def test_synthesize_string_processor(self, request):
         """Test that LLM can synthesize a string processing function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1180,11 +1219,10 @@ class TestCallableSynthesis:
             assert "HELLO" in result
             assert "!" in result
 
-    @requires_openai
     def test_synthesize_counter_with_parameter(self, request):
         """Test that LLM can synthesize a parameterized counting function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1196,12 +1234,11 @@ class TestCallableSynthesis:
             assert count_a("aardvark") == 3
             assert count_a("AAA") == 0  # case-sensitive
 
-    @requires_openai
     def test_synthesized_function_roundtrip(self, request):
         """Test that a synthesized function can be encoded and decoded."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1220,12 +1257,11 @@ class TestCallableSynthesis:
             assert callable(decoded)
             assert decoded(5, 7) == 12
 
-    @requires_openai
     def test_synthesize_bool_return_type(self, request):
         """Test that LLM respects bool return type in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1242,12 +1278,11 @@ class TestCallableSynthesis:
             assert is_even(0) is True
             assert is_even(-4) is True
 
-    @requires_openai
     def test_synthesize_three_params(self, request):
         """Test that LLM respects the exact number of parameters in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1297,6 +1332,7 @@ class TestMessageSequence:
             tool=add_numbers,
             bound_args=inspect.signature(add_numbers).bind(1, 2),
             id="tc_1",
+            name="add_numbers",
         )
 
         with (
@@ -1457,13 +1493,12 @@ class MessageSequenceTracker(ObjectInterpretation):
 class TestMessageSequenceReplay:
     """Fixture-based tests verifying message sequence invariants through the full provider stack."""
 
-    @requires_openai
     def test_simple_prompt_unique_message_ids(self, request):
         """A no-tool prompt should produce a single call_assistant with unique message IDs."""
         tracker = MessageSequenceTracker()
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -1473,14 +1508,13 @@ class TestMessageSequenceReplay:
         ids = tracker.call_log[0]
         assert len(ids) == len(set(ids)), "message IDs should be unique"
 
-    @requires_openai
     def test_tool_calling_no_duplicate_message_ids(self, request):
         """Tool-calling prompts should accumulate messages without duplicates across calls."""
         tracker = MessageSequenceTracker()
 
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
             result = compute_sum(3, 5)
@@ -1526,21 +1560,21 @@ class TestCallToolWrapsExecutionError:
         """call_tool wraps tool runtime errors in ToolCallExecutionError."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=7)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_wrap_1")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_wrap_1", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError) as exc_info:
             call_tool(tc)
 
         err = exc_info.value
-        assert err.tool_name == "failing_tool"
-        assert err.tool_call_id == "call_wrap_1"
+        assert err.raw_tool_call.name == "failing_tool"
+        assert err.raw_tool_call.id == "call_wrap_1"
         assert isinstance(err.original_error, ValueError)
 
     def test_call_tool_preserves_cause_chain(self):
         """ToolCallExecutionError should chain from the original exception."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_chain")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_chain", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError) as exc_info:
             call_tool(tc)
@@ -1551,7 +1585,7 @@ class TestCallToolWrapsExecutionError:
         """Successful tool calls should not raise ToolCallExecutionError."""
         sig = inspect.signature(add_numbers)
         bound_args = sig.bind(a=3, b=4)
-        tc = DecodedToolCall(add_numbers, bound_args, "call_ok")
+        tc = DecodedToolCall(add_numbers, bound_args, "call_ok", "add_numbers")
 
         result = call_tool(tc)
         assert result["role"] == "tool"
@@ -1565,7 +1599,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """When original_error matches catch_tool_errors, return error feedback."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_match")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_match", "flaky_tool")
 
         with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
             result = call_tool(tc)
@@ -1579,7 +1613,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """When original_error doesn't match catch_tool_errors, re-raise ToolCallExecutionError."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_no_match")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_no_match", "flaky_tool")
 
         # catch_tool_errors=TypeError, but tool raises ConnectionError
         with pytest.raises(ToolCallExecutionError) as exc_info:
@@ -1592,7 +1626,9 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """Default catch_tool_errors=Exception catches all standard exceptions."""
         sig = inspect.signature(type_error_tool)
         bound_args = sig.bind(x=5)
-        tc = DecodedToolCall(type_error_tool, bound_args, "call_default")
+        tc = DecodedToolCall(
+            type_error_tool, bound_args, "call_default", "type_error_tool"
+        )
 
         with handler(RetryLLMHandler()):
             result = call_tool(tc)
@@ -1604,7 +1640,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """catch_tool_errors accepts a tuple of exception types."""
         sig = inspect.signature(flaky_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(flaky_tool, bound_args, "call_tuple")
+        tc = DecodedToolCall(flaky_tool, bound_args, "call_tuple", "flaky_tool")
 
         with handler(
             RetryLLMHandler(
@@ -1620,7 +1656,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         """Without RetryLLMHandler, ToolCallExecutionError propagates directly."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=1)
-        tc = DecodedToolCall(failing_tool, bound_args, "call_no_retry")
+        tc = DecodedToolCall(failing_tool, bound_args, "call_no_retry", "failing_tool")
 
         with pytest.raises(ToolCallExecutionError):
             call_tool(tc)
@@ -1633,7 +1669,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": 1}'),
+            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1682,7 +1718,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": 1}'),
+            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1709,10 +1745,14 @@ class TestLiteLLMProviderMessagePruning:
 
     def test_successful_call_preserves_messages(self):
         """A successful top-level template call should write messages back to Agent history."""
-        responses = [make_text_response('{"value": "done"}')]
+        responses = [make_text_response("done")]
         mock_handler = MockCompletionHandler(responses)
 
         class SimpleAgent(Agent):
+            """You are a persistence-check test agent.
+            Your goal is to complete `simple_task` and persist successful history.
+            """
+
             @Template.define
             def simple_task(self, instruction: str) -> str:
                 """Do: {instruction}"""
@@ -1753,6 +1793,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class TestAgent(Agent):
+            """You are a cross-template recovery test agent.
+            Your goal is to recover from failed tool calls across template methods.
+            """
+
             @Template.define
             def step_with_tool(self, task: str) -> str:
                 """Use bad_service for: {task}"""
@@ -1766,7 +1810,7 @@ class TestAgentCrossTemplateRecovery:
         # Step 1: LLM calls bad_service → tool error propagates
         tool_call_response = make_tool_call_response("bad_service", "{}")
         # Step 2: Simple text response for the second template
-        text_response = make_text_response('{"value": "summary result"}')
+        text_response = make_text_response("summary result")
 
         call_count = 0
 
@@ -1822,6 +1866,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class CleanupAgent(Agent):
+            """You are an error-cleanup test agent.
+            Your goal is to ensure failed calls do not persist message history.
+            """
+
             @Template.define
             def do_work(self, task: str) -> str:
                 """Do: {task}"""
@@ -1845,12 +1893,16 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class SuccessAgent(Agent):
+            """You are a success-history test agent.
+            Your goal is to preserve message history for successful calls.
+            """
+
             @Template.define
             def greet(self, name: str) -> str:
                 """Say hello to {name}."""
                 raise NotHandled
 
-        responses = [make_text_response('{"value": "Hello!"}')]
+        responses = [make_text_response("Hello!")]
         mock = MockCompletionHandler(responses)
         agent = SuccessAgent()
 
@@ -1868,6 +1920,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class ChatAgent(Agent):
+            """You are a multi-call history test agent.
+            Your goal is to accumulate conversation history across successful calls.
+            """
+
             @Template.define
             def chat(self, msg: str) -> str:
                 """Respond to: {msg}"""
@@ -1880,7 +1936,7 @@ class TestAgentCrossTemplateRecovery:
             def _completion(self, model, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
-                return make_text_response(f'{{"value": "reply {call_count}"}}')
+                return make_text_response(f"reply {call_count}")
 
         agent = ChatAgent()
 
@@ -1905,6 +1961,10 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class RecoveryAgent(Agent):
+            """You are a failure-recovery test agent.
+            Your goal is to recover after a failed call and retain only successful history.
+            """
+
             @Template.define
             def risky(self, task: str) -> str:
                 """Do risky: {task}"""
@@ -1924,7 +1984,7 @@ class TestAgentCrossTemplateRecovery:
                 call_count += 1
                 if call_count == 1:
                     return make_tool_call_response("broken_tool", "{}")
-                return make_text_response('{"value": "safe result"}')
+                return make_text_response("safe result")
 
         agent = RecoveryAgent()
 
@@ -1941,3 +2001,161 @@ class TestAgentCrossTemplateRecovery:
         # Only messages from the successful call should be in history
         assert len(agent.__history__) >= 2
         assert len(agent.__history__) > history_after_error
+
+
+class TestAgentSystemMessageDeduplication:
+    """Regression tests for system message duplication bug.
+
+    When LiteLLMProvider._call copies the history, call_system replaces the
+    system message in the copy. Previously, history.update(history_copy) was
+    used to merge back, which is additive — it didn't remove the stale system
+    message key deleted from the copy. This caused multiple system messages to
+    accumulate, triggering an assertion on the 3rd+ call.
+
+    The fix is history.clear() before history.update(history_copy).
+    """
+
+    def test_three_consecutive_calls_no_system_message_duplication(self):
+        """Three consecutive agent calls should not fail with duplicate system messages."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class ThreeCallAgent(Agent):
+            """You are a test agent for system message deduplication."""
+
+            @Template.define
+            def ask(self, question: str) -> str:
+                """Answer: {question}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class CountingHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"answer {call_count}")
+
+        agent = ThreeCallAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(CountingHandler()):
+            r1 = agent.ask("q1")
+            r2 = agent.ask("q2")
+            r3 = agent.ask("q3")
+
+        assert r1 == "answer 1"
+        assert r2 == "answer 2"
+        assert r3 == "answer 3"
+
+    def test_history_has_exactly_one_system_message_after_multiple_calls(self):
+        """After multiple calls, the agent history should contain exactly one system message."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class SystemMsgAgent(Agent):
+            """You are a system message count test agent."""
+
+            @Template.define
+            def do(self, task: str) -> str:
+                """Do: {task}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class MultiHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"done {call_count}")
+
+        agent = SystemMsgAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(MultiHandler()):
+            agent.do("a")
+            agent.do("b")
+            agent.do("c")
+            agent.do("d")
+
+        system_msgs = [m for m in agent.__history__.values() if m["role"] == "system"]
+        assert len(system_msgs) == 1, (
+            f"Expected exactly 1 system message, got {len(system_msgs)}"
+        )
+
+    def test_conversation_history_preserved_across_calls(self):
+        """Earlier user/assistant messages should persist across multiple calls."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class MemoryAgent(Agent):
+            """You are a memory test agent."""
+
+            @Template.define
+            def chat(self, msg: str) -> str:
+                """User says: {msg}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class MemoryHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                # Verify that previous messages are visible to later calls
+                if call_count == 3:
+                    # Third call should see messages from calls 1 and 2
+                    user_msgs = [m for m in messages if m["role"] == "user"]
+                    assert len(user_msgs) == 3, (
+                        f"Third call should see 3 user messages, got {len(user_msgs)}"
+                    )
+                return make_text_response(f"reply {call_count}")
+
+        agent = MemoryAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(MemoryHandler()):
+            agent.chat("first")
+            agent.chat("second")
+            agent.chat("third")
+
+        # History should have: 1 system + 3 user + 3 assistant = 7
+        assert len(agent.__history__) == 7
+        roles = [m["role"] for m in agent.__history__.values()]
+        assert roles.count("system") == 1
+        assert roles.count("user") == 3
+        assert roles.count("assistant") == 3
+
+    def test_system_message_is_always_first(self):
+        """The system message should remain the first message after multiple calls."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class OrderAgent(Agent):
+            """You are a message order test agent."""
+
+            @Template.define
+            def step(self, n: int) -> str:
+                """Step {n}"""
+                raise NotHandled
+
+        call_count = 0
+
+        class OrderHandler(ObjectInterpretation):
+            @implements(completion)
+            def _completion(self, model, messages=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                return make_text_response(f"step {call_count}")
+
+        agent = OrderAgent()
+
+        with handler(LiteLLMProvider(model="test")), handler(OrderHandler()):
+            agent.step(1)
+            agent.step(2)
+            agent.step(3)
+
+        messages = list(agent.__history__.values())
+        assert messages[0]["role"] == "system", (
+            "System message should be the first message in history"
+        )

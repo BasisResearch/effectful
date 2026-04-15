@@ -1126,3 +1126,140 @@ def test_operation_dataclass_generic():
         raise NotHandled
 
     assert isinstance(id(A(0)).x, Term)
+
+
+# Forward references in types only work on module-level definitions.
+@defop
+def forward_ref_op() -> "A":
+    raise NotHandled
+
+
+class A: ...
+
+
+def test_defop_forward_ref():
+    term = forward_ref_op()
+    assert term.op == forward_ref_op
+    assert typeof(term) is A
+
+    @defop
+    def local_forward_ref_op() -> "B":
+        raise NotHandled
+
+    class B: ...
+
+    with pytest.raises(NameError):
+        local_forward_ref_op()
+
+
+# Forward ref in a parameter annotation.
+@defop
+def _forward_ref_param_op(x: "_ForwardRefParam") -> int:
+    raise NotHandled
+
+
+class _ForwardRefParam:
+    pass
+
+
+def test_defop_forward_ref_param():
+    sig = inspect.signature(_forward_ref_param_op)
+    assert sig.parameters["x"].annotation is _ForwardRefParam
+    assert sig.return_annotation is int
+
+
+# Forward ref through Operation.define on a type.
+class _ForwardRefType:
+    pass
+
+
+_forward_ref_type_op = Operation.define(_ForwardRefType)
+
+
+def test_define_type_forward_ref():
+    term = _forward_ref_type_op()
+    assert term.op == _forward_ref_type_op
+    assert typeof(term) is _ForwardRefType
+
+
+# Forward ref on an instance method.
+class _ForwardRefMethodHost:
+    @defop
+    def my_method(self, x: int) -> "_ForwardRefMethodResult":
+        raise NotHandled
+
+
+class _ForwardRefMethodResult:
+    pass
+
+
+def test_defop_forward_ref_method():
+    instance = _ForwardRefMethodHost()
+    term = instance.my_method(5)
+    assert isinstance(term, Term)
+    sig = inspect.signature(_ForwardRefMethodHost.my_method)
+    assert sig.return_annotation is _ForwardRefMethodResult
+
+
+# Forward ref on a staticmethod.
+class _ForwardRefStaticHost:
+    @defop
+    @staticmethod
+    def my_static(x: int) -> "_ForwardRefStaticResult":
+        raise NotHandled
+
+
+class _ForwardRefStaticResult:
+    pass
+
+
+def test_defop_forward_ref_staticmethod():
+    term = _ForwardRefStaticHost.my_static(5)
+    assert isinstance(term, Term)
+    sig = inspect.signature(_ForwardRefStaticHost.my_static)
+    assert sig.return_annotation is _ForwardRefStaticResult
+
+
+# Forward ref on a classmethod.
+class _ForwardRefClassmethodHost:
+    @defop
+    @classmethod
+    def my_classmethod(cls, x: int) -> "_ForwardRefClassmethodResult":
+        raise NotHandled
+
+
+class _ForwardRefClassmethodResult:
+    pass
+
+
+def test_defop_forward_ref_classmethod():
+    term = _ForwardRefClassmethodHost.my_classmethod(5)
+    assert isinstance(term, Term)
+    sig = inspect.signature(_ForwardRefClassmethodHost.my_classmethod)
+    assert sig.return_annotation is _ForwardRefClassmethodResult
+
+
+# Mutual recursion: two classes with forward refs to each other.
+class _Coordinate:
+    @defop
+    def log(self) -> "_CoordinateTangent":
+        raise NotHandled
+
+
+class _CoordinateTangent:
+    @defop
+    def exp(self) -> "_Coordinate":
+        raise NotHandled
+
+
+def test_defop_forward_ref_mutual_recursion():
+    coord = _Coordinate()
+    tangent = _CoordinateTangent()
+
+    log_term = coord.log()
+    assert isinstance(log_term, Term)
+    assert typeof(log_term) is _CoordinateTangent
+
+    exp_term = tangent.exp()
+    assert isinstance(exp_term, Term)
+    assert typeof(exp_term) is _Coordinate

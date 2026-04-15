@@ -1,4 +1,5 @@
 try:
+    import numpyro
     import numpyro.distributions as dist
 except ImportError:
     raise ImportError("Numpyro is required to use effectful.handlers.numpyro")
@@ -331,6 +332,13 @@ class _DistributionTerm(dist.Distribution):
             return self._reindex_sample(self._pos_base_dist.variance, ())
         except NotImplementedError:
             raise RuntimeError(f"variance is not implemented for {type(self).__name__}")
+
+    @property
+    @defop
+    def support(self) -> numpyro.distributions.constraints.Constraint:
+        if not self._is_eager:
+            raise NotHandled
+        return self._pos_base_dist.support
 
     @defop
     def enumerate_support(self, expand=True) -> jax.Array:
