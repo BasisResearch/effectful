@@ -27,14 +27,12 @@ from effectful.handlers.weighted.optimization.reorder import (
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop, syntactic_eq
-from effectful.ops.weighted.monoid import mul
-from effectful.ops.weighted.reduce import BaselineReduce, reduce
+from effectful.ops.weighted.monoid import MaxMonoid, SumMonoid, mul
 from effectful.ops.weighted.sugar import CartesianProd, Max, Prod, Sum
 from tests.utils import REDUCE_TRANSFORMS
 
 parameterize_base_intp = mark.parametrize(
-    "base_intp",
-    [param(BaselineReduce(), id="baseline"), param(DenseTensorReduce(), id="jax")],
+    "base_intp", [param({}, id="baseline"), param(DenseTensorReduce(), id="jax")]
 )
 
 parameterize_transform_intp = mark.parametrize(
@@ -113,14 +111,14 @@ def test_unused_streams_optim():
 
     assert expr.op is mul
     reduce_expr, const = expr.args
-    assert reduce_expr.op is reduce
+    assert reduce_expr.op is SumMonoid.reduce
     assert len(reduce_expr.args[1]) == 1
     assert const == 3
 
     with handler(intp):
         expr = Max({i: jnp.arange(3), j: jnp.arange(3)}, i())
 
-    assert expr.op is reduce
+    assert expr.op is MaxMonoid.reduce
     assert len(expr.args[1]) == 1
 
 
@@ -215,13 +213,12 @@ def test_cartesian_product_distribution():
     x_stream = {x: CartesianProd(i_stream, jnp.arange(x_size))}
 
     arr = random.uniform(key, shape=(x_size, i_size))
-    expr = Sum(x_stream, Prod(i_stream, jax_getitem(arr, (x()[i()], i()))))
+    expr = lambda: Sum(x_stream, Prod(i_stream, jax_getitem(arr, (x()[i()], i()))))
 
-    with handler(BaselineReduce()):
-        expected = evaluate(expr)
+    expected = expr()
 
     with handler(ReduceDistributeCartesianProduct()), handler(ReduceNoStreams()):
-        expr_eval = evaluate(expr)
+        expr_eval = expr()
         # check if optimization is applied
         assert str(expr_eval.args[0]) == "Prod"
 
@@ -285,10 +282,10 @@ def test_reduce_distribute_term():
     term1 = jax_getitem(a(), (i(),))
     term2 = jax_getitem(b(), (i(), k()))
 
-    expr = Sum(streams, term1 * term2)
+    expr = lambda: Sum(streams, term1 * term2)
     with handler(ReduceDistributeTerm()):
         # Sum({i: i_stream}, term_1 * Sum({j: j_stream, k: k_stream}, term_2))
-        optimized_expr = evaluate(expr)
+        optimized_expr = expr
 
     # Check if the optimization triggered
     assert len(optimized_expr.args[1]) == 1
@@ -296,8 +293,8 @@ def test_reduce_distribute_term():
     k1, k2 = random.split(random.PRNGKey(42))
     arr_intp = {a: deffn(random.normal(k1, (2,))), b: deffn(random.normal(k2, (2, 4)))}
 
-    with handler(BaselineReduce()), handler(arr_intp):
-        expected = evaluate(expr)
+    with handler(arr_intp):
+        expected = expr()
         result = evaluate(optimized_expr)
     assert allclose(result, expected)
 
@@ -316,6 +313,5 @@ def test_polyhedral():
     with handler(DenseTensorReduce()), handler(ReduceLinearIndexer()):
         result = Sum(streams, i() / j())
 
-    with handler(BaselineReduce()):
-        expected = Sum(streams, i() / j())
+    expected = Sum(streams, i() / j())
     assert allclose(result, expected)

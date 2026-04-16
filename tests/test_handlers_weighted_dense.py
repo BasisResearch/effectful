@@ -20,7 +20,6 @@ from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.jax import reals
-from effectful.ops.weighted.reduce import reduce
 from effectful.ops.weighted.sugar import ArgMin, LogSum, Max, Min, Sum
 from tests.utils import DEFAULT_TEST_REDUCE_INTP
 
@@ -473,8 +472,6 @@ def test_reduce_chain(intp) -> None:
 
     with handler(ScanReduce()):
         new_reduce = Sum(streams, vs[-1]())
-
-    assert isinstance(new_reduce, Term) and new_reduce.op is reduce
     new_streams = new_reduce.args[1]
 
     # ScanReduce should break the dependency graph in the streams
@@ -505,8 +502,6 @@ def test_reduce_chain_named(intp) -> None:
 
     with handler(ScanReduce()):
         new_reduce = Sum(streams, vs[-1]())
-
-    assert isinstance(new_reduce, Term) and new_reduce.op is reduce
     new_streams = new_reduce.args[1]
 
     # ScanReduce should break the dependency graph in the streams

@@ -15,7 +15,6 @@ from effectful.handlers.weighted.optimization.jax import StackIndex
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.weighted.monoid import mul
-from effectful.ops.weighted.reduce import BaselineReduce
 from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 
@@ -45,13 +44,11 @@ def construct_hmm():
     initial_state = defop(jax.Array, name="initial")()
     observation = defop(jax.Array, name="observation")()
 
-    with handler(BaselineReduce()):  # immediately unroll factors
-        hmm_factor = (
-            initial_state[z[0]]
-            * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
-            * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
-        )
-
+    hmm_factor = (
+        initial_state[z[0]]
+        * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
+        * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
+    )
     hmm = Sum(z_stream | x_stream, hmm_factor)
 
     param_ops = (transition_factor, emission_factor, initial_state, observation)

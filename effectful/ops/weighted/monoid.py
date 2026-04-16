@@ -2,52 +2,109 @@ import collections.abc
 import functools
 import itertools
 import numbers
-from collections.abc import Callable, Generator, Mapping
-from typing import Any
+import operator
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from graphlib import TopologicalSorter
+from typing import Annotated, Any
 
 import jax
 import jax.tree as tree
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
-from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, NotHandled, Term
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.syntax import Scoped, deffn, defop
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+
+# Note: The streams value type should be something like Iterable[T], but some of
+# our target stream types (e.g. jax.Array) are not subtypes of Iterable
+type Streams[T] = Mapping[Operation[[], T], Any]
+
+type Body[T] = (
+    Iterable[T]
+    | Callable[..., T]
+    | T
+    | Mapping[Any, Body[T]]
+    | Interpretation[T, Body[T]]
+)
+
+
+def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
+    """Determine an order to evaluate the streams based on their dependencies"""
+    stream_vars = set(streams.keys())
+    dependencies = {k: fvsof(v) & stream_vars for k, v in streams.items()}
+    topo = TopologicalSorter(dependencies)
+    topo.prepare()
+    while topo.is_active():
+        node_group = topo.get_ready()
+        yield from sorted(node_group, key=str)
+        topo.done(*node_group)
 
 
 class Monoid[T]:
-    add: Callable[[T, T], T]
-    zero: T
-    name: str | None = None
+    kernel: Operation[[T, ...], T]
+    identity: T
 
-    def __init__(self, add, zero, name=None):
-        self.add = add
-        self.zero = zero
-        self.name = name
-        self.typ = type(zero)
+    def __init__(self, kernel: Callable[[T, ...], T], identity: T):
+        self.kernel = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+        self.identity = identity
 
-    def __str__(self):
-        if self.name is None:
-            return repr(self)
-        return self.name
+    @classmethod
+    def from_binary(cls, kernel: Callable[[T, T], T], identity: T):
+        return cls(lambda *a: functools.reduce(kernel, a), identity)
 
-    def __call__(self, x, y):
-        if isinstance(x, self.typ) and x == self.zero:
-            return y
-        if isinstance(y, self.typ) and y == self.zero:
-            return x
-        return self.add(x, y)
+    @functools.singledispatchmethod
+    def __call__(self, *bodies: Body[T]) -> Body[T]:
+        """Monoid addition with broadcasting over common collection types,
+        callables, and interpretations.
 
-    def is_idempotent(self) -> bool:
         """
-        Check whether a monoid is idempotent.
+        return self.kernel(*bodies)
 
-        A monoid (A, ⊕, e) is idempotent if
-            ∀x ∈ A: x ⊕ x = x
-        """
-        return self.add in (min, max, arg_min, arg_max)
+    # TODO: This case should be covered by a more general use of jax.tree or
+    # similar.
+    @__call__.register
+    def _(self, a: Sequence, *bs: Sequence):
+        result = [self(*vs) for vs in zip(*(a, *bs), strict=True)]
+        return result
 
-    def scalar_mul(self):
+    # TODO: This case should be covered by a more general use of jax.tree or
+    # similar.
+    @__call__.register
+    def _(self, a: Mapping, *bs: Mapping):
+        all_values = collections.defaultdict(list)
+        for d in (a, *bs):
+            for k, v in d.items():
+                all_values[k].append(v)
+        result = {k: self(*vs) for (k, vs) in all_values.items()}
+        return result
+
+    @__call__.register
+    def _(self, a: callable, *bs: callable):
+        result = lambda *args, **kwargs: self(
+            a(*args, **kwargs), *[b(*args, **kwargs) for b in bs]
+        )
+        return result
+
+    @__call__.register
+    def _(self, a: Interpretation, *bs: Interpretation):
+        a_keys = a.keys()
+        for b in bs:
+            b_keys = b.keys()
+            if not a_keys == b_keys:
+                raise ValueError(
+                    f"Expected interpretation of {a_keys} but got {b_keys}"
+                )
+
+        result = {
+            k: self(handler(a)(a[k]), *[handler(b)(b[k]) for b in bs]) for k in a_keys
+        }
+        return result
+
+    def scalar_mul(self, v: T, x: int) -> T:
         """
         Returns the scalar multiplication w.r.t. a monoid.
 
@@ -59,54 +116,64 @@ class Monoid[T]:
         Warning: scalar multiplication is not commutative,
             the scalar is always the second argument.
         """
-        if self.is_idempotent():
-            return lambda x, _: x
-        if self.add is add:
-            return mul
-        if self.add is logaddexp:
-            return add
-        if self.add is mul:
-            return pow
-        raise ValueError("Unknown")
+        if x < 0:
+            raise ValueError("Expected x >= 0")
+        if x == 0:
+            return self.identity
+        return functools.reduce(self, itertools.repeat(v, x))
 
-    def distributes_with(self, op) -> bool:
-        """
-        Returns whether a monoid is distributive w.r.t.
-        another monoid/op. I.e. the two monoids form a semiring.
-        (May have false negatives but no false positives.)
-        """
-        op = self.from_jax_op(op) or op
-        if isinstance(op, Monoid):
-            op = op.add
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
+    ) -> Annotated[U, Scoped[B]]:
 
-        if self.add is add:
-            return op is mul
-        elif self.add is min:
-            return op is add
-        elif self.add is max:
-            return op is mul or op is min or op is add
-        elif self.add is logaddexp:
-            return op is add
-        else:
-            return False
+        def generator(loop_order):
+            if loop_order:
+                stream_key = loop_order[0]
+                stream_values = evaluate(streams[stream_key])
+                for val in stream_values:
+                    intp = {stream_key: deffn(val)}
+                    with handler(intp):
+                        for intp2 in generator(loop_order[1:]):
+                            yield coproduct(intp, intp2)
+            else:
+                yield {}
 
-    @classmethod
-    def from_jax_op(cls, op):
-        """
-        Returns the Monoid corresponding to a binary jax function.
-        """
-        if op is jnp.add:
-            return SumMonoid
-        elif op is jnp.multiply:
-            return ProdMonoid
-        elif op is jnp.minimum:
-            return MinMonoid
-        elif op is jnp.maximum:
-            return MaxMonoid
-        elif op is jnp.logaddexp:
-            return LogSumMonoid
-        else:
-            return None
+        def body_value(body: Body, intp: Interpretation) -> Body:
+            if isinstance(body, Interpretation):
+                # TODO: This should be a product, but the implementation of product isn't quite correct.
+                return {
+                    op: handler(coproduct(intp, body))(impl)
+                    for op, impl in body.items()
+                }
+            elif callable(body):
+                return handler(intp)(body)
+            elif isinstance(body, Mapping):
+                return {k: body_value(v, intp) for (k, v) in body.items()}
+            elif isinstance(body, Generator):
+                return (body_value(v, intp) for v in body)
+            else:
+                return evaluate(body, intp=intp)
+
+        loop_order = list(order_streams(streams))
+        values = (body_value(body, intp) for intp in generator(loop_order))
+        result = self(*values)  # type: ignore
+        return result
+
+
+class IdempotentMonoid[T](Monoid[T]):
+    def scalar_mul(self, v: T, x: int) -> T:
+        if x < 0:
+            raise ValueError("Expected x >= 0")
+        if x == 0:
+            return self.identity
+        return v
+
+
+class CommutativeMonoid[T](Monoid[T]): ...
+
+
+class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
 
 
 # Semiring laws:
@@ -202,70 +269,36 @@ def jax_cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-# TODO: fold me into baseline reduce
-def _promote_add(add, a, b):
-    if isinstance(a, Generator):
-        assert isinstance(b, Generator)
-        return (v for v in (*a, *b))
-    elif isinstance(a, Mapping):
-        assert isinstance(b, Mapping)
-        result = {
-            k: a[k]
-            if k not in b
-            else b[k]
-            if k not in a
-            else _promote_add(add, a[k], b[k])
-            for k in set(a) | set(b)
-        }
-        return result
-    elif callable(a):
-        assert callable(b)
-        return lambda *args, **kwargs: _promote_add(
-            add, a(*args, **kwargs), b(*args, **kwargs)
-        )
-    elif isinstance(a, Interpretation):
-        assert isinstance(b, Interpretation)
-        assert a.keys() == b.keys()
-        result = {k: _promote_add(add, handler(a)(a[k]), handler(b)(b[k])) for k in a}
-        return result
-    else:
-        return add(a, b)
-
-
-def promote(self):
-    add = functools.partial(_promote_add, self.add)
-    return Monoid(add, self.zero, "Promoted" + self.name)
-
-
-SumMonoid: Monoid[float] = Monoid(add, 0.0, "Sum")
-
-ProdMonoid: Monoid[float] = Monoid(mul, 1.0, "Prod")
-
-LogSumMonoid: Monoid[float] = Monoid(logaddexp, float("-inf"), "LogSum")
-
-MinMonoid: Monoid[float] = Monoid(min, float("inf"), "Min")
-
-MaxMonoid: Monoid[float] = Monoid(max, float("-inf"), "Max")
-
-ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(
-    arg_min, (float("inf"), None), "ArgMin"
-)
-
-ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(
-    arg_max, (float("-inf"), None), "ArgMax"
-)
-
-JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid(
-    jax_cartesian_prod, jnp.array([]), "JaxCartesianProd"
-)
+SumMonoid = CommutativeMonoid(operator.add, 0.0)
+ProdMonoid = CommutativeMonoid(operator.mul, 1.0)
+MinMonoid = Semilattice(min, float("inf"))
+MaxMonoid = Semilattice(max, float("-inf"))
+LogSumMonoid: Monoid[float] = Monoid(logaddexp, float("-inf"))
+ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(arg_min, (float("inf"), None))
+ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(arg_max, (float("-inf"), None))
+JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid(jax_cartesian_prod, jnp.array([]))
 
 StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
-    lambda a, b: (v for v in itertools.chain(a, b)), (), name="StreamChain"
+    lambda a, b: (v for v in itertools.chain(a, b)),
+    (),
 )
 
 # note: empty tuple is not a valid identity
 StreamProdMonoid: Monoid[collections.abc.Generator] = Monoid(
     lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
     (),
-    name="StreamProd",
 )
+
+
+@dataclass
+class _ExtensibleBinaryRelation[S, T]:
+    tuples: set[tuple[S, T]]
+
+    def register(self, s: S, t: T) -> None:
+        self.tuples.add((s, t))
+
+    def __call__(self, s: S, t: T) -> bool:
+        return (s, t) in self.tuples
+
+
+distributes_with = _ExtensibleBinaryRelation({})
