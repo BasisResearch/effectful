@@ -50,6 +50,13 @@ llm = [
   "typing_extensions",
   "restrictedpython>=8.1"
 ]
+weighted = [
+  "jax",
+  "optax",
+  "scipy",
+  "islpy",
+  "chex",
+]
 prettyprinter = ["prettyprinter"]
 docs = [
     "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
