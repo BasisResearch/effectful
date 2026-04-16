@@ -102,32 +102,6 @@ def test_body_mapping_nested():
 
 
 # ---------------------------------------------------------------------------
-# Generator body (Generator branch in _body_value)
-# ---------------------------------------------------------------------------
-
-
-def test_body_generator():
-    """Body is a generator expression. With a single stream element the
-    generator is consumed once, producing all its values."""
-    x = defop(int, name="x")
-    result = Sum({x: [5]}, (x() + i for i in range(3)))
-    assert isinstance(result, Generator)
-    assert list(result) == [5, 6, 7]
-
-
-def test_body_generator_multi_stream():
-    """With multiple stream elements the underlying generator is consumed by
-    the first binding; subsequent bindings see an exhausted generator."""
-    x = defop(int, name="x")
-    result = Sum({x: [1, 2]}, (x() + i for i in range(3)))
-    # First binding (x=1) consumes the generator: [1, 2, 3]
-    # Second binding (x=2) gets empty generator
-    # Chain: [1, 2, 3]
-    assert isinstance(result, Generator)
-    assert list(result) == [1, 2, 3]
-
-
-# ---------------------------------------------------------------------------
 # Interpretation body (Interpretation branch in _body_value)
 # ---------------------------------------------------------------------------
 

@@ -6,7 +6,7 @@ import operator
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 import jax
 import jax.tree as tree
@@ -57,19 +57,24 @@ class Monoid[T]:
         return cls(lambda *a: functools.reduce(kernel, a), identity)
 
     @functools.singledispatchmethod
-    def __call__(self, *bodies: Body[T]) -> Body[T]:
+    def __call__(self, a: Body[T], *bs: Body[T]) -> Body[T]:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
 
         """
-        return self.kernel(*bodies)
+        if callable(a):
+            result = lambda *args, **kwargs: self(
+                a(*args, **kwargs), *[b(*args, **kwargs) for b in bs]
+            )
+            return result
+        return self.kernel(a, *bs)
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
     @__call__.register
     def _(self, a: Sequence, *bs: Sequence):
         result = [self(*vs) for vs in zip(*(a, *bs), strict=True)]
-        return result
+        return type(a)(result)
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
@@ -80,13 +85,6 @@ class Monoid[T]:
             for k, v in d.items():
                 all_values[k].append(v)
         result = {k: self(*vs) for (k, vs) in all_values.items()}
-        return result
-
-    @__call__.register
-    def _(self, a: callable, *bs: callable):
-        result = lambda *args, **kwargs: self(
-            a(*args, **kwargs), *[b(*args, **kwargs) for b in bs]
-        )
         return result
 
     @__call__.register
@@ -269,14 +267,20 @@ def jax_cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-SumMonoid = CommutativeMonoid(operator.add, 0.0)
-ProdMonoid = CommutativeMonoid(operator.mul, 1.0)
+SumMonoid = CommutativeMonoid.from_binary(operator.add, 0.0)
+ProdMonoid = CommutativeMonoid.from_binary(operator.mul, 1.0)
 MinMonoid = Semilattice(min, float("inf"))
 MaxMonoid = Semilattice(max, float("-inf"))
-LogSumMonoid: Monoid[float] = Monoid(logaddexp, float("-inf"))
-ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid(arg_min, (float("inf"), None))
-ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid(arg_max, (float("-inf"), None))
-JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid(jax_cartesian_prod, jnp.array([]))
+LogSumMonoid: Monoid[float] = Monoid.from_binary(logaddexp, float("-inf"))
+ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid.from_binary(
+    arg_min, (float("inf"), None)
+)
+ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid.from_binary(
+    arg_max, (float("-inf"), None)
+)
+JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid.from_binary(
+    jax_cartesian_prod, jnp.array([])
+)
 
 StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
     lambda a, b: (v for v in itertools.chain(a, b)),

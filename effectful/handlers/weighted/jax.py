@@ -35,10 +35,11 @@ from effectful.ops.weighted.monoid import (
     LogSumMonoid,
     MaxMonoid,
     MinMonoid,
+    Monoid,
     ProdMonoid,
     SumMonoid,
+    order_streams,
 )
-from effectful.ops.weighted.reduce import order_streams, reduce
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class DenseTensorReduce(ObjectInterpretation):
         else:
             return None
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     @timed(name="DenseTensorReduce")
     def reduce(self, monoid, streams, body):
         reductor = self._get_reductor(monoid)
@@ -250,7 +251,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
         self.init = {} if init is None else init
         self.progress = progress
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         # TODO: handle mixed discrete/continuous optimization
         if not (
@@ -347,7 +348,7 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
     def __init__(self, samples=1):
         self.samples = samples
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         if not (
             monoid is SumMonoid
@@ -419,8 +420,7 @@ class PytreeMapReduce(ObjectInterpretation):
         flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body_indices]
 
         flat_body = [
-            reduce(
-                monoid,
+            monoid.reduce(
                 streams,
                 D(*[(k, v) for (k, _), v in zip(body_indices, vs, strict=True)]),
             )
@@ -451,7 +451,7 @@ class ScanReduce(ObjectInterpretation):
     def __init__(self, min_length=3):
         self.min_length = min_length
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         # FIXME: This handler does not deal with the case where some but not all
         # stream variables form a chain
@@ -515,7 +515,7 @@ class ScanReduce(ObjectInterpretation):
         for i, (var, _) in enumerate(chain[1:]):
             new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
 
-        return reduce(monoid, new_streams, body)
+        return monoid.reduce(new_streams, body)
 
 
 interpretation = functools.reduce(
