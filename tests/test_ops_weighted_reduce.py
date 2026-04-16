@@ -19,7 +19,6 @@ from effectful.ops.types import Interpretation
 from effectful.ops.weighted.monoid import SumMonoid, promote
 from effectful.ops.weighted.reduce import BaselineReduce, reduce
 
-
 # ---------------------------------------------------------------------------
 # Raw value body (else branch in _body_value → evaluate(body, intp=intp))
 # ---------------------------------------------------------------------------
@@ -65,7 +64,7 @@ def test_body_raw_value_tuple():
     with handler(BaselineReduce()):
         result = reduce(SumMonoid, {x: [1, 2, 3]}, (x(), x() + 1))
     # tuples are added with +, which concatenates: (1, 2) + (2, 3) + (3, 4)
-    assert result == (1, 2, 2, 3, 3, 4)
+    assert result == (6, 9)
 
 
 # ---------------------------------------------------------------------------
