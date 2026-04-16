@@ -202,6 +202,7 @@ def jax_cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
+# TODO: fold me into baseline reduce
 def _promote_add(add, a, b):
     if isinstance(a, Generator):
         assert isinstance(b, Generator)
