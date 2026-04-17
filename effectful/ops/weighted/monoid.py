@@ -129,6 +129,9 @@ class Monoid[T]:
     def reduce[A, B, U: Body](
         self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
     ) -> Annotated[U, Scoped[B]]:
+        if any(isinstance(x, Term) for x in streams.values()):
+            raise NotHandled
+
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]

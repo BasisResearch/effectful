@@ -7,13 +7,11 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
+from effectful.handlers.jax.monoid import Sum
 from effectful.handlers.weighted.jax import D
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.sugar import Sum
-from tests.utils import (
-    DEFAULT_TEST_REDUCE_INTP,
-)
+from tests.utils import DEFAULT_TEST_REDUCE_INTP
 
 EINSUM_EXAMPLES = [
     # vector operations
@@ -98,7 +96,7 @@ def einsum_weighted(
     operand_intp = {operand_ops[name].op: deffn(o) for name, o in operands_map.items()}
     body = D((output_indices, input_term))
     with handler(reduce_intp), handler(operand_intp):
-        return evaluate(Sum(streams, body))
+        return evaluate(Sum.reduce(streams, body))
 
 
 @pytest.mark.parametrize("equation", EINSUM_EXAMPLES)
