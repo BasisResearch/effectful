@@ -13,7 +13,7 @@ def parse_terms(value: Term, monoid: Monoid) -> tuple[Any, list[Term]]:
     if not isinstance(value, Term):
         return None, [value]
     mul = value.op
-    if not monoid.distributes_with(mul):
+    if not distributes_with(monoid, mul):
         return None, [value]
 
     return mul, parse_with_op(value, mul)

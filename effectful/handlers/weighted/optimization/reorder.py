@@ -3,7 +3,6 @@ import functools
 from scipy.cluster.hierarchy import DisjointSet
 
 import effectful.handlers.jax.numpy as jnp
-import effectful.ops.weighted.reduce as ops
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.weighted.optimization.utils import (
     parse_terms,
@@ -13,6 +12,7 @@ from effectful.handlers.weighted.optimization.utils import (
 from effectful.ops.semantics import fvsof, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Term
+from effectful.ops.weighted.monoid import IdempotentMonoid, Monoid
 
 
 class ReduceNoStreams(ObjectInterpretation):
@@ -20,7 +20,7 @@ class ReduceNoStreams(ObjectInterpretation):
     reduce(R, ∅, body) = 0
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, _):
         if len(streams) == 0:
             return monoid.zero
@@ -35,12 +35,12 @@ class ReduceFusion(ObjectInterpretation):
     over the product of their streams, which can be more efficient.
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         match body:
-            case Term(ops.reduce, (inner_monoid, inner_streams, inner_body)):
+            case Term(monoid, (inner_monoid, inner_streams, inner_body)):
                 if monoid == inner_monoid:
-                    return ops.reduce(monoid, streams | inner_streams, inner_body)
+                    return monoid.reduce(streams | inner_streams, inner_body)
         return fwd()
 
 
@@ -52,12 +52,12 @@ class ReduceSplit(ObjectInterpretation):
     allows for individual terms to be further optimized.
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         match body:
-            case Term(monoid.add, _):
+            case Term(monoid.kernel, _):
                 add_terms = parse_with_op(body, monoid.add)
-                new_terms = (ops.reduce(monoid, streams, t) for t in add_terms)
+                new_terms = (monoid.reduce(streams, t) for t in add_terms)
                 return functools.reduce(monoid, new_terms, monoid.zero)
         return fwd()
 
@@ -73,7 +73,7 @@ class ReduceDistributeTerm(ObjectInterpretation):
      which is relevant for lifting).
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         mul, terms = parse_terms(body, monoid)
         if len(terms) < 2 or len(streams) < 2:
@@ -96,9 +96,9 @@ class ReduceDistributeTerm(ObjectInterpretation):
                     t for t, b in zip(terms, t_free_fvs, strict=False) if not b
                 ]
                 inner_body = functools.reduce(mul, inner_terms)
-                inner_reduce = ops.reduce(monoid, unused_streams, inner_body)
+                inner_reduce = monoid.reduce(unused_streams, inner_body)
                 outer_term = functools.reduce(mul, outer_terms)
-                return ops.reduce(monoid, used_streams, mul(outer_term, inner_reduce))
+                return monoid.reduce(used_streams, mul(outer_term, inner_reduce))
 
         return fwd()
 
@@ -114,7 +114,7 @@ class ReducePropagateUnusedStreams(ObjectInterpretation):
     streams are never eliminated.
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         # A stream is redundant if it doesn't appear in the body or in another stream.
         stream_fvs = functools.reduce(set.union, map(fvsof, streams.values()), set())
@@ -122,7 +122,7 @@ class ReducePropagateUnusedStreams(ObjectInterpretation):
         redundant_streams = {k: v for k, v in streams.items() if k not in fvs}
 
         constant = 1
-        if not monoid.is_idempotent():
+        if not isinstance(monoid, IdempotentMonoid):
             sized_redundant_streams = {}
 
             for k, v in redundant_streams.items():
@@ -140,7 +140,7 @@ class ReducePropagateUnusedStreams(ObjectInterpretation):
             return fwd()
 
         used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
-        new_reduce = ops.reduce(monoid, used_streams, body)
+        new_reduce = monoid.reduce(used_streams, body)
         return monoid.scalar_mul()(new_reduce, jnp.array(constant))
 
 
@@ -151,7 +151,7 @@ class ReduceReorderReduction(ObjectInterpretation):
     or contraction ordering (in tensor networks).
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         mul, terms = parse_terms(body, monoid)
 
@@ -179,7 +179,7 @@ class ReduceReorderReduction(ObjectInterpretation):
 
             new_body = functools.reduce(mul, reduce_terms)
             current_streams = {v: streams[v] for v in eliminated_vars}
-            new_reduce = ops.reduce(monoid, current_streams, new_body)
+            new_reduce = monoid.reduce(current_streams, new_body)
             terms.append(new_reduce)
 
         assert len(terms) == 1
@@ -246,7 +246,7 @@ class ReduceFactorization(ObjectInterpretation):
                 var_sets.merge(factor_vars[0], v)
         return var_sets.subsets()
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         stream_vars = fvsof(streams.keys())
         # We assume all streams are used
@@ -264,6 +264,6 @@ class ReduceFactorization(ObjectInterpretation):
             partition_streams = {k: v for k, v in streams.items() if k in partition}
             partition_terms = (t for t in terms if len(fvsof(t) & partition) > 0)
             partition_term = functools.reduce(mul, partition_terms)
-            new_reduces.append(ops.reduce(monoid, partition_streams, partition_term))
+            new_reduces.append(monoid.reduce(partition_streams, partition_term))
 
         return functools.reduce(mul, new_reduces)

@@ -42,19 +42,29 @@ def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
         topo.done(*node_group)
 
 
+@dataclass
 class Monoid[T]:
-    kernel: Operation[[T, ...], T]
+    kernel: Operation[[T, T], T]
+    add: Callable[[T, ...], T]
     identity: T
-
-    def __init__(self, kernel: Callable[[T, ...], T], identity: T):
-        self.kernel = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-        self.identity = identity
 
     @classmethod
     def from_binary(cls, kernel: Callable[[T, T], T], identity: T):
-        return cls(lambda *a: functools.reduce(kernel, a), identity)
+        kernel_op = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+
+        def _add(*args: T) -> T:
+            return functools.reduce(kernel_op, args)
+
+        return cls(kernel_op, add, identity)
+
+    @classmethod
+    def from_nary(cls, kernel: Callable[[T, ...], T], identity: T):
+        kernel_op = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+        return cls(kernel_op, kernel_op, identity)
 
     @functools.singledispatchmethod
     def __call__(self, a: Body[T], *bs: Body[T]) -> Body[T]:
@@ -183,24 +193,6 @@ class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
 
 
 @defop
-def add[T](a: T, b: T) -> T:
-    if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
-        raise NotHandled
-    return a + b  # type: ignore
-
-
-@defop
-def mul[T](a: T, b: T) -> T:
-    if (isinstance(a, numbers.Number) and a == 0) or (
-        isinstance(b, numbers.Number) and b == 0
-    ):
-        return 0  # type: ignore
-    if any(isinstance(x, Term) and not is_eager_array(x) for x in (a, b)):
-        raise NotHandled
-    return a * b  # type: ignore
-
-
-@defop
 def min[T](a: T, b: T) -> T:
     if any(isinstance(x, Term) for x in (a, b)):
         raise NotHandled
@@ -267,10 +259,11 @@ def jax_cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-SumMonoid = CommutativeMonoid.from_binary(operator.add, 0.0)
-ProdMonoid = CommutativeMonoid.from_binary(operator.mul, 1.0)
-MinMonoid = Semilattice(min, float("inf"))
-MaxMonoid = Semilattice(max, float("-inf"))
+SumMonoid = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0.0)
+ProdMonoid = CommutativeMonoid.from_binary(_NumberTerm.__mul__, 1.0)
+
+MinMonoid = Semilattice.from_nary(min, float("inf"))
+MaxMonoid = Semilattice.from_nary(max, float("-inf"))
 LogSumMonoid: Monoid[float] = Monoid.from_binary(logaddexp, float("-inf"))
 ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid.from_binary(
     arg_min, (float("inf"), None)
@@ -282,13 +275,13 @@ JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid.from_binary(
     jax_cartesian_prod, jnp.array([])
 )
 
-StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid(
+StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid.from_binary(
     lambda a, b: (v for v in itertools.chain(a, b)),
     (),
 )
 
 # note: empty tuple is not a valid identity
-StreamProdMonoid: Monoid[collections.abc.Generator] = Monoid(
+StreamProdMonoid: Monoid[collections.abc.Generator] = Monoid.from_binary(
     lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
     (),
 )
@@ -305,4 +298,6 @@ class _ExtensibleBinaryRelation[S, T]:
         return (s, t) in self.tuples
 
 
-distributes_with = _ExtensibleBinaryRelation({})
+distributes_with = _ExtensibleReflexiveBinaryRelation(
+    {(SumMonoid, _NumberTerm.__mul__), (ProdMonoid, _NumberTerm.__pow__)}
+)

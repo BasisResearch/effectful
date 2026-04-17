@@ -396,7 +396,7 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
 class PytreeMapReduce(ObjectInterpretation):
     """Map a reduce over a pytree body."""
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         if not (monoid in (MinMonoid, MaxMonoid, SumMonoid)):
             return fwd()

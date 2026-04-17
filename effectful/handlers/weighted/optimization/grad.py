@@ -7,8 +7,8 @@ from effectful.ops.weighted.monoid import (
     ArgMinMonoid,
     MaxMonoid,
     MinMonoid,
+    Monoid,
 )
-from effectful.ops.weighted.reduce import reduce
 
 
 class FlipOptimizationReduce(ObjectInterpretation):
@@ -18,7 +18,7 @@ class FlipOptimizationReduce(ObjectInterpretation):
     by negating the objective function, allowing reuse of minimization algorithms.
     """
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body, **kwargs):
         # Only handle MaxMonoid and ArgMaxMonoid
         if monoid not in (MaxMonoid, ArgMaxMonoid):
@@ -59,7 +59,7 @@ class FlipOptimizationReduce(ObjectInterpretation):
         new_body = D(*new_args)
 
         # Solve as a minimization problem
-        result = reduce(target_monoid, streams, new_body, **kwargs)
+        result = target_monoid.reduce(streams, new_body, **kwargs)
 
         # For MaxMonoid, negate the result back
         if monoid is MaxMonoid:
