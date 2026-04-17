@@ -11,8 +11,7 @@ from effectful.handlers.weighted.optimization.distribution import (
     interpretation as simplify_normals,
 )
 from effectful.ops.semantics import evaluate, handler
-from effectful.ops.syntax import deffn
-from effectful.ops.weighted.reduce import defop
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.weighted.sugar import ArgMin
 
 

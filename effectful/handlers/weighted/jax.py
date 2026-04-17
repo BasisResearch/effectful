@@ -8,37 +8,21 @@ import optax
 from numpyro.distributions import Distribution
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.semantics import (
-    coproduct,
-    evaluate,
-    fvsof,
-    fwd,
-    handler,
-    typeof,
-)
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
     deffn,
     defop,
     implements,
-    syntactic_eq,
 )
 from effectful.ops.types import Expr, Operation, Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.jax import key, reals
-from effectful.ops.weighted.monoid import (
-    ArgMaxMonoid,
-    ArgMinMonoid,
-    LogSumMonoid,
-    MaxMonoid,
-    MinMonoid,
-    ProdMonoid,
-    SumMonoid,
-)
-from effectful.ops.weighted.reduce import order_streams, reduce
+from effectful.ops.weighted.monoid import ArgMax, ArgMin, Monoid, order_streams
 
 logger = logging.getLogger(__name__)
 
@@ -135,24 +119,24 @@ class DenseTensorReduce(ObjectInterpretation):
         return tensor
 
     def _get_reductor(self, semi_ring):
-        if semi_ring == SumMonoid:
+        if semi_ring == Sum:
             return self._sum_reductor
-        if semi_ring == ProdMonoid:
+        if semi_ring == Product:
             return self._prod_reductor
-        elif semi_ring == MinMonoid:
+        elif semi_ring == Min:
             return self._min_reductor
-        elif semi_ring == MaxMonoid:
+        elif semi_ring == Max:
             return self._max_reductor
-        elif semi_ring == ArgMinMonoid:
+        elif semi_ring == ArgMin:
             return self._argmin_reductor
-        elif semi_ring == ArgMaxMonoid:
+        elif semi_ring == ArgMax:
             return self._argmax_reductor
-        elif semi_ring == LogSumMonoid:
+        elif semi_ring == LogSumExp:
             return self._logaddexp_reductor
         else:
             return None
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     @timed(name="DenseTensorReduce")
     def reduce(self, monoid, streams, body):
         reductor = self._get_reductor(monoid)
@@ -172,7 +156,7 @@ class DenseTensorReduce(ObjectInterpretation):
 
         indices, value = body_indices[0]
 
-        if monoid in (ArgMinMonoid, ArgMaxMonoid):
+        if monoid in (ArgMin, ArgMax):
             if not isinstance(value, tuple) and len(value) == 2:
                 raise ValueError("Expected a tuple of (value, arg) for argmin/argmax")
             value, arg = value
@@ -192,6 +176,8 @@ class DenseTensorReduce(ObjectInterpretation):
         # add indices for streams that don't appear in body
         fvars = set(streams.keys()) - fvsof(value)
         unused_streams = tuple(v() for k, v in indexed_streams.items() if k in fvars)
+
+        value = jnp.asarray(value) if not isinstance(value, Term | jax.Array) else value
         value = jax_getitem(value[*[None] * len(unused_streams)], unused_streams)
 
         with handler(indexed_streams):
@@ -208,7 +194,7 @@ class DenseTensorReduce(ObjectInterpretation):
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
 
-        if monoid in (ArgMinMonoid, ArgMaxMonoid):
+        if monoid in (ArgMin, ArgMax):
             result_3, min_indices = result_3
 
             with handler(
@@ -250,11 +236,11 @@ class GradientOptimizationReduce(ObjectInterpretation):
         self.init = {} if init is None else init
         self.progress = progress
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         # TODO: handle mixed discrete/continuous optimization
         if not (
-            monoid in (MinMonoid, ArgMinMonoid)
+            monoid in (Min, ArgMin)
             and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
@@ -272,7 +258,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
             # TODO: handle indexed outputs
             return fwd()
 
-        if monoid is ArgMinMonoid:
+        if monoid is ArgMin:
             if not isinstance(value, tuple) or len(value) != 2:
                 raise ValueError("Expected a tuple of (value, arg) for ArgMinMonoid")
             value, arg = value
@@ -330,7 +316,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
 
         final_loss = loss(key, *param_values)
 
-        if monoid is MinMonoid:
+        if monoid is Min:
             return final_loss
 
         with handler(
@@ -347,13 +333,13 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
     def __init__(self, samples=1):
         self.samples = samples
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         if not (
-            monoid is SumMonoid
+            monoid is Sum
             and all(issubclass(typeof(v), Distribution) for v in streams.values())
         ):
-            reason = "monoid" if monoid is not SumMonoid else "streams"
+            reason = "monoid" if monoid is not Sum else "streams"
             logger.debug(
                 f"Skipping likelihood weighting (reason {reason}): reduce({monoid}, {streams}, {body}"
             )
@@ -389,15 +375,15 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
         with handler(sample_streams):
             body = evaluate(body)
 
-        return reduce(SumMonoid, index_streams, body)
+        return Sum.reduce(index_streams, body)
 
 
 class PytreeMapReduce(ObjectInterpretation):
     """Map a reduce over a pytree body."""
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
-        if not (monoid in (MinMonoid, MaxMonoid, SumMonoid)):
+        if not (monoid in (Min, Max, Sum)):
             return fwd()
 
         body_indices = _parse_body(body)
@@ -419,8 +405,7 @@ class PytreeMapReduce(ObjectInterpretation):
         flat_bodies = [jax.tree.flatten(t)[0] for (_, t) in body_indices]
 
         flat_body = [
-            reduce(
-                monoid,
+            monoid.reduce(
                 streams,
                 D(*[(k, v) for (k, _), v in zip(body_indices, vs, strict=True)]),
             )
@@ -430,97 +415,4 @@ class PytreeMapReduce(ObjectInterpretation):
         return jax.tree.unflatten(structure, flat_body)
 
 
-def scan(f, init, *args, **kwargs):
-    sizes = sizesof(init)
-    pos_init = bind_dims(init, *sizes.keys())
-
-    def wrapped_f(pos_carry, x):
-        carry = unbind_dims(pos_carry, *sizes.keys())
-        next_carry, next_result = f(carry, x)
-        return bind_dims(next_carry, *sizes.keys()), bind_dims(
-            next_result, *sizes.keys()
-        )
-
-    pos_carry, pos_result = jax.lax.scan(wrapped_f, pos_init, *args, **kwargs)
-    carry = unbind_dims(pos_carry, *sizes.keys())
-    result = jax_getitem(pos_result, [slice(None)] + [i() for i in sizes])
-    return carry, result
-
-
-class ScanReduce(ObjectInterpretation):
-    def __init__(self, min_length=3):
-        self.min_length = min_length
-
-    @implements(reduce)
-    def reduce(self, monoid, streams, body):
-        # FIXME: This handler does not deal with the case where some but not all
-        # stream variables form a chain
-
-        if len(streams) < self.min_length:
-            return fwd()
-
-        # check that the streams form a chain
-        stream_vars = set(streams.keys())
-        head_var, head_val = None, None
-        for k, v in streams.items():
-            if not (fvsof(v) & stream_vars):
-                head_var, head_val = (k, v)
-                break
-
-        if head_var is None or head_val is None or not is_eager_array(head_val):
-            return fwd()
-
-        # FIXME: This algorithm is O(n^2) in the number of stream variables
-        unlinked_vars = set(stream_vars)
-        unlinked_vars.remove(head_var)
-        chain = [(head_var, head_val)]
-        while unlinked_vars:
-            for var in unlinked_vars:
-                free_vars = fvsof(streams[var]) & stream_vars
-                if free_vars == {chain[-1][0]}:
-                    chain.append((var, streams[var]))
-                    unlinked_vars.remove(var)
-                    break
-            else:
-                # Failed to find the next link in the chain
-                return fwd()
-
-        if len(chain) < 3:
-            return fwd()
-
-        dummy_var = defop(jax.Array)
-        chain_body = None
-        for i in range(1, len(chain)):
-            with handler({chain[i - 1][0]: dummy_var}):
-                if chain_body is None:
-                    chain_body = evaluate(chain[i][1])
-                else:
-                    if not syntactic_eq(chain_body, evaluate(chain[i][1])):
-                        return fwd()
-
-        dummy_idx = defop(jax.Array, name="k")
-
-        def func(carry, _idx):
-            with handler({dummy_var: lambda: carry}):
-                result = evaluate(chain_body)
-                result = bind_dims(result, dummy_idx)
-                result = jnp.squeeze(result, 0)
-                result = unbind_dims(result, dummy_idx)
-            return (result, result)
-
-        head_val_indexed = jax_getitem(head_val, [dummy_idx()])
-        _, scanned_array = scan(func, head_val_indexed, jnp.arange(len(chain) - 1))
-
-        new_streams = {head_var: head_val}
-        for i, (var, _) in enumerate(chain[1:]):
-            new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
-
-        return reduce(monoid, new_streams, body)
-
-
-interpretation = functools.reduce(
-    coproduct,  # type: ignore
-    [
-        DenseTensorReduce(),
-    ],
-)
+interpretation = DenseTensorReduce()

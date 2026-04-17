@@ -19,7 +19,6 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.reduce import BaselineReduce
 from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 PLATED_EINSUM_EXAMPLES = [
@@ -31,22 +30,14 @@ PLATED_EINSUM_EXAMPLES = [
     ("ai,abi,bci,cdi->", "i"),
 ]
 
-base_intp = BaselineReduce()
+base_intp = {}
 lift_intp = functools.reduce(
     coproduct,  # type: ignore
-    (
-        BaselineReduce(),
-        ReduceDistributeCartesianProduct(),
-        ReduceDistributeTerm(),
-    ),
+    (ReduceDistributeCartesianProduct(), ReduceDistributeTerm()),
 )
 ground_intp = functools.reduce(
     coproduct,  # type: ignore
-    (
-        BaselineReduce(),
-        ReduceReorderReduction(),
-        SplitCartesianProductReduce(),
-    ),
+    (ReduceReorderReduction(), SplitCartesianProductReduce()),
 )
 
 

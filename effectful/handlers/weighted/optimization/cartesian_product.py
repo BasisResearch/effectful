@@ -15,7 +15,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Term
-from effectful.ops.weighted.monoid import JaxCartesianProdMonoid
+from effectful.ops.weighted.monoid import JaxCartesianProdMonoid, Monoid
 from effectful.ops.weighted.reduce import order_streams
 
 
@@ -60,9 +60,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
     """
 
     @implements(ops.reduce)
-    def reduce(self, monoid1, streams, body):
+    def reduce(self, monoid1: Monoid, streams, body):
         match body:
             case Term(ops.reduce, (monoid2, streams1, body2)):
+                assert isinstance(monoid2, Monoid)
+
                 if not monoid1.distributes_with(monoid2):
                     return fwd()
                 if not all(is_eager_array(v) for v in streams1.values()):

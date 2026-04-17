@@ -6,13 +6,13 @@ from scipy.special import roots_hermite
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.jax.monoid import Sum
 from effectful.handlers.weighted.optimization.utils import parse_terms
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
 from effectful.ops.weighted.jax import reals
-from effectful.ops.weighted.monoid import SumMonoid
-from effectful.ops.weighted.reduce import reduce
+from effectful.ops.weighted.monoid import Monoid
 
 
 class GaussHermiteQuadrature(ObjectInterpretation):
@@ -43,9 +43,9 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         self.points = jnp.array(points) * jnp.sqrt(2)
         self.weights = jnp.array(weights) / jnp.sqrt(jax.numpy.pi)
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
-        if monoid != SumMonoid:
+        if monoid != Sum:
             return fwd()
 
         # Try to parse the body into a gaussian distribution
@@ -80,4 +80,4 @@ class GaussHermiteQuadrature(ObjectInterpretation):
         }
         remaining_body = functools.reduce(mul, remaining_terms)
         new_body = jax_getitem(self.weights, (fresh_index(),)) * remaining_body
-        return reduce(monoid, streams | new_streams, new_body)
+        return monoid.reduce(streams | new_streams, new_body)

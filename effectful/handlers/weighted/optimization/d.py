@@ -5,7 +5,7 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Term
 from effectful.ops.weighted.distribution import D
-from effectful.ops.weighted.reduce import reduce
+from effectful.ops.weighted.monoid import Monoid
 
 
 def eliminate_d(monoid, streams, indices, body):
@@ -16,14 +16,14 @@ def eliminate_d(monoid, streams, indices, body):
         ix: jax_getitem(streams[ix], (fresh_ix(), None))
         for ix, fresh_ix in zip(indices, fresh_indices, strict=False)
     }
-    new_reduce = reduce(monoid, streams | fresh_streams, body)
+    new_reduce = monoid.reduce(streams | fresh_streams, body)
     return bind_dims(new_reduce, *fresh_indices)
 
 
 class ReduceEliminateDterm(ObjectInterpretation):
     """Eliminates D-terms from a reduce."""
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         # Check if the body is a D term.
         if not (isinstance(body, Term) and body.op is D):
