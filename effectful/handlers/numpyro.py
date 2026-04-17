@@ -16,6 +16,16 @@ from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.semantics import evaluate, typeof
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.weighted.jax import reals
+
+
+@defop
+def kl_divergence(p: dist.Distribution, q: dist.Distribution) -> jax.Array:
+    # KL(p, q) = ∫ p(x) (log p(x) - log q(x)) dx
+    x: Operation[[], jax.Array] = defop(jax.Array, name="x")  # type: ignore
+    log_p = p.log_prob(x())
+    log_q = q.log_prob(x())
+    return jax.monoid.Sum.reduce({x: reals()}, jnp.exp(log_p) * (log_p - log_q))
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -74,7 +84,6 @@ def _unbind_distribution(
             raise ValueError("All tensors must have the same batch shape.")
 
     def _to_named(a):
-        nonlocal batch_shape
         # FIXME: Some distributions take scalar arguments that are never
         # batched. Ignore these. We should be able to raise an error in some
         # cases that we see a scalar tensor, and a smarter version of this code

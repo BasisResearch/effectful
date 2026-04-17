@@ -11,8 +11,6 @@ Forms 2–4 require a promoted monoid (promote(SumMonoid)) because the
 standard monoid add only operates on scalar values.
 """
 
-from collections.abc import Generator
-
 from effectful.ops.syntax import defop
 from effectful.ops.weighted.sugar import Sum
 

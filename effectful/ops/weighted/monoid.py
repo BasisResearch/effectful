@@ -2,19 +2,13 @@ import collections.abc
 import functools
 import itertools
 import numbers
-import operator
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any
 
-import jax
-import jax.tree as tree
-
-import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax._handlers import is_eager_array
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Scoped, deffn, defop
+from effectful.ops.syntax import Scoped, _NumberTerm, deffn
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -57,7 +51,7 @@ class Monoid[T]:
         def _add(*args: T) -> T:
             return functools.reduce(kernel_op, args)
 
-        return cls(kernel_op, add, identity)
+        return cls(kernel_op, _add, identity)
 
     @classmethod
     def from_nary(cls, kernel: Callable[[T, ...], T], identity: T):
@@ -77,7 +71,7 @@ class Monoid[T]:
                 a(*args, **kwargs), *[b(*args, **kwargs) for b in bs]
             )
             return result
-        return self.kernel(a, *bs)
+        return self.add(a, *bs)
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
@@ -184,106 +178,60 @@ class CommutativeMonoid[T](Monoid[T]): ...
 class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
 
 
-# Semiring laws:
-# (R, +) is a commutative monoid with identity 0
-# (R, *) is a monoid with identity 1
-# a * 0 = 0 = 0 * a
-# a * (b + c) = (a * b) + (a * c)
-# (b + c) * a = (b * a) + (c * a)
-
-
-@defop
-def min[T](a: T, b: T) -> T:
-    if any(isinstance(x, Term) for x in (a, b)):
+@Operation.define
+def _min[T](*args: T) -> T:
+    if any(isinstance(x, Term) for x in args):
         raise NotHandled
-    return a if a < b else b  # type: ignore
+    return min(*args)
 
 
-@defop
-def max[T](a: T, b: T) -> T:
-    if any(isinstance(x, Term) for x in (a, b)):
+Min = Semilattice.from_nary(_min, float("inf"))
+
+
+@Operation.define
+def _max[T](*args: T) -> T:
+    if any(isinstance(x, Term) for x in args):
         raise NotHandled
-    return a if a > b else b  # type: ignore
+    return max(*args)
 
 
-@defop
-def arg_min(a, b):
-    if (
-        isinstance(a, tuple)
-        and isinstance(a[0], numbers.Number)
-        and a[0] == float("inf")
-    ):
-        return b
-    if (
-        isinstance(b, tuple)
-        and isinstance(b[0], numbers.Number)
-        and b[0] == float("inf")
-    ):
-        return a
-    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+Max = Semilattice.from_nary(_max, float("-inf"))
+
+
+@Operation.define
+def _arg_min[T](
+    a: tuple[numbers.Number, T | None], b: tuple[numbers.Number, T | None]
+) -> tuple[numbers.Number, T | None]:
+    if isinstance(a[0], Term) or isinstance(b[0], Term):
         raise NotHandled
-    return a if a[0] < b[0] else b
+    return b if b[0] < a[0] else a
 
 
-@defop
-def arg_max(a, b):
-    if (
-        isinstance(a, tuple)
-        and isinstance(a[0], numbers.Number)
-        and a[0] == float("-inf")
-    ):
-        return b
-    if (
-        isinstance(b, tuple)
-        and isinstance(b[0], numbers.Number)
-        and b[0] == float("-inf")
-    ):
-        return a
-    if any(isinstance(x, Term) for x in tree.flatten((a, b))):
+ArgMin: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_min, (float("inf"), None))
+
+
+@Operation.define
+def _arg_max[T](
+    a: tuple[numbers.Number, T | None], b: tuple[numbers.Number, T | None]
+) -> tuple[numbers.Number, T | None]:
+    if isinstance(a[0], Term) or isinstance(b[0], Term):
         raise NotHandled
-    return a if a[0] > b[0] else b
+    return b if b[0] > a[0] else a
 
 
-@defop
-def logaddexp(a, b):
-    return jnp.logaddexp(a, b)
+ArgMax: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_max, (float("-inf"), None))
+
+Sum = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0.0)
+Prod = CommutativeMonoid.from_binary(_NumberTerm.__mul__, 1.0)
 
 
-@defop
-def jax_cartesian_prod(x, y):
-    if x.ndim == 1:
-        x = x[:, None]
-    if y.ndim == 1:
-        y = y[:, None]
-    x, y = jnp.repeat(x, y.shape[0], axis=0), jnp.tile(y, (x.shape[0], 1))
-    return jnp.hstack([x, y])
-
-
-SumMonoid = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0.0)
-ProdMonoid = CommutativeMonoid.from_binary(_NumberTerm.__mul__, 1.0)
-
-MinMonoid = Semilattice.from_nary(min, float("inf"))
-MaxMonoid = Semilattice.from_nary(max, float("-inf"))
-LogSumMonoid: Monoid[float] = Monoid.from_binary(logaddexp, float("-inf"))
-ArgMinMonoid: Monoid[tuple[float, Any]] = Monoid.from_binary(
-    arg_min, (float("inf"), None)
-)
-ArgMaxMonoid: Monoid[tuple[float, Any]] = Monoid.from_binary(
-    arg_max, (float("-inf"), None)
-)
-JaxCartesianProdMonoid: Monoid[jax.Array] = Monoid.from_binary(
-    jax_cartesian_prod, jnp.array([])
-)
-
-StreamChainMonoid: Monoid[collections.abc.Generator] = Monoid.from_binary(
-    lambda a, b: (v for v in itertools.chain(a, b)),
-    (),
+StreamChain: Monoid[collections.abc.Generator] = Monoid.from_binary(
+    lambda a, b: (v for v in itertools.chain(a, b)), ()
 )
 
 # note: empty tuple is not a valid identity
-StreamProdMonoid: Monoid[collections.abc.Generator] = Monoid.from_binary(
-    lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)),
-    (),
+StreamProd: Monoid[collections.abc.Generator] = Monoid.from_binary(
+    lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)), ()
 )
 
 
@@ -298,6 +246,12 @@ class _ExtensibleBinaryRelation[S, T]:
         return (s, t) in self.tuples
 
 
-distributes_with = _ExtensibleReflexiveBinaryRelation(
-    {(SumMonoid, _NumberTerm.__mul__), (ProdMonoid, _NumberTerm.__pow__)}
+distributes_over = _ExtensibleBinaryRelation(
+    {
+        (max, min),
+        (min, max),
+        (_NumberTerm.__add__, min),
+        (_NumberTerm.__add__, max),
+        (_NumberTerm.__mul__, _NumberTerm.__add__),
+    }
 )

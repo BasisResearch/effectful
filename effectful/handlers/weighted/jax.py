@@ -10,15 +10,9 @@ from numpyro.distributions import Distribution
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.semantics import (
-    coproduct,
-    evaluate,
-    fvsof,
-    fwd,
-    handler,
-    typeof,
-)
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
     deffn,
@@ -29,17 +23,7 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, Operation, Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.jax import key, reals
-from effectful.ops.weighted.monoid import (
-    ArgMaxMonoid,
-    ArgMinMonoid,
-    LogSumMonoid,
-    MaxMonoid,
-    MinMonoid,
-    Monoid,
-    ProdMonoid,
-    SumMonoid,
-    order_streams,
-)
+from effectful.ops.weighted.monoid import ArgMax, ArgMin, Monoid, order_streams
 
 logger = logging.getLogger(__name__)
 
@@ -136,19 +120,19 @@ class DenseTensorReduce(ObjectInterpretation):
         return tensor
 
     def _get_reductor(self, semi_ring):
-        if semi_ring == SumMonoid:
+        if semi_ring == Sum:
             return self._sum_reductor
-        if semi_ring == ProdMonoid:
+        if semi_ring == Product:
             return self._prod_reductor
-        elif semi_ring == MinMonoid:
+        elif semi_ring == Min:
             return self._min_reductor
-        elif semi_ring == MaxMonoid:
+        elif semi_ring == Max:
             return self._max_reductor
-        elif semi_ring == ArgMinMonoid:
+        elif semi_ring == ArgMin:
             return self._argmin_reductor
-        elif semi_ring == ArgMaxMonoid:
+        elif semi_ring == ArgMax:
             return self._argmax_reductor
-        elif semi_ring == LogSumMonoid:
+        elif semi_ring == LogSumExp:
             return self._logaddexp_reductor
         else:
             return None
@@ -173,7 +157,7 @@ class DenseTensorReduce(ObjectInterpretation):
 
         indices, value = body_indices[0]
 
-        if monoid in (ArgMinMonoid, ArgMaxMonoid):
+        if monoid in (ArgMin, ArgMax):
             if not isinstance(value, tuple) and len(value) == 2:
                 raise ValueError("Expected a tuple of (value, arg) for argmin/argmax")
             value, arg = value
@@ -209,7 +193,7 @@ class DenseTensorReduce(ObjectInterpretation):
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
 
-        if monoid in (ArgMinMonoid, ArgMaxMonoid):
+        if monoid in (ArgMin, ArgMax):
             result_3, min_indices = result_3
 
             with handler(
@@ -255,7 +239,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
     def reduce(self, monoid, streams, body):
         # TODO: handle mixed discrete/continuous optimization
         if not (
-            monoid in (MinMonoid, ArgMinMonoid)
+            monoid in (Min, ArgMin)
             and all(isinstance(v, Term) and v.op is reals for v in streams.values())
         ):
             return fwd()
@@ -273,7 +257,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
             # TODO: handle indexed outputs
             return fwd()
 
-        if monoid is ArgMinMonoid:
+        if monoid is ArgMin:
             if not isinstance(value, tuple) or len(value) != 2:
                 raise ValueError("Expected a tuple of (value, arg) for ArgMinMonoid")
             value, arg = value
@@ -331,7 +315,7 @@ class GradientOptimizationReduce(ObjectInterpretation):
 
         final_loss = loss(key, *param_values)
 
-        if monoid is MinMonoid:
+        if monoid is Min:
             return final_loss
 
         with handler(
@@ -351,10 +335,10 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
     @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         if not (
-            monoid is SumMonoid
+            monoid is Sum
             and all(issubclass(typeof(v), Distribution) for v in streams.values())
         ):
-            reason = "monoid" if monoid is not SumMonoid else "streams"
+            reason = "monoid" if monoid is not Sum else "streams"
             logger.debug(
                 f"Skipping likelihood weighting (reason {reason}): reduce({monoid}, {streams}, {body}"
             )
@@ -390,7 +374,7 @@ class LikelihoodWeightingReduce(ObjectInterpretation):
         with handler(sample_streams):
             body = evaluate(body)
 
-        return reduce(SumMonoid, index_streams, body)
+        return Sum.reduce(index_streams, body)
 
 
 class PytreeMapReduce(ObjectInterpretation):
@@ -398,7 +382,7 @@ class PytreeMapReduce(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
-        if not (monoid in (MinMonoid, MaxMonoid, SumMonoid)):
+        if not (monoid in (Min, Max, Sum)):
             return fwd()
 
         body_indices = _parse_body(body)
@@ -518,9 +502,4 @@ class ScanReduce(ObjectInterpretation):
         return monoid.reduce(new_streams, body)
 
 
-interpretation = functools.reduce(
-    coproduct,  # type: ignore
-    [
-        DenseTensorReduce(),
-    ],
-)
+interpretation = DenseTensorReduce()

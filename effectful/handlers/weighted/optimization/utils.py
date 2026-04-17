@@ -2,7 +2,7 @@ from collections.abc import Collection, Mapping
 from typing import Any
 
 from effectful.ops.types import Term
-from effectful.ops.weighted.monoid import Monoid
+from effectful.ops.weighted.monoid import Monoid, distributes_over
 
 """
 Parsing utilities for the program transforms.
@@ -13,7 +13,7 @@ def parse_terms(value: Term, monoid: Monoid) -> tuple[Any, list[Term]]:
     if not isinstance(value, Term):
         return None, [value]
     mul = value.op
-    if not distributes_with(monoid, mul):
+    if not distributes_over(mul, monoid.kernel):
         return None, [value]
 
     return mul, parse_with_op(value, mul)

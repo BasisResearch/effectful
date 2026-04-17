@@ -2,10 +2,10 @@ import functools
 
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.numpyro import kl_divergence
 from effectful.ops.semantics import coproduct, fwd
 from effectful.ops.syntax import ObjectInterpretation, implements, syntactic_eq
 from effectful.ops.types import Term
-from effectful.ops.weighted.distribution import kl_divergence
 
 """
 Elementary transforms and simplification on Normal
