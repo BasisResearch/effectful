@@ -8,7 +8,7 @@ import optax
 from numpyro.distributions import Distribution
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
 from effectful.handlers.jax.scipy.special import logsumexp
@@ -18,7 +18,6 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     implements,
-    syntactic_eq,
 )
 from effectful.ops.types import Expr, Operation, Term
 from effectful.ops.weighted.distribution import D
@@ -177,6 +176,8 @@ class DenseTensorReduce(ObjectInterpretation):
         # add indices for streams that don't appear in body
         fvars = set(streams.keys()) - fvsof(value)
         unused_streams = tuple(v() for k, v in indexed_streams.items() if k in fvars)
+
+        value = jnp.asarray(value) if not isinstance(value, Term | jax.Array) else value
         value = jax_getitem(value[*[None] * len(unused_streams)], unused_streams)
 
         with handler(indexed_streams):
@@ -412,94 +413,6 @@ class PytreeMapReduce(ObjectInterpretation):
         ]
 
         return jax.tree.unflatten(structure, flat_body)
-
-
-def scan(f, init, *args, **kwargs):
-    sizes = sizesof(init)
-    pos_init = bind_dims(init, *sizes.keys())
-
-    def wrapped_f(pos_carry, x):
-        carry = unbind_dims(pos_carry, *sizes.keys())
-        next_carry, next_result = f(carry, x)
-        return bind_dims(next_carry, *sizes.keys()), bind_dims(
-            next_result, *sizes.keys()
-        )
-
-    pos_carry, pos_result = jax.lax.scan(wrapped_f, pos_init, *args, **kwargs)
-    carry = unbind_dims(pos_carry, *sizes.keys())
-    result = jax_getitem(pos_result, [slice(None)] + [i() for i in sizes])
-    return carry, result
-
-
-class ScanReduce(ObjectInterpretation):
-    def __init__(self, min_length=3):
-        self.min_length = min_length
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, streams, body):
-        # FIXME: This handler does not deal with the case where some but not all
-        # stream variables form a chain
-
-        if len(streams) < self.min_length:
-            return fwd()
-
-        # check that the streams form a chain
-        stream_vars = set(streams.keys())
-        head_var, head_val = None, None
-        for k, v in streams.items():
-            if not (fvsof(v) & stream_vars):
-                head_var, head_val = (k, v)
-                break
-
-        if head_var is None or head_val is None or not is_eager_array(head_val):
-            return fwd()
-
-        # FIXME: This algorithm is O(n^2) in the number of stream variables
-        unlinked_vars = set(stream_vars)
-        unlinked_vars.remove(head_var)
-        chain = [(head_var, head_val)]
-        while unlinked_vars:
-            for var in unlinked_vars:
-                free_vars = fvsof(streams[var]) & stream_vars
-                if free_vars == {chain[-1][0]}:
-                    chain.append((var, streams[var]))
-                    unlinked_vars.remove(var)
-                    break
-            else:
-                # Failed to find the next link in the chain
-                return fwd()
-
-        if len(chain) < 3:
-            return fwd()
-
-        dummy_var = defop(jax.Array)
-        chain_body = None
-        for i in range(1, len(chain)):
-            with handler({chain[i - 1][0]: dummy_var}):
-                if chain_body is None:
-                    chain_body = evaluate(chain[i][1])
-                else:
-                    if not syntactic_eq(chain_body, evaluate(chain[i][1])):
-                        return fwd()
-
-        dummy_idx = defop(jax.Array, name="k")
-
-        def func(carry, _idx):
-            with handler({dummy_var: lambda: carry}):
-                result = evaluate(chain_body)
-                result = bind_dims(result, dummy_idx)
-                result = jnp.squeeze(result, 0)
-                result = unbind_dims(result, dummy_idx)
-            return (result, result)
-
-        head_val_indexed = jax_getitem(head_val, [dummy_idx()])
-        _, scanned_array = scan(func, head_val_indexed, jnp.arange(len(chain) - 1))
-
-        new_streams = {head_var: head_val}
-        for i, (var, _) in enumerate(chain[1:]):
-            new_streams[var] = bind_dims(scanned_array[i], dummy_idx)
-
-        return monoid.reduce(new_streams, body)
 
 
 interpretation = DenseTensorReduce()
