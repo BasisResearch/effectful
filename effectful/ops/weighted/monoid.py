@@ -8,7 +8,7 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Scoped, _NumberTerm, deffn
+from effectful.ops.syntax import Scoped, _IteratorTerm, _NumberTerm, deffn
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -129,13 +129,21 @@ class Monoid[T]:
     def reduce[A, B, U: Body](
         self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
     ) -> Annotated[U, Scoped[B]]:
-        if any(isinstance(x, Term) for x in streams.values()):
-            raise NotHandled
 
         def generator(loop_order):
             if loop_order:
                 stream_key = loop_order[0]
                 stream_values = evaluate(streams[stream_key])
+                stream_values_iter = iter(stream_values)
+
+                # If we try to iterate and get a term instead of a real
+                # iterator, give up
+                if (
+                    isinstance(stream_values_iter, Term)
+                    and stream_values_iter.op is _IteratorTerm.__iter__
+                ):
+                    raise NotHandled
+
                 for val in stream_values:
                     intp = {stream_key: deffn(val)}
                     with handler(intp):
@@ -161,7 +169,7 @@ class Monoid[T]:
                 return evaluate(body, intp=intp)
 
         loop_order = list(order_streams(streams))
-        values = (body_value(body, intp) for intp in generator(loop_order))
+        values = [body_value(body, intp) for intp in generator(loop_order)]
         result = self(*values)  # type: ignore
         return result
 
