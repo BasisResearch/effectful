@@ -21,6 +21,7 @@ from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.monoid import ArgMin
 from tests.utils import DEFAULT_TEST_REDUCE_INTP
 
 parameterize_intp = pytest.mark.parametrize(
@@ -193,13 +194,13 @@ def test_arg_min_reduces(intp) -> None:
 
     with handler(intp):
         # Basic ArgMin test
-        f2_arg = ArgMin({x: jnp.arange(-10, 10)}, (x() ** 2, x()))
+        f2_arg = ArgMin.reduce({x: jnp.arange(-10, 10)}, (x() ** 2, x()))
         assert isinstance(f2_arg[0], jax.Array)
         assert isinstance(f2_arg[1], jax.Array)
         assert f2_arg == (jnp.array(0), jnp.array(0))
 
         # Edge case: tied minimum values
-        f_tied = ArgMin({x: jnp.arange(-3, 4)}, (abs(x()), x()))
+        f_tied = ArgMin.reduce({x: jnp.arange(-3, 4)}, (abs(x()), x()))
         assert isinstance(f_tied[0], jax.Array)
         assert isinstance(f_tied[1], jax.Array)
         assert f_tied == (jnp.array(0), jnp.array(0))
@@ -229,7 +230,7 @@ def test_multi_variable_arg_min_reduces(intp) -> None:
 
     with handler(intp):
         # Test ArgMin with multiple variables
-        f2_arg_pair = ArgMin(
+        f2_arg_pair = ArgMin.reduce(
             {x: jnp.arange(1, 5), y: jnp.arange(4, 8)}, (x() + y(), (x(), y()))
         )
         assert isinstance(f2_arg_pair[0], jax.Array)
@@ -249,7 +250,7 @@ def test_complex_arg_min_reduces(intp) -> None:
 
     with handler(intp):
         # Complex expression with three variables
-        f_complex = ArgMin(
+        f_complex = ArgMin.reduce(
             {x: jnp.arange(-3, 4), y: jnp.arange(-3, 4), z: jnp.arange(-3, 4)},
             ((x() - 1) ** 2 + (y() + 2) ** 2 + (z() - 3) ** 2, (x(), y(), z())),
         )
@@ -582,7 +583,9 @@ def test_gradient_optimization_init() -> None:
         assert result < 0.1
 
         # Test with ArgMinAlg to get both value and argmin
-        result_arg = ArgMin({x: reals(), y: reals()}, (quadratic(x(), y()), (x(), y())))
+        result_arg = ArgMin.reduce(
+            {x: reals(), y: reals()}, (quadratic(x(), y()), (x(), y()))
+        )
         # Value should be close to minimum
         assert all(isinstance(result, jax.Array) for a in result_arg)
         assert result_arg[0] < 0.1

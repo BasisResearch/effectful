@@ -23,7 +23,7 @@ class ReduceNoStreams(ObjectInterpretation):
     @implements(Monoid.reduce)
     def reduce(self, monoid, streams, _):
         if len(streams) == 0:
-            return monoid.zero
+            return monoid.identity
         return fwd()
 
 
@@ -56,9 +56,9 @@ class ReduceSplit(ObjectInterpretation):
     def reduce(self, monoid, streams, body):
         match body:
             case Term(monoid.kernel, _):
-                add_terms = parse_with_op(body, monoid.add)
-                new_terms = (monoid.reduce(streams, t) for t in add_terms)
-                return functools.reduce(monoid, new_terms, monoid.zero)
+                add_terms = parse_with_op(body, monoid.kernel)
+                new_terms = [monoid.reduce(streams, t) for t in add_terms]
+                return monoid(*new_terms)
         return fwd()
 
 
@@ -141,7 +141,7 @@ class ReducePropagateUnusedStreams(ObjectInterpretation):
 
         used_streams = {k: v for k, v in streams.items() if k not in redundant_streams}
         new_reduce = monoid.reduce(used_streams, body)
-        return monoid.scalar_mul()(new_reduce, jnp.array(constant))
+        return monoid.scalar_mul(new_reduce, jnp.array(constant))
 
 
 class ReduceReorderReduction(ObjectInterpretation):

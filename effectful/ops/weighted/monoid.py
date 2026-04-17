@@ -75,23 +75,24 @@ class Monoid[T]:
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
-    @__call__.register
+    @__call__.register(Sequence)
     def _(self, a: Sequence, *bs: Sequence):
         result = [self(*vs) for vs in zip(*(a, *bs), strict=True)]
         return type(a)(result)
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
-    @__call__.register
+    @__call__.register(Mapping)
     def _(self, a: Mapping, *bs: Mapping):
         all_values = collections.defaultdict(list)
         for d in (a, *bs):
+            assert isinstance(d, Mapping)
             for k, v in d.items():
                 all_values[k].append(v)
         result = {k: self(*vs) for (k, vs) in all_values.items()}
         return result
 
-    @__call__.register
+    @__call__.register(Interpretation)
     def _(self, a: Interpretation, *bs: Interpretation):
         a_keys = a.keys()
         for b in bs:
@@ -175,6 +176,29 @@ class IdempotentMonoid[T](Monoid[T]):
 class CommutativeMonoid[T](Monoid[T]): ...
 
 
+@dataclass
+class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
+    zero: T
+
+    @classmethod
+    def from_binary(cls, kernel: Callable[[T, T], T], identity: T, zero: T):
+        kernel_op = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+
+        def _add(*args: T) -> T:
+            return functools.reduce(kernel_op, args)
+
+        return cls(kernel_op, _add, identity, zero)
+
+    @classmethod
+    def from_nary(cls, kernel: Callable[[T, ...], T], identity: T, zero: T):
+        kernel_op = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+        return cls(kernel_op, kernel_op, identity, zero)
+
+
 class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
 
 
@@ -221,8 +245,8 @@ def _arg_max[T](
 
 ArgMax: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_max, (float("-inf"), None))
 
-Sum = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0.0)
-Prod = CommutativeMonoid.from_binary(_NumberTerm.__mul__, 1.0)
+Sum = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0)
+Product = CommutativeMonoidWithZero.from_binary(_NumberTerm.__mul__, 1, 0)
 
 
 StreamChain: Monoid[collections.abc.Generator] = Monoid.from_binary(
