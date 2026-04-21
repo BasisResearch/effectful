@@ -231,7 +231,7 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
     dataclass_op = _get_dataclass_constr_op(type(expr))
     subst = {
         field.name: evaluate(getattr(expr, field.name))
-        for field in dataclasses.fields(expr)
+        for field in dataclasses.fields(expr)  # type: ignore[arg-type]
     }
     return typing.cast(T, dataclass_op(**subst))
 
