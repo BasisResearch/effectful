@@ -20,6 +20,7 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
+from effectful.ops.types import Interpretation
 
 PLATED_EINSUM_EXAMPLES = [
     ("i->", "i"),
@@ -30,7 +31,7 @@ PLATED_EINSUM_EXAMPLES = [
     ("ai,abi,bci,cdi->", "i"),
 ]
 
-base_intp = {}
+base_intp: Interpretation = {}
 lift_intp = functools.reduce(
     coproduct,  # type: ignore
     (ReduceDistributeCartesianProduct(), ReduceDistributeTerm()),

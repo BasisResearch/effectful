@@ -15,7 +15,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Term
-from effectful.ops.weighted.monoid import Monoid, order_streams
+from effectful.ops.weighted.monoid import Monoid, distributes_over, order_streams
 
 
 # TODO: Remove me
@@ -64,9 +64,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         match body:
             case Term(Monoid.reduce, (monoid2, streams1, body2)):
                 assert isinstance(monoid2, Monoid)
+                assert isinstance(streams1, dict)
 
-                if not monoid1.distributes_with(monoid2):
+                if not distributes_over(monoid1.kernel, monoid2.kernel):
                     return fwd()
+
                 if not all(is_eager_array(v) for v in streams1.values()):
                     return fwd()
 
@@ -75,6 +77,8 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                         case Term(Monoid.reduce, (_monoid, _streams1, body1)) if (
                             _monoid is CartesianProd
                         ):
+                            assert isinstance(_streams1, dict)
+
                             stream_unifier = unify_streams(streams1, _streams1)
                             if stream_unifier is None:
                                 continue
@@ -87,7 +91,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                             size = functools.reduce(
                                 lambda x, y: x * y, map(len, streams1.values())
                             )
-                            cartesian_stream = {k: jnp.tile(body1, (size, 1)).T}
+                            cartesian_stream = {k: jnp.tile(body1, (size, 1)).T}  # type: ignore[arg-type]
                             streams2 = {k2: v2 for k2, v2 in streams.items() if k != k2}
 
                             inner_sum_reduce = Monoid.reduce(

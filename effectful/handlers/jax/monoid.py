@@ -16,7 +16,7 @@ class _SumMonoid(CommutativeMonoid[jax.Array]):
         return v * x
 
 
-Sum = _SumMonoid.from_binary(jnp.add, 0)
+Sum = _SumMonoid.from_binary(jnp.add, jnp.asarray(0))
 
 
 class _ProductMonoid(CommutativeMonoidWithZero[jax.Array]):
@@ -24,11 +24,13 @@ class _ProductMonoid(CommutativeMonoidWithZero[jax.Array]):
         return v**x
 
 
-Product = _ProductMonoid.from_binary(jnp.multiply, 1, 0)
+Product = _ProductMonoid.from_binary_with_zero(
+    jnp.multiply, jnp.asarray(1), jnp.asarray(0)
+)
 
-Min = Semilattice.from_binary(jnp.minimum, float("-inf"))
-Max = Semilattice.from_binary(jnp.maximum, float("inf"))
-LogSumExp = CommutativeMonoid.from_binary(jnp.logaddexp, float("-inf"))
+Min = Semilattice.from_binary(jnp.minimum, jnp.asarray(float("-inf")))
+Max = Semilattice.from_binary(jnp.maximum, jnp.asarray(float("inf")))
+LogSumExp = CommutativeMonoid.from_binary(jnp.logaddexp, jnp.asarray(float("-inf")))
 
 
 @Operation.define

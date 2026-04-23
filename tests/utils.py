@@ -11,9 +11,10 @@ from effectful.handlers.weighted.optimization import (
     ReduceSplit,
 )
 from effectful.ops.semantics import coproduct
+from effectful.ops.types import Interpretation
 
 JAX_INTP = DenseTensorReduce()
-BASELINE_INTP = {}
+BASELINE_INTP: Interpretation = {}
 
 REORDER_TRANS = ReduceReorderReduction()
 SPLIT_TRANS = ReduceSplit()

@@ -13,6 +13,7 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
+from effectful.handlers.jax.monoid import Sum
 from effectful.ops.semantics import evaluate, typeof
 from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
@@ -22,10 +23,10 @@ from effectful.ops.weighted.jax import reals
 @defop
 def kl_divergence(p: dist.Distribution, q: dist.Distribution) -> jax.Array:
     # KL(p, q) = ∫ p(x) (log p(x) - log q(x)) dx
-    x: Operation[[], jax.Array] = defop(jax.Array, name="x")  # type: ignore
+    x = defop(jax.Array, name="x")
     log_p = p.log_prob(x())
     log_q = q.log_prob(x())
-    return jax.monoid.Sum.reduce({x: reals()}, jnp.exp(log_p) * (log_p - log_q))
+    return Sum.reduce({x: reals()}, jnp.exp(log_p) * (log_p - log_q))
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
