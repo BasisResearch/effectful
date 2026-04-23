@@ -9,6 +9,7 @@ from effectful.handlers.weighted.optimization import FlipOptimizationReduce
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.monoid import ArgMax
 
 
 def test_flip_optimization_max() -> None:

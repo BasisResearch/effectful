@@ -7,7 +7,7 @@ from effectful.handlers.jax import numpy as jnp
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Term
-from effectful.ops.weighted.reduce import reduce
+from effectful.ops.weighted.monoid import Monoid
 
 
 def _intp_add(lhs, rhs):
@@ -53,7 +53,7 @@ def array_constraint(space, k, array):
 class ReduceLinearIndexer(ObjectInterpretation):
     """Tabular indexer for affine dependent streams."""
 
-    @implements(reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         stream_vars = set(streams.keys())
         linear_streams = {
@@ -110,4 +110,4 @@ class ReduceLinearIndexer(ObjectInterpretation):
             op: deffn(jax_getitem(op_range[op], (new_index(),))) for op in op_names
         }
         new_body = evaluate(body, intp=linear_intp)
-        return reduce(monoid, new_streams, new_body)
+        return monoid.reduce(new_streams, new_body)

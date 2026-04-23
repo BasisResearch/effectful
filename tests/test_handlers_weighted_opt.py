@@ -3,11 +3,13 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import unbind_dims
+from effectful.handlers.jax.monoid import Min, Sum
 from effectful.handlers.weighted.jax import GradientOptimizationReduce
 from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 from effectful.ops.weighted.jax import reals
+from effectful.ops.weighted.monoid import ArgMin
 
 
 def assert_no_base_case(*args, **kwargs):

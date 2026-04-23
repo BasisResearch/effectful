@@ -3,9 +3,9 @@ import itertools
 
 import jax
 
-import effectful.ops.weighted.reduce as ops
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax.monoid import CartesianProd
 from effectful.ops.semantics import evaluate, fvsof, fwd
 from effectful.ops.syntax import (
     ObjectInterpretation,
@@ -15,10 +15,10 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Term
-from effectful.ops.weighted.monoid import JaxCartesianProdMonoid, Monoid
-from effectful.ops.weighted.reduce import order_streams
+from effectful.ops.weighted.monoid import Monoid, order_streams
 
 
+# TODO: Remove me
 def unify_streams(streams1: dict, streams2: dict) -> dict | None:
     """
     Returns the interpretation that unifies
@@ -59,10 +59,10 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
     variable elimination." AISTATS. 2013.
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid1: Monoid, streams, body):
         match body:
-            case Term(ops.reduce, (monoid2, streams1, body2)):
+            case Term(Monoid.reduce, (monoid2, streams1, body2)):
                 assert isinstance(monoid2, Monoid)
 
                 if not monoid1.distributes_with(monoid2):
@@ -72,8 +72,8 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
                 for k, v in streams.items():
                     match v:
-                        case Term(ops.reduce, (_monoid, _streams1, body1)) if (
-                            _monoid is JaxCartesianProdMonoid
+                        case Term(Monoid.reduce, (_monoid, _streams1, body1)) if (
+                            _monoid is CartesianProd
                         ):
                             stream_unifier = unify_streams(streams1, _streams1)
                             if stream_unifier is None:
@@ -90,13 +90,13 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                             cartesian_stream = {k: jnp.tile(body1, (size, 1)).T}
                             streams2 = {k2: v2 for k2, v2 in streams.items() if k != k2}
 
-                            inner_sum_reduce = ops.reduce(
+                            inner_sum_reduce = Monoid.reduce(
                                 monoid1, cartesian_stream, body2
                             )
-                            reduce = ops.reduce(monoid2, streams1, inner_sum_reduce)
+                            reduce = Monoid.reduce(monoid2, streams1, inner_sum_reduce)
                             if len(streams2) == 0:
                                 return reduce
-                            return ops.reduce(monoid1, streams2, reduce)
+                            return Monoid.reduce(monoid1, streams2, reduce)
         return fwd()
 
 
@@ -114,12 +114,12 @@ class SplitCartesianProductReduce(ObjectInterpretation):
     product stream, the individual streams can be rearranged.
     """
 
-    @implements(ops.reduce)
+    @implements(Monoid.reduce)
     def reduce(self, monoid, streams, body):
         for stream_var, stream_arr in streams.items():
             match stream_arr:
-                case Term(ops.reduce, (_monoid, cart_streams, plate_body)) if (
-                    _monoid is JaxCartesianProdMonoid
+                case Term(Monoid.reduce, (_monoid, cart_streams, plate_body)) if (
+                    _monoid is CartesianProd
                 ):
                     if not all(
                         isinstance(stream, jax.Array)
@@ -136,6 +136,6 @@ class SplitCartesianProductReduce(ObjectInterpretation):
                         for v, vals in zip(fresh_vars, cart_vals, strict=False)
                     }
                     old_streams = {k: v for k, v in streams.items() if k != stream_var}
-                    return ops.reduce(monoid, new_streams | old_streams, body)
+                    return Monoid.reduce(monoid, new_streams | old_streams, body)
 
         return fwd()

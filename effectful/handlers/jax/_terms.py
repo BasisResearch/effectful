@@ -224,7 +224,7 @@ class _ArrayTerm(Term[jax.Array]):
         return _IndexUpdateHelper(self)
 
     def __iter__(self):
-        raise TypeError("A free array is not iterable.")
+        raise NotHandled
 
     def all(self, axis=None, keepdims=False, *, where=None):
         return jnp.all(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)

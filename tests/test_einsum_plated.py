@@ -7,8 +7,9 @@ import pyro.ops.contract
 import pytest
 from torch import tensor
 
+import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem
-from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
 from effectful.handlers.weighted.optimization import (
     ReduceDistributeTerm,
     ReduceReorderReduction,
@@ -19,7 +20,6 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 PLATED_EINSUM_EXAMPLES = [
     ("i->", "i"),
@@ -113,7 +113,7 @@ def einsum_plated(
         term = jax_getitem(operand_op(), var_ixs + plate_ixs)
         plate_streams = {plate_ops[p]: jnp.arange(plate_sizes[p]) for p in plts}
         if len(plate_streams):
-            term = Prod(plate_streams, term)
+            term = Product.reduce(plate_streams, term)
         input_terms.append(term)
 
     var_streams = {}
@@ -122,11 +122,11 @@ def einsum_plated(
             plate_ops[p]: jnp.arange(plate_sizes[p]) for p in plate_func[s]
         }
         var_stream = jnp.arange(var_sizes[s])
-        var_streams[symbol_ops[s]] = CartesianProd(plate_streams, var_stream)
+        var_streams[symbol_ops[s]] = CartesianProd.reduce(plate_streams, var_stream)
 
     expr = functools.reduce(operator.mul, input_terms)
     if len(var_streams):
-        expr = Sum(var_streams, expr)
+        expr = Sum.reduce(var_streams, expr)
 
     operand_intp = {
         operand_ops[name]: deffn(arr)

@@ -8,7 +8,7 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Scoped, _IteratorTerm, _NumberTerm, deffn
+from effectful.ops.syntax import Scoped, _IteratorTerm, _NumberTerm
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -84,28 +84,33 @@ class Monoid[T]:
     # similar.
     @__call__.register(Mapping)
     def _(self, a: Mapping, *bs: Mapping):
-        all_values = collections.defaultdict(list)
-        for d in (a, *bs):
-            assert isinstance(d, Mapping)
-            for k, v in d.items():
-                all_values[k].append(v)
-        result = {k: self(*vs) for (k, vs) in all_values.items()}
-        return result
+        # singledispatch doesn't recognize Interpretation as a more specific type than Mapping
+        if isinstance(a, Interpretation):
+            for b in bs:
+                if not isinstance(b, Interpretation):
+                    raise TypeError(f"Expected interpretation but got {b}")
 
-    @__call__.register(Interpretation)
-    def _(self, a: Interpretation, *bs: Interpretation):
-        a_keys = a.keys()
-        for b in bs:
-            b_keys = b.keys()
-            if not a_keys == b_keys:
-                raise ValueError(
-                    f"Expected interpretation of {a_keys} but got {b_keys}"
-                )
+            a_keys = a.keys()
+            for b in bs:
+                b_keys = b.keys()
+                if not a_keys == b_keys:
+                    raise ValueError(
+                        f"Expected interpretation of {a_keys} but got {b_keys}"
+                    )
 
-        result = {
-            k: self(handler(a)(a[k]), *[handler(b)(b[k]) for b in bs]) for k in a_keys
-        }
-        return result
+            result = {
+                k: self(handler(a)(a[k]), *[handler(b)(b[k]) for b in bs])
+                for k in a_keys
+            }
+            return result
+        else:
+            all_values = collections.defaultdict(list)
+            for d in (a, *bs):
+                assert isinstance(d, Mapping)
+                for k, v in d.items():
+                    all_values[k].append(v)
+            result = {k: self(*vs) for (k, vs) in all_values.items()}
+            return result
 
     def scalar_mul(self, v: T, x: int) -> T:
         """
@@ -145,7 +150,7 @@ class Monoid[T]:
                     raise NotHandled
 
                 for val in stream_values:
-                    intp = {stream_key: deffn(val)}
+                    intp = {stream_key: functools.partial(lambda v: v, val)}
                     with handler(intp):
                         for intp2 in generator(loop_order[1:]):
                             yield coproduct(intp, intp2)
@@ -166,7 +171,7 @@ class Monoid[T]:
             elif isinstance(body, Generator):
                 return (body_value(v, intp) for v in body)
             else:
-                return evaluate(body, intp=intp)
+                return handler(intp)(evaluate)(body)
 
         loop_order = list(order_streams(streams))
         values = [body_value(body, intp) for intp in generator(loop_order)]
@@ -255,8 +260,21 @@ def _arg_max[T](
 
 ArgMax: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_max, (float("-inf"), None))
 
-Sum = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0)
-Product = CommutativeMonoidWithZero.from_binary(_NumberTerm.__mul__, 1, 0)
+
+class _SumMonoid(CommutativeMonoid[numbers.Number]):
+    def scalar_mul(self, v: numbers.Number, x: int) -> numbers.Number:
+        return v * x
+
+
+Sum = _SumMonoid.from_binary(_NumberTerm.__add__, 0)
+
+
+class _ProductMonoid(CommutativeMonoidWithZero[numbers.Number]):
+    def scalar_mul(self, v: numbers.Number, x: int) -> numbers.Number:
+        return v**x
+
+
+Product = _ProductMonoid.from_binary(_NumberTerm.__mul__, 1, 0)
 
 
 @dataclass
