@@ -259,16 +259,6 @@ Sum = CommutativeMonoid.from_binary(_NumberTerm.__add__, 0)
 Product = CommutativeMonoidWithZero.from_binary(_NumberTerm.__mul__, 1, 0)
 
 
-StreamChain: Monoid[collections.abc.Generator] = Monoid.from_binary(
-    lambda a, b: (v for v in itertools.chain(a, b)), ()
-)
-
-# note: empty tuple is not a valid identity
-StreamProd: Monoid[collections.abc.Generator] = Monoid.from_binary(
-    lambda a, b: ((v1, v2) for (v1, v2) in itertools.product(a, b)), ()
-)
-
-
 @dataclass
 class _ExtensibleBinaryRelation[S, T]:
     tuples: set[tuple[S, T]]

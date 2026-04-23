@@ -13,7 +13,7 @@ from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.weighted.jax import reals
-from effectful.ops.weighted.monoid import StreamChain
+from effectful.ops.weighted.monoid import ArgMin
 
 # Expectation(
 #     f(x)
@@ -55,15 +55,6 @@ def test_sampling() -> None:
     with handler({loc: deffn(0.0), scale: deffn(1.0)}):
         s3 = evaluate(s3_term)
     assert isinstance(s3, jax.Array)
-
-
-def test_stream_chain_reduce() -> None:
-    x = defop(tuple, name="x")
-    y = defop(tuple, name="y")
-    streams = {x: (1, 2, 3), y: (4, 5)}
-    expr = StreamChain.reduce(streams, [(x(), y())])
-    expected = [(x, y) for x in (1, 2, 3) for y in (4, 5)]
-    assert list(expr) == expected
 
 
 @pytest.mark.skip(reason="argmin refactor")
