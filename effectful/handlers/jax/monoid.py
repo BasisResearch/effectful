@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Callable
 
 import jax
 
@@ -38,59 +38,19 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
     return [((), body)]
 
 
-class _JaxReduce:
-    def _sum_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.sum(tensor, axis=0)
-        return tensor
+class _JaxReduceMixin:
+    reduce_array: Callable[[jax.Array, int | tuple[int]], jax.Array]
 
-    def _prod_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.prod(tensor, axis=0)
-        return tensor
-
-    def _min_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.min(tensor, axis=0)
-        return tensor
-
-    def _max_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.max(tensor, axis=0)
-        return tensor
-
-    def _logaddexp_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = logsumexp(tensor, axis=0)
-        return tensor
-
-    def _get_reductor(self, semi_ring):
-        if semi_ring == Sum:
-            return self._sum_reductor
-        if semi_ring == Product:
-            return self._prod_reductor
-        elif semi_ring == Min:
-            return self._min_reductor
-        elif semi_ring == Max:
-            return self._max_reductor
-        elif semi_ring == ArgMin:
-            return self._argmin_reductor
-        elif semi_ring == ArgMax:
-            return self._argmax_reductor
-        elif semi_ring == LogSumExp:
-            return self._logaddexp_reductor
-        else:
-            return None
+    def __init__(self, *args, **kwargs):
+        self.reduce_array = kwargs.pop("reduce_array")
+        super().__init__(*args, **kwargs)
 
     @Operation.define
     def reduce[A, B, U: Body](
         self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
     ) -> Annotated[U, Scoped[B]]:
-        reductor = self._get_reductor(self)
-        if not (
-            reductor and all(issubclass(typeof(s), jax.Array) for s in streams.values())
-        ):
-            return fwd()
+        if not (all(issubclass(typeof(s), jax.Array) for s in streams.values())):
+            return super().reduce(streams, body)
 
         # raises an exception if there are cyclic dependencies
         order_streams(streams)
@@ -106,7 +66,8 @@ class _JaxReduce:
         # Check that the output is indexed in a subset of the input indices, and
         # that there are no index transformations
         if not all(isinstance(i, Term) and i.op in streams for i in indices):
-            return fwd()
+            return super().reduce(streams, body)
+
         indices = [i.op for i in indices]
 
         old_to_fresh = {k: defop(k, name=f"fresh_{k}") for k in streams}
@@ -125,12 +86,14 @@ class _JaxReduce:
             result_1 = evaluate(value)
 
         if not is_eager_array(result_1):
-            return fwd()
+            r = super().reduce
+            breakpoint()
+            return super().reduce(streams, body)
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
-        reduction_indices = [old_to_fresh[i] for i in streams if i not in indices]
+        reduction_indices = tuple(old_to_fresh[i] for i in streams if i not in indices)
         result_2 = bind_dims(result_1, *reduction_indices)
-        result_3 = reductor(result_2, len(reduction_indices))
+        result_3 = self.reduce_array(result_2, tuple(range(len(reduction_indices))))
 
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
@@ -138,19 +101,21 @@ class _JaxReduce:
         return result_4
 
 
-class _JaxMonoid(_JaxReduce, Monoid[jax.Array]):
+class _JaxMonoid(_JaxReduceMixin, Monoid[jax.Array]):
     pass
 
 
-class _JaxCommutativeMonoid(_JaxReduce, CommutativeMonoid[jax.Array]):
+class _JaxCommutativeMonoid(_JaxReduceMixin, CommutativeMonoid[jax.Array]):
     pass
 
 
-class _JaxCommutativeMonoidWithZero(_JaxReduce, CommutativeMonoidWithZero[jax.Array]):
+class _JaxCommutativeMonoidWithZero(
+    _JaxReduceMixin, CommutativeMonoidWithZero[jax.Array]
+):
     pass
 
 
-class _JaxSemilattice(_JaxReduce, Semilattice[jax.Array]):
+class _JaxSemilattice(_JaxReduceMixin, Semilattice[jax.Array]):
     pass
 
 
@@ -159,25 +124,11 @@ class _SumMonoid(_JaxCommutativeMonoid):
         return v * x
 
 
-Sum = _SumMonoid.from_binary(jnp.add, jnp.asarray(0))
-
-
 class _ProductMonoid(_JaxCommutativeMonoidWithZero):
     def scalar_mul(self, v: jax.Array, x: int) -> jax.Array:
         return v**x
 
 
-Product = _ProductMonoid.from_binary_with_zero(
-    jnp.multiply, jnp.asarray(1), jnp.asarray(0)
-)
-
-
-Min = _JaxSemilattice.from_binary(jnp.minimum, jnp.asarray(float("-inf")))
-Max = _JaxSemilattice.from_binary(jnp.maximum, jnp.asarray(float("inf")))
-LogSumExp = _JaxSemilattice.from_binary(jnp.logaddexp, jnp.asarray(float("-inf")))
-
-
-@Operation.define
 def cartesian_prod(x, y):
     if x.ndim == 1:
         x = x[:, None]
@@ -187,7 +138,30 @@ def cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-CartesianProd = _JaxMonoid.from_binary(cartesian_prod, jnp.array([]))
+def from_binary(cls, add, identity, reduce):
+    identity = identity if identity is not None else ufunc.identity
+    if identity is None:
+        raise ValueError("Expected an identity element.")
+
+    result = cls.from_binary(ufunc, identity)
+    result.reduce_array = ufunc.reduce
+    return result
+
+
+Sum = _SumMonoid(jnp.add, identity=jnp.asarray(0), reduce_array=jnp.sum)
+Product = _ProductMonoid(
+    jnp.multiply, identity=jnp.asarray(1), zero=jnp.asarray(0), reduce_array=jnp.prod
+)
+Min = _JaxSemilattice(
+    jnp.minimum, identity=jnp.asarray(float("-inf")), reduce_array=jnp.min
+)
+Max = _JaxSemilattice(
+    jnp.maximum, identity=jnp.asarray(float("inf")), reduce_array=jnp.max
+)
+LogSumExp = _JaxSemilattice(
+    jnp.logaddexp, identity=jnp.asarray(float("-inf")), reduce_array=logsumexp
+)
+CartesianProd = Monoid(cartesian_prod, identity=jnp.array([]))
 
 distributes_over.register(jnp.maximum, jnp.minimum)
 distributes_over.register(jnp.minimum, jnp.maximum)

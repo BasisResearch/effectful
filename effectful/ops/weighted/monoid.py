@@ -41,29 +41,27 @@ class Add[T](Protocol):
     def __call__(self, *args: T) -> T: ...
 
 
-@dataclass
 class Monoid[T]:
     kernel: Operation[[T, T], T]
     add: Add[T]
     identity: T
 
-    @classmethod
-    def from_binary(cls, kernel: Callable[[T, T], T], identity: T):
-        kernel_op = (
+    def __init__(
+        self, kernel: Callable[[T, T], T], identity: T, add: Add[T] | None = None
+    ):
+        self.identity = identity
+        self.kernel = (
             kernel if isinstance(kernel, Operation) else Operation.define(kernel)
         )
 
-        def _add(*args: T) -> T:
-            return functools.reduce(kernel_op, args)
+        if add is None:
 
-        return cls(kernel_op, _add, identity)
+            def _add(*args: T) -> T:
+                return functools.reduce(self.kernel, args)
 
-    @classmethod
-    def from_nary(cls, kernel: Add[T], identity: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-        return cls(kernel_op, kernel_op, identity)
+            self.add = _add
+        else:
+            self.add = add
 
     @functools.singledispatchmethod
     def __call__[S: Body[T]](self, a: S, *bs: S) -> S:
@@ -209,23 +207,15 @@ class CommutativeMonoid[T](Monoid[T]): ...
 class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
     zero: T
 
-    @classmethod
-    def from_binary_with_zero(cls, kernel: Callable[[T, T], T], identity: T, zero: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-
-        def _add(*args: T) -> T:
-            return functools.reduce(kernel_op, args)
-
-        return cls(kernel_op, _add, identity, zero)
-
-    @classmethod
-    def from_nary_with_zero(cls, kernel: Add[T], identity: T, zero: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-        return cls(kernel_op, kernel_op, identity, zero)
+    def __init__(
+        self,
+        kernel: Callable[[T, T], T],
+        identity: T,
+        zero: T,
+        add: Add[T] | None = None,
+    ):
+        super().__init__(kernel, identity, add=add)
+        self.zero = zero
 
 
 class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
@@ -243,7 +233,7 @@ def _min[T: SupportsRichComparison](*args: T) -> T:
     return min(*args)
 
 
-Min = Semilattice.from_nary(_min, float("inf"))
+Min = Semilattice(_min, identity=float("inf"), add=_min)
 
 
 @Operation.define
@@ -253,7 +243,7 @@ def _max[T: SupportsRichComparison](*args: T) -> T:
     return max(*args)
 
 
-Max = Semilattice.from_nary(_max, float("-inf"))
+Max = Semilattice(_max, identity=float("-inf"), add=_max)
 
 
 @Operation.define
@@ -265,7 +255,7 @@ def _arg_min[T](
     return b if b[0] < a[0] else a  # type: ignore
 
 
-ArgMin: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_min, (float("inf"), None))
+ArgMin: Monoid[tuple[float, Any]] = Monoid(_arg_min, identity=(float("inf"), None))
 
 
 @Operation.define
@@ -277,7 +267,7 @@ def _arg_max[T](
     return b if b[0] > a[0] else a  # type: ignore
 
 
-ArgMax: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_max, (float("-inf"), None))
+ArgMax: Monoid[tuple[float, Any]] = Monoid(_arg_max, identity=(float("-inf"), None))
 
 
 class _SumMonoid[N: int | float | complex](CommutativeMonoid[N]):
@@ -285,7 +275,7 @@ class _SumMonoid[N: int | float | complex](CommutativeMonoid[N]):
         return typing.cast(N, v * x)
 
 
-Sum = _SumMonoid.from_binary(_NumberTerm.__add__, 0)
+Sum = _SumMonoid(_NumberTerm.__add__, identity=0)
 
 
 class _ProductMonoid[N: int | float | complex](CommutativeMonoidWithZero[N]):
@@ -293,7 +283,7 @@ class _ProductMonoid[N: int | float | complex](CommutativeMonoidWithZero[N]):
         return typing.cast(N, v**x)
 
 
-Product = _ProductMonoid.from_binary_with_zero(_NumberTerm.__mul__, 1, 0)
+Product = _ProductMonoid(_NumberTerm.__mul__, identity=1, zero=0)
 
 
 @dataclass
