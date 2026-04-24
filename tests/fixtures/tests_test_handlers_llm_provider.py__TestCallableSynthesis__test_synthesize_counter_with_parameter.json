@@ -1,26 +1,17 @@
 {
-  "id": "chatcmpl-D3t094sc9fvHTU8EcpX5U3jmycshT",
-  "created": 1769818781,
-  "model": "gpt-4o-mini-2024-07-18",
+  "id": "chatcmpl-DSsTCx1kUcfdJ59lQjrTyvINIRWJm",
+  "created": 1775774938,
+  "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
-  "system_fingerprint": "fp_1590f93f9d",
+  "system_fingerprint": "fp_8706f899b3",
   "choices": [
     {
-      "finish_reason": "tool_calls",
+      "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": null,
+        "content": "{\"value\":{\"module_code\":\"def count_a_occurrences(input_string: str) -> int:\\n    return input_string.count('a')\\n\"}}",
         "role": "assistant",
-        "tool_calls": [
-          {
-            "function": {
-              "arguments": "{\"char\":\"a\"}",
-              "name": "create_function"
-            },
-            "id": "call_yHyAUG2fywMoQVlgDgfW5tni",
-            "type": "function"
-          }
-        ],
+        "tool_calls": null,
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
@@ -31,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 14,
-    "prompt_tokens": 591,
-    "total_tokens": 605,
+    "completion_tokens": 37,
+    "prompt_tokens": 981,
+    "total_tokens": 1018,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"
