@@ -10,11 +10,7 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Sum
-from effectful.handlers.weighted.jax import (
-    DenseTensorReduce,
-    GradientOptimizationReduce,
-    PytreeMapReduce,
-)
+from effectful.handlers.weighted.jax import GradientOptimizationReduce, PytreeMapReduce
 from effectful.ops.semantics import fvsof, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
@@ -486,7 +482,7 @@ def test_pytree_reduce(weighted_op, python_op, pytree_constr) -> None:
     """
     i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
 
-    with handler(DenseTensorReduce()), handler(PytreeMapReduce()):
+    with handler(PytreeMapReduce()):
         actual = weighted_op(
             {i: jnp.arange(5), j: jnp.arange(7)}, pytree_constr(i() + j(), i() * j())
         )
@@ -516,10 +512,7 @@ def test_gradient_optimization_init() -> None:
         return (x_val - 2) ** 2 + (y_val + 3) ** 2
 
     # Test with default initialization (zeros)
-    with (
-        handler(GradientOptimizationReduce(steps=100, learning_rate=0.1)),
-        handler(DenseTensorReduce()),
-    ):
+    with handler(GradientOptimizationReduce(steps=100, learning_rate=0.1)):
         result = Min.reduce({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be close to the minimum value (0)
         assert isinstance(result, jax.Array)
@@ -538,13 +531,8 @@ def test_gradient_optimization_init() -> None:
 
     # Test with custom initialization
     # Starting closer to the minimum should converge faster
-    with (
-        handler(
-            GradientOptimizationReduce(
-                steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5}
-            )
-        ),
-        handler(DenseTensorReduce()),
+    with handler(
+        GradientOptimizationReduce(steps=20, learning_rate=0.1, init={x: 1.5, y: -2.5})
     ):
         result = Min.reduce({x: reals(), y: reals()}, quadratic(x(), y()))
         # Should be very close to the minimum with fewer steps

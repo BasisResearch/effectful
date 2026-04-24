@@ -16,7 +16,6 @@ from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax.monoid import Sum
 from effectful.handlers.numpyro import kl_divergence
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import simplify_normals_intp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
@@ -95,7 +94,7 @@ def train(dataset_loader, model, optimizer, key):
         data = jnp.array(data[:, 0, :, :])
         key, subkey = random.split(key)
 
-        with handler(DenseTensorReduce()), handler(simplify_normals_intp):
+        with handler(simplify_normals_intp):
             loss, grads = elbo_loss_grad(model, data, subkey)
         total_loss += loss
         optimizer.update(grads)

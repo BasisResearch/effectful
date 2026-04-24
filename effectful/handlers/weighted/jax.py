@@ -1,6 +1,4 @@
-import functools
 import logging
-import operator
 
 import jax
 import jax.tree as tree
@@ -8,21 +6,15 @@ import optax
 from numpyro.distributions import Distribution
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem
-from effectful.handlers.jax._handlers import is_eager_array
-from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
+from effectful.handlers.jax import jax_getitem
+from effectful.handlers.jax.monoid import Max, Min, Sum
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import (
-    ObjectInterpretation,
-    deffn,
-    defop,
-    implements,
-)
-from effectful.ops.types import Expr, Operation, Term
+from effectful.ops.semantics import evaluate, fwd, handler, typeof
+from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.jax import key, reals
-from effectful.ops.weighted.monoid import ArgMax, ArgMin, Monoid, order_streams
+from effectful.ops.weighted.monoid import ArgMin, Monoid
 
 logger = logging.getLogger(__name__)
 
@@ -64,155 +56,6 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
             kvs.append((k, v))
         return kvs
     return [((), body)]
-
-
-class DenseTensorReduce(ObjectInterpretation):
-    def _sum_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.sum(tensor, axis=0)
-        return tensor
-
-    def _prod_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.prod(tensor, axis=0)
-        return tensor
-
-    def _min_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.min(tensor, axis=0)
-        return tensor
-
-    def _max_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = jnp.max(tensor, axis=0)
-        return tensor
-
-    def _argmin_reductor(self, tensor, dims):
-        # Flatten the leading len(reduction_indices) dimensions
-        reduction_shape = tensor.shape[:dims]
-        head_shape = (functools.reduce(operator.mul, reduction_shape, 1),)
-        tail_shape = tensor.shape[dims:]
-        flat_shape = head_shape + tail_shape
-
-        flat_result = jnp.reshape(tensor, flat_shape)
-        mins = jnp.min(flat_result, axis=0)
-        flat_indices = jnp.argmin(flat_result, axis=0)
-        min_indices = jnp.unravel_index(flat_indices, reduction_shape)
-        return mins, min_indices
-
-    def _argmax_reductor(self, tensor, dims):
-        # Flatten the leading len(reduction_indices) dimensions
-        reduction_shape = tensor.shape[:dims]
-        head_shape = (functools.reduce(operator.mul, reduction_shape, 1),)
-        tail_shape = tensor.shape[dims:]
-        flat_shape = head_shape + tail_shape
-
-        flat_result = jnp.reshape(tensor, flat_shape)
-        maxs = jnp.max(flat_result, axis=0)
-        flat_indices = jnp.argmax(flat_result, axis=0)
-        max_indices = jnp.unravel_index(flat_indices, reduction_shape)
-        return maxs, max_indices
-
-    def _logaddexp_reductor(self, tensor, dims):
-        for _ in range(dims):
-            tensor = logsumexp(tensor, axis=0)
-        return tensor
-
-    def _get_reductor(self, semi_ring):
-        if semi_ring == Sum:
-            return self._sum_reductor
-        if semi_ring == Product:
-            return self._prod_reductor
-        elif semi_ring == Min:
-            return self._min_reductor
-        elif semi_ring == Max:
-            return self._max_reductor
-        elif semi_ring == ArgMin:
-            return self._argmin_reductor
-        elif semi_ring == ArgMax:
-            return self._argmax_reductor
-        elif semi_ring == LogSumExp:
-            return self._logaddexp_reductor
-        else:
-            return None
-
-    @implements(Monoid.reduce)
-    @timed(name="DenseTensorReduce")
-    def reduce(self, monoid, streams, body):
-        reductor = self._get_reductor(monoid)
-        if not (
-            reductor and all(issubclass(typeof(s), jax.Array) for s in streams.values())
-        ):
-            return fwd()
-
-        # raises an exception if there are cyclic dependencies
-        order_streams(streams)
-
-        body_indices = _parse_body(body)
-
-        if len(body_indices) > 1:
-            # todo: handle multiple output indices
-            return fwd()
-
-        indices, value = body_indices[0]
-
-        if monoid in (ArgMin, ArgMax):
-            if not isinstance(value, tuple) and len(value) == 2:
-                raise ValueError("Expected a tuple of (value, arg) for argmin/argmax")
-            value, arg = value
-
-        # Check that the output is indexed in a subset of the input indices, and
-        # that there are no index transformations
-        if not all(isinstance(i, Term) and i.op in streams for i in indices):
-            return fwd()
-        indices = [i.op for i in indices]
-
-        old_to_fresh = {k: defop(k, name=f"fresh_{k}") for k in streams}
-        fresh_to_old = {v: k for (k, v) in old_to_fresh.items()}
-        indexed_streams = {
-            k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
-        }
-
-        # add indices for streams that don't appear in body
-        fvars = set(streams.keys()) - fvsof(value)
-        unused_streams = tuple(v() for k, v in indexed_streams.items() if k in fvars)
-
-        value = jnp.asarray(value) if not isinstance(value, Term | jax.Array) else value
-        value = jax_getitem(value[*[None] * len(unused_streams)], unused_streams)
-
-        with handler(indexed_streams):
-            result_1 = evaluate(value)
-
-        if not is_eager_array(result_1):
-            return fwd()
-
-        # bind and reduce indices from the streams that do not appear in the result indexing expression
-        reduction_indices = [old_to_fresh[i] for i in streams if i not in indices]
-        result_2 = bind_dims(result_1, *reduction_indices)
-        result_3 = reductor(result_2, len(reduction_indices))
-
-        # bind indices that appear in the indexing expression
-        fresh_indices = [old_to_fresh[i] for i in indices]
-
-        if monoid in (ArgMin, ArgMax):
-            result_3, min_indices = result_3
-
-            with handler(
-                {
-                    fresh_to_old[k]: deffn(jax_getitem(streams[fresh_to_old[k]], [v]))
-                    for k, v in zip(reduction_indices, min_indices, strict=False)
-                }
-            ):
-                args = evaluate(arg)
-
-            result_4 = (
-                bind_dims(result_3, *fresh_indices),
-                bind_dims(args, *fresh_indices),
-            )
-        else:
-            result_4 = bind_dims(result_3, *fresh_indices)
-
-        return result_4
 
 
 class GradientOptimizationReduce(ObjectInterpretation):
@@ -415,4 +258,4 @@ class PytreeMapReduce(ObjectInterpretation):
         return jax.tree.unflatten(structure, flat_body)
 
 
-interpretation = DenseTensorReduce()
+interpretation: Interpretation = {}

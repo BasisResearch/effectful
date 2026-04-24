@@ -1,6 +1,5 @@
 import functools
 
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import (
     ReduceDistributeTerm,
     ReduceEliminateDterm,
@@ -13,7 +12,7 @@ from effectful.handlers.weighted.optimization import (
 from effectful.ops.semantics import coproduct
 from effectful.ops.types import Interpretation
 
-JAX_INTP = DenseTensorReduce()
+JAX_INTP: Interpretation = {}
 BASELINE_INTP: Interpretation = {}
 
 REORDER_TRANS = ReduceReorderReduction()

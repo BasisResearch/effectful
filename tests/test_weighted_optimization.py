@@ -8,7 +8,6 @@ import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import CartesianProd, Max, Product, Sum
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import ReducePropagateUnusedStreams
 from effectful.handlers.weighted.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
@@ -30,17 +29,12 @@ from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop, syntactic_eq
 from tests.utils import REDUCE_TRANSFORMS
 
-parameterize_base_intp = mark.parametrize(
-    "base_intp", [param({}, id="baseline"), param(DenseTensorReduce(), id="jax")]
-)
-
 parameterize_transform_intp = mark.parametrize(
     "transform_intp", [param(x, id=type(x).__name__) for x in REDUCE_TRANSFORMS]
 )
 
 
 @pytest.mark.skip(reason="evaluation order")
-@parameterize_base_intp
 @parameterize_transform_intp
 def test_factorize(base_intp, transform_intp):
     dim_size = 4
@@ -71,7 +65,6 @@ def test_factorize(base_intp, transform_intp):
     assert allclose(result, expected)
 
 
-@parameterize_base_intp
 @parameterize_transform_intp
 def test_fuse_split(base_intp, transform_intp):
     dim_size = 4
@@ -213,11 +206,7 @@ def test_cartesian_product_distribution():
     expected = expr()
 
     # check if the result is the same
-    with (
-        handler(DenseTensorReduce()),
-        handler(ReduceDistributeCartesianProduct()),
-        handler(ReduceNoStreams()),
-    ):
+    with handler(ReduceDistributeCartesianProduct()), handler(ReduceNoStreams()):
         result = expr()
     assert allclose(result, expected)
 
@@ -273,7 +262,7 @@ def test_polyhedral():
         j: jnp.arange(i() + 10, 2 * i() + 10),
     }
 
-    with handler(DenseTensorReduce()), handler(ReduceLinearIndexer()):
+    with handler(ReduceLinearIndexer()):
         result = Sum.reduce(streams, i() / j())
 
     expected = Sum.reduce(streams, i() / j())

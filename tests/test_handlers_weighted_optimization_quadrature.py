@@ -4,7 +4,6 @@ from jax.numpy import allclose
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax.monoid import Sum
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization.quadrature import GaussHermiteQuadrature
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop
@@ -20,7 +19,7 @@ def test_quadrature() -> None:
     body = jnp.exp(d.log_prob(x())) * polynomial
     expr = Sum.reduce({x: reals()}, body)
     # 3 points are sufficient as polynomial is quadratic
-    with handler(DenseTensorReduce()), handler(GaussHermiteQuadrature(3)):
+    with handler(GaussHermiteQuadrature(3)):
         expr = evaluate(expr)
 
     expected = 2 * mu + mu**2 + sigma**2
@@ -43,7 +42,7 @@ def test_bivariate_quadrature() -> None:
     expr = Sum.reduce({x: reals(), y: reals()}, body)
 
     # 3 points are sufficient as polynomial is quadratic
-    with handler(DenseTensorReduce()), handler(GaussHermiteQuadrature(3)):
+    with handler(GaussHermiteQuadrature(3)):
         expr = evaluate(expr)
 
     expected = 2 * mu_x + mu_y**2 + sigma_y**2

@@ -7,7 +7,6 @@ from jax.numpy.linalg import norm
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax
 from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import ReduceDistributeTerm
 from effectful.handlers.weighted.optimization.cartesian_product import (
     SplitCartesianProductReduce,
@@ -92,6 +91,6 @@ if __name__ == "__main__":
     param_intp = create_hmm_params(*param_ops)
     # .. and perform inference by computing the reduce
     t1 = time.perf_counter()
-    with handler(param_intp), handler(DenseTensorReduce()):
+    with handler(param_intp):
         result = evaluate(model)
     print(result, f"(done in {time.perf_counter() - t1:.2f}s)")

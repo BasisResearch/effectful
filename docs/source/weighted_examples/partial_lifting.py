@@ -3,7 +3,6 @@ from jax import random
 
 from effectful.handlers.jax import numpy as jnp
 from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
-from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
     SplitCartesianProductReduce,
@@ -60,7 +59,7 @@ def main():
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f.op: deffn(F_arr)}
-    with handler(factor_intp), handler(DenseTensorReduce()):
+    with handler(factor_intp):
         contraction = evaluate(model)
     print("result:", contraction)
 
