@@ -44,7 +44,7 @@ numpyro = [
   "jax<0.10"
 ]
 llm = [
-  "litellm<1.82.7",
+  "litellm",
   "tenacity",
   "mypy",
   "autoflake",
