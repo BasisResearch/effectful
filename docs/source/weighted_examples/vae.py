@@ -14,12 +14,12 @@ from torchvision.datasets import MNIST
 from effectful.handlers import numpyro as dist
 from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.jax.monoid import Sum
+from effectful.handlers.numpyro import kl_divergence
 from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import simplify_normals_intp
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-from effectful.ops.weighted.distribution import kl_divergence
-from effectful.ops.weighted.sugar import Sum
 
 REPO_PATH = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(REPO_PATH, "data")
@@ -80,10 +80,10 @@ def elbo_loss(model, x, key, beta=2.0):
     batch_stream = {batch_dim: jnp.arange(x.shape[0])}
 
     log_prob_x = unbind_dims(p.log_prob(x), batch_dim, img_x_dim, img_y_dim)
-    reconstruction_loss = -Sum(image_streams, log_prob_x)
-    kl_loss = Sum(latent_stream, kl_divergence(q, model.prior()))
+    reconstruction_loss = -Sum.reduce(image_streams, log_prob_x)
+    kl_loss = Sum.reduce(latent_stream, kl_divergence(q, model.prior()))
     elbo = reconstruction_loss + beta * kl_loss
-    return Sum(batch_stream, elbo) / x.shape[0]
+    return Sum.reduce(batch_stream, elbo) / x.shape[0]
 
 
 elbo_loss_grad = nnx.jit(nnx.value_and_grad(elbo_loss))

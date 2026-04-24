@@ -4,6 +4,7 @@ from jax import random
 from torch import tensor
 
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
 from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import ReduceDistributeTerm
 from effectful.handlers.weighted.optimization.cartesian_product import (
@@ -12,7 +13,6 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 from effectful.handlers.weighted.optimization.reorder import ReduceNoStreams
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 """
 Example for a plated factor graph (taken from Example 3.1. in [1]).
@@ -55,7 +55,7 @@ def main():
     x_size = 2
     y_size = 3
     x_stream = {x: jnp.arange(x_size)}
-    y_stream = {y: CartesianProd(i_stream, jnp.arange(y_size))}
+    y_stream = {y: CartesianProd.reduce(i_stream, jnp.arange(y_size))}
 
     # define the factors
     f = defop(jax.Array, name="f")
@@ -72,8 +72,8 @@ def main():
         F = f()[x()]
         G = g()[y()[i()], i()]
         H = h()[x(), y()[i()], i(), j()]
-        body = F * Prod(i_stream, G * Prod(j_stream, H))
-        model = Sum(x_stream | y_stream, body)
+        body = F * Product.reduce(i_stream, G * Product.reduce(j_stream, H))
+        model = Sum.reduce(x_stream | y_stream, body)
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f: deffn(F_arr), g: deffn(G_arr), h: deffn(H_arr)}

@@ -6,6 +6,7 @@ from jax.numpy.linalg import norm
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import jax
+from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
 from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization import ReduceDistributeTerm
 from effectful.handlers.weighted.optimization.cartesian_product import (
@@ -14,8 +15,6 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 from effectful.handlers.weighted.optimization.jax import StackIndex
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.monoid import mul
-from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 
 def construct_hmm():
@@ -36,8 +35,8 @@ def construct_hmm():
 
     t_stream = {t.op: jnp.arange(args.nb_time_steps)}
     tm1_stream = {t.op: jnp.arange(args.nb_time_steps - 1)}
-    z_stream = {z.op: CartesianProd(t_stream, jnp.arange(args.latent_size))}
-    x_stream = {x.op: CartesianProd(t_stream, jnp.arange(args.emission_size))}
+    z_stream = {z.op: CartesianProd.reduce(t_stream, jnp.arange(args.latent_size))}
+    x_stream = {x.op: CartesianProd.reduce(t_stream, jnp.arange(args.emission_size))}
 
     transition_factor = defop(jax.Array, name="transition")()
     emission_factor = defop(jax.Array, name="emission")()
@@ -46,10 +45,10 @@ def construct_hmm():
 
     hmm_factor = (
         initial_state[z[0]]
-        * Prod(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
-        * Prod(tm1_stream, transition_factor[z[t], z[t + 1]])
+        * Product.reduce(t_stream, emission_factor[z[t], x[t]] * observation[t, x[t]])
+        * Product.reduce(tm1_stream, transition_factor[z[t], z[t + 1]])
     )
-    hmm = Sum(z_stream | x_stream, hmm_factor)
+    hmm = Sum.reduce(z_stream | x_stream, hmm_factor)
 
     param_ops = (transition_factor, emission_factor, initial_state, observation)
     param_ops = (x.op for x in param_ops)
@@ -83,7 +82,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # first, we construct an abstract HMM, unroll it...
-    with handler(SplitCartesianProductReduce()), handler({mul: jnp.multiply}):
+    with handler(SplitCartesianProductReduce()):
         model, param_ops = construct_hmm()
     # ... and optimize the reduce ordering
     with handler(ReduceDistributeTerm()), handler(StackIndex()):

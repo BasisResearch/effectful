@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euxo pipefail
 
-SRC="tests/ effectful/"
+SRC="tests/ effectful/ docs/source/weighted_examples/"
 
 mypy $SRC
 for f in docs/source/*.py

@@ -1,5 +1,6 @@
 import jax
 from effectful.handlers.weighted.optimization.plates import plated
+from effectful.ops.weighted.sugar import ArgMax, Sum
 
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax import numpy as jnp
@@ -8,7 +9,6 @@ from effectful.handlers.weighted.jax import interpretation as jax_intp
 from effectful.handlers.weighted.optimization import ReduceReorderReduction
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
-from effectful.ops.weighted.sugar import ArgMax, Sum
 
 """
 Consider the following classic POMDP example [1].

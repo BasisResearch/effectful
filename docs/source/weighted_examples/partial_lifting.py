@@ -2,6 +2,7 @@ import jax
 from jax import random
 
 from effectful.handlers.jax import numpy as jnp
+from effectful.handlers.jax.monoid import CartesianProd, Product, Sum
 from effectful.handlers.weighted.jax import DenseTensorReduce
 from effectful.handlers.weighted.optimization.cartesian_product import (
     ReduceDistributeCartesianProduct,
@@ -9,7 +10,6 @@ from effectful.handlers.weighted.optimization.cartesian_product import (
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.sugar import CartesianProd, Prod, Sum
 
 """
 Simplest plated factor graph that is not liftable
@@ -41,8 +41,8 @@ def main():
     x = defop(jax.Array, name="x")()
     y = defop(jax.Array, name="y")()
     x_size, y_size = 2, 3
-    x_stream = {x.op: CartesianProd(i_stream, jnp.arange(x_size))}
-    y_stream = {y.op: CartesianProd(j_stream, jnp.arange(y_size))}
+    x_stream = {x.op: CartesianProd.reduce(i_stream, jnp.arange(x_size))}
+    y_stream = {y.op: CartesianProd.reduce(j_stream, jnp.arange(y_size))}
 
     # define the factors
     f = defop(jax.Array, name="f")()
@@ -53,7 +53,10 @@ def main():
         SplitCartesianProductReduce(), ReduceDistributeCartesianProduct()
     )
     with handler(reduce_opt):
-        model = Sum(x_stream | y_stream, Prod(j_stream, Prod(i_stream, f[x[i], y[j]])))
+        model = Sum.reduce(
+            x_stream | y_stream,
+            Product.reduce(j_stream, Product.reduce(i_stream, f[x[i], y[j]])),
+        )
 
     # Now, we can just instantiate the arrays and compute the result.
     factor_intp = {f.op: deffn(F_arr)}

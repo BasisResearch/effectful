@@ -12,7 +12,7 @@ from effectful.handlers.weighted.optimization.distribution import (
 )
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.weighted.sugar import ArgMin
+from effectful.ops.weighted.monoid import ArgMin
 
 
 def get_dataset():
