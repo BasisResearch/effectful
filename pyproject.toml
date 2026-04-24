@@ -39,7 +39,10 @@ Source = "https://github.com/BasisResearch/effectful"
 torch = ["torch"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
-numpyro = ["numpyro>=0.19"]
+numpyro = [
+  "numpyro>=0.19",
+  "jax<0.10"
+]
 llm = [
   "litellm<1.82.7",
   "tenacity",
