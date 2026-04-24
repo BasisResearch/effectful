@@ -38,7 +38,7 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
     return [((), body)]
 
 
-class _JaxReduceMixin:
+class _JaxMonoid(Monoid[jax.Array]):
     reduce_array: Callable[[jax.Array, int | tuple[int]], jax.Array]
 
     def __init__(self, *args, **kwargs):
@@ -86,9 +86,8 @@ class _JaxReduceMixin:
             result_1 = evaluate(value)
 
         if not is_eager_array(result_1):
-            r = super().reduce
             breakpoint()
-            return super().reduce(streams, body)
+            return super(_JaxMonoid, self).reduce(streams, body)
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
         reduction_indices = tuple(old_to_fresh[i] for i in streams if i not in indices)
@@ -101,21 +100,15 @@ class _JaxReduceMixin:
         return result_4
 
 
-class _JaxMonoid(_JaxReduceMixin, Monoid[jax.Array]):
+class _JaxCommutativeMonoid(_JaxMonoid, CommutativeMonoid[jax.Array]):
     pass
 
 
-class _JaxCommutativeMonoid(_JaxReduceMixin, CommutativeMonoid[jax.Array]):
+class _JaxCommutativeMonoidWithZero(_JaxMonoid, CommutativeMonoidWithZero[jax.Array]):
     pass
 
 
-class _JaxCommutativeMonoidWithZero(
-    _JaxReduceMixin, CommutativeMonoidWithZero[jax.Array]
-):
-    pass
-
-
-class _JaxSemilattice(_JaxReduceMixin, Semilattice[jax.Array]):
+class _JaxSemilattice(_JaxMonoid, Semilattice[jax.Array]):
     pass
 
 
