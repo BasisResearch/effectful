@@ -877,3 +877,34 @@ def test_fvsof_dataclass() -> None:
 
     v = Operation.define(int)
     assert fvsof(A(v())) == {v}
+
+
+def test_instanceop_super() -> None:
+    class A:
+        @Operation.define
+        def f(self):
+            return "A"
+
+    class B(A):
+        @Operation.define
+        def f(self):
+            return super().f() + " and B"
+
+    assert isinstance(A.f, Operation)
+    assert isinstance(A().f, Operation)
+    assert isinstance(B.f, Operation)
+    assert isinstance(B().f, Operation)
+
+    assert A.f != A().f != B.f != B().f
+
+    assert A().f() == "A"
+    assert B().f() == "A and B"
+    with handler({A.f: lambda self: "*A*"}):
+        assert A().f() == "*A*"
+        assert B().f() == "*A* and B"
+    with handler({B.f: lambda self: super(B, self).f() + " and *B*"}):
+        assert A().f() == "A"
+        assert B().f() == "A and *B*"
+    b = B()
+    with handler({b.f: lambda: "*B*"}):
+        assert b.f() == "*B*"
