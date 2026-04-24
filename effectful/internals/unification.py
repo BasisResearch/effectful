@@ -178,8 +178,9 @@ class TypeEvaluator(abc.ABC):
 
     @evaluate.register
     def _(self, typ: typing.ForwardRef):
-        if typ.__forward_value__ is not None:
-            return self.evaluate(typ.__forward_value__)
+        forward_value = getattr(typ, "__forward_value__", None)
+        if forward_value is not None:
+            return self.evaluate(forward_value)
         else:
             return typ
 
@@ -673,8 +674,9 @@ def _(typ: typing._UnpackGenericAlias):  # type: ignore
 
 @canonicalize.register
 def _(typ: typing.ForwardRef):
-    if typ.__forward_value__ is not None:
-        return canonicalize(typ.__forward_value__)
+    forward_value = getattr(typ, "__forward_value__", None)
+    if forward_value is not None:
+        return canonicalize(forward_value)
     else:
         raise TypeError(f"Cannot canonicalize lazy ForwardRef {typ}.")
 
