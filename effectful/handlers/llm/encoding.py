@@ -138,11 +138,14 @@ class TypeToPydanticType(TypeEvaluator):
 
     def evaluate(self, ty):
         app = super().evaluate(ty)
-        if (
-            isinstance(app, type | GenericAlias)
-            and typing.get_origin(app) is not typing.Annotated
+        origin = typing.get_origin(app)
+        # Only dispatch on regular types. Special forms (Literal, Annotated,
+        # Union) have non-type origins that singledispatch can't resolve; pass
+        # them through for Pydantic to handle natively.
+        if isinstance(app, type | GenericAlias) and (
+            origin is None or isinstance(origin, type)
         ):
-            return self._registry.dispatch(typing.get_origin(app) or app)(app)
+            return self._registry.dispatch(origin or app)(app)
         else:
             return app
 

@@ -11,7 +11,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, NamedTuple, TypedDict
+from typing import Annotated, Any, Literal, NamedTuple, TypedDict, Union
 
 import litellm
 import pydantic
@@ -167,6 +167,12 @@ def _tool_distance(p: _PointModel) -> float:
     return (p.x**2 + p.y**2) ** 0.5
 
 
+@Tool.define
+def _tool_style(style: Literal["moral", "funny"]) -> str:
+    """Return the requested style."""
+    return style
+
+
 # ---------------------------------------------------------------------------
 # Module-level callable definitions
 # ---------------------------------------------------------------------------
@@ -308,6 +314,19 @@ ROUNDTRIP_CASES = [
     pytest.param(tuple[()], (), None, id="tuple-empty"),
     pytest.param(tuple, (1, "hello", True), None, id="tuple-bare"),
     pytest.param(tuple[int, ...], (1, 2, 3), None, id="tuple-variadic"),
+    # --- Literal / special forms (regression for #644) ---
+    pytest.param(Literal["moral", "funny"], "moral", None, id="literal-two-strings"),
+    pytest.param(Literal[1, 2, 3], 2, None, id="literal-ints"),
+    pytest.param(Annotated[int, "meta"], 42, None, id="annotated-int"),
+    # typing.Union (vs PEP 604 `|`) uses typing.Union as origin — a _SpecialForm
+    # that would re-trigger the #644 dispatch bug if the guard regressed.
+    pytest.param(Union[int, str], 42, None, id="union-old-int"),  # noqa: UP007
+    pytest.param(int | str, 42, None, id="union-new-int"),  # noqa: UP007
+    pytest.param(Union[int, str], "hello", None, id="union-old-str"),  # noqa: UP007
+    pytest.param(list[Literal["a", "b"]], ["a", "b", "a"], None, id="list-literal"),
+    pytest.param(tuple[Literal["x", "y"], int], ("x", 5), None, id="tuple-literal-int"),
+    pytest.param(Literal["a", "b"] | None, "a", None, id="literal-or-none-some"),
+    pytest.param(Literal["a", "b"] | None, None, None, id="literal-or-none-none"),
     # --- list ---
     pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
     pytest.param(list[str], ["hello", "world"], None, id="list-str"),
@@ -376,6 +395,12 @@ ROUNDTRIP_CASES = [
         _tool_distance,
         {"_tool_distance": _tool_distance},
         id="tool-pydantic-param",
+    ),
+    pytest.param(
+        type(_tool_style),
+        _tool_style,
+        {"_tool_style": _tool_style},
+        id="tool-literal-param",
     ),
     # --- DecodedToolCall ---
     pytest.param(
