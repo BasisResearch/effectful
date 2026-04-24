@@ -451,7 +451,9 @@ class Operation[**Q, V]:
     def __set_name__[T](self, owner: type[T], name: str) -> None:
         if not issubclass(owner, Term):
             assert not hasattr(self, "_name_on_instance"), "should only be called once"
-            self._name_on_instance: str = f"{INSTANCE_OP_PREFIX}_{name}"
+            self._name_on_instance: str = (
+                f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
+            )
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
