@@ -905,3 +905,6 @@ def test_instanceop_super() -> None:
     with handler({B.f: lambda self: super(B, self).f() + " and *B*"}):
         assert A().f() == "A"
         assert B().f() == "A and *B*"
+    b = B()
+    with handler({b.f: lambda: "*B*"}):
+        assert b.f() == "*B*"
