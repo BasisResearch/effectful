@@ -289,9 +289,7 @@ class TestTypeToAstTypingAnnotations:
         # Python 3.14 unified typing.Union with types.UnionType (PEP 604),
         # so typing.Optional[int] now renders with | syntax.
         expected = (
-            "int | None"
-            if sys.version_info >= (3, 14)
-            else "typing.Union[int, None]"
+            "int | None" if sys.version_info >= (3, 14) else "typing.Union[int, None]"
         )
         assert ast.unparse(result) == expected
 
