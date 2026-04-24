@@ -25,7 +25,7 @@ from effectful.handlers.weighted.optimization.reorder import (
     ReduceDistributeTerm,
     ReduceNoStreams,
 )
-from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop, syntactic_eq
 from tests.utils import REDUCE_TRANSFORMS
 
@@ -36,7 +36,7 @@ parameterize_transform_intp = mark.parametrize(
 
 @pytest.mark.skip(reason="evaluation order")
 @parameterize_transform_intp
-def test_factorize(base_intp, transform_intp):
+def test_factorize(transform_intp):
     dim_size = 4
     key = random.PRNGKey(42)
 
@@ -58,7 +58,7 @@ def test_factorize(base_intp, transform_intp):
         for k, key in zip(arr_names, keys, strict=False)
     }
     arr_intp = {ops[k]: deffn(v) for k, v in arrs.items()}
-    with handler(base_intp), handler(arr_intp):
+    with handler(arr_intp):
         result = evaluate(reduce_expr)
 
     expected = jnp.einsum("ij,kl,lm->", arrs["x"], arrs["y"], arrs["z"])
@@ -66,7 +66,7 @@ def test_factorize(base_intp, transform_intp):
 
 
 @parameterize_transform_intp
-def test_fuse_split(base_intp, transform_intp):
+def test_fuse_split(transform_intp):
     dim_size = 4
     key = random.PRNGKey(42)
     x_ix = defop(jax.Array, name="x_ix")
@@ -82,7 +82,7 @@ def test_fuse_split(base_intp, transform_intp):
     y_stream = {y_ix: jnp.arange(dim_size)}
     arr_intp = {x_op: lambda: x_arr, y_op: lambda: y_arr}
 
-    reduce_intp = coproduct(base_intp, transform_intp)
+    reduce_intp = transform_intp
     expected = (x_arr.sum() + y_arr.sum()) * dim_size
 
     with handler(reduce_intp), handler(arr_intp):

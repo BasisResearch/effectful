@@ -130,7 +130,9 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
-        if (
+        if _jax_op is jax_getitem and not args[1]:
+            return args[0]
+        elif (
             _jax_op is jax_getitem
             and not isinstance(args[0], Term)
             and sized_fvs

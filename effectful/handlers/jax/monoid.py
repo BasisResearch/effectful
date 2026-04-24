@@ -38,11 +38,17 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
     return [((), body)]
 
 
-class _JaxMonoid(Monoid[jax.Array]):
-    reduce_array: Callable[[jax.Array, int | tuple[int]], jax.Array]
+class ArrayMonoid(Monoid[T]):
+    """Reduce array-valued bodies over array-valued streams."""
+
+    reduce_dims: Callable[[T, int | tuple[int]], T]
+    bind_dims: Operation
+    unbind_dims: Operation
 
     def __init__(self, *args, **kwargs):
-        self.reduce_array = kwargs.pop("reduce_array")
+        self.reduce_dims = kwargs.pop("reduce_dims")
+        self.bind_dims = kwargs.pop("bind_dims")
+        self.unbind_dims = kwargs.pop("unbind_dims")
         super().__init__(*args, **kwargs)
 
     @Operation.define
@@ -72,43 +78,42 @@ class _JaxMonoid(Monoid[jax.Array]):
 
         old_to_fresh = {k: defop(k, name=f"fresh_{k}") for k in streams}
         indexed_streams = {
-            k: deffn(jax_getitem(v, [old_to_fresh[k]()])) for k, v in streams.items()
+            k: deffn(self.unbind_dims(v, old_to_fresh[k])) for k, v in streams.items()
         }
 
-        # add indices for streams that don't appear in body
-        fvars = set(streams.keys()) - fvsof(value)
-        unused_streams = tuple(v() for k, v in indexed_streams.items() if k in fvars)
-
-        value = jnp.asarray(value) if not isinstance(value, Term | jax.Array) else value
-        value = jax_getitem(value[*[None] * len(unused_streams)], unused_streams)
-
-        with handler(indexed_streams):
-            result_1 = evaluate(value)
-
-        if not is_eager_array(result_1):
-            breakpoint()
-            return super(_JaxMonoid, self).reduce(streams, body)
+        result_1 = handler(indexed_streams)(evaluate)(value)
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
         reduction_indices = tuple(old_to_fresh[i] for i in streams if i not in indices)
         result_2 = bind_dims(result_1, *reduction_indices)
-        result_3 = self.reduce_array(result_2, tuple(range(len(reduction_indices))))
+        result_3 = self.reduce_dims(result_2, tuple(range(len(reduction_indices))))
 
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
         result_4 = bind_dims(result_3, *fresh_indices)
-        return result_4
+
+        # add indices for streams that don't appear in body
+        fvars = set(streams.keys()) - fvsof(value)
+        unused_streams = {k: v for (k, v) in streams.items() if k in fvars}
+        return super().reduce(unused_streams, result_4)
 
 
-class _JaxCommutativeMonoid(_JaxMonoid, CommutativeMonoid[jax.Array]):
+class _JaxArrayMonoid(Monoid[T]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, bind_dims=bind_dims, unbind_dims=unbind_dims, **kwargs)
+
+
+class _JaxCommutativeMonoid(_JaxArrayMonoid, CommutativeMonoid[jax.Array]):
     pass
 
 
-class _JaxCommutativeMonoidWithZero(_JaxMonoid, CommutativeMonoidWithZero[jax.Array]):
+class _JaxCommutativeMonoidWithZero(
+    _JaxArrayMonoid, CommutativeMonoidWithZero[jax.Array]
+):
     pass
 
 
-class _JaxSemilattice(_JaxMonoid, Semilattice[jax.Array]):
+class _JaxSemilattice(_JaxArrayMonoid, Semilattice[jax.Array]):
     pass
 
 
@@ -137,22 +142,22 @@ def from_binary(cls, add, identity, reduce):
         raise ValueError("Expected an identity element.")
 
     result = cls.from_binary(ufunc, identity)
-    result.reduce_array = ufunc.reduce
+    result.reduce_dims = ufunc.reduce
     return result
 
 
-Sum = _SumMonoid(jnp.add, identity=jnp.asarray(0), reduce_array=jnp.sum)
+Sum = _SumMonoid(jnp.add, identity=jnp.asarray(0), reduce_dims=jnp.sum)
 Product = _ProductMonoid(
-    jnp.multiply, identity=jnp.asarray(1), zero=jnp.asarray(0), reduce_array=jnp.prod
+    jnp.multiply, identity=jnp.asarray(1), zero=jnp.asarray(0), reduce_dims=jnp.prod
 )
 Min = _JaxSemilattice(
-    jnp.minimum, identity=jnp.asarray(float("-inf")), reduce_array=jnp.min
+    jnp.minimum, identity=jnp.asarray(float("-inf")), reduce_dims=jnp.min
 )
 Max = _JaxSemilattice(
-    jnp.maximum, identity=jnp.asarray(float("inf")), reduce_array=jnp.max
+    jnp.maximum, identity=jnp.asarray(float("inf")), reduce_dims=jnp.max
 )
 LogSumExp = _JaxSemilattice(
-    jnp.logaddexp, identity=jnp.asarray(float("-inf")), reduce_array=logsumexp
+    jnp.logaddexp, identity=jnp.asarray(float("-inf")), reduce_dims=logsumexp
 )
 CartesianProd = Monoid(cartesian_prod, identity=jnp.array([]))
 
