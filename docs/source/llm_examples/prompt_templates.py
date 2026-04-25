@@ -57,9 +57,7 @@ if __name__ == "__main__":
         default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
-    parser.add_argument(
-        "--theme", type=str, default="fish", help="Theme for the poem"
-    )
+    parser.add_argument("--theme", type=str, default="fish", help="Theme for the poem")
     args = parser.parse_args()
 
     provider = LiteLLMProvider(model=args.model)

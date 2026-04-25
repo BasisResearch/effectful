@@ -78,9 +78,7 @@ if __name__ == "__main__":
         default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
-    parser.add_argument(
-        "--movie", type=str, default="Die Hard", help="Movie to rate"
-    )
+    parser.add_argument("--movie", type=str, default="Die Hard", help="Movie to rate")
     parser.add_argument(
         "--num-retries",
         type=int,
