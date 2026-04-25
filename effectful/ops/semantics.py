@@ -8,7 +8,7 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defop
+from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -364,6 +364,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
             assert isinstance(bound_var, Operation)
             if bound_var in _fvs:
                 _fvs.remove(bound_var)
+        return defdata(op, *args, **kwargs)
 
     with interpreter({apply: _update_fvs}):
         evaluate(term)

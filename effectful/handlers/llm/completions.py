@@ -1,8 +1,10 @@
+import abc
 import collections
 import collections.abc
 import dataclasses
 import functools
 import inspect
+import json
 import string
 import textwrap
 import traceback
@@ -11,22 +13,32 @@ import uuid
 
 import litellm
 import pydantic
+import tenacity
 from litellm import (
     ChatCompletionFunctionMessage,
     ChatCompletionMessageToolCall,
     ChatCompletionTextObject,
     ChatCompletionToolMessage,
-    ChatCompletionToolParam,
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionSystemMessage,
     OpenAIChatCompletionUserMessage,
     OpenAIMessageContentListBlock,
 )
 
-from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.encoding import (
+    DecodedToolCall,
+    Encodable,
+    to_content_blocks,
+)
+from effectful.handlers.llm.template import (
+    Agent,
+    Template,
+    Tool,
+    _is_recursive_signature,
+)
+from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
@@ -52,14 +64,29 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant, you need to follow user's instruction"
+)
 
-@defop
-def get_message_sequence() -> collections.OrderedDict[str, Message]:
-    return collections.OrderedDict()
+
+class _NoActiveHistoryException(Exception):
+    """Raised when there is no active message history to append to."""
 
 
-def append_message(message: Message):
-    get_message_sequence()[message["id"]] = message
+@Operation.define
+def _get_history() -> collections.OrderedDict[str, Message]:
+    raise _NoActiveHistoryException(
+        "No active message history. This operation should only be used within a handler that provides a message history."
+    )
+
+
+def append_message(message: Message, last: bool = True) -> None:
+    try:
+        _get_history()[message["id"]] = message
+        if not last:
+            _get_history().move_to_end(message["id"], last=False)
+    except _NoActiveHistoryException:
+        pass
 
 
 def _make_message(content: dict) -> Message:
@@ -68,20 +95,27 @@ def _make_message(content: dict) -> Message:
     return message
 
 
-type ToolCallID = str
+class DecodingError[E: Exception](abc.ABC, Exception):
+    """Base class for decoding errors that can occur during LLM response processing."""
+
+    original_error: E
+
+    @abc.abstractmethod
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        """Convert the decoding error into a feedback message to be sent back to the LLM."""
+        raise NotImplementedError
 
 
 @dataclasses.dataclass
-class ToolCallDecodingError(Exception):
+class ToolCallDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding a tool call fails."""
 
-    tool_name: str
-    tool_call_id: str
-    original_error: Exception
+    original_error: E
     raw_message: Message
+    raw_tool_call: ChatCompletionMessageToolCall
 
     def __str__(self) -> str:
-        return f"Error decoding tool call '{self.tool_name}': {self.original_error}. Please provide a valid response and try again."
+        return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -91,17 +125,17 @@ class ToolCallDecodingError(Exception):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
 
 
 @dataclasses.dataclass
-class ResultDecodingError(Exception):
+class ResultDecodingError[E: Exception](DecodingError[E]):
     """Error raised when decoding the LLM response result fails."""
 
-    original_error: Exception
+    original_error: E
     raw_message: Message
 
     def __str__(self) -> str:
@@ -118,15 +152,14 @@ class ResultDecodingError(Exception):
 
 
 @dataclasses.dataclass
-class ToolCallExecutionError(Exception):
+class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     """Error raised when a tool execution fails at runtime."""
 
-    tool_name: str
-    tool_call_id: str
-    original_error: BaseException
+    original_error: E
+    raw_tool_call: DecodedToolCall[T]
 
     def __str__(self) -> str:
-        return f"Tool execution failed: Error executing tool '{self.tool_name}': {self.original_error}"
+        return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
     def to_feedback_message(self, include_traceback: bool) -> Message:
         error_message = f"{self}"
@@ -136,97 +169,44 @@ class ToolCallExecutionError(Exception):
         return _make_message(
             {
                 "role": "tool",
-                "tool_call_id": self.tool_call_id,
+                "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
             },
         )
 
 
-class DecodedToolCall[T](typing.NamedTuple):
-    tool: Tool[..., T]
-    bound_args: inspect.BoundArguments
-    id: ToolCallID
-
-
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
-@functools.cache
-def _param_model(tool: Tool) -> type[pydantic.BaseModel]:
-    sig = inspect.signature(tool)
-    return pydantic.create_model(
-        "Params",
-        __config__={"extra": "forbid"},
-        **{
-            name: Encodable.define(param.annotation).enc
-            for name, param in sig.parameters.items()
-        },  # type: ignore
-    )
+def _collect_tools(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> collections.abc.Mapping[str, Tool]:
+    """Operations and Templates available as tools. Auto-capture from lexical context."""
+    result = {}
 
+    for name, obj in env.items():
+        # Collect tools directly in context
+        if isinstance(obj, Tool | Template):
+            result[name] = obj
 
-@functools.cache
-def _function_model(tool: Tool) -> ChatCompletionToolParam:
-    response_format = litellm.utils.type_to_response_format_param(_param_model(tool))
-    assert response_format is not None
-    assert tool.__default__.__doc__ is not None
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.__name__,
-            "description": textwrap.dedent(tool.__default__.__doc__),
-            "parameters": response_format["json_schema"]["schema"],
-            "strict": True,
-        },
-    }
+        # Collect tools as methods on Agent instances in context
+        elif isinstance(obj, Agent):
+            for cls in type(obj).__mro__:
+                for attr_name in vars(cls):
+                    if isinstance(getattr(obj, attr_name), Tool):
+                        result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
 
+    # The same Tool can appear under multiple names when it is both
+    # visible in the enclosing scope *and* discovered via an Agent
+    # instance's MRO.  Since Tools are hashable Operations and
+    # instance-method Tools are cached per instance, we keep only
+    # the last name for each unique tool object.
+    tool2name = {tool: name for name, tool in sorted(result.items())}
+    for name, tool in tuple(result.items()):
+        if tool2name[tool] != name:
+            del result[name]
 
-def decode_tool_call(
-    tool_call: ChatCompletionMessageToolCall,
-    tools: collections.abc.Mapping[str, Tool],
-    raw_message: Message,
-) -> DecodedToolCall:
-    """Decode a tool call from the LLM response into a DecodedToolCall.
-
-    Args:
-        tool_call: The tool call to decode.
-        tools: Mapping of tool names to Tool objects.
-        raw_message: Optional raw assistant message for error context.
-
-    Raises:
-        ToolCallDecodingError: If the tool call cannot be decoded.
-    """
-    tool_name = tool_call.function.name
-    assert tool_name is not None
-
-    try:
-        tool = tools[tool_name]
-    except KeyError as e:
-        raise ToolCallDecodingError(
-            tool_name, tool_call.id, e, raw_message=raw_message
-        ) from e
-
-    json_str = tool_call.function.arguments
-    sig = inspect.signature(tool)
-
-    try:
-        # build dict of raw encodable types U
-        raw_args = _param_model(tool).model_validate_json(json_str)
-
-        # use encoders to decode Us to python types T
-        bound_sig: inspect.BoundArguments = sig.bind(
-            **{
-                param_name: Encodable.define(
-                    sig.parameters[param_name].annotation, {}
-                ).decode(getattr(raw_args, param_name))
-                for param_name in raw_args.model_fields_set
-            }
-        )
-    except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
-        raise ToolCallDecodingError(
-            tool_name, tool_call.id, e, raw_message=raw_message
-        ) from e
-
-    return DecodedToolCall(tool, bound_sig, tool_call.id)
+    return result
 
 
 @Operation.define
@@ -241,10 +221,14 @@ def completion(*args, **kwargs) -> typing.Any:
     return litellm.completion(*args, **kwargs)
 
 
+class _BoxedResponse[T](pydantic.BaseModel):
+    value: T
+
+
 @Operation.define
-def call_assistant[T, U](
-    tools: collections.abc.Mapping[str, Tool],
-    response_format: Encodable[T, U],
+def call_assistant[T](
+    env: collections.abc.Mapping[str, typing.Any],
+    response_type: type[T],
     model: str,
     **kwargs,
 ) -> MessageResult[T]:
@@ -259,20 +243,28 @@ def call_assistant[T, U](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tool_specs = {k: _function_model(t) for k, t in tools.items()}
-    response_model = (
-        response_format.enc
-        if issubclass(response_format.enc, pydantic.BaseModel)
-        else pydantic.create_model(
-            "Response", value=response_format.enc, __config__={"extra": "forbid"}
-        )
+    tools = _collect_tools(env)
+    tool_specs = {
+        k: typing.cast(
+            pydantic.TypeAdapter[typing.Any],
+            pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
+        ).dump_python(t, mode="json", context={k: t})
+        for k, t in tools.items()
+    }
+
+    # The OpenAI API requires a wrapper object for non-object structured output types,
+    # so we create one on the fly here. Using a Pydantic model offloads JSON schema
+    # generation and validation logic to litellm, and offers better error messages.
+    response_format: type[_BoxedResponse[T]] = pydantic.create_model(
+        "BoxedResponse",
+        value=Encodable[response_type],  # type: ignore[valid-type]
+        __base__=_BoxedResponse,
     )
 
-    messages = list(get_message_sequence().values())
     response: litellm.types.utils.ModelResponse = completion(
         model,
-        messages=list(messages),
-        response_format=response_model if response_format.enc is not str else None,
+        messages=list(_get_history().values()),
+        response_format=None if response_type is str else response_format,
         tools=list(tool_specs.values()),
         **kwargs,
     )
@@ -286,35 +278,35 @@ def call_assistant[T, U](
     append_message(raw_message)
 
     tool_calls: list[DecodedToolCall] = []
-    raw_tool_calls = message.get("tool_calls") or []
-    for raw_tool_call in raw_tool_calls:
-        validated_tool_call = ChatCompletionMessageToolCall.model_validate(
-            raw_tool_call
-        )
-        decoded_tool_call = decode_tool_call(validated_tool_call, tools, raw_message)
-        tool_calls.append(decoded_tool_call)
+    encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
+        Encodable[DecodedToolCall]
+    )
+    for raw_tool_call in message.get("tool_calls") or []:
+        try:
+            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+        except Exception as e:
+            raise ToolCallDecodingError(
+                raw_tool_call=raw_tool_call,
+                original_error=e,
+                raw_message=raw_message,
+            ) from e
 
     result = None
-    if not tool_calls and response_format.enc is not str:
+    if not tool_calls:
         # return response
         serialized_result = message.get("content") or message.get("reasoning_content")
         assert isinstance(serialized_result, str), (
             "final response from the model should be a string"
         )
-        try:
-            raw_result = response_model.model_validate_json(serialized_result)
-            result = response_format.decode(
-                raw_result.value
-                if not issubclass(response_format.enc, pydantic.BaseModel)
-                else raw_result
-            )  # type: ignore
-        except (pydantic.ValidationError, TypeError, ValueError, SyntaxError) as e:
-            raise ResultDecodingError(e, raw_message=raw_message) from e
-    elif not tool_calls and response_format.enc is str:
-        # if expecting a string result, return the raw content as the result
-        content = message.get("content") or message.get("reasoning_content")
-        assert isinstance(content, str), "Expected content to be a string"
-        result = content
+        if response_type is str:
+            result = typing.cast(T, serialized_result)
+        else:
+            try:
+                result = response_format.model_validate(
+                    json.loads(serialized_result), context=env
+                ).value
+            except Exception as e:
+                raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
 
@@ -327,16 +319,19 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
 
     """
     # call tool with python types
-    # call_tool invariant: tool is called in a context with a fresh message sequence
-    message_sequence: collections.OrderedDict[str, Message] = collections.OrderedDict()
-    with handler({get_message_sequence: lambda: message_sequence}):
+    try:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
+    except Exception as e:
+        raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
-    # serialize back to U using encoder for return type
-    return_type = Encodable.define(type(result))
-    encoded_result = return_type.serialize(return_type.encode(result))
+    return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        Encodable[nested_type(result).value]  # type: ignore[misc]
+    )
+    encoded_result = to_content_blocks(
+        return_type.dump_python(result, mode="json", context={})
+    )
     message = _make_message(
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
@@ -372,11 +367,11 @@ def call_user(
             continue
 
         obj, _ = formatter.get_field(field_name, (), env)
-        encoder = Encodable.define(type(obj))
-        encoded_obj: typing.Sequence[OpenAIMessageContentListBlock] = encoder.serialize(
-            encoder.encode(obj)
+        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(obj).value]  # type: ignore[misc]
         )
-        for part in encoded_obj:
+        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
+        for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":
                 text = (
                     formatter.convert_field(part["text"], conversion)
@@ -398,38 +393,12 @@ def call_user(
 
 
 @Operation.define
-def call_system(template: Template) -> collections.abc.Sequence[Message]:
+def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
-
-    assert inspect.getdoc(type(template)) is not None
-
-    system_prompt = inspect.cleandoc(f"""
-    You are responsible for implementing the `Template` '{template.__name__}' defined in the module source code below.
-
-    First, as background, here is the class-level documentation for the `Template` class::
-
-    {inspect.getdoc(type(template))}
-    """)
-
-    try:
-        system_prompt += inspect.cleandoc(f"""
-        Here is the source code of the module defining the `Template` instance '{template.__name__}'::
-
-        {inspect.getsource(inspect.getmodule(template))}
-        """)
-    except (TypeError, OSError):
-        system_prompt += inspect.cleandoc(f"""
-        The source code for the module defining '{template.__name__}' is not available.
-        Instead, here are the signature and docstring of '{template.__name__}'::
-
-        {template.__name__} :: {template.__signature__.format()}
-
-        {inspect.cleandoc(template.__prompt_template__)}
-        """)
-
-    msg = _make_message(dict(role="system", content=system_prompt))
-    append_message(msg)
-    return (msg,)
+    system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
+    message = _make_message(dict(role="system", content=system_prompt))
+    append_message(message, last=False)
+    return message
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -444,69 +413,68 @@ class RetryLLMHandler(ObjectInterpretation):
     captured and returned as tool response messages.
 
     Args:
-        num_retries: The maximum number of retries (default: 3).
         include_traceback: If True, include full traceback in error feedback
-            for better debugging context (default: False).
+            for better debugging context (default: True).
         catch_tool_errors: Exception type(s) to catch during tool execution.
             Can be a single exception class or a tuple of exception classes.
             Defaults to Exception (catches all exceptions).
+        stop: tenacity stop condition for retrying `call_assistant`. Defaults to
+            `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
+        **kwargs: Additional keyword arguments forwarded to `tenacity.Retrying`.
     """
+
+    call_assistant_retryer: tenacity.Retrying
+
+    _user_before_sleep: collections.abc.Callable[[tenacity.RetryCallState], None] | None
 
     def __init__(
         self,
-        num_retries: int = 3,
-        include_traceback: bool = False,
+        include_traceback: bool = True,
         catch_tool_errors: type[BaseException]
         | tuple[type[BaseException], ...] = Exception,
+        stop: tenacity.stop.stop_base = tenacity.stop_after_attempt(4),
+        **kwargs,
     ):
-        self.num_retries = num_retries
         self.include_traceback = include_traceback
         self.catch_tool_errors = catch_tool_errors
+        assert "retry" not in kwargs, "Cannot override retry logic of RetryLLMHandler"
+        assert "reraise" not in kwargs, (
+            "Cannot override reraise logic of RetryLLMHandler"
+        )
+        self._user_before_sleep = kwargs.pop("before_sleep", None)
+        self.call_assistant_retryer = tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                (ToolCallDecodingError, ResultDecodingError)
+            ),
+            reraise=True,
+            before_sleep=self._before_sleep,
+            stop=stop,
+            **kwargs,
+        )
+
+    def _before_sleep(self, retry_state: tenacity.RetryCallState) -> None:
+        e = retry_state.outcome.exception()  # type: ignore
+        assert isinstance(e, (ToolCallDecodingError, ResultDecodingError))
+        append_message(e.raw_message)
+        append_message(e.to_feedback_message(self.include_traceback))
+        if self._user_before_sleep is not None:
+            self._user_before_sleep(retry_state)
 
     @implements(call_assistant)
-    def _call_assistant[T, U](
+    def _call_assistant[T](
         self,
-        tools: collections.abc.Mapping[str, Tool],
-        response_format: Encodable[T, U],
+        env: collections.abc.Mapping[str, typing.Any],
+        response_type: type[T],
         model: str,
         **kwargs,
     ) -> MessageResult[T]:
-        message_sequence = get_message_sequence().copy()
-        last_attempt = self.num_retries
+        _message_sequence = _get_history().copy()
 
-        for attempt in range(self.num_retries + 1):
-            try:
-                # call assistant, use saved message_sequence
-                with handler({get_message_sequence: lambda: message_sequence}):
-                    message, tool_calls, result = fwd(
-                        tools, response_format, model, **kwargs
-                    )
+        with handler({_get_history: lambda: _message_sequence}):
+            message, tool_calls, result = self.call_assistant_retryer(fwd)
 
-                # Success! The returned message is the final successful response.
-                # Malformed messages from retries are only in local message_sequence copy,
-                # not in the enclosing message sequence.
-                append_message(message)
-                return (message, tool_calls, result)
-
-            except (ToolCallDecodingError, ResultDecodingError) as e:
-                # On last attempt, re-raise to preserve full traceback
-                if attempt == last_attempt:
-                    raise
-
-                # Add the malformed assistant message
-                message_sequence[e.raw_message["id"]] = e.raw_message
-
-                # Add error feedback as a tool response
-                error_feedback: Message = e.to_feedback_message(self.include_traceback)
-                message_sequence[error_feedback["id"]] = error_feedback
-
-        # Should never reach here - either we return on success or raise on final failure
-        raise AssertionError("Unreachable: retry loop exited without return or raise")
-
-    @implements(completion)
-    def _completion(self, *args, **kwargs) -> typing.Any:
-        """Inject num_retries for litellm's built-in network error handling."""
-        return fwd(*args, **({"num_retries": self.num_retries} | kwargs))
+        append_message(message)
+        return (message, tool_calls, result)
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall) -> Message:
@@ -518,11 +486,13 @@ class RetryLLMHandler(ObjectInterpretation):
         """
         try:
             return fwd(tool_call)
-        except self.catch_tool_errors as e:
-            error = ToolCallExecutionError(tool_call.tool.__name__, tool_call.id, e)
-            message = error.to_feedback_message(self.include_traceback)
-            append_message(message)
-            return message
+        except ToolCallExecutionError as e:
+            if isinstance(e.original_error, self.catch_tool_errors):
+                message = e.to_feedback_message(self.include_traceback)
+                append_message(message)
+                return message
+            else:
+                raise
 
 
 class LiteLLMProvider(ObjectInterpretation):
@@ -540,19 +510,25 @@ class LiteLLMProvider(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        message_sequence: collections.OrderedDict[str, Message] = get_message_sequence()
-        with handler({get_message_sequence: lambda: message_sequence}):
-            # encode arguments
-            bound_args = inspect.signature(template).bind(*args, **kwargs)
-            bound_args.apply_defaults()
-            env = template.__context__.new_child(bound_args.arguments)
+        # encode arguments
+        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = template.__context__.new_child(bound_args.arguments)
 
-            # Create response_model with env so tools passed as arguments are available
-            response_model = Encodable.define(
-                template.__signature__.return_annotation, env
-            )
+        if not _is_recursive_signature(template.__signature__):
+            env = env.new_child({k: None for k, v in env.items() if v is template})
 
-            call_system(template)
+        history: collections.OrderedDict[str, Message] = getattr(
+            template, "__history__", collections.OrderedDict()
+        )  # type: ignore
+        history_copy = history.copy()
+
+        with handler({_get_history: lambda: history_copy}):
+            if (
+                not _get_history()
+                or next(iter(_get_history().values()))["role"] != "system"
+            ):
+                call_system(template)
 
             message: Message = call_user(template.__prompt_template__, env)
 
@@ -561,12 +537,14 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    template.tools, response_model, **self.config
+                    env, template.__signature__.return_annotation, **self.config
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
 
-            assert result is not None, (
-                "call_assistant did not produce a result nor tool_calls"
-            )
-            return result
+        try:
+            _get_history()
+        except _NoActiveHistoryException:
+            history.clear()
+            history.update(history_copy)
+        return typing.cast(T, result)
