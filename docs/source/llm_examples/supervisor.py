@@ -155,6 +155,12 @@ if __name__ == "__main__":
         help="LLM model to use",
     )
     parser.add_argument(
+        "--question",
+        type=str,
+        default="What year was the Eiffel Tower completed and how tall is it?",
+        help="Research question to answer",
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=3,
@@ -175,7 +181,7 @@ if __name__ == "__main__":
         handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
     ):
         result = supervised_research(
-            "What year was the Eiffel Tower completed and how tall is it?",
+            args.question,
             max_retries=args.max_retries,
         )
         print(f"\nFinal answer: {result}")
