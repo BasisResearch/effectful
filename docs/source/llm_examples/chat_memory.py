@@ -109,17 +109,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     agent = ChatAgent()
 

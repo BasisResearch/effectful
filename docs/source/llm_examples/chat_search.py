@@ -4,6 +4,7 @@ import os
 import urllib.parse
 
 import requests
+from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
@@ -77,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
     parser.add_argument(
@@ -91,19 +92,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Run in interactive mode, allowing multiple back-and-forth messages",
     )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=4,
+        help="Number of retries for malformed LLM output",
+    )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     chatbot = ChatBot(bot_name=args.name)
     provider = LiteLLMProvider(model=args.model)
 
-    with handler(provider), handler(RetryLLMHandler(num_retries=3)):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
         if args.interactive:
             while True:
                 print(chatbot.send(input("You: ")))

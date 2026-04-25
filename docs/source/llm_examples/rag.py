@@ -14,6 +14,7 @@ import os
 
 import litellm
 import numpy as np
+from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
@@ -153,23 +154,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
     parser.add_argument(
         "--embedding-model",
         type=str,
-        default="lm_studio/nomic-ai/nomic-embed-text-v1.5-GGUF",
+        default="lm_studio/text-embedding-embeddinggemma-300m-qat",
         help="Embedding model to use",
     )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=3,
+        help="Number of retries for malformed LLM output",
+    )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     # Offline: build the index
     index = build_index(DOCUMENTS, embedding_model=args.embedding_model)
@@ -186,7 +186,10 @@ if __name__ == "__main__":
 
     provider = LiteLLMProvider(model=args.model)
 
-    with handler(provider), handler(RetryLLMHandler(num_retries=3)):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
         for question in questions:
             print(f"\nQ: {question}")
             answer = answer_question(question)

@@ -8,6 +8,8 @@ Demonstrates:
 import argparse
 import os
 
+from tenacity import stop_after_attempt
+
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
 from effectful.ops.semantics import handler
@@ -26,14 +28,6 @@ def travel_query(user_query: str) -> str:
     raise NotHandled
 
 
-@Template.define
-def is_safe_query(user_query: str) -> bool:
-    """
-    Determine whether the user's query is purely related to travel advice: {user_query}
-    """
-    raise NotHandled
-
-
 # ---------------------------------------------------------------------------
 # Guarded agent
 # ---------------------------------------------------------------------------
@@ -41,6 +35,14 @@ def is_safe_query(user_query: str) -> bool:
 
 def answer_travel_query(user_query: str) -> str:
     """Only answer travel-related queries; reject everything else."""
+
+    @Template.define
+    def is_safe_query(user_query: str) -> bool:
+        """
+        Determine whether the user's query is purely related to travel advice: {user_query}
+        """
+        raise NotHandled
+
     if is_safe_query(user_query):
         return travel_query(user_query)
     else:
@@ -56,19 +58,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
+    )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=4,
+        help="Number of retries for malformed LLM output",
     )
     args = parser.parse_args()
 
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
-
     provider = LiteLLMProvider(model=args.model)
-    with handler(provider), handler(RetryLLMHandler(num_retries=5)):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
         print(answer_travel_query("What are great places to check out in NYC?"))
         print(answer_travel_query("Should I buy apple stocks?"))

@@ -12,6 +12,8 @@ import dataclasses
 import enum
 import os
 
+from tenacity import stop_after_attempt
+
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
 from effectful.ops.semantics import handler
@@ -133,7 +135,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
     parser.add_argument(
@@ -142,14 +144,13 @@ if __name__ == "__main__":
         default=5,
         help="Maximum rounds per game",
     )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=3,
+        help="Number of retries for malformed LLM output",
+    )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     games = [
         ("piano", ["music", "keys", "instrument", "play"]),
@@ -158,7 +159,10 @@ if __name__ == "__main__":
 
     provider = LiteLLMProvider(model=args.model)
 
-    with handler(provider), handler(RetryLLMHandler(num_retries=3)):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
         for secret, taboo in games:
             print(f"\nGame: '{secret}' (taboo: {taboo})")
             play_taboo(secret, taboo, max_rounds=args.max_rounds)

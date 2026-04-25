@@ -10,6 +10,8 @@ import argparse
 import dataclasses
 import os
 
+from tenacity import stop_after_attempt
+
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
 from effectful.ops.semantics import handler
@@ -68,7 +70,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
     parser.add_argument(
@@ -86,14 +88,13 @@ if __name__ == "__main__":
         ),
         help="The problem to solve",
     )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=3,
+        help="Number of retries for malformed LLM output",
+    )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     provider = LiteLLMProvider(model=args.model)
 
@@ -105,7 +106,10 @@ if __name__ == "__main__":
         ),
     ]
 
-    with handler(provider), handler(RetryLLMHandler(num_retries=3)):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
         for problem in problems:
             thinker = Thinker()
             print(f"\nProblem: {problem}")

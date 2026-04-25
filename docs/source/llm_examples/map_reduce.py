@@ -9,9 +9,12 @@ Demonstrates:
 
 import argparse
 import asyncio
+import collections.abc
 import dataclasses
 import functools
 import os
+
+from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
@@ -53,13 +56,16 @@ def evaluate_resume(resume: str, job_description: str) -> Evaluation:
 
 
 @Template.define
-def summarize_evaluations(job_description: str, evaluations_text: str) -> str:
+def summarize_evaluations(
+    job_description: str,
+    evaluations: collections.abc.Sequence[Evaluation],
+) -> str:
     """You are a hiring manager summarizing candidate evaluations.
 
     Job description: {job_description}
 
     Individual evaluations:
-    {evaluations_text}
+    {evaluations}
 
     Provide a brief summary: rank the candidates from best to worst,
     highlight the top candidate, and note any concerns.
@@ -103,7 +109,11 @@ async def map_reduce_evaluate(
     # Map: evaluate each resume concurrently
     evaluate = functools.partial(
         asyncio.to_thread,
-        handler(provider)(handler(RetryLLMHandler(num_retries=3))(evaluate_resume)),
+        handler(provider)(
+            handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries)))(
+                evaluate_resume
+            )
+        ),
     )
     evaluations: list[Evaluation] = list(
         await asyncio.gather(*(evaluate(resume, job_description) for resume in resumes))
@@ -116,16 +126,11 @@ async def map_reduce_evaluate(
         print(f"    - {ev.weaknesses}")
 
     # Reduce: summarize all evaluations
-    evaluations_text = "\n\n".join(
-        f"Candidate: {ev.name}\n"
-        f"Score: {ev.score}/10\n"
-        f"Qualified: {ev.qualified}\n"
-        f"Strengths: {ev.strengths}\n"
-        f"Weaknesses: {ev.weaknesses}"
-        for ev in evaluations
-    )
-    with handler(provider), handler(RetryLLMHandler(num_retries=3)):
-        return summarize_evaluations(job_description, evaluations_text)
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+    ):
+        return summarize_evaluations(job_description, evaluations)
 
 
 # ---------------------------------------------------------------------------
@@ -137,17 +142,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="lm_studio/zai-org/glm-4.7-flash",
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
         help="LLM model to use",
     )
+    parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=3,
+        help="Number of retries for malformed LLM output",
+    )
     args = parser.parse_args()
-
-    if args.model.startswith("lm_studio/"):
-        assert os.environ.get("LM_STUDIO_API_BASE")
-    elif args.model.startswith("gpt-"):
-        assert os.environ.get("OPENAI_API_KEY")
-    elif args.model.startswith("claude-"):
-        assert os.environ.get("ANTHROPIC_API_KEY")
 
     provider = LiteLLMProvider(model=args.model)
 
