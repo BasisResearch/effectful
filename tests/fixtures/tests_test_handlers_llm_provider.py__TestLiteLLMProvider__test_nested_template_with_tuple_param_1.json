@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D3rNU2lVVTdXXJhrnqD9Vs2LUtPNT",
-  "created": 1769812540,
+  "id": "chatcmpl-replay-nested-tuple-1",
+  "created": 1769812601,
   "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_1590f93f9d",
+  "system_fingerprint": "fp_fixture",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing ensures that a product meets its requirements and functions as intended.\"}",
+        "content": "{\"value\":\"Call search(query='nearby restaurants', max_results=10) to find relevant results.\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,9 +22,9 @@
     }
   ],
   "usage": {
-    "completion_tokens": 21,
-    "prompt_tokens": 262,
-    "total_tokens": 283,
+    "completion_tokens": 25,
+    "prompt_tokens": 350,
+    "total_tokens": 375,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,

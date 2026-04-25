@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-DSsTumLiV10fWdQVE7Shz8QkzLVOK",
-  "created": 1775774982,
-  "model": "gpt-4o-2024-08-06",
+  "id": "chatcmpl-bare-tuple-param-fixture",
+  "created": 1769812600,
+  "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_8706f899b3",
+  "system_fingerprint": "fp_fixture",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"from typing import Callable\\n\\ndef multiply_three_numbers(a: int, b: int, c: int) -> int:\\n    return a * b * c\"}}",
+        "content": "{\"value\":\"The items include apples, bananas, and cherries.\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,24 +22,22 @@
     }
   ],
   "usage": {
-    "completion_tokens": 46,
-    "prompt_tokens": 994,
-    "total_tokens": 1040,
+    "completion_tokens": 15,
+    "prompt_tokens": 100,
+    "total_tokens": 115,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null,
-      "video_tokens": null
+      "image_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null,
-      "video_tokens": null
+      "image_tokens": null
     }
   },
   "service_tier": "default"

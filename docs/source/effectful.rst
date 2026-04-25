@@ -47,6 +47,13 @@ LLM
    :members:
    :undoc-members:
 
+Template
+""""""""
+
+.. automodule:: effectful.handlers.llm.template
+   :members:
+   :undoc-members:
+
 Encoding
 """"""""
 
@@ -60,6 +67,14 @@ Completions
 .. automodule:: effectful.handlers.llm.completions
    :members:
    :undoc-members:
+
+Evaluation
+""""""""""
+      
+.. automodule:: effectful.handlers.llm.evaluation
+   :members:
+   :undoc-members:
+
    
 Jax
 ^^^

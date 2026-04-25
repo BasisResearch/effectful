@@ -39,9 +39,13 @@ Source = "https://github.com/BasisResearch/effectful"
 torch = ["torch"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
-numpyro = ["numpyro>=0.19"]
+numpyro = [
+  "numpyro>=0.19",
+  "jax<0.10"
+]
 llm = [
   "litellm",
+  "tenacity",
   "mypy",
   "autoflake",
   "pillow",
@@ -57,7 +61,7 @@ docs = [
     "sphinx_rtd_theme",
     "myst-parser",
     "nbsphinx",
-    "sphinx_autodoc_typehints",
+    "sphinx_autodoc_typehints>=3.6,<3.9",
     "pypandoc_binary<1.16",
 ]
 test = [
@@ -82,7 +86,7 @@ target-version = "py312"
 select = ["F", "I", "PERF", "UP"]
 
 [tool.pytest.ini_options]
-addopts = "--doctest-modules"
+addopts = "--doctest-modules --dist loadgroup"
 testpaths = ["./effectful", "./tests"]
 
 [tool.mypy]

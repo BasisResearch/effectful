@@ -1,41 +1,45 @@
 {
-  "id": "chatcmpl-D3rNwzesxKrjfwjxNOJDf2C92mCHg",
-  "created": 1769812568,
-  "model": "gpt-4o-2024-08-06",
+  "id": "chatcmpl-DSsWrrIYt2jM73BkcqlwScPhOrB1A",
+  "created": 1775775165,
+  "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_fa7f5b168b",
+  "system_fingerprint": "fp_a5086b7b9a",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are crisp, juicy fruits that come in a variety of colors, offering a sweet or tart flavor profile perfect for snacking or baking.\"}",
+        "content": "Apples are crunchy, sweet fruits that come in various colors and are often used in delicious desserts.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
-        "provider_specific_fields": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
         "annotations": []
       },
       "provider_specific_fields": {}
     }
   ],
   "usage": {
-    "completion_tokens": 37,
-    "prompt_tokens": 262,
-    "total_tokens": 299,
+    "completion_tokens": 21,
+    "prompt_tokens": 815,
+    "total_tokens": 836,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

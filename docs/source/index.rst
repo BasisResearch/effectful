@@ -10,6 +10,12 @@ Table of Contents
    named_tensor_notation
    llm
 
+.. tip::
+
+   **For AI coding agents:** A standalone Markdown version of the LLM guide is
+   available at `llm.md <llm.md>`_ — point your agent there for a complete
+   reference on building effectful LLM applications.
+
 .. toctree::
    :maxdepth: 1
    :caption: Examples

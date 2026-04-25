@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D3rNjYHHVoJdYAi1XKbt6f4aGFFS8",
-  "created": 1769812555,
-  "model": "gpt-5-nano-2025-08-07",
+  "id": "chatcmpl-DSsSlxbtInEbJyuLjT8bkEOVBaf3w",
+  "created": 1775774911,
+  "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_8706f899b3",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"title\":\"The First Spark\",\"rating\":4,\"summary\":\"A brisk coming-of-age fantasy about a young wizard who discovers his powers and enrolls at a wizarding academy. The world-building is vivid, with a fresh take on magic grounded in runes and elemental affinities. The character work—friendships, mentor dynamics, and self-doubt—drives a fast-paced school-year plot that balances whimsy with danger. While it leans on familiar tropes of secret origins and rival houses, the emotional honesty and lively prose keep it engaging. Ideal for readers who enjoy classic magical school tales with a modern, character-forward edge.\"}}",
+        "content": "{\"value\":{\"title\":\"The Book of Arcane Wonders\",\"rating\":4,\"summary\":\"The Book of Arcane Wonders is an intriguing tale of self-discovery set against the backdrop of an enchanting world filled with magic and mystery. The plot revolves around a young wizard's journey into uncovering his innate magical talents, followed by his adventures at a prestigious school for wizards. The story beautifully captures the struggles and triumphs of mastering magic while forming friendships and facing formidable challenges. Though the narrative feels reminiscent of other tales in the genre, what sets it apart is its unique world-building and well-developed characters, which capture the imagination of readers young and old. It's a delightful read, filled with suspense, humor, and wonder, making it a must-read for fans of magical adventures.\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 1744,
-    "prompt_tokens": 445,
-    "total_tokens": 2189,
+    "completion_tokens": 163,
+    "prompt_tokens": 952,
+    "total_tokens": 1115,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "reasoning_tokens": 1600,
+      "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

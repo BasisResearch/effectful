@@ -1,17 +1,26 @@
 {
-  "id": "chatcmpl-D3rNPzidwbTkz4hc0mGchwjqbvlq9",
-  "created": 1769812535,
+  "id": "chatcmpl-replay-nested-tuple-0",
+  "created": 1769812600,
   "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_1590f93f9d",
+  "system_fingerprint": "fp_fixture",
   "choices": [
     {
-      "finish_reason": "stop",
+      "finish_reason": "tool_calls",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing is the process of evaluating a system or component to ensure it meets specified requirements and functions correctly.\"}",
+        "content": null,
         "role": "assistant",
-        "tool_calls": null,
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"tool_name\":\"search\",\"tool_description\":\"Search the web for relevant results\",\"params\":{\"item_0\":\"query\"}}",
+              "name": "propose"
+            },
+            "id": "call_nested_tuple_param_001",
+            "type": "function"
+          }
+        ],
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
@@ -22,9 +31,9 @@
     }
   ],
   "usage": {
-    "completion_tokens": 28,
-    "prompt_tokens": 262,
-    "total_tokens": 290,
+    "completion_tokens": 30,
+    "prompt_tokens": 400,
+    "total_tokens": 430,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
