@@ -12,8 +12,10 @@ import inspect
 import os
 from collections.abc import Callable
 
+from tenacity import stop_after_attempt
+
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider
+from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import handler
 from effectful.ops.types import NotHandled
@@ -50,6 +52,12 @@ if __name__ == "__main__":
         help="LLM model to use",
     )
     parser.add_argument(
+        "--num-retries",
+        type=int,
+        default=5,
+        help="Number of retries for malformed LLM output",
+    )
+    parser.add_argument(
         "--first-digit",
         type=int,
         default=6,
@@ -65,7 +73,11 @@ if __name__ == "__main__":
 
     provider = LiteLLMProvider(model=args.model)
 
-    with handler(provider), handler(UnsafeEvalProvider()):
+    with (
+        handler(provider),
+        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+        handler(UnsafeEvalProvider()),
+    ):
         prime = primes(args.first_digit)
         assert type(prime) is int
         print(f"Prime starting with {args.first_digit}: {prime}")
