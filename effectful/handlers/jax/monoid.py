@@ -1,18 +1,16 @@
-from typing import Annotated, Callable
+from collections.abc import Callable
+from typing import Annotated
 
 import jax
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem
-from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import Scoped, deffn, defop
 from effectful.ops.types import Expr, Operation, Term
 from effectful.ops.weighted.distribution import D
 from effectful.ops.weighted.monoid import (
-    ArgMax,
-    ArgMin,
     Body,
     CommutativeMonoid,
     CommutativeMonoidWithZero,
@@ -38,7 +36,7 @@ def _parse_body(body) -> list[tuple[tuple[Operation, ...], Expr[jax.Array]]]:
     return [((), body)]
 
 
-class ArrayMonoid(Monoid[T]):
+class ArrayMonoid[T](Monoid[T]):
     """Reduce array-valued bodies over array-valued streams."""
 
     reduce_dims: Callable[[T, int | tuple[int]], T]
@@ -81,24 +79,34 @@ class ArrayMonoid(Monoid[T]):
             k: deffn(self.unbind_dims(v, old_to_fresh[k])) for k, v in streams.items()
         }
 
-        result_1 = handler(indexed_streams)(evaluate)(value)
+        indexed_result = handler(indexed_streams)(evaluate)(value)
+        used_indices = fvsof(indexed_result)
 
         # bind and reduce indices from the streams that do not appear in the result indexing expression
-        reduction_indices = tuple(old_to_fresh[i] for i in streams if i not in indices)
-        result_2 = bind_dims(result_1, *reduction_indices)
-        result_3 = self.reduce_dims(result_2, tuple(range(len(reduction_indices))))
+        reduction_indices = tuple(
+            old_to_fresh[i]
+            for i in streams
+            if old_to_fresh[i] in used_indices and i not in indices
+        )
+        if reduction_indices:
+            bound_result = self.bind_dims(indexed_result, *reduction_indices)
+            reduced_result = self.reduce_dims(
+                bound_result, tuple(range(len(reduction_indices)))
+            )
+        else:
+            reduced_result = indexed_result
 
         # bind indices that appear in the indexing expression
         fresh_indices = [old_to_fresh[i] for i in indices]
-        result_4 = bind_dims(result_3, *fresh_indices)
+        reindexed_result = self.bind_dims(reduced_result, *fresh_indices)
 
-        # add indices for streams that don't appear in body
-        fvars = set(streams.keys()) - fvsof(value)
-        unused_streams = {k: v for (k, v) in streams.items() if k in fvars}
-        return super().reduce(unused_streams, result_4)
+        unused_streams = {
+            k: v for (k, v) in streams.items() if old_to_fresh[k] not in used_indices
+        }
+        return super().reduce(unused_streams, reindexed_result)
 
 
-class _JaxArrayMonoid(Monoid[T]):
+class _JaxArrayMonoid(ArrayMonoid[jax.Array]):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, bind_dims=bind_dims, unbind_dims=unbind_dims, **kwargs)
 
