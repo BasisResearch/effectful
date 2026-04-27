@@ -54,6 +54,8 @@ llm = [
   "typing_extensions",
   "restrictedpython>=8.1"
 ]
+llm-weave = ["effectful[llm]", "weave"]
+llm-langfuse = ["effectful[llm]", "langfuse"]
 prettyprinter = ["prettyprinter"]
 docs = [
     "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
@@ -78,7 +80,7 @@ test = [
 ]
 
 [dependency-groups]
-dev = ["effectful[torch,pyro,jax,numpyro,llm,docs,test]"]
+dev = ["effectful[torch,pyro,jax,numpyro,llm,llm-weave,llm-langfuse,docs,test]"]
 
 [tool.ruff]
 target-version = "py312"
