@@ -2,7 +2,14 @@ from typing import Callable
 
 from effectful.ops.syntax import syntactic_eq
 from effectful.ops.types import Operation
-from effectful.ops.weighted.monoid import Max, Min, Product, Sum
+from effectful.ops.weighted.monoid import (
+    CommutativeMonoid,
+    IdempotentMonoid,
+    Max,
+    Min,
+    Product,
+    Sum,
+)
 
 
 def define_vars(*names, typ=int):
@@ -80,6 +87,35 @@ def test_plus_distributes_multiple():
             ),
         ),
     )
+
+
+def test_plus_idempotent():
+    (a, b, identity) = define_vars("a", "b", "identity")
+
+    IdMonoid = IdempotentMonoid(
+        kernel=Operation.define(Callable[[int, int], int]), identity=identity()
+    )
+
+    assert syntactic_eq(IdMonoid.plus(a(), a(), b()), IdMonoid.plus(a(), b()))
+    assert syntactic_eq(IdMonoid.plus(a(), b(), a()), IdMonoid.plus(a(), b(), a()))
+    assert syntactic_eq(
+        IdMonoid.plus(a(), b(), a(), b(), b(), a(), a()),
+        IdMonoid.plus(a(), b(), a(), b(), a()),
+    )
+
+
+def test_plus_commutative_idempotent():
+    (a, b) = define_vars("a", "b")
+
+    assert syntactic_eq(Min.plus(a(), a(), b()), Min.plus(a(), b()))
+    assert syntactic_eq(Min.plus(b(), a(), b()), Min.plus(b(), a()))
+    assert syntactic_eq(Min.plus(a(), b(), a(), b(), b(), a(), a()), Min.plus(a(), b()))
+
+
+def test_plus_zero():
+    a = define_vars("a")
+    assert syntactic_eq(Product.plus(a(), Product.zero), Product.zero)
+    assert syntactic_eq(Product.plus(Product.zero, a()), Product.zero)
 
 
 def test_reduce_body_int():
@@ -160,7 +196,7 @@ def test_reduce_idempotent():
     assert syntactic_eq(Min.reduce({a: A()}, b()), b())
 
 
-def test_reduce_distr():
-    a, b = define_vars("a", "b")
-    A, B = define_vars("A", "B", typ=list[int])
-    assert syntactic_eq(Product.reduce({a: A()}, Sum({b: B(a())}, b())), ??)
+# def test_reduce_distr():
+#     a, b = define_vars("a", "b")
+#     A, B = define_vars("A", "B", typ=list[int])
+#     assert syntactic_eq(Product.reduce({a: A()}, Sum({b: B(a())}, b())), ??)

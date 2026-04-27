@@ -23,6 +23,7 @@ from effectful.ops.syntax import (
     iter_,
     next_,
     syntactic_eq,
+    syntactic_hash,
     trace,
 )
 from effectful.ops.types import NotHandled, Operation, Term
@@ -886,6 +887,24 @@ def test_syntactic_eq() -> None:
     assert not syntactic_eq(defop(int)(), 1)
     assert not syntactic_eq([], l)
     assert not syntactic_eq(1, [])
+
+
+def test_syntactic_hash() -> None:
+    l = defop(list[int])()
+
+    # Equal values must hash equal.
+    assert syntactic_hash("test") == syntactic_hash("test")
+    assert syntactic_hash([1, 2, 3]) == syntactic_hash([1, 2, 3])
+    assert syntactic_hash(set([1, 2, 3])) == syntactic_hash(set([1, 2, 3]))
+    assert syntactic_hash({"a": 1, "b": 2}) == syntactic_hash({"b": 2, "a": 1})
+    assert syntactic_hash(l) == syntactic_hash(l)
+
+    # Unequal values are *allowed* to collide, but for these concrete cases
+    # they shouldn't — a collision here would indicate a real bug.
+    assert syntactic_hash(1) != syntactic_hash(defop(int)())
+    assert syntactic_hash(defop(int)()) != syntactic_hash(1)
+    assert syntactic_hash([]) != syntactic_hash(l)
+    assert syntactic_hash(1) != syntactic_hash([])
 
 
 def test_arg_positioning():

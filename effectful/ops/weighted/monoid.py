@@ -3,14 +3,21 @@ import functools
 import itertools
 import numbers
 import typing
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any, Protocol
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Scoped, _IteratorTerm, _NumberTerm
+from effectful.ops.syntax import (
+    Scoped,
+    _IteratorTerm,
+    _NumberTerm,
+    defdata,
+    syntactic_eq,
+    syntactic_hash,
+)
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -131,8 +138,11 @@ class Monoid[T]:
         # elim associativity
         if any(isinstance(x, Term) and x.op is self.plus for x in args):
             flat_args = sum(
-                t.args if isinstance(t, Term) and t.op is self.plus else (t,)
-                for t in args
+                (
+                    t.args if isinstance(t, Term) and t.op is self.plus else (t,)
+                    for t in args
+                ),
+                start=(),
             )
             assert len(args) > 0
             return self.plus(*flat_args)
@@ -283,7 +293,13 @@ class Monoid[T]:
 class IdempotentMonoid[T](Monoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        normalized_plus = super().plus(*args)
+        # elim consecutive duplicates
+        dedup_args = []
+        for i in range(len(args)):
+            if i == 0 or not syntactic_eq(args[i - 1], args[i]):
+                dedup_args.append(args[i])
+
+        return super().plus(*dedup_args)
 
     def scalar_mul(self, v: T, x: int) -> T:
         if x < 0:
@@ -327,8 +343,40 @@ class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
         )
         return cls(kernel_op, kernel_op, identity, zero)
 
+    @Operation.define
+    def plus[S: Body[T]](self, *args: S) -> S:
+        # elim zero
+        if any(x is self.zero for x in args):
+            return self.zero
 
-class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]): ...
+        return super().plus(*args)
+
+
+@dataclass
+class _HashableTerm:
+    term: Term
+
+    def __eq__(self, other):
+        return syntactic_eq(self, other)
+
+    def __hash__(self):
+        return syntactic_hash(self)
+
+
+class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]):
+    @Operation.define
+    def plus[S: Body[T]](self, *args: S) -> S:
+        # elim dups
+        args_count = Counter(_HashableTerm(t) for t in args)
+        if args_count.total() < len(args):
+            dedup_args = []
+            for t in args:
+                if t in args_count:
+                    dedup_args.append(t)
+                    del args_count[t]
+            args = tuple(dedup_args)
+
+        return super().plus(*args)
 
 
 class SupportsRichComparison(Protocol):
