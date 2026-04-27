@@ -3,6 +3,7 @@ import functools
 import itertools
 import numbers
 import typing
+from collections import defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
@@ -43,9 +44,26 @@ class Add[T](Protocol):
 
 @dataclass
 class Monoid[T]:
-    kernel: Operation[[T, T], T]
+    kernel: Operation[[T, ...], T]
     add: Add[T]
     identity: T
+
+    def __init__(
+        self, kernel: Callable[[T, T], T], identity: T, add: Add[T] | None = None
+    ):
+        self.identity = identity
+        self.kernel = (
+            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
+        )
+
+        if add is None:
+
+            def _add(*args: T) -> T:
+                return functools.reduce(self.kernel, args)
+
+            self.add = _add
+        else:
+            self.add = add
 
     @classmethod
     def from_binary(cls, kernel: Callable[[T, T], T], identity: T):
@@ -65,38 +83,83 @@ class Monoid[T]:
         )
         return cls(kernel_op, kernel_op, identity)
 
+    def __call__[S: Body[T]](self, x: S, *xs: S) -> S:
+        return self.plus(x, *xs)
+
+    @Operation.define
     @functools.singledispatchmethod
-    def __call__[S: Body[T]](self, a: S, *bs: S) -> S:
+    def plus[S: Body[T]](self, a: S, *bs: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
 
         """
+        # eliminate identity elements
+        bs = tuple(b for b in bs if b is not self.identity)
+
+        # eliminate singleton plus
+        if not bs:
+            return a
+
+        # eliminate nested plus
+        breakpoint()
+        args = []
+        for t in (a, *bs):
+            if isinstance(t, Term) and t.op is self.plus:
+                args += t.args
+            else:
+                args.append(t)
+        a = args[0]
+        bs = args[1:]
+
         if callable(a):
             for b in bs:
                 if not callable(b):
                     raise TypeError(f"Expected callable but got {b}")
 
-            result = lambda *args, **kwargs: self(
+            result = lambda *args, **kwargs: self.plus(
                 a(*args, **kwargs),
                 *[b(*args, **kwargs) for b in bs],  # type: ignore[operator]
             )
             return typing.cast(S, result)
 
+        # group terms by head operation
+        by_head_op = defaultdict(list)
+        for t in (a, *bs):
+            by_head_op[t.op].append(t)
+
+        # distribute over each group
+        final_sum = []
+        progress = False
+        for op, terms in by_head_op.items():
+            if distributes_over(self.plus, op):
+                progress = True
+
+                term_args = tuple(t.args for t in terms)
+                dist_terms = tuple(
+                    self.plus(*args) for args in itertools.product(*term_args)
+                )
+                final_sum.append(op(*dist_terms))
+            else:
+                final_sum += terms
+        if progress:
+            return self.plus(*final_sum)
+        raise NotHandled
+
         # Base case: a: T, *bs: T
         return typing.cast(
-            S, self.add(typing.cast(T, a), *typing.cast(tuple[T, ...], bs))
+            S, self.kernel(typing.cast(T, a), *typing.cast(tuple[T, ...], bs))
         )
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
-    @__call__.register(Sequence)
+    @plus.register
     def _(self, a: Sequence, *bs: Sequence):
         result = [self(*vs) for vs in zip(*(a, *bs), strict=True)]
         return type(a)(result)  # type: ignore[call-arg]
 
     # TODO: This case should be covered by a more general use of jax.tree or
     # similar.
-    @__call__.register(Mapping)
+    @plus.register
     def _(self, a: Mapping, *bs: Mapping):
         # singledispatch doesn't recognize Interpretation as a more specific type than Mapping
         if isinstance(a, Interpretation):
@@ -309,10 +372,10 @@ class _ExtensibleBinaryRelation[S, T]:
 
 distributes_over = _ExtensibleBinaryRelation(
     {
-        (max, min),
-        (min, max),
-        (_NumberTerm.__add__, min),
-        (_NumberTerm.__add__, max),
-        (_NumberTerm.__mul__, _NumberTerm.__add__),
+        (Max.plus, Min.plus),
+        (Min.plus, Max.plus),
+        (Sum.plus, Min.plus),
+        (Sum.plus, Max.plus),
+        (Product.plus, Sum.plus),
     }
 )

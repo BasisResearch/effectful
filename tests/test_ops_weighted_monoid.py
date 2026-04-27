@@ -11,12 +11,85 @@ Forms 2–4 require a promoted monoid (promote(SumMonoid)) because the
 standard monoid add only operates on scalar values.
 """
 
-from effectful.ops.syntax import defop
-from effectful.ops.weighted.monoid import Sum
+from effectful.ops.syntax import defop, syntactic_eq
+from effectful.ops.types import Operation
+from effectful.ops.weighted.monoid import Max, Min, Product, Sum
 
-# ---------------------------------------------------------------------------
-# Raw value body (else branch in _body_value → evaluate(body, intp=intp))
-# ---------------------------------------------------------------------------
+
+def define_vars(*names, typ=int):
+    if len(names) == 1:
+        return Operation.define(typ, name=names[0])
+    return tuple(Operation.define(typ, name=n) for n in names)
+
+
+def test_plus_single():
+    x = define_vars("x")
+    assert syntactic_eq(Sum.plus(x()), x())
+
+
+def test_plus_identity():
+    x = define_vars("x")
+    assert syntactic_eq(Sum.plus(x(), Sum.identity), x())
+
+
+def test_plus_plus():
+    (x, y, z) = define_vars("x", "y", "z")
+    assert syntactic_eq(Sum.plus(x(), Sum.plus(y(), z())), Sum.plus(x(), y(), z()))
+    assert syntactic_eq(Sum.plus(Sum.plus(x(), y()), z()), Sum.plus(x(), y(), z()))
+
+
+def test_plus_sequence():
+    (a, b, c, d) = define_vars("a", "b", "c", "d")
+    assert syntactic_eq(
+        Sum.plus([a(), b()], [c(), d()]), [Sum.plus(a(), b()), Sum.plus(c(), d())]
+    )
+
+
+def test_plus_mapping():
+    (a, b, c, d) = define_vars("a", "b", "c", "d")
+    assert syntactic_eq(
+        Sum.plus({"x": a(), "y": b()}, {"x": c(), "z": d()}),
+        {"x": Sum.plus(a(), c()), "y": b(), "z": d()},
+    )
+
+
+def test_plus_distributes():
+    (a, b, c, d) = define_vars("a", "b", "c", "d")
+    assert syntactic_eq(
+        Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d())),
+        Sum.plus(
+            Product.plus(a(), c()),
+            Product.plus(a(), d()),
+            Product.plus(b(), c()),
+            Product.plus(b(), d()),
+        ),
+    )
+
+
+def test_plus_distributes_multiple():
+    (a, b, c, d) = define_vars("a", "b", "c", "d")
+    assert syntactic_eq(
+        Sum.plus(
+            Min.plus(a(), b()),
+            Min.plus(c(), d()),
+            Max.plus(a(), b()),
+            Max.plus(c(), d()),
+        ),
+        Sum.plus(
+            Min.plus(
+                Sum.plus(a(), c()),
+                Sum.plus(a(), d()),
+                Sum.plus(b(), c()),
+                Sum.plus(b(), d()),
+            ),
+            Max.plus(
+                Sum.plus(a(), c()),
+                Sum.plus(a(), d()),
+                Sum.plus(b(), c()),
+                Sum.plus(b(), d()),
+            ),
+        ),
+    )
 
 
 def test_body_raw_value():
