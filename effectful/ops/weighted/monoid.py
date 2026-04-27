@@ -112,35 +112,36 @@ class Monoid[T]:
         return args
 
     @Operation.define
-    @functools.singledispatchmethod
-    def plus[S: Body[T]](self, a: S, *bs: S) -> S:
+    def plus[S: Body[T]](self, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
 
         """
+        if not args:
+            return self.identity
+
         # elim single arg plus
-        if not bs:
-            return a
+        if len(args) == 1:
+            return args[0]
 
         # elim identity
-        if any(x is self.identity for x in bs):
-            return self.plus(a, *tuple(b for b in bs if b is not self.identity))
+        if any(x is self.identity for x in args):
+            return self.plus(*tuple(x for x in args if x is not self.identity))
 
         # elim associativity
-        if any(isinstance(x, Term) and x.op is self.plus for x in (a, *bs)):
-            args = []
-            for t in (a, *bs):
-                args += t.args if isinstance(t, Term) and t.op is self.plus else (t,)
+        if any(isinstance(x, Term) and x.op is self.plus for x in args):
+            flat_args = sum(
+                t.args if isinstance(t, Term) and t.op is self.plus else (t,)
+                for t in args
+            )
             assert len(args) > 0
-            return self.plus(*args)
+            return self.plus(*flat_args)
 
         # elim distributivity
-        if any(
-            isinstance(x, Term) and distributes_over(self.plus, x.op) for x in (a, *bs)
-        ):
+        if any(isinstance(x, Term) and distributes_over(self.plus, x.op) for x in args):
             # group terms by head operation
             by_head_op = defaultdict(list)
-            for t in (a, *bs):
+            for t in args:
                 by_head_op[t.op].append(t)
 
             # distribute over each group
@@ -163,63 +164,54 @@ class Monoid[T]:
             if progress:
                 return self.plus(*final_sum)
 
-        if any(isinstance(x, Term) for x in (a, *bs)):
+        if any(isinstance(x, Term) for x in args):
             raise NotHandled
 
-        if callable(a):
-            for b in bs:
+        if callable(args[0]):
+            for b in args[1:]:
                 if not callable(b):
                     raise TypeError(f"Expected callable but got {b}")
 
             result = lambda *args, **kwargs: self.plus(
-                a(*args, **kwargs),
-                *[b(*args, **kwargs) for b in bs],  # type: ignore[operator]
+                *tuple(x(*args, **kwargs) for x in args),  # type: ignore[operator]
             )
             return typing.cast(S, result)
 
-        # Base case: a: T, *bs: T
-        return typing.cast(
-            S, self.kernel(typing.cast(T, a), *typing.cast(tuple[T, ...], bs))
-        )
+        if isinstance(args[0], Sequence):
+            return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
 
-    # TODO: This case should be covered by a more general use of jax.tree or
-    # similar.
-    @plus.register
-    def _(self, a: Sequence, *bs: Sequence):
-        result = [self(*vs) for vs in zip(*(a, *bs), strict=True)]
-        return type(a)(result)  # type: ignore[call-arg]
+        if isinstance(args[0], Interpretation):
+            keys = args[0].keys()
 
-    # TODO: This case should be covered by a more general use of jax.tree or
-    # similar.
-    @plus.register
-    def _(self, a: Mapping, *bs: Mapping):
-        # singledispatch doesn't recognize Interpretation as a more specific type than Mapping
-        if isinstance(a, Interpretation):
-            for b in bs:
+            for b in args[1:]:
                 if not isinstance(b, Interpretation):
                     raise TypeError(f"Expected interpretation but got {b}")
 
-            a_keys = a.keys()
-            for b in bs:
                 b_keys = b.keys()
-                if not a_keys == b_keys:
+                if not keys == b_keys:
                     raise ValueError(
-                        f"Expected interpretation of {a_keys} but got {b_keys}"
+                        f"Expected interpretation of {keys} but got {b_keys}"
                     )
 
             result = {
-                k: self(handler(a)(a[k]), *[handler(b)(b[k]) for b in bs])
-                for k in a_keys
+                k: self.plus(*tuple(handler(b)(b[k]) for b in args)) for k in keys
             }
             return result
-        else:
+
+        if isinstance(args[0], Mapping):
+            for b in args[1:]:
+                if not isinstance(b, Mapping):
+                    raise TypeError(f"Expected mapping but got {b}")
+
             all_values = collections.defaultdict(list)
-            for d in (a, *bs):
-                assert isinstance(d, Mapping)
+            for d in args:
                 for k, v in d.items():
                     all_values[k].append(v)
-            result = {k: self(*vs) for (k, vs) in all_values.items()}
+            result = {k: self.plus(*vs) for (k, vs) in all_values.items()}
             return result
+
+        # Base case: a: T, *bs: T
+        return typing.cast(S, self.kernel(*args))
 
     def scalar_mul(self, v: T, x: int) -> T:
         """
@@ -289,6 +281,10 @@ class Monoid[T]:
 
 
 class IdempotentMonoid[T](Monoid[T]):
+    @Operation.define
+    def plus[S: Body[T]](self, *args: S) -> S:
+        normalized_plus = super().plus(*args)
+
     def scalar_mul(self, v: T, x: int) -> T:
         if x < 0:
             raise ValueError("Expected x >= 0")
