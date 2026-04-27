@@ -262,6 +262,9 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     if isinstance(typ, inspect.Signature):
         return _unify_signature(typ, subtyp, subs)
 
+    if _is_typeddict_type(typ) and _is_typeddict_type(subtyp):
+        return _unify_typeddict(typ, subtyp, subs)
+
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
 
@@ -364,6 +367,45 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
         if len(unifiers) > 0 and all(u == unifiers[0] for u in unifiers):
             return unifiers[0]
     raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+
+
+def _is_typeddict_type(typ) -> bool:
+    """Check if typ is a TypedDict class or a parameterized TypedDict (e.g. Datum[T])."""
+    if isinstance(typ, type) and typing.is_typeddict(typ):
+        return True
+    origin = typing.get_origin(typ)
+    return (
+        origin is not None and isinstance(origin, type) and typing.is_typeddict(origin)
+    )
+
+
+def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
+    """Get type hints for a TypedDict, substituting type params if parameterized."""
+    origin = typing.get_origin(typ)
+    if origin is not None and typing.is_typeddict(origin):
+        args = typing.get_args(typ)
+        type_params = origin.__type_params__
+        hints = typing.get_type_hints(origin)
+        param_subs = dict(zip(type_params, args))
+        return {field: substitute(hint, param_subs) for field, hint in hints.items()}
+    else:
+        return typing.get_type_hints(typ)
+
+
+def _unify_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
+    """Unify two TypedDict types by matching fields structurally."""
+    typ_hints = _get_typeddict_hints(typ)
+    subtyp_hints = _get_typeddict_hints(subtyp)
+
+    for field in typ_hints:
+        if field not in subtyp_hints:
+            raise TypeError(
+                f"Cannot unify TypedDict {typ} with {subtyp}: "
+                f"field '{field}' not found in {subtyp}"
+            )
+        subs = unify(typ_hints[field], subtyp_hints[field], subs)
+
+    return subs
 
 
 @typing.overload
@@ -857,6 +899,9 @@ def _(value: collections.abc.Mapping):
     elif len(value) == 1:
         ktyp = nested_type(next(iter(value.keys()))).value
         vtyp = nested_type(next(iter(value.values()))).value
+        if ktyp is str and isinstance(vtyp, type) and typing.is_typeddict(vtyp):
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
     else:
         ktyp = functools.reduce(

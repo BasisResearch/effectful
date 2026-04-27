@@ -1831,3 +1831,14 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
         ),
         collections.abc.Mapping,
     )
+
+
+def test_unify_generic_typeddict_extracts_typevar():
+    """unify(Datum[T], nested_type(dict).value) should return {T: int}."""
+
+    class Datum[T](typing.TypedDict):
+        name: str
+        value: T
+
+    result = unify(Datum[T], nested_type({"name": "a", "value": 1}).value)
+    assert result == {T: int}

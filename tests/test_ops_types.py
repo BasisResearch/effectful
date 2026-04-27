@@ -1,5 +1,7 @@
 import inspect
+import typing
 
+from effectful.ops.semantics import typeof
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, NotHandled
 
@@ -49,3 +51,22 @@ def test_instance_method_signature_excludes_self():
 
     # Binding should work with just the real args (no 'self')
     sig.bind(42)
+
+
+def test_defop_generic_typeddict_type_inference():
+    """defop with generic TypedDict params should infer return type from nested dicts."""
+
+    class Datum[T](typing.TypedDict):
+        name: str
+        value: T
+
+    class Outer[T](typing.TypedDict):
+        inner: Datum[T]
+
+    @defop
+    def unwrap_outer[T](x: Outer[T]) -> T:
+        raise NotHandled
+
+    term = unwrap_outer({"inner": {"name": "a", "value": 1}})
+
+    assert typeof(term) == int
