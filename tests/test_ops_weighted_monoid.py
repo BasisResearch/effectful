@@ -41,7 +41,7 @@ def test_plus_plus():
 def test_plus_sequence():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
     assert syntactic_eq(
-        Sum.plus([a(), b()], [c(), d()]), [Sum.plus(a(), b()), Sum.plus(c(), d())]
+        Sum.plus([a(), b()], [c(), d()]), [Sum.plus(a(), c()), Sum.plus(b(), d())]
     )
 
 

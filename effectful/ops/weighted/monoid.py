@@ -42,7 +42,6 @@ class Add[T](Protocol):
     def __call__(self, *args: T) -> T: ...
 
 
-@dataclass
 class Monoid[T]:
     kernel: Operation[[T, ...], T]
     add: Add[T]
@@ -86,6 +85,32 @@ class Monoid[T]:
     def __call__[S: Body[T]](self, x: S, *xs: S) -> S:
         return self.plus(x, *xs)
 
+    def _elim_identity_plus[T](self, *args: T) -> T:
+        progress = False
+        args = []
+        for t in args:
+            if isinstance(t, Term) and t.op is self.plus:
+                progress = True
+                args += t.args
+            else:
+                args.append(t)
+        if progress:
+            return self.plus(*args).args
+        return args
+
+    def _elim_assoc_plus[T](self, *args: T) -> T:
+        progress = False
+        args = []
+        for t in args:
+            if isinstance(t, Term) and t.op is self.plus:
+                progress = True
+                args += t.args
+            else:
+                args.append(t)
+        if progress:
+            return self.plus(*args).args
+        return args
+
     @Operation.define
     @functools.singledispatchmethod
     def plus[S: Body[T]](self, a: S, *bs: S) -> S:
@@ -93,23 +118,53 @@ class Monoid[T]:
         callables, and interpretations.
 
         """
-        # eliminate identity elements
-        bs = tuple(b for b in bs if b is not self.identity)
-
-        # eliminate singleton plus
+        # elim single arg plus
         if not bs:
             return a
 
-        # eliminate nested plus
-        breakpoint()
-        args = []
-        for t in (a, *bs):
-            if isinstance(t, Term) and t.op is self.plus:
-                args += t.args
-            else:
-                args.append(t)
-        a = args[0]
-        bs = args[1:]
+        # elim identity
+        if any(x is self.identity for x in bs):
+            return self.plus(a, *tuple(b for b in bs if b is not self.identity))
+
+        # elim associativity
+        if any(isinstance(x, Term) and x.op is self.plus for x in (a, *bs)):
+            args = []
+            for t in (a, *bs):
+                args += t.args if isinstance(t, Term) and t.op is self.plus else (t,)
+            assert len(args) > 0
+            return self.plus(*args)
+
+        # elim distributivity
+        if any(
+            isinstance(x, Term) and distributes_over(self.plus, x.op) for x in (a, *bs)
+        ):
+            # group terms by head operation
+            by_head_op = defaultdict(list)
+            for t in (a, *bs):
+                by_head_op[t.op].append(t)
+
+            # distribute over each group
+            progress = False
+            final_sum = []
+            for op, terms in by_head_op.items():
+                if (
+                    len(terms) > 1
+                    and distributes_over(self.plus, op)
+                    and not distributes_over(op, self.plus)
+                ):
+                    progress = True
+                    term_args = tuple(t.args for t in terms)
+                    dist_terms = tuple(
+                        self.plus(*args) for args in itertools.product(*term_args)
+                    )
+                    final_sum.append(op(*dist_terms))
+                else:
+                    final_sum += terms
+            if progress:
+                return self.plus(*final_sum)
+
+        if any(isinstance(x, Term) for x in (a, *bs)):
+            raise NotHandled
 
         if callable(a):
             for b in bs:
@@ -121,29 +176,6 @@ class Monoid[T]:
                 *[b(*args, **kwargs) for b in bs],  # type: ignore[operator]
             )
             return typing.cast(S, result)
-
-        # group terms by head operation
-        by_head_op = defaultdict(list)
-        for t in (a, *bs):
-            by_head_op[t.op].append(t)
-
-        # distribute over each group
-        final_sum = []
-        progress = False
-        for op, terms in by_head_op.items():
-            if distributes_over(self.plus, op):
-                progress = True
-
-                term_args = tuple(t.args for t in terms)
-                dist_terms = tuple(
-                    self.plus(*args) for args in itertools.product(*term_args)
-                )
-                final_sum.append(op(*dist_terms))
-            else:
-                final_sum += terms
-        if progress:
-            return self.plus(*final_sum)
-        raise NotHandled
 
         # Base case: a: T, *bs: T
         return typing.cast(
@@ -268,9 +300,18 @@ class IdempotentMonoid[T](Monoid[T]):
 class CommutativeMonoid[T](Monoid[T]): ...
 
 
-@dataclass
 class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
     zero: T
+
+    def __init__(
+        self,
+        kernel: Callable[[T, T], T],
+        identity: T,
+        zero: T,
+        add: Add[T] | None = None,
+    ):
+        super().__init__(kernel, identity, add=add)
+        self.zero = zero
 
     @classmethod
     def from_binary_with_zero(cls, kernel: Callable[[T, T], T], identity: T, zero: T):
