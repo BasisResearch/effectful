@@ -3,6 +3,7 @@
 import ast
 import builtins
 import inspect
+import sys
 import textwrap
 import types
 import typing
@@ -285,7 +286,12 @@ class TestTypeToAstTypingAnnotations:
 
         typ = typing.Optional[int]  # noqa: UP045 - intentionally testing old syntax
         result = type_to_ast(typ)
-        assert ast.unparse(result) == "typing.Union[int, None]"
+        # Python 3.14 unified typing.Union with types.UnionType (PEP 604),
+        # so typing.Optional[int] now renders with | syntax.
+        expected = (
+            "int | None" if sys.version_info >= (3, 14) else "typing.Union[int, None]"
+        )
+        assert ast.unparse(result) == expected
 
     def test_typing_dict(self):
         """typing.Dict[str, int]."""
