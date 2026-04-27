@@ -518,6 +518,8 @@ def _(typ: type | abc.ABCMeta):
         return collections.abc.Set
     elif typ is range:
         return collections.abc.Sequence[int]
+    elif typing.is_typeddict(typ):
+        return collections.abc.MutableMapping
     elif typ is types.GeneratorType:
         return collections.abc.Generator
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:
@@ -864,7 +866,12 @@ def _(value: collections.abc.Mapping):
             operator.or_, [nested_type(x).value for x in value.values()]
         )
         if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
-            return Box(type(value))
+            if ktyp is str:
+                # typedict support
+                fields = {key: nested_type(vl).value for key, vl in value.items()}
+                return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+            else:
+                return Box(type(value))
         else:
             return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
 

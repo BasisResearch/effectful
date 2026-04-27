@@ -188,6 +188,16 @@ def test_canonicalize_1():
     assert canonicalize(Literal[1, "a"]) == (int | str)
 
 
+def test_canonicalize_typeddict_class():
+    """Canonicalizing a TypedDict class returns MutableMapping."""
+
+    class MyTD(typing.TypedDict):
+        name: str
+        age: int
+
+    assert canonicalize(MyTD) == collections.abc.MutableMapping
+
+
 @pytest.mark.parametrize(
     "typ,subs,expected",
     [
@@ -758,6 +768,58 @@ def test_infer_return_type_failure(
 def test_nested_type(value, expected):
     result = nested_type(value).value
     assert canonicalize(result) == canonicalize(expected)
+
+
+def test_nested_type_typeddict_str_keys_mixed_values():
+    """Dicts with str keys and heterogeneous value types produce a TypedDict."""
+    value = {"name": "Alice", "age": 30}
+    result = nested_type(value).value
+    # Should be a TypedDict, not dict
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"name": str, "age": int}
+
+
+def test_nested_type_typeddict_multiple_value_types():
+    """TypedDict with more than two distinct value types."""
+    value = {"label": "x", "count": 5, "flag": True}
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"label": str, "count": int, "flag": bool}
+
+
+def test_nested_type_typeddict_nested_values():
+    """TypedDict with nested collection values."""
+    value = {"items": [1, 2, 3], "name": "test"}
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert canonicalize(hints["items"]) == canonicalize(list[int])
+    assert hints["name"] is str
+
+
+def test_nested_type_typeddict_instance_roundtrip():
+    """A TypedDict instance with heterogeneous values produces a TypedDict."""
+
+    class UserTD(typing.TypedDict):
+        name: str
+        age: int
+
+    value = UserTD(name="a", age=1)
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"name": str, "age": int}
+
+
+def test_nested_type_non_str_keys_mixed_values_stays_dict():
+    """Dicts with non-str keys and mixed value types stay as plain dict."""
+    value = {1: "one", 2: True}
+    result = nested_type(value).value
+    # Should remain a plain dict type, not a TypedDict
+    assert not typing.is_typeddict(result)
+    assert result is dict
 
 
 def test_nested_type_term_error():
