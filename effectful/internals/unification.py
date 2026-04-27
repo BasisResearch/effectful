@@ -852,7 +852,7 @@ def _(value: collections.abc.Mapping):
 
     if len(value) == 0:
         return Box(type(value))
-    elif len(value) == 1:
+    elif len(value) == 2:
         ktyp = nested_type(next(iter(value.keys()))).value
         vtyp = nested_type(next(iter(value.values()))).value
         return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
