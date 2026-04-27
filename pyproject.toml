@@ -8,7 +8,7 @@ version = "0.3.1"
 description = "Metaprogramming infrastructure"
 readme = "README.rst"
 license = "Apache-2.0"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12"
 authors = [
     { name = "Basis" },
 ]
@@ -27,6 +27,7 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = []
 
@@ -39,9 +40,12 @@ Source = "https://github.com/BasisResearch/effectful"
 torch = ["torch"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
-numpyro = ["numpyro>=0.19"]
+numpyro = [
+  "numpyro>=0.19",
+  "jax<0.10"
+]
 llm = [
-  "litellm<1.82.7",
+  "litellm",
   "tenacity",
   "mypy",
   "autoflake",
@@ -94,7 +98,7 @@ target-version = "py312"
 select = ["F", "I", "PERF", "UP"]
 
 [tool.pytest.ini_options]
-addopts = "--doctest-modules"
+addopts = "--doctest-modules --dist loadgroup"
 testpaths = ["./effectful", "./tests"]
 
 [tool.mypy]

@@ -847,6 +847,17 @@ def test_distribution_terms():
     assert isinstance(d3, Term) and isinstance(d3, numpyro.distributions.Distribution)
 
 
+def test_distribution_support():
+    d = dist.Normal(0, 1)
+    assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
+
+    d = dist.Uniform(0, 1)
+    assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
+
+    d = dist.CategoricalProbs(jnp.array([0.5, 0.5]))
+    assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
+
+
 @pytest.mark.parametrize(
     "dist_factory,dist_args",
     [(dist.Normal, []), (dist.BernoulliProbs, [jnp.array(0.5)])],
