@@ -9,10 +9,9 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any, Protocol
 
-from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.semantics import fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
-    _IteratorTerm,
     _NumberTerm,
     defdata,
     syntactic_eq,
@@ -33,7 +32,7 @@ type Body[T] = (
 )
 
 
-def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
+def order_streams[T](streams: Streams[T]) -> Iterable[tuple[Operation[[], T], Any]]:
     """Determine an order to evaluate the streams based on their dependencies"""
     stream_vars = set(streams.keys())
     dependencies = {k: fvsof(v) & stream_vars for k, v in streams.items()}
@@ -41,8 +40,34 @@ def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
     topo.prepare()
     while topo.is_active():
         node_group = topo.get_ready()
-        yield from sorted(node_group, key=str)
+        for op in sorted(node_group):
+            yield (op, streams[op])
         topo.done(*node_group)
+
+
+def transitive_dependencies(graph: dict, dependents: set) -> set:
+    """
+    Compute the transitive dependencies of a set of dependents.
+
+    Args:
+        graph: Dict mapping each dependent to an iterable of its direct dependencies.
+        dependents: Set of dependents whose transitive dependencies to compute.
+
+    Returns:
+        Set of all transitive dependencies (excluding the input dependents themselves
+        unless they appear as dependencies of other items in the input set).
+    """
+    result = set()
+    stack = [dep for d in dependents for dep in graph.get(d, ())]
+
+    while stack:
+        node = stack.pop()
+        if node in result:
+            continue
+        result.add(node)
+        stack.extend(graph.get(node, ()))
+
+    return result
 
 
 class Add[T](Protocol):
@@ -252,14 +277,27 @@ class Monoid[T]:
         body: Annotated[U, Scoped[A | B]],
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
-        # elim empty streams
+        # elim empty streams dict
         if not streams:
             return self.identity
+
+        # elim empty stream
+        if any(
+            issubclass(typeof(v), Sequence)
+            and not isinstance(iter(v), Term)
+            and len(v) == 0
+            for v in streams.values()
+        ):
+            return self.identity
+
+        # elim reduce body
+        if isinstance(body, Term) and body.op == self.reduce:
+            return self.reduce(body.args[0], streams | body.args[1])
 
         if callable(body):
             return lambda *a, **k: self.reduce(body(*a, *k), streams)
 
-        raise NotHandled
+        return defdata(self.reduce, body, streams)
 
     @reduce.register
     def _(self, body: Mapping, streams):
@@ -303,6 +341,29 @@ class IdempotentMonoid[T](Monoid[T]):
         ]
         return super().plus(*dedup_args)
 
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        # elim unused streams
+        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
+        body_vars = fvsof(body)
+        used_streams = (
+            transitive_dependencies(stream_deps, body_vars) | body_vars
+        ) & set(streams.keys())
+
+        if len(used_streams) == 0:
+            return body
+
+        if len(used_streams) < len(streams):
+            return super().reduce(
+                body, {k: v for (k, v) in streams.items() if k in used_streams}
+            )
+
+        return super().reduce(body, streams)
+
     def scalar_mul(self, v: T, x: int) -> T:
         if x < 0:
             raise ValueError("Expected x >= 0")
@@ -311,7 +372,18 @@ class IdempotentMonoid[T](Monoid[T]):
         return v
 
 
-class CommutativeMonoid[T](Monoid[T]): ...
+class CommutativeMonoid[T](Monoid[T]):
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        # elim plus body
+        if isinstance(body, Term) and body.op == self.plus:
+            return self.plus(*(self.reduce(x, streams) for x in body.args))
+
+        return super().reduce(body, streams)
 
 
 class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):

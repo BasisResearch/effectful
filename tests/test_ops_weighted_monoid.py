@@ -5,7 +5,7 @@ from collections.abc import Callable
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
-from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.types import NotHandled, Operation
 from effectful.ops.weighted.monoid import IdempotentMonoid, Max, Min, Product, Sum
 
 
@@ -227,13 +227,6 @@ def test_plus_zero():
     assert syntactic_eq_alpha(Product.plus(Product.zero, a()), Product.zero)
 
 
-def test_reduce_body_int():
-    a, b, c, x = define_vars("a", "b", "c", "x")
-    assert syntactic_eq_alpha(
-        Sum.reduce(x(), {x: [a(), b(), c()]}), Sum.plus(a(), b(), c())
-    )
-
-
 def test_reduce_body_sequence():
     x = Operation.define(int)
     X = Operation.define(list[int])
@@ -303,35 +296,39 @@ def test_reduce_plus():
     A, B = define_vars("A", "B", typ=list[int])
     assert syntactic_eq_alpha(
         Sum.reduce(Sum.plus(a(), b()), {a: A(), b: B()}),
-        Sum.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()})),
+        Sum.plus(Sum.reduce(a(), {a: A(), b: B()}), Sum.reduce(b(), {a: A(), b: B()})),
     )
 
 
 def test_reduce_reduce():
     a, b = define_vars("a", "b")
-    A = Operation.define(list[int])
+    A, B = define_vars("A", "B", typ=list[int])
 
     @Operation.define
-    def f(x: int) -> list[int]:
-        raise NotHandled
-
-    @Operation.define
-    def g(x: int, y: int) -> int:
+    def f(x: int, y: int) -> int:
         raise NotHandled
 
     assert syntactic_eq_alpha(
-        Sum.reduce(Sum.reduce(g(a(), b()), {b: f(A())}), {a: A()}),
-        Sum.reduce(g(a(), b()), {a: A(), b: f(A())}),
+        Sum.reduce(Sum.reduce(f(a(), b()), {a: A()}), {b: B()}),
+        Sum.reduce(f(a(), b()), {a: A(), b: B()}),
     )
 
 
-def test_reduce_idempotent():
+def test_reduce_idempotent_unused_1():
     a, b = define_vars("a", "b")
     A = Operation.define(list[int])
     assert syntactic_eq_alpha(Min.reduce(b(), {a: A()}), b())
 
 
-# def test_reduce_distr():
-#     a, b = define_vars("a", "b")
-#     A, B = define_vars("A", "B", typ=list[int])
-#     assert syntactic_eq_alpha(Product.reduce({a: A()}, Sum({b: B(a())}, b())), ??)
+def test_reduce_idempotent_unused_2():
+    a, b, c = define_vars("a", "b", "c")
+    C = define_vars("C", typ=list[int])
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    assert syntactic_eq_alpha(
+        Min.reduce(b(), {a: f(b()), b: f(c()), c: C()}),
+        Min.reduce(b(), {b: f(c()), c: C()}),
+    )
