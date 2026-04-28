@@ -48,6 +48,54 @@ def order_streams[T](streams: Streams[T]) -> Iterable[Operation[[], T]]:
 class Add[T](Protocol):
     def __call__(self, *args: T) -> T: ...
 
+    # @Operation.define
+    # def reduce[A, B, U: Body](
+    #     self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
+    # ) -> Annotated[U, Scoped[B]]:
+
+    #     def generator(loop_order):
+    #         if loop_order:
+    #             stream_key = loop_order[0]
+    #             stream_values = evaluate(streams[stream_key])
+    #             stream_values_iter = iter(stream_values)
+
+    #             # If we try to iterate and get a term instead of a real
+    #             # iterator, give up
+    #             if (
+    #                 isinstance(stream_values_iter, Term)
+    #                 and stream_values_iter.op is _IteratorTerm.__iter__
+    #             ):
+    #                 raise NotHandled
+
+    #             for val in stream_values:
+    #                 intp = {stream_key: functools.partial(lambda v: v, val)}
+    #                 with handler(intp):
+    #                     for intp2 in generator(loop_order[1:]):
+    #                         yield coproduct(intp, intp2)
+    #         else:
+    #             yield {}
+
+    #     def body_value(body: Body, intp: Interpretation) -> Body:
+    #         if isinstance(body, Interpretation):
+    #             # TODO: This should be a product, but the implementation of product isn't quite correct.
+    #             return {
+    #                 op: handler(coproduct(intp, body))(impl)
+    #                 for op, impl in body.items()
+    #             }
+    #         elif callable(body):
+    #             return handler(intp)(body)
+    #         elif isinstance(body, Mapping):
+    #             return {k: body_value(v, intp) for (k, v) in body.items()}
+    #         elif isinstance(body, Generator):
+    #             return (body_value(v, intp) for v in body)
+    #         else:
+    #             return handler(intp)(evaluate)(body)
+
+    #     loop_order = list(order_streams(streams))
+    #     values = [body_value(body, intp) for intp in generator(loop_order)]
+    #     result = self(*values)
+    #     return result
+
 
 class Monoid[T]:
     kernel: Operation[[T, ...], T]
@@ -91,32 +139,6 @@ class Monoid[T]:
 
     def __call__[S: Body[T]](self, x: S, *xs: S) -> S:
         return self.plus(x, *xs)
-
-    def _elim_identity_plus[T](self, *args: T) -> T:
-        progress = False
-        args = []
-        for t in args:
-            if isinstance(t, Term) and t.op is self.plus:
-                progress = True
-                args += t.args
-            else:
-                args.append(t)
-        if progress:
-            return self.plus(*args).args
-        return args
-
-    def _elim_assoc_plus[T](self, *args: T) -> T:
-        progress = False
-        args = []
-        for t in args:
-            if isinstance(t, Term) and t.op is self.plus:
-                progress = True
-                args += t.args
-            else:
-                args.append(t)
-        if progress:
-            return self.plus(*args).args
-        return args
 
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
@@ -223,6 +245,34 @@ class Monoid[T]:
         # Base case: a: T, *bs: T
         return typing.cast(S, self.kernel(*args))
 
+    @Operation.define
+    @functools.singledispatchmethod
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        # elim empty streams
+        if not streams:
+            return self.identity
+
+        if callable(body):
+            return lambda *a, **k: self.reduce(body(*a, *k), streams)
+
+        raise NotHandled
+
+    @reduce.register
+    def _(self, body: Mapping, streams):
+        return {k: self.reduce(v, streams) for (k, v) in body.items()}
+
+    @reduce.register
+    def _(self, body: Sequence, streams):
+        return type(body)(self.reduce(x, streams) for x in body)
+
+    @reduce.register
+    def _(self, body: Generator, streams):
+        return (self.reduce(x, streams) for x in body)
+
     def scalar_mul(self, v: T, x: int) -> T:
         """
         Returns the scalar multiplication w.r.t. a monoid.
@@ -240,54 +290,6 @@ class Monoid[T]:
         if x == 0:
             return self.identity
         return self(*itertools.repeat(v, x))
-
-    @Operation.define
-    def reduce[A, B, U: Body](
-        self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
-    ) -> Annotated[U, Scoped[B]]:
-
-        def generator(loop_order):
-            if loop_order:
-                stream_key = loop_order[0]
-                stream_values = evaluate(streams[stream_key])
-                stream_values_iter = iter(stream_values)
-
-                # If we try to iterate and get a term instead of a real
-                # iterator, give up
-                if (
-                    isinstance(stream_values_iter, Term)
-                    and stream_values_iter.op is _IteratorTerm.__iter__
-                ):
-                    raise NotHandled
-
-                for val in stream_values:
-                    intp = {stream_key: functools.partial(lambda v: v, val)}
-                    with handler(intp):
-                        for intp2 in generator(loop_order[1:]):
-                            yield coproduct(intp, intp2)
-            else:
-                yield {}
-
-        def body_value(body: Body, intp: Interpretation) -> Body:
-            if isinstance(body, Interpretation):
-                # TODO: This should be a product, but the implementation of product isn't quite correct.
-                return {
-                    op: handler(coproduct(intp, body))(impl)
-                    for op, impl in body.items()
-                }
-            elif callable(body):
-                return handler(intp)(body)
-            elif isinstance(body, Mapping):
-                return {k: body_value(v, intp) for (k, v) in body.items()}
-            elif isinstance(body, Generator):
-                return (body_value(v, intp) for v in body)
-            else:
-                return handler(intp)(evaluate)(body)
-
-        loop_order = list(order_streams(streams))
-        values = [body_value(body, intp) for intp in generator(loop_order)]
-        result = self(*values)
-        return result
 
 
 class IdempotentMonoid[T](Monoid[T]):
