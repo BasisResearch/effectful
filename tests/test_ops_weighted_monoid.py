@@ -340,3 +340,50 @@ def test_reduce_unused():
     assert syntactic_eq_alpha(
         Sum.reduce(b(), {a: A()}), Sum.scalar_mul(b(), Sum.reduce(1, {a: A()}))
     )
+
+
+def test_reduce_independent_1():
+    a, b = define_vars("a", "b")
+    A, B = define_vars("A", "B", typ=list[int])
+    assert syntactic_eq_alpha(
+        Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()}),
+        Product.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()})),
+    )
+
+
+def test_reduce_independent_2():
+    a, b, c = define_vars("a", "b", "c")
+    A, B, C = define_vars("A", "B", "C", typ=list[int])
+
+    @Operation.define
+    def f(x: int, y: int) -> int:
+        raise NotHandled
+
+    assert syntactic_eq_alpha(
+        Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()}),
+        Product.plus(
+            Sum.reduce(a(), {a: A()}),
+            Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+        ),
+    )
+
+
+def test_reduce_independent_3():
+    a, b, c = define_vars("a", "b", "c")
+    A, B, C = define_vars("A", "B", "C", typ=list[int])
+
+    @Operation.define
+    def f(x: int, y: int) -> int:
+        raise NotHandled
+
+    @Operation.define
+    def g(x: int) -> list[int]:
+        raise NotHandled
+
+    assert not syntactic_eq_alpha(
+        Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}),
+        Product.plus(
+            Sum.reduce(a(), {a: A()}),
+            Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
+        ),
+    )

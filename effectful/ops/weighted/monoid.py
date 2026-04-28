@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any, Protocol
 
+from effectful.internals.disjoint_set import DisjointSet
 from effectful.ops.semantics import fvsof, handler, typeof
 from effectful.ops.syntax import (
     Scoped,
@@ -68,6 +69,24 @@ def transitive_dependencies(graph: dict, dependents: set) -> set:
         stack.extend(graph.get(node, ()))
 
     return result
+
+
+def independent_terms(factors: Term, vs: set[Operation]) -> Iterable[set[Operation]]:
+    var_ids = {v: i for (i, v) in enumerate(vs)}
+    var_sets = DisjointSet(len(vs))
+
+    for factor in factors:
+        var_sets.union(*(var_ids[v] for v in (fvsof(factor) & vs)))
+
+    result_sets = {}
+    for v, i in var_ids.items():
+        set_i = var_sets.find(i)
+        if set_i in result_sets:
+            result_sets[set_i].add(v)
+        else:
+            result_sets[set_i] = {v}
+
+    return result_sets.values()
 
 
 class Add[T](Protocol):
@@ -369,11 +388,17 @@ class CommutativeMonoid[T](Monoid[T]):
             return self.plus(*(self.reduce(x, streams) for x in body.args))
 
         # elim unused streams
+        #
+        # Implements the identity
+        #     reduce(R, S × S', body) = |S'| ⋅ reduce(R, S, body)
+        #         where fvsof(body) ∩ S' = ∅
+        #         and `⋅` is the scalar product of the monoid addition
         stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
         body_vars = fvsof(body)
+        stream_vars = streams.keys()
         used_stream_vars = (
             transitive_dependencies(stream_deps, body_vars) | body_vars
-        ) & set(streams.keys())
+        ) & set(stream_vars)
 
         if len(used_stream_vars) < len(streams) and not (self is Sum and body == 1):
             used_streams = {k: v for (k, v) in streams.items() if k in used_stream_vars}
@@ -387,6 +412,54 @@ class CommutativeMonoid[T](Monoid[T]):
                 result = body
             mult = Sum.reduce(1, unused_streams)
             return self.scalar_mul(result, mult)
+
+        # Elim factors
+        #
+        # Implements factorization of independent terms.
+        #
+        # For example, when having two independent distributions, we can rewrite
+        # their marginalization as: ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
+        #
+        # More specifically, in terms of reduces we are performing:
+        #     reduce(R, (S₁ × ... × Sₖ), A₁ * ... * Aₖ)
+        #     => reduce(R, S₁, A₁) * ... * reduce(R, Sₖ, Aₖ)
+        #     where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
+        #       and free(Aᵢ) ∩ Sᵢ ≠ ∅
+        #
+        # (The implementation is a little more general than this, as each
+        # independent component can have an arbitrary number of streams.)
+        if isinstance(body, Term) and distributes_over(body.op, self.plus):
+            factors = body.args
+
+            stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
+            ds = DisjointSet(len(streams))
+
+            # streams are in the same partition as their dependencies
+            for stream_id, (stream_var, stream_body) in enumerate(streams.items()):
+                deps = {stream_ids[v] for v in fvsof(stream_body) & stream_vars}
+                ds.union(stream_id, *deps)
+
+            # factors are in the same partition as their dependencies
+            for factor in factors:
+                ds.union(*(stream_ids[v] for v in (fvsof(factor) & stream_vars)))
+
+            partitions = {}
+            for v, i in stream_ids.items():
+                p = ds.find(i)
+                part_streams = partitions.get(p, {})
+                part_streams[v] = streams[v]
+                partitions[p] = part_streams
+
+            if len(partitions) > 1:
+                new_reduces = []
+                for partition_streams in partitions.values():
+                    partition_terms = (
+                        t for t in factors if (fvsof(t) & set(partition_streams.keys()))
+                    )
+                    partition_term = body.op(*partition_terms)
+                    new_reduces.append(self.reduce(partition_term, partition_streams))
+
+                return body.op(*new_reduces)
 
         return super().reduce(body, streams)
 
