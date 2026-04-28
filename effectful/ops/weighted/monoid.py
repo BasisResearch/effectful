@@ -144,27 +144,6 @@ class Monoid[T]:
         else:
             self.add = add
 
-    @classmethod
-    def from_binary(cls, kernel: Callable[[T, T], T], identity: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-
-        def _add(*args: T) -> T:
-            return functools.reduce(kernel_op, args)
-
-        return cls(kernel_op, _add, identity)
-
-    @classmethod
-    def from_nary(cls, kernel: Add[T], identity: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-        return cls(kernel_op, kernel_op, identity)
-
-    def __call__[S: Body[T]](self, x: S, *xs: S) -> S:
-        return self.plus(x, *xs)
-
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
@@ -180,7 +159,7 @@ class Monoid[T]:
 
         # elim identity
         if any(x is self.identity for x in args):
-            return self.plus(*tuple(x for x in args if x is not self.identity))
+            return self.plus(*(x for x in args if x is not self.identity))
 
         # elim associativity
         if any(isinstance(x, Term) and x.op is self.plus for x in args):
@@ -211,8 +190,8 @@ class Monoid[T]:
                     and not distributes_over(op, self.plus)
                 ):
                     progress = True
-                    term_args = tuple(t.args for t in terms)
-                    dist_terms = tuple(
+                    term_args = (t.args for t in terms)
+                    dist_terms = (
                         self.plus(*args) for args in itertools.product(*term_args)
                     )
                     final_sum.append(op(*dist_terms))
@@ -230,7 +209,7 @@ class Monoid[T]:
                     raise TypeError(f"Expected callable but got {b}")
 
             result = lambda *args, **kwargs: self.plus(
-                *tuple(x(*args, **kwargs) for x in args),  # type: ignore[operator]
+                *(x(*args, **kwargs) for x in args),  # type: ignore[operator]
             )
             return typing.cast(S, result)
 
@@ -250,9 +229,7 @@ class Monoid[T]:
                         f"Expected interpretation of {keys} but got {b_keys}"
                     )
 
-            result = {
-                k: self.plus(*tuple(handler(b)(b[k]) for b in args)) for k in keys
-            }
+            result = {k: self.plus(*(handler(b)(b[k]) for b in args)) for k in keys}
             return result
 
         if isinstance(args[0], Mapping):
@@ -311,6 +288,7 @@ class Monoid[T]:
     def _(self, body: Generator, streams):
         return (self.reduce(x, streams) for x in body)
 
+    @Operation.define
     def scalar_mul(self, v: T, x: int) -> T:
         """
         Returns the scalar multiplication w.r.t. a monoid.
@@ -323,11 +301,14 @@ class Monoid[T]:
         Warning: scalar multiplication is not commutative,
             the scalar is always the second argument.
         """
+        if isinstance(x, Term):
+            return defdata(self.scalar_mul, v, x)
+
         if x < 0:
             raise ValueError("Expected x >= 0")
         if x == 0:
             return self.identity
-        return self(*itertools.repeat(v, x))
+        return self.plus(*itertools.repeat(v, x))
 
 
 class IdempotentMonoid[T](Monoid[T]):
@@ -364,7 +345,11 @@ class IdempotentMonoid[T](Monoid[T]):
 
         return super().reduce(body, streams)
 
+    @Operation.define
     def scalar_mul(self, v: T, x: int) -> T:
+        if isinstance(x, Term):
+            return defdata(self.scalar_mul, v, x)
+
         if x < 0:
             raise ValueError("Expected x >= 0")
         if x == 0:
@@ -383,6 +368,26 @@ class CommutativeMonoid[T](Monoid[T]):
         if isinstance(body, Term) and body.op == self.plus:
             return self.plus(*(self.reduce(x, streams) for x in body.args))
 
+        # elim unused streams
+        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
+        body_vars = fvsof(body)
+        used_stream_vars = (
+            transitive_dependencies(stream_deps, body_vars) | body_vars
+        ) & set(streams.keys())
+
+        if len(used_stream_vars) < len(streams) and not (self is Sum and body == 1):
+            used_streams = {k: v for (k, v) in streams.items() if k in used_stream_vars}
+            unused_streams = {
+                k: v for (k, v) in streams.items() if k not in used_stream_vars
+            }
+
+            if len(used_stream_vars) > 0:
+                result = super().reduce(body, used_streams)
+            else:
+                result = body
+            mult = Sum.reduce(1, unused_streams)
+            return self.scalar_mul(result, mult)
+
         return super().reduce(body, streams)
 
 
@@ -398,24 +403,6 @@ class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
     ):
         super().__init__(kernel, identity, add=add)
         self.zero = zero
-
-    @classmethod
-    def from_binary_with_zero(cls, kernel: Callable[[T, T], T], identity: T, zero: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-
-        def _add(*args: T) -> T:
-            return functools.reduce(kernel_op, args)
-
-        return cls(kernel_op, _add, identity, zero)
-
-    @classmethod
-    def from_nary_with_zero(cls, kernel: Add[T], identity: T, zero: T):
-        kernel_op = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
-        return cls(kernel_op, kernel_op, identity, zero)
 
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
@@ -466,7 +453,7 @@ def _min[T: SupportsRichComparison](*args: T) -> T:
     return min(*args)
 
 
-Min = Semilattice.from_nary(_min, float("inf"))
+Min = Semilattice(kernel=_min, identity=float("inf"), add=_min)
 
 
 @Operation.define
@@ -476,7 +463,7 @@ def _max[T: SupportsRichComparison](*args: T) -> T:
     return max(*args)
 
 
-Max = Semilattice.from_nary(_max, float("-inf"))
+Max = Semilattice(kernel=_max, identity=float("-inf"), add=_min)
 
 
 @Operation.define
@@ -488,7 +475,9 @@ def _arg_min[T](
     return b if b[0] < a[0] else a  # type: ignore
 
 
-ArgMin: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_min, (float("inf"), None))
+ArgMin: Monoid[tuple[float, Any]] = Monoid(
+    kernel=_arg_min, identity=(float("inf"), None)
+)
 
 
 @Operation.define
@@ -500,23 +489,33 @@ def _arg_max[T](
     return b if b[0] > a[0] else a  # type: ignore
 
 
-ArgMax: Monoid[tuple[float, Any]] = Monoid.from_binary(_arg_max, (float("-inf"), None))
+ArgMax: Monoid[tuple[float, Any]] = Monoid(
+    kernel=_arg_max, identity=(float("-inf"), None)
+)
 
 
 class _SumMonoid[N: int | float | complex](CommutativeMonoid[N]):
     def scalar_mul(self, v: N, x: int) -> N:
+        if not isinstance(x, Term) and x == 0:
+            return self.identity
+        if not isinstance(x, Term) and x == 1:
+            return v
         return typing.cast(N, v * x)
 
 
-Sum = _SumMonoid.from_binary(_NumberTerm.__add__, 0)
+Sum = _SumMonoid(kernel=_NumberTerm.__add__, identity=0)
 
 
 class _ProductMonoid[N: int | float | complex](CommutativeMonoidWithZero[N]):
     def scalar_mul(self, v: N, x: int) -> N:
+        if not isinstance(x, Term) and x == 0:
+            return self.identity
+        if not isinstance(x, Term) and x == 1:
+            return v
         return typing.cast(N, v**x)
 
 
-Product = _ProductMonoid.from_binary_with_zero(_NumberTerm.__mul__, 1, 0)
+Product = _ProductMonoid(kernel=_NumberTerm.__mul__, identity=1, zero=0)
 
 
 @dataclass

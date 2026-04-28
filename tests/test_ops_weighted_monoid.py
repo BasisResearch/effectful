@@ -332,3 +332,11 @@ def test_reduce_idempotent_unused_2():
         Min.reduce(b(), {a: f(b()), b: f(c()), c: C()}),
         Min.reduce(b(), {b: f(c()), c: C()}),
     )
+
+
+def test_reduce_unused():
+    a, b = define_vars("a", "b")
+    A = Operation.define(list[int])
+    assert syntactic_eq_alpha(
+        Sum.reduce(b(), {a: A()}), Sum.scalar_mul(b(), Sum.reduce(1, {a: A()}))
+    )
