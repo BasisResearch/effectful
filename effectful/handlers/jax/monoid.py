@@ -16,7 +16,7 @@ class _SumMonoid(CommutativeMonoid[jax.Array]):
         return v * x
 
 
-Sum = _SumMonoid.from_binary(jnp.add, jnp.asarray(0))
+Sum = _SumMonoid(kernel=jnp.add, identity=jnp.asarray(0))
 
 
 class _ProductMonoid(CommutativeMonoidWithZero[jax.Array]):
@@ -24,13 +24,13 @@ class _ProductMonoid(CommutativeMonoidWithZero[jax.Array]):
         return v**x
 
 
-Product = _ProductMonoid.from_binary_with_zero(
-    jnp.multiply, jnp.asarray(1), jnp.asarray(0)
+Product = _ProductMonoid(
+    kernel=jnp.multiply, identity=jnp.asarray(1), zero=jnp.asarray(0)
 )
 
-Min = Semilattice.from_binary(jnp.minimum, jnp.asarray(float("-inf")))
-Max = Semilattice.from_binary(jnp.maximum, jnp.asarray(float("inf")))
-LogSumExp = CommutativeMonoid.from_binary(jnp.logaddexp, jnp.asarray(float("-inf")))
+Min = Semilattice(kernel=jnp.minimum, identity=jnp.asarray(float("-inf")))
+Max = Semilattice(kernel=jnp.maximum, identity=jnp.asarray(float("inf")))
+LogSumExp = CommutativeMonoid(kernel=jnp.logaddexp, identity=jnp.asarray(float("-inf")))
 
 
 @Operation.define
@@ -43,11 +43,11 @@ def cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-CartesianProd = Monoid.from_binary(cartesian_prod, jnp.array([]))
+CartesianProd = Monoid(kernel=cartesian_prod, identity=jnp.array([]))
 
-distributes_over.register(jnp.maximum, jnp.minimum)
-distributes_over.register(jnp.minimum, jnp.maximum)
-distributes_over.register(jnp.add, jnp.minimum)
-distributes_over.register(jnp.add, jnp.maximum)
-distributes_over.register(jnp.multiply, jnp.add)
-distributes_over.register(jnp.add, jnp.logaddexp)
+distributes_over.register(Max.plus, Min.plus)
+distributes_over.register(Min.plus, Max.plus)
+distributes_over.register(Sum.plus, Min.plus)
+distributes_over.register(Sum.plus, Max.plus)
+distributes_over.register(Product.plus, Sum.plus)
+distributes_over.register(Sum.plus, LogSumExp.plus)
