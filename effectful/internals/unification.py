@@ -262,11 +262,11 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     if isinstance(typ, inspect.Signature):
         return _unify_signature(typ, subtyp, subs)
 
-    if _is_typeddict_type(typ) and _is_typeddict_type(subtyp):
-        return _unify_typeddict(typ, subtyp, subs)
-
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
+
+    if _is_typeddict_type(typ) and _is_typeddict_type(subtyp):
+        return _unify_typeddict(typ, subtyp, subs)
 
     if typ is subtyp or typ == subtyp:
         return subs
@@ -393,17 +393,29 @@ def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
 
 
 def _unify_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
-    """Unify two TypedDict types by matching fields structurally."""
+    """Unify two TypedDict types by matching fields structurally.
+
+    - Required fields in typ must exist in subtyp
+    - Optional fields in typ may be absent from subtyp
+    """
     typ_hints = _get_typeddict_hints(typ)
     subtyp_hints = _get_typeddict_hints(subtyp)
 
-    for field in typ_hints:
+    # Determine which fields are optional in the pattern (typ)
+    typ_origin = typing.get_origin(typ) or typ
+    optional_keys: frozenset[str] = getattr(
+        typ_origin, "__optional_keys__", frozenset()
+    )
+
+    for field, field_type in typ_hints.items():
         if field not in subtyp_hints:
+            if field in optional_keys:
+                continue  # NotRequired / total=False field, OK to be absent
             raise TypeError(
                 f"Cannot unify TypedDict {typ} with {subtyp}: "
-                f"field '{field}' not found in {subtyp}"
+                f"required field '{field}' not found in {subtyp}"
             )
-        subs = unify(typ_hints[field], subtyp_hints[field], subs)
+        subs = unify(field_type, subtyp_hints[field], subs)
 
     return subs
 
@@ -561,7 +573,20 @@ def _(typ: type | abc.ABCMeta):
     elif typ is range:
         return collections.abc.Sequence[int]
     elif typing.is_typeddict(typ):
-        return collections.abc.MutableMapping
+        hints = typing.get_type_hints(typ)
+        # Idempotency: if all field types are already canonical, return same object
+        if all(canonicalize(h) == h for h in hints.values()):
+            return typ
+        # Otherwise, create a fresh TypedDict with canonicalized field types
+        optional_keys: frozenset[str] = getattr(typ, "__optional_keys__", frozenset())
+        canon_fields: dict[str, type] = {}
+        for field, ftype in hints.items():
+            ct = canonicalize(ftype)
+            if field in optional_keys:
+                canon_fields[field] = typing.NotRequired[ct]  # type: ignore[assignment]
+            else:
+                canon_fields[field] = ct  # type: ignore[assignment]
+        return typing.TypedDict("_Canonical", canon_fields)  # type: ignore[operator]
     elif typ is types.GeneratorType:
         return collections.abc.Generator
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:

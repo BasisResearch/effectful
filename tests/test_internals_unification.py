@@ -189,13 +189,33 @@ def test_canonicalize_1():
 
 
 def test_canonicalize_typeddict_class():
-    """Canonicalizing a TypedDict class returns MutableMapping."""
+    """Canonicalizing a TypedDict class preserves structure with canonical field types."""
 
     class MyTD(typing.TypedDict):
         name: str
         age: int
 
-    assert canonicalize(MyTD) == collections.abc.MutableMapping
+    # Fields are already canonical types
+    result = canonicalize(MyTD)
+    assert typing.is_typeddict(result)
+
+    hints = typing.get_type_hints(result)
+    assert hints["name"] is str
+    assert hints["age"] is int
+
+    class MyTD2(typing.TypedDict):
+        name: str
+        items: list[int]
+
+    # list[int] -> MutableSequence[int], so a new TypedDict is created
+    result = canonicalize(MyTD2)
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints["name"] is str
+    assert hints["items"] == collections.abc.MutableSequence[int]
+
+    # Idempotent: canonicalizing the result returns the same object
+    assert canonicalize(result) is result
 
 
 @pytest.mark.parametrize(
@@ -1842,3 +1862,190 @@ def test_unify_generic_typeddict_extracts_typevar():
 
     result = unify(Datum[T], nested_type({"name": "a", "value": 1}).value)
     assert result == {T: int}
+
+
+# --- TypedDict <-> Mapping subtyping ---
+
+
+def test_unify_mapping_typeddict_subclass():
+    """TypedDict unifies with Mapping/MutableMapping via subclass check."""
+
+    class Info(typing.TypedDict):
+        name: str
+        age: int
+
+    # TypedDict is a subclass of MutableMapping, so this succeeds
+    subs = unify(collections.abc.MutableMapping, Info)
+    assert subs == {}
+
+    subs = unify(collections.abc.Mapping, Info)
+    assert subs == {}
+
+
+# --- NotRequired fields ---
+
+
+def test_unify_typeddict_notrequired_present():
+    """NotRequired field present in subtype unifies normally."""
+
+    class Pattern(typing.TypedDict):
+        name: str
+        nickname: typing.NotRequired[str]
+
+    class Sub(typing.TypedDict):
+        name: str
+        nickname: str
+
+    subs = unify(Pattern, Sub)
+    assert subs == {}
+
+
+def test_unify_typeddict_notrequired_absent():
+    """NotRequired field absent from subtype is OK."""
+
+    class Pattern(typing.TypedDict):
+        name: str
+        nickname: typing.NotRequired[str]
+
+    class Sub(typing.TypedDict):
+        name: str
+
+    subs = unify(Pattern, Sub)
+    assert subs == {}
+
+
+def test_unify_typeddict_required_missing_raises():
+    """Required field missing from subtype raises TypeError."""
+
+    class Pattern(typing.TypedDict):
+        name: str
+        age: int
+
+    class Sub(typing.TypedDict):
+        name: str
+
+    with pytest.raises(TypeError, match="required field 'age'"):
+        unify(Pattern, Sub)
+
+
+# --- total=False ---
+
+
+def test_unify_typeddict_total_false_all_optional():
+    """total=False makes all fields optional; absent fields OK."""
+
+    class Pattern(typing.TypedDict, total=False):
+        name: str
+        age: int
+
+    class Sub(typing.TypedDict):
+        name: str
+
+    subs = unify(Pattern, Sub)
+    assert subs == {}
+
+
+def test_unify_typeddict_total_false_with_required():
+    """total=False with Required override: Required field must exist."""
+
+    class Pattern(typing.TypedDict, total=False):
+        name: typing.Required[str]
+        age: int
+
+    class Sub(typing.TypedDict):
+        name: str
+
+    # age is optional (total=False), name is Required -> OK
+    subs = unify(Pattern, Sub)
+    assert subs == {}
+
+
+def test_unify_typeddict_total_false_required_missing_raises():
+    """total=False with Required field missing in subtype raises TypeError."""
+
+    class Pattern(typing.TypedDict, total=False):
+        name: typing.Required[str]
+        age: int
+
+    class Sub(typing.TypedDict):
+        age: int
+
+    with pytest.raises(TypeError, match="required field 'name'"):
+        unify(Pattern, Sub)
+
+
+# --- TypedDict inheritance ---
+
+
+def test_unify_typeddict_inheritance():
+    """Derived TypedDict includes base fields."""
+
+    class Base(typing.TypedDict):
+        name: str
+
+    class Derived(Base):
+        age: int
+
+    class Sub(typing.TypedDict):
+        name: str
+        age: int
+
+    subs = unify(Derived, Sub)
+    assert subs == {}
+
+
+def test_unify_typeddict_inheritance_generic():
+    """Generic inherited TypedDict with TypeVar extraction."""
+
+    class Base[T](typing.TypedDict):
+        value: T
+
+    class Derived(Base[int]):
+        label: str
+
+    class Sub(typing.TypedDict):
+        value: int
+        label: str
+
+    subs = unify(Derived, Sub)
+    # T from Base is still in Derived's hints, so it gets unified with int
+    assert any(v == int for v in subs.values())
+
+
+# --- Edge cases ---
+
+
+def test_unify_empty_typeddict():
+    """Empty TypedDict unifies with any TypedDict (no fields to check)."""
+
+    class Empty(typing.TypedDict):
+        pass
+
+    class NonEmpty(typing.TypedDict):
+        name: str
+
+    subs = unify(Empty, NonEmpty)
+    assert subs == {}
+
+
+def test_unify_mapping_empty_typeddict():
+    """Mapping[K, V] with empty TypedDict succeeds via subclass check."""
+
+    class Empty(typing.TypedDict):
+        pass
+
+    subs = unify(collections.abc.Mapping[K, V], Empty)
+    # Falls through to _unify_generic subclass check (K, V unbound)
+    assert K not in subs and V not in subs
+
+
+def test_canonicalize_typeddict_notrequired():
+    """Canonicalize preserves NotRequired annotations."""
+
+    class TD(typing.TypedDict):
+        name: str
+        items: typing.NotRequired[list[int]]
+
+    result = canonicalize(TD)
+    assert typing.is_typeddict(result)
+    assert "items" in result.__optional_keys__
