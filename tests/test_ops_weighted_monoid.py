@@ -1,15 +1,8 @@
-from typing import Callable
+from collections.abc import Callable
 
 from effectful.ops.syntax import syntactic_eq
-from effectful.ops.types import Operation
-from effectful.ops.weighted.monoid import (
-    CommutativeMonoid,
-    IdempotentMonoid,
-    Max,
-    Min,
-    Product,
-    Sum,
-)
+from effectful.ops.types import NotHandled, Operation
+from effectful.ops.weighted.monoid import IdempotentMonoid, Max, Min, Product, Sum
 
 
 def define_vars(*names, typ=int):
@@ -126,7 +119,12 @@ def test_reduce_body_int():
 def test_reduce_body_sequence():
     x = Operation.define(int)
     X = Operation.define(list[int])
-    f, g = define_vars("f", "g", typ=Callable[[int], int])
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    g = Operation.define(f, name="g")
 
     assert syntactic_eq(
         Sum.reduce({x: X()}, [f(x()), g(x())]),
@@ -137,7 +135,12 @@ def test_reduce_body_sequence():
 def test_reduce_body_sequence_2():
     x, y = define_vars("x", "y")
     X, Y = define_vars("X", "Y", typ=list[int])
-    f, g = define_vars("f", "g", typ=Callable[[int], int])
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    g = Operation.define(f, name="g")
 
     assert syntactic_eq(
         Sum.reduce({x: X(), y: Y()}, [f(x()), g(y())]),
@@ -151,7 +154,12 @@ def test_reduce_body_sequence_2():
 def test_reduce_body_mapping():
     x = Operation.define(int)
     X = Operation.define(list[int])
-    f, g = define_vars("f", "g", typ=Callable[[int], int])
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    g = Operation.define(f, name="g")
 
     assert syntactic_eq(
         Sum.reduce({x: X()}, {"a": f(x()), "b": g(x())}),
@@ -166,12 +174,18 @@ def test_reduce_no_streams():
 
 def test_reduce_empty():
     a, b, c = define_vars("a", "b", "c")
-    A, C = define_vars("A", "C", typ=list[int])
+    A = define_vars("A", typ=list[int])
+
+    @Operation.define
+    def C(x: int) -> list[int]:
+        raise NotHandled
+
     assert syntactic_eq(Sum.reduce({a: A(), b: [], c: C(a())}, c()), Sum.identity)
 
 
 def test_reduce_plus():
-    a, b, A, B = define_vars("a", "b", "A", "B")
+    a, b = define_vars("a", "b")
+    A, B = define_vars("A", "B", typ=list[int])
     assert syntactic_eq(
         Sum.reduce({a: A(), b: B()}, Sum.plus(a(), b())),
         Sum.plus(Sum.reduce({a: A()}, a()), Sum.reduce({b: B()}, b())),
@@ -181,8 +195,14 @@ def test_reduce_plus():
 def test_reduce_reduce():
     a, b = define_vars("a", "b")
     A = Operation.define(list[int])
-    f = Operation.define(Callable[[int], int])
-    g = Operation.define(Callable[[int, int], int])
+
+    @Operation.define
+    def f(x: int) -> list[int]:
+        raise NotHandled
+
+    @Operation.define
+    def g(x: int, y: int) -> int:
+        raise NotHandled
 
     assert syntactic_eq(
         Sum.reduce({a: A()}, Sum.reduce({b: f(A())}, g(a(), b()))),

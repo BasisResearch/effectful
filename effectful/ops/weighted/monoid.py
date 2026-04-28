@@ -175,7 +175,7 @@ class Monoid[T]:
                 return self.plus(*final_sum)
 
         if any(isinstance(x, Term) for x in args):
-            raise NotHandled
+            return defdata(self.plus, *args)
 
         if callable(args[0]):
             for b in args[1:]:
@@ -294,11 +294,11 @@ class IdempotentMonoid[T](Monoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
         # elim consecutive duplicates
-        dedup_args = []
-        for i in range(len(args)):
-            if i == 0 or not syntactic_eq(args[i - 1], args[i]):
-                dedup_args.append(args[i])
-
+        dedup_args = [
+            args[i]
+            for i in range(len(args))
+            if i == 0 or not syntactic_eq(args[i - 1], args[i])
+        ]
         return super().plus(*dedup_args)
 
     def scalar_mul(self, v: T, x: int) -> T:
@@ -368,12 +368,13 @@ class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]):
     def plus[S: Body[T]](self, *args: S) -> S:
         # elim dups
         args_count = Counter(_HashableTerm(t) for t in args)
-        if args_count.total() < len(args):
+        if len(args_count) < len(args):
             dedup_args = []
             for t in args:
-                if t in args_count:
+                ht = _HashableTerm(t)
+                if ht in args_count:
                     dedup_args.append(t)
-                    del args_count[t]
+                    del args_count[ht]
             args = tuple(dedup_args)
 
         return super().plus(*args)
