@@ -92,152 +92,35 @@ def independent_terms(factors: Term, vs: set[Operation]) -> Iterable[set[Operati
     return result_sets.values()
 
 
-class Add[T](Protocol):
-    def __call__(self, *args: T) -> T: ...
-
-    # @Operation.define
-    # def reduce[A, B, U: Body](
-    #     self, streams: Annotated[Streams, Scoped[A]], body: Annotated[U, Scoped[A | B]]
-    # ) -> Annotated[U, Scoped[B]]:
-
-    #     def generator(loop_order):
-    #         if loop_order:
-    #             stream_key = loop_order[0]
-    #             stream_values = evaluate(streams[stream_key])
-    #             stream_values_iter = iter(stream_values)
-
-    #             # If we try to iterate and get a term instead of a real
-    #             # iterator, give up
-    #             if (
-    #                 isinstance(stream_values_iter, Term)
-    #                 and stream_values_iter.op is _IteratorTerm.__iter__
-    #             ):
-    #                 raise NotHandled
-
-    #             for val in stream_values:
-    #                 intp = {stream_key: functools.partial(lambda v: v, val)}
-    #                 with handler(intp):
-    #                     for intp2 in generator(loop_order[1:]):
-    #                         yield coproduct(intp, intp2)
-    #         else:
-    #             yield {}
-
-    #     def body_value(body: Body, intp: Interpretation) -> Body:
-    #         if isinstance(body, Interpretation):
-    #             # TODO: This should be a product, but the implementation of product isn't quite correct.
-    #             return {
-    #                 op: handler(coproduct(intp, body))(impl)
-    #                 for op, impl in body.items()
-    #             }
-    #         elif callable(body):
-    #             return handler(intp)(body)
-    #         elif isinstance(body, Mapping):
-    #             return {k: body_value(v, intp) for (k, v) in body.items()}
-    #         elif isinstance(body, Generator):
-    #             return (body_value(v, intp) for v in body)
-    #         else:
-    #             return handler(intp)(evaluate)(body)
-
-    #     loop_order = list(order_streams(streams))
-    #     values = [body_value(body, intp) for intp in generator(loop_order)]
-    #     result = self(*values)
-    #     return result
-
-
 class Monoid[T]:
-    kernel: Operation[[T, ...], T]
-    add: Add[T]
+    kernel: Operation[[T, T], T]
     identity: T
 
-    def __init__(
-        self, kernel: Callable[[T, T], T], identity: T, add: Add[T] | None = None
-    ):
+    def __init__(self, kernel: Callable[[T, T], T], identity: T):
         self.identity = identity
         self.kernel = (
             kernel if isinstance(kernel, Operation) else Operation.define(kernel)
         )
 
-        if add is None:
-
-            def _add(*args: T) -> T:
-                return functools.reduce(self.kernel, args)
-
-            self.add = _add
-        else:
-            self.add = add
-
     @Operation.define
+    @functools.singledispatchmethod
     def plus[S: Body[T]](self, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
 
         """
-        if not args:
-            return self.identity
-
-        # elim single arg plus
-        if len(args) == 1:
-            return args[0]
-
-        # elim identity
-        if any(x is self.identity for x in args):
-            return self.plus(*(x for x in args if x is not self.identity))
-
-        # elim associativity
-        if any(isinstance(x, Term) and x.op is self.plus for x in args):
-            flat_args = sum(
-                (
-                    t.args if isinstance(t, Term) and t.op is self.plus else (t,)
-                    for t in args
-                ),
-                start=(),
-            )
-            assert len(args) > 0
-            return self.plus(*flat_args)
-
-        # elim distributivity
-        if any(isinstance(x, Term) and distributes_over(self.plus, x.op) for x in args):
-            # group terms by head operation
-            by_head_op = defaultdict(list)
-            for t in args:
-                by_head_op[t.op].append(t)
-
-            # distribute over each group
-            progress = False
-            final_sum = []
-            for op, terms in by_head_op.items():
-                if (
-                    len(terms) > 1
-                    and distributes_over(self.plus, op)
-                    and not distributes_over(op, self.plus)
-                ):
-                    progress = True
-                    term_args = (t.args for t in terms)
-                    dist_terms = (
-                        self.plus(*args) for args in itertools.product(*term_args)
-                    )
-                    final_sum.append(op(*dist_terms))
-                else:
-                    final_sum += terms
-            if progress:
-                return self.plus(*final_sum)
-
         if any(isinstance(x, Term) for x in args):
             return defdata(self.plus, *args)
 
-        if callable(args[0]):
-            for b in args[1:]:
-                if not callable(b):
-                    raise TypeError(f"Expected callable but got {b}")
+        # Base case: a: T, *bs: T
+        return typing.cast(S, functools.reduce(self.kernel, args, self.identity))
 
-            result = lambda *args, **kwargs: self.plus(
-                *(x(*args, **kwargs) for x in args),  # type: ignore[operator]
-            )
-            return typing.cast(S, result)
+    @plus.register(Sequence)
+    def _(self, *args):
+        return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
 
-        if isinstance(args[0], Sequence):
-            return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
-
+    @plus.register(Mapping)
+    def _(self, *args):
         if isinstance(args[0], Interpretation):
             keys = args[0].keys()
 
@@ -277,7 +160,7 @@ class Monoid[T]:
 
         def generator(loop_order):
             if loop_order:
-                stream_key = loop_order[0][0]
+                stream_key = loop_order[0]
                 stream_values = evaluate(streams[stream_key])
                 stream_values_iter = iter(stream_values)
 
