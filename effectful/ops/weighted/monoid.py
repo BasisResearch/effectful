@@ -67,16 +67,16 @@ class Monoid[T]:
 
         """
         if any(isinstance(x, Term) for x in args):
-            return defdata(self.plus, *args)
+            return typing.cast(S, defdata(self.plus, *args))
 
         # Base case: a: T, *bs: T
         return typing.cast(S, functools.reduce(self.kernel, args, self.identity))
 
-    @plus.register(Sequence)
+    @plus.register(Sequence)  # type: ignore[attr-defined]
     def _(self, *args):
         return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
 
-    @plus.register(Mapping)
+    @plus.register(Mapping)  # type: ignore[attr-defined]
     def _(self, *args):
         if isinstance(args[0], Interpretation):
             keys = args[0].keys()
@@ -113,7 +113,7 @@ class Monoid[T]:
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
         if callable(body):
-            return lambda *a, **k: self.reduce(body(*a, *k), streams)
+            return typing.cast(U, lambda *a, **k: self.reduce(body(*a, *k), streams))
 
         def generator(loop_order):
             if loop_order:
@@ -143,17 +143,17 @@ class Monoid[T]:
                 *(handler(intp)(evaluate)(body) for intp in generator(loop_order))
             )
         except NotHandled:
-            return defdata(self.reduce, body, streams)
+            return typing.cast(U, defdata(self.reduce, body, streams))
 
-    @reduce.register
+    @reduce.register  # type: ignore[attr-defined]
     def _(self, body: Mapping, streams):
         return {k: self.reduce(v, streams) for (k, v) in body.items()}
 
-    @reduce.register
+    @reduce.register  # type: ignore[attr-defined]
     def _(self, body: Sequence, streams):
-        return type(body)(self.reduce(x, streams) for x in body)
+        return type(body)(self.reduce(x, streams) for x in body)  # type:ignore[call-arg]
 
-    @reduce.register
+    @reduce.register  # type: ignore[attr-defined]
     def _(self, body: Generator, streams):
         return (self.reduce(x, streams) for x in body)
 
@@ -404,16 +404,19 @@ class PlusDups(ObjectInterpretation):
 
 NormalizePlusIntp = functools.reduce(
     coproduct,
-    [
-        PlusEmpty(),
-        PlusSingle(),
-        PlusIdentity(),
-        PlusAssoc(),
-        PlusDistr(),
-        PlusZero(),
-        PlusConsecutiveDups(),
-        PlusDups(),
-    ],
+    typing.cast(
+        list[Interpretation],
+        [
+            PlusEmpty(),
+            PlusSingle(),
+            PlusIdentity(),
+            PlusAssoc(),
+            PlusDistr(),
+            PlusZero(),
+            PlusConsecutiveDups(),
+            PlusDups(),
+        ],
+    ),
 )
 
 
@@ -557,13 +560,16 @@ class ReduceFactorization(ObjectInterpretation):
 
 NormalizeReduceIntp = functools.reduce(
     coproduct,
-    [
-        ReduceNoStreams(),
-        ReduceFusion(),
-        ReduceSplit(),
-        ReduceFactorization(),
-        ReduceUnused(),
-    ],
+    typing.cast(
+        list[Interpretation],
+        [
+            ReduceNoStreams(),
+            ReduceFusion(),
+            ReduceSplit(),
+            ReduceFactorization(),
+            ReduceUnused(),
+        ],
+    ),
 )
 
 NormalizeIntp = coproduct(NormalizePlusIntp, NormalizeReduceIntp)
