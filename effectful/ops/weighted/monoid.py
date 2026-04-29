@@ -10,11 +10,14 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any, Protocol
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import fvsof, handler, typeof
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
+    ObjectInterpretation,
     Scoped,
     _NumberTerm,
     defdata,
+    implements,
+    iter_,
     syntactic_eq,
     syntactic_hash,
 )
@@ -251,20 +254,16 @@ class Monoid[T]:
             result = {k: self.plus(*(handler(b)(b[k]) for b in args)) for k in keys}
             return result
 
-        if isinstance(args[0], Mapping):
-            for b in args[1:]:
-                if not isinstance(b, Mapping):
-                    raise TypeError(f"Expected mapping but got {b}")
+        for b in args[1:]:
+            if not isinstance(b, Mapping):
+                raise TypeError(f"Expected mapping but got {b}")
 
-            all_values = collections.defaultdict(list)
-            for d in args:
-                for k, v in d.items():
-                    all_values[k].append(v)
-            result = {k: self.plus(*vs) for (k, vs) in all_values.items()}
-            return result
-
-        # Base case: a: T, *bs: T
-        return typing.cast(S, self.kernel(*args))
+        all_values = collections.defaultdict(list)
+        for d in args:
+            for k, v in d.items():
+                all_values[k].append(v)
+        result = {k: self.plus(*vs) for (k, vs) in all_values.items()}
+        return result
 
     @Operation.define
     @functools.singledispatchmethod
@@ -273,27 +272,38 @@ class Monoid[T]:
         body: Annotated[U, Scoped[A | B]],
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
-        # elim empty streams dict
-        if not streams:
-            return self.identity
-
-        # elim empty stream
-        if any(
-            issubclass(typeof(v), Sequence)
-            and not isinstance(iter(v), Term)
-            and len(v) == 0
-            for v in streams.values()
-        ):
-            return self.identity
-
-        # elim reduce body
-        if isinstance(body, Term) and body.op == self.reduce:
-            return self.reduce(body.args[0], streams | body.args[1])
-
         if callable(body):
             return lambda *a, **k: self.reduce(body(*a, *k), streams)
 
-        return defdata(self.reduce, body, streams)
+        def generator(loop_order):
+            if loop_order:
+                stream_key = loop_order[0][0]
+                stream_values = evaluate(streams[stream_key])
+                stream_values_iter = iter(stream_values)
+
+                # If we try to iterate and get a term instead of a real
+                # iterator, give up
+                if (
+                    isinstance(stream_values_iter, Term)
+                    and stream_values_iter.op is iter_
+                ):
+                    raise NotHandled
+
+                for val in stream_values:
+                    intp = {stream_key: functools.partial(lambda v: v, val)}
+                    with handler(intp):
+                        for intp2 in generator(loop_order[1:]):
+                            yield coproduct(intp, intp2)
+            else:
+                yield {}
+
+        loop_order = list(order_streams(streams))
+        try:
+            return self.plus(
+                *(handler(intp)(evaluate)(body) for intp in generator(loop_order))
+            )
+        except NotHandled:
+            return defdata(self.reduce, body, streams)
 
     @reduce.register
     def _(self, body: Mapping, streams):
@@ -307,39 +317,11 @@ class Monoid[T]:
     def _(self, body: Generator, streams):
         return (self.reduce(x, streams) for x in body)
 
-    @Operation.define
-    def scalar_mul(self, v: T, x: int) -> T:
-        """
-        Returns the scalar multiplication w.r.t. a monoid.
-
-        The scalar multiplication of a monoid (A, ⊕, e) is
-        a function (⋅): A × ℕ → A, inductively defined as
-            a⋅0 = e
-            a⋅n = a⋅(n-1) + a
-
-        Warning: scalar multiplication is not commutative,
-            the scalar is always the second argument.
-        """
-        if isinstance(x, Term):
-            return defdata(self.scalar_mul, v, x)
-
-        if x < 0:
-            raise ValueError("Expected x >= 0")
-        if x == 0:
-            return self.identity
-        return self.plus(*itertools.repeat(v, x))
-
 
 class IdempotentMonoid[T](Monoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        # elim consecutive duplicates
-        dedup_args = [
-            args[i]
-            for i in range(len(args))
-            if i == 0 or not syntactic_eq(args[i - 1], args[i])
-        ]
-        return super().plus(*dedup_args)
+        return super(IdempotentMonoid, self).plus(*args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -347,196 +329,55 @@ class IdempotentMonoid[T](Monoid[T]):
         body: Annotated[U, Scoped[A | B]],
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
-        # elim unused streams
-        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
-        body_vars = fvsof(body)
-        used_streams = (
-            transitive_dependencies(stream_deps, body_vars) | body_vars
-        ) & set(streams.keys())
-
-        if len(used_streams) == 0:
-            return body
-
-        if len(used_streams) < len(streams):
-            return super().reduce(
-                body, {k: v for (k, v) in streams.items() if k in used_streams}
-            )
-
         return super().reduce(body, streams)
-
-    @Operation.define
-    def scalar_mul(self, v: T, x: int) -> T:
-        if isinstance(x, Term):
-            return defdata(self.scalar_mul, v, x)
-
-        if x < 0:
-            raise ValueError("Expected x >= 0")
-        if x == 0:
-            return self.identity
-        return v
 
 
 class CommutativeMonoid[T](Monoid[T]):
     @Operation.define
+    def plus[S: Body[T]](self, *args: S) -> S:
+        return super(CommutativeMonoid, self).plus(*args)
+
+    @Operation.define
     def reduce[A, B, U: Body](
         self,
         body: Annotated[U, Scoped[A | B]],
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
-        # elim plus body
-        if isinstance(body, Term) and body.op == self.plus:
-            return self.plus(*(self.reduce(x, streams) for x in body.args))
-
-        # elim unused streams
-        #
-        # Implements the identity
-        #     reduce(R, S × S', body) = |S'| ⋅ reduce(R, S, body)
-        #         where fvsof(body) ∩ S' = ∅
-        #         and `⋅` is the scalar product of the monoid addition
-        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
-        body_vars = fvsof(body)
-        stream_vars = streams.keys()
-        used_stream_vars = (
-            transitive_dependencies(stream_deps, body_vars) | body_vars
-        ) & set(stream_vars)
-
-        if len(used_stream_vars) < len(streams) and not (self is Sum and body == 1):
-            used_streams = {k: v for (k, v) in streams.items() if k in used_stream_vars}
-            unused_streams = {
-                k: v for (k, v) in streams.items() if k not in used_stream_vars
-            }
-
-            if len(used_stream_vars) > 0:
-                result = super().reduce(body, used_streams)
-            else:
-                result = body
-            mult = Sum.reduce(1, unused_streams)
-            return self.scalar_mul(result, mult)
-
-        # Elim factors
-        #
-        # Implements factorization of independent terms.
-        #
-        # For example, when having two independent distributions, we can rewrite
-        # their marginalization as: ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
-        #
-        # More specifically, in terms of reduces we are performing:
-        #     reduce(R, (S₁ × ... × Sₖ), A₁ * ... * Aₖ)
-        #     => reduce(R, S₁, A₁) * ... * reduce(R, Sₖ, Aₖ)
-        #     where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
-        #       and free(Aᵢ) ∩ Sᵢ ≠ ∅
-        #
-        # (The implementation is a little more general than this, as each
-        # independent component can have an arbitrary number of streams.)
-        if isinstance(body, Term) and distributes_over(body.op, self.plus):
-            factors = body.args
-
-            stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
-            ds = DisjointSet(len(streams))
-
-            # streams are in the same partition as their dependencies
-            for stream_id, (stream_var, stream_body) in enumerate(streams.items()):
-                deps = {stream_ids[v] for v in fvsof(stream_body) & stream_vars}
-                ds.union(stream_id, *deps)
-
-            # factors are in the same partition as their dependencies
-            for factor in factors:
-                ds.union(*(stream_ids[v] for v in (fvsof(factor) & stream_vars)))
-
-            partitions = {}
-            for v, i in stream_ids.items():
-                p = ds.find(i)
-                part_streams = partitions.get(p, {})
-                part_streams[v] = streams[v]
-                partitions[p] = part_streams
-
-            if len(partitions) > 1:
-                new_reduces = []
-                for partition_streams in partitions.values():
-                    partition_terms = (
-                        t for t in factors if (fvsof(t) & set(partition_streams.keys()))
-                    )
-                    partition_term = body.op(*partition_terms)
-                    new_reduces.append(self.reduce(partition_term, partition_streams))
-
-                return body.op(*new_reduces)
-
         return super().reduce(body, streams)
 
 
 class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
     zero: T
 
-    def __init__(
-        self,
-        kernel: Callable[[T, T], T],
-        identity: T,
-        zero: T,
-        add: Add[T] | None = None,
-    ):
-        super().__init__(kernel, identity, add=add)
+    def __init__(self, kernel: Callable[[T, T], T], identity: T, zero: T):
+        super().__init__(kernel, identity)
         self.zero = zero
 
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        # elim zero
-        if any(x is self.zero for x in args):
-            return self.zero
+        return super(CommutativeMonoidWithZero, self).plus(*args)
 
-        return super().plus(*args)
-
-
-@dataclass
-class _HashableTerm:
-    term: Term
-
-    def __eq__(self, other):
-        return syntactic_eq(self, other)
-
-    def __hash__(self):
-        return syntactic_hash(self)
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        return super().reduce(body, streams)
 
 
 class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        # elim dups
-        args_count = Counter(_HashableTerm(t) for t in args)
-        if len(args_count) < len(args):
-            dedup_args = []
-            for t in args:
-                ht = _HashableTerm(t)
-                if ht in args_count:
-                    dedup_args.append(t)
-                    del args_count[ht]
-            args = tuple(dedup_args)
+        return super(Semilattice, self).plus(*args)
 
-        return super().plus(*args)
-
-
-class SupportsRichComparison(Protocol):
-    def __lt__(self, other: Any) -> bool: ...
-    def __gt__(self, other: Any) -> bool: ...
-
-
-@Operation.define
-def _min[T: SupportsRichComparison](*args: T) -> T:
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
-    return min(*args)
-
-
-Min = Semilattice(kernel=_min, identity=float("inf"), add=_min)
-
-
-@Operation.define
-def _max[T: SupportsRichComparison](*args: T) -> T:
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
-    return max(*args)
-
-
-Max = Semilattice(kernel=_max, identity=float("-inf"), add=_min)
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        return super().reduce(body, streams)
 
 
 @Operation.define
@@ -548,11 +389,6 @@ def _arg_min[T](
     return b if b[0] < a[0] else a  # type: ignore
 
 
-ArgMin: Monoid[tuple[float, Any]] = Monoid(
-    kernel=_arg_min, identity=(float("inf"), None)
-)
-
-
 @Operation.define
 def _arg_max[T](
     a: tuple[numbers.Number, T | None], b: tuple[numbers.Number, T | None]
@@ -562,33 +398,12 @@ def _arg_max[T](
     return b if b[0] > a[0] else a  # type: ignore
 
 
-ArgMax: Monoid[tuple[float, Any]] = Monoid(
-    kernel=_arg_max, identity=(float("-inf"), None)
-)
-
-
-class _SumMonoid[N: int | float | complex](CommutativeMonoid[N]):
-    def scalar_mul(self, v: N, x: int) -> N:
-        if not isinstance(x, Term) and x == 0:
-            return self.identity
-        if not isinstance(x, Term) and x == 1:
-            return v
-        return typing.cast(N, v * x)
-
-
-Sum = _SumMonoid(kernel=_NumberTerm.__add__, identity=0)
-
-
-class _ProductMonoid[N: int | float | complex](CommutativeMonoidWithZero[N]):
-    def scalar_mul(self, v: N, x: int) -> N:
-        if not isinstance(x, Term) and x == 0:
-            return self.identity
-        if not isinstance(x, Term) and x == 1:
-            return v
-        return typing.cast(N, v**x)
-
-
-Product = _ProductMonoid(kernel=_NumberTerm.__mul__, identity=1, zero=0)
+Min = Semilattice(kernel=min, identity=float("inf"))
+Max = Semilattice(kernel=min, identity=float("-inf"))
+ArgMin = Monoid(kernel=_arg_min, identity=(float("inf"), None))
+ArgMax = Monoid(kernel=_arg_max, identity=(float("-inf"), None))
+Sum = CommutativeMonoid(kernel=_NumberTerm.__add__, identity=0)
+Product = CommutativeMonoidWithZero(kernel=_NumberTerm.__mul__, identity=1, zero=0)
 
 
 @dataclass
@@ -611,3 +426,304 @@ distributes_over = _ExtensibleBinaryRelation(
         (Product.plus, Sum.plus),
     }
 )
+
+
+class PlusEmpty(ObjectInterpretation):
+    """plus() = 0"""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not args:
+            return monoid.identity
+        return fwd()
+
+
+class PlusSingle(ObjectInterpretation):
+    """plus(x) = x"""
+
+    @implements(Monoid.plus)
+    def plus(self, _, *args):
+        if len(args) == 1:
+            return args[0]
+        return fwd()
+
+
+class PlusIdentity(ObjectInterpretation):
+    """x₁ + ... + 0 + ... + xₙ = x₁ + ... + xₙ"""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if any(x is monoid.identity for x in args):
+            return monoid.plus(*(x for x in args if x is not monoid.identity))
+        return fwd()
+
+
+class PlusAssoc(ObjectInterpretation):
+    """x + (y + z) = (x + y) + z = x + y + z"""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if any(isinstance(x, Term) and x.op is monoid.plus for x in args):
+            flat_args = sum(
+                (
+                    t.args if isinstance(t, Term) and t.op is monoid.plus else (t,)
+                    for t in args
+                ),
+                start=(),
+            )
+            assert len(args) > 0
+            return monoid.plus(*flat_args)
+        return fwd()
+
+
+class PlusDistr(ObjectInterpretation):
+    """x + (y * z) = x * y + x * z"""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if any(
+            isinstance(x, Term) and distributes_over(monoid.plus, x.op) for x in args
+        ):
+            # group terms by head operation
+            by_head_op = defaultdict(list)
+            for t in args:
+                by_head_op[t.op].append(t)
+
+            # distribute over each group
+            progress = False
+            final_sum = []
+            for op, terms in by_head_op.items():
+                if (
+                    len(terms) > 1
+                    and distributes_over(monoid.plus, op)
+                    and not distributes_over(op, monoid.plus)
+                ):
+                    progress = True
+                    term_args = (t.args for t in terms)
+                    dist_terms = (
+                        monoid.plus(*args) for args in itertools.product(*term_args)
+                    )
+                    final_sum.append(op(*dist_terms))
+                else:
+                    final_sum += terms
+            if progress:
+                return monoid.plus(*final_sum)
+        return fwd()
+
+
+class PlusZero(ObjectInterpretation):
+    """x₁ * ... * 0 * ... * xₙ = 0"""
+
+    @implements(CommutativeMonoidWithZero.plus)
+    def plus(self, monoid, *args):
+        if any(x is monoid.zero for x in args):
+            return monoid.zero
+        return fwd()
+
+
+class PlusConsecutiveDups(ObjectInterpretation):
+    """x ⊕ x ⊕ y = x ⊕ y"""
+
+    @implements(IdempotentMonoid.plus)
+    def plus(self, monoid, *args):
+        dedup_args = (
+            args[i]
+            for i in range(len(args))
+            if i == 0 or not syntactic_eq(args[i - 1], args[i])
+        )
+        return fwd(monoid, *dedup_args)
+
+
+class PlusDups(ObjectInterpretation):
+    """x ⊕ y ⊕ x = x ⊕ y"""
+
+    @dataclass
+    class _HashableTerm:
+        term: Term
+
+        def __eq__(self, other):
+            return syntactic_eq(self, other)
+
+        def __hash__(self):
+            return syntactic_hash(self)
+
+    @implements(Semilattice.plus)
+    def plus(self, monoid, *args):
+        # elim dups
+        args_count = Counter(self._HashableTerm(t) for t in args)
+        if len(args_count) < len(args):
+            dedup_args = []
+            for t in args:
+                ht = self._HashableTerm(t)
+                if ht in args_count:
+                    dedup_args.append(t)
+                    del args_count[ht]
+            return fwd(monoid, *dedup_args)
+        return fwd()
+
+
+NormalizePlusIntp = functools.reduce(
+    coproduct,
+    [
+        PlusEmpty(),
+        PlusSingle(),
+        PlusIdentity(),
+        PlusAssoc(),
+        PlusDistr(),
+        PlusZero(),
+        PlusConsecutiveDups(),
+        PlusDups(),
+    ],
+)
+
+
+class ReduceNoStreams(ObjectInterpretation):
+    """Implements the identity
+    reduce(R, ∅, body) = 0
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, _, streams):
+        if len(streams) == 0:
+            return monoid.identity
+        return fwd()
+
+
+class ReduceFusion(ObjectInterpretation):
+    """Implements the identity
+    reduce(R, S1, reduce(R, S2, body)) = reduce(R, S1 ∪ S2, body)
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if isinstance(body, Term) and body.op == monoid.reduce:
+            return monoid.reduce(body.args[0], streams | body.args[1])
+        return fwd()
+
+
+class ReduceSplit(ObjectInterpretation):
+    """Implements the identity
+    reduce(R, S, b1 + ... + bn) = reduce(R, S, b1) + ... + reduce(R, S, bn)
+    """
+
+    @implements(CommutativeMonoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if isinstance(body, Term) and body.op == monoid.plus:
+            return monoid.plus(*(monoid.reduce(x, streams) for x in body.args))
+        return fwd()
+
+
+class ReduceUnused(ObjectInterpretation):
+    """Removes unused streams for idempotent monoids."""
+
+    @staticmethod
+    def transitive_dependencies(graph: dict, dependents: set) -> set:
+        """
+        Compute the transitive dependencies of a set of dependents.
+
+        Args:
+            graph: Dict mapping each dependent to an iterable of its direct dependencies.
+            dependents: Set of dependents whose transitive dependencies to compute.
+
+        Returns:
+            Set of all transitive dependencies (excluding the input dependents themselves
+            unless they appear as dependencies of other items in the input set).
+        """
+        result = set()
+        stack = [dep for d in dependents for dep in graph.get(d, ())]
+
+        while stack:
+            node = stack.pop()
+            if node in result:
+                continue
+            result.add(node)
+            stack.extend(graph.get(node, ()))
+
+        return result
+
+    @implements(IdempotentMonoid.reduce)
+    def reduce(self, monoid, body, streams):
+        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
+        body_vars = fvsof(body)
+        used_streams = (
+            ReduceUnused.transitive_dependencies(stream_deps, body_vars) | body_vars
+        ) & set(streams.keys())
+
+        if len(used_streams) == 0:
+            return body
+
+        if len(used_streams) < len(streams):
+            return fwd(
+                monoid, body, {k: v for (k, v) in streams.items() if k in used_streams}
+            )
+
+        return fwd()
+
+
+class ReduceFactorization(ObjectInterpretation):
+    """
+    Implements factorization of independent terms.
+    For example, when having two independent distributions,
+    we can rewrite their marginalization as:
+        ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
+
+    More specifically, in terms of reduces we are performing:
+        reduce(R, (S₁ × ... × Sₖ) , A₁ * ... * Aₖ)
+        => reduce(R, S₁, A₁) * ... * reduce(R, Sₖ, Aₖ)
+        where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
+          and free(Aᵢ) ∩ S ⊆ Sᵢ
+    """
+
+    @implements(CommutativeMonoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if isinstance(body, Term) and distributes_over(body.op, monoid.plus):
+            stream_vars = set(streams.keys())
+            factors = body.args
+            stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
+            ds = DisjointSet(len(streams))
+
+            # streams are in the same partition as their dependencies
+            for stream_id, stream_body in enumerate(streams.values()):
+                deps = {stream_ids[v] for v in fvsof(stream_body) & stream_vars}
+                ds.union(stream_id, *deps)
+
+            # factors are in the same partition as their dependencies
+            for factor in factors:
+                ds.union(*(stream_ids[v] for v in (fvsof(factor) & stream_vars)))
+
+            placed_streams = set()
+            new_reduces = []
+            for stream_key, stream_def in streams.items():
+                if stream_key in placed_streams:
+                    continue
+                partition = ds.find(stream_ids[stream_key])
+                partition_streams = {
+                    k: v
+                    for (k, v) in streams.items()
+                    if ds.find(stream_ids[k]) == partition
+                }
+                partition_stream_keys = set(partition_streams.keys())
+                partition_term = body.op(
+                    *(t for t in factors if (fvsof(t) & partition_stream_keys))
+                )
+                new_reduces.append((partition_term, partition_streams))
+                placed_streams |= partition_stream_keys
+
+            if len(new_reduces) > 1:
+                return body.op(*(monoid.reduce(*args) for args in new_reduces))
+
+        return fwd()
+
+
+NormalizeReduceIntp = functools.reduce(
+    coproduct,
+    [
+        ReduceNoStreams(),
+        ReduceFusion(),
+        ReduceSplit(),
+        ReduceFactorization(),
+        ReduceUnused(),
+    ],
+)
+
+NormalizeIntp = coproduct(NormalizePlusIntp, NormalizeReduceIntp)

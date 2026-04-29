@@ -3,10 +3,17 @@ import itertools
 from collections.abc import Callable
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate
+from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
 from effectful.ops.types import NotHandled, Operation
-from effectful.ops.weighted.monoid import IdempotentMonoid, Max, Min, Product, Sum
+from effectful.ops.weighted.monoid import (
+    IdempotentMonoid,
+    Max,
+    Min,
+    NormalizeIntp,
+    Product,
+    Sum,
+)
 
 
 def define_vars(*names, typ=int):
@@ -121,44 +128,53 @@ def _canonicalize(expr):
 
 def test_plus_single():
     x = define_vars("x")
-    assert syntactic_eq_alpha(Sum.plus(x()), x())
+    with handler(NormalizeIntp):
+        t = Sum.plus(x())
+    assert syntactic_eq_alpha(t, x())
 
 
 def test_plus_identity():
     x = define_vars("x")
-    assert syntactic_eq_alpha(Sum.plus(x(), Sum.identity), x())
-    assert syntactic_eq_alpha(Sum.plus(Sum.identity, x()), x())
+
+    with handler(NormalizeIntp):
+        t1 = Sum.plus(x(), Sum.identity)
+        t2 = Sum.plus(Sum.identity, x())
+
+    assert syntactic_eq_alpha(t1, x())
+    assert syntactic_eq_alpha(t2, x())
 
 
 def test_plus_plus():
     (x, y, z) = define_vars("x", "y", "z")
-    assert syntactic_eq_alpha(
-        Sum.plus(x(), Sum.plus(y(), z())), Sum.plus(x(), y(), z())
-    )
-    assert syntactic_eq_alpha(
-        Sum.plus(Sum.plus(x(), y()), z()), Sum.plus(x(), y(), z())
-    )
+
+    with handler(NormalizeIntp):
+        t1 = Sum.plus(x(), Sum.plus(y(), z()))
+        t2 = Sum.plus(Sum.plus(x(), y()), z())
+
+    assert syntactic_eq_alpha(t1, Sum.plus(x(), y(), z()))
+    assert syntactic_eq_alpha(t2, Sum.plus(x(), y(), z()))
 
 
 def test_plus_sequence():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
-    assert syntactic_eq_alpha(
-        Sum.plus([a(), b()], [c(), d()]), [Sum.plus(a(), c()), Sum.plus(b(), d())]
-    )
+    with handler(NormalizeIntp):
+        t = Sum.plus([a(), b()], [c(), d()])
+    assert syntactic_eq_alpha(t, [Sum.plus(a(), c()), Sum.plus(b(), d())])
 
 
 def test_plus_mapping():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
-    assert syntactic_eq_alpha(
-        Sum.plus({"x": a(), "y": b()}, {"x": c(), "z": d()}),
-        {"x": Sum.plus(a(), c()), "y": b(), "z": d()},
-    )
+    with handler(NormalizeIntp):
+        t = Sum.plus({"x": a(), "y": b()}, {"x": c(), "z": d()})
+    assert syntactic_eq_alpha(t, {"x": Sum.plus(a(), c()), "y": b(), "z": d()})
 
 
 def test_plus_distributes():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
+    with handler(NormalizeIntp):
+        t = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
     assert syntactic_eq_alpha(
-        Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d())),
+        t,
         Sum.plus(
             Product.plus(a(), c()),
             Product.plus(a(), d()),
@@ -170,13 +186,15 @@ def test_plus_distributes():
 
 def test_plus_distributes_multiple():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
-    assert syntactic_eq_alpha(
-        Sum.plus(
+    with handler(NormalizeIntp):
+        t = Sum.plus(
             Min.plus(a(), b()),
             Min.plus(c(), d()),
             Max.plus(a(), b()),
             Max.plus(c(), d()),
-        ),
+        )
+    assert syntactic_eq_alpha(
+        t,
         Sum.plus(
             Min.plus(
                 Sum.plus(a(), c()),
@@ -201,30 +219,36 @@ def test_plus_idempotent():
         kernel=Operation.define(Callable[[int, int], int]), identity=identity()
     )
 
-    assert syntactic_eq_alpha(IdMonoid.plus(a(), a(), b()), IdMonoid.plus(a(), b()))
-    assert syntactic_eq_alpha(
-        IdMonoid.plus(a(), b(), a()), IdMonoid.plus(a(), b(), a())
-    )
-    assert syntactic_eq_alpha(
-        IdMonoid.plus(a(), b(), a(), b(), b(), a(), a()),
-        IdMonoid.plus(a(), b(), a(), b(), a()),
-    )
+    with handler(NormalizeIntp):
+        t1 = IdMonoid.plus(a(), a(), b())
+        t2 = IdMonoid.plus(a(), b(), a())
+        t3 = IdMonoid.plus(a(), b(), a(), b(), b(), a(), a())
+
+    assert syntactic_eq_alpha(t1, IdMonoid.plus(a(), b()))
+    assert syntactic_eq_alpha(t2, IdMonoid.plus(a(), b(), a()))
+    assert syntactic_eq_alpha(t3, IdMonoid.plus(a(), b(), a(), b(), a()))
 
 
 def test_plus_commutative_idempotent():
     (a, b) = define_vars("a", "b")
 
-    assert syntactic_eq_alpha(Min.plus(a(), a(), b()), Min.plus(a(), b()))
-    assert syntactic_eq_alpha(Min.plus(b(), a(), b()), Min.plus(b(), a()))
-    assert syntactic_eq_alpha(
-        Min.plus(a(), b(), a(), b(), b(), a(), a()), Min.plus(a(), b())
-    )
+    with handler(NormalizeIntp):
+        t1 = Min.plus(a(), a(), b())
+        t2 = Min.plus(b(), a(), b())
+        t3 = Min.plus(a(), b(), a(), b(), b(), a(), a())
+
+    assert syntactic_eq_alpha(t1, Min.plus(a(), b()))
+    assert syntactic_eq_alpha(t2, Min.plus(b(), a()))
+    assert syntactic_eq_alpha(t3, Min.plus(a(), b()))
 
 
 def test_plus_zero():
     a = define_vars("a")
-    assert syntactic_eq_alpha(Product.plus(a(), Product.zero), Product.zero)
-    assert syntactic_eq_alpha(Product.plus(Product.zero, a()), Product.zero)
+    with handler(NormalizeIntp):
+        t1 = Product.plus(a(), Product.zero)
+        t2 = Product.plus(Product.zero, a())
+    assert syntactic_eq_alpha(t1, Product.zero)
+    assert syntactic_eq_alpha(t2, Product.zero)
 
 
 def test_reduce_body_sequence():
@@ -237,8 +261,10 @@ def test_reduce_body_sequence():
 
     g = Operation.define(f, name="g")
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce([f(x()), g(x())], {x: X()})
     assert syntactic_eq_alpha(
-        Sum.reduce([f(x()), g(x())], {x: X()}),
+        t,
         [Sum.reduce(f(x()), {x: X()}), Sum.reduce(g(x()), {x: X()})],
     )
 
@@ -253,8 +279,10 @@ def test_reduce_body_sequence_2():
 
     g = Operation.define(f, name="g")
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce([f(x()), g(y())], {x: X(), y: Y()})
     assert syntactic_eq_alpha(
-        Sum.reduce([f(x()), g(y())], {x: X(), y: Y()}),
+        t,
         [Sum.reduce(f(x()), {x: X(), y: Y()}), Sum.reduce(g(y()), {x: X(), y: Y()})],
     )
 
@@ -269,33 +297,28 @@ def test_reduce_body_mapping():
 
     g = Operation.define(f, name="g")
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce({"a": f(x()), "b": g(x())}, {x: X()})
     assert syntactic_eq_alpha(
-        Sum.reduce({"a": f(x()), "b": g(x())}, {x: X()}),
+        t,
         {"a": Sum.reduce(f(x()), {x: X()}), "b": Sum.reduce(g(x()), {x: X()})},
     )
 
 
 def test_reduce_no_streams():
     a = define_vars("a")
-    assert syntactic_eq_alpha(Sum.reduce(a(), {}), Sum.identity)
-
-
-def test_reduce_empty():
-    a, b, c = define_vars("a", "b", "c")
-    A = define_vars("A", typ=list[int])
-
-    @Operation.define
-    def C(x: int) -> list[int]:
-        raise NotHandled
-
-    assert syntactic_eq_alpha(Sum.reduce(c(), {a: A(), b: [], c: C(a())}), Sum.identity)
+    with handler(NormalizeIntp):
+        t = Sum.reduce(a(), {})
+    assert syntactic_eq_alpha(t, Sum.identity)
 
 
 def test_reduce_plus():
     a, b = define_vars("a", "b")
     A, B = define_vars("A", "B", typ=list[int])
+    with handler(NormalizeIntp):
+        t = Sum.reduce(Sum.plus(a(), b()), {a: A(), b: B()})
     assert syntactic_eq_alpha(
-        Sum.reduce(Sum.plus(a(), b()), {a: A(), b: B()}),
+        t,
         Sum.plus(Sum.reduce(a(), {a: A(), b: B()}), Sum.reduce(b(), {a: A(), b: B()})),
     )
 
@@ -308,8 +331,10 @@ def test_reduce_reduce():
     def f(x: int, y: int) -> int:
         raise NotHandled
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce(Sum.reduce(f(a(), b()), {a: A()}), {b: B()})
     assert syntactic_eq_alpha(
-        Sum.reduce(Sum.reduce(f(a(), b()), {a: A()}), {b: B()}),
+        t,
         Sum.reduce(f(a(), b()), {a: A(), b: B()}),
     )
 
@@ -317,7 +342,9 @@ def test_reduce_reduce():
 def test_reduce_idempotent_unused_1():
     a, b = define_vars("a", "b")
     A = Operation.define(list[int])
-    assert syntactic_eq_alpha(Min.reduce(b(), {a: A()}), b())
+    with handler(NormalizeIntp):
+        t = Min.reduce(b(), {a: A()})
+    assert syntactic_eq_alpha(t, b())
 
 
 def test_reduce_idempotent_unused_2():
@@ -328,25 +355,21 @@ def test_reduce_idempotent_unused_2():
     def f(x: int) -> int:
         raise NotHandled
 
+    with handler(NormalizeIntp):
+        t = Min.reduce(b(), {a: f(b()), b: f(c()), c: C()})
     assert syntactic_eq_alpha(
-        Min.reduce(b(), {a: f(b()), b: f(c()), c: C()}),
+        t,
         Min.reduce(b(), {b: f(c()), c: C()}),
-    )
-
-
-def test_reduce_unused():
-    a, b = define_vars("a", "b")
-    A = Operation.define(list[int])
-    assert syntactic_eq_alpha(
-        Sum.reduce(b(), {a: A()}), Sum.scalar_mul(b(), Sum.reduce(1, {a: A()}))
     )
 
 
 def test_reduce_independent_1():
     a, b = define_vars("a", "b")
     A, B = define_vars("A", "B", typ=list[int])
+    with handler(NormalizeIntp):
+        t = Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()})
     assert syntactic_eq_alpha(
-        Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()}),
+        t,
         Product.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()})),
     )
 
@@ -359,8 +382,10 @@ def test_reduce_independent_2():
     def f(x: int, y: int) -> int:
         raise NotHandled
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
     assert syntactic_eq_alpha(
-        Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()}),
+        t,
         Product.plus(
             Sum.reduce(a(), {a: A()}),
             Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
@@ -380,8 +405,10 @@ def test_reduce_independent_3():
     def g(x: int) -> list[int]:
         raise NotHandled
 
+    with handler(NormalizeIntp):
+        t = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()})
     assert not syntactic_eq_alpha(
-        Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}),
+        t,
         Product.plus(
             Sum.reduce(a(), {a: A()}),
             Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
