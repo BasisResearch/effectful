@@ -1,5 +1,3 @@
-import jax
-
 import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
     CommutativeMonoid,
@@ -10,24 +8,10 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.types import Operation
 
-
-class _SumMonoid(CommutativeMonoid[jax.Array]):
-    def scalar_mul(self, v: jax.Array, x: int) -> jax.Array:
-        return v * x
-
-
-Sum = _SumMonoid(kernel=jnp.add, identity=jnp.asarray(0))
-
-
-class _ProductMonoid(CommutativeMonoidWithZero[jax.Array]):
-    def scalar_mul(self, v: jax.Array, x: int) -> jax.Array:
-        return v**x
-
-
-Product = _ProductMonoid(
+Sum = CommutativeMonoid(kernel=jnp.add, identity=jnp.asarray(0))
+Product = CommutativeMonoidWithZero(
     kernel=jnp.multiply, identity=jnp.asarray(1), zero=jnp.asarray(0)
 )
-
 Min = Semilattice(kernel=jnp.minimum, identity=jnp.asarray(float("-inf")))
 Max = Semilattice(kernel=jnp.maximum, identity=jnp.asarray(float("inf")))
 LogSumExp = CommutativeMonoid(kernel=jnp.logaddexp, identity=jnp.asarray(float("-inf")))
