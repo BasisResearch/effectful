@@ -10,7 +10,7 @@ class DisjointSet:
     practical n).
 
     Example:
-        >>> dsu = DSU(5)
+        >>> dsu = DisjointSet(5)
         >>> dsu.union(0, 1)
         True
         >>> dsu.union(1, 2)
