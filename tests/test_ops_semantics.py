@@ -879,6 +879,27 @@ def test_fvsof_dataclass() -> None:
     assert fvsof(A(v())) == {v}
 
 
+def test_defdata_dataclass_init_effects() -> None:
+    @Operation.define
+    def f(x: int):
+        raise NotHandled
+
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+        def __init__(self, x: int):
+            self.x = f(x)
+
+    @Operation.define
+    def g(a: A):
+        raise NotHandled
+
+    v = Operation.define(int)
+    t = g(A(v()))
+    assert isinstance(t.args[0].x, Term)
+
+
 def test_instanceop_super() -> None:
     class A:
         @Operation.define

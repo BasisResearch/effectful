@@ -211,17 +211,29 @@ def evaluate[T](
 @evaluate.register(bytes)
 def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-        return typing.cast(
-            T,
-            dataclasses.replace(
-                expr,
-                **{
-                    field.name: evaluate(getattr(expr, field.name))
-                    for field in dataclasses.fields(expr)
-                },
-            ),
-        )
+        return _evaluate_dataclass(expr, **kwargs)
     return expr
+
+
+def _get_dataclass_constr_op(typ):
+    if hasattr(typ, "constr_op"):
+        return typ.constr_op
+
+    @Operation.define
+    def constr_op(*args, **kwargs) -> typ:
+        return typ(*args, **kwargs)
+
+    typ.constr_op = constr_op
+    return constr_op
+
+
+def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
+    dataclass_op = _get_dataclass_constr_op(type(expr))
+    subst = {
+        field.name: evaluate(getattr(expr, field.name))
+        for field in dataclasses.fields(expr)  # type: ignore[arg-type]
+    }
+    return typing.cast(T, dataclass_op(**subst))
 
 
 @evaluate.register(Term)
