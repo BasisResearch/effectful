@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
@@ -47,49 +47,6 @@ def order_streams[T](streams: Streams[T]) -> Iterable[tuple[Operation[[], T], An
         for op in sorted(node_group):
             yield (op, streams[op])
         topo.done(*node_group)
-
-
-def transitive_dependencies(graph: dict, dependents: set) -> set:
-    """
-    Compute the transitive dependencies of a set of dependents.
-
-    Args:
-        graph: Dict mapping each dependent to an iterable of its direct dependencies.
-        dependents: Set of dependents whose transitive dependencies to compute.
-
-    Returns:
-        Set of all transitive dependencies (excluding the input dependents themselves
-        unless they appear as dependencies of other items in the input set).
-    """
-    result = set()
-    stack = [dep for d in dependents for dep in graph.get(d, ())]
-
-    while stack:
-        node = stack.pop()
-        if node in result:
-            continue
-        result.add(node)
-        stack.extend(graph.get(node, ()))
-
-    return result
-
-
-def independent_terms(factors: Term, vs: set[Operation]) -> Iterable[set[Operation]]:
-    var_ids = {v: i for (i, v) in enumerate(vs)}
-    var_sets = DisjointSet(len(vs))
-
-    for factor in factors:
-        var_sets.union(*(var_ids[v] for v in (fvsof(factor) & vs)))
-
-    result_sets = {}
-    for v, i in var_ids.items():
-        set_i = var_sets.find(i)
-        if set_i in result_sets:
-            result_sets[set_i].add(v)
-        else:
-            result_sets[set_i] = {v}
-
-    return result_sets.values()
 
 
 class Monoid[T]:
@@ -160,7 +117,7 @@ class Monoid[T]:
 
         def generator(loop_order):
             if loop_order:
-                stream_key = loop_order[0]
+                stream_key = loop_order[0][0]
                 stream_values = evaluate(streams[stream_key])
                 stream_values_iter = iter(stream_values)
 
@@ -204,7 +161,7 @@ class Monoid[T]:
 class IdempotentMonoid[T](Monoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        return super(IdempotentMonoid, self).plus(*args)
+        return super().plus(*args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -218,7 +175,7 @@ class IdempotentMonoid[T](Monoid[T]):
 class CommutativeMonoid[T](Monoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        return super(CommutativeMonoid, self).plus(*args)
+        return super().plus(*args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -238,7 +195,7 @@ class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
 
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        return super(CommutativeMonoidWithZero, self).plus(*args)
+        return super().plus(*args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -252,7 +209,7 @@ class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
 class Semilattice[T](IdempotentMonoid[T], CommutativeMonoid[T]):
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:
-        return super(Semilattice, self).plus(*args)
+        return super().plus(*args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -576,7 +533,7 @@ class ReduceFactorization(ObjectInterpretation):
 
             placed_streams = set()
             new_reduces = []
-            for stream_key, stream_def in streams.items():
+            for stream_key in streams:
                 if stream_key in placed_streams:
                     continue
                 partition = ds.find(stream_ids[stream_key])
