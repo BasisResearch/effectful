@@ -5,10 +5,15 @@ RequiredType instances to its cache, causing a crash.
 """
 
 import collections.abc
+import sys
 import typing
-from typing import ReadOnly
 
 import pytest
+
+if sys.version_info >= (3, 13):
+    from typing import ReadOnly
+else:
+    from typing_extensions import ReadOnly
 
 from effectful.internals.unification import (
     canonicalize,
