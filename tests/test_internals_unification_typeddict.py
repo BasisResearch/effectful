@@ -5,10 +5,15 @@ RequiredType instances to its cache, causing a crash.
 """
 
 import collections.abc
+import sys
 import typing
-from typing import ReadOnly
 
 import pytest
+
+if sys.version_info >= (3, 13):
+    from typing import ReadOnly
+else:
+    from typing_extensions import ReadOnly
 
 from effectful.internals.unification import (
     canonicalize,
@@ -237,6 +242,9 @@ def test_unify_typeddict_invariance_rejects_subtype():
         unify(Pattern, Sub)
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 13), reason="ReadOnly TypedDict requires 3.13+"
+)
 def test_unify_typeddict_readonly_covariance():
     """ReadOnly field allows covariant subtyping."""
     Pattern = typing.TypedDict("Pattern", {"x": ReadOnly[int]})  # noqa: UP013
@@ -247,6 +255,9 @@ def test_unify_typeddict_readonly_covariance():
     assert subs == {}
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 13), reason="ReadOnly TypedDict requires 3.13+"
+)
 def test_unify_typeddict_readonly_notrequired_to_required():
     """ReadOnly NotRequired in typ, Required in subtyp → OK (promotion)."""
     Pattern = typing.TypedDict(  # noqa: UP013
