@@ -177,6 +177,24 @@ def test_plus_distributes():
     )
 
 
+def test_plus_distributes_constant():
+    (a, b, c, d) = define_vars("a", "b", "c", "d")
+    with handler(NormalizeIntp):
+        t = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
+    assert syntactic_eq_alpha(
+        t,
+        Product.plus(
+            5,
+            Sum.plus(
+                Product.plus(a(), c()),
+                Product.plus(a(), d()),
+                Product.plus(b(), c()),
+                Product.plus(b(), d()),
+            ),
+        ),
+    )
+
+
 def test_plus_distributes_multiple():
     (a, b, c, d) = define_vars("a", "b", "c", "d")
     with handler(NormalizeIntp):

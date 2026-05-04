@@ -113,7 +113,7 @@ class Monoid[T]:
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
         if callable(body):
-            return typing.cast(U, lambda *a, **k: self.reduce(body(*a, *k), streams))
+            return typing.cast(U, lambda *a, **k: self.reduce(body(*a, **k), streams))
 
         def generator(loop_order):
             if loop_order:
@@ -239,7 +239,7 @@ def _arg_max[T](
 
 
 Min = Semilattice(kernel=min, identity=float("inf"))
-Max = Semilattice(kernel=min, identity=float("-inf"))
+Max = Semilattice(kernel=max, identity=float("-inf"))
 ArgMin = Monoid(kernel=_arg_min, identity=(float("inf"), None))
 ArgMax = Monoid(kernel=_arg_max, identity=(float("-inf"), None))
 Sum = CommutativeMonoid(kernel=_NumberTerm.__add__, identity=0)
@@ -304,12 +304,9 @@ class PlusAssoc(ObjectInterpretation):
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         if any(isinstance(x, Term) and x.op is monoid.plus for x in args):
-            flat_args = sum(
-                (
-                    t.args if isinstance(t, Term) and t.op is monoid.plus else (t,)
-                    for t in args
-                ),
-                start=(),
+            flat_args = itertools.chain.from_iterable(
+                t.args if isinstance(t, Term) and t.op is monoid.plus else (t,)
+                for t in args
             )
             assert len(args) > 0
             return monoid.plus(*flat_args)
@@ -324,10 +321,15 @@ class PlusDistr(ObjectInterpretation):
         if any(
             isinstance(x, Term) and distributes_over(monoid.plus, x.op) for x in args
         ):
+            non_terms = []
+
             # group terms by head operation
             by_head_op = defaultdict(list)
             for t in args:
-                by_head_op[t.op].append(t)
+                if isinstance(t, Term):
+                    by_head_op[t.op].append(t)
+                else:
+                    non_terms.append(t)
 
             # distribute over each group
             progress = False
@@ -347,7 +349,7 @@ class PlusDistr(ObjectInterpretation):
                 else:
                     final_sum += terms
             if progress:
-                return monoid.plus(*final_sum)
+                return monoid.plus(*non_terms, *final_sum)
         return fwd()
 
 
