@@ -71,6 +71,7 @@ test = [
     "pytest-cov",
     "pytest-xdist",
     "pytest-benchmark",
+    "hypothesis",
     "mypy",
     "ruff",
     "nbval",

@@ -4,7 +4,7 @@ import itertools
 import numbers
 import typing
 from collections import Counter, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
@@ -59,24 +59,32 @@ class Monoid[T]:
             kernel if isinstance(kernel, Operation) else Operation.define(kernel)
         )
 
+    def __repr__(self):
+        return f"{type(self)}({self.kernel}, {self.identity})"
+
     @Operation.define
-    @functools.singledispatchmethod
     def plus[S: Body[T]](self, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
 
         """
+        if not args:
+            return self.identity
+
         if any(isinstance(x, Term) for x in args):
             return typing.cast(S, defdata(self.plus, *args))
 
-        # Base case: a: T, *bs: T
+        return self._plus(*args)
+
+    @functools.singledispatchmethod
+    def _plus[S](self, *args: S) -> S:
         return typing.cast(S, functools.reduce(self.kernel, args, self.identity))
 
-    @plus.register(Sequence)  # type: ignore[attr-defined]
+    @_plus.register(Sequence)  # type: ignore[attr-defined]
     def _(self, *args):
         return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
 
-    @plus.register(Mapping)  # type: ignore[attr-defined]
+    @_plus.register(Mapping)  # type: ignore[attr-defined]
     def _(self, *args):
         if isinstance(args[0], Interpretation):
             keys = args[0].keys()
@@ -115,27 +123,28 @@ class Monoid[T]:
         if callable(body):
             return typing.cast(U, lambda *a, **k: self.reduce(body(*a, **k), streams))
 
-        def generator(loop_order):
-            if loop_order:
-                stream_key = loop_order[0][0]
-                stream_values = evaluate(streams[stream_key])
-                stream_values_iter = iter(stream_values)
+        def generator(loop_order) -> Iterator[Interpretation]:
+            if len(loop_order) == 0:
+                return
 
-                # If we try to iterate and get a term instead of a real
-                # iterator, give up
-                if (
-                    isinstance(stream_values_iter, Term)
-                    and stream_values_iter.op is iter_
-                ):
-                    raise NotHandled
+            stream_key = loop_order[0][0]
+            stream_values = evaluate(streams[stream_key])
+            stream_values_iter = iter(stream_values)
 
+            # If we try to iterate and get a term instead of a real
+            # iterator, give up
+            if isinstance(stream_values_iter, Term) and stream_values_iter.op is iter_:
+                raise NotHandled
+
+            if len(loop_order) == 1:
+                for val in stream_values:
+                    yield {stream_key: functools.partial(lambda v: v, val)}
+            else:
                 for val in stream_values:
                     intp = {stream_key: functools.partial(lambda v: v, val)}
                     with handler(intp):
                         for intp2 in generator(loop_order[1:]):
                             yield coproduct(intp, intp2)
-            else:
-                yield {}
 
         loop_order = list(order_streams(streams))
         try:
@@ -192,6 +201,9 @@ class CommutativeMonoidWithZero[T](CommutativeMonoid[T]):
     def __init__(self, kernel: Callable[[T, T], T], identity: T, zero: T):
         super().__init__(kernel, identity)
         self.zero = zero
+
+    def __repr__(self):
+        return f"{type(self)}({self.kernel}, {self.identity}, {self.zero})"
 
     @Operation.define
     def plus[S: Body[T]](self, *args: S) -> S:

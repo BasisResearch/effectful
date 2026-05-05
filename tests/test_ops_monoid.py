@@ -1,12 +1,49 @@
 import functools
 import itertools
-from collections.abc import Callable
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import IdempotentMonoid, Max, Min, NormalizeIntp, Product, Sum
+from effectful.ops.monoid import (
+    IdempotentMonoid,
+    Max,
+    Min,
+    NormalizeIntp,
+    Product,
+    Semilattice,
+    Sum,
+)
 from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
 from effectful.ops.types import NotHandled, Operation
+from tests._monoid_helpers import TermPair, random_interpretation
+
+_INT = st.integers(min_value=-100, max_value=100)
+
+ALL_MONOIDS = [
+    pytest.param(Sum, id="Sum"),
+    pytest.param(Product, id="Product"),
+    pytest.param(Min, id="Min"),
+    pytest.param(Max, id="Max"),
+]
+
+COMMUTATIVE = [
+    pytest.param(Sum, id="Sum"),
+    pytest.param(Product, id="Product"),
+    pytest.param(Min, id="Min"),
+    pytest.param(Max, id="Max"),
+]
+
+IDEMPOTENT = [
+    pytest.param(Min, id="Min"),
+    pytest.param(Max, id="Max"),
+]
+
+WITH_ZERO = [
+    pytest.param(Product, id="Product"),
+]
 
 
 def define_vars(*names, typ=int):
@@ -119,55 +156,143 @@ def _canonicalize(expr):
         return evaluate(expr)
 
 
-def test_plus_single():
-    x = define_vars("x")
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+@given(a=_INT, b=_INT, c=_INT)
+@settings(max_examples=50, deadline=None)
+def test_associativity(monoid, a, b, c):
+    left = monoid.plus(monoid.plus(a, b), c)
+    right = monoid.plus(a, monoid.plus(b, c))
+    assert left == right
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+@given(a=_INT)
+@settings(max_examples=50, deadline=None)
+def test_identity(monoid, a):
+    assert monoid.plus(monoid.identity, a) == a
+    assert monoid.plus(a, monoid.identity) == a
+
+
+@pytest.mark.parametrize("monoid", COMMUTATIVE)
+@given(a=_INT, b=_INT)
+@settings(max_examples=50, deadline=None)
+def test_commutativity(monoid, a, b):
+    assert monoid.plus(a, b) == monoid.plus(b, a)
+
+
+@pytest.mark.parametrize("monoid", IDEMPOTENT)
+@given(a=_INT)
+@settings(max_examples=50, deadline=None)
+def test_idempotence(monoid, a):
+    assert monoid.plus(a, a) == a
+
+
+@pytest.mark.parametrize("monoid", WITH_ZERO)
+@given(a=_INT)
+@settings(max_examples=50, deadline=None)
+def test_zero_absorbs(monoid, a):
+    assert monoid.plus(monoid.zero, a) == monoid.zero
+    assert monoid.plus(a, monoid.zero) == monoid.zero
+
+
+def _check_pair(lhs, rhs, *, free_vars=[], max_examples: int = 25) -> None:
+    """Run structural + semantic checks on a TermPair."""
     with handler(NormalizeIntp):
-        t = Sum.plus(x())
-    assert syntactic_eq_alpha(t, x())
+        norm = evaluate(lhs)
+
+    assert syntactic_eq_alpha(norm, rhs)
+
+    @given(intp=random_interpretation(free_vars))
+    @settings(max_examples=max_examples, deadline=None)
+    def _check_semantics(intp):
+        with handler(intp):
+            lhs_val = evaluate(lhs)
+            rhs_val = evaluate(rhs)
+        assert lhs_val == rhs_val
+
+    _check_semantics()
 
 
-def test_plus_identity():
-    x = define_vars("x")
-
-    with handler(NormalizeIntp):
-        t1 = Sum.plus(x(), Sum.identity)
-        t2 = Sum.plus(Sum.identity, x())
-
-    assert syntactic_eq_alpha(t1, x())
-    assert syntactic_eq_alpha(t2, x())
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_empty(monoid):
+    _check_pair(lhs=monoid.plus(), rhs=monoid.identity)
 
 
-def test_plus_plus():
-    (x, y, z) = define_vars("x", "y", "z")
-
-    with handler(NormalizeIntp):
-        t1 = Sum.plus(x(), Sum.plus(y(), z()))
-        t2 = Sum.plus(Sum.plus(x(), y()), z())
-
-    assert syntactic_eq_alpha(t1, Sum.plus(x(), y(), z()))
-    assert syntactic_eq_alpha(t2, Sum.plus(x(), y(), z()))
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_single(monoid):
+    x = define_vars("x", typ=type(monoid.identity))
+    _check_pair(lhs=monoid.plus(x()), rhs=x(), free_vars=[x])
 
 
-def test_plus_sequence():
-    (a, b, c, d) = define_vars("a", "b", "c", "d")
-    with handler(NormalizeIntp):
-        t = Sum.plus([a(), b()], [c(), d()])
-    assert syntactic_eq_alpha(t, [Sum.plus(a(), c()), Sum.plus(b(), d())])
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_identity_right(monoid):
+    x = define_vars("x", typ=type(monoid.identity))
+    _check_pair(lhs=monoid.plus(x(), monoid.identity), rhs=x(), free_vars=[x])
 
 
-def test_plus_mapping():
-    (a, b, c, d) = define_vars("a", "b", "c", "d")
-    with handler(NormalizeIntp):
-        t = Sum.plus({"x": a(), "y": b()}, {"x": c(), "z": d()})
-    assert syntactic_eq_alpha(t, {"x": Sum.plus(a(), c()), "y": b(), "z": d()})
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_identity_left(monoid):
+    x = define_vars("x", typ=type(monoid.identity))
+    _check_pair(lhs=monoid.plus(monoid.identity, x()), rhs=x(), free_vars=[x])
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_assoc_right(monoid):
+    x, y, z = define_vars("x", "y", "z", typ=type(monoid.identity))
+    _check_pair(
+        lhs=monoid.plus(x(), monoid.plus(y(), z())),
+        rhs=monoid.plus(x(), y(), z()),
+        free_vars=[x, y, z],
+    )
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_assoc_left(monoid):
+    x, y, z = define_vars("x", "y", "z", typ=type(monoid.identity))
+    _check_pair(
+        lhs=monoid.plus(monoid.plus(x(), y()), z()),
+        rhs=monoid.plus(x(), y(), z()),
+        free_vars=[x, y, z],
+    )
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_sequence(monoid):
+    a, b, c, d = define_vars("a", "b", "c", "d", typ=type(monoid.identity))
+    _check_pair(
+        lhs=monoid.plus([a(), b()], [c(), d()]),
+        rhs=[monoid.plus(a(), c()), monoid.plus(b(), d())],
+        free_vars=[a, b, c, d],
+    )
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_plus_mapping(monoid):
+    a, b, c, d = define_vars("a", "b", "c", "d", typ=type(monoid.identity))
+    _check_pair(
+        lhs=monoid.plus({"x": a(), "y": b()}, {"x": c(), "z": d()}),
+        rhs={"x": monoid.plus(a(), c()), "y": b(), "z": d()},
+        free_vars=[a, b, c, d],
+    )
 
 
 def test_plus_distributes():
-    (a, b, c, d) = define_vars("a", "b", "c", "d")
-    with handler(NormalizeIntp):
-        t = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
-    assert syntactic_eq_alpha(
-        t,
+    a, b, c, d = define_vars("a", "b", "c", "d")
+    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
+    rhs = Sum.plus(
+        Product.plus(a(), c()),
+        Product.plus(a(), d()),
+        Product.plus(b(), c()),
+        Product.plus(b(), d()),
+    )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[a, b, c, d])
+
+
+def test_plus_distributes_constant():
+    a, b, c, d = define_vars("a", "b", "c", "d")
+    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
+    rhs = Product.plus(
+        5,
         Sum.plus(
             Product.plus(a(), c()),
             Product.plus(a(), d()),
@@ -175,96 +300,75 @@ def test_plus_distributes():
             Product.plus(b(), d()),
         ),
     )
-
-
-def test_plus_distributes_constant():
-    (a, b, c, d) = define_vars("a", "b", "c", "d")
-    with handler(NormalizeIntp):
-        t = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
-    assert syntactic_eq_alpha(
-        t,
-        Product.plus(
-            5,
-            Sum.plus(
-                Product.plus(a(), c()),
-                Product.plus(a(), d()),
-                Product.plus(b(), c()),
-                Product.plus(b(), d()),
-            ),
-        ),
-    )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[a, b, c, d])
 
 
 def test_plus_distributes_multiple():
-    (a, b, c, d) = define_vars("a", "b", "c", "d")
-    with handler(NormalizeIntp):
-        t = Sum.plus(
-            Min.plus(a(), b()),
-            Min.plus(c(), d()),
-            Max.plus(a(), b()),
-            Max.plus(c(), d()),
-        )
-    assert syntactic_eq_alpha(
-        t,
-        Sum.plus(
-            Min.plus(
-                Sum.plus(a(), c()),
-                Sum.plus(a(), d()),
-                Sum.plus(b(), c()),
-                Sum.plus(b(), d()),
-            ),
-            Max.plus(
-                Sum.plus(a(), c()),
-                Sum.plus(a(), d()),
-                Sum.plus(b(), c()),
-                Sum.plus(b(), d()),
-            ),
+    a, b, c, d = define_vars("a", "b", "c", "d")
+    lhs = Sum.plus(
+        Min.plus(a(), b()),
+        Min.plus(c(), d()),
+        Max.plus(a(), b()),
+        Max.plus(c(), d()),
+    )
+    rhs = Sum.plus(
+        Min.plus(
+            Sum.plus(a(), c()),
+            Sum.plus(a(), d()),
+            Sum.plus(b(), c()),
+            Sum.plus(b(), d()),
+        ),
+        Max.plus(
+            Sum.plus(a(), c()),
+            Sum.plus(a(), d()),
+            Sum.plus(b(), c()),
+            Sum.plus(b(), d()),
         ),
     )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[a, b, c, d])
 
 
-def test_plus_idempotent():
-    (a, b, identity) = define_vars("a", "b", "identity")
-
-    IdMonoid = IdempotentMonoid(
-        kernel=Operation.define(Callable[[int, int], int]), identity=identity()
-    )
-
-    with handler(NormalizeIntp):
-        t1 = IdMonoid.plus(a(), a(), b())
-        t2 = IdMonoid.plus(a(), b(), a())
-        t3 = IdMonoid.plus(a(), b(), a(), b(), b(), a(), a())
-
-    assert syntactic_eq_alpha(t1, IdMonoid.plus(a(), b()))
-    assert syntactic_eq_alpha(t2, IdMonoid.plus(a(), b(), a()))
-    assert syntactic_eq_alpha(t3, IdMonoid.plus(a(), b(), a(), b(), a()))
+@pytest.mark.parametrize("monoid", IDEMPOTENT)
+def test_plus_idempotent_consecutive(monoid):
+    """``a, a, b → a, b`` — only consecutive duplicates collapse."""
+    a, b = define_vars("a", "b")
+    lhs = monoid.plus(a(), a(), b())
+    return _check_pair(lhs=lhs, rhs=monoid.plus(a(), b()), free_vars=[a, b])
 
 
-def test_plus_commutative_idempotent():
-    (a, b) = define_vars("a", "b")
+@pytest.mark.parametrize("monoid", IDEMPOTENT)
+def test_plus_idempotent_non_consecutive(monoid):
+    """``a, b, a`` — Semilattice (Min/Max) collapses via commutative
+    PlusDups; plain IdempotentMonoid leaves it as-is (consecutive-only)."""
+    a, b = define_vars("a", "b")
+    lhs = monoid.plus(a(), b(), a())
+    if isinstance(monoid, Semilattice):
+        rhs = monoid.plus(a(), b())
+    else:
+        rhs = monoid.plus(a(), b(), a())
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[a, b])
 
-    with handler(NormalizeIntp):
-        t1 = Min.plus(a(), a(), b())
-        t2 = Min.plus(b(), a(), b())
-        t3 = Min.plus(a(), b(), a(), b(), b(), a(), a())
 
-    assert syntactic_eq_alpha(t1, Min.plus(a(), b()))
-    assert syntactic_eq_alpha(t2, Min.plus(b(), a()))
-    assert syntactic_eq_alpha(t3, Min.plus(a(), b()))
+def test_plus_commutative_idempotent_long():
+    """Long alternation collapses via commutative dedup (Min/Max only)."""
+    a, b = define_vars("a", "b")
+    lhs = Min.plus(a(), b(), a(), b(), b(), a(), a())
+    _check_pair(lhs=lhs, rhs=Min.plus(a(), b()), free_vars=[a, b])
 
 
-def test_plus_zero():
+@pytest.mark.parametrize("monoid", WITH_ZERO)
+def test_plus_zero(monoid):
     a = define_vars("a")
-    with handler(NormalizeIntp):
-        t1 = Product.plus(a(), Product.zero)
-        t2 = Product.plus(Product.zero, a())
-    assert syntactic_eq_alpha(t1, Product.zero)
-    assert syntactic_eq_alpha(t2, Product.zero)
+    lhs_right = monoid.plus(a(), monoid.zero)
+    lhs_left = monoid.plus(monoid.zero, a())
+    _check_pair(lhs=lhs_right, rhs=monoid.zero, free_vars=[a])
+    _check_pair(lhs=lhs_left, rhs=monoid.zero, free_vars=[a])
 
 
-def test_reduce_body_sequence():
-    x = Operation.define(int)
-    X = Operation.define(list[int])
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_body_sequence(monoid):
+    x = Operation.define(int, name="x")
+    X = Operation.define(list[int], name="X")
 
     @Operation.define
     def f(x: int) -> int:
@@ -272,15 +376,14 @@ def test_reduce_body_sequence():
 
     g = Operation.define(f, name="g")
 
-    with handler(NormalizeIntp):
-        t = Sum.reduce([f(x()), g(x())], {x: X()})
-    assert syntactic_eq_alpha(
-        t,
-        [Sum.reduce(f(x()), {x: X()}), Sum.reduce(g(x()), {x: X()})],
-    )
+    lhs = monoid.reduce([f(x()), g(x())], {x: X()})
+    rhs = [monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()})]
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, f, g])
 
 
-def test_reduce_body_sequence_2():
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_body_sequence_2(monoid):
     x, y = define_vars("x", "y")
     X, Y = define_vars("X", "Y", typ=list[int])
 
@@ -290,17 +393,26 @@ def test_reduce_body_sequence_2():
 
     g = Operation.define(f, name="g")
 
-    with handler(NormalizeIntp):
-        t = Sum.reduce([f(x()), g(y())], {x: X(), y: Y()})
-    assert syntactic_eq_alpha(
-        t,
-        [Sum.reduce(f(x()), {x: X(), y: Y()}), Sum.reduce(g(y()), {x: X(), y: Y()})],
-    )
+    lhs = monoid.reduce([f(x()), g(y())], {x: X(), y: Y()})
+
+    if isinstance(monoid, IdempotentMonoid):
+        rhs = [
+            monoid.reduce(f(x()), {x: X()}),
+            monoid.reduce(g(y()), {y: Y()}),
+        ]
+    else:
+        rhs = [
+            monoid.reduce(f(x()), {x: X(), y: Y()}),
+            monoid.reduce(g(y()), {x: X(), y: Y()}),
+        ]
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, Y, f, g])
 
 
-def test_reduce_body_mapping():
-    x = Operation.define(int)
-    X = Operation.define(list[int])
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_body_mapping(monoid):
+    x = Operation.define(int, name="x")
+    X = Operation.define(list[int], name="X")
 
     @Operation.define
     def f(x: int) -> int:
@@ -308,33 +420,25 @@ def test_reduce_body_mapping():
 
     g = Operation.define(f, name="g")
 
-    with handler(NormalizeIntp):
-        t = Sum.reduce({"a": f(x()), "b": g(x())}, {x: X()})
-    assert syntactic_eq_alpha(
-        t,
-        {"a": Sum.reduce(f(x()), {x: X()}), "b": Sum.reduce(g(x()), {x: X()})},
-    )
+    lhs = monoid.reduce({"a": f(x()), "b": g(x())}, {x: X()})
+    rhs = {
+        "a": monoid.reduce(f(x()), {x: X()}),
+        "b": monoid.reduce(g(x()), {x: X()}),
+    }
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, f, g])
 
 
-def test_reduce_no_streams():
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_no_streams(monoid):
     a = define_vars("a")
-    with handler(NormalizeIntp):
-        t = Sum.reduce(a(), {})
-    assert syntactic_eq_alpha(t, Sum.identity)
+    lhs = monoid.reduce(a(), {})
+    rhs = monoid.identity
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[a])
 
 
-def test_reduce_plus():
-    a, b = define_vars("a", "b")
-    A, B = define_vars("A", "B", typ=list[int])
-    with handler(NormalizeIntp):
-        t = Sum.reduce(Sum.plus(a(), b()), {a: A(), b: B()})
-    assert syntactic_eq_alpha(
-        t,
-        Sum.plus(Sum.reduce(a(), {a: A(), b: B()}), Sum.reduce(b(), {a: A(), b: B()})),
-    )
-
-
-def test_reduce_reduce():
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_reduce(monoid):
     a, b = define_vars("a", "b")
     A, B = define_vars("A", "B", typ=list[int])
 
@@ -342,47 +446,61 @@ def test_reduce_reduce():
     def f(x: int, y: int) -> int:
         raise NotHandled
 
-    with handler(NormalizeIntp):
-        t = Sum.reduce(Sum.reduce(f(a(), b()), {a: A()}), {b: B()})
-    assert syntactic_eq_alpha(
-        t,
-        Sum.reduce(f(a(), b()), {a: A(), b: B()}),
-    )
+    lhs = monoid.reduce(monoid.reduce(f(a(), b()), {a: A()}), {b: B()})
+    rhs = monoid.reduce(f(a(), b()), {a: A(), b: B()})
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, f])
 
 
-def test_reduce_idempotent_unused_1():
+@pytest.mark.parametrize("monoid", COMMUTATIVE)
+def test_reduce_plus(monoid):
+    a, b = define_vars("a", "b")
+    A, B = define_vars("A", "B", typ=list[int])
+    lhs = monoid.reduce(monoid.plus(a(), b()), {a: A(), b: B()})
+    if isinstance(monoid, IdempotentMonoid):
+        # ReduceSplit + ReduceUnused: each split term drops its unused stream.
+        rhs = monoid.plus(
+            monoid.reduce(a(), {a: A()}),
+            monoid.reduce(b(), {b: B()}),
+        )
+    else:
+        rhs = monoid.plus(
+            monoid.reduce(a(), {a: A(), b: B()}),
+            monoid.reduce(b(), {a: A(), b: B()}),
+        )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B])
+
+
+@pytest.mark.parametrize("monoid", IDEMPOTENT)
+def test_reduce_idempotent_unused_1(monoid):
     a, b = define_vars("a", "b")
     A = Operation.define(list[int])
-    with handler(NormalizeIntp):
-        t = Min.reduce(b(), {a: A()})
-    assert syntactic_eq_alpha(t, b())
+
+    lhs = monoid.reduce(b(), {a: A()})
+    _check_pair(lhs=lhs, rhs=b(), free_vars=[A, b])
 
 
-def test_reduce_idempotent_unused_2():
+@pytest.mark.parametrize("monoid", IDEMPOTENT)
+def test_reduce_idempotent_unused_2(monoid):
     a, b, c = define_vars("a", "b", "c")
     C = define_vars("C", typ=list[int])
 
     @Operation.define
-    def f(x: int) -> int:
+    def f(x: int) -> list[int]:
         raise NotHandled
 
-    with handler(NormalizeIntp):
-        t = Min.reduce(b(), {a: f(b()), b: f(c()), c: C()})
-    assert syntactic_eq_alpha(
-        t,
-        Min.reduce(b(), {b: f(c()), c: C()}),
-    )
+    lhs = monoid.reduce(b(), {a: f(b()), b: f(c()), c: C()})
+    rhs = monoid.reduce(b(), {b: f(c()), c: C()})
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[C, f])
 
 
 def test_reduce_independent_1():
     a, b = define_vars("a", "b")
     A, B = define_vars("A", "B", typ=list[int])
-    with handler(NormalizeIntp):
-        t = Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()})
-    assert syntactic_eq_alpha(
-        t,
-        Product.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()})),
-    )
+    lhs = Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()})
+    rhs = Product.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()}))
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B])
 
 
 def test_reduce_independent_2():
@@ -393,20 +511,19 @@ def test_reduce_independent_2():
     def f(x: int, y: int) -> int:
         raise NotHandled
 
-    with handler(NormalizeIntp):
-        t = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
-    assert syntactic_eq_alpha(
-        t,
-        Product.plus(
-            Sum.reduce(a(), {a: A()}),
-            Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
-        ),
+    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
+    rhs = Product.plus(
+        Sum.reduce(a(), {a: A()}),
+        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, C, f])
 
 
-def test_reduce_independent_3():
+def test_reduce_independent_3_negative():
+    """Stream `b` depends on `a` (b: g(a())), so the proposed factorization
+    is unsound — the normalizer must NOT apply it."""
     a, b, c = define_vars("a", "b", "c")
-    A, B, C = define_vars("A", "B", "C", typ=list[int])
+    A, C = define_vars("A", "C", typ=list[int])
 
     @Operation.define
     def f(x: int, y: int) -> int:
@@ -417,11 +534,13 @@ def test_reduce_independent_3():
         raise NotHandled
 
     with handler(NormalizeIntp):
-        t = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()})
-    assert not syntactic_eq_alpha(
-        t,
-        Product.plus(
-            Sum.reduce(a(), {a: A()}),
-            Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
-        ),
+        lhs = Sum.reduce(
+            Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}
+        )
+    bogus_rhs = Product.plus(
+        Sum.reduce(a(), {a: A()}),
+        Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
     )
+    # Structural-only negative check: the normalizer correctly refused to apply
+    # the bogus factorization.
+    assert not syntactic_eq_alpha(lhs, bogus_rhs)
