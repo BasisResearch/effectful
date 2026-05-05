@@ -613,6 +613,85 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
     raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
 
 
+def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
+    """Infer the return type of a function from its bound arguments."""
+    typ = _replace_self(
+        _freshen(_sig_to_type(bound_sig.signature)), typing.TypeVar("Self")
+    )
+    subtyp = _freshen(_bound_sig_to_type(bound_sig))
+    return substitute(bound_sig.signature.return_annotation, unify(typ, subtyp))
+
+
+def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
+    """Convert an inspect.Signature to a type expression."""
+    if sig.return_annotation is inspect.Parameter.empty:
+        return _sig_to_type(sig.replace(return_annotation=typing.Any))
+    elif sig.return_annotation is None:
+        return _sig_to_type(sig.replace(return_annotation=type(None)))
+    elif typing.get_origin(sig.return_annotation) is typing.Annotated:
+        return _sig_to_type(
+            sig.replace(return_annotation=typing.get_args(sig.return_annotation)[0])
+        )
+
+    annotations: dict[str, TypeExpressions] = {
+        "return": typing.NotRequired[sig.return_annotation]
+    }
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            annotations[name] = tuple[param.annotation, ...]
+        elif param.kind == inspect.Parameter.VAR_KEYWORD:
+            annotations[name] = dict[str, param.annotation]
+        elif param.kind not in {
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        }:
+            annotations[name] = param.annotation
+
+    return typing.TypedDict(f"{sig}_Type", annotations)
+
+
+def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
+    """Convert an inspect.BoundArguments to a type expression for unification."""
+    sig: inspect.Signature = bound_sig.signature
+    typed_arguments = sig.bind(
+        *[nested_type(a).value for a in bound_sig.args],
+        **{k: nested_type(v).value for k, v in bound_sig.kwargs.items()},
+    ).arguments
+
+    annotations: dict[str, TypeExpressions] = {}
+    for name, param in sig.parameters.items():
+        if param.annotation is inspect.Parameter.empty:
+            continue
+
+        if name not in typed_arguments:
+            assert param.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }
+            continue
+
+        psubtyp = typed_arguments[name]
+        if param.kind == inspect.Parameter.VAR_POSITIONAL and isinstance(
+            psubtyp, collections.abc.Sequence
+        ):
+            annotations[name] = tuple[psubtyp]
+        elif param.kind == inspect.Parameter.VAR_KEYWORD and isinstance(
+            psubtyp, collections.abc.Mapping
+        ):
+            annotations[name] = typing.TypedDict(f"{name}BoundKwargs", psubtyp)
+        elif param.kind not in {
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
+            annotations[name] = psubtyp
+        else:
+            raise TypeError(
+                f"Cannot unify parameter {param} with argument {psubtyp} in signature unification."
+            )
+
+    return typing.TypedDict("BoundSigType", annotations)
+
+
 def _unify_signature(
     typ: inspect.Signature, subtyp: inspect.BoundArguments, subs: Substitutions
 ) -> Substitutions:
