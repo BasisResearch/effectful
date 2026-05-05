@@ -470,53 +470,6 @@ class ReduceSplit(ObjectInterpretation):
         return fwd()
 
 
-class ReduceUnused(ObjectInterpretation):
-    """Removes unused streams for idempotent monoids."""
-
-    @staticmethod
-    def transitive_dependencies(graph: dict, dependents: set) -> set:
-        """
-        Compute the transitive dependencies of a set of dependents.
-
-        Args:
-            graph: Dict mapping each dependent to an iterable of its direct dependencies.
-            dependents: Set of dependents whose transitive dependencies to compute.
-
-        Returns:
-            Set of all transitive dependencies (excluding the input dependents themselves
-            unless they appear as dependencies of other items in the input set).
-        """
-        result = set()
-        stack = [dep for d in dependents for dep in graph.get(d, ())]
-
-        while stack:
-            node = stack.pop()
-            if node in result:
-                continue
-            result.add(node)
-            stack.extend(graph.get(node, ()))
-
-        return result
-
-    @implements(IdempotentMonoid.reduce)
-    def reduce(self, monoid, body, streams):
-        stream_deps = {k: fvsof(v) for (k, v) in streams.items()}
-        body_vars = fvsof(body)
-        used_streams = (
-            ReduceUnused.transitive_dependencies(stream_deps, body_vars) | body_vars
-        ) & set(streams.keys())
-
-        if len(used_streams) == 0:
-            return body
-
-        if len(used_streams) < len(streams):
-            return fwd(
-                monoid, body, {k: v for (k, v) in streams.items() if k in used_streams}
-            )
-
-        return fwd()
-
-
 class ReduceFactorization(ObjectInterpretation):
     """
     Implements factorization of independent terms.
@@ -576,13 +529,7 @@ NormalizeReduceIntp = functools.reduce(
     coproduct,
     typing.cast(
         list[Interpretation],
-        [
-            ReduceNoStreams(),
-            ReduceFusion(),
-            ReduceSplit(),
-            ReduceFactorization(),
-            ReduceUnused(),
-        ],
+        [ReduceNoStreams(), ReduceFusion(), ReduceSplit(), ReduceFactorization()],
     ),
 )
 

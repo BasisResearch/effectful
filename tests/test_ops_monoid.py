@@ -371,7 +371,7 @@ def test_reduce_body_sequence(monoid):
     X = Operation.define(list[int], name="X")
 
     @Operation.define
-    def f(x: int) -> int:
+    def f(_x: int) -> int:
         raise NotHandled
 
     g = Operation.define(f, name="g")
@@ -388,23 +388,16 @@ def test_reduce_body_sequence_2(monoid):
     X, Y = define_vars("X", "Y", typ=list[int])
 
     @Operation.define
-    def f(x: int) -> int:
+    def f(_x: int) -> int:
         raise NotHandled
 
     g = Operation.define(f, name="g")
 
     lhs = monoid.reduce([f(x()), g(y())], {x: X(), y: Y()})
-
-    if isinstance(monoid, IdempotentMonoid):
-        rhs = [
-            monoid.reduce(f(x()), {x: X()}),
-            monoid.reduce(g(y()), {y: Y()}),
-        ]
-    else:
-        rhs = [
-            monoid.reduce(f(x()), {x: X(), y: Y()}),
-            monoid.reduce(g(y()), {x: X(), y: Y()}),
-        ]
+    rhs = [
+        monoid.reduce(f(x()), {x: X(), y: Y()}),
+        monoid.reduce(g(y()), {x: X(), y: Y()}),
+    ]
 
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, Y, f, g])
 
@@ -415,7 +408,7 @@ def test_reduce_body_mapping(monoid):
     X = Operation.define(list[int], name="X")
 
     @Operation.define
-    def f(x: int) -> int:
+    def f(_x: int) -> int:
         raise NotHandled
 
     g = Operation.define(f, name="g")
@@ -443,7 +436,7 @@ def test_reduce_reduce(monoid):
     A, B = define_vars("A", "B", typ=list[int])
 
     @Operation.define
-    def f(x: int, y: int) -> int:
+    def f(_x: int, _y: int) -> int:
         raise NotHandled
 
     lhs = monoid.reduce(monoid.reduce(f(a(), b()), {a: A()}), {b: B()})
@@ -457,42 +450,11 @@ def test_reduce_plus(monoid):
     a, b = define_vars("a", "b")
     A, B = define_vars("A", "B", typ=list[int])
     lhs = monoid.reduce(monoid.plus(a(), b()), {a: A(), b: B()})
-    if isinstance(monoid, IdempotentMonoid):
-        # ReduceSplit + ReduceUnused: each split term drops its unused stream.
-        rhs = monoid.plus(
-            monoid.reduce(a(), {a: A()}),
-            monoid.reduce(b(), {b: B()}),
-        )
-    else:
-        rhs = monoid.plus(
-            monoid.reduce(a(), {a: A(), b: B()}),
-            monoid.reduce(b(), {a: A(), b: B()}),
-        )
+    rhs = monoid.plus(
+        monoid.reduce(a(), {a: A(), b: B()}),
+        monoid.reduce(b(), {a: A(), b: B()}),
+    )
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B])
-
-
-@pytest.mark.parametrize("monoid", IDEMPOTENT)
-def test_reduce_idempotent_unused_1(monoid):
-    a, b = define_vars("a", "b")
-    A = Operation.define(list[int])
-
-    lhs = monoid.reduce(b(), {a: A()})
-    _check_pair(lhs=lhs, rhs=b(), free_vars=[A, b])
-
-
-@pytest.mark.parametrize("monoid", IDEMPOTENT)
-def test_reduce_idempotent_unused_2(monoid):
-    a, b, c = define_vars("a", "b", "c")
-    C = define_vars("C", typ=list[int])
-
-    @Operation.define
-    def f(x: int) -> list[int]:
-        raise NotHandled
-
-    lhs = monoid.reduce(b(), {a: f(b()), b: f(c()), c: C()})
-    rhs = monoid.reduce(b(), {b: f(c()), c: C()})
-
-    _check_pair(lhs=lhs, rhs=rhs, free_vars=[C, f])
 
 
 def test_reduce_independent_1():
@@ -508,7 +470,7 @@ def test_reduce_independent_2():
     A, B, C = define_vars("A", "B", "C", typ=list[int])
 
     @Operation.define
-    def f(x: int, y: int) -> int:
+    def f(_x: int, _y: int) -> int:
         raise NotHandled
 
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
@@ -526,11 +488,11 @@ def test_reduce_independent_3_negative():
     A, C = define_vars("A", "C", typ=list[int])
 
     @Operation.define
-    def f(x: int, y: int) -> int:
+    def f(_x: int, _y: int) -> int:
         raise NotHandled
 
     @Operation.define
-    def g(x: int) -> list[int]:
+    def g(_x: int) -> list[int]:
         raise NotHandled
 
     with handler(NormalizeIntp):
