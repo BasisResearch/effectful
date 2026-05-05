@@ -69,7 +69,7 @@ class Monoid[T]:
 
         """
         if not args:
-            return self.identity
+            return typing.cast(S, self.identity)
 
         if any(isinstance(x, Term) for x in args):
             return typing.cast(S, defdata(self.plus, *args))
@@ -80,11 +80,11 @@ class Monoid[T]:
     def _plus[S](self, *args: S) -> S:
         return typing.cast(S, functools.reduce(self.kernel, args, self.identity))
 
-    @_plus.register(Sequence)  # type: ignore[attr-defined]
+    @_plus.register(Sequence)
     def _(self, *args):
         return type(args[0])(self.plus(*vs) for vs in zip(*args, strict=True))
 
-    @_plus.register(Mapping)  # type: ignore[attr-defined]
+    @_plus.register(Mapping)
     def _(self, *args):
         if isinstance(args[0], Interpretation):
             keys = args[0].keys()
@@ -129,7 +129,7 @@ class Monoid[T]:
 
             stream_key = loop_order[0][0]
             stream_values = evaluate(streams[stream_key])
-            stream_values_iter = iter(stream_values)
+            stream_values_iter = iter(stream_values)  # type: ignore[arg-type]
 
             # If we try to iterate and get a term instead of a real
             # iterator, give up
@@ -137,11 +137,13 @@ class Monoid[T]:
                 raise NotHandled
 
             if len(loop_order) == 1:
-                for val in stream_values:
+                for val in stream_values_iter:
                     yield {stream_key: functools.partial(lambda v: v, val)}
             else:
-                for val in stream_values:
-                    intp = {stream_key: functools.partial(lambda v: v, val)}
+                for val in stream_values_iter:
+                    intp: Interpretation = {
+                        stream_key: functools.partial(lambda v: v, val)
+                    }
                     with handler(intp):
                         for intp2 in generator(loop_order[1:]):
                             yield coproduct(intp, intp2)
