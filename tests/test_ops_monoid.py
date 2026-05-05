@@ -6,19 +6,11 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import (
-    IdempotentMonoid,
-    Max,
-    Min,
-    NormalizeIntp,
-    Product,
-    Semilattice,
-    Sum,
-)
+from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Semilattice, Sum
 from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
 from effectful.ops.types import NotHandled, Operation
-from tests._monoid_helpers import TermPair, random_interpretation
+from tests._monoid_helpers import random_interpretation
 
 _INT = st.integers(min_value=-100, max_value=100)
 

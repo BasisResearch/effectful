@@ -30,6 +30,10 @@ class DisjointSet:
         self.parent = list(range(n))
         self.rank = [0] * n
 
+    def _validate(self, x):
+        if x < 0 or x >= len(self.parent):
+            raise IndexError(f"Element {x} out of bounds")
+
     def find(self, x):
         """Return the representative (root) of the set containing x.
 
@@ -44,6 +48,7 @@ class DisjointSet:
         Returns:
             The root element of x's set.
         """
+        self._validate(x)
         while self.parent[x] != x:
             self.parent[x] = self.parent[self.parent[x]]  # path compression
             x = self.parent[x]
@@ -69,16 +74,26 @@ class DisjointSet:
             return False
 
         merged = False
-        rx = self.find(elements[0])
+        first = elements[0]
+
         for y in elements[1:]:
-            ry = self.find(y)
-            if rx == ry:
-                continue
-            if self.rank[rx] < self.rank[ry]:
-                rx, ry = ry, rx
-            self.parent[ry] = rx
-            if self.rank[rx] == self.rank[ry]:
-                self.rank[rx] += 1
-            merged = True
+            if self._union_pair(first, y):
+                merged = True
 
         return merged
+
+    def _union_pair(self, x, y):
+        rx = self.find(x)
+        ry = self.find(y)
+
+        if rx == ry:
+            return False
+
+        if self.rank[rx] < self.rank[ry]:
+            rx, ry = ry, rx
+
+        self.parent[ry] = rx
+        if self.rank[rx] == self.rank[ry]:
+            self.rank[rx] += 1
+
+        return True
