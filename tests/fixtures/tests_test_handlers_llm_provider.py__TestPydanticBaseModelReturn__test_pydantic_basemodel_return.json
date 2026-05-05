@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D9hhLJOHKOw4k9zRbHsj0gQ83wHo4",
-  "created": 1771205299,
-  "model": "gpt-5-nano-2025-08-07",
+  "id": "chatcmpl-DSsSlxbtInEbJyuLjT8bkEOVBaf3w",
+  "created": 1775774911,
+  "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_8706f899b3",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"title\":\"Harry Potter and the Philosopher's Stone\",\"rating\":5,\"summary\":\"A wonderfully inviting entry to a long-running fantasy saga. It follows a boy who discovers he is a wizard and begins at Hogwarts, where magic, friendship, and danger intertwine. The book shines with imaginative world-building, endearing characters, and themes of courage, loyalty, and self-discovery. While aimed at younger readers, its charm and sense of wonder appeal to all ages and set the standard for modern fantasy.\"}",
+        "content": "{\"value\":{\"title\":\"The Book of Arcane Wonders\",\"rating\":4,\"summary\":\"The Book of Arcane Wonders is an intriguing tale of self-discovery set against the backdrop of an enchanting world filled with magic and mystery. The plot revolves around a young wizard's journey into uncovering his innate magical talents, followed by his adventures at a prestigious school for wizards. The story beautifully captures the struggles and triumphs of mastering magic while forming friendships and facing formidable challenges. Though the narrative feels reminiscent of other tales in the genre, what sets it apart is its unique world-building and well-developed characters, which capture the imagination of readers young and old. It's a delightful read, filled with suspense, humor, and wonder, making it a must-read for fans of magical adventures.\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 1268,
-    "prompt_tokens": 923,
-    "total_tokens": 2191,
+    "completion_tokens": 163,
+    "prompt_tokens": 952,
+    "total_tokens": 1115,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "reasoning_tokens": 1152,
+      "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

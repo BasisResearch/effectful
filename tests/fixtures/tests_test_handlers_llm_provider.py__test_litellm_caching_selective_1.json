@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D3rOnYRas1FEzNW5AQBkzZVINzkxJ",
-  "created": 1769812621,
-  "model": "gpt-4o-2024-08-06",
+  "id": "chatcmpl-DSsWwrgMhqi8eCyyvbY9fYRcVCWq2",
+  "created": 1775775170,
+  "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_fa7f5b168b",
+  "system_fingerprint": "fp_a5086b7b9a",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Apples are crisp, sweet fruits that come in a variety of colors, including red, green, and yellow.\"}",
+        "content": "Apples are a popular fruit known for their crisp texture and sweet or tart flavor.",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 31,
-    "prompt_tokens": 262,
-    "total_tokens": 293,
+    "completion_tokens": 18,
+    "prompt_tokens": 815,
+    "total_tokens": 833,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

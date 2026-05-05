@@ -3,6 +3,7 @@
 import ast
 import builtins
 import inspect
+import sys
 import textwrap
 import types
 import typing
@@ -285,7 +286,12 @@ class TestTypeToAstTypingAnnotations:
 
         typ = typing.Optional[int]  # noqa: UP045 - intentionally testing old syntax
         result = type_to_ast(typ)
-        assert ast.unparse(result) == "typing.Union[int, None]"
+        # Python 3.14 unified typing.Union with types.UnionType (PEP 604),
+        # so typing.Optional[int] now renders with | syntax.
+        expected = (
+            "int | None" if sys.version_info >= (3, 14) else "typing.Union[int, None]"
+        )
+        assert ast.unparse(result) == expected
 
     def test_typing_dict(self):
         """typing.Dict[str, int]."""
@@ -853,6 +859,7 @@ class TestTypeAliases:
         assert unparsed == "MyList"
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckE2E:
     """End-to-end stress tests for mypy_type_check with get_context and ast.parse. Never empty context."""
 
@@ -1002,6 +1009,7 @@ def f(x: Annotated[int, Tag]) -> int:
         mypy_type_check(module, ctx, [int], int)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckFailures:
     """Failure cases: mypy_type_check must raise TypeError with mypy report. All use get_context()."""
 
@@ -1275,6 +1283,7 @@ def outer(x: int) -> bool:
             mypy_type_check(module, ctx, [], MyErr)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckNameCollision:
     """Tests that mypy_type_check renames synthesized functions whose names
     collide with variable declarations or class stubs from the context."""
@@ -1401,7 +1410,6 @@ class TestMypyTypeCheckNameCollision:
 
 def test_restricted_blocks_private_attribute_access():
     """RestrictedPython blocks access to underscore-prefixed attributes by default."""
-    encodable = Encodable.define(Callable[[str], int], {})
     source = SynthesizedFunction(
         module_code="""def get_private(s: str) -> int:
     return s.__class__.__name__"""
@@ -1409,7 +1417,9 @@ def test_restricted_blocks_private_attribute_access():
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
         with handler(RestrictedEvalProvider()):
-            fn = encodable.decode(source)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
+                source, context={}
+            )
             fn("test")
 
 
@@ -1420,13 +1430,14 @@ def test_restricted_with_custom_policy():
     class CustomPolicy(RestrictingNodeTransformer):
         pass
 
-    encodable = Encodable.define(Callable[[int, int], int], {})
     source = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider(policy=CustomPolicy)):
-        fn = encodable.decode(source)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source, context={}
+        )
     assert fn(2, 3) == 5
 
 
@@ -1443,18 +1454,18 @@ def test_builtins_in_env_does_not_bypass_security():
     dangerous_ctx = {"__builtins__": builtins.__dict__}
 
     # Test 1: open() should not be usable even with __builtins__ in context
-    encodable_open = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_open = SynthesizedFunction(
         module_code="""def read_file(path: str) -> str:
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
         with handler(RestrictedEvalProvider()):
-            fn = encodable_open.decode(source_open)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_open, context=dangerous_ctx
+            )
             fn("/etc/passwd")
 
     # Test 2: __import__ should not be usable
-    encodable_import = Encodable.define(Callable[[], str], dangerous_ctx)
     source_import = SynthesizedFunction(
         module_code="""def get_os_name() -> str:
     os = __import__('os')
@@ -1462,26 +1473,30 @@ def test_builtins_in_env_does_not_bypass_security():
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_import.decode(source_import)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
+                source_import, context=dangerous_ctx
+            )
             fn()
 
     # Test 3: Verify safe code still works with dangerous context
-    encodable_safe = Encodable.define(Callable[[int, int], int], dangerous_ctx)
     source_safe = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider()):
-        fn = encodable_safe.decode(source_safe)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source_safe, context=dangerous_ctx
+        )
         assert fn(2, 3) == 5, "Safe code should still work"
 
     # Test 4: Private attribute access should still be blocked
-    encodable_private = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_private = SynthesizedFunction(
         module_code="""def get_class(s: str) -> str:
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_private.decode(source_private)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_private, context=dangerous_ctx
+            )
             fn("test")

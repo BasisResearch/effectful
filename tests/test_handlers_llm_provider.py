@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 
 import litellm
+import pydantic
 import pytest
 import tenacity
 from litellm import ChatCompletionMessageToolCall
@@ -38,27 +39,14 @@ from effectful.handlers.llm.completions import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm, requires_vision
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
-# Check for API keys
-HAS_OPENAI_KEY = "OPENAI_API_KEY" in os.environ and os.environ["OPENAI_API_KEY"]
-HAS_ANTHROPIC_KEY = (
-    "ANTHROPIC_API_KEY" in os.environ and os.environ["ANTHROPIC_API_KEY"]
-)
-
-# Pytest markers for skipping tests based on API key availability
-requires_openai = pytest.mark.skipif(
-    not HAS_OPENAI_KEY, reason="OPENAI_API_KEY environment variable not set"
-)
-requires_anthropic = pytest.mark.skipif(
-    not HAS_ANTHROPIC_KEY, reason="ANTHROPIC_API_KEY environment variable not set"
-)
 
 REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 
@@ -66,6 +54,8 @@ REBUILD_FIXTURES = os.getenv("REBUILD_FIXTURES") == "true"
 # ============================================================================
 # Test Fixtures and Mock Data
 # ============================================================================
+
+
 def retry_on_error(error: type[Exception], n: int):
     def decorator(func):
         @functools.wraps(func)
@@ -193,42 +183,22 @@ class _ToolNameAgent(Agent):
 class TestLiteLLMProvider:
     """Tests for LiteLLMProvider basic functionality."""
 
-    @requires_openai
-    @pytest.mark.parametrize("model_name", ["gpt-4o-mini", "gpt-5-nano"])
-    def test_simple_prompt_multiple_models(self, request, model_name):
-        """Test that LiteLLMProvider works with different model configurations."""
+    def test_simple_prompt(self, request):
+        """Test that LiteLLMProvider returns a non-empty string."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
             assert isinstance(result, str)
             assert len(result) > 0
 
-    @pytest.mark.parametrize(
-        "model_name",
-        [
-            pytest.param("gpt-4o-mini", marks=requires_openai),
-            pytest.param("claude-haiku-4-5", marks=requires_anthropic),
-        ],
-    )
-    def test_simple_prompt_cross_endpoint(self, request, model_name):
-        """Test that ReplayLiteLLMProvider works across different API endpoints."""
-        with (
-            handler(ReplayLiteLLMProvider(request, model=model_name)),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            result = simple_prompt("testing")
-            assert isinstance(result, str)
-            assert len(result) > 0
-
-    @requires_openai
     def test_structured_output(self, request):
         """Test LiteLLMProvider with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -239,11 +209,10 @@ class TestLiteLLMProvider:
             assert isinstance(classification.explanation, str)
             assert len(classification.explanation) > 0
 
-    @requires_openai
     def test_integer_return_type(self, request):
         """Test LiteLLMProvider with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -251,13 +220,14 @@ class TestLiteLLMProvider:
             assert isinstance(result, int)
             assert 1 <= result <= 100
 
-    @requires_openai
     def test_with_config_params(self, request):
         """Test LiteLLMProvider accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(request, model="gpt-4o-mini", temperature=0.1)
+                ReplayLiteLLMProvider(
+                    request, model=EFFECTFUL_LLM_MODEL, temperature=0.1
+                )
             ),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -265,8 +235,8 @@ class TestLiteLLMProvider:
             assert isinstance(result, str)
 
 
-@requires_openai
-def test_agent_tool_names_are_openai_compatible_integration():
+@requires_llm
+def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
     template = agent.ask
     tools = template.tools
@@ -275,10 +245,12 @@ def test_agent_tool_names_are_openai_compatible_integration():
     assert expected_helper_tool_name in tools
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
 
-    # End-to-end provider call. If tool names violate OpenAI schema, this raises BadRequest.
+    # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
         handler(
-            LiteLLMProvider(model="gpt-4o-mini", tool_choice="none", max_tokens=16)
+            LiteLLMProvider(
+                model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=16
+            )
         ),
         handler(LimitLLMCallsHandler(max_calls=1)),
     ):
@@ -314,10 +286,10 @@ def categorise_image(image: Image.Image) -> str:
     raise NotHandled
 
 
-@requires_openai
+@requires_vision
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -347,14 +319,14 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     raise NotHandled
 
 
-@requires_openai
+@requires_vision
 def test_list_image_input(request):
     """Regression test for GitHub issue #552: list[Image.Image] in templates."""
     img_red = Image.new("RGB", (64, 64), (255, 0, 0))
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
     with (
-        handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -382,12 +354,11 @@ def review_book(plot: str) -> BookReview:
 
 
 class TestPydanticBaseModelReturn:
-    @requires_openai
     def test_pydantic_basemodel_return(self, request):
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-5-nano")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -403,7 +374,7 @@ class TestPydanticBaseModelReturn:
 
 def test_litellm_caching_integration(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         p3 = simple_prompt("oranges")
@@ -415,14 +386,16 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o", caching=False)):
+    with handler(
+        ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
+    ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
 
 
 def test_litellm_caching_selective(request):
-    with handler(ReplayLiteLLMProvider(request, model="gpt-4o")):
+    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"
@@ -544,8 +517,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -574,8 +547,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -606,8 +579,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -633,8 +606,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -660,17 +633,15 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response(
-                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
-            ),
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -685,8 +656,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -695,7 +666,6 @@ class TestRetryLLMHandler:
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
 
-    @requires_openai
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 
@@ -733,7 +703,7 @@ class TestRetryLLMHandler:
 
         with (
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(3))),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
         ):
             result = codeadapt("generate_paragraph")
@@ -760,8 +730,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
-                response_format=Encodable.define(int),
+                env={},
+                response_type=int,
                 model="test-model",
             )
 
@@ -792,8 +762,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
-                    response_format=Encodable.define(int),
+                    env={},
+                    response_type=int,
                     model="test-model",
                 )
 
@@ -819,8 +789,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -849,8 +819,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
-                    response_format=Encodable.define(int),
+                    env={},
+                    response_type=int,
                     model="test-model",
                 )
 
@@ -877,8 +847,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -907,8 +877,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -937,8 +907,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -968,8 +938,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1056,7 +1026,7 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_tool_call_response("failing_tool", '{"x": 42}'),
             make_text_response("handled the error"),
         ]
 
@@ -1069,8 +1039,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, tools, response_format, model, **kwargs):
-                return fwd(tools, response_format, model, **kwargs)
+            def _call_assistant(self, env, response_type, model, **kwargs):
+                return fwd(env, response_type, model, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1079,8 +1049,8 @@ class TestToolExecutionErrorHandling:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"failing_tool": failing_tool},
-                response_format=Encodable.define(str),
+                env={"failing_tool": failing_tool},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1218,11 +1188,10 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
-    @requires_openai
     def test_synthesize_adder_function(self, request):
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1234,11 +1203,10 @@ class TestCallableSynthesis:
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 
-    @requires_openai
     def test_synthesize_string_processor(self, request):
         """Test that LLM can synthesize a string processing function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1250,11 +1218,10 @@ class TestCallableSynthesis:
             assert "HELLO" in result
             assert "!" in result
 
-    @requires_openai
     def test_synthesize_counter_with_parameter(self, request):
         """Test that LLM can synthesize a parameterized counting function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1266,12 +1233,11 @@ class TestCallableSynthesis:
             assert count_a("aardvark") == 3
             assert count_a("AAA") == 0  # case-sensitive
 
-    @requires_openai
     def test_synthesized_function_roundtrip(self, request):
         """Test that a synthesized function can be encoded and decoded."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1280,22 +1246,21 @@ class TestCallableSynthesis:
             assert callable(add_func)
 
             # Encode it back to SynthesizedFunction
-            encodable = Encodable.define(Callable[[int, int], int], {})
-            encoded = encodable.encode(add_func)
-            assert isinstance(encoded, SynthesizedFunction)
-            assert "def " in encoded.module_code
+            adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
+            encoded = adapter.dump_python(add_func, mode="json")
+            assert isinstance(encoded, dict)
+            assert "def " in encoded["module_code"]
 
             # Decode it again and verify it still works
-            decoded = encodable.decode(encoded)
+            decoded = adapter.validate_python(encoded)
             assert callable(decoded)
             assert decoded(5, 7) == 12
 
-    @requires_openai
     def test_synthesize_bool_return_type(self, request):
         """Test that LLM respects bool return type in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1312,12 +1277,11 @@ class TestCallableSynthesis:
             assert is_even(0) is True
             assert is_even(-4) is True
 
-    @requires_openai
     def test_synthesize_three_params(self, request):
         """Test that LLM respects the exact number of parameters in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1412,8 +1376,8 @@ class TestMessageSequence:
             handler({_get_history: lambda: message_sequence}),
         ):
             call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1454,14 +1418,14 @@ class TestMessageSequence:
         ):
             # First call: input is the latest message (msg_user)
             resp1, _, _ = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
             # Second call: input is the first response
             resp2, _, _ = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1493,8 +1457,8 @@ class TestMessageSequence:
             ):
                 call_assistant(
                     messages=[msg],
-                    tools={},
-                    response_format=Encodable.define(str),
+                    env={},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -1528,13 +1492,12 @@ class MessageSequenceTracker(ObjectInterpretation):
 class TestMessageSequenceReplay:
     """Fixture-based tests verifying message sequence invariants through the full provider stack."""
 
-    @requires_openai
     def test_simple_prompt_unique_message_ids(self, request):
         """A no-tool prompt should produce a single call_assistant with unique message IDs."""
         tracker = MessageSequenceTracker()
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -1544,14 +1507,13 @@ class TestMessageSequenceReplay:
         ids = tracker.call_log[0]
         assert len(ids) == len(set(ids)), "message IDs should be unique"
 
-    @requires_openai
     def test_tool_calling_no_duplicate_message_ids(self, request):
         """Tool-calling prompts should accumulate messages without duplicates across calls."""
         tracker = MessageSequenceTracker()
 
         with (
             handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model="gpt-4o-mini")),
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
             result = compute_sum(3, 5)
@@ -1706,7 +1668,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1755,7 +1717,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 

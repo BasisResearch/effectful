@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D9kEmk1oyzrC7PUCXGr9C32PGgmI0",
-  "created": 1771215060,
+  "id": "chatcmpl-DSsUM6fF96dN2bl7S2WQBML5MS6qx",
+  "created": 1775775010,
   "model": "gpt-4o-2024-08-06",
   "object": "chat.completion",
-  "system_fingerprint": "fp_ad98c18a04",
+  "system_fingerprint": "fp_40f28510d9",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"description\":\"The images consist of two solid-colored squares. The first image is a red square, and the second image is a blue square.\",\"count\":2}",
+        "content": "{\"value\":{\"description\":\"There are two images of solid-colored squares. One square is red, and the other square is blue.\",\"count\":2}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 38,
-    "prompt_tokens": 1286,
-    "total_tokens": 1324,
+    "completion_tokens": 36,
+    "prompt_tokens": 1374,
+    "total_tokens": 1410,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
       "cached_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

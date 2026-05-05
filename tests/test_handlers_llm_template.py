@@ -559,9 +559,7 @@ class TestAgentWithToolCalls:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response(
-                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
-                ),
+                make_tool_call_response("add", '{"a": 2, "b": 3}'),
                 make_text_response("The answer is 5"),
             ]
         )
@@ -1226,7 +1224,7 @@ def test_template_formatting_scoped():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1341,7 +1339,7 @@ def test_staticmethod_lexical_scope_formatting():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
