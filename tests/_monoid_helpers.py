@@ -1,19 +1,3 @@
-"""Test helpers for property-based testing of effectful.ops.monoid.
-
-Provides:
-  - TermPair: an (LHS, RHS) pair where LHS is the un-normalized term, RHS
-    is the expected normalized form, and `free_vars` is the list of
-    placeholder Operations (by identity) to randomize.
-  - random_interpretation(case): a hypothesis strategy that produces an
-    Interpretation binding every free Operation in `case.free_vars` to a
-    randomly drawn Python value (or callable).
-  - Monoid groupings (ALL_MONOIDS, COMMUTATIVE, IDEMPOTENT, WITH_ZERO) for
-    parameterizing tests.
-
-Type scope: free variables are restricted to int, list[int], or functions
-between those (`int -> int`, `(int, int) -> int`). Anything else raises.
-"""
-
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, get_args, get_origin
 
