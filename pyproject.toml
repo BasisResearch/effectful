@@ -93,4 +93,4 @@ testpaths = ["./effectful", "./tests"]
 [tool.mypy]
 ignore_missing_imports = true
 warn_unused_ignores = true
-exclude = "build"
+exclude = "build|test_internals_unification_typeddict"

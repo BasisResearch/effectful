@@ -265,6 +265,20 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
 
+    if _is_typeddict_type(typ) and _is_typeddict_type(subtyp):
+        return _unify_typeddict(typ, subtyp, subs)
+
+    # unifying Mapping[K, V] and TypedDict
+    if _is_typeddict_type(subtyp) and isinstance(typ, GenericAlias):
+        origin = typing.get_origin(typ)
+        if (
+            origin is not None
+            and isinstance(origin, type)
+            and issubclass(origin, collections.abc.Mapping)
+            and len(typing.get_args(typ)) == 2
+        ):
+            return _unify_mapping_typeddict(typ, subtyp, subs)
+
     if typ is subtyp or typ == subtyp:
         return subs
     elif isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
@@ -364,6 +378,129 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
         if len(unifiers) > 0 and all(u == unifiers[0] for u in unifiers):
             return unifiers[0]
     raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
+
+
+def _is_typeddict_type(typ) -> bool:
+    """Check if typ is a TypedDict class or a parameterized TypedDict (e.g. Datum[T])."""
+    if isinstance(typ, type) and typing.is_typeddict(typ):
+        return True
+    origin = typing.get_origin(typ)
+    return (
+        origin is not None and isinstance(origin, type) and typing.is_typeddict(origin)
+    )
+
+
+def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
+    """Get type hints for a TypedDict, substituting type params if parameterized."""
+    origin = typing.get_origin(typ)
+    if origin is not None and typing.is_typeddict(origin):
+        args = typing.get_args(typ)
+        type_params = origin.__type_params__
+        hints = typing.get_type_hints(origin)
+        param_subs = dict(zip(type_params, args))
+        return {field: substitute(hint, param_subs) for field, hint in hints.items()}
+    else:
+        hints = typing.get_type_hints(typ)
+        # For classes like Derived(Base[int]), resolve unsubstituted TypeVars
+        # from parameterized bases.
+        base_param_subs: dict[TypeVariable, TypeExpressions] = {
+            tp: arg
+            for base in types.get_original_bases(typ)
+            if (base_origin := typing.get_origin(base)) is not None
+            and hasattr(base_origin, "__type_params__")
+            for tp, arg in zip(base_origin.__type_params__, typing.get_args(base))
+        }
+        if base_param_subs:
+            hints = {
+                field: substitute(hint, base_param_subs)
+                for field, hint in hints.items()
+            }
+        return hints
+
+
+def _unify_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
+    """Unify two TypedDict types by matching fields structurally.
+
+    Per the typing spec for TypedDict structural subtyping:
+    - Required fields in typ must be Required in subtyp
+    - NotRequired mutable fields in typ must be NotRequired in subtyp
+    - NotRequired ReadOnly fields in typ may be Required in subtyp (promotion)
+    - Mutable fields are invariant; ReadOnly fields are covariant
+    """
+    typ_hints = _get_typeddict_hints(typ)
+    subtyp_hints = _get_typeddict_hints(subtyp)
+
+    # Determine which fields are optional/readonly in pattern (typ) and subtyp
+    typ_origin = typing.get_origin(typ) or typ
+    subtyp_origin = typing.get_origin(subtyp) or subtyp
+    typ_optional: frozenset[str] = getattr(typ_origin, "__optional_keys__", frozenset())
+    subtyp_optional: frozenset[str] = getattr(
+        subtyp_origin, "__optional_keys__", frozenset()
+    )
+    typ_readonly: frozenset[str] = getattr(typ_origin, "__readonly_keys__", frozenset())
+
+    for field, field_type in typ_hints.items():
+        if field not in subtyp_hints:
+            if field in typ_optional:
+                continue  # NotRequired / total=False field, OK to be absent
+            raise TypeError(
+                f"Cannot unify TypedDict {typ} with {subtyp}: "
+                f"required field '{field}' not found in {subtyp}"
+            )
+
+        # Required/NotRequired symmetry checks
+        field_is_optional_in_typ = field in typ_optional
+        field_is_optional_in_subtyp = field in subtyp_optional
+        field_is_readonly_in_typ = field in typ_readonly
+
+        if not field_is_optional_in_typ and field_is_optional_in_subtyp:
+            # Required in typ → must be Required in subtyp
+            raise TypeError(
+                f"Cannot unify TypedDict {typ} with {subtyp}: "
+                f"field '{field}' is Required in pattern but NotRequired in subtype"
+            )
+
+        if field_is_optional_in_typ and not field_is_optional_in_subtyp:
+            # NotRequired in typ + Required in subtyp:
+            # Only allowed if field is ReadOnly in typ (promotion)
+            if not field_is_readonly_in_typ:
+                raise TypeError(
+                    f"Cannot unify TypedDict {typ} with {subtyp}: "
+                    f"field '{field}' is NotRequired in pattern but Required in subtype"
+                )
+
+        # Covariant check (always)
+        subs = unify(field_type, subtyp_hints[field], subs)
+
+        # Invariance: mutable fields require reverse unify too
+        if field not in typ_readonly:
+            subs = unify(subtyp_hints[field], field_type, subs)
+
+    return subs
+
+
+def _unify_mapping_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
+    """Unify Mapping[K, V] (or MutableMapping[K, V]) with a TypedDict.
+
+    TypedDict keys are always str, so K must unify with str.
+    V must unify with each field's value type (covariant for Mapping,
+    invariant for MutableMapping).
+    """
+    origin = typing.get_origin(typ)
+    key_type, value_type = typing.get_args(typ)
+    subtyp_hints = _get_typeddict_hints(subtyp)
+
+    # TypedDict keys are always str
+    subs = unify(key_type, str, subs)
+
+    # V must unify with each field type
+    for field_type in subtyp_hints.values():
+        subs = unify(value_type, field_type, subs)
+        # MutableMapping requires invariance
+        if origin is not None and issubclass(origin, collections.abc.MutableMapping):
+            subs = unify(field_type, value_type, subs)
+
+    return subs
 
 
 @typing.overload
@@ -518,6 +655,21 @@ def _(typ: type | abc.ABCMeta):
         return collections.abc.Set
     elif typ is range:
         return collections.abc.Sequence[int]
+    elif typing.is_typeddict(typ):
+        hints = typing.get_type_hints(typ)
+        # Idempotency: if all field types are already canonical, return same object
+        if all(canonicalize(h) == h for h in hints.values()):
+            return typ
+        # Otherwise, create a fresh TypedDict with canonicalized field types
+        optional_keys: frozenset[str] = getattr(typ, "__optional_keys__", frozenset())
+        canon_fields: dict[str, type] = {}
+        for field, ftype in hints.items():
+            ct = canonicalize(ftype)
+            if field in optional_keys:
+                canon_fields[field] = typing.NotRequired[ct]  # type: ignore[assignment]
+            else:
+                canon_fields[field] = ct  # type: ignore[assignment]
+        return typing.TypedDict(typ.__name__, canon_fields)  # type: ignore[operator]
     elif typ is types.GeneratorType:
         return collections.abc.Generator
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:
@@ -855,11 +1007,18 @@ def _(value: collections.abc.Mapping):
     elif len(value) == 1:
         ktyp = nested_type(next(iter(value.keys()))).value
         vtyp = nested_type(next(iter(value.values()))).value
+        if ktyp is str and isinstance(vtyp, type) and typing.is_typeddict(vtyp):
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
     else:
         ktyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.keys()]
         )
+        if ktyp is str:
+            # str-keyed multi-entry dicts → always TypedDict
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
