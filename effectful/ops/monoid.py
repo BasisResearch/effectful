@@ -490,7 +490,7 @@ class ReduceFactorization(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         if isinstance(body, Term) and distributes_over(body.op, monoid.plus):
             stream_vars = set(streams.keys())
-            factors = body.args
+            factors = [(arg, fvsof(arg)) for arg in body.args]
             stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
             ds = DisjointSet(len(streams))
 
@@ -500,14 +500,16 @@ class ReduceFactorization(ObjectInterpretation):
                 ds.union(stream_id, *deps)
 
             # factors are in the same partition as their dependencies
-            for factor in factors:
-                ds.union(*(stream_ids[v] for v in (fvsof(factor) & stream_vars)))
+            for factor, factor_fvs in factors:
+                factor_streams = [stream_ids[v] for v in (factor_fvs & stream_vars)]
+                ds.union(*factor_streams)
 
             placed_streams = set()
             new_reduces = []
             for stream_key in streams:
                 if stream_key in placed_streams:
                     continue
+
                 partition = ds.find(stream_ids[stream_key])
                 partition_streams = {
                     k: v
@@ -515,9 +517,17 @@ class ReduceFactorization(ObjectInterpretation):
                     if ds.find(stream_ids[k]) == partition
                 }
                 partition_stream_keys = set(partition_streams.keys())
-                partition_term = body.op(
-                    *(t for t in factors if (fvsof(t) & partition_stream_keys))
-                )
+
+                partition_factors = [
+                    t for t in factors if (t[1] & partition_stream_keys)
+                ]
+
+                assert all(
+                    (t[1] & stream_vars) <= partition_stream_keys
+                    for t in partition_factors
+                ), "partition contains all streams required by factor"
+
+                partition_term = body.op(*(t[0] for t in partition_factors))
                 new_reduces.append((partition_term, partition_streams))
                 placed_streams |= partition_stream_keys
 
