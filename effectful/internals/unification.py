@@ -9,7 +9,7 @@ The module provides four main operations:
 1. **unify(typ, subtyp, subs={})**: The core unification algorithm that attempts to
    find a substitution mapping for type variables that makes a pattern type equal to
    a concrete type. It handles TypeVars, generic types (List[T], Dict[K,V]), unions,
-   callables, and function signatures with inspect.Signature/BoundArguments.
+   TypedDicts, and structural collections.
 
 2. **substitute(typ, subs)**: Applies a substitution mapping to a type expression,
    replacing all TypeVars with their mapped concrete types. This is used to
@@ -23,13 +23,19 @@ The module provides four main operations:
    collections by recursively determining element types. For example, [1, 2, 3]
    becomes list[int], and {"key": [1, 2]} becomes dict[str, list[int]].
 
+Function signatures are not first-class to ``unify``. They are converted to
+TypedDict patterns via :func:`_sig_to_type` (with ``typing.Self`` eliminated by
+:class:`SelfTypeReplacer` at the boundary), and the resulting TypedDicts are
+unified through the regular path. :func:`infer_return_type` is the entry point
+that ties this together for callable invocations.
+
 The unification algorithm uses a single-dispatch pattern to handle different type
 combinations:
 - TypeVar unification binds variables to concrete types
 - Generic type unification matches origins and recursively unifies type arguments
 - Structural unification handles sequences and mappings by element
 - Union types attempt unification with any matching branch
-- Function signatures unify parameter types with bound arguments
+- TypedDict unification matches fields, with NotRequired / ReadOnly semantics
 
 Example usage:
     >>> from effectful.internals.unification import unify, substitute, freetypevars
@@ -60,13 +66,13 @@ import abc
 import builtins
 import collections
 import collections.abc
+import dataclasses
 import functools
 import inspect
 import numbers
 import operator
 import types
 import typing
-from dataclasses import dataclass
 
 try:
     from typing import _collect_type_parameters as _freetypevars  # type: ignore
@@ -94,61 +100,7 @@ TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
 
 
-def _has_typing_self(typ) -> bool:
-    """Check if typing.Self appears anywhere in a type expression."""
-    if typ is typing.Self:
-        return True
-    if isinstance(typ, inspect.Signature):
-        if _has_typing_self(typ.return_annotation):
-            return True
-        for p in typ.parameters.values():
-            if _has_typing_self(p.annotation):
-                return True
-        return False
-    if isinstance(typ, list):
-        return any(_has_typing_self(item) for item in typ)
-    for arg in typing.get_args(typ):
-        if _has_typing_self(arg):
-            return True
-    return False
-
-
-def _replace_self(typ, self_tv: typing.TypeVar):
-    """Replace all occurrences of typing.Self with the given TypeVar."""
-    if typ is typing.Self:
-        return self_tv
-    elif isinstance(typ, inspect.Signature):
-        new_params = []
-        for i, p in enumerate(typ.parameters.values()):
-            if _has_typing_self(p.annotation):
-                new_params.append(
-                    p.replace(annotation=_replace_self(p.annotation, self_tv))
-                )
-            elif i == 0 and p.annotation is inspect.Parameter.empty:
-                new_params.append(p.replace(annotation=self_tv))
-            else:
-                new_params.append(p)
-        new_ret = (
-            _replace_self(typ.return_annotation, self_tv)
-            if _has_typing_self(typ.return_annotation)
-            else typ.return_annotation
-        )
-        return typ.replace(parameters=new_params, return_annotation=new_ret)
-    elif isinstance(typ, list):
-        return [_replace_self(item, self_tv) for item in typ]
-    args = typing.get_args(typ)
-    if not args:
-        return typ
-    new_args = tuple(_replace_self(a, self_tv) for a in args)
-    if new_args == args:
-        return typ
-    origin = typing.get_origin(typ)
-    if origin is not None:
-        return origin[new_args]
-    return typ
-
-
-@dataclass
+@dataclasses.dataclass
 class Box[T]:
     """Boxed types. Prevents confusion between types computed by __type_rule__
     and values.
@@ -238,24 +190,14 @@ class TypeEvaluator(abc.ABC):
         else:
             return typ
 
+    @evaluate.register  # type: ignore[arg-type]
+    def _(self, typ: typing._SpecialForm) -> TypeExpressions:  # type: ignore[type-arg]
+        return typing.cast(TypeExpressions, typ)
 
-@typing.overload
+
 def unify(
-    typ: inspect.Signature,
-    subtyp: inspect.BoundArguments,
-    subs: Substitutions = {},
-) -> Substitutions: ...
-
-
-@typing.overload
-def unify(
-    typ: TypeExpressions,
-    subtyp: TypeExpressions,
-    subs: Substitutions = {},
-) -> Substitutions: ...
-
-
-def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
+    typ: TypeExpressions, subtyp: TypeExpressions, subs: Substitutions = {}
+) -> Substitutions:
     """
     Unify a pattern type with a concrete type, returning a substitution map.
 
@@ -313,9 +255,6 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
             ...
         TypeError: Cannot unify ...
     """
-    if isinstance(typ, inspect.Signature):
-        return _unify_signature(typ, subtyp, subs)
-
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
 
@@ -613,19 +552,66 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
     raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
 
 
+@dataclasses.dataclass
+class SelfTypeReplacer(TypeEvaluator):
+    """Replace ``typing.Self`` with a TypeVar throughout a type expression.
+
+    Used during signature-to-TypedDict conversion in :func:`_sig_to_type` so
+    that ``typing.Self`` is eliminated at the boundary and never appears in
+    downstream unification machinery (``unify``, ``substitute``, ``_freshen``,
+    ``freetypevars``).
+    """
+
+    tv: typing.TypeVar
+
+    def evaluate(self, typ) -> TypeExpressions:
+        if typ is typing.Self:
+            return self.tv
+        return super().evaluate(typ)
+
+
 def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
-    """Infer the return type of a function from its bound arguments."""
-    typ = _replace_self(
-        _freshen(_sig_to_type(bound_sig.signature)), typing.TypeVar("Self")
-    )
-    subtyp = _freshen(_bound_sig_to_type(bound_sig))
-    return substitute(bound_sig.signature.return_annotation, unify(typ, subtyp))
+    """Infer the return type of a function from its bound arguments.
+
+    The signature is converted to a TypedDict-shaped pattern via
+    :func:`_sig_to_type`; the bound arguments are converted via
+    :func:`_bound_sig_to_type`; the two are unified using the regular TypedDict
+    unification path; and the freshened return type from the pattern is
+    substituted with the resulting bindings.
+
+    ``typing.Self`` is eliminated by :func:`_sig_to_type` (via
+    :class:`SelfTypeReplacer`) — by the time we reach unification, no
+    ``typing.Self`` references remain anywhere.
+    """
+    pattern = _sig_to_type(bound_sig.signature)
+    bound = _freshen(_bound_sig_to_type(bound_sig))
+    return_type = _get_typeddict_hints(pattern)["return"]
+    return substitute(return_type, unify(pattern, bound))
 
 
 def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
-    """Convert an inspect.Signature to a type expression."""
+    """Convert an :class:`inspect.Signature` to a TypedDict pattern for unification.
+
+    .. note::
+
+       The precise encoding of signatures as TypedDicts is an implementation
+       detail of the unification machinery and is subject to change. Callers
+       outside this module should treat the returned TypedDict as opaque and
+       interact with it only through :func:`unify` / :func:`infer_return_type`.
+       In particular: the choice of field names (e.g. ``"return"``), wrapping
+       order (``NotRequired`` vs ``ReadOnly``), variadic encoding, and which
+       parameters are omitted may all change without notice.
+
+    The current encoding maps each annotated parameter to a TypedDict field and
+    the return annotation to a ``"return"`` field. ``typing.Self`` is replaced
+    by a fresh ``TypeVar`` via :class:`SelfTypeReplacer` so that no Self leaks
+    into the unification path. Fields the bound side may omit (default-valued
+    params, ``*args``, ``**kwargs``, ``"return"``) are wrapped in
+    ``NotRequired``; all fields are also wrapped in ``ReadOnly`` to give the
+    TypedDict unification path covariant semantics for parameter types.
+    """
     if sig.return_annotation is inspect.Parameter.empty:
-        return _sig_to_type(sig.replace(return_annotation=typing.Any))
+        return _sig_to_type(sig.replace(return_annotation=object))
     elif sig.return_annotation is None:
         return _sig_to_type(sig.replace(return_annotation=type(None)))
     elif typing.get_origin(sig.return_annotation) is typing.Annotated:
@@ -633,25 +619,49 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
             sig.replace(return_annotation=typing.get_args(sig.return_annotation)[0])
         )
 
+    replacer = SelfTypeReplacer(typing.TypeVar("Self"))  # type: ignore[misc]
+
     annotations: dict[str, TypeExpressions] = {
-        "return": typing.NotRequired[sig.return_annotation]
+        "return": typing.NotRequired[
+            typing.ReadOnly[replacer.evaluate(sig.return_annotation)]
+        ]  # type: ignore[assignment]
     }
     for name, param in sig.parameters.items():
+        if param.annotation is inspect.Parameter.empty:
+            continue
+        ann = replacer.evaluate(param.annotation)
         if param.kind == inspect.Parameter.VAR_POSITIONAL:
-            annotations[name] = tuple[param.annotation, ...]
+            field: TypeExpressions = typing.NotRequired[
+                typing.ReadOnly[tuple[ann, ...]]
+            ]  # type: ignore[assignment]
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            annotations[name] = dict[str, param.annotation]
-        elif param.kind not in {
-            inspect.Parameter.VAR_KEYWORD,
-            inspect.Parameter.VAR_POSITIONAL,
-        }:
-            annotations[name] = param.annotation
+            field = typing.NotRequired[typing.ReadOnly[dict[str, ann]]]  # type: ignore[assignment]
+        elif param.default is not inspect.Parameter.empty:
+            field = typing.NotRequired[typing.ReadOnly[ann]]  # type: ignore[assignment]
+        else:
+            field = typing.ReadOnly[ann]  # type: ignore[assignment]
+        annotations[name] = field
 
     return typing.TypedDict(f"{sig}_Type", annotations)
 
 
 def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
-    """Convert an inspect.BoundArguments to a type expression for unification."""
+    """Convert an :class:`inspect.BoundArguments` to a TypedDict subtype.
+
+    .. note::
+
+       Like :func:`_sig_to_type`, the precise encoding here is an
+       implementation detail of the unification machinery and is subject to
+       change. The two functions are designed in tandem to produce TypedDicts
+       that unify against each other; treat the output as opaque.
+
+    The current encoding maps each bound argument to a field whose value is
+    its runtime type (from :func:`nested_type`). Variadic positional/keyword
+    arguments are encoded as a fixed-arity tuple / nested TypedDict
+    respectively. Parameters that were not bound (defaults, unfilled varargs)
+    are simply omitted; this aligns with the ``NotRequired`` fields produced
+    by :func:`_sig_to_type`.
+    """
     sig: inspect.Signature = bound_sig.signature
     typed_arguments = sig.bind(
         *[nested_type(a).value for a in bound_sig.args],
@@ -664,10 +674,14 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
             continue
 
         if name not in typed_arguments:
-            assert param.kind in {
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            }
+            assert (
+                param.kind
+                in {
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                }
+                or param.default is not inspect.Parameter.empty
+            )
             continue
 
         psubtyp = typed_arguments[name]
@@ -692,64 +706,16 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
     return typing.TypedDict("BoundSigType", annotations)
 
 
-def _unify_signature(
-    typ: inspect.Signature, subtyp: inspect.BoundArguments, subs: Substitutions
-) -> Substitutions:
-    if typ != subtyp.signature:
-        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
-
-    if _has_typing_self(typ):
-        self_tv = typing.TypeVar("Self")
-        typ = _replace_self(typ, self_tv)
-        subtyp = typ.bind(*subtyp.args, **subtyp.kwargs)
-        return {**unify(typ, subtyp, subs), typing.Self: self_tv}  # type: ignore
-
-    for name, param in typ.parameters.items():
-        if param.annotation is inspect.Parameter.empty:
-            continue
-
-        if name not in subtyp.arguments:
-            assert param.kind in {
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            }
-            continue
-
-        ptyp, psubtyp = param.annotation, subtyp.arguments[name]
-        if param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
-            psubtyp, collections.abc.Sequence
-        ):
-            for psubtyp_item in _freshen(psubtyp):
-                subs = unify(ptyp, psubtyp_item, subs)
-        elif param.kind is inspect.Parameter.VAR_KEYWORD and isinstance(
-            psubtyp, collections.abc.Mapping
-        ):
-            for psubtyp_item in _freshen(tuple(psubtyp.values())):
-                subs = unify(ptyp, psubtyp_item, subs)
-        elif param.kind not in {
-            inspect.Parameter.VAR_KEYWORD,
-            inspect.Parameter.VAR_POSITIONAL,
-        } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
-            subs = unify(ptyp, _freshen(psubtyp), subs)
-        else:
-            raise TypeError(f"Cannot unify {param} with {psubtyp} given {subs}")
-    return subs
-
-
 def _freshen(tp: typing.Any):
     """
     Return a freshened version of the given type expression.
 
-    This function replaces all TypeVars in the type expression with new TypeVars
-    that have unique names, ensuring that the resulting type has no free TypeVars.
-    It is useful for creating fresh type variables in generic programming contexts.
+    Replaces all free :class:`typing.TypeVar` / :class:`typing.ParamSpec`
+    occurrences with new TypeVars/ParamSpecs of the same name, isolating type
+    variables across independent unification calls so they can't accidentally
+    collide.
 
-    Args:
-        tp: The type expression to freshen. Can be a plain type, TypeVar,
-            generic alias, or union type.
-
-    Returns:
-        A new type expression with all TypeVars replaced by fresh TypeVars.
+    Traverses ``TypeExpression`` and ``TypedDict`` shapes.
 
     Examples:
         >>> import typing
@@ -759,12 +725,13 @@ def _freshen(tp: typing.Any):
         >>> _freshen(T) == T
         False
     """
-    assert all(canonicalize(fv) is fv for fv in freetypevars(tp))
+    fvs = freetypevars(tp)
+    assert all(canonicalize(fv) is fv for fv in fvs)
     subs: Substitutions = {
         fv: typing.TypeVar(fv.__name__, bound=fv.__bound__)
         if isinstance(fv, typing.TypeVar)
         else typing.ParamSpec(fv.__name__)
-        for fv in freetypevars(tp)
+        for fv in fvs
         if isinstance(fv, typing.TypeVar | typing.ParamSpec)
     }
     return substitute(tp, subs)
@@ -799,15 +766,19 @@ def _(typ: type | abc.ABCMeta):
         # Idempotency: if all field types are already canonical, return same object
         if all(canonicalize(h) == h for h in hints.values()):
             return typ
-        # Otherwise, create a fresh TypedDict with canonicalized field types
+        # Otherwise, create a fresh TypedDict with canonicalized field types,
+        # preserving NotRequired-ness and ReadOnly-ness via __optional_keys__
+        # and __readonly_keys__.
         optional_keys: frozenset[str] = getattr(typ, "__optional_keys__", frozenset())
+        readonly_keys: frozenset[str] = getattr(typ, "__readonly_keys__", frozenset())
         canon_fields: dict[str, type] = {}
         for field, ftype in hints.items():
             ct = canonicalize(ftype)
+            if field in readonly_keys:
+                ct = typing.ReadOnly[ct]  # type: ignore[assignment]
             if field in optional_keys:
-                canon_fields[field] = typing.NotRequired[ct]  # type: ignore[assignment]
-            else:
-                canon_fields[field] = ct  # type: ignore[assignment]
+                ct = typing.NotRequired[ct]  # type: ignore[assignment]
+            canon_fields[field] = ct  # type: ignore[assignment]
         return typing.TypedDict(typ.__name__, canon_fields)  # type: ignore[operator]
     elif typ is types.GeneratorType:
         return collections.abc.Generator
@@ -1245,6 +1216,11 @@ def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
         >>> freetypevars(dict[str, T])
         {~T}
     """
+    if _is_typeddict_type(typ):
+        result: set[TypeVariable] = set()
+        for ftype in _get_typeddict_hints(typ).values():
+            result |= freetypevars(ftype)
+        return result
     return set(_freetypevars((typ,)))
 
 
@@ -1293,15 +1269,37 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         >>> substitute(int, {T: str})
         <class 'int'>
     """
-    if typing.Self in subs and _has_typing_self(typ):
-        return substitute(_replace_self(typ, subs[typing.Self]), subs)
-
     if isinstance(typ, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
         return substitute(subs[typ], subs) if typ in subs else typ
     elif isinstance(typ, list | tuple):
         return type(typ)(substitute(item, subs) for item in typ)
+    elif _is_typeddict_type(typ):
+        return _substitute_typeddict(typ, subs)
     elif any(fv in subs for fv in freetypevars(typ)):
         args = tuple(subs.get(fv, fv) for fv in _freetypevars((typ,)))
         return substitute(typ[args], subs)
     else:
         return typ
+
+
+def _substitute_typeddict(typ, subs: Substitutions) -> TypeExpressions:
+    """Substitute inside a TypedDict's fields, preserving NotRequired-ness."""
+    typ_origin = typing.get_origin(typ) or typ
+    optional_keys: frozenset[str] = getattr(
+        typ_origin, "__optional_keys__", frozenset()
+    )
+    hints = _get_typeddict_hints(typ)
+    new_fields: dict[str, TypeExpressions] = {}
+    changed = False
+    for field, ftype in hints.items():
+        new_ftype = substitute(ftype, subs)
+        if new_ftype is not ftype:
+            changed = True
+        if field in optional_keys:
+            new_fields[field] = typing.NotRequired[new_ftype]  # type: ignore[assignment]
+        else:
+            new_fields[field] = new_ftype
+    if not changed:
+        return typ
+    name = getattr(typ_origin, "__name__", "_Subbed")
+    return typing.TypedDict(name, new_fields)  # type: ignore[operator,misc]

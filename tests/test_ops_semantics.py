@@ -917,11 +917,11 @@ def test_instanceop_super() -> None:
 
 class _SelfA:
     @defop
-    def ret_self(self, x: int) -> typing.Self:
+    def ret_self(self: typing.Self, x: int) -> typing.Self:
         raise NotHandled
 
     @defop
-    def ret_list_self(self, x: int) -> list[typing.Self]:
+    def ret_list_self(self: typing.Self, x: int) -> list[typing.Self]:
         raise NotHandled
 
     @defop
@@ -929,13 +929,13 @@ class _SelfA:
         raise NotHandled
 
     @defop
-    def ret_self_or_none(self, x: int) -> typing.Self | None:
+    def ret_self_or_none(self: typing.Self, x: int) -> typing.Self | None:
         raise NotHandled
 
 
 class _SelfB:
     @defop
-    def ret_self(self, x: int) -> typing.Self:
+    def ret_self(self: typing.Self, x: int) -> typing.Self:
         raise NotHandled
 
 
