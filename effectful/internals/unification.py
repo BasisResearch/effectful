@@ -406,7 +406,7 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
 
 def _is_typeddict_type(
     typ: TypeExpressions,
-) -> typing.TypeIs[TypedDictType]:
+) -> typing.TypeGuard[TypedDictType]:
     """Check if typ is a TypedDict class or a parameterized TypedDict (e.g. Datum[T])."""
     if isinstance(typ, GenericAlias):
         return typing.is_typeddict(typing.get_origin(typ))
