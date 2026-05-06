@@ -194,7 +194,9 @@ class TypeEvaluator(abc.ABC):
         return typ  # type: ignore
 
 
-def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
+def infer_return_type(
+    bound_sig: inspect.BoundArguments, *, always_check: bool = True
+) -> TypeExpressions:
     """Infer the return type of a function from its bound arguments.
 
     The signature is converted to a TypedDict-shaped pattern via
@@ -208,9 +210,14 @@ def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
     ``typing.Self`` references remain anywhere.
     """
     pattern = _freshen(_sig_to_type(bound_sig.signature))
-    bound = _freshen(_bound_sig_to_type(bound_sig))
-    return_type = _get_encoded_return_annotation(pattern)
-    return substitute(return_type, unify(pattern, bound))
+    return_anno = _get_encoded_return_annotation(pattern)
+    if not always_check and not freetypevars(return_anno):
+        # Fast path: if the return annotation is closed (has no free type variables),
+        # we can skip unification and just return it directly.
+        return return_anno
+    else:
+        bound = _freshen(_bound_sig_to_type(bound_sig))
+        return substitute(return_anno, unify(pattern, bound))
 
 
 def unify(
@@ -626,6 +633,23 @@ def _get_encoded_return_annotation(sig_type_encoding) -> TypeExpression:
     return _get_typeddict_hints(sig_type_encoding)["return"]
 
 
+def _fix_return_annotation(sig: inspect.Signature) -> inspect.Signature:
+    """Replace empty return annotations with object, and None with type(None).
+
+    This ensures that all signatures have a return annotation that can be
+    processed by _sig_to_type without special-casing the empty annotation or
+    None.
+    """
+    if sig.return_annotation is inspect.Parameter.empty:
+        return sig.replace(return_annotation=object)
+    elif sig.return_annotation is None:
+        return sig.replace(return_annotation=type(None))
+    elif typing.get_origin(sig.return_annotation) is typing.Annotated:
+        return sig.replace(return_annotation=typing.get_args(sig.return_annotation)[0])
+    else:
+        return sig
+
+
 def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
     """Convert an :class:`inspect.Signature` to a TypedDict pattern for unification.
 
@@ -647,14 +671,7 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
     ``NotRequired``; all fields are also wrapped in ``ReadOnly`` to give the
     TypedDict unification path covariant semantics for parameter types.
     """
-    if sig.return_annotation is inspect.Parameter.empty:
-        return _sig_to_type(sig.replace(return_annotation=object))
-    elif sig.return_annotation is None:
-        return _sig_to_type(sig.replace(return_annotation=type(None)))
-    elif typing.get_origin(sig.return_annotation) is typing.Annotated:
-        return _sig_to_type(
-            sig.replace(return_annotation=typing.get_args(sig.return_annotation)[0])
-        )
+    sig = _fix_return_annotation(sig)
 
     replacer = SelfTypeReplacer(typing.TypeVar("Self"))
 

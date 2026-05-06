@@ -382,7 +382,7 @@ class Operation[**Q, V]:
         from effectful.internals.unification import infer_return_type
 
         bound_sig = self.__signature__.bind(*args, **kwargs)
-        return typing.cast(type[V], infer_return_type(bound_sig))
+        return typing.cast(type[V], infer_return_type(bound_sig, always_check=False))
 
     @typing.final
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
