@@ -68,6 +68,7 @@ import functools
 import inspect
 import numbers
 import operator
+import sys
 import types
 import typing
 
@@ -675,25 +676,30 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
 
     replacer = SelfTypeReplacer(typing.TypeVar("Self"))
 
-    annotations: dict[str, TypeExpressions] = {
+    annotations: dict[str, TypeExpression] = {
         "return": typing.NotRequired[  # type: ignore[dict-item]
             typing.ReadOnly[replacer.evaluate(sig.return_annotation)]
+            if sys.version_info >= (3, 13)
+            else replacer.evaluate(sig.return_annotation)
         ]
     }
     for name, param in sig.parameters.items():
         if param.annotation is inspect.Parameter.empty:
             continue
         ann = replacer.evaluate(param.annotation)
+        assert not isinstance(ann, collections.abc.Sequence)
         if param.kind == inspect.Parameter.VAR_POSITIONAL:
-            field: TypeExpressions = typing.NotRequired[
-                typing.ReadOnly[tuple[ann, ...]]  # type: ignore[valid-type]
+            field: TypeExpression = typing.NotRequired[
+                tuple[ann, ...]  # type: ignore[valid-type]
             ]  # type: ignore[assignment]
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            field = typing.NotRequired[typing.ReadOnly[dict[str, ann]]]  # type: ignore[valid-type,assignment]
+            field = typing.NotRequired[dict[str, ann]]  # type: ignore[valid-type,assignment]
         elif param.default is not inspect.Parameter.empty:
-            field = typing.NotRequired[typing.ReadOnly[ann]]  # type: ignore[assignment]
+            field = typing.NotRequired[ann]  # type: ignore[assignment]
         else:
-            field = typing.ReadOnly[ann]  # type: ignore[assignment]
+            field = ann
+        if sys.version_info >= (3, 13):
+            field = typing.ReadOnly[field]  # type: ignore
         annotations[name] = field
 
     return typing.TypedDict(f"{sig}_Type", annotations)  # type: ignore[operator]
@@ -836,8 +842,8 @@ def _(typ: type | abc.ABCMeta):
         canon_fields: dict[str, type] = {}
         for field, ftype in hints.items():
             ct = canonicalize(ftype)
-            if field in readonly_keys:
-                ct = typing.ReadOnly[ct]  # type: ignore[assignment]
+            if field in readonly_keys and sys.version_info >= (3, 13):
+                ct = typing.ReadOnly[ct]  # type: ignore
             if field in optional_keys:
                 ct = typing.NotRequired[ct]  # type: ignore[assignment]
             canon_fields[field] = ct  # type: ignore[assignment]
@@ -1392,8 +1398,8 @@ def _substitute_typeddict[T: TypedDictType](typ: T, subs: Substitutions) -> T:
         new_ftype = substitute(ftype, subs)
         if new_ftype is not ftype:
             changed = True
-        if field in readonly_keys:
-            new_ftype = typing.ReadOnly[new_ftype]  # type: ignore[assignment]
+        if field in readonly_keys and sys.version_info >= (3, 13):
+            new_ftype = typing.ReadOnly[new_ftype]  # type: ignore
         if field in optional_keys:
             new_ftype = typing.NotRequired[new_ftype]  # type: ignore[assignment]
         new_fields[field] = new_ftype
