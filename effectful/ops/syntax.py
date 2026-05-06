@@ -852,6 +852,84 @@ def _(x: object, other) -> bool:
     return x == other
 
 
+@_CustomSingleDispatchCallable
+def syntactic_hash(__dispatch: Callable[[type], Callable[[Any], int]], x) -> int:
+    """Structural hash compatible with :func:`syntactic_eq`.
+
+    Guarantees that ``syntactic_eq(x, y)`` implies
+    ``syntactic_hash(x) == syntactic_hash(y)``.
+
+    :param x: A term.
+    :returns: An integer hash.
+    """
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        return hash(
+            (
+                "dataclass",
+                type(x),
+                syntactic_hash(
+                    {
+                        field.name: getattr(x, field.name)
+                        for field in dataclasses.fields(x)
+                    }
+                ),
+            )
+        )
+    else:
+        return __dispatch(type(x))(x)
+
+
+@syntactic_hash.register
+def _(x: Term) -> int:
+    return hash(
+        (
+            "term",
+            x.op,
+            len(x.args),
+            tuple(syntactic_hash(a) for a in x.args),
+            # sort kwargs so order doesn't affect the hash
+            tuple((k, syntactic_hash(x.kwargs[k])) for k in sorted(x.kwargs)),
+        )
+    )
+
+
+@syntactic_hash.register
+def _(x: collections.abc.Mapping) -> int:
+    # XOR over (key_hash, value_hash) pairs — order-independent,
+    # matching the set-based comparison in syntactic_eq's Mapping branch.
+    acc = 0
+    for k in x:
+        acc ^= hash((hash(k), syntactic_hash(x[k])))
+    return hash(("mapping", acc))
+
+
+@syntactic_hash.register
+def _(x: collections.abc.Sequence) -> int:
+    if (
+        isinstance(x, tuple)
+        and hasattr(x, "_fields")
+        and all(hasattr(x, f) for f in x._fields)
+    ):
+        return hash(
+            (
+                "namedtuple",
+                type(x),
+                tuple(syntactic_hash(getattr(x, f)) for f in x._fields),
+            )
+        )
+    else:
+        # Use the abstract Sequence tag (not type(x)) because syntactic_eq
+        # treats any two Sequences of equal length and elementwise-equal
+        # contents as equal — e.g. [1,2] and (1,2) compare equal.
+        return hash(("sequence", len(x), tuple(syntactic_hash(a) for a in x)))
+
+
+@syntactic_hash.register(object)
+@syntactic_hash.register(str | bytes)
+def _(x: object) -> int:
+    return hash(x)
+
+
 class ObjectInterpretation[T, V](collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
