@@ -68,9 +68,10 @@ import functools
 import inspect
 import numbers
 import operator
-import sys
 import types
 import typing
+
+import typing_extensions
 
 try:
     from typing import _collect_type_parameters as _freetypevars  # type: ignore
@@ -410,9 +411,9 @@ def _is_typeddict_type(
 ) -> typing.TypeGuard[TypedDictType]:
     """Check if typ is a TypedDict class or a parameterized TypedDict (e.g. Datum[T])."""
     if isinstance(typ, GenericAlias):
-        return typing.is_typeddict(typing.get_origin(typ))
+        return typing_extensions.is_typeddict(typing.get_origin(typ))
     else:
-        return typing.is_typeddict(typ)
+        return typing_extensions.is_typeddict(typ)
 
 
 def _get_typeddict_hints(
@@ -421,16 +422,16 @@ def _get_typeddict_hints(
     """Get type hints for a TypedDict, substituting type params if parameterized."""
     if isinstance(typ, GenericAlias):
         origin = typing.get_origin(typ)
-        assert typing.is_typeddict(origin), (
+        assert typing_extensions.is_typeddict(origin), (
             f"Expected a parameterized TypedDict, got {typ}."
         )
         args = typing.get_args(typ)
         type_params = origin.__type_params__
-        hints = typing.get_type_hints(origin)
-        param_subs = dict(zip(type_params, args))
+        hints = typing_extensions.get_type_hints(origin)
+        param_subs = typing.cast(Substitutions, dict(zip(type_params, args)))
         return {field: substitute(hint, param_subs) for field, hint in hints.items()}
     else:
-        hints = typing.get_type_hints(typ)
+        hints = typing_extensions.get_type_hints(typ)
         # For classes like Derived(Base[int]), resolve unsubstituted TypeVars
         # from parameterized bases.
         base_param_subs: dict[TypeVariable, TypeExpression] = {
@@ -678,9 +679,7 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
 
     annotations: dict[str, TypeExpression] = {
         "return": typing.NotRequired[  # type: ignore[dict-item]
-            typing.ReadOnly[replacer.evaluate(sig.return_annotation)]
-            if sys.version_info >= (3, 13)
-            else replacer.evaluate(sig.return_annotation)
+            typing_extensions.ReadOnly[replacer.evaluate(sig.return_annotation)]
         ]
     }
     for name, param in sig.parameters.items():
@@ -698,11 +697,9 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
             field = typing.NotRequired[ann]  # type: ignore[assignment]
         else:
             field = ann
-        if sys.version_info >= (3, 13):
-            field = typing.ReadOnly[field]  # type: ignore
-        annotations[name] = field
+        annotations[name] = typing_extensions.ReadOnly[field]  # type: ignore[assignment]
 
-    return typing.TypedDict(f"{sig}_Type", annotations)  # type: ignore[operator]
+    return typing_extensions.TypedDict(f"{sig}_Type", annotations)  # type: ignore[operator]
 
 
 def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
@@ -757,7 +754,9 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
         elif param.kind == inspect.Parameter.VAR_KEYWORD and isinstance(
             psubtyp, collections.abc.Mapping
         ):
-            annotations[name] = typing.TypedDict(f"{name}BoundKwargs", psubtyp)  # type: ignore[operator]
+            annotations[name] = typing_extensions.TypedDict(
+                f"{name}BoundKwargs", psubtyp
+            )  # type: ignore[operator]
         elif param.kind not in {
             inspect.Parameter.VAR_KEYWORD,
             inspect.Parameter.VAR_POSITIONAL,
@@ -771,7 +770,7 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
                 f"Cannot unify parameter {param} with argument {psubtyp} in signature unification."
             )
 
-    return typing.TypedDict("BoundSigType", annotations)  # type: ignore[operator]
+    return typing_extensions.TypedDict("BoundSigType", annotations)  # type: ignore[operator]
 
 
 def _freshen[T: TypeExpressions](tp: T) -> T:
@@ -829,8 +828,8 @@ def _(typ: type | abc.ABCMeta):
         return collections.abc.Set
     elif typ is range:
         return collections.abc.Sequence[int]
-    elif typing.is_typeddict(typ):
-        hints = typing.get_type_hints(typ)
+    elif typing_extensions.is_typeddict(typ):
+        hints = typing_extensions.get_type_hints(typ)
         # Idempotency: if all field types are already canonical, return same object
         if all(canonicalize(h) == h for h in hints.values()):
             return typ
@@ -842,12 +841,12 @@ def _(typ: type | abc.ABCMeta):
         canon_fields: dict[str, type] = {}
         for field, ftype in hints.items():
             ct = canonicalize(ftype)
-            if field in readonly_keys and sys.version_info >= (3, 13):
-                ct = typing.ReadOnly[ct]  # type: ignore
+            if field in readonly_keys:
+                ct = typing_extensions.ReadOnly[ct]  # type: ignore[assignment]
             if field in optional_keys:
                 ct = typing.NotRequired[ct]  # type: ignore[assignment]
             canon_fields[field] = ct  # type: ignore[assignment]
-        return typing.TypedDict(typ.__name__, canon_fields)  # type: ignore[operator]
+        return typing_extensions.TypedDict(typ.__name__, canon_fields)  # type: ignore[operator]
     elif typ is types.GeneratorType:
         return collections.abc.Generator
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:
@@ -1185,9 +1184,13 @@ def _(value: collections.abc.Mapping):
     elif len(value) == 1:
         ktyp = nested_type(next(iter(value.keys()))).value
         vtyp = nested_type(next(iter(value.values()))).value
-        if ktyp is str and isinstance(vtyp, type) and typing.is_typeddict(vtyp):
+        if (
+            ktyp is str
+            and isinstance(vtyp, type)
+            and typing_extensions.is_typeddict(vtyp)
+        ):
             fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+            return Box(typing_extensions.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
     else:
         ktyp = functools.reduce(
@@ -1196,7 +1199,7 @@ def _(value: collections.abc.Mapping):
         if ktyp is str:
             # str-keyed multi-entry dicts → always TypedDict
             fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+            return Box(typing_extensions.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
@@ -1398,12 +1401,12 @@ def _substitute_typeddict[T: TypedDictType](typ: T, subs: Substitutions) -> T:
         new_ftype = substitute(ftype, subs)
         if new_ftype is not ftype:
             changed = True
-        if field in readonly_keys and sys.version_info >= (3, 13):
-            new_ftype = typing.ReadOnly[new_ftype]  # type: ignore
+        if field in readonly_keys:
+            new_ftype = typing_extensions.ReadOnly[new_ftype]  # type: ignore[assignment]
         if field in optional_keys:
             new_ftype = typing.NotRequired[new_ftype]  # type: ignore[assignment]
         new_fields[field] = new_ftype
     if not changed:
         return typ
     name = getattr(typ_origin, "__name__", "_Subbed")
-    return typing.TypedDict(name, new_fields)  # type: ignore[operator]
+    return typing_extensions.TypedDict(name, new_fields)  # type: ignore[operator]

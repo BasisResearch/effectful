@@ -6,6 +6,7 @@ import typing
 from typing import Literal
 
 import pytest
+import typing_extensions
 
 from effectful.internals.unification import (
     Box,
@@ -198,9 +199,9 @@ def test_canonicalize_typeddict_class():
 
     # Fields are already canonical types
     result = canonicalize(MyTD)
-    assert typing.is_typeddict(result)
+    assert typing_extensions.is_typeddict(result)
 
-    hints = typing.get_type_hints(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints["name"] is str
     assert hints["age"] is int
 
@@ -210,8 +211,8 @@ def test_canonicalize_typeddict_class():
 
     # list[int] -> MutableSequence[int], so a new TypedDict is created
     result = canonicalize(MyTD2)
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints["name"] is str
     assert hints["items"] == collections.abc.MutableSequence[int]
 
@@ -935,8 +936,8 @@ def test_nested_type_typeddict_str_keys_mixed_values():
     value = {"name": "Alice", "age": 30}
     result = nested_type(value).value
     # Should be a TypedDict, not dict
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"name": str, "age": int}
 
 
@@ -944,8 +945,8 @@ def test_nested_type_typeddict_multiple_value_types():
     """TypedDict with more than two distinct value types."""
     value = {"label": "x", "count": 5, "flag": True}
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"label": str, "count": int, "flag": bool}
 
 
@@ -953,8 +954,8 @@ def test_nested_type_typeddict_nested_values():
     """TypedDict with nested collection values."""
     value = {"items": [1, 2, 3], "name": "test"}
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert canonicalize(hints["items"]) == canonicalize(list[int])
     assert hints["name"] is str
 
@@ -968,21 +969,21 @@ def test_nested_type_typeddict_instance_roundtrip():
 
     value = UserTD(name="a", age=1)
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"name": str, "age": int}
 
 
 def test_nested_type_typeddict_homogeneous_str_keys():
     """Multi-key str dicts produce TypedDict even with homogeneous value types."""
     result = nested_type({"a": 1, "b": 2}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"a": int, "b": int}
 
     result = nested_type({"a": {1, 2}, "b": {3, 4}}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert canonicalize(hints["a"]) == canonicalize(set[int])
     assert canonicalize(hints["b"]) == canonicalize(set[int])
 
@@ -992,7 +993,7 @@ def test_nested_type_non_str_keys_mixed_values_stays_dict():
     value = {1: "one", 2: True}
     result = nested_type(value).value
     # Should remain a plain dict type, not a TypedDict
-    assert not typing.is_typeddict(result)
+    assert not typing_extensions.is_typeddict(result)
     assert result is dict
 
 
