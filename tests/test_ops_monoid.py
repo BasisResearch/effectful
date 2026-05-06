@@ -7,7 +7,7 @@ from hypothesis import strategies as st
 
 from effectful.internals.runtime import interpreter
 from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Semilattice, Sum
-from effectful.ops.semantics import apply, evaluate, handler
+from effectful.ops.semantics import apply, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import random_interpretation
@@ -495,6 +495,7 @@ def test_reduce_independent_3_negative():
         Sum.reduce(a(), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
     )
+    assert fvsof(bogus_rhs) != fvsof(lhs)
     # Structural-only negative check: the normalizer correctly refused to apply
     # the bogus factorization.
     assert not syntactic_eq_alpha(lhs, bogus_rhs)

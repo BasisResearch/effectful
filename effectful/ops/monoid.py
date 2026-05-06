@@ -496,12 +496,14 @@ class ReduceFactorization(ObjectInterpretation):
 
             # streams are in the same partition as their dependencies
             for stream_id, stream_body in enumerate(streams.values()):
-                deps = {stream_ids[v] for v in fvsof(stream_body) & stream_vars}
+                deps = sorted([stream_ids[v] for v in fvsof(stream_body) & stream_vars])
                 ds.union(stream_id, *deps)
 
             # factors are in the same partition as their dependencies
             for factor, factor_fvs in factors:
-                factor_streams = [stream_ids[v] for v in (factor_fvs & stream_vars)]
+                factor_streams = sorted(
+                    [stream_ids[v] for v in (factor_fvs & stream_vars)]
+                )
                 ds.union(*factor_streams)
 
             placed_streams = set()
@@ -532,7 +534,9 @@ class ReduceFactorization(ObjectInterpretation):
                 placed_streams |= partition_stream_keys
 
             if len(new_reduces) > 1:
-                return body.op(*(monoid.reduce(*args) for args in new_reduces))
+                result = body.op(*(monoid.reduce(*args) for args in new_reduces))
+                assert fvsof(result) == fvsof(defdata(monoid.reduce, body, streams))
+                return result
 
         return fwd()
 
