@@ -499,3 +499,20 @@ def test_reduce_independent_3_negative():
     # Structural-only negative check: the normalizer correctly refused to apply
     # the bogus factorization.
     assert not syntactic_eq_alpha(lhs, bogus_rhs)
+
+
+def test_reduce_independent_4():
+    a, b, c = define_vars("a", "b", "c")
+    A, B, C = define_vars("A", "B", "C", typ=list[int])
+
+    @Operation.define
+    def f(_x: int, _y: int) -> int:
+        raise NotHandled
+
+    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), 7), {a: A(), b: B(), c: C()})
+    rhs = Product.plus(
+        7,
+        Sum.reduce(a(), {a: A()}),
+        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+    )
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, C, f])
