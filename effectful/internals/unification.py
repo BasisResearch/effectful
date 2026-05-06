@@ -4,7 +4,10 @@ This module implements a unification algorithm for type inference over a subset 
 Python's generic types. Unification is a fundamental operation in type systems that
 finds substitutions for type variables to make two types equivalent.
 
-The module provides four main operations:
+The module provides five main operations:
+
+0. **infer_return_type(bound_sig)**: Given a bound signature (from a callable invocation),
+    infer the return type implied by the signature and the types of the bound arguments.
 
 1. **unify(typ, subtyp, subs={})**: The core unification algorithm that attempts to
    find a substitution mapping for type variables that makes a pattern type equal to
@@ -22,12 +25,6 @@ The module provides four main operations:
 4. **nested_type(value)**: Infers the type of a runtime value, handling nested
    collections by recursively determining element types. For example, [1, 2, 3]
    becomes list[int], and {"key": [1, 2]} becomes dict[str, list[int]].
-
-Function signatures are not first-class to ``unify``. They are converted to
-TypedDict patterns via :func:`_sig_to_type` (with ``typing.Self`` eliminated by
-:class:`SelfTypeReplacer` at the boundary), and the resulting TypedDicts are
-unified through the regular path. :func:`infer_return_type` is the entry point
-that ties this together for callable invocations.
 
 The unification algorithm uses a single-dispatch pattern to handle different type
 combinations:
