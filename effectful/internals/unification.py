@@ -79,10 +79,12 @@ except ImportError:
 import effectful.ops.types
 
 if typing.TYPE_CHECKING:
-    TypeConstant = type | abc.ABCMeta | types.EllipsisType | None
+    TypedDictType = type[dict[str, typing.Any]]
+    TypeConstant = TypedDictType | type | abc.ABCMeta | types.EllipsisType | None
     GenericAlias = types.GenericAlias
     UnionType = types.UnionType
 else:
+    TypedDictType = type
     TypeConstant = (
         type | abc.ABCMeta | types.EllipsisType | type(None) | type(typing.Any)
     )
@@ -187,9 +189,28 @@ class TypeEvaluator(abc.ABC):
         else:
             return typ
 
-    @evaluate.register  # type: ignore[arg-type]
-    def _(self, typ: typing._SpecialForm) -> TypeExpressions:  # type: ignore[type-arg]
-        return typing.cast(TypeExpressions, typ)
+    @evaluate.register
+    def _(self, typ: typing._SpecialForm) -> TypeExpressions:
+        return typ  # type: ignore
+
+
+def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
+    """Infer the return type of a function from its bound arguments.
+
+    The signature is converted to a TypedDict-shaped pattern via
+    :func:`_sig_to_type`; the bound arguments are converted via
+    :func:`_bound_sig_to_type`; the two are unified using the regular TypedDict
+    unification path; and the freshened return type from the pattern is
+    substituted with the resulting bindings.
+
+    ``typing.Self`` is eliminated by :func:`_sig_to_type` (via
+    :class:`SelfTypeReplacer`) — by the time we reach unification, no
+    ``typing.Self`` references remain anywhere.
+    """
+    pattern = _freshen(_sig_to_type(bound_sig.signature))
+    bound = _freshen(_bound_sig_to_type(bound_sig))
+    return_type = _get_encoded_return_annotation(pattern)
+    return substitute(return_type, unify(pattern, bound))
 
 
 def unify(
@@ -255,32 +276,20 @@ def unify(
     if typ != canonicalize(typ) or subtyp != canonicalize(subtyp):
         return unify(canonicalize(typ), canonicalize(subtyp), subs)
 
-    if _is_typeddict_type(typ) and _is_typeddict_type(subtyp):
-        return _unify_typeddict(typ, subtyp, subs)
-
-    # unifying Mapping[K, V] and TypedDict
-    if _is_typeddict_type(subtyp) and isinstance(typ, GenericAlias):
-        origin = typing.get_origin(typ)
-        if (
-            origin is not None
-            and isinstance(origin, type)
-            and issubclass(origin, collections.abc.Mapping)
-            and len(typing.get_args(typ)) == 2
-        ):
-            return _unify_mapping_typeddict(typ, subtyp, subs)
-
     if typ is subtyp or typ == subtyp:
         return subs
     elif isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
-        return _unify_typevar(typ, subtyp, subs)
+        return _unify_typevar(typ, subtyp, subs)  # type: ignore
     elif isinstance(typ, collections.abc.Sequence) or isinstance(
         subtyp, collections.abc.Sequence
     ):
-        return _unify_sequence(typ, subtyp, subs)
+        return _unify_sequence(typ, subtyp, subs)  # type: ignore
     elif isinstance(typ, UnionType) or isinstance(subtyp, UnionType):
-        return _unify_union(typ, subtyp, subs)
+        return _unify_union(typ, subtyp, subs)  # type: ignore
     elif isinstance(typ, GenericAlias) or isinstance(subtyp, GenericAlias):
-        return _unify_generic(typ, subtyp, subs)
+        return _unify_generic(typ, subtyp, subs)  # type: ignore
+    elif _is_typeddict_type(typ) or _is_typeddict_type(subtyp):
+        return _unify_typeddict(typ, subtyp, subs)  # type: ignore
     elif isinstance(typ, type) and isinstance(subtyp, type) and issubclass(subtyp, typ):
         return subs
     elif typ in (typing.Any, ...) or subtyp in (typing.Any, ...):
@@ -301,7 +310,9 @@ def _unify_typevar(
 ) -> Substitutions: ...
 
 
-def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
+def _unify_typevar(
+    typ: TypeExpression, subtyp: TypeExpression, subs: Substitutions
+) -> Substitutions:
     if isinstance(typ, TypeVariable) and isinstance(subtyp, TypeVariable):
         return subs if typ == subtyp else {typ: subtyp, **subs}
     elif isinstance(typ, TypeVariable) and not isinstance(subtyp, TypeVariable):
@@ -318,19 +329,35 @@ def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
 
 @typing.overload
 def _unify_sequence(
-    typ: collections.abc.Sequence, subtyp: TypeExpressions, subs: Substitutions
+    typ: collections.abc.Sequence[TypeExpression],
+    subtyp: TypeExpression,
+    subs: Substitutions,
 ) -> Substitutions: ...
 
 
 @typing.overload
 def _unify_sequence(
-    typ: TypeExpressions, subtyp: collections.abc.Sequence, subs: Substitutions
+    typ: TypeExpression,
+    subtyp: collections.abc.Sequence[TypeExpression],
+    subs: Substitutions,
 ) -> Substitutions: ...
 
 
-def _unify_sequence(typ, subtyp, subs: Substitutions) -> Substitutions:
+@typing.overload
+def _unify_sequence(
+    typ: collections.abc.Sequence[TypeExpression],
+    subtyp: collections.abc.Sequence[TypeExpression],
+    subs: Substitutions,
+) -> Substitutions: ...
+
+
+def _unify_sequence(
+    typ: TypeExpressions, subtyp: TypeExpressions, subs: Substitutions
+) -> Substitutions:
     if isinstance(typ, types.EllipsisType) or isinstance(subtyp, types.EllipsisType):
         return subs
+    assert isinstance(typ, collections.abc.Sequence)
+    assert isinstance(subtyp, collections.abc.Sequence)
     if len(typ) != len(subtyp):
         raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
     for p_item, c_item in zip(typ, subtyp):
@@ -370,20 +397,25 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
     raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}")
 
 
-def _is_typeddict_type(typ) -> bool:
+def _is_typeddict_type(
+    typ: TypeExpressions,
+) -> typing.TypeIs[TypedDictType]:
     """Check if typ is a TypedDict class or a parameterized TypedDict (e.g. Datum[T])."""
-    if isinstance(typ, type) and typing.is_typeddict(typ):
-        return True
-    origin = typing.get_origin(typ)
-    return (
-        origin is not None and isinstance(origin, type) and typing.is_typeddict(origin)
-    )
+    if isinstance(typ, GenericAlias):
+        return typing.is_typeddict(typing.get_origin(typ))
+    else:
+        return typing.is_typeddict(typ)
 
 
-def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
+def _get_typeddict_hints(
+    typ: TypedDictType | GenericAlias,
+) -> collections.abc.Mapping[str, TypeExpression]:
     """Get type hints for a TypedDict, substituting type params if parameterized."""
-    origin = typing.get_origin(typ)
-    if origin is not None and typing.is_typeddict(origin):
+    if isinstance(typ, GenericAlias):
+        origin = typing.get_origin(typ)
+        assert typing.is_typeddict(origin), (
+            f"Expected a parameterized TypedDict, got {typ}."
+        )
         args = typing.get_args(typ)
         type_params = origin.__type_params__
         hints = typing.get_type_hints(origin)
@@ -393,7 +425,7 @@ def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
         hints = typing.get_type_hints(typ)
         # For classes like Derived(Base[int]), resolve unsubstituted TypeVars
         # from parameterized bases.
-        base_param_subs: dict[TypeVariable, TypeExpressions] = {
+        base_param_subs: dict[TypeVariable, TypeExpression] = {
             tp: arg
             for base in types.get_original_bases(typ)
             if (base_origin := typing.get_origin(base)) is not None
@@ -408,7 +440,11 @@ def _get_typeddict_hints(typ) -> dict[str, TypeExpressions]:
         return hints
 
 
-def _unify_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
+def _unify_typeddict(
+    typ: TypedDictType | GenericAlias,
+    subtyp: TypedDictType | GenericAlias,
+    subs: Substitutions,
+) -> Substitutions:
     """Unify two TypedDict types by matching fields structurally.
 
     Per the typing spec for TypedDict structural subtyping:
@@ -469,13 +505,22 @@ def _unify_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
     return subs
 
 
-def _unify_mapping_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
+def _unify_mapping_typeddict(
+    typ: GenericAlias, subtyp: TypedDictType, subs: Substitutions
+) -> Substitutions:
     """Unify Mapping[K, V] (or MutableMapping[K, V]) with a TypedDict.
 
     TypedDict keys are always str, so K must unify with str.
     V must unify with each field's value type (covariant for Mapping,
     invariant for MutableMapping).
     """
+    if not (
+        typing.get_origin(typ) is not None
+        and issubclass(typing.get_origin(typ), collections.abc.Mapping)
+        and len(typing.get_args(typ)) == 2
+    ):
+        raise TypeError(f"Expected a Mapping type, got {typ}.")
+
     origin = typing.get_origin(typ)
     key_type, value_type = typing.get_args(typ)
     subtyp_hints = _get_typeddict_hints(subtyp)
@@ -495,13 +540,13 @@ def _unify_mapping_typeddict(typ, subtyp, subs: Substitutions) -> Substitutions:
 
 @typing.overload
 def _unify_generic(
-    typ: GenericAlias, subtyp: type, subs: Substitutions
+    typ: GenericAlias, subtyp: TypeConstant, subs: Substitutions
 ) -> Substitutions: ...
 
 
 @typing.overload
 def _unify_generic(
-    typ: type, subtyp: GenericAlias, subs: Substitutions
+    typ: TypeConstant, subtyp: GenericAlias, subs: Substitutions
 ) -> Substitutions: ...
 
 
@@ -511,7 +556,11 @@ def _unify_generic(
 ) -> Substitutions: ...
 
 
-def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
+def _unify_generic(
+    typ: TypeConstant | GenericAlias,
+    subtyp: TypeConstant | GenericAlias,
+    subs: Substitutions,
+) -> Substitutions:
     if (
         isinstance(typ, GenericAlias)
         and isinstance(subtyp, GenericAlias)
@@ -540,6 +589,11 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
                     return unify(typ, base[typing.get_args(subtyp)], subs)  # type: ignore
     elif isinstance(typ, type) and isinstance(subtyp, GenericAlias):
         return unify(typ, typing.get_origin(subtyp), subs)
+    elif isinstance(typ, GenericAlias) and _is_typeddict_type(subtyp):
+        if _is_typeddict_type(typ):
+            return _unify_typeddict(typ, subtyp, subs)
+        else:
+            return _unify_mapping_typeddict(typ, subtyp, subs)
     elif (
         isinstance(typ, GenericAlias)
         and isinstance(subtyp, type)
@@ -567,23 +621,9 @@ class SelfTypeReplacer(TypeEvaluator):
         return super().evaluate(typ)
 
 
-def infer_return_type(bound_sig: inspect.BoundArguments) -> TypeExpressions:
-    """Infer the return type of a function from its bound arguments.
-
-    The signature is converted to a TypedDict-shaped pattern via
-    :func:`_sig_to_type`; the bound arguments are converted via
-    :func:`_bound_sig_to_type`; the two are unified using the regular TypedDict
-    unification path; and the freshened return type from the pattern is
-    substituted with the resulting bindings.
-
-    ``typing.Self`` is eliminated by :func:`_sig_to_type` (via
-    :class:`SelfTypeReplacer`) — by the time we reach unification, no
-    ``typing.Self`` references remain anywhere.
-    """
-    pattern = _sig_to_type(bound_sig.signature)
-    bound = _freshen(_bound_sig_to_type(bound_sig))
-    return_type = _get_typeddict_hints(pattern)["return"]
-    return substitute(return_type, unify(pattern, bound))
+def _get_encoded_return_annotation(sig_type_encoding) -> TypeExpression:
+    """Extract the return annotation from a signature encoded as a type."""
+    return _get_typeddict_hints(sig_type_encoding)["return"]
 
 
 def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
@@ -616,12 +656,12 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
             sig.replace(return_annotation=typing.get_args(sig.return_annotation)[0])
         )
 
-    replacer = SelfTypeReplacer(typing.TypeVar("Self"))  # type: ignore[misc]
+    replacer = SelfTypeReplacer(typing.TypeVar("Self"))
 
     annotations: dict[str, TypeExpressions] = {
-        "return": typing.NotRequired[
+        "return": typing.NotRequired[  # type: ignore[dict-item]
             typing.ReadOnly[replacer.evaluate(sig.return_annotation)]
-        ]  # type: ignore[assignment]
+        ]
     }
     for name, param in sig.parameters.items():
         if param.annotation is inspect.Parameter.empty:
@@ -629,17 +669,17 @@ def _sig_to_type(sig: inspect.Signature) -> TypeExpression:
         ann = replacer.evaluate(param.annotation)
         if param.kind == inspect.Parameter.VAR_POSITIONAL:
             field: TypeExpressions = typing.NotRequired[
-                typing.ReadOnly[tuple[ann, ...]]
+                typing.ReadOnly[tuple[ann, ...]]  # type: ignore[valid-type]
             ]  # type: ignore[assignment]
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
-            field = typing.NotRequired[typing.ReadOnly[dict[str, ann]]]  # type: ignore[assignment]
+            field = typing.NotRequired[typing.ReadOnly[dict[str, ann]]]  # type: ignore[valid-type,assignment]
         elif param.default is not inspect.Parameter.empty:
             field = typing.NotRequired[typing.ReadOnly[ann]]  # type: ignore[assignment]
         else:
             field = typing.ReadOnly[ann]  # type: ignore[assignment]
         annotations[name] = field
 
-    return typing.TypedDict(f"{sig}_Type", annotations)
+    return typing.TypedDict(f"{sig}_Type", annotations)  # type: ignore[operator]
 
 
 def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
@@ -660,12 +700,17 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
     by :func:`_sig_to_type`.
     """
     sig: inspect.Signature = bound_sig.signature
-    typed_arguments = sig.bind(
+    typed_arguments: collections.OrderedDict[
+        str,
+        TypeExpression
+        | collections.abc.Sequence[TypeExpression]
+        | collections.abc.Mapping[str, TypeExpression],
+    ] = sig.bind(
         *[nested_type(a).value for a in bound_sig.args],
         **{k: nested_type(v).value for k, v in bound_sig.kwargs.items()},
     ).arguments
 
-    annotations: dict[str, TypeExpressions] = {}
+    annotations: dict[str, TypeExpression] = {}
     for name, param in sig.parameters.items():
         if param.annotation is inspect.Parameter.empty:
             continue
@@ -685,25 +730,28 @@ def _bound_sig_to_type(bound_sig: inspect.BoundArguments) -> TypeExpression:
         if param.kind == inspect.Parameter.VAR_POSITIONAL and isinstance(
             psubtyp, collections.abc.Sequence
         ):
-            annotations[name] = tuple[psubtyp]
+            annotations[name] = tuple[psubtyp]  # type: ignore[valid-type]
         elif param.kind == inspect.Parameter.VAR_KEYWORD and isinstance(
             psubtyp, collections.abc.Mapping
         ):
-            annotations[name] = typing.TypedDict(f"{name}BoundKwargs", psubtyp)
+            annotations[name] = typing.TypedDict(f"{name}BoundKwargs", psubtyp)  # type: ignore[operator]
         elif param.kind not in {
             inspect.Parameter.VAR_KEYWORD,
             inspect.Parameter.VAR_POSITIONAL,
         } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
+            assert not isinstance(
+                psubtyp, collections.abc.Sequence | collections.abc.Mapping
+            )
             annotations[name] = psubtyp
         else:
             raise TypeError(
                 f"Cannot unify parameter {param} with argument {psubtyp} in signature unification."
             )
 
-    return typing.TypedDict("BoundSigType", annotations)
+    return typing.TypedDict("BoundSigType", annotations)  # type: ignore[operator]
 
 
-def _freshen(tp: typing.Any):
+def _freshen[T: TypeExpressions](tp: T) -> T:
     """
     Return a freshened version of the given type expression.
 
@@ -724,10 +772,10 @@ def _freshen(tp: typing.Any):
     """
     fvs = freetypevars(tp)
     assert all(canonicalize(fv) is fv for fv in fvs)
-    subs: Substitutions = {
+    subs: collections.abc.Mapping[TypeVariable, TypeVariable] = {
         fv: typing.TypeVar(fv.__name__, bound=fv.__bound__)
         if isinstance(fv, typing.TypeVar)
-        else typing.ParamSpec(fv.__name__)
+        else typing.ParamSpec(fv.__name__, bound=fv.__bound__)
         for fv in fvs
         if isinstance(fv, typing.TypeVar | typing.ParamSpec)
     }
@@ -820,7 +868,7 @@ def _(typ: typing.TypeVar):
 @canonicalize.register
 def _(typ: typing.ParamSpec):
     if (
-        typ.__bound__
+        typ.__bound__ not in (None, type(None))
         or typ.__covariant__
         or typ.__contravariant__
         or getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None)
@@ -1163,7 +1211,7 @@ def _(value: str | bytes | range | None):
     return Box(type(value))
 
 
-def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
+def freetypevars(typ: TypeExpressions) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
 
@@ -1219,6 +1267,38 @@ def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
             result |= freetypevars(ftype)
         return result
     return set(_freetypevars((typ,)))
+
+
+@typing.overload
+def substitute(typ: typing.TypeVar, subs: Substitutions) -> TypeExpression: ...
+
+
+@typing.overload
+def substitute(
+    typ: typing.ParamSpec, subs: Substitutions
+) -> (
+    typing.ParamSpec | types.EllipsisType | collections.abc.Sequence[TypeExpression]
+): ...
+
+
+@typing.overload
+def substitute(
+    typ: typing.TypeVarTuple, subs: Substitutions
+) -> (
+    typing.TypeVarTuple | types.EllipsisType | collections.abc.Sequence[TypeExpression]
+): ...
+
+
+@typing.overload
+def substitute[
+    T: TypeConstant | TypeApplication | collections.abc.Sequence[TypeExpression]
+](typ: T, subs: Substitutions) -> T: ...
+
+
+@typing.overload
+def substitute[T: TypeExpressions](
+    typ: T, subs: collections.abc.Mapping[TypeVariable, TypeVariable]
+) -> T: ...
 
 
 def substitute(typ, subs: Substitutions) -> TypeExpressions:
@@ -1279,11 +1359,14 @@ def substitute(typ, subs: Substitutions) -> TypeExpressions:
         return typ
 
 
-def _substitute_typeddict(typ, subs: Substitutions) -> TypeExpressions:
-    """Substitute inside a TypedDict's fields, preserving NotRequired-ness."""
+def _substitute_typeddict[T: TypedDictType](typ: T, subs: Substitutions) -> T:
+    """Substitute inside a TypedDict's fields, preserving NotRequired-ness and ReadOnly-ness."""
     typ_origin = typing.get_origin(typ) or typ
     optional_keys: frozenset[str] = getattr(
         typ_origin, "__optional_keys__", frozenset()
+    )
+    readonly_keys: frozenset[str] = getattr(
+        typ_origin, "__readonly_keys__", frozenset()
     )
     hints = _get_typeddict_hints(typ)
     new_fields: dict[str, TypeExpressions] = {}
@@ -1292,11 +1375,12 @@ def _substitute_typeddict(typ, subs: Substitutions) -> TypeExpressions:
         new_ftype = substitute(ftype, subs)
         if new_ftype is not ftype:
             changed = True
+        if field in readonly_keys:
+            new_ftype = typing.ReadOnly[new_ftype]  # type: ignore[assignment]
         if field in optional_keys:
-            new_fields[field] = typing.NotRequired[new_ftype]  # type: ignore[assignment]
-        else:
-            new_fields[field] = new_ftype
+            new_ftype = typing.NotRequired[new_ftype]  # type: ignore[assignment]
+        new_fields[field] = new_ftype
     if not changed:
         return typ
     name = getattr(typ_origin, "__name__", "_Subbed")
-    return typing.TypedDict(name, new_fields)  # type: ignore[operator,misc]
+    return typing.TypedDict(name, new_fields)  # type: ignore[operator]

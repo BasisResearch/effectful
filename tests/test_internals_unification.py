@@ -608,7 +608,7 @@ def returns_annotated[T](x: T) -> typing.Annotated[T, "meta"]:
     return x
 
 
-def no_return_annotation_func(x: int):  # type: ignore[no-untyped-def]
+def no_return_annotation_func(x: int):
     return x
 
 
@@ -1918,7 +1918,7 @@ def test_unify_mapping_typeddict_subclass():
             collections.abc.Callable[[typing.Self], int],
             lambda tv: collections.abc.Callable[[tv], int],
         ),
-        (type[typing.Self], lambda tv: type[tv]),  # type: ignore[misc,valid-type]
+        (type[typing.Self], lambda tv: type[tv]),
         # Union containing Self
         (typing.Self | None, lambda tv: tv | None),
         # Types without Self pass through unchanged
@@ -1932,7 +1932,7 @@ def test_self_type_replacer(typ, expected_factory, tv_name):
     """SelfTypeReplacer rewrites every typing.Self occurrence to the given TypeVar."""
     from effectful.internals.unification import SelfTypeReplacer
 
-    tv = typing.TypeVar(tv_name)  # type: ignore[misc]
+    tv = typing.TypeVar(tv_name)
     replacer = SelfTypeReplacer(tv)
     assert replacer.evaluate(typ) == expected_factory(tv)
 
@@ -2018,7 +2018,7 @@ def test_infer_return_type_direct_simple():
     Inputs are Boxed types per the convention used by ``__type_rule__``.
     """
 
-    def f(x: T) -> list[T]: ...  # type: ignore[valid-type]
+    def f(x: T) -> list[T]: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(f)
     result = infer_return_type(sig.bind(Box(int)))
@@ -2034,7 +2034,7 @@ def test_infer_return_type_direct_self():
     """
 
     class C:
-        def m(self: typing.Self) -> typing.Self: ...
+        def m(self: typing.Self) -> typing.Self: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(C.m)
     result = infer_return_type(sig.bind(C()))
@@ -2045,7 +2045,7 @@ def test_infer_return_type_bare_self_unresolved():
     """A method with bare ``self`` does not bind Self — it stays a free TypeVar."""
 
     class C:
-        def m(self) -> typing.Self: ...
+        def m(self) -> typing.Self: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(C.m)
     result = infer_return_type(sig.bind(C()))
@@ -2056,7 +2056,7 @@ def test_infer_return_type_bare_self_unresolved():
 def test_infer_return_type_direct_default_omitted():
     """infer_return_type with a default-valued param omitted still returns correctly."""
 
-    def f(x: T, y: str = "ok") -> T: ...  # type: ignore[valid-type]
+    def f(x: T, y: str = "ok") -> T: ...
 
     sig = inspect.signature(f)
     result = infer_return_type(sig.bind(Box(int)))
@@ -2078,7 +2078,7 @@ def test_infer_return_type_typeddict_param():
         name: str
         age: int
 
-    def greet(u: User) -> str: ...
+    def greet(u: User) -> str: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(greet)
     # nested_type({"name": "a", "age": 1}) returns a TypedDict, which is
@@ -2095,7 +2095,7 @@ def test_infer_return_type_generic_typeddict_param():
         name: str
         value: T
 
-    def extract[T](d: Datum[T]) -> T: ...
+    def extract[T](d: Datum[T]) -> T: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(extract)
     result = infer_return_type(sig.bind({"name": "a", "value": 42}))
@@ -2115,7 +2115,7 @@ def test_infer_return_type_conflicting_self_bindings():
     """
 
     class C:
-        def f(self: typing.Self, other: typing.Self) -> typing.Self: ...
+        def f(self: typing.Self, other: typing.Self) -> typing.Self: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(C.f)
     # Same type for both: succeeds.
@@ -2129,7 +2129,7 @@ def test_infer_return_type_wrong_arg_type():
     """Passing an arg whose type is incompatible with the parameter
     annotation must raise."""
 
-    def f(x: int) -> int: ...
+    def f(x: int) -> int: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(f)
     with pytest.raises(TypeError):
@@ -2140,7 +2140,7 @@ def test_infer_return_type_missing_required_arg():
     """Omitting a required positional arg surfaces as a Signature.bind error
     before we reach infer_return_type — document that contract here."""
 
-    def f(x: int, y: int) -> int: ...
+    def f(x: int, y: int) -> int: ...  # type: ignore[empty-body]
 
     sig = inspect.signature(f)
     with pytest.raises(TypeError):
