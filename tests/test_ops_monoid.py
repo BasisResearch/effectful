@@ -6,7 +6,15 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Semilattice, Sum
+from effectful.ops.monoid import (
+    CartesianProduct,
+    Max,
+    Min,
+    NormalizeIntp,
+    Product,
+    Semilattice,
+    Sum,
+)
 from effectful.ops.semantics import apply, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
 from effectful.ops.types import NotHandled, Operation
@@ -70,14 +78,11 @@ def syntactic_eq_alpha(x, y) -> bool:
 def _canonicalize(expr):
     counter = itertools.count()
 
-    def _passthrough(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
-
     def _substitute(arg, renaming):
         """Apply a bound-variable renaming using ``evaluate`` for traversal."""
         if not renaming:
             return arg
-        with interpreter({apply: _passthrough, **renaming}):
+        with interpreter({apply: _BaseTerm, **renaming}):
             return evaluate(arg)
 
     def _bound_var_order(args, kwargs, bound_set):
@@ -121,7 +126,7 @@ def _canonicalize(expr):
             *bindings.args, *bindings.kwargs.values()
         )
         if not all_bound:
-            return defdata(op, *args, **kwargs)
+            return _BaseTerm(op, *args, **kwargs)
 
         order = _bound_var_order(args, kwargs, all_bound)
         canonical = {var: _canonical_op(next(counter)) for var in order}
@@ -496,8 +501,6 @@ def test_reduce_independent_3_negative():
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
     )
     assert fvsof(bogus_rhs) != fvsof(lhs)
-    # Structural-only negative check: the normalizer correctly refused to apply
-    # the bogus factorization.
     assert not syntactic_eq_alpha(lhs, bogus_rhs)
 
 
@@ -516,3 +519,79 @@ def test_reduce_independent_4():
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, C, f])
+
+
+def test_reduce_lifted_1():
+    a, i = define_vars("a", "i")
+    A, N, A_domain = define_vars("A", "N", "A_domain", typ=list[int])
+
+    @Operation.define
+    def f(_: int) -> float:
+        raise NotHandled
+
+    term1 = Sum.reduce(
+        Product.reduce(f(a()), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(), {i: N()})},
+    )
+    term2 = Product.reduce(Sum.reduce(f(a()), {a: A_domain()}), {i: N()})
+    _check_pair(lhs=term1, rhs=term2, free_vars=[N, A_domain, f])
+
+
+def test_reduce_cartesian_1():
+    a, i = define_vars("a", "i")
+    A = define_vars("A", typ=list[int])
+
+    term1 = Sum.reduce(
+        Product.reduce(a(), {a: []}),
+        {A: CartesianProduct.reduce([], {i: []})},
+    )
+    term2 = Product.reduce(Sum.reduce(a(), {a: []}), {i: []})
+    assert term1 == term2
+
+
+def test_reduce_cartesian_2():
+    a, i = define_vars("a", "i")
+    A = define_vars("A", typ=list[int])
+
+    term1 = Sum.reduce(
+        Product.reduce(a(), {a: A()}),
+        {A: CartesianProduct.reduce([(0,)], {i: [0]})},
+    )
+    term2 = Product.reduce(Sum.reduce(a(), {a: [0]}), {i: [0]})
+    assert term1 == term2
+
+
+def test_reduce_lifted_2():
+    """The worked example on page 396 of 'Lifted Variable Elimination:
+    Decoupling the Operators from the Constraint Language'.
+
+    """
+    a, i, s, t = define_vars("a", "i", "s", "t")
+    A, N, T = define_vars("A", "N", "T", typ=list[int])
+
+    @Operation.define
+    def A_domain(_i: int) -> list[int]:
+        raise NotHandled
+
+    @Operation.define
+    def f1(_a: int, _s: int) -> float:
+        raise NotHandled
+
+    @Operation.define
+    def f2(_t: int, _a: int) -> float:
+        raise NotHandled
+
+    term1 = Sum.reduce(
+        Product.reduce(Product.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(i()), {i: N()}), t: T()},
+    )
+
+    term2 = Sum.reduce(
+        Product.reduce(
+            Sum.reduce(Product.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
+            {i: N()},
+        ),
+        {t: T()},
+    )
+
+    _check_pair(lhs=term1, rhs=term2, free_vars=[a, i, s, t, A, N, T, A_domain, f1, f2])
