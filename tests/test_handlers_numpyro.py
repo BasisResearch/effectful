@@ -25,16 +25,71 @@ def setup_module():
     pass
 
 
-TEST_CASES = []
-RAW_TEST_CASES = []
-
-
 @dataclass
 class RawTestCase:
     raw_dist: str
-    raw_params: dict[str, str]
+    raw_params: Sequence[tuple[str, str]]
     batch_shape: tuple[int, ...]
     xfail: str | None = None
+
+
+class DistTestCase:
+    raw_dist: str
+    params: dict[str, jax.Array]
+    indexed_params: dict[str, jax.Array]
+    batch_shape: tuple[int, ...]
+    xfail: str | None
+    kind: str
+
+    def __init__(
+        self,
+        raw_dist: str,
+        params: dict[str, jax.Array],
+        indexed_params: dict[str, jax.Array],
+        batch_shape: tuple[int, ...],
+        xfail: str | None,
+        kind: str,
+    ):
+        self.raw_dist = re.sub(r"\s+", " ", raw_dist.strip())
+        self.params = params
+        self.indexed_params = indexed_params
+        self.batch_shape = batch_shape
+        self.xfail = xfail
+        self.kind = kind
+
+    def get_dist(self):
+        """Return positional and indexed distributions."""
+        if self.xfail is not None:
+            pytest.xfail(self.xfail)
+
+        Case = namedtuple("Case", tuple(name for name, _ in self.params.items()))
+
+        case = Case(**self.params)
+        dist_ = eval(self.raw_dist)
+
+        # case is used by generated code in self.raw_dist
+        case = Case(**self.indexed_params)  # noqa: F841
+        indexed_dist = eval(self.raw_dist)
+
+        return dist_, indexed_dist
+
+    def __eq__(self, other):
+        if isinstance(other, DistTestCase):
+            return (
+                self.raw_dist == other.raw_dist
+                and self.batch_shape == other.batch_shape
+                and self.kind == other.kind
+            )
+
+    def __hash__(self):
+        return hash((self.raw_dist, self.batch_shape, self.kind))
+
+    def __repr__(self):
+        return f"{self.raw_dist} {self.batch_shape} {self.kind}"
+
+
+TEST_CASES: list[DistTestCase] = []
+RAW_TEST_CASES: list[RawTestCase] = []
 
 
 def add_case(raw_dist, raw_params, batch_shape, xfail=None):
@@ -472,61 +527,6 @@ def from_indexed(tensor, batch_dims):
     indices = [name_to_sym(str(i)) for i in range(batch_dims)]
     indices = [i for i in indices if i in tensor_sizes]
     return bind_dims(tensor, *indices)
-
-
-class DistTestCase:
-    raw_dist: str
-    params: dict[str, jax.Array]
-    indexed_params: dict[str, jax.Array]
-    batch_shape: tuple[int, ...]
-    xfail: str | None
-    kind: str
-
-    def __init__(
-        self,
-        raw_dist: str,
-        params: dict[str, jax.Array],
-        indexed_params: dict[str, jax.Array],
-        batch_shape: tuple[int, ...],
-        xfail: str | None,
-        kind: str,
-    ):
-        self.raw_dist = re.sub(r"\s+", " ", raw_dist.strip())
-        self.params = params
-        self.indexed_params = indexed_params
-        self.batch_shape = batch_shape
-        self.xfail = xfail
-        self.kind = kind
-
-    def get_dist(self):
-        """Return positional and indexed distributions."""
-        if self.xfail is not None:
-            pytest.xfail(self.xfail)
-
-        Case = namedtuple("Case", tuple(name for name, _ in self.params.items()))
-
-        case = Case(**self.params)
-        dist_ = eval(self.raw_dist)
-
-        # case is used by generated code in self.raw_dist
-        case = Case(**self.indexed_params)  # noqa: F841
-        indexed_dist = eval(self.raw_dist)
-
-        return dist_, indexed_dist
-
-    def __eq__(self, other):
-        if isinstance(other, DistTestCase):
-            return (
-                self.raw_dist == other.raw_dist
-                and self.batch_shape == other.batch_shape
-                and self.kind == other.kind
-            )
-
-    def __hash__(self):
-        return hash((self.raw_dist, self.batch_shape, self.kind))
-
-    def __repr__(self):
-        return f"{self.raw_dist} {self.batch_shape} {self.kind}"
 
 
 def full_indexed_test_case(
