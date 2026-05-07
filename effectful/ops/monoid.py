@@ -4,7 +4,7 @@ import itertools
 import numbers
 import typing
 from collections import Counter, defaultdict
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
@@ -563,23 +563,6 @@ class ReduceFactorization(ObjectInterpretation):
                 return result
 
         return fwd()
-
-
-def outer_stream(
-    streams: dict[Operation, Expr],
-) -> Iterable[tuple[Operation, Expr, dict[Operation, Expr]]]:
-    """Returns the streams that can be ordered outermost in the loop nest as
-    well as the remaining streams in the nest.
-
-    """
-    stream_vars = set(streams.keys())
-    pred = {k: fvsof(v) & stream_vars for k, v in streams.items()}
-    topo = TopologicalSorter(pred)
-    topo.prepare()
-    return (
-        (op, streams[op], {k: v for (k, v) in streams.items() if k != op})
-        for op in topo.get_ready()
-    )
 
 
 def inner_stream(

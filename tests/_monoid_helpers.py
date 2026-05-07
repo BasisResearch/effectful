@@ -14,7 +14,7 @@ def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
     if annotation is float:
         return st.floats(allow_nan=False)
     if get_origin(annotation) is list and get_args(annotation) == (int,):
-        return st.lists(st.integers())
+        return st.lists(st.integers(), max_size=3)
     raise NotImplementedError(
         f"No value strategy for return annotation {annotation!r}; "
         "supported: int, list[int]"

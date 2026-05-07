@@ -257,8 +257,8 @@ def test_plus_assoc_left(monoid):
 def test_plus_sequence(monoid):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=type(monoid.identity))
     _check_pair(
-        lhs=monoid.plus([a(), b()], [c(), d()]),
-        rhs=[monoid.plus(a(), c()), monoid.plus(b(), d())],
+        lhs=monoid.plus((a(), b()), (c(), d())),
+        rhs=(monoid.plus(a(), c()), monoid.plus(b(), d())),
         free_vars=[a, b, c, d],
     )
 
@@ -373,8 +373,8 @@ def test_reduce_body_sequence(monoid):
 
     g = Operation.define(f, name="g")
 
-    lhs = monoid.reduce([f(x()), g(x())], {x: X()})
-    rhs = [monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()})]
+    lhs = monoid.reduce((f(x()), g(x())), {x: X()})
+    rhs = (monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()}))
 
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, f, g])
 
@@ -390,11 +390,11 @@ def test_reduce_body_sequence_2(monoid):
 
     g = Operation.define(f, name="g")
 
-    lhs = monoid.reduce([f(x()), g(y())], {x: X(), y: Y()})
-    rhs = [
+    lhs = monoid.reduce((f(x()), g(y())), {x: X(), y: Y()})
+    rhs = (
         monoid.reduce(f(x()), {x: X(), y: Y()}),
         monoid.reduce(g(y()), {x: X(), y: Y()}),
-    ]
+    )
 
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, Y, f, g])
 

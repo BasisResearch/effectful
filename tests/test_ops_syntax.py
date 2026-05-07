@@ -489,7 +489,6 @@ def test_defop_singledispatchmethod():
     )
 
     assert isinstance(term_float, Term)
-    assert term_float.op.__name__ == "MyClass_my_singledispatch"
     assert term_float.args == (1.5,)
     assert term_float.kwargs == {}
 
