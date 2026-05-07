@@ -1,16 +1,11 @@
-import functools
-import itertools
-
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from effectful.internals.runtime import interpreter
 from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Semilattice, Sum
-from effectful.ops.semantics import apply, evaluate, fvsof, handler
-from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation
-from tests._monoid_helpers import random_interpretation
+from tests._monoid_helpers import define_vars, random_interpretation, syntactic_eq_alpha
 
 _INT = st.integers(min_value=-100, max_value=100)
 
@@ -36,116 +31,6 @@ IDEMPOTENT = [
 WITH_ZERO = [
     pytest.param(Product, id="Product"),
 ]
-
-
-def define_vars(*names, typ=int):
-    if len(names) == 1:
-        return Operation.define(typ, name=names[0])
-    return tuple(Operation.define(typ, name=n) for n in names)
-
-
-@functools.cache
-def _canonical_op(idx: int) -> Operation:
-    """Globally cached canonical Operation, keyed by encounter index.
-
-    Cached so that two independent canonicalize runs return the same
-    Operation object for the same index — letting ``syntactic_eq``
-    compare canonical forms by Operation identity.
-    """
-    return Operation.define(int, name=f"__cv_{idx}")
-
-
-def syntactic_eq_alpha(x, y) -> bool:
-    """Alpha-equivalence-respecting variant of ``syntactic_eq``.
-
-    Walks each expression bottom-up with :func:`evaluate` and renames
-    every bound variable to a deterministic canonical Operation. The
-    canonical names are assigned by a counter that increments in
-    ``evaluate``'s natural traversal order, so two alpha-equivalent
-    expressions canonicalize to syntactically identical results.
-    """
-    return syntactic_eq(_canonicalize(x), _canonicalize(y))
-
-
-def _canonicalize(expr):
-    counter = itertools.count()
-
-    def _passthrough(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
-
-    def _substitute(arg, renaming):
-        """Apply a bound-variable renaming using ``evaluate`` for traversal."""
-        if not renaming:
-            return arg
-        with interpreter({apply: _passthrough, **renaming}):
-            return evaluate(arg)
-
-    def _bound_var_order(args, kwargs, bound_set):
-        """Return bound variables in deterministic encounter order."""
-        seen: list[Operation] = []
-        seen_set: set[Operation] = set()
-
-        def _capture(op, *a, **kw):
-            if op in bound_set and op not in seen_set:
-                seen.append(op)
-                seen_set.add(op)
-            return defdata(op, *a, **kw)
-
-        # ``evaluate`` walks Terms, lists, tuples, mappings, dataclasses,
-        # etc. for free; the apply handler captures bound vars used as
-        # ``x()`` anywhere in the body.
-        with interpreter({apply: _capture}):
-            evaluate((args, kwargs))
-
-        # Binders bypass the apply handler. Pick them up with a small structural
-        # walk that visits dict keys too.
-        def _walk_bare(obj):
-            if isinstance(obj, Operation):
-                if obj in bound_set and obj not in seen_set:
-                    seen.append(obj)
-                    seen_set.add(obj)
-            elif isinstance(obj, dict):
-                for k, v in obj.items():
-                    _walk_bare(k)
-                    _walk_bare(v)
-            elif isinstance(obj, list | set | frozenset | tuple):
-                for v in obj:
-                    _walk_bare(v)
-
-        _walk_bare((args, kwargs))
-        return seen
-
-    def _apply_canonical(op, *args, **kwargs):
-        bindings = op.__fvs_rule__(*args, **kwargs)
-        all_bound: set[Operation] = set().union(
-            *bindings.args, *bindings.kwargs.values()
-        )
-        if not all_bound:
-            return defdata(op, *args, **kwargs)
-
-        order = _bound_var_order(args, kwargs, all_bound)
-        canonical = {var: _canonical_op(next(counter)) for var in order}
-        assert all_bound <= set(order)
-
-        new_args = tuple(
-            _substitute(
-                arg, {v: canonical[v] for v in bindings.args[i] if v in canonical}
-            )
-            for i, arg in enumerate(args)
-        )
-        new_kwargs = {
-            k: _substitute(
-                v,
-                {var: canonical[var] for var in bindings.kwargs[k] if var in canonical},
-            )
-            for k, v in kwargs.items()
-        }
-
-        # avoid the renaming from defdata
-        return _BaseTerm(op, *new_args, **new_kwargs)
-
-    with interpreter({apply: _apply_canonical}):
-        return evaluate(expr)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -355,6 +240,52 @@ def test_plus_zero(monoid):
     lhs_left = monoid.plus(monoid.zero, a())
     _check_pair(lhs=lhs_right, rhs=monoid.zero, free_vars=[a])
     _check_pair(lhs=lhs_left, rhs=monoid.zero, free_vars=[a])
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_partial_1(monoid):
+    x, y = define_vars("x", "y")
+
+    lhs = monoid.reduce(x(), {x: []})
+    rhs = monoid.identity
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[x, y])
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_partial_2(monoid):
+    x, y = define_vars("x", "y")
+    Y = define_vars("Y", typ=list[int])
+
+    lhs = monoid.reduce(x(), {y: Y(), x: []})
+    rhs = monoid.identity
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[x, y, Y])
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_partial_3(monoid):
+    x, y, a, b = define_vars("x", "y", "a", "b")
+    Y = define_vars("Y", typ=list[int])
+
+    lhs = monoid.reduce(x(), {y: Y(), x: [a(), b()]})
+    rhs = monoid.plus(monoid.reduce(a(), {y: Y()}), monoid.reduce(b(), {y: Y()}))
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[x, y, a, b, Y])
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_partial_4(monoid):
+    x, y, a, b = define_vars("x", "y", "a", "b")
+
+    @Operation.define
+    def f(_x: int) -> list[int]:
+        raise NotHandled
+
+    lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
+    rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
+
+    _check_pair(lhs=lhs, rhs=rhs, free_vars=[x, y, a, b, f])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
