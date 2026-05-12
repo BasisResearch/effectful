@@ -351,15 +351,15 @@ class PlusDistr(ObjectInterpretation):
             for m, terms in by_monoid.items():
                 if (
                     len(terms) > 1
-                    and distributes_over(monoid.plus, m)
-                    and not distributes_over(m, monoid.plus)
+                    and distributes_over(monoid, m)
+                    and not distributes_over(m, monoid)
                 ):
                     progress = True
                     term_args = (t.args[1:] for t in terms)
                     dist_terms = (
                         monoid.plus(*args) for args in itertools.product(*term_args)
                     )
-                    final_sum.append(monoid.plus(*dist_terms))
+                    final_sum.append(m.plus(*dist_terms))
                 else:
                     final_sum += terms
             if progress:
@@ -463,8 +463,12 @@ class ReduceFusion(ObjectInterpretation):
 
     @implements(reduce)
     def reduce(self, monoid, body, streams):
-        if isinstance(body, Term) and body.op == monoid.reduce:
-            return monoid.reduce(body.args[0], streams | body.args[1])
+        if (
+            isinstance(body, Term)
+            and body.op == reduce
+            and body.args[0] is monoid
+        ):
+            return monoid.reduce(body.args[1], streams | body.args[2])
         return fwd()
 
 
@@ -477,8 +481,12 @@ class ReduceSplit(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         if not is_commutative(monoid):
             return fwd()
-        if isinstance(body, Term) and body.op == monoid.plus:
-            return monoid.plus(*(monoid.reduce(x, streams) for x in body.args))
+        if (
+            isinstance(body, Term)
+            and body.op == plus
+            and body.args[0] is monoid
+        ):
+            return monoid.plus(*(monoid.reduce(x, streams) for x in body.args[1:]))
         return fwd()
 
 
@@ -500,9 +508,14 @@ class ReduceFactorization(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         if not is_commutative(monoid):
             return fwd()
-        if isinstance(body, Term) and distributes_over(body.op, monoid.plus):
+        if (
+            isinstance(body, Term)
+            and body.op == plus
+            and distributes_over(body.args[0], monoid)
+        ):
+            inner_monoid = body.args[0]
             stream_vars = set(streams.keys())
-            factors = [(arg, fvsof(arg)) for arg in body.args]
+            factors = [(arg, fvsof(arg)) for arg in body.args[1:]]
             stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
             ds = DisjointSet(len(streams))
 
@@ -542,14 +555,14 @@ class ReduceFactorization(ObjectInterpretation):
                     for t in partition_factors
                 ), "partition contains all streams required by factor"
 
-                partition_term = body.op(*(t[0] for t in partition_factors))
+                partition_term = inner_monoid.plus(*(t[0] for t in partition_factors))
                 new_reduces.append((partition_term, partition_streams))
                 placed_streams |= partition_stream_keys
 
             constant_factors = [t for (t, fvs) in factors if not (fvs & stream_vars)]
 
             if len(new_reduces) > 1:
-                result = body.op(
+                result = inner_monoid.plus(
                     *constant_factors, *(monoid.reduce(*args) for args in new_reduces)
                 )
                 return result
@@ -609,8 +622,8 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             return fwd()
 
         # body is a product or multiplication of products
-        if distributes_over(sum_body.op, sum_monoid.plus):
-            prod_reduces = sum_body.args
+        if sum_body.op == plus and distributes_over(sum_body.args[0], sum_monoid):
+            prod_reduces = sum_body.args[1:]
         else:
             prod_reduces = [sum_body]
 
@@ -637,10 +650,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         for outer_sum_streams, cprod_op, cprod_term in inner_stream(sum_streams):
             if not (
                 isinstance(cprod_term, Term)
-                and cprod_term.op == CartesianProduct.reduce
+                and cprod_term.op == reduce
+                and cprod_term.args[0] is CartesianProduct
             ):
                 continue
-            (cprod_body, cprod_streams) = cprod_term.args
+            (_, cprod_body, cprod_streams) = cprod_term.args
 
             if not all(
                 prod_stream.op == cprod_op for (_, _, _, prod_stream) in products

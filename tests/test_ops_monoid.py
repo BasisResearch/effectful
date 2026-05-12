@@ -56,7 +56,7 @@ MONOID_PAIRS = [
     for o in ALL_MONOIDS
     for i in ALL_MONOIDS
     if distributes_over(
-        typing.cast(Monoid, i.values[0]).plus, typing.cast(Monoid, o.values[0]).plus
+        typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
     )
 ]
 
