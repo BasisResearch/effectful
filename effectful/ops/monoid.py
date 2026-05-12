@@ -13,6 +13,7 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
+    _NumberTerm,
     deffn,
     implements,
     iter_,
@@ -66,6 +67,12 @@ class Monoid[T]:
 
     def __repr__(self):
         return f"Monoid({self._name!r})"
+
+    def __eq__(self, other):
+        return id(self) == id(other)
+
+    def __hash__(self):
+        return hash(id(self))
 
     def __eq__(self, other):
         return id(self) == id(other)
@@ -213,6 +220,21 @@ ArgMax = Monoid("ArgMax")
 Sum = Monoid("Sum")
 Product = MonoidWithZero("Product")
 CartesianProduct = Monoid("CartesianProduct")
+
+
+@dataclass
+class _ExtensiblePredicate[T]:
+    elems: set[T]
+
+    def register(self, t: T) -> None:
+        self.elems.add(t)
+
+    def __call__(self, t: T) -> bool:
+        return t in self.elems
+
+
+is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product})
+is_idempotent = _ExtensiblePredicate({Max, Min})
 
 
 @dataclass
