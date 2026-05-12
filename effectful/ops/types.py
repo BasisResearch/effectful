@@ -53,9 +53,7 @@ class _CustomSingleDispatchMethod[**P, **Q, S, T]:
 
     def __init__(
         self,
-        func: Callable[
-            Concatenate[Any, Callable[[type], Callable[Q, S]], P], T
-        ],
+        func: Callable[Concatenate[Any, Callable[[type], Callable[Q, S]], P], T],
     ):
         self.func = func
         self._registry = functools.singledispatch(func)
@@ -94,9 +92,7 @@ class _BoundCustomSingleDispatchMethod:
         return self._method.register
 
     def __call__(self, *args, **kwargs):
-        return self._method.func(
-            self._instance, self._method.dispatch, *args, **kwargs
-        )
+        return self._method.func(self._instance, self._method.dispatch, *args, **kwargs)
 
 
 class _ClassMethodOpDescriptor(classmethod):

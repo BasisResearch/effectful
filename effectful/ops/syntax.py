@@ -15,7 +15,6 @@ from effectful.ops.types import (
     Operation,
     Term,
     _CustomSingleDispatchCallable,
-    _CustomSingleDispatchMethod,
 )
 
 

@@ -15,7 +15,6 @@ from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
     _NumberTerm,
-    defdata,
     deffn,
     implements,
     iter_,
@@ -463,11 +462,7 @@ class ReduceFusion(ObjectInterpretation):
 
     @implements(reduce)
     def reduce(self, monoid, body, streams):
-        if (
-            isinstance(body, Term)
-            and body.op == reduce
-            and body.args[0] is monoid
-        ):
+        if isinstance(body, Term) and body.op == reduce and body.args[0] is monoid:
             return monoid.reduce(body.args[1], streams | body.args[2])
         return fwd()
 
@@ -481,11 +476,7 @@ class ReduceSplit(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         if not is_commutative(monoid):
             return fwd()
-        if (
-            isinstance(body, Term)
-            and body.op == plus
-            and body.args[0] is monoid
-        ):
+        if isinstance(body, Term) and body.op == plus and body.args[0] is monoid:
             return monoid.plus(*(monoid.reduce(x, streams) for x in body.args[1:]))
         return fwd()
 
