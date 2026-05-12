@@ -1,7 +1,6 @@
 import collections.abc
 import functools
 import itertools
-import numbers
 import typing
 from collections import Counter, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
@@ -14,7 +13,6 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
-    _NumberTerm,
     deffn,
     implements,
     iter_,
@@ -61,17 +59,13 @@ def outer_stream(
 
 
 class Monoid[T]:
-    kernel: Operation[[T, T], T]
-    identity: T
+    _name: str
 
-    def __init__(self, kernel: Callable[[T, T], T], identity: T):
-        self.identity = identity
-        self.kernel = (
-            kernel if isinstance(kernel, Operation) else Operation.define(kernel)
-        )
+    def __init__(self, name):
+        self._name = name
 
     def __repr__(self):
-        return f"{type(self)}({self.kernel}, {self.identity})"
+        return f"Monoid({self._name!r})"
 
     def __eq__(self, other):
         return id(self) == id(other)
@@ -80,20 +74,28 @@ class Monoid[T]:
         return hash(id(self))
 
     @Operation.define
+    def kernel(self, _x: T, _y: T) -> T:
+        raise NotHandled
+
+    @Operation.define
+    def identity(self) -> T:
+        raise NotHandled
+
+    @Operation.define
     @_CustomSingleDispatchMethod
     def plus[S](self, dispatch, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
         """
         if not args:
-            return typing.cast(S, self.identity)
+            return typing.cast(S, self.identity())
         return dispatch(type(args[0]))(self, *args)
 
     @plus.register(object)  # type: ignore[attr-defined]
     def _(self, *args):
         if any(isinstance(x, Term) for x in args):
             raise NotHandled
-        return functools.reduce(self.kernel, args, self.identity)
+        return functools.reduce(self.kernel, args, self.identity())
 
     @plus.register(tuple)  # type: ignore[attr-defined]
     def _(self, *args):
@@ -131,7 +133,7 @@ class Monoid[T]:
         self, body: Annotated[U, Scoped[A | B]], streams: Annotated[Streams, Scoped[A]]
     ) -> Annotated[U, Scoped[B]]:
         if not streams:
-            return self.identity
+            return self.identity()
 
         # find and reduce a ground stream
         for stream_key, stream_body, streams_tail in outer_stream(streams):
@@ -185,32 +187,10 @@ def _is_monoid_reduce(op: Operation) -> bool:
 
 
 class MonoidWithZero[T](Monoid[T]):
-    zero: T
-
-    def __init__(self, kernel: Callable[[T, T], T], identity: T, zero: T):
-        super().__init__(kernel, identity)
-        self.zero = zero
-
-    def __repr__(self):
-        return f"{type(self)}({self.kernel}, {self.identity}, {self.zero})"
-
-
-@Operation.define
-def _arg_min[T](
-    a: tuple[numbers.Number, T | None], b: tuple[numbers.Number, T | None]
-) -> tuple[numbers.Number, T | None]:
-    if isinstance(a[0], Term) or isinstance(b[0], Term):
+    @Operation.define
+    @staticmethod
+    def zero() -> T:
         raise NotHandled
-    return b if b[0] < a[0] else a  # type: ignore
-
-
-@Operation.define
-def _arg_max[T](
-    a: tuple[numbers.Number, T | None], b: tuple[numbers.Number, T | None]
-) -> tuple[numbers.Number, T | None]:
-    if isinstance(a[0], Term) or isinstance(b[0], Term):
-        raise NotHandled
-    return b if b[0] > a[0] else a  # type: ignore
 
 
 @Operation.define
@@ -226,13 +206,13 @@ def product[T](
     return [to_tuple(x) + to_tuple(y) for (x, y) in itertools.product(a, b)]
 
 
-Min = Monoid(kernel=min, identity=float("inf"))
-Max = Monoid(kernel=max, identity=float("-inf"))
-ArgMin = Monoid(kernel=_arg_min, identity=(float("inf"), None))
-ArgMax = Monoid(kernel=_arg_max, identity=(float("-inf"), None))
-Sum = Monoid(kernel=_NumberTerm.__add__, identity=0)
-Product = MonoidWithZero(kernel=_NumberTerm.__mul__, identity=1, zero=0)
-CartesianProduct = Monoid(kernel=product, identity=[()])
+Min = Monoid("Min")
+Max = Monoid("Max")
+ArgMin = Monoid("ArgMin")
+ArgMax = Monoid("ArgMax")
+Sum = Monoid("Sum")
+Product = MonoidWithZero("Product")
+CartesianProduct = Monoid("CartesianProduct")
 
 
 @dataclass
@@ -264,6 +244,98 @@ class _ExtensibleBinaryRelation[S, T]:
 distributes_over = _ExtensibleBinaryRelation(
     {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
 )
+
+
+class SumKernel(ObjectInterpretation):
+    @implements(Sum.identity)
+    def identity(self):
+        return 0
+
+    @implements(Sum.kernel)
+    def kernel(self, x, y):
+        return x + y
+
+
+class ProductKernel(ObjectInterpretation):
+    @implements(Product.identity)
+    def identity(self):
+        return 1
+
+    @implements(Product.zero)
+    def zero(self):
+        return 0
+
+    @implements(Product.kernel)
+    def kernel(self, x, y):
+        return x * y
+
+
+class MinKernel(ObjectInterpretation):
+    @implements(Min.identity)
+    def identity(self):
+        return float("inf")
+
+    @implements(Min.kernel)
+    def kernel(self, x, y):
+        if isinstance(x, int | float) and isinstance(y, int | float):
+            return min(x, y)
+        return fwd()
+
+
+class MaxKernel(ObjectInterpretation):
+    @implements(Min.identity)
+    def identity(self):
+        return -float("inf")
+
+    @implements(Min.kernel)
+    def kernel(self, x, y):
+        if isinstance(x, int | float) and isinstance(y, int | float):
+            return max(x, y)
+        return fwd()
+
+
+class ArgMinKernel(ObjectInterpretation):
+    @implements(ArgMin.identity)
+    def identity(self):
+        return (float("inf"), None)
+
+    @implements(ArgMin.kernel)
+    def kernel(self, a, b):
+        if isinstance(a[0], Term) or isinstance(b[0], Term):
+            return fwd()
+        if isinstance(a[0], int | float) and isinstance(b[0], int | float):
+            return b if b[0] < a[0] else a
+        return fwd()
+
+
+class ArgMaxKernel(ObjectInterpretation):
+    @implements(ArgMax.identity)
+    def identity(self):
+        return (-float("inf"), None)
+
+    @implements(ArgMax.kernel)
+    def kernel(self, a, b):
+        if isinstance(a[0], Term) or isinstance(b[0], Term):
+            return fwd()
+        if isinstance(a[0], int | float) and isinstance(b[0], int | float):
+            return b if b[0] < a[0] else a
+        return fwd()
+
+
+class CartesianProductKernel(ObjectInterpretation):
+    @implements(CartesianProduct.kernel)
+    def kernel(self, a, b):
+        if isinstance(a, Term) or isinstance(b, Term):
+            raise NotHandled
+
+        if isinstance(a, Iterable) and isinstance(b, Iterable):
+
+            def to_tuple(x):
+                return x if isinstance(x, tuple) else (x,)
+
+            return [to_tuple(x) + to_tuple(y) for (x, y) in itertools.product(a, b)]
+
+        return fwd()
 
 
 class PlusEmpty(ObjectInterpretation):
