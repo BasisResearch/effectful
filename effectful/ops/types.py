@@ -488,7 +488,10 @@ class Operation[**Q, V]:
                     else:
                         return default_result
 
-                instance_op = self.define(types.MethodType(_instance_op, instance))
+                name = ("" if owner is None else f"{owner.__name__}_") + self.__name__
+                instance_op = self.define(
+                    types.MethodType(_instance_op, instance), name=name
+                )
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:

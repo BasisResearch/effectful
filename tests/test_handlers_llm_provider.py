@@ -244,7 +244,7 @@ def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
     template = agent.ask
     tools = template.tools
-    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    expected_helper_tool_name = "self__helper"
     assert tools
     assert expected_helper_tool_name in tools
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
