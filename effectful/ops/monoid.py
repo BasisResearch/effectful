@@ -577,8 +577,10 @@ def inner_stream(
     no_dependents = set()
     succ = defaultdict(set)
     for k, v in streams.items():
-        for pred in fvsof(v) & stream_vars:
-            succ[pred].add(k)
+        preds = fvsof(v) & stream_vars
+        if preds:
+            for pred in preds:
+                succ[pred].add(k)
         else:
             no_dependents.add(k)
 
