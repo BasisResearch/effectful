@@ -667,8 +667,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 continue
 
             prod_op = Operation.define(products[0][2])
+            prod_monoid = products[0][0]
             inner_sum = sum_monoid.reduce(
-                Product.plus(
+                prod_monoid.plus(
                     *(prod_body(prod_op()) for (_, prod_body, _, _) in products)
                 ),
                 {prod_op: cprod_body},
