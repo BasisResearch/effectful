@@ -1,5 +1,6 @@
 import functools
 import itertools
+import typing
 
 import pytest
 from hypothesis import given, settings
@@ -10,6 +11,7 @@ from effectful.ops.monoid import (
     CartesianProduct,
     Max,
     Min,
+    Monoid,
     NormalizeIntp,
     Product,
     Semilattice,
@@ -53,7 +55,9 @@ MONOID_PAIRS = [
     pytest.param(o.values[0], i.values[0], id=f"{o.id}-{i.id}")
     for o in ALL_MONOIDS
     for i in ALL_MONOIDS
-    if distributes_over(i.values[0].plus, o.values[0].plus)
+    if distributes_over(
+        typing.cast(Monoid, i.values[0]).plus, typing.cast(Monoid, o.values[0]).plus
+    )
 ]
 
 
