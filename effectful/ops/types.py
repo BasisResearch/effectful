@@ -60,7 +60,7 @@ class _CustomSingleDispatchMethod[**P, **Q, S, T]:
         self.__signature__ = inspect.signature(
             functools.partial(func, None, None)  # type: ignore[arg-type]
         )
-        functools.update_wrapper(self, func)
+        functools.update_wrapper(self, func)  # type: ignore[arg-type]
 
     @property
     def dispatch(self):

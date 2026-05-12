@@ -128,7 +128,7 @@ class Monoid[T]:
     @_CustomSingleDispatchMethod
     def plus[S](self, dispatch, *args: S) -> S:
         if not args:
-            return self.identity
+            return typing.cast(S, self.identity)
         return dispatch(type(args[0]))(self, *args)
 
     @plus.register(object)
@@ -183,15 +183,15 @@ class Monoid[T]:
 
         return reduce(self, body, streams)
 
-    @reduce.register  # type: ignore[attr-defined]
+    @reduce.register
     def _(self, body: Mapping, streams):
         return {k: self.reduce(v, streams) for (k, v) in body.items()}
 
-    @reduce.register  # type: ignore[attr-defined]
+    @reduce.register
     def _(self, body: tuple, streams):
         return tuple(self.reduce(x, streams) for x in body)
 
-    @reduce.register  # type: ignore[attr-defined]
+    @reduce.register
     def _(self, body: Generator, streams):
         return (self.reduce(x, streams) for x in body)
 
@@ -622,7 +622,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         for prod_reduce in prod_reduces:
             if not (isinstance(prod_reduce, Term) and prod_reduce.op == reduce):
                 return fwd()
-            (prod_monoid, prod_body, prod_streams) = prod_reduce.args
+            prod_monoid = typing.cast(Monoid, prod_reduce.args[0])
+            prod_body = prod_reduce.args[1]
+            prod_streams = typing.cast(Mapping, prod_reduce.args[2])
             if not (
                 distributes_over(prod_monoid, sum_monoid)
                 and (len(products) == 0 or products[-1][0] == prod_monoid)
