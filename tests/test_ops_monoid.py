@@ -14,9 +14,9 @@ from effectful.ops.monoid import (
     Monoid,
     NormalizeIntp,
     Product,
-    Semilattice,
     Sum,
     distributes_over,
+    is_commutative,
 )
 from effectful.ops.semantics import apply, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
@@ -56,7 +56,7 @@ MONOID_PAIRS = [
     for o in ALL_MONOIDS
     for i in ALL_MONOIDS
     if distributes_over(
-        typing.cast(Monoid, i.values[0]).plus, typing.cast(Monoid, o.values[0]).plus
+        typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
     )
 ]
 
@@ -354,7 +354,7 @@ def test_plus_idempotent_non_consecutive(monoid):
     PlusDups; plain IdempotentMonoid leaves it as-is (consecutive-only)."""
     a, b = define_vars("a", "b")
     lhs = monoid.plus(a(), b(), a())
-    if isinstance(monoid, Semilattice):
+    if is_commutative(monoid):
         rhs = monoid.plus(a(), b())
     else:
         rhs = monoid.plus(a(), b(), a())
