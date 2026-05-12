@@ -44,7 +44,7 @@ def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
     if annotation is float:
         return st.floats(allow_nan=False)
     if get_origin(annotation) is list and get_args(annotation) == (int,):
-        return st.lists(st.integers())
+        return st.lists(st.integers(), max_size=2)
     if annotation is jax.Array:
         return _jax_array_value_strategy()
     raise NotImplementedError(
@@ -53,7 +53,7 @@ def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
     )
 
 
-_UNARY_INT_FNS: list[Callable[[int], int]] = [
+_UNARY_NUM_FNS: list[Callable[[int], int]] = [
     lambda x: x,
     lambda x: x + 1,
     lambda x: x - 1,
@@ -62,7 +62,7 @@ _UNARY_INT_FNS: list[Callable[[int], int]] = [
     lambda x: 3 * x + 1,
 ]
 
-_BINARY_INT_FNS: list[Callable[[int, int], int]] = [
+_BINARY_NUM_FNS: list[Callable[[int, int], int]] = [
     lambda x, y: x + y,
     lambda x, y: x - y,
     lambda x, y: x * y,
@@ -90,10 +90,10 @@ def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
 
     if not params:
         return _value_strategy_for(ret).map(deffn)
-    if ret is int and param_types == (int,):
-        return st.sampled_from(_UNARY_INT_FNS)
-    if ret is int and param_types == (int, int):
-        return st.sampled_from(_BINARY_INT_FNS)
+    if ret in (int, float) and param_types == (int,):
+        return st.sampled_from(_UNARY_NUM_FNS)
+    if ret in (int, float) and param_types == (int, int):
+        return st.sampled_from(_BINARY_NUM_FNS)
     if get_origin(ret) is list and get_args(ret) == (int,) and param_types == (int,):
         return st.sampled_from(_UNARY_LIST_FNS)
     if ret is jax.Array and param_types == (jax.Array,):

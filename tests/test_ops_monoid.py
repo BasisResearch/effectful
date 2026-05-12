@@ -1,8 +1,20 @@
+import typing
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Semilattice, Sum
+from effectful.ops.monoid import (
+    CartesianProduct,
+    Max,
+    Min,
+    Monoid,
+    NormalizeIntp,
+    Product,
+    Sum,
+    distributes_over,
+    is_commutative,
+)
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import define_vars, random_interpretation, syntactic_eq_alpha
@@ -30,6 +42,18 @@ IDEMPOTENT = [
 
 WITH_ZERO = [
     pytest.param(Product, id="Product"),
+]
+
+# Pairs (outer, inner) such that inner distributes over outer — i.e. the lifting
+# identity ``outer(inner(body, A), CartesianProduct...) == inner(outer(body, D), ...)``
+# is valid for that semiring pair.
+MONOID_PAIRS = [
+    pytest.param(o.values[0], i.values[0], id=f"{o.id}-{i.id}")
+    for o in ALL_MONOIDS
+    for i in ALL_MONOIDS
+    if distributes_over(
+        typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
+    )
 ]
 
 
@@ -137,8 +161,8 @@ def test_plus_assoc_left(monoid):
 def test_plus_sequence(monoid):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=type(monoid.identity))
     _check_pair(
-        lhs=monoid.plus([a(), b()], [c(), d()]),
-        rhs=[monoid.plus(a(), c()), monoid.plus(b(), d())],
+        lhs=monoid.plus((a(), b()), (c(), d())),
+        rhs=(monoid.plus(a(), c()), monoid.plus(b(), d())),
         free_vars=[a, b, c, d],
     )
 
@@ -219,7 +243,7 @@ def test_plus_idempotent_non_consecutive(monoid):
     PlusDups; plain IdempotentMonoid leaves it as-is (consecutive-only)."""
     a, b = define_vars("a", "b")
     lhs = monoid.plus(a(), b(), a())
-    if isinstance(monoid, Semilattice):
+    if is_commutative(monoid):
         rhs = monoid.plus(a(), b())
     else:
         rhs = monoid.plus(a(), b(), a())
@@ -299,8 +323,8 @@ def test_reduce_body_sequence(monoid):
 
     g = Operation.define(f, name="g")
 
-    lhs = monoid.reduce([f(x()), g(x())], {x: X()})
-    rhs = [monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()})]
+    lhs = monoid.reduce((f(x()), g(x())), {x: X()})
+    rhs = (monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()}))
 
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, f, g])
 
@@ -316,11 +340,11 @@ def test_reduce_body_sequence_2(monoid):
 
     g = Operation.define(f, name="g")
 
-    lhs = monoid.reduce([f(x()), g(y())], {x: X(), y: Y()})
-    rhs = [
+    lhs = monoid.reduce((f(x()), g(y())), {x: X(), y: Y()})
+    rhs = (
         monoid.reduce(f(x()), {x: X(), y: Y()}),
         monoid.reduce(g(y()), {x: X(), y: Y()}),
-    ]
+    )
 
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, Y, f, g])
 
@@ -427,8 +451,6 @@ def test_reduce_independent_3_negative():
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: g(a()), c: C()}),
     )
     assert fvsof(bogus_rhs) != fvsof(lhs)
-    # Structural-only negative check: the normalizer correctly refused to apply
-    # the bogus factorization.
     assert not syntactic_eq_alpha(lhs, bogus_rhs)
 
 
@@ -447,3 +469,101 @@ def test_reduce_independent_4():
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, C, f])
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_1(outer, inner):
+    a, i = define_vars("a", "i")
+    A, N, A_domain = define_vars("A", "N", "A_domain", typ=list[int])
+
+    @Operation.define
+    def f(_: int) -> float:
+        raise NotHandled
+
+    term1 = outer.reduce(
+        inner.reduce(f(a()), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(), {i: N()})},
+    )
+    term2 = inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {i: N()})
+    _check_pair(lhs=term1, rhs=term2, free_vars=[N, A_domain, f])
+
+
+def test_reduce_cartesian_1():
+    a, i = define_vars("a", "i")
+    A = define_vars("A", typ=list[int])
+
+    term1 = Sum.reduce(
+        Product.reduce(a(), {a: []}),
+        {A: CartesianProduct.reduce([], {i: []})},
+    )
+    term2 = Product.reduce(Sum.reduce(a(), {a: []}), {i: []})
+    assert term1 == term2
+
+
+def test_reduce_cartesian_2():
+    a, i = define_vars("a", "i")
+    A = define_vars("A", typ=list[int])
+
+    term1 = Sum.reduce(
+        Product.reduce(a(), {a: A()}),
+        {A: CartesianProduct.reduce([(0,)], {i: [0]})},
+    )
+    term2 = Product.reduce(Sum.reduce(a(), {a: [0]}), {i: [0]})
+    assert term1 == term2
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_multi_index(outer, inner):
+    a, i, j = define_vars("a", "i", "j")
+    A, N, M, A_domain = define_vars("A", "N", "M", "A_domain", typ=list[int])
+
+    @Operation.define
+    def f(_: int) -> float:
+        raise NotHandled
+
+    term1 = outer.reduce(
+        inner.reduce(f(a()), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(), {i: N(), j: M()})},
+    )
+    term2 = inner.reduce(
+        outer.reduce(f(a()), {a: A_domain()}),
+        {i: N(), j: M()},
+    )
+    _check_pair(lhs=term1, rhs=term2, free_vars=[N, M, A_domain, f])
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_2(outer, inner):
+    """The worked example on page 396 of 'Lifted Variable Elimination:
+    Decoupling the Operators from the Constraint Language'.
+
+    """
+    a, i, s, t = define_vars("a", "i", "s", "t")
+    A, N, T = define_vars("A", "N", "T", typ=list[int])
+
+    @Operation.define
+    def A_domain(_i: int) -> list[int]:
+        raise NotHandled
+
+    @Operation.define
+    def f1(_a: int, _s: int) -> float:
+        raise NotHandled
+
+    @Operation.define
+    def f2(_t: int, _a: int) -> float:
+        raise NotHandled
+
+    term1 = outer.reduce(
+        inner.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(i()), {i: N()}), t: T()},
+    )
+
+    term2 = outer.reduce(
+        inner.reduce(
+            outer.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
+            {i: N()},
+        ),
+        {t: T()},
+    )
+
+    _check_pair(lhs=term1, rhs=term2, free_vars=[a, i, s, t, A, N, T, A_domain, f1, f2])
