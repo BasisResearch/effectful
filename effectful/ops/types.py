@@ -364,6 +364,15 @@ class Operation[**Q, V]:
 
         return typing.cast(Operation[P, T], cls.define(func, **kwargs))
 
+    @define.register(types.MethodType)
+    @classmethod
+    def _define_methodtype[**P, T](
+        cls, t: Callable[P, T], *, name: str | None = None
+    ) -> "Operation[P, T]":
+        op = cls._define_callable(t, name=name)
+        op.__self__ = t.__self__  # type: ignore[attr-defined]
+        return typing.cast("Operation[P, T]", op)
+
     @define.register(staticmethod)
     @classmethod
     def _define_staticmethod[**P, T](cls, t: "staticmethod[P, T]", **kwargs):
@@ -401,6 +410,20 @@ class Operation[**Q, V]:
         op = cls.define(func, **kwargs)
         op.dispatch = default._registry.dispatch  # type: ignore[attr-defined]
         op.register = default._registry.register  # type: ignore[attr-defined]
+        return op
+
+    @define.register(_CustomSingleDispatchMethod)
+    @classmethod
+    def _define_customsingledispatchmethod(
+        cls, default: _CustomSingleDispatchMethod, **kwargs
+    ):
+        @functools.wraps(default.func)
+        def _wrapper(obj, *args, **kwargs):
+            return default.__get__(obj)(*args, **kwargs)
+
+        op = cls.define(_wrapper, **kwargs)
+        op.register = default.register  # type: ignore[attr-defined]
+        op.dispatch = default.dispatch  # type: ignore[attr-defined]
         return op
 
     @typing.final
