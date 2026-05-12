@@ -14,6 +14,7 @@ from effectful.ops.monoid import (
     Product,
     Semilattice,
     Sum,
+    distributes_over,
 )
 from effectful.ops.semantics import apply, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, syntactic_eq
@@ -43,6 +44,16 @@ IDEMPOTENT = [
 
 WITH_ZERO = [
     pytest.param(Product, id="Product"),
+]
+
+# Pairs (outer, inner) such that inner distributes over outer — i.e. the lifting
+# identity ``outer(inner(body, A), CartesianProduct...) == inner(outer(body, D), ...)``
+# is valid for that semiring pair.
+MONOID_PAIRS = [
+    pytest.param(o.values[0], i.values[0], id=f"{o.id}-{i.id}")
+    for o in ALL_MONOIDS
+    for i in ALL_MONOIDS
+    if distributes_over(i.values[0].plus, o.values[0].plus)
 ]
 
 
@@ -521,7 +532,8 @@ def test_reduce_independent_4():
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[A, B, C, f])
 
 
-def test_reduce_lifted_1():
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_1(outer, inner):
     a, i = define_vars("a", "i")
     A, N, A_domain = define_vars("A", "N", "A_domain", typ=list[int])
 
@@ -529,11 +541,11 @@ def test_reduce_lifted_1():
     def f(_: int) -> float:
         raise NotHandled
 
-    term1 = Sum.reduce(
-        Product.reduce(f(a()), {a: A()}),
+    term1 = outer.reduce(
+        inner.reduce(f(a()), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(), {i: N()})},
     )
-    term2 = Product.reduce(Sum.reduce(f(a()), {a: A_domain()}), {i: N()})
+    term2 = inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {i: N()})
     _check_pair(lhs=term1, rhs=term2, free_vars=[N, A_domain, f])
 
 
@@ -561,7 +573,28 @@ def test_reduce_cartesian_2():
     assert term1 == term2
 
 
-def test_reduce_lifted_2():
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_multi_index(outer, inner):
+    a, i, j = define_vars("a", "i", "j")
+    A, N, M, A_domain = define_vars("A", "N", "M", "A_domain", typ=list[int])
+
+    @Operation.define
+    def f(_: int) -> float:
+        raise NotHandled
+
+    term1 = outer.reduce(
+        inner.reduce(f(a()), {a: A()}),
+        {A: CartesianProduct.reduce(A_domain(), {i: N(), j: M()})},
+    )
+    term2 = inner.reduce(
+        outer.reduce(f(a()), {a: A_domain()}),
+        {i: N(), j: M()},
+    )
+    _check_pair(lhs=term1, rhs=term2, free_vars=[N, M, A_domain, f])
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_2(outer, inner):
     """The worked example on page 396 of 'Lifted Variable Elimination:
     Decoupling the Operators from the Constraint Language'.
 
@@ -581,14 +614,14 @@ def test_reduce_lifted_2():
     def f2(_t: int, _a: int) -> float:
         raise NotHandled
 
-    term1 = Sum.reduce(
-        Product.reduce(Product.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
+    term1 = outer.reduce(
+        inner.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(i()), {i: N()}), t: T()},
     )
 
-    term2 = Sum.reduce(
-        Product.reduce(
-            Sum.reduce(Product.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
+    term2 = outer.reduce(
+        inner.reduce(
+            outer.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
             {i: N()},
         ),
         {t: T()},
