@@ -610,8 +610,8 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
     More specifically, this transform implements the identity
     reduce(⨁, reduce(⨂, body2, {vv: v()}), {v: reduce(×, body1, S1)} ∪ S2)
-        = reduce(⨁, reduce(⨂, reduce(⨁, body2, {vv: v()}), S1), S2)
-            where × is the cartesian product and ⨂ distributes over ⨁.
+        = reduce(⨁, reduce(⨂, reduce(⨁, body2, {vv: body1}), S1), S2)
+    where × is the cartesian product and ⨂ distributes over ⨁.
 
     Note: This could be generalized to grouped inversion [2].
 
