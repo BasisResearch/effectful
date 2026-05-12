@@ -3,7 +3,7 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
-from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
+from effectful.handlers.jax.monoid import Delta, LogSumExp, Max, Min, Product, Sum
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import define_vars, syntactic_eq_alpha
@@ -79,4 +79,24 @@ def test_reduce_array_3(monoid, reductor):
         axis=0,
     )
 
+    assert syntactic_eq_alpha(lhs, rhs)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_reduce_delta_1(monoid, reductor):
+    (x, y, X, k1, k2) = define_vars("x", "y", "X", "k1", "k2", typ=jax.Array)
+
+    lhs = monoid.reduce(
+        Delta(y(), unbind_dims(a, x) * unbind_dims(b, x, y)), {x: X(), y: Y()}
+    )
+    rhs = monoid.reduce(unbind_dims(a, x) * unbind_dims(b, x, Y()), {x: X()})
+    assert syntactic_eq_alpha(lhs, rhs)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_reduce_delta_3(monoid, reductor):
+    (x, y, X, k1, k2) = define_vars("x", "y", "X", "k1", "k2", typ=jax.Array)
+
+    lhs = monoid.reduce(Delta(((x(), y()), f(x(), y()))), {x: X(), y: jnp.arange(x())})
+    rhs = monoid.reduce(unbind_dims(a, x) * unbind_dims(b, x, Y()), {x: X()})
     assert syntactic_eq_alpha(lhs, rhs)
