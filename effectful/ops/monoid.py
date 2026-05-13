@@ -14,7 +14,6 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
-    _NumberTerm,
     deffn,
     implements,
     iter_,
@@ -27,7 +26,6 @@ from effectful.ops.types import (
     NotHandled,
     Operation,
     Term,
-    _CustomSingleDispatchMethod,
 )
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -61,12 +59,34 @@ def outer_stream(
 
 
 class Monoid[T]:
+    """A monoid with per-instance dispatch tables for ``plus`` and ``reduce``.
+
+    Each instance owns its own :func:`functools.singledispatch` registries.
+    Backends and call sites extend behavior via ``instance.plus.register(type)``
+    and ``instance.reduce.register(type)``. Rewrites that key on the class-level
+    ``Monoid.plus`` / ``Monoid.reduce`` operations still fire, because
+    per-instance operations delegate to them.
+    """
+
     _name: str
     identity: T
 
     def __init__(self, identity: T, name: str):
         self._name = name
         self.identity = identity
+
+        # per-instance dispatch tables
+        self._plus_dispatch = functools.singledispatch(self._plus_default)
+        self._reduce_dispatch = functools.singledispatch(self._reduce_default)
+
+        # expose register/dispatch on the per-instance cached operations
+        plus_op = type(self).plus.__get__(self, type(self))
+        plus_op.register = self._plus_dispatch.register
+        plus_op.dispatch = self._plus_dispatch.dispatch
+
+        reduce_op = type(self).reduce.__get__(self, type(self))
+        reduce_op.register = self._reduce_dispatch.register
+        reduce_op.dispatch = self._reduce_dispatch.dispatch
 
     def __repr__(self):
         return f"Monoid({self._name!r})"
@@ -77,32 +97,20 @@ class Monoid[T]:
     def __hash__(self):
         return hash(id(self))
 
-    @Operation.define
-    @_CustomSingleDispatchMethod
-    def plus[S](self, dispatch, *args: S) -> S:
-        """Monoid addition with broadcasting over common collection types,
-        callables, and interpretations.
-        """
-        if not args:
-            return typing.cast(S, self.identity)
-        return dispatch(type(args[0]))(self, *args)
+    # --- plus default registrations ----------------------------------------
 
-    @plus.register(object)  # type: ignore[attr-defined]
-    def _(self, *args):
+    def _plus_default(self, *args):
         if any(isinstance(x, Term) for x in args):
             raise NotHandled
-        raise TypeError("Unexpected arguments to plus")
+        raise TypeError(f"Unexpected arguments to {self._name}.plus")
 
-    @plus.register(tuple)  # type: ignore[attr-defined]
-    def _(self, *args):
+    def _plus_tuple(self, *args):
         return tuple(self.plus(*vs) for vs in zip(*args, strict=True))
 
-    @plus.register(Generator)  # type: ignore[attr-defined]
-    def _(self, *args):
+    def _plus_generator(self, *args):
         return (self.plus(*vs) for vs in zip(*args, strict=True))
 
-    @plus.register(Mapping)  # type: ignore[attr-defined]
-    def _(self, *args):
+    def _plus_mapping(self, *args):
         if isinstance(args[0], Interpretation):
             keys = args[0].keys()
             for b in args[1:]:
@@ -123,11 +131,8 @@ class Monoid[T]:
                 all_values[k].append(v)
         return {k: self.plus(*vs) for (k, vs) in all_values.items()}
 
-    @Operation.define
-    @functools.singledispatchmethod
-    def reduce[A, B, U: Body](
-        self, body: Annotated[U, Scoped[A | B]], streams: Annotated[Streams, Scoped[A]]
-    ) -> Annotated[U, Scoped[B]]:
+    # --- reduce default registrations --------------------------------------
+    def _reduce_default(self, body, streams):
         if not streams:
             return self.identity
 
@@ -153,21 +158,37 @@ class Monoid[T]:
 
         raise NotHandled
 
-    @reduce.register(Callable)  # type: ignore[attr-defined]
-    def _reduce_callable(self, body: Callable, streams):
+    def _reduce_callable(self, body, streams):
         return lambda *a, **k: self.reduce(body(*a, **k), streams)
 
-    @reduce.register(Mapping)  # type: ignore[attr-defined]
-    def _reduce_mapping(self, body: Mapping, streams):
+    def _reduce_mapping(self, body, streams):
         return {k: self.reduce(v, streams) for (k, v) in body.items()}
 
-    @reduce.register(tuple)  # type: ignore[attr-defined]
-    def _reduce_sequence(self, body: tuple, streams):
-        return tuple(self.reduce(x, streams) for x in body)  # type:ignore[call-arg]
+    def _reduce_sequence(self, body, streams):
+        return type(body)(self.reduce(x, streams) for x in body)
 
-    @reduce.register(Generator)  # type: ignore[attr-defined]
-    def _reduce_generator(self, body: Generator, streams):
+    def _reduce_generator(self, body, streams):
         return (self.reduce(x, streams) for x in body)
+
+    # --- public operations -------------------------------------------------
+
+    @Operation.define
+    def plus[S](self, *args: S) -> S:
+        """Monoid addition with broadcasting over common collection types,
+        callables, and interpretations.
+        """
+        if not args:
+            return typing.cast(S, self.identity)
+        return self._plus_dispatch.dispatch(type(args[0]))(*args)
+
+    @Operation.define
+    def reduce[A, B, U: Body](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Streams, Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        """Reduce ``body`` over ``streams``."""
+        return self._reduce_dispatch.dispatch(type(body))(body, streams)
 
 
 def _is_monoid_plus(op: Operation) -> bool:
@@ -190,84 +211,96 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+def _register_broadcasting(monoid: "Monoid") -> None:
+    """Register elementwise broadcasting over common collection types.
+
+    Standard monoids treat tuples/lists/generators/mappings as containers to
+    broadcast over. Monoids whose values *are* collections (e.g.
+    :data:`CartesianProduct`) opt out.
+    """
+    monoid.plus.register(tuple)(monoid._plus_tuple)
+    monoid.plus.register(Generator)(monoid._plus_generator)
+    monoid.plus.register(Mapping)(monoid._plus_mapping)
+    monoid.reduce.register(Callable)(monoid._reduce_callable)
+    monoid.reduce.register(Mapping)(monoid._reduce_mapping)
+    monoid.reduce.register(tuple)(monoid._reduce_sequence)
+    monoid.reduce.register(list)(monoid._reduce_sequence)
+    monoid.reduce.register(Generator)(monoid._reduce_generator)
+
+
+_cartesian_product_id_op = Operation.define(object, name="CartesianProductId")
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
-CartesianProduct = Monoid(
-    name="CartesianProduct",
-    identity=Operation.define(object, name="CartesianProductId"),
-)
+CartesianProduct = Monoid(name="CartesianProduct", identity=_cartesian_product_id_op())
+
+for _m in (Min, Max, ArgMin, ArgMax, Sum, Product):
+    _register_broadcasting(_m)
 
 
 @Min.plus.register(int | float)
-def _(self, *args):
+def _(*args):
     if any(isinstance(x, Term) for x in args):
         raise NotHandled
-    return min(*args)
+    return min(args)
 
 
 @Max.plus.register(int | float)
-def _(self, *args):
+def _(*args):
     if any(isinstance(x, Term) for x in args):
         raise NotHandled
-    return max(*args)
-
-
-@Min.plus.register(int | float)
-def _(self, *args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
-    return min(*args)
-
-
-@Max.plus.register(int | float)
-def _(self, *args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
-    return max(*args)
+    return max(args)
 
 
 @Sum.plus.register(int | float)
-def _(self, *args):
+def _(*args):
     if any(isinstance(x, Term) for x in args):
         raise NotHandled
-    return sum(*args)
+    return sum(args)
 
 
 @Product.plus.register(int | float)
-def _(self, *args):
+def _(*args):
     if any(isinstance(x, Term) for x in args):
         raise NotHandled
     return functools.reduce(operator.mul, args)
 
 
+# ArgMin / ArgMax: override the default tuple broadcasting with score comparison.
+@ArgMin.plus.register(tuple)
+def _(*args):
+    if any(isinstance(a[0], Term) for a in args):
+        raise NotHandled
+    if not all(isinstance(a[0], int | float) for a in args):
+        raise NotHandled
+    return min(args, key=lambda a: a[0])
+
+
+@ArgMax.plus.register(tuple)
+def _(*args):
+    if any(isinstance(a[0], Term) for a in args):
+        raise NotHandled
+    if not all(isinstance(a[0], int | float) for a in args):
+        raise NotHandled
+    return max(args, key=lambda a: a[0])
+
+
+# CartesianProduct skips ``_register_broadcasting`` because tuples and lists are
+# CP values, not containers to broadcast over. Its plus is registered against
+# Iterable; its reduce falls through to the default ground-stream rule.
 @CartesianProduct.plus.register(Iterable)
-def _(self, *args):
+def _(*args):
     if any(isinstance(x, Term) for x in args):
         raise NotHandled
 
     def to_tuple(x):
         return x if isinstance(x, tuple) else (x,)
 
-    return [sum(to_tuple(x) for x in vals) for vals in itertools.product(*args)]
-
-
-@dataclass
-class _ExtensiblePredicate[T]:
-    elems: set[T]
-
-    def register(self, t: T) -> None:
-        self.elems.add(t)
-
-    def __call__(self, t: T) -> bool:
-        return t in self.elems
-
-
-is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product})
-is_idempotent = _ExtensiblePredicate({Max, Min})
+    return [sum((to_tuple(v) for v in vals), ()) for vals in itertools.product(*args)]
 
 
 @dataclass
@@ -299,98 +332,6 @@ class _ExtensibleBinaryRelation[S, T]:
 distributes_over = _ExtensibleBinaryRelation(
     {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
 )
-
-
-class SumKernel(ObjectInterpretation):
-    @implements(Sum.identity)
-    def identity(self):
-        return 0
-
-    @implements(Sum.kernel)
-    def kernel(self, x, y):
-        return x + y
-
-
-class ProductKernel(ObjectInterpretation):
-    @implements(Product.identity)
-    def identity(self):
-        return 1
-
-    @implements(Product.zero)
-    def zero(self):
-        return 0
-
-    @implements(Product.kernel)
-    def kernel(self, x, y):
-        return x * y
-
-
-class MinKernel(ObjectInterpretation):
-    @implements(Min.identity)
-    def identity(self):
-        return float("inf")
-
-    @implements(Min.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, int | float) and isinstance(y, int | float):
-            return min(x, y)
-        return fwd()
-
-
-class MaxKernel(ObjectInterpretation):
-    @implements(Min.identity)
-    def identity(self):
-        return -float("inf")
-
-    @implements(Min.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, int | float) and isinstance(y, int | float):
-            return max(x, y)
-        return fwd()
-
-
-class ArgMinKernel(ObjectInterpretation):
-    @implements(ArgMin.identity)
-    def identity(self):
-        return (float("inf"), None)
-
-    @implements(ArgMin.kernel)
-    def kernel(self, a, b):
-        if isinstance(a[0], Term) or isinstance(b[0], Term):
-            return fwd()
-        if isinstance(a[0], int | float) and isinstance(b[0], int | float):
-            return b if b[0] < a[0] else a
-        return fwd()
-
-
-class ArgMaxKernel(ObjectInterpretation):
-    @implements(ArgMax.identity)
-    def identity(self):
-        return (-float("inf"), None)
-
-    @implements(ArgMax.kernel)
-    def kernel(self, a, b):
-        if isinstance(a[0], Term) or isinstance(b[0], Term):
-            return fwd()
-        if isinstance(a[0], int | float) and isinstance(b[0], int | float):
-            return b if b[0] < a[0] else a
-        return fwd()
-
-
-class CartesianProductKernel(ObjectInterpretation):
-    @implements(CartesianProduct.kernel)
-    def kernel(self, a, b):
-        if isinstance(a, Term) or isinstance(b, Term):
-            raise NotHandled
-
-        if isinstance(a, Iterable) and isinstance(b, Iterable):
-
-            def to_tuple(x):
-                return x if isinstance(x, tuple) else (x,)
-
-            return [to_tuple(x) + to_tuple(y) for (x, y) in itertools.product(a, b)]
-
-        return fwd()
 
 
 class PlusEmpty(ObjectInterpretation):

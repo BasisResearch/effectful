@@ -1,3 +1,5 @@
+import functools
+
 import jax
 
 import effectful.handlers.jax.numpy as jnp
@@ -13,9 +15,9 @@ from effectful.ops.monoid import (
     Sum,
     outer_stream,
 )
-from effectful.ops.semantics import evaluate, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Operation
+from effectful.ops.semantics import evaluate, handler, typeof
+from effectful.ops.syntax import deffn
+from effectful.ops.types import NotHandled, Operation
 
 
 def cartesian_prod(x, y):
@@ -27,43 +29,37 @@ def cartesian_prod(x, y):
     return jnp.hstack([x, y])
 
 
-LogSumExp = Monoid("LogSumExp")
+LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 
 
-class MinKernelJax(ObjectInterpretation):
-    @implements(Min.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, jax.Array) and isinstance(y, jax.Array):
-            return jnp.minimum(x, y)
-        return fwd()
+@Sum.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(jnp.add, args)
 
 
-class MaxKernelJax(ObjectInterpretation):
-    @implements(Max.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, jax.Array) and isinstance(y, jax.Array):
-            return jnp.maximum(x, y)
-        return fwd()
+@Product.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(jnp.multiply, args)
 
 
-class CartesianProductKernelJax(ObjectInterpretation):
-    @implements(CartesianProduct.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, jax.Array) and isinstance(y, jax.Array):
-            return cartesian_prod(x, y)
-        return fwd()
+@Min.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(jnp.minimum, args)
 
 
-class LogSumExpKernelJax(ObjectInterpretation):
-    @implements(LogSumExp.identity)
-    def identity(self):
-        return float("-inf")
+@Max.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(jnp.maximum, args)
 
-    @implements(LogSumExp.kernel)
-    def kernel(self, x, y):
-        if isinstance(x, jax.Array) and isinstance(y, jax.Array):
-            return jnp.logaddexp(x, y)
-        return fwd()
+
+@LogSumExp.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(jnp.logaddexp, args)
+
+
+@CartesianProduct.plus.register(jax.Array)
+def _(*args):
+    return functools.reduce(cartesian_prod, args)
 
 
 ARRAY_REDUCE = {
@@ -75,28 +71,37 @@ ARRAY_REDUCE = {
 }
 
 
-@Monoid.reduce.register(jax.Array)
-def _reduce_array(self, body: jax.Array, streams: Streams):
-    reductor = ARRAY_REDUCE[self.plus]
-    index = Operation.define(jax.Array)
+def _reduce_array_for(monoid: Monoid):
+    def _reduce_array(body: jax.Array, streams: Streams):
+        reductor = ARRAY_REDUCE[monoid.plus]
+        index = Operation.define(jax.Array)
 
-    if not streams:
-        return self.identity
+        if not streams:
+            return monoid.identity
 
-    # find and reduce an array stream
-    for stream_key, stream_body, streams_tail in outer_stream(streams):
-        if typeof(stream_body) != jax.Array:
-            continue
+        # find and reduce an array stream
+        for stream_key, stream_body, streams_tail in outer_stream(streams):
+            if typeof(stream_body) != jax.Array:
+                continue
 
-        with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
-            (eval_body, eval_streams_tail) = evaluate(body), evaluate(streams_tail)
-            assert isinstance(eval_streams_tail, dict)
+            with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
+                (eval_body, eval_streams_tail) = (
+                    evaluate(body),
+                    evaluate(streams_tail),
+                )
+                assert isinstance(eval_streams_tail, dict)
 
-            reduce_tail = (
-                self.reduce(eval_body, eval_streams_tail)
-                if len(eval_streams_tail) > 0
-                else eval_body
-            )
-            return reductor(bind_dims(reduce_tail, index), axis=0)
+                reduce_tail = (
+                    monoid.reduce(eval_body, eval_streams_tail)
+                    if len(eval_streams_tail) > 0
+                    else eval_body
+                )
+                return reductor(bind_dims(reduce_tail, index), axis=0)
 
-    return self._reduce_object(body, streams)
+        raise NotHandled
+
+    return _reduce_array
+
+
+for _m in (Sum, Product, Min, Max, LogSumExp):
+    _m.reduce.register(jax.Array)(_reduce_array_for(_m))
