@@ -10,7 +10,7 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -104,11 +104,15 @@ class Monoid[T]:
             raise NotHandled
         raise TypeError(f"Unexpected arguments to {self._name}.plus")
 
-    def _plus_tuple(self, *args):
-        return tuple(self.plus(*vs) for vs in zip(*args, strict=True))
-
-    def _plus_generator(self, *args):
-        return (self.plus(*vs) for vs in zip(*args, strict=True))
+    def _plus_iterable(self, *args):
+        """Broadcast plus elementwise over an iterable, preserving input type
+        for tuples and lists; generators stay generators.
+        """
+        zipped = zip(*args, strict=True)
+        result = (self.plus(*vs) for vs in zipped)
+        if isinstance(args[0], tuple | list):
+            return type(args[0])(result)
+        return result
 
     def _plus_mapping(self, *args):
         if isinstance(args[0], Interpretation):
@@ -164,11 +168,14 @@ class Monoid[T]:
     def _reduce_mapping(self, body, streams):
         return {k: self.reduce(v, streams) for (k, v) in body.items()}
 
-    def _reduce_sequence(self, body, streams):
-        return type(body)(self.reduce(x, streams) for x in body)
-
-    def _reduce_generator(self, body, streams):
-        return (self.reduce(x, streams) for x in body)
+    def _reduce_iterable(self, body, streams):
+        """Broadcast reduce elementwise over an iterable, preserving input type
+        for tuples and lists; generators stay generators.
+        """
+        result = (self.reduce(x, streams) for x in body)
+        if isinstance(body, tuple | list):
+            return type(body)(result)
+        return result
 
     # --- public operations -------------------------------------------------
 
@@ -188,19 +195,7 @@ class Monoid[T]:
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
         """Reduce ``body`` over ``streams``."""
-        return self._reduce_dispatch.dispatch(type(body))(body, streams)
-
-
-def _is_monoid_plus(op: Operation) -> bool:
-    """True if ``op`` is the ``plus`` operation of some :class:`Monoid`."""
-    owner = getattr(op, "__self__", None)
-    return isinstance(owner, Monoid) and op is owner.plus
-
-
-def _is_monoid_reduce(op: Operation) -> bool:
-    """True if ``op`` is the ``reduce`` operation of some :class:`Monoid`."""
-    owner = getattr(op, "__self__", None)
-    return isinstance(owner, Monoid) and op is owner.reduce
+        return self._reduce_dispatch.dispatch(typeof(body))(body, streams)
 
 
 class MonoidWithZero[T](Monoid[T]):
@@ -211,21 +206,36 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
-def _register_broadcasting(monoid: "Monoid") -> None:
-    """Register elementwise broadcasting over common collection types.
+def _register_sequence_broadcasting(monoid: "Monoid") -> None:
+    """Register elementwise broadcasting over tuples, lists, and generators.
 
-    Standard monoids treat tuples/lists/generators/mappings as containers to
-    broadcast over. Monoids whose values *are* collections (e.g.
-    :data:`CartesianProduct`) opt out.
+    Appropriate when the monoid's values are scalars and these collections are
+    containers to broadcast over. Skipped by monoids whose values *are*
+    sequences (e.g. :data:`CartesianProduct`) or whose tuples carry meaning
+    other than "container" (e.g. :data:`ArgMin` / :data:`ArgMax`, where a
+    tuple is a (score, value) pair).
     """
-    monoid.plus.register(tuple)(monoid._plus_tuple)
-    monoid.plus.register(Generator)(monoid._plus_generator)
+    monoid.plus.register(tuple | list | Generator)(monoid._plus_iterable)
+    monoid.reduce.register(tuple | list | Generator)(monoid._reduce_iterable)
+
+
+def _register_mapping_broadcasting(monoid: "Monoid") -> None:
+    """Register broadcasting over dict-like containers and interpretations.
+
+    Safe for any monoid: mappings carry one value per key, and broadcasting
+    merges per-key values via the monoid.
+    """
     monoid.plus.register(Mapping)(monoid._plus_mapping)
-    monoid.reduce.register(Callable)(monoid._reduce_callable)
     monoid.reduce.register(Mapping)(monoid._reduce_mapping)
-    monoid.reduce.register(tuple)(monoid._reduce_sequence)
-    monoid.reduce.register(list)(monoid._reduce_sequence)
-    monoid.reduce.register(Generator)(monoid._reduce_generator)
+
+
+def _register_callable_broadcasting(monoid: "Monoid") -> None:
+    """Register lifting of :meth:`reduce` under callables.
+
+    ``monoid.reduce(f, streams)`` becomes ``lambda *a: monoid.reduce(f(*a),
+    streams)``. Safe for any monoid.
+    """
+    monoid.reduce.register(Callable)(monoid._reduce_callable)
 
 
 _cartesian_product_id_op = Operation.define(object, name="CartesianProductId")
@@ -238,8 +248,14 @@ Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
 CartesianProduct = Monoid(name="CartesianProduct", identity=_cartesian_product_id_op())
 
-for _m in (Min, Max, ArgMin, ArgMax, Sum, Product):
-    _register_broadcasting(_m)
+# Scalar-valued monoids: tuples/lists/generators are containers to broadcast over.
+for _m in (Min, Max, Sum, Product):
+    _register_sequence_broadcasting(_m)
+
+# Mapping and callable broadcasting are safe for every monoid.
+for _m in (Min, Max, ArgMin, ArgMax, Sum, Product, CartesianProduct):
+    _register_mapping_broadcasting(_m)
+    _register_callable_broadcasting(_m)
 
 
 @Min.plus.register(int | float)
@@ -270,7 +286,7 @@ def _(*args):
     return functools.reduce(operator.mul, args)
 
 
-# ArgMin / ArgMax: override the default tuple broadcasting with score comparison.
+# ArgMin / ArgMax: tuples are (score, value) pairs; plus compares by score.
 @ArgMin.plus.register(tuple)
 def _(*args):
     if any(isinstance(a[0], Term) for a in args):
@@ -332,6 +348,18 @@ class _ExtensibleBinaryRelation[S, T]:
 distributes_over = _ExtensibleBinaryRelation(
     {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
 )
+
+
+def _is_monoid_plus(op: Operation) -> bool:
+    """True if ``op`` is the ``plus`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.plus
+
+
+def _is_monoid_reduce(op: Operation) -> bool:
+    """True if ``op`` is the ``reduce`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.reduce
 
 
 class PlusEmpty(ObjectInterpretation):
