@@ -88,10 +88,6 @@ class Monoid[T]:
         """Monoid addition. Handlers supply per-monoid and broadcasting
         behavior; the default rule only handles empty / Term cases.
         """
-        if not args:
-            return typing.cast(S, self.identity)
-        if any(isinstance(x, Term) for x in args):
-            raise NotHandled
         raise NotHandled
 
     @Operation.define
@@ -115,7 +111,9 @@ class Monoid[T]:
                 with handler({stream_key: deffn(stream_val)}):
                     eval_args = evaluate((body, streams_tail))
                     assert isinstance(eval_args, tuple)
-                    new_reduces.append(self.reduce(*eval_args))
+                    new_reduces.append(
+                        self.reduce(*eval_args) if streams_tail else eval_args[0]
+                    )
             return self.plus(*new_reduces)
         raise NotHandled
 
@@ -404,8 +402,6 @@ class ReduceFactorization(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        import sys
-        print(f"RF CALLED monoid={monoid} body={body} streams={streams}", file=sys.stderr)
         if not is_commutative(monoid):
             return fwd()
         if (
@@ -785,6 +781,9 @@ EvaluateIntp = functools.reduce(
     typing.cast(
         list[Interpretation],
         [
+            # tuple/list/Generator broadcasting, only for monoids whose values
+            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
+            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
             # universal broadcasting
             PlusOverMapping(),
             ReduceOverCallable(),
@@ -797,9 +796,6 @@ EvaluateIntp = functools.reduce(
             ArgMinKernel(),
             ArgMaxKernel(),
             CartesianProductKernel(),
-            # tuple/list/Generator broadcasting, only for monoids whose values
-            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
-            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
         ],
     ),
 )
@@ -809,7 +805,7 @@ plus/reduce on concrete (non-Term) values without applying any rewrites.
 
 
 NormalizeIntp = coproduct(
-    coproduct(NormalizePlusIntp, NormalizeReduceIntp), EvaluateIntp
+    coproduct(EvaluateIntp, NormalizeReduceIntp), NormalizePlusIntp
 )
 """Rewrites *plus* evaluation. ``NormalizeIntp`` is a superset of
 :data:`EvaluateIntp`: it applies pure-Term rewrites (associativity,

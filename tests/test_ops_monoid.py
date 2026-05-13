@@ -32,6 +32,7 @@ def _install_normalize_intp():
     with handler(NormalizeIntp):
         yield
 
+
 _INT = st.integers(min_value=-100, max_value=100)
 
 ALL_MONOIDS = [
