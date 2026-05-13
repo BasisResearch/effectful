@@ -1015,10 +1015,6 @@ def _(value: collections.abc.Mapping):
         ktyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.keys()]
         )
-        if ktyp is str:
-            # str-keyed multi-entry dicts → always TypedDict
-            fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
