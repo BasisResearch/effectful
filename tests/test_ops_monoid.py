@@ -6,7 +6,6 @@ from hypothesis import strategies as st
 
 from effectful.ops.monoid import (
     CartesianProduct,
-    EvaluateIntp,
     Max,
     Min,
     Monoid,
@@ -16,7 +15,7 @@ from effectful.ops.monoid import (
     distributes_over,
     is_commutative,
 )
-from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import define_vars, random_interpretation, syntactic_eq_alpha
 

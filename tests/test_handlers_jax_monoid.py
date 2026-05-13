@@ -24,6 +24,7 @@ def _install_evaluate():
     with handler(coproduct(EvaluateIntp, JaxEvaluateIntp)):
         yield
 
+
 MONOIDS = [
     pytest.param(Sum, jnp.sum, id="Sum"),
     pytest.param(Product, jnp.prod, id="Product"),

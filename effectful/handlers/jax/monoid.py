@@ -12,13 +12,12 @@ from effectful.ops.monoid import (
     Min,
     Monoid,
     Product,
-    Streams,
     Sum,
     outer_stream,
 )
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import Interpretation, Operation, Term
 
 
 def cartesian_prod(x, y):

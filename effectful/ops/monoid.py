@@ -10,7 +10,7 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -20,13 +20,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
     syntactic_hash,
 )
-from effectful.ops.types import (
-    Expr,
-    Interpretation,
-    NotHandled,
-    Operation,
-    Term,
-)
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 # Note: The streams value type should be something like Iterable[T], but some of
 # our target stream types (e.g. jax.Array) are not subtypes of Iterable
