@@ -240,15 +240,18 @@ def _register_callable_broadcasting(monoid: "Monoid") -> None:
     monoid.reduce.register(Callable)(monoid._reduce_callable)
 
 
-_cartesian_product_id_op = Operation.define(object, name="CartesianProductId")
-
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
-CartesianProduct = Monoid(name="CartesianProduct", identity=_cartesian_product_id_op())
+# CartesianProduct values are "two-level indexable" (rows × positions). The
+# identity ``[()]`` is one row of zero positions (composing with it preserves
+# shape); the zero ``[]`` is no rows (absorbs under product).
+CartesianProduct = MonoidWithZero(
+    name="CartesianProduct", identity=[()], zero=[]
+)
 
 # Scalar-valued monoids: tuples/lists/generators are containers to broadcast over.
 for _m in (Min, Max, Sum, Product):

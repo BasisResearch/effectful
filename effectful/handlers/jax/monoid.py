@@ -61,7 +61,17 @@ def _(*args):
 
 @CartesianProduct.plus.register(jax.Array)
 def _(*args):
-    return functools.reduce(cartesian_prod, args)
+    # Skip identity ``[()]`` args; short-circuit on zero ``[]``. Both sentinels
+    # arrive as Python lists alongside jax-array factors, so check for them
+    # explicitly before composing under :func:`cartesian_prod`.
+    result = None
+    for a in args:
+        if a is CartesianProduct.zero:
+            return CartesianProduct.zero
+        if a is CartesianProduct.identity:
+            continue
+        result = a if result is None else cartesian_prod(result, a)
+    return result if result is not None else CartesianProduct.identity
 
 
 # Chain a JAX-typed case onto the tuple plus handler: handle (jax.Array,
