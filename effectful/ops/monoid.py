@@ -59,13 +59,12 @@ def outer_stream(
 
 
 class Monoid[T]:
-    """A monoid with per-instance dispatch tables for ``plus`` and ``reduce``.
+    """A monoid with ``plus`` and ``reduce`` :class:`Operation` s.
 
-    Each instance owns its own :func:`functools.singledispatch` registries.
-    Backends and call sites extend behavior via ``instance.plus.register(type)``
-    and ``instance.reduce.register(type)``. Rewrites that key on the class-level
-    ``Monoid.plus`` / ``Monoid.reduce`` operations still fire, because
-    per-instance operations delegate to them.
+    Behavior is supplied by handlers installed via an interpretation
+    (see :data:`NormalizeIntp`). The default rules handle only the trivial
+    cases (empty plus, empty streams, Term args) — everything else stays
+    symbolic until a handler interprets it.
     """
 
     _name: str
@@ -74,19 +73,6 @@ class Monoid[T]:
     def __init__(self, identity: T, name: str):
         self._name = name
         self.identity = identity
-
-        # per-instance dispatch tables
-        self._plus_dispatch = functools.singledispatch(self._plus_default)
-        self._reduce_dispatch = functools.singledispatch(self._reduce_default)
-
-        # expose register/dispatch on the per-instance cached operations
-        plus_op = type(self).plus.__get__(self, type(self))
-        plus_op.register = self._plus_dispatch.register
-        plus_op.dispatch = self._plus_dispatch.dispatch
-
-        reduce_op = type(self).reduce.__get__(self, type(self))
-        reduce_op.register = self._reduce_dispatch.register
-        reduce_op.dispatch = self._reduce_dispatch.dispatch
 
     def __repr__(self):
         return f"Monoid({self._name!r})"
@@ -97,98 +83,16 @@ class Monoid[T]:
     def __hash__(self):
         return hash(id(self))
 
-    def _plus_default(self, *args):
-        raise TypeError(f"Unexpected arguments to {self._name}.plus")
-
-    def _plus_iterable(self, *args):
-        """Broadcast plus elementwise over an iterable, preserving input type
-        for tuples and lists; generators stay generators.
-        """
-        zipped = zip(*args, strict=True)
-        result = (self.plus(*vs) for vs in zipped)
-        if isinstance(args[0], tuple | list):
-            return type(args[0])(result)
-        return result
-
-    def _plus_mapping(self, *args):
-        if isinstance(args[0], Interpretation):
-            keys = args[0].keys()
-            for b in args[1:]:
-                if not isinstance(b, Interpretation):
-                    raise TypeError(f"Expected interpretation but got {b}")
-                if not keys == b.keys():
-                    raise ValueError(
-                        f"Expected interpretation of {keys} but got {b.keys()}"
-                    )
-            return {k: self.plus(*(handler(b)(b[k]) for b in args)) for k in keys}
-
-        for b in args[1:]:
-            if not isinstance(b, Mapping):
-                raise TypeError(f"Expected mapping but got {b}")
-        all_values = collections.defaultdict(list)
-        for d in args:
-            for k, v in d.items():
-                all_values[k].append(v)
-        return {k: self.plus(*vs) for (k, vs) in all_values.items()}
-
-    def _reduce_default(self, body, streams):
-        if not streams:
-            return self.identity
-
-        # find and reduce a ground stream
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if isinstance(stream_body, Term):
-                continue
-
-            stream_values_iter = iter(stream_body)
-
-            # if we iterate and get a term instead of a real iterator, skip
-            if isinstance(stream_values_iter, Term) and stream_values_iter.op is iter_:
-                continue
-
-            new_reduces = []
-            for stream_val in stream_values_iter:
-                with handler({stream_key: deffn(stream_val)}):
-                    eval_args = evaluate((body, streams_tail))
-                    assert isinstance(eval_args, tuple)
-                    new_reduces.append(self.reduce(*eval_args))
-
-            return self.plus(*new_reduces)
-
-        raise NotHandled
-
-    def _reduce_callable(self, body, streams):
-        return lambda *a, **k: self.reduce(body(*a, **k), streams)
-
-    def _reduce_mapping(self, body, streams):
-        return {k: self.reduce(v, streams) for (k, v) in body.items()}
-
-    def _reduce_iterable(self, body, streams):
-        """Broadcast reduce elementwise over an iterable, preserving input type
-        for tuples and lists; generators stay generators.
-        """
-        result = (self.reduce(x, streams) for x in body)
-        if isinstance(body, tuple | list):
-            return type(body)(result)
-        return result
-
-    # --- public operations -------------------------------------------------
-
     @Operation.define
     def plus[S](self, *args: S) -> S:
-        """Monoid addition with broadcasting over common collection types,
-        callables, and interpretations.
-
-        Any :class:`Term` arg routes to symbolic evaluation. Registered
-        handlers can therefore assume their args are concrete values.
-        Composite handlers (tuple/list, Mapping) recurse through
-        :meth:`plus` so interior Terms are caught at the next call.
+        """Monoid addition. Handlers supply per-monoid and broadcasting
+        behavior; the default rule only handles empty / Term cases.
         """
         if not args:
             return typing.cast(S, self.identity)
         if any(isinstance(x, Term) for x in args):
             raise NotHandled
-        return self._plus_dispatch.dispatch(type(args[0]))(*args)
+        raise NotHandled
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -196,8 +100,24 @@ class Monoid[T]:
         body: Annotated[U, Scoped[A | B]],
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
-        """Reduce ``body`` over ``streams``."""
-        return self._reduce_dispatch.dispatch(typeof(body))(body, streams)
+        """Reduce ``body`` over ``streams``. Handlers supply per-monoid and
+        broadcasting behavior; the default rule only handles the empty-stream
+        case.
+        """
+        for stream_key, stream_body, streams_tail in outer_stream(streams):
+            if isinstance(stream_body, Term):
+                continue
+            stream_values_iter = iter(stream_body)
+            if isinstance(stream_values_iter, Term) and stream_values_iter.op is iter_:
+                continue
+            new_reduces = []
+            for stream_val in stream_values_iter:
+                with handler({stream_key: deffn(stream_val)}):
+                    eval_args = evaluate((body, streams_tail))
+                    assert isinstance(eval_args, tuple)
+                    new_reduces.append(self.reduce(*eval_args))
+            return self.plus(*new_reduces)
+        raise NotHandled
 
 
 class MonoidWithZero[T](Monoid[T]):
@@ -206,38 +126,6 @@ class MonoidWithZero[T](Monoid[T]):
     def __init__(self, name: str, identity: T, zero: T):
         super().__init__(name=name, identity=identity)
         self.zero = zero
-
-
-def _register_sequence_broadcasting(monoid: "Monoid") -> None:
-    """Register elementwise broadcasting over tuples, lists, and generators.
-
-    Appropriate when the monoid's values are scalars and these collections are
-    containers to broadcast over. Skipped by monoids whose values *are*
-    sequences (e.g. :data:`CartesianProduct`) or whose tuples carry meaning
-    other than "container" (e.g. :data:`ArgMin` / :data:`ArgMax`, where a
-    tuple is a (score, value) pair).
-    """
-    monoid.plus.register(tuple | list | Generator)(monoid._plus_iterable)
-    monoid.reduce.register(tuple | list | Generator)(monoid._reduce_iterable)
-
-
-def _register_mapping_broadcasting(monoid: "Monoid") -> None:
-    """Register broadcasting over dict-like containers and interpretations.
-
-    Safe for any monoid: mappings carry one value per key, and broadcasting
-    merges per-key values via the monoid.
-    """
-    monoid.plus.register(Mapping)(monoid._plus_mapping)
-    monoid.reduce.register(Mapping)(monoid._reduce_mapping)
-
-
-def _register_callable_broadcasting(monoid: "Monoid") -> None:
-    """Register lifting of :meth:`reduce` under callables.
-
-    ``monoid.reduce(f, streams)`` becomes ``lambda *a: monoid.reduce(f(*a),
-    streams)``. Safe for any monoid.
-    """
-    monoid.reduce.register(Callable)(monoid._reduce_callable)
 
 
 Min = Monoid(name="Min", identity=float("inf"))
@@ -249,60 +137,7 @@ Product = MonoidWithZero(name="Product", identity=1, zero=0)
 # CartesianProduct values are "two-level indexable" (rows × positions). The
 # identity ``[()]`` is one row of zero positions (composing with it preserves
 # shape); the zero ``[]`` is no rows (absorbs under product).
-CartesianProduct = MonoidWithZero(
-    name="CartesianProduct", identity=[()], zero=[]
-)
-
-# Scalar-valued monoids: tuples/lists/generators are containers to broadcast over.
-for _m in (Min, Max, Sum, Product):
-    _register_sequence_broadcasting(_m)
-
-# Mapping and callable broadcasting are safe for every monoid.
-for _m in (Min, Max, ArgMin, ArgMax, Sum, Product, CartesianProduct):
-    _register_mapping_broadcasting(_m)
-    _register_callable_broadcasting(_m)
-
-
-@Min.plus.register(int | float)
-def _(*args):
-    return min(args)
-
-
-@Max.plus.register(int | float)
-def _(*args):
-    return max(args)
-
-
-@Sum.plus.register(int | float)
-def _(*args):
-    return sum(args)
-
-
-@Product.plus.register(int | float)
-def _(*args):
-    return functools.reduce(operator.mul, args)
-
-
-@ArgMin.plus.register(tuple)
-def _(*args):
-    if not all(isinstance(a[0], int | float) for a in args):
-        raise NotHandled
-    return min(args, key=lambda a: a[0])
-
-
-@ArgMax.plus.register(tuple)
-def _(*args):
-    if not all(isinstance(a[0], int | float) for a in args):
-        raise NotHandled
-    return max(args, key=lambda a: a[0])
-
-
-@CartesianProduct.plus.register(Iterable)
-def _(*args):
-    def to_tuple(x):
-        return x if isinstance(x, tuple) else (x,)
-
-    return [sum((to_tuple(v) for v in vals), ()) for vals in itertools.product(*args)]
+CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[()], zero=[])
 
 
 @dataclass
@@ -569,6 +404,8 @@ class ReduceFactorization(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        import sys
+        print(f"RF CALLED monoid={monoid} body={body} streams={streams}", file=sys.stderr)
         if not is_commutative(monoid):
             return fwd()
         if (
@@ -748,6 +585,186 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         return fwd()
 
 
+class ReduceOverCallable(ObjectInterpretation):
+    """``monoid.reduce(f, streams) = lambda *a: monoid.reduce(f(*a), streams)``."""
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if isinstance(body, Term) or not isinstance(body, Callable):
+            return fwd()
+        return lambda *a, **k: monoid.reduce(body(*a, **k), streams)
+
+
+class ReduceOverMapping(ObjectInterpretation):
+    """``monoid.reduce({k: v_k}, streams) = {k: monoid.reduce(v_k, streams)}``."""
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if isinstance(body, Term) or not isinstance(body, Mapping):
+            return fwd()
+        return {k: monoid.reduce(v, streams) for (k, v) in body.items()}
+
+
+class PlusOverMapping(ObjectInterpretation):
+    """Broadcast ``plus`` over dict-like containers and interpretations."""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not args or not isinstance(args[0], Mapping):
+            return fwd()
+
+        if isinstance(args[0], Interpretation):
+            keys = args[0].keys()
+            for b in args[1:]:
+                if not isinstance(b, Interpretation):
+                    raise TypeError(f"Expected interpretation but got {b}")
+                if not keys == b.keys():
+                    raise ValueError(
+                        f"Expected interpretation of {keys} but got {b.keys()}"
+                    )
+            return {k: monoid.plus(*(handler(b)(b[k]) for b in args)) for k in keys}
+
+        for b in args[1:]:
+            if not isinstance(b, Mapping):
+                raise TypeError(f"Expected mapping but got {b}")
+        all_values = collections.defaultdict(list)
+        for d in args:
+            for k, v in d.items():
+                all_values[k].append(v)
+        return {k: monoid.plus(*vs) for (k, vs) in all_values.items()}
+
+
+def _scalar_args(args):
+    """True iff ``args`` is non-empty and every arg is a concrete int/float."""
+    return (
+        bool(args)
+        and not any(isinstance(x, Term) for x in args)
+        and all(isinstance(x, int | float) for x in args)
+    )
+
+
+class SumKernel(ObjectInterpretation):
+    """Scalar implementation of :data:`Sum`."""
+
+    @implements(Sum.plus)
+    def plus(self, *args):
+        if not _scalar_args(args):
+            return fwd()
+        return sum(args)
+
+
+class MinKernel(ObjectInterpretation):
+    """Scalar implementation of :data:`Min`."""
+
+    @implements(Min.plus)
+    def plus(self, *args):
+        if not _scalar_args(args):
+            return fwd()
+        return min(args)
+
+
+class MaxKernel(ObjectInterpretation):
+    """Scalar implementation of :data:`Max`."""
+
+    @implements(Max.plus)
+    def plus(self, *args):
+        if not _scalar_args(args):
+            return fwd()
+        return max(args)
+
+
+class ProductKernel(ObjectInterpretation):
+    """Scalar implementation of :data:`Product`."""
+
+    @implements(Product.plus)
+    def plus(self, *args):
+        if not _scalar_args(args):
+            return fwd()
+        return functools.reduce(operator.mul, args)
+
+
+class ArgMinKernel(ObjectInterpretation):
+    """Scalar score implementation of :data:`ArgMin`."""
+
+    @implements(ArgMin.plus)
+    def plus(self, *args):
+        if not args or not all(isinstance(a, tuple) for a in args):
+            return fwd()
+        if any(isinstance(a[0], Term) for a in args):
+            return fwd()
+        if not all(isinstance(a[0], int | float) for a in args):
+            return fwd()
+        return min(args, key=lambda a: a[0])
+
+
+class ArgMaxKernel(ObjectInterpretation):
+    """Scalar score implementation of :data:`ArgMax`."""
+
+    @implements(ArgMax.plus)
+    def plus(self, *args):
+        if not args or not all(isinstance(a, tuple) for a in args):
+            return fwd()
+        if any(isinstance(a[0], Term) for a in args):
+            return fwd()
+        if not all(isinstance(a[0], int | float) for a in args):
+            return fwd()
+        return max(args, key=lambda a: a[0])
+
+
+class CartesianProductKernel(ObjectInterpretation):
+    """Pure-Python implementation of :data:`CartesianProduct`."""
+
+    @implements(CartesianProduct.plus)
+    def plus(self, *args):
+        if not args:
+            return fwd()
+        if any(isinstance(x, Term) for x in args):
+            return fwd()
+        if not all(isinstance(x, Iterable) for x in args):
+            return fwd()
+
+        def to_tuple(x):
+            return x if isinstance(x, tuple) else (x,)
+
+        return [
+            sum((to_tuple(v) for v in vals), ()) for vals in itertools.product(*args)
+        ]
+
+
+def sequence_broadcasting(monoid: "Monoid") -> ObjectInterpretation:
+    """Return an :class:`ObjectInterpretation` that broadcasts ``monoid.plus``
+    and ``monoid.reduce`` elementwise over tuples, lists, and generators.
+
+    Tuples and lists are reconstructed as their input type; generators stay
+    generators. Appropriate for monoids whose values are scalars; *not* for
+    monoids whose values *are* sequences (:data:`CartesianProduct`) or whose
+    tuples carry meaning (:data:`ArgMin` / :data:`ArgMax`).
+    """
+
+    class _SequenceBroadcasting(ObjectInterpretation):
+        @implements(monoid.plus)
+        def plus(self, *args):
+            if not args or not isinstance(args[0], tuple | list | Generator):
+                return fwd()
+            zipped = zip(*args, strict=True)
+            result = (monoid.plus(*vs) for vs in zipped)
+            if isinstance(args[0], tuple | list):
+                return type(args[0])(result)
+            return result
+
+        @implements(monoid.reduce)
+        def reduce(self, body, streams):
+            if not isinstance(body, tuple | list | Generator):
+                return fwd()
+            result = (monoid.reduce(x, streams) for x in body)
+            if isinstance(body, tuple | list):
+                return type(body)(result)
+            return result
+
+    _SequenceBroadcasting.__name__ = f"{monoid._name}SequenceBroadcasting"
+    return _SequenceBroadcasting()
+
+
 NormalizeReduceIntp = functools.reduce(
     coproduct,
     typing.cast(
@@ -762,4 +779,40 @@ NormalizeReduceIntp = functools.reduce(
     ),
 )
 
-NormalizeIntp = coproduct(NormalizePlusIntp, NormalizeReduceIntp)
+
+EvaluateIntp = functools.reduce(
+    coproduct,
+    typing.cast(
+        list[Interpretation],
+        [
+            # universal broadcasting
+            PlusOverMapping(),
+            ReduceOverCallable(),
+            ReduceOverMapping(),
+            # per-monoid concrete kernels
+            SumKernel(),
+            MinKernel(),
+            MaxKernel(),
+            ProductKernel(),
+            ArgMinKernel(),
+            ArgMaxKernel(),
+            CartesianProductKernel(),
+            # tuple/list/Generator broadcasting, only for monoids whose values
+            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
+            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
+        ],
+    ),
+)
+"""Concrete-value kernels and universal broadcasting. Install to evaluate
+plus/reduce on concrete (non-Term) values without applying any rewrites.
+"""
+
+
+NormalizeIntp = coproduct(
+    coproduct(NormalizePlusIntp, NormalizeReduceIntp), EvaluateIntp
+)
+"""Rewrites *plus* evaluation. ``NormalizeIntp`` is a superset of
+:data:`EvaluateIntp`: it applies pure-Term rewrites (associativity,
+distributivity, identity elimination, fusion, factorization, etc.) and also
+evaluates concrete arguments through the kernels.
+"""

@@ -1,4 +1,5 @@
 import functools
+import typing
 
 import jax
 
@@ -6,8 +7,6 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
-    ArgMax,
-    ArgMin,
     CartesianProduct,
     Max,
     Min,
@@ -17,9 +16,9 @@ from effectful.ops.monoid import (
     Sum,
     outer_stream,
 )
-from effectful.ops.semantics import evaluate, handler, typeof
-from effectful.ops.syntax import deffn
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.semantics import coproduct, evaluate, fwd, handler, typeof
+from effectful.ops.syntax import ObjectInterpretation, deffn, implements
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 
 def cartesian_prod(x, y):
@@ -34,117 +33,128 @@ def cartesian_prod(x, y):
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 
 
-@Sum.plus.register(jax.Array)
-def _(*args):
-    return functools.reduce(jnp.add, args)
+def _jax_args(args):
+    """True iff every arg is a concrete :class:`jax.Array` (no Terms)."""
+    return all(isinstance(a, jax.Array) and not isinstance(a, Term) for a in args)
 
 
-@Product.plus.register(jax.Array)
-def _(*args):
-    return functools.reduce(jnp.multiply, args)
+class SumKernelJax(ObjectInterpretation):
+    @implements(Sum.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.add, args)
 
 
-@Min.plus.register(jax.Array)
-def _(*args):
-    return functools.reduce(jnp.minimum, args)
+class ProductKernelJax(ObjectInterpretation):
+    @implements(Product.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.multiply, args)
 
 
-@Max.plus.register(jax.Array)
-def _(*args):
-    return functools.reduce(jnp.maximum, args)
+class MinKernelJax(ObjectInterpretation):
+    @implements(Min.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.minimum, args)
 
 
-@LogSumExp.plus.register(jax.Array)
-def _(*args):
-    return functools.reduce(jnp.logaddexp, args)
+class MaxKernelJax(ObjectInterpretation):
+    @implements(Max.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.maximum, args)
 
 
-@CartesianProduct.plus.register(jax.Array)
-def _(*args):
-    # Skip identity ``[()]`` args; short-circuit on zero ``[]``. Both sentinels
-    # arrive as Python lists alongside jax-array factors, so check for them
-    # explicitly before composing under :func:`cartesian_prod`.
-    result = None
-    for a in args:
-        if a is CartesianProduct.zero:
-            return CartesianProduct.zero
-        if a is CartesianProduct.identity:
-            continue
-        result = a if result is None else cartesian_prod(result, a)
-    return result if result is not None else CartesianProduct.identity
+class LogSumExpKernelJax(ObjectInterpretation):
+    @implements(LogSumExp.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.logaddexp, args)
 
 
-# Chain a JAX-typed case onto the tuple plus handler: handle (jax.Array,
-# jax.Array) pairs here, fall through to the prior handler otherwise.
-_argmin_tuple_prior = ArgMin.plus.dispatch(tuple)
-_argmax_tuple_prior = ArgMax.plus.dispatch(tuple)
+class CartesianProductKernelJax(ObjectInterpretation):
+    @implements(CartesianProduct.plus)
+    def plus(self, *args):
+        # Skip identity ``[()]`` args; short-circuit on zero ``[]``. Both
+        # sentinels arrive as Python lists alongside jax-array factors, so
+        # check for them explicitly before composing.
+        if not any(isinstance(a, jax.Array) for a in args):
+            return fwd()
+        result = None
+        for a in args:
+            if a is CartesianProduct.zero:
+                return CartesianProduct.zero
+            if a is CartesianProduct.identity:
+                continue
+            if not isinstance(a, jax.Array):
+                return fwd()
+            result = a if result is None else cartesian_prod(result, a)
+        return result if result is not None else CartesianProduct.identity
 
 
-@ArgMin.plus.register(tuple)
-def _(*args):
-    if all(isinstance(a[0], jax.Array) and isinstance(a[1], jax.Array) for a in args):
-        best_score, best_value = args[0]
-        for score, value in args[1:]:
-            is_new = score < best_score
-            best_score = jnp.where(is_new, score, best_score)
-            best_value = jnp.where(is_new, value, best_value)
-        return (best_score, best_value)
-    return _argmin_tuple_prior(*args)
-
-
-@ArgMax.plus.register(tuple)
-def _(*args):
-    if all(isinstance(a[0], jax.Array) and isinstance(a[1], jax.Array) for a in args):
-        best_score, best_value = args[0]
-        for score, value in args[1:]:
-            is_new = score > best_score
-            best_score = jnp.where(is_new, score, best_score)
-            best_value = jnp.where(is_new, value, best_value)
-        return (best_score, best_value)
-    return _argmax_tuple_prior(*args)
-
-
-def register_array_reduce(monoid: Monoid, reductor) -> None:
-    """Register ``reductor`` as the JAX array reduction for ``monoid``.
-
-    A backend-specific reducer (e.g. :func:`jnp.sum`) is paired with a monoid so
-    that ``monoid.reduce`` over an array-valued body and array-valued streams
-    unbinds the indices, evaluates, and applies the reducer along those axes.
-
+def _make_array_reduce_class(monoid: Monoid, reductor):
+    """Build an :class:`ObjectInterpretation` that implements
+    ``monoid.reduce`` for ``jax.Array`` bodies using ``reductor``.
     """
 
-    def _reduce_array(body: jax.Array, streams: Streams):
-        index = Operation.define(jax.Array)
+    class _ArrayReduce(ObjectInterpretation):
+        @implements(monoid.reduce)
+        def reduce(self, body, streams):
+            if typeof(body) is not jax.Array:
+                return fwd()
+            if not streams:
+                return monoid.identity
 
-        if not streams:
-            return monoid.identity
+            index = Operation.define(jax.Array)
+            for stream_key, stream_body, streams_tail in outer_stream(streams):
+                if typeof(stream_body) is not jax.Array:
+                    continue
+                with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
+                    eval_body = evaluate(body)
+                    eval_streams_tail = evaluate(streams_tail)
+                    assert isinstance(eval_streams_tail, dict)
+                    reduce_tail = (
+                        monoid.reduce(eval_body, eval_streams_tail)
+                        if len(eval_streams_tail) > 0
+                        else eval_body
+                    )
+                    return reductor(bind_dims(reduce_tail, index), axis=0)
+            return fwd()
 
-        # find and reduce an array stream
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if typeof(stream_body) != jax.Array:
-                continue
-
-            with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
-                (eval_body, eval_streams_tail) = (
-                    evaluate(body),
-                    evaluate(streams_tail),
-                )
-                assert isinstance(eval_streams_tail, dict)
-
-                reduce_tail = (
-                    monoid.reduce(eval_body, eval_streams_tail)
-                    if len(eval_streams_tail) > 0
-                    else eval_body
-                )
-                return reductor(bind_dims(reduce_tail, index), axis=0)
-
-        raise NotHandled
-
-    monoid.reduce.register(jax.Array)(_reduce_array)
+    _ArrayReduce.__name__ = f"{monoid._name}ArrayReduceJax"
+    return _ArrayReduce
 
 
-register_array_reduce(Sum, jnp.sum)
-register_array_reduce(Product, jnp.prod)
-register_array_reduce(Min, jnp.min)
-register_array_reduce(Max, jnp.max)
-register_array_reduce(LogSumExp, logsumexp)
+_ARRAY_REDUCE_CLASSES = [
+    _make_array_reduce_class(Sum, jnp.sum),
+    _make_array_reduce_class(Product, jnp.prod),
+    _make_array_reduce_class(Min, jnp.min),
+    _make_array_reduce_class(Max, jnp.max),
+    _make_array_reduce_class(LogSumExp, logsumexp),
+]
+
+
+JaxEvaluateIntp = functools.reduce(
+    coproduct,
+    typing.cast(
+        list[Interpretation],
+        [
+            SumKernelJax(),
+            ProductKernelJax(),
+            MinKernelJax(),
+            MaxKernelJax(),
+            LogSumExpKernelJax(),
+            CartesianProductKernelJax(),
+            *[cls() for cls in _ARRAY_REDUCE_CLASSES],
+        ],
+    ),
+)
+"""JAX kernels for plus and reduce. Composes with
+:data:`effectful.ops.monoid.EvaluateIntp` to extend evaluation to JAX arrays.
+"""

@@ -3,10 +3,26 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
-from effectful.handlers.jax.monoid import LogSumExp, Max, Min, Product, Sum
+from effectful.handlers.jax.monoid import (
+    JaxEvaluateIntp,
+    LogSumExp,
+    Max,
+    Min,
+    Product,
+    Sum,
+)
 from effectful.handlers.jax.scipy.special import logsumexp
+from effectful.ops.monoid import EvaluateIntp
+from effectful.ops.semantics import coproduct, handler
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import define_vars, syntactic_eq_alpha
+
+
+@pytest.fixture(autouse=True)
+def _install_evaluate():
+    """Install scalar + JAX evaluation kernels for every test in this module."""
+    with handler(coproduct(EvaluateIntp, JaxEvaluateIntp)):
+        yield
 
 MONOIDS = [
     pytest.param(Sum, jnp.sum, id="Sum"),

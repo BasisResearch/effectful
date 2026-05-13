@@ -6,6 +6,7 @@ from hypothesis import strategies as st
 
 from effectful.ops.monoid import (
     CartesianProduct,
+    EvaluateIntp,
     Max,
     Min,
     Monoid,
@@ -15,9 +16,21 @@ from effectful.ops.monoid import (
     distributes_over,
     is_commutative,
 )
-from effectful.ops.semantics import evaluate, fvsof, handler
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation
 from tests._monoid_helpers import define_vars, random_interpretation, syntactic_eq_alpha
+
+
+@pytest.fixture(autouse=True)
+def _install_normalize_intp():
+    """Install :data:`NormalizeIntp` for every test in this module.
+
+    :data:`NormalizeIntp` is a superset of :data:`EvaluateIntp` — direct
+    monoid calls evaluate, rewrites also fire. Will be replaced by a global
+    interpretation once that lands.
+    """
+    with handler(NormalizeIntp):
+        yield
 
 _INT = st.integers(min_value=-100, max_value=100)
 
