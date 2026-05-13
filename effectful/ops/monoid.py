@@ -97,11 +97,7 @@ class Monoid[T]:
     def __hash__(self):
         return hash(id(self))
 
-    # --- plus default registrations ----------------------------------------
-
     def _plus_default(self, *args):
-        if any(isinstance(x, Term) for x in args):
-            raise NotHandled
         raise TypeError(f"Unexpected arguments to {self._name}.plus")
 
     def _plus_iterable(self, *args):
@@ -135,7 +131,6 @@ class Monoid[T]:
                 all_values[k].append(v)
         return {k: self.plus(*vs) for (k, vs) in all_values.items()}
 
-    # --- reduce default registrations --------------------------------------
     def _reduce_default(self, body, streams):
         if not streams:
             return self.identity
@@ -183,9 +178,16 @@ class Monoid[T]:
     def plus[S](self, *args: S) -> S:
         """Monoid addition with broadcasting over common collection types,
         callables, and interpretations.
+
+        Any :class:`Term` arg routes to symbolic evaluation. Registered
+        handlers can therefore assume their args are concrete values.
+        Composite handlers (tuple/list, Mapping) recurse through
+        :meth:`plus` so interior Terms are caught at the next call.
         """
         if not args:
             return typing.cast(S, self.identity)
+        if any(isinstance(x, Term) for x in args):
+            raise NotHandled
         return self._plus_dispatch.dispatch(type(args[0]))(*args)
 
     @Operation.define
@@ -260,37 +262,26 @@ for _m in (Min, Max, ArgMin, ArgMax, Sum, Product, CartesianProduct):
 
 @Min.plus.register(int | float)
 def _(*args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
     return min(args)
 
 
 @Max.plus.register(int | float)
 def _(*args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
     return max(args)
 
 
 @Sum.plus.register(int | float)
 def _(*args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
     return sum(args)
 
 
 @Product.plus.register(int | float)
 def _(*args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
     return functools.reduce(operator.mul, args)
 
 
-# ArgMin / ArgMax: tuples are (score, value) pairs; plus compares by score.
 @ArgMin.plus.register(tuple)
 def _(*args):
-    if any(isinstance(a[0], Term) for a in args):
-        raise NotHandled
     if not all(isinstance(a[0], int | float) for a in args):
         raise NotHandled
     return min(args, key=lambda a: a[0])
@@ -298,21 +289,13 @@ def _(*args):
 
 @ArgMax.plus.register(tuple)
 def _(*args):
-    if any(isinstance(a[0], Term) for a in args):
-        raise NotHandled
     if not all(isinstance(a[0], int | float) for a in args):
         raise NotHandled
     return max(args, key=lambda a: a[0])
 
 
-# CartesianProduct skips ``_register_broadcasting`` because tuples and lists are
-# CP values, not containers to broadcast over. Its plus is registered against
-# Iterable; its reduce falls through to the default ground-stream rule.
 @CartesianProduct.plus.register(Iterable)
 def _(*args):
-    if any(isinstance(x, Term) for x in args):
-        raise NotHandled
-
     def to_tuple(x):
         return x if isinstance(x, tuple) else (x,)
 

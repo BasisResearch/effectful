@@ -6,6 +6,8 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
+    ArgMax,
+    ArgMin,
     CartesianProduct,
     Max,
     Min,
@@ -62,18 +64,46 @@ def _(*args):
     return functools.reduce(cartesian_prod, args)
 
 
-ARRAY_REDUCE = {
-    Sum.plus: jnp.sum,
-    Product.plus: jnp.prod,
-    Min.plus: jnp.min,
-    Max.plus: jnp.max,
-    LogSumExp.plus: logsumexp,
-}
+# Chain a JAX-typed case onto the tuple plus handler: handle (jax.Array,
+# jax.Array) pairs here, fall through to the prior handler otherwise.
+_argmin_tuple_prior = ArgMin.plus.dispatch(tuple)
+_argmax_tuple_prior = ArgMax.plus.dispatch(tuple)
 
 
-def _reduce_array_for(monoid: Monoid):
+@ArgMin.plus.register(tuple)
+def _(*args):
+    if all(isinstance(a[0], jax.Array) and isinstance(a[1], jax.Array) for a in args):
+        best_score, best_value = args[0]
+        for score, value in args[1:]:
+            is_new = score < best_score
+            best_score = jnp.where(is_new, score, best_score)
+            best_value = jnp.where(is_new, value, best_value)
+        return (best_score, best_value)
+    return _argmin_tuple_prior(*args)
+
+
+@ArgMax.plus.register(tuple)
+def _(*args):
+    if all(isinstance(a[0], jax.Array) and isinstance(a[1], jax.Array) for a in args):
+        best_score, best_value = args[0]
+        for score, value in args[1:]:
+            is_new = score > best_score
+            best_score = jnp.where(is_new, score, best_score)
+            best_value = jnp.where(is_new, value, best_value)
+        return (best_score, best_value)
+    return _argmax_tuple_prior(*args)
+
+
+def register_array_reduce(monoid: Monoid, reductor) -> None:
+    """Register ``reductor`` as the JAX array reduction for ``monoid``.
+
+    A backend-specific reducer (e.g. :func:`jnp.sum`) is paired with a monoid so
+    that ``monoid.reduce`` over an array-valued body and array-valued streams
+    unbinds the indices, evaluates, and applies the reducer along those axes.
+
+    """
+
     def _reduce_array(body: jax.Array, streams: Streams):
-        reductor = ARRAY_REDUCE[monoid.plus]
         index = Operation.define(jax.Array)
 
         if not streams:
@@ -100,8 +130,11 @@ def _reduce_array_for(monoid: Monoid):
 
         raise NotHandled
 
-    return _reduce_array
+    monoid.reduce.register(jax.Array)(_reduce_array)
 
 
-for _m in (Sum, Product, Min, Max, LogSumExp):
-    _m.reduce.register(jax.Array)(_reduce_array_for(_m))
+register_array_reduce(Sum, jnp.sum)
+register_array_reduce(Product, jnp.prod)
+register_array_reduce(Min, jnp.min)
+register_array_reduce(Max, jnp.max)
+register_array_reduce(LogSumExp, logsumexp)
