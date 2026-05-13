@@ -1,6 +1,7 @@
 import collections.abc
 import functools
 import itertools
+import operator
 import typing
 from collections import Counter, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
@@ -61,9 +62,11 @@ def outer_stream(
 
 class Monoid[T]:
     _name: str
+    identity: T
 
-    def __init__(self, name):
+    def __init__(self, identity: T, name: str):
         self._name = name
+        self.identity = identity
 
     def __repr__(self):
         return f"Monoid({self._name!r})"
@@ -74,20 +77,6 @@ class Monoid[T]:
     def __hash__(self):
         return hash(id(self))
 
-    def __eq__(self, other):
-        return id(self) == id(other)
-
-    def __hash__(self):
-        return hash(id(self))
-
-    @Operation.define
-    def kernel(self, _x: T, _y: T) -> T:
-        raise NotHandled
-
-    @Operation.define
-    def identity(self) -> T:
-        raise NotHandled
-
     @Operation.define
     @_CustomSingleDispatchMethod
     def plus[S](self, dispatch, *args: S) -> S:
@@ -95,14 +84,14 @@ class Monoid[T]:
         callables, and interpretations.
         """
         if not args:
-            return typing.cast(S, self.identity())
+            return typing.cast(S, self.identity)
         return dispatch(type(args[0]))(self, *args)
 
     @plus.register(object)  # type: ignore[attr-defined]
     def _(self, *args):
         if any(isinstance(x, Term) for x in args):
             raise NotHandled
-        return functools.reduce(self.kernel, args, self.identity())
+        raise TypeError("Unexpected arguments to plus")
 
     @plus.register(tuple)  # type: ignore[attr-defined]
     def _(self, *args):
@@ -140,7 +129,7 @@ class Monoid[T]:
         self, body: Annotated[U, Scoped[A | B]], streams: Annotated[Streams, Scoped[A]]
     ) -> Annotated[U, Scoped[B]]:
         if not streams:
-            return self.identity()
+            return self.identity
 
         # find and reduce a ground stream
         for stream_key, stream_body, streams_tail in outer_stream(streams):
@@ -194,32 +183,76 @@ def _is_monoid_reduce(op: Operation) -> bool:
 
 
 class MonoidWithZero[T](Monoid[T]):
-    @Operation.define
-    @staticmethod
-    def zero() -> T:
+    zero: T
+
+    def __init__(self, name: str, identity: T, zero: T):
+        super().__init__(name=name, identity=identity)
+        self.zero = zero
+
+
+Min = Monoid(name="Min", identity=float("inf"))
+Max = Monoid(name="Max", identity=-float("inf"))
+ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
+ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
+Sum = Monoid(name="Sum", identity=0)
+Product = MonoidWithZero(name="Product", identity=1, zero=0)
+CartesianProduct = Monoid(
+    name="CartesianProduct",
+    identity=Operation.define(object, name="CartesianProductId"),
+)
+
+
+@Min.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
         raise NotHandled
+    return min(*args)
 
 
-@Operation.define
-def product[T](
-    a: Iterable[tuple[T, ...] | T], b: Iterable[tuple[T, ...] | T]
-) -> Iterable[tuple[T, ...]]:
-    if isinstance(a, Term) or isinstance(b, Term):
+@Max.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
+        raise NotHandled
+    return max(*args)
+
+
+@Min.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
+        raise NotHandled
+    return min(*args)
+
+
+@Max.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
+        raise NotHandled
+    return max(*args)
+
+
+@Sum.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
+        raise NotHandled
+    return sum(*args)
+
+
+@Product.plus.register(int | float)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
+        raise NotHandled
+    return functools.reduce(operator.mul, args)
+
+
+@CartesianProduct.plus.register(Iterable)
+def _(self, *args):
+    if any(isinstance(x, Term) for x in args):
         raise NotHandled
 
     def to_tuple(x):
         return x if isinstance(x, tuple) else (x,)
 
-    return [to_tuple(x) + to_tuple(y) for (x, y) in itertools.product(a, b)]
-
-
-Min = Monoid("Min")
-Max = Monoid("Max")
-ArgMin = Monoid("ArgMin")
-ArgMax = Monoid("ArgMax")
-Sum = Monoid("Sum")
-Product = MonoidWithZero("Product")
-CartesianProduct = Monoid("CartesianProduct")
+    return [sum(to_tuple(x) for x in vals) for vals in itertools.product(*args)]
 
 
 @dataclass
