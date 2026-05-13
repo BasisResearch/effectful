@@ -324,24 +324,6 @@ class PlusDups(ObjectInterpretation):
         return fwd()
 
 
-NormalizePlusIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        list[Interpretation],
-        [
-            PlusEmpty(),
-            PlusSingle(),
-            PlusIdentity(),
-            PlusAssoc(),
-            PlusDistr(),
-            PlusZero(),
-            PlusConsecutiveDups(),
-            PlusDups(),
-        ],
-    ),
-)
-
-
 class ReduceNoStreams(ObjectInterpretation):
     """Implements the identity
     reduce(R, ∅, body) = 0
@@ -633,7 +615,7 @@ def _scalar_args(args):
     )
 
 
-class SumKernel(ObjectInterpretation):
+class SumPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Sum`."""
 
     @implements(Sum.plus)
@@ -643,7 +625,7 @@ class SumKernel(ObjectInterpretation):
         return sum(args)
 
 
-class MinKernel(ObjectInterpretation):
+class MinPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Min`."""
 
     @implements(Min.plus)
@@ -653,7 +635,7 @@ class MinKernel(ObjectInterpretation):
         return min(args)
 
 
-class MaxKernel(ObjectInterpretation):
+class MaxPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Max`."""
 
     @implements(Max.plus)
@@ -663,7 +645,7 @@ class MaxKernel(ObjectInterpretation):
         return max(args)
 
 
-class ProductKernel(ObjectInterpretation):
+class ProductPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Product`."""
 
     @implements(Product.plus)
@@ -673,7 +655,7 @@ class ProductKernel(ObjectInterpretation):
         return functools.reduce(operator.mul, args)
 
 
-class ArgMinKernel(ObjectInterpretation):
+class ArgMinPlus(ObjectInterpretation):
     """Scalar score implementation of :data:`ArgMin`."""
 
     @implements(ArgMin.plus)
@@ -687,7 +669,7 @@ class ArgMinKernel(ObjectInterpretation):
         return min(args, key=lambda a: a[0])
 
 
-class ArgMaxKernel(ObjectInterpretation):
+class ArgMaxPlus(ObjectInterpretation):
     """Scalar score implementation of :data:`ArgMax`."""
 
     @implements(ArgMax.plus)
@@ -701,7 +683,7 @@ class ArgMaxKernel(ObjectInterpretation):
         return max(args, key=lambda a: a[0])
 
 
-class CartesianProductKernel(ObjectInterpretation):
+class CartesianProductPlus(ObjectInterpretation):
     """Pure-Python implementation of :data:`CartesianProduct`."""
 
     @implements(CartesianProduct.plus)
@@ -755,6 +737,33 @@ def sequence_broadcasting(monoid: "Monoid") -> ObjectInterpretation:
     return _SequenceBroadcasting()
 
 
+EvaluateIntp = functools.reduce(
+    coproduct,
+    typing.cast(
+        list[Interpretation],
+        [
+            # tuple/list/Generator broadcasting, only for monoids whose values
+            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
+            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
+            # universal broadcasting
+            PlusOverMapping(),
+            ReduceOverCallable(),
+            ReduceOverMapping(),
+            # per-monoid concrete kernels
+            SumPlus(),
+            MinPlus(),
+            MaxPlus(),
+            ProductPlus(),
+            ArgMinPlus(),
+            ArgMaxPlus(),
+            CartesianProductPlus(),
+        ],
+    ),
+)
+"""Concrete-value kernels and universal broadcasting. Install to evaluate
+plus/reduce on concrete (non-Term) values without applying any rewrites.
+"""
+
 NormalizeReduceIntp = functools.reduce(
     coproduct,
     typing.cast(
@@ -769,33 +778,22 @@ NormalizeReduceIntp = functools.reduce(
     ),
 )
 
-
-EvaluateIntp = functools.reduce(
+NormalizePlusIntp = functools.reduce(
     coproduct,
     typing.cast(
         list[Interpretation],
         [
-            # tuple/list/Generator broadcasting, only for monoids whose values
-            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
-            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
-            # universal broadcasting
-            PlusOverMapping(),
-            ReduceOverCallable(),
-            ReduceOverMapping(),
-            # per-monoid concrete kernels
-            SumKernel(),
-            MinKernel(),
-            MaxKernel(),
-            ProductKernel(),
-            ArgMinKernel(),
-            ArgMaxKernel(),
-            CartesianProductKernel(),
+            PlusEmpty(),
+            PlusSingle(),
+            PlusIdentity(),
+            PlusAssoc(),
+            PlusDistr(),
+            PlusZero(),
+            PlusConsecutiveDups(),
+            PlusDups(),
         ],
     ),
 )
-"""Concrete-value kernels and universal broadcasting. Install to evaluate
-plus/reduce on concrete (non-Term) values without applying any rewrites.
-"""
 
 
 NormalizeIntp = coproduct(
