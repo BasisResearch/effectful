@@ -8,22 +8,18 @@ from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
+    EvaluateIntp,
     Max,
     Min,
     Monoid,
+    NormalizeIntp,
     Product,
     Sum,
     outer_stream,
 )
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements, syntactic_hash
+from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Interpretation, Operation, Term
-
-
-@syntactic_hash.register(jax.Array)
-def _(x: jax.Array) -> int:
-    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
-    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
 
 
 def cartesian_prod(x, y):
@@ -42,9 +38,7 @@ def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
     :class:`jax.Array` (no Terms).
     """
-    return bool(args) and all(
-        isinstance(a, jax.Array) and not isinstance(a, Term) for a in args
-    )
+    return bool(args) and all(not isinstance(a, Term) for a in args)
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -142,21 +136,12 @@ class ArrayReduce(ObjectInterpretation):
         return fwd()
 
 
-JaxEvaluateIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        list[Interpretation],
-        [
-            SumPlusJax(),
-            ProductPlusJax(),
-            MinPlusJax(),
-            MaxPlusJax(),
-            LogSumExpPlusJax(),
-            CartesianProductPlusJax(),
-            ArrayReduce(),
-        ],
-    ),
+NormalizeIntp.extend(ArrayReduce())
+EvaluateIntp.extend(
+    SumPlusJax(),
+    ProductPlusJax(),
+    MinPlusJax(),
+    MaxPlusJax(),
+    LogSumExpPlusJax(),
+    CartesianProductPlusJax(),
 )
-"""JAX kernels for plus and reduce. Composes with
-:data:`effectful.ops.monoid.EvaluateIntp` to extend evaluation to JAX arrays.
-"""

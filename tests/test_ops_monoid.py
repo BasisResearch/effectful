@@ -4,9 +4,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from effectful.handlers.jax.monoid import JaxEvaluateIntp
+import effectful.handlers.jax.monoid  # noqa: F401
 from effectful.ops.monoid import (
     CartesianProduct,
+    EvaluateIntp,
     Max,
     Min,
     Monoid,
@@ -16,7 +17,7 @@ from effectful.ops.monoid import (
     distributes_over,
     is_commutative,
 )
-from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.types import Operation
 from tests._monoid_helpers import (
     INT_BACKEND,
@@ -31,18 +32,6 @@ from tests._monoid_helpers import (
 @pytest.fixture(params=[INT_BACKEND, JAX_BACKEND], ids=["int", "jax"])
 def backend(request) -> Backend:
     return request.param
-
-
-@pytest.fixture(autouse=True)
-def _install_normalize_intp(backend):
-    """Install :data:`NormalizeIntp` (plus JAX kernels when the backend is
-    jax) for every test in this module.
-    """
-    intp = NormalizeIntp
-    if backend.scalar_typ is not int:
-        intp = coproduct(intp, JaxEvaluateIntp)
-    with handler(intp):
-        yield
 
 
 ALL_MONOIDS = [
@@ -83,51 +72,74 @@ MONOID_PAIRS = [
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 @given(data=st.data())
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 def test_associativity(monoid, backend, data):
     a = data.draw(backend.scalar_strategy)
     b = data.draw(backend.scalar_strategy)
     c = data.draw(backend.scalar_strategy)
-    left = monoid.plus(monoid.plus(a, b), c)
-    right = monoid.plus(a, monoid.plus(b, c))
-    assert backend.eq(left, right)
+    with handler(EvaluateIntp):
+        left = monoid.plus(monoid.plus(a, b), c)
+        right = monoid.plus(a, monoid.plus(b, c))
+        assert backend.eq(left, right)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 @given(data=st.data())
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 def test_identity(monoid, backend, data):
     a = data.draw(backend.scalar_strategy)
-    ident = backend.lift(monoid.identity)
-    assert backend.eq(monoid.plus(ident, a), a)
-    assert backend.eq(monoid.plus(a, ident), a)
+    with handler(EvaluateIntp):
+        assert backend.eq(monoid.plus(monoid.identity, a), a)
+        assert backend.eq(monoid.plus(a, monoid.identity), a)
 
 
 @pytest.mark.parametrize("monoid", COMMUTATIVE)
 @given(data=st.data())
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 def test_commutativity(monoid, backend, data):
     a = data.draw(backend.scalar_strategy)
     b = data.draw(backend.scalar_strategy)
-    assert backend.eq(monoid.plus(a, b), monoid.plus(b, a))
+    with handler(EvaluateIntp):
+        assert backend.eq(monoid.plus(a, b), monoid.plus(b, a))
 
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
 @given(data=st.data())
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 def test_idempotence(monoid, backend, data):
     a = data.draw(backend.scalar_strategy)
-    assert backend.eq(monoid.plus(a, a), a)
+    with handler(EvaluateIntp):
+        assert backend.eq(monoid.plus(a, a), a)
 
 
 @pytest.mark.parametrize("monoid", WITH_ZERO)
 @given(data=st.data())
-@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
 def test_zero_absorbs(monoid, backend, data):
     a = data.draw(backend.scalar_strategy)
-    zero = backend.lift(monoid.zero)
-    assert backend.eq(monoid.plus(zero, a), monoid.zero)
-    assert backend.eq(monoid.plus(a, zero), monoid.zero)
+    with handler(EvaluateIntp):
+        assert backend.eq(monoid.plus(monoid.zero, a), monoid.zero)
+        assert backend.eq(monoid.plus(a, monoid.zero), monoid.zero)
 
 
 def _check_pair(
@@ -146,7 +158,7 @@ def _check_pair(
         suppress_health_check=[HealthCheck.function_scoped_fixture],
     )
     def _check_semantics(intp):
-        with handler(intp):
+        with handler(EvaluateIntp), handler(intp):
             lhs_val = evaluate(lhs)
             rhs_val = evaluate(rhs)
         assert backend.eq(lhs_val, rhs_val)
@@ -310,9 +322,7 @@ def test_plus_commutative_idempotent_long(backend):
     """Long alternation collapses via commutative dedup (Min/Max only)."""
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     lhs = Min.plus(a(), b(), a(), b(), b(), a(), a())
-    _check_pair(
-        lhs=lhs, rhs=Min.plus(a(), b()), backend=backend, free_vars=[a, b]
-    )
+    _check_pair(lhs=lhs, rhs=Min.plus(a(), b()), backend=backend, free_vars=[a, b])
 
 
 @pytest.mark.parametrize("monoid", WITH_ZERO)
@@ -540,9 +550,7 @@ def test_reduce_cartesian_2(backend):
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_multi_index(outer, inner, backend):
     a, i, j = define_vars("a", "i", "j", typ=backend.scalar_typ)
-    A, N, M, A_domain = define_vars(
-        "A", "N", "M", "A_domain", typ=backend.stream_typ
-    )
+    A, N, M, A_domain = define_vars("A", "N", "M", "A_domain", typ=backend.stream_typ)
     f = backend.fresh_op("f", n_args=1, ret="scalar")
 
     term1 = outer.reduce(
@@ -553,9 +561,7 @@ def test_reduce_lifted_multi_index(outer, inner, backend):
         outer.reduce(f(a()), {a: A_domain()}),
         {i: N(), j: M()},
     )
-    _check_pair(
-        lhs=term1, rhs=term2, backend=backend, free_vars=[N, M, A_domain, f]
-    )
+    _check_pair(lhs=term1, rhs=term2, backend=backend, free_vars=[N, M, A_domain, f])
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)

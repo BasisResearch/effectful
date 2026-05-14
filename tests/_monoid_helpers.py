@@ -10,7 +10,7 @@ import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.types import NotHandled, Operation, Term
 
 _JAX_ARRAY_SHAPE = (3,)
 
@@ -18,7 +18,7 @@ _JAX_ARRAY_SHAPE = (3,)
 def _jax_array_value_strategy() -> st.SearchStrategy[jax.Array]:
     return st.integers(min_value=0, max_value=2**31 - 1).map(
         lambda seed: jax.random.uniform(
-            jax.random.PRNGKey(seed), _JAX_ARRAY_SHAPE, minval=0.5, maxval=1.5
+            jax.random.PRNGKey(seed), _JAX_ARRAY_SHAPE, minval=-1.5, maxval=1.5
         )
     )
 
@@ -41,11 +41,11 @@ _BINARY_JAX_FNS: list[Callable[[jax.Array, jax.Array], jax.Array]] = [
 def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
     """Strategy for the value an *0-arg* Operation should return."""
     if annotation is int:
-        return st.integers()
+        return st.integers(min_value=-100, max_value=100)
     if annotation is float:
         return st.floats(allow_nan=False)
     if get_origin(annotation) is list and get_args(annotation) == (int,):
-        return st.lists(st.integers(), max_size=2)
+        return st.lists(st.integers(min_value=-100, max_value=100), max_size=2)
     if annotation is jax.Array:
         return _jax_array_value_strategy()
     if get_origin(annotation) is list and get_args(annotation) == (jax.Array,):
@@ -262,7 +262,6 @@ class Backend:
     stream_typ: Any
     scalar_strategy: st.SearchStrategy[Any]
     eq: Callable[[Any, Any], bool]
-    lift: Callable[[Any], Any]
 
     def fresh_op(self, name: str, n_args: int = 1, ret: str = "scalar") -> Operation:
         """Build a fresh, unhandled Operation whose parameter and return
@@ -286,23 +285,11 @@ class Backend:
 
 
 def _int_eq(a: Any, b: Any) -> bool:
-    return a == b
+    return not isinstance(a, Term) and not isinstance(b, Term) and a == b
 
 
 def _jax_eq(a: Any, b: Any) -> bool:
-    if isinstance(a, dict) and isinstance(b, dict):
-        if set(a.keys()) != set(b.keys()):
-            return False
-        return all(_jax_eq(a[k], b[k]) for k in a)
-    if isinstance(a, tuple | list) and isinstance(b, tuple | list):
-        if len(a) != len(b):
-            return False
-        return all(_jax_eq(x, y) for x, y in zip(a, b, strict=True))
-    if isinstance(a, jax.Array) or isinstance(b, jax.Array):
-        aa, bb = jax.numpy.asarray(a), jax.numpy.asarray(b)
-        aa, bb = jax.numpy.broadcast_arrays(aa, bb)
-        return bool(jax.numpy.all(jax.numpy.isclose(aa, bb, equal_nan=True)))
-    return a == b
+    return bool(jax.numpy.allclose(a, b))
 
 
 INT_BACKEND = Backend(
@@ -311,7 +298,6 @@ INT_BACKEND = Backend(
     stream_typ=list[int],
     scalar_strategy=st.integers(min_value=-100, max_value=100),
     eq=_int_eq,
-    lift=lambda x: x,
 )
 
 
@@ -321,7 +307,6 @@ JAX_BACKEND = Backend(
     stream_typ=list[jax.Array],
     scalar_strategy=_jax_array_value_strategy(),
     eq=_jax_eq,
-    lift=lambda x: jax.numpy.asarray(x, dtype=jax.numpy.float32),
 )
 
 

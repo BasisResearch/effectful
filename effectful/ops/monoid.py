@@ -3,7 +3,7 @@ import functools
 import itertools
 import operator
 import typing
-from collections import Counter, defaultdict
+from collections import Counter, UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
@@ -53,13 +53,7 @@ def outer_stream(
 
 
 class Monoid[T]:
-    """A monoid with ``plus`` and ``reduce`` :class:`Operation` s.
-
-    Behavior is supplied by handlers installed via an interpretation
-    (see :data:`NormalizeIntp`). The default rules handle only the trivial
-    cases (empty plus, empty streams, Term args) — everything else stays
-    symbolic until a handler interprets it.
-    """
+    """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
     _name: str
     identity: T
@@ -77,11 +71,15 @@ class Monoid[T]:
     def __hash__(self):
         return hash(id(self))
 
+    # the weak typing allows us to write monoid.plus(monoid.identity, <array>)
+    # and monoid.plus(monoid.identity, <float>)
     @Operation.define
-    def plus[S](self, *args: S) -> S:
+    def plus(self, *args: Any) -> Any:
         """Monoid addition. Handlers supply per-monoid and broadcasting
         behavior; the default rule only handles empty / Term cases.
         """
+        if not args:
+            return self.identity
         raise NotHandled
 
     @Operation.define
@@ -557,7 +555,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         return fwd()
 
 
-class ReduceOverCallable(ObjectInterpretation):
+class MonoidOverCallable(ObjectInterpretation):
     """``monoid.reduce(f, streams) = lambda *a: monoid.reduce(f(*a), streams)``."""
 
     @implements(Monoid.reduce)
@@ -566,8 +564,16 @@ class ReduceOverCallable(ObjectInterpretation):
             return fwd()
         return lambda *a, **k: monoid.reduce(body(*a, **k), streams)
 
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not args or any(
+            isinstance(arg, Term) or not isinstance(arg, Callable) for arg in args
+        ):
+            return fwd()
+        return lambda *a, **k: monoid.plus(*(arg(*a, **k) for arg in args))
 
-class ReduceOverMapping(ObjectInterpretation):
+
+class MonoidOverMapping(ObjectInterpretation):
     """``monoid.reduce({k: v_k}, streams) = {k: monoid.reduce(v_k, streams)}``."""
 
     @implements(Monoid.reduce)
@@ -575,10 +581,6 @@ class ReduceOverMapping(ObjectInterpretation):
         if isinstance(body, Term) or not isinstance(body, Mapping):
             return fwd()
         return {k: monoid.reduce(v, streams) for (k, v) in body.items()}
-
-
-class PlusOverMapping(ObjectInterpretation):
-    """Broadcast ``plus`` over dict-like containers and interpretations."""
 
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
@@ -733,74 +735,54 @@ def sequence_broadcasting(monoid: "Monoid") -> ObjectInterpretation:
                 return type(body)(result)
             return result
 
-    _SequenceBroadcasting.__name__ = f"{monoid._name}SequenceBroadcasting"
+    _SequenceBroadcasting.__name__ = f"{monoid._name}OverSequence"
     return _SequenceBroadcasting()
 
 
-EvaluateIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        list[Interpretation],
-        [
-            # tuple/list/Generator broadcasting, only for monoids whose values
-            # are scalars (not CartesianProduct, ArgMin, or ArgMax).
-            *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
-            # universal broadcasting
-            PlusOverMapping(),
-            ReduceOverCallable(),
-            ReduceOverMapping(),
-            # per-monoid concrete kernels
-            SumPlus(),
-            MinPlus(),
-            MaxPlus(),
-            ProductPlus(),
-            ArgMinPlus(),
-            ArgMaxPlus(),
-            CartesianProductPlus(),
-        ],
-    ),
+class _ExtensibleInterpretation(UserDict, Interpretation):
+    def extend(self, *intps: Interpretation) -> typing.Self:
+        for intp in intps:
+            self.data = coproduct(self.data, intp)
+        return self
+
+
+EvaluateIntp = _ExtensibleInterpretation().extend(
+    # tuple/list/Generator broadcasting, only for monoids whose values
+    # are scalars (not CartesianProduct, ArgMin, or ArgMax).
+    *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
+    # universal broadcasting
+    MonoidOverMapping(),
+    MonoidOverCallable(),
+    # per-monoid concrete kernels
+    SumPlus(),
+    MinPlus(),
+    MaxPlus(),
+    ProductPlus(),
+    ArgMinPlus(),
+    ArgMaxPlus(),
+    CartesianProductPlus(),
 )
 """Concrete-value kernels and universal broadcasting. Install to evaluate
 plus/reduce on concrete (non-Term) values without applying any rewrites.
+
 """
 
-NormalizeReduceIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        list[Interpretation],
-        [
-            ReduceNoStreams(),
-            ReduceFusion(),
-            ReduceSplit(),
-            ReduceFactorization(),
-            ReduceDistributeCartesianProduct(),
-        ],
-    ),
+NormalizeIntp = _ExtensibleInterpretation().extend(
+    ReduceNoStreams(),
+    ReduceFusion(),
+    ReduceSplit(),
+    ReduceFactorization(),
+    ReduceDistributeCartesianProduct(),
+    PlusEmpty(),
+    PlusSingle(),
+    PlusIdentity(),
+    PlusAssoc(),
+    PlusDistr(),
+    PlusZero(),
+    PlusConsecutiveDups(),
+    PlusDups(),
 )
+"""``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
+identity elimination, fusion, factorization, etc.).
 
-NormalizePlusIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        list[Interpretation],
-        [
-            PlusEmpty(),
-            PlusSingle(),
-            PlusIdentity(),
-            PlusAssoc(),
-            PlusDistr(),
-            PlusZero(),
-            PlusConsecutiveDups(),
-            PlusDups(),
-        ],
-    ),
-)
-
-
-NormalizeIntp = coproduct(
-    coproduct(EvaluateIntp, NormalizeReduceIntp), NormalizePlusIntp
-)
-"""Rewrites *plus* evaluation. ``NormalizeIntp`` is a superset of
-:data:`EvaluateIntp`: it applies pure-Term rewrites (associativity,
-distributivity, identity elimination, fusion, factorization, etc.) and also
-evaluates concrete arguments through the kernels.
 """
