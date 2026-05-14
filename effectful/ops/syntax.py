@@ -849,6 +849,8 @@ def _(x: collections.abc.Sequence, other) -> bool:
 @syntactic_eq.register(object)
 @syntactic_eq.register(str | bytes)
 def _(x: object, other) -> bool:
+    if isinstance(other, Term):  # Terms often override __eq__
+        return False
     return x == other
 
 

@@ -1,5 +1,6 @@
 import itertools
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
 import jax
@@ -9,7 +10,7 @@ import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
-from effectful.ops.types import Operation
+from effectful.ops.types import NotHandled, Operation
 
 _JAX_ARRAY_SHAPE = (3,)
 
@@ -47,9 +48,11 @@ def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
         return st.lists(st.integers(), max_size=2)
     if annotation is jax.Array:
         return _jax_array_value_strategy()
+    if get_origin(annotation) is list and get_args(annotation) == (jax.Array,):
+        return st.lists(_jax_array_value_strategy(), max_size=2)
     raise NotImplementedError(
         f"No value strategy for return annotation {annotation!r}; "
-        "supported: int, list[int], jax.Array"
+        "supported: int, list[int], jax.Array, list[jax.Array]"
     )
 
 
@@ -78,6 +81,13 @@ _UNARY_LIST_FNS: list[Callable[[int], list[int]]] = [
     lambda x: [0, x, x + 1],
 ]
 
+_UNARY_JAX_LIST_FNS: list[Callable[[jax.Array], list[jax.Array]]] = [
+    lambda _x: [],
+    lambda x: [x],
+    lambda x: [x, x + 1.0],
+    lambda x: [x, -x],
+]
+
 
 def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
     """Pick a strategy producing a callable suitable for binding `op` in an
@@ -100,6 +110,12 @@ def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
         return st.sampled_from(_UNARY_JAX_FNS)
     if ret is jax.Array and param_types == (jax.Array, jax.Array):
         return st.sampled_from(_BINARY_JAX_FNS)
+    if (
+        get_origin(ret) is list
+        and get_args(ret) == (jax.Array,)
+        and param_types == (jax.Array,)
+    ):
+        return st.sampled_from(_UNARY_JAX_LIST_FNS)
     raise NotImplementedError(
         f"No callable strategy for free var with return {ret!r}, params {param_types!r}"
     )
@@ -233,4 +249,87 @@ def _canonicalize(expr, _canonical_op):
         return evaluate(expr)
 
 
-__all__ = ["random_interpretation", "define_vars", "syntactic_eq_alpha"]
+@dataclass(frozen=True)
+class Backend:
+    """A value-domain spec used to share monoid tests across int and jax.Array
+    backends. Provides the concrete value type, the hypothesis strategy for
+    drawing scalars in property tests, and an equality predicate that works
+    for that domain.
+    """
+
+    name: str
+    scalar_typ: Any
+    stream_typ: Any
+    scalar_strategy: st.SearchStrategy[Any]
+    eq: Callable[[Any, Any], bool]
+    lift: Callable[[Any], Any]
+
+    def fresh_op(self, name: str, n_args: int = 1, ret: str = "scalar") -> Operation:
+        """Build a fresh, unhandled Operation whose parameter and return
+        annotations are derived from this backend.
+
+        ``ret`` is ``"scalar"`` for a scalar return or ``"stream"`` for a
+        stream-of-scalar return. The operation has ``n_args`` parameters,
+        each of type ``scalar_typ``.
+        """
+        scalar = self.scalar_typ
+        out = self.stream_typ if ret == "stream" else scalar
+        params = ", ".join(f"_a{i}" for i in range(n_args))
+        ns: dict[str, Any] = {"NotHandled": NotHandled}
+        exec(f"def _fn({params}):\n    raise NotHandled\n", ns)
+        fn = ns["_fn"]
+        fn.__annotations__ = {
+            **{f"_a{i}": scalar for i in range(n_args)},
+            "return": out,
+        }
+        return Operation.define(fn, name=name)
+
+
+def _int_eq(a: Any, b: Any) -> bool:
+    return a == b
+
+
+def _jax_eq(a: Any, b: Any) -> bool:
+    if isinstance(a, dict) and isinstance(b, dict):
+        if set(a.keys()) != set(b.keys()):
+            return False
+        return all(_jax_eq(a[k], b[k]) for k in a)
+    if isinstance(a, tuple | list) and isinstance(b, tuple | list):
+        if len(a) != len(b):
+            return False
+        return all(_jax_eq(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, jax.Array) or isinstance(b, jax.Array):
+        aa, bb = jax.numpy.asarray(a), jax.numpy.asarray(b)
+        aa, bb = jax.numpy.broadcast_arrays(aa, bb)
+        return bool(jax.numpy.all(jax.numpy.isclose(aa, bb, equal_nan=True)))
+    return a == b
+
+
+INT_BACKEND = Backend(
+    name="int",
+    scalar_typ=int,
+    stream_typ=list[int],
+    scalar_strategy=st.integers(min_value=-100, max_value=100),
+    eq=_int_eq,
+    lift=lambda x: x,
+)
+
+
+JAX_BACKEND = Backend(
+    name="jax",
+    scalar_typ=jax.Array,
+    stream_typ=list[jax.Array],
+    scalar_strategy=_jax_array_value_strategy(),
+    eq=_jax_eq,
+    lift=lambda x: jax.numpy.asarray(x, dtype=jax.numpy.float32),
+)
+
+
+__all__ = [
+    "Backend",
+    "INT_BACKEND",
+    "JAX_BACKEND",
+    "random_interpretation",
+    "define_vars",
+    "syntactic_eq_alpha",
+]

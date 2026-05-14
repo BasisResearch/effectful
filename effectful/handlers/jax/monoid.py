@@ -16,8 +16,14 @@ from effectful.ops.monoid import (
     outer_stream,
 )
 from effectful.ops.semantics import coproduct, evaluate, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements
+from effectful.ops.syntax import ObjectInterpretation, deffn, implements, syntactic_hash
 from effectful.ops.types import Interpretation, Operation, Term
+
+
+@syntactic_hash.register(jax.Array)
+def _(x: jax.Array) -> int:
+    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
+    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
 
 
 def cartesian_prod(x, y):
@@ -33,8 +39,12 @@ LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 
 
 def _jax_args(args):
-    """True iff every arg is a concrete :class:`jax.Array` (no Terms)."""
-    return all(isinstance(a, jax.Array) and not isinstance(a, Term) for a in args)
+    """True iff ``args`` is non-empty and every arg is a concrete
+    :class:`jax.Array` (no Terms).
+    """
+    return bool(args) and all(
+        isinstance(a, jax.Array) and not isinstance(a, Term) for a in args
+    )
 
 
 class SumPlusJax(ObjectInterpretation):
