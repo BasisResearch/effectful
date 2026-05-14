@@ -4,15 +4,17 @@ from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
 import jax
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate
+from effectful.ops.monoid import NormalizeIntp
+from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 
-_JAX_ARRAY_SHAPE = (3,)
+_JAX_ARRAY_SHAPE = (2,)
 
 
 def _jax_array_value_strategy() -> st.SearchStrategy[jax.Array]:
@@ -299,6 +301,31 @@ def _jax_eq(a: Any, b: Any) -> bool:
     return all(leaves)
 
 
+def check_rewrite(
+    lhs,
+    rhs,
+    rule,
+    *,
+    backend: Backend,
+    free_vars=[],
+    max_examples: int = 25,
+    deadline=None,
+) -> None:
+    with handler(rule):
+        norm = evaluate(lhs)
+    assert syntactic_eq_alpha(norm, rhs)
+
+    @given(intp=random_interpretation(free_vars))
+    @settings(max_examples=max_examples, deadline=deadline)
+    def _check_semantics(intp):
+        with handler(NormalizeIntp), handler(intp):
+            lhs_val = evaluate(lhs)
+            rhs_val = evaluate(rhs)
+        assert backend.eq(lhs_val, rhs_val)
+
+    _check_semantics()
+
+
 INT_BACKEND = Backend(
     name="int",
     scalar_typ=int,
@@ -311,7 +338,7 @@ INT_BACKEND = Backend(
 JAX_BACKEND = Backend(
     name="jax",
     scalar_typ=jax.Array,
-    stream_typ=list[jax.Array],
+    stream_typ=jax.Array,
     scalar_strategy=_jax_array_value_strategy(),
     eq=_jax_eq,
 )
@@ -324,4 +351,5 @@ __all__ = [
     "random_interpretation",
     "define_vars",
     "syntactic_eq_alpha",
+    "check_rewrite",
 ]

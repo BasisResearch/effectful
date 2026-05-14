@@ -25,8 +25,12 @@ def cartesian_prod(x, y):
         x = x[:, None]
     if y.ndim == 1:
         y = y[:, None]
-    x, y = jnp.repeat(x, y.shape[0], axis=0), jnp.tile(y, (x.shape[0], 1))
-    return jnp.hstack([x, y])
+    nx, dx = x.shape
+    ny, dy = y.shape
+    # Broadcast into (nx, ny, dx+dy), then flatten the first two axes
+    x_b = jnp.broadcast_to(x[:, None, :], (nx, ny, dx))
+    y_b = jnp.broadcast_to(y[None, :, :], (nx, ny, dy))
+    return jnp.concatenate([x_b, y_b], axis=-1).reshape(nx * ny, dx + dy)
 
 
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
@@ -123,7 +127,7 @@ class ArrayReduce(ObjectInterpretation):
         reductor = ARRAY_REDUCTORS[monoid]
         index = Operation.define(jax.Array)
         for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if typeof(stream_body) is not jax.Array:
+            if not issubclass(typeof(stream_body), jax.Array):
                 continue
             with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
                 eval_body = evaluate(body)

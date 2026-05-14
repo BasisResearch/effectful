@@ -29,16 +29,15 @@ from effectful.ops.monoid import (
     ReduceSplit,
     Sum,
     distributes_over,
-    is_commutative,
 )
-from effectful.ops.semantics import evaluate, fvsof, handler
+from effectful.ops.semantics import fvsof, handler
 from effectful.ops.types import Operation
 from tests._monoid_helpers import (
     INT_BACKEND,
     JAX_BACKEND,
     Backend,
+    check_rewrite,
     define_vars,
-    random_interpretation,
     syntactic_eq_alpha,
 )
 
@@ -82,28 +81,6 @@ MONOID_PAIRS = [
         typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
     )
 ]
-
-
-def _check_rewrite(
-    lhs, rhs, rule, *, backend: Backend, free_vars=[], max_examples: int = 25
-) -> None:
-    with handler(rule):
-        norm = evaluate(lhs)
-    assert syntactic_eq_alpha(norm, rhs)
-
-    @given(intp=random_interpretation(free_vars))
-    @settings(
-        max_examples=max_examples,
-        deadline=None,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def _check_semantics(intp):
-        with handler(NormalizeIntp), handler(intp):
-            lhs_val = evaluate(lhs)
-            rhs_val = evaluate(rhs)
-        assert backend.eq(lhs_val, rhs_val)
-
-    _check_semantics()
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -180,7 +157,7 @@ def test_zero_absorbs(monoid, backend, data):
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_empty(monoid, backend):
-    _check_rewrite(
+    check_rewrite(
         lhs=monoid.plus(), rhs=monoid.identity, rule=PlusEmpty(), backend=backend
     )
 
@@ -188,7 +165,7 @@ def test_plus_empty(monoid, backend):
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_single(monoid, backend):
     x = define_vars("x", typ=backend.scalar_typ)
-    _check_rewrite(
+    check_rewrite(
         lhs=monoid.plus(x()), rhs=x(), rule=PlusSingle(), backend=backend, free_vars=[x]
     )
 
@@ -200,9 +177,7 @@ def test_plus_identity_right(monoid, backend):
     lhs = monoid.plus(x(), monoid.identity)
     rhs = monoid.plus(x())
 
-    _check_rewrite(
-        lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x]
-    )
+    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -212,15 +187,13 @@ def test_plus_identity_left(monoid, backend):
     lhs = monoid.plus(monoid.identity, x())
     rhs = monoid.plus(x())
 
-    _check_rewrite(
-        lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x]
-    )
+    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_assoc_right(monoid, backend):
     x, y, z = define_vars("x", "y", "z", typ=backend.scalar_typ)
-    _check_rewrite(
+    check_rewrite(
         lhs=monoid.plus(x(), monoid.plus(y(), z())),
         rhs=monoid.plus(x(), y(), z()),
         rule=PlusAssoc(),
@@ -232,7 +205,7 @@ def test_plus_assoc_right(monoid, backend):
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_assoc_left(monoid, backend):
     x, y, z = define_vars("x", "y", "z", typ=backend.scalar_typ)
-    _check_rewrite(
+    check_rewrite(
         lhs=monoid.plus(monoid.plus(x(), y()), z()),
         rhs=monoid.plus(x(), y(), z()),
         rule=PlusAssoc(),
@@ -244,7 +217,7 @@ def test_plus_assoc_left(monoid, backend):
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_sequence(monoid, backend):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
-    _check_rewrite(
+    check_rewrite(
         lhs=monoid.plus((a(), b()), (c(), d())),
         rhs=(monoid.plus(a(), c()), monoid.plus(b(), d())),
         rule=MonoidOverSequence(),
@@ -260,7 +233,7 @@ def test_plus_mapping(monoid, backend):
     lhs = monoid.plus({0: a(), 1: b()}, {0: c(), 2: d()})
     rhs = {0: monoid.plus(a(), c()), 1: monoid.plus(b()), 2: monoid.plus(d())}
 
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=MonoidOverMapping(),
@@ -280,7 +253,7 @@ def test_plus_distributes(backend):
             Product.plus(b(), d()),
         )
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
     )
 
@@ -297,7 +270,7 @@ def test_plus_distributes_constant(backend):
             Product.plus(b(), d()),
         ),
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
     )
 
@@ -324,7 +297,7 @@ def test_plus_distributes_multiple(backend):
             Sum.plus(b(), d()),
         ),
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
     )
 
@@ -334,7 +307,7 @@ def test_plus_idempotent_consecutive(monoid, backend):
     """``a, a, b → a, b`` — only consecutive duplicates collapse."""
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     lhs = monoid.plus(a(), a(), b())
-    return _check_rewrite(
+    return check_rewrite(
         lhs=lhs,
         rhs=monoid.plus(a(), b()),
         rule=PlusConsecutiveDups(),
@@ -350,7 +323,7 @@ def test_plus_idempotent_non_consecutive(monoid, backend):
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     lhs = monoid.plus(a(), b(), a())
     rhs = monoid.plus(a(), b())
-    _check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
+    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
 
 
 @pytest.mark.parametrize("monoid", [Min, Max])
@@ -359,7 +332,7 @@ def test_plus_commutative_idempotent_long(monoid, backend):
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     lhs = monoid.plus(a(), b(), a(), b(), b(), a(), a())
     rhs = monoid.plus(a(), b())
-    _check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
+    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
 
 
 @pytest.mark.parametrize("monoid", WITH_ZERO)
@@ -368,10 +341,10 @@ def test_plus_zero(monoid, backend):
     lhs_right = monoid.plus(a(), monoid.zero)
     lhs_left = monoid.plus(monoid.zero, a())
     rhs = monoid.zero
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs_right, rhs=rhs, rule=PlusZero(), backend=backend, free_vars=[a]
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs_left, rhs=rhs, rule=PlusZero(), backend=backend, free_vars=[a]
     )
 
@@ -381,7 +354,7 @@ def test_partial_1(monoid, backend):
     x, y = define_vars("x", "y", typ=backend.scalar_typ)
     lhs = monoid.reduce(x(), {x: []})
     rhs = monoid.identity
-    _check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y])
+    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -392,7 +365,7 @@ def test_partial_2(monoid, backend):
     lhs = monoid.reduce(x(), {y: Y(), x: []})
     rhs = monoid.identity
 
-    _check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, Y])
+    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, Y])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -403,9 +376,7 @@ def test_partial_3(monoid, backend):
     lhs = monoid.reduce(x(), {y: Y(), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: Y()}), monoid.reduce(b(), {y: Y()}))
 
-    _check_rewrite(
-        lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, Y]
-    )
+    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, Y])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -416,9 +387,7 @@ def test_partial_4(monoid, backend):
     lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
 
-    _check_rewrite(
-        lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, f]
-    )
+    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, f])
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -431,7 +400,7 @@ def test_reduce_body_sequence(monoid, backend):
     lhs = monoid.reduce((f(x()), g(x())), {x: X()})
     rhs = (monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()}))
 
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=MonoidOverSequence(),
@@ -453,7 +422,7 @@ def test_reduce_body_sequence_2(monoid, backend):
         monoid.reduce(g(y()), {x: X(), y: Y()}),
     )
 
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=MonoidOverSequence(),
@@ -474,7 +443,7 @@ def test_reduce_body_mapping(monoid, backend):
         0: monoid.reduce(f(x()), {x: X()}),
         1: monoid.reduce(g(x()), {x: X()}),
     }
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=MonoidOverMapping(),
@@ -489,7 +458,7 @@ def test_reduce_no_streams(monoid, backend):
     lhs = monoid.reduce(a(), {})
     rhs = monoid.identity
 
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=ReduceNoStreams(), backend=backend, free_vars=[a]
     )
 
@@ -503,7 +472,7 @@ def test_reduce_reduce(monoid, backend):
     lhs = monoid.reduce(monoid.reduce(f(a(), b()), {a: A()}), {b: B()})
     rhs = monoid.reduce(f(a(), b()), {a: A(), b: B()})
 
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=ReduceFusion(), backend=backend, free_vars=[A, B, f]
     )
 
@@ -517,7 +486,7 @@ def test_reduce_plus(monoid, backend):
         monoid.reduce(a(), {a: A(), b: B()}),
         monoid.reduce(b(), {a: A(), b: B()}),
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=ReduceSplit(), backend=backend, free_vars=[A, B]
     )
 
@@ -529,7 +498,7 @@ def test_reduce_independent_1(backend):
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs, rhs=rhs, rule=ReduceFactorization(), backend=backend, free_vars=[A, B]
     )
 
@@ -544,7 +513,7 @@ def test_reduce_independent_2(backend):
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=ReduceFactorization(),
@@ -584,7 +553,7 @@ def test_reduce_independent_4(backend):
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=lhs,
         rhs=rhs,
         rule=ReduceFactorization(),
@@ -605,7 +574,7 @@ def test_reduce_lifted_1(outer, inner, backend):
     )
     term2 = inner.reduce(outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N()})
 
-    _check_rewrite(
+    check_rewrite(
         lhs=term1,
         rhs=term2,
         rule=ReduceDistributeCartesianProduct(),
@@ -654,7 +623,7 @@ def test_reduce_lifted_multi_index(outer, inner, backend):
         outer.reduce(inner.plus(f(a())), {a: A_domain()}),
         {i: N(), j: M()},
     )
-    _check_rewrite(
+    check_rewrite(
         lhs=term1,
         rhs=term2,
         rule=ReduceDistributeCartesianProduct(),
@@ -690,7 +659,7 @@ def test_reduce_lifted_2(outer, inner, backend):
         {t: T()},
     )
 
-    _check_rewrite(
+    check_rewrite(
         lhs=term1,
         rhs=term2,
         rule=ReduceDistributeCartesianProduct(),

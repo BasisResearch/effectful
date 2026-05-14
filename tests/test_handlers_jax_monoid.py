@@ -3,27 +3,10 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
-from effectful.handlers.jax.monoid import (
-    JaxEvaluateIntp,
-    LogSumExp,
-    Max,
-    Min,
-    Product,
-    Sum,
-)
+from effectful.handlers.jax.monoid import ArrayReduce, LogSumExp
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.monoid import EvaluateIntp
-from effectful.ops.semantics import coproduct, handler
-from effectful.ops.types import NotHandled, Operation
-from tests._monoid_helpers import define_vars, syntactic_eq_alpha
-
-
-@pytest.fixture(autouse=True)
-def _install_evaluate():
-    """Install scalar + JAX evaluation kernels for every test in this module."""
-    with handler(coproduct(EvaluateIntp, JaxEvaluateIntp)):
-        yield
-
+from effectful.ops.monoid import Max, Min, Product, Sum
+from tests._monoid_helpers import JAX_BACKEND, Backend, check_rewrite, define_vars
 
 MONOIDS = [
     pytest.param(Sum, jnp.sum, id="Sum"),
@@ -34,23 +17,29 @@ MONOIDS = [
 ]
 
 
+@pytest.fixture
+def backend() -> Backend:
+    return JAX_BACKEND
+
+
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_array_1(monoid, reductor):
-    (x, X, k) = define_vars("x", "X", "k", typ=jax.Array)
+def test_reduce_array_1(monoid, reductor, backend: Backend):
+    (x, k) = define_vars("x", "k", typ=jax.Array)
+    X = define_vars("X", typ=backend.stream_typ)
 
     lhs = monoid.reduce(x(), {x: X()})
     rhs = reductor(bind_dims(unbind_dims(X(), k), k), axis=0)
 
-    assert syntactic_eq_alpha(lhs, rhs)
+    check_rewrite(
+        lhs=lhs, rhs=rhs, rule=ArrayReduce(), backend=backend, free_vars=[x, X, k]
+    )
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_array_2(monoid, reductor):
-    (x, y, X, Y, k1, k2) = define_vars("x", "y", "X", "Y", "k1", "k2", typ=jax.Array)
-
-    @Operation.define
-    def f(_a: jax.Array, _b: jax.Array) -> jax.Array:
-        raise NotHandled
+def test_reduce_array_2(monoid, reductor, backend: Backend):
+    (x, y, k1, k2) = define_vars("x", "y", "k1", "k2", typ=backend.scalar_typ)
+    (X, Y) = define_vars("X", "Y", typ=backend.stream_typ)
+    f = backend.fresh_op("f", n_args=2, ret="scalar")
 
     lhs = monoid.reduce(f(x(), y()), {x: X(), y: Y()})
     rhs = reductor(
@@ -64,22 +53,24 @@ def test_reduce_array_2(monoid, reductor):
         axis=0,
     )
 
-    assert syntactic_eq_alpha(lhs, rhs)
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ArrayReduce(),
+        backend=backend,
+        free_vars=[x, y, k1, k2, X, Y, f],
+    )
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_array_3(monoid, reductor):
+def test_reduce_array_3(monoid, reductor, backend: Backend):
     """Stream `y` is `g(x())` — depends on the bound element of X. The reducer
     must inline ``g`` along the same named dim used to unbind `x`."""
-    (x, y, X, k1, k2) = define_vars("x", "y", "X", "k1", "k2", typ=jax.Array)
+    (x, y, k1, k2) = define_vars("x", "y", "k1", "k2", typ=backend.scalar_typ)
+    X = define_vars("X", typ=backend.stream_typ)
 
-    @Operation.define
-    def f(_a: jax.Array, _b: jax.Array) -> jax.Array:
-        raise NotHandled
-
-    @Operation.define
-    def g(_a: jax.Array) -> jax.Array:
-        raise NotHandled
+    f = backend.fresh_op("f", n_args=2, ret="scalar")
+    g = backend.fresh_op("g", n_args=1, ret="stream")
 
     lhs = monoid.reduce(f(x(), y()), {x: X(), y: g(x())})
     rhs = reductor(
@@ -96,4 +87,10 @@ def test_reduce_array_3(monoid, reductor):
         axis=0,
     )
 
-    assert syntactic_eq_alpha(lhs, rhs)
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ArrayReduce(),
+        backend=backend,
+        free_vars=[x, y, k1, k2, X, f, g],
+    )
