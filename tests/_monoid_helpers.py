@@ -16,19 +16,19 @@ _JAX_ARRAY_SHAPE = (3,)
 
 
 def _jax_array_value_strategy() -> st.SearchStrategy[jax.Array]:
-    return st.integers(min_value=0, max_value=2**31 - 1).map(
-        lambda seed: jax.random.uniform(
-            jax.random.PRNGKey(seed), _JAX_ARRAY_SHAPE, minval=-1.5, maxval=1.5
-        )
-    )
+    return st.lists(
+        st.integers(min_value=-5, max_value=5),
+        min_size=_JAX_ARRAY_SHAPE[0],
+        max_size=_JAX_ARRAY_SHAPE[0],
+    ).map(lambda xs: jax.numpy.asarray(xs, dtype=jax.numpy.float32))
 
 
 # Unary jax fns map a scalar to a 1-D array (analogous to ``_UNARY_LIST_FNS``
 # for ints). Uses the effectful-wrapped jnp so named-dim broadcasting works.
 _UNARY_JAX_FNS: list[Callable[[jax.Array], jax.Array]] = [
-    lambda a: _jnp.stack([a, a + 1.0]),
+    lambda a: _jnp.stack([a, a + 1]),
     lambda a: _jnp.stack([a, -a]),
-    lambda a: _jnp.stack([a, a + 1.0, 2.0 * a]),
+    lambda a: _jnp.stack([a, a + 1, 2 * a]),
 ]
 
 _BINARY_JAX_FNS: list[Callable[[jax.Array, jax.Array], jax.Array]] = [
@@ -84,7 +84,7 @@ _UNARY_LIST_FNS: list[Callable[[int], list[int]]] = [
 _UNARY_JAX_LIST_FNS: list[Callable[[jax.Array], list[jax.Array]]] = [
     lambda _x: [],
     lambda x: [x],
-    lambda x: [x, x + 1.0],
+    lambda x: [x, x + 1],
     lambda x: [x, -x],
 ]
 

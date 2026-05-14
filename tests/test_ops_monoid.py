@@ -272,11 +272,13 @@ def test_plus_mapping(monoid, backend):
 def test_plus_distributes(backend):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
     lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
-    rhs = Sum.plus(
-        Product.plus(a(), c()),
-        Product.plus(a(), d()),
-        Product.plus(b(), c()),
-        Product.plus(b(), d()),
+    rhs = Product.plus(
+        Sum.plus(
+            Product.plus(a(), c()),
+            Product.plus(a(), d()),
+            Product.plus(b(), c()),
+            Product.plus(b(), d()),
+        )
     )
     _check_rewrite(
         lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
@@ -344,14 +346,11 @@ def test_plus_idempotent_consecutive(monoid, backend):
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
 def test_plus_idempotent_non_consecutive(monoid, backend):
     """``a, b, a`` — Semilattice (Min/Max) collapses via commutative
-    PlusDups; plain IdempotentMonoid leaves it as-is (consecutive-only)."""
+    PlusDups."""
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     lhs = monoid.plus(a(), b(), a())
-    if is_commutative(monoid):
-        rhs = monoid.plus(a(), b())
-    else:
-        rhs = monoid.plus(a(), b(), a())
-    _check_rewrite(lhs=lhs, rhs=rhs, backend=backend, free_vars=[a, b])
+    rhs = monoid.plus(a(), b())
+    _check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
 
 
 @pytest.mark.parametrize("monoid", [Min, Max])
@@ -527,7 +526,9 @@ def test_reduce_independent_1(backend):
     a, b = define_vars("a", "b", typ=backend.scalar_typ)
     A, B = define_vars("A", "B", typ=backend.stream_typ)
     lhs = Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()})
-    rhs = Product.plus(Sum.reduce(a(), {a: A()}), Sum.reduce(b(), {b: B()}))
+    rhs = Product.plus(
+        Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
+    )
     _check_rewrite(
         lhs=lhs, rhs=rhs, rule=ReduceFactorization(), backend=backend, free_vars=[A, B]
     )
@@ -540,7 +541,7 @@ def test_reduce_independent_2(backend):
 
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
-        Sum.reduce(a(), {a: A()}),
+        Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
     _check_rewrite(
@@ -580,7 +581,7 @@ def test_reduce_independent_4(backend):
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), 7), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
         7,
-        Sum.reduce(a(), {a: A()}),
+        Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
     _check_rewrite(
@@ -602,7 +603,8 @@ def test_reduce_lifted_1(outer, inner, backend):
         inner.reduce(f(a()), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(), {i: N()})},
     )
-    term2 = inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {i: N()})
+    term2 = inner.reduce(outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N()})
+
     _check_rewrite(
         lhs=term1,
         rhs=term2,
@@ -649,7 +651,7 @@ def test_reduce_lifted_multi_index(outer, inner, backend):
         {A: CartesianProduct.reduce(A_domain(), {i: N(), j: M()})},
     )
     term2 = inner.reduce(
-        outer.reduce(f(a()), {a: A_domain()}),
+        outer.reduce(inner.plus(f(a())), {a: A_domain()}),
         {i: N(), j: M()},
     )
     _check_rewrite(
@@ -680,7 +682,9 @@ def test_reduce_lifted_2(outer, inner, backend):
 
     term2 = outer.reduce(
         inner.reduce(
-            outer.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
+            outer.reduce(
+                inner.plus(inner.plus(f1(a(), s()), f2(t(), a()))), {a: A_domain(i())}
+            ),
             {i: N()},
         ),
         {t: T()},
