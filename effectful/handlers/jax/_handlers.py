@@ -19,6 +19,7 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     syntactic_eq,
+    syntactic_hash,
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
@@ -120,12 +121,15 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     return result
 
 
+class JaxOperation[**P, T](Operation[P, T]): ...
+
+
 @functools.cache
 def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
-    @defop
+    @JaxOperation.define
     def _jax_op(*args, **kwargs) -> jax.Array:
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
@@ -277,3 +281,9 @@ def _(x: jax.Array, other) -> bool:
         and x.shape == other.shape
         and bool((jnp.asarray(x) == jnp.asarray(other)).all())
     )
+
+
+@syntactic_hash.register(jax.Array)
+def _(x: jax.Array) -> int:
+    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
+    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
