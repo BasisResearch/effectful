@@ -705,38 +705,32 @@ class CartesianProductPlus(ObjectInterpretation):
         ]
 
 
-def sequence_broadcasting(monoid: "Monoid") -> ObjectInterpretation:
-    """Return an :class:`ObjectInterpretation` that broadcasts ``monoid.plus``
-    and ``monoid.reduce`` elementwise over tuples, lists, and generators.
+is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product})
 
-    Tuples and lists are reconstructed as their input type; generators stay
-    generators. Appropriate for monoids whose values are scalars; *not* for
-    monoids whose values *are* sequences (:data:`CartesianProduct`) or whose
-    tuples carry meaning (:data:`ArgMin` / :data:`ArgMax`).
-    """
 
-    class _SequenceBroadcasting(ObjectInterpretation):
-        @implements(monoid.plus)
-        def plus(self, *args):
-            if not args or not isinstance(args[0], tuple | list | Generator):
-                return fwd()
-            zipped = zip(*args, strict=True)
-            result = (monoid.plus(*vs) for vs in zipped)
-            if isinstance(args[0], tuple | list):
-                return type(args[0])(result)
-            return result
+class MonoidOverSequence(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if (
+            not is_scalar(monoid)
+            or not args
+            or not isinstance(args[0], tuple | list | Generator)
+        ):
+            return fwd()
+        zipped = zip(*args, strict=True)
+        result = (monoid.plus(*vs) for vs in zipped)
+        if isinstance(args[0], tuple | list):
+            return type(args[0])(result)
+        return result
 
-        @implements(monoid.reduce)
-        def reduce(self, body, streams):
-            if not isinstance(body, tuple | list | Generator):
-                return fwd()
-            result = (monoid.reduce(x, streams) for x in body)
-            if isinstance(body, tuple | list):
-                return type(body)(result)
-            return result
-
-    _SequenceBroadcasting.__name__ = f"{monoid._name}OverSequence"
-    return _SequenceBroadcasting()
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not is_scalar(monoid) or not isinstance(body, tuple | list | Generator):
+            return fwd()
+        result = (monoid.reduce(x, streams) for x in body)
+        if isinstance(body, tuple | list):
+            return type(body)(result)
+        return result
 
 
 class _ExtensibleInterpretation(UserDict, Interpretation):
@@ -746,28 +740,10 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
         return self
 
 
-EvaluateIntp = _ExtensibleInterpretation().extend(
-    # tuple/list/Generator broadcasting, only for monoids whose values
-    # are scalars (not CartesianProduct, ArgMin, or ArgMax).
-    *(sequence_broadcasting(m) for m in (Sum, Min, Max, Product)),
-    # universal broadcasting
+NormalizeIntp = _ExtensibleInterpretation().extend(
+    MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
-    # per-monoid concrete kernels
-    SumPlus(),
-    MinPlus(),
-    MaxPlus(),
-    ProductPlus(),
-    ArgMinPlus(),
-    ArgMaxPlus(),
-    CartesianProductPlus(),
-)
-"""Concrete-value kernels and universal broadcasting. Install to evaluate
-plus/reduce on concrete (non-Term) values without applying any rewrites.
-
-"""
-
-NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceNoStreams(),
     ReduceFusion(),
     ReduceSplit(),
@@ -781,6 +757,13 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusZero(),
     PlusConsecutiveDups(),
     PlusDups(),
+    SumPlus(),
+    MinPlus(),
+    MaxPlus(),
+    ProductPlus(),
+    ArgMinPlus(),
+    ArgMaxPlus(),
+    CartesianProductPlus(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).

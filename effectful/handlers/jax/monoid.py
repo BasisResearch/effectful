@@ -1,5 +1,4 @@
 import functools
-import typing
 
 import jax
 
@@ -8,7 +7,6 @@ from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
-    EvaluateIntp,
     Max,
     Min,
     Monoid,
@@ -17,9 +15,9 @@ from effectful.ops.monoid import (
     Sum,
     outer_stream,
 )
-from effectful.ops.semantics import coproduct, evaluate, fwd, handler, typeof
+from effectful.ops.semantics import evaluate, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Interpretation, Operation, Term
+from effectful.ops.types import Operation
 
 
 def cartesian_prod(x, y):
@@ -38,7 +36,11 @@ def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
     :class:`jax.Array` (no Terms).
     """
-    return bool(args) and all(not isinstance(a, Term) for a in args)
+    return (
+        bool(args)
+        and any(isinstance(a, jax.Array) for a in args)
+        and all(isinstance(a, jax.typing.ArrayLike) for a in args)
+    )
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -136,8 +138,8 @@ class ArrayReduce(ObjectInterpretation):
         return fwd()
 
 
-NormalizeIntp.extend(ArrayReduce())
-EvaluateIntp.extend(
+NormalizeIntp.extend(
+    ArrayReduce(),
     SumPlusJax(),
     ProductPlusJax(),
     MinPlusJax(),
