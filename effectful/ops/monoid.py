@@ -224,7 +224,7 @@ class PlusDistr(ObjectInterpretation):
     """x + (y * z) = x * y + x * z"""
 
     @implements(Monoid.plus)
-    def plus(self, monoid, *args):
+    def plus(self, monoid: Monoid, *args):
         if any(
             isinstance(x, Term)
             and _is_monoid_plus(x.op)
@@ -736,7 +736,7 @@ class MonoidOverSequence(ObjectInterpretation):
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
-            self.data = coproduct(self.data, intp)
+            self.data = coproduct(self.data, intp)  # type: ignore[assignment]
         return self
 
 

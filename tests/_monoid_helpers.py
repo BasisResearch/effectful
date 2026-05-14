@@ -183,7 +183,7 @@ def _canonicalize(expr, _canonical_op):
         with interpreter({apply: _BaseTerm, **renaming}):
             return evaluate(arg)
 
-    def _bound_var_order(args, kwargs, bound_set):
+    def _bound_var_order(args, kwargs, bound_set: set[Operation]) -> list[Operation]:
         """Return bound variables in deterministic encounter order."""
         seen: list[Operation] = []
         seen_set: set[Operation] = set()
@@ -218,7 +218,7 @@ def _canonicalize(expr, _canonical_op):
         _walk_bare((args, kwargs))
         return seen
 
-    def _apply_canonical(op, *args, **kwargs):
+    def _apply_canonical(op, *args, **kwargs) -> Term:
         bindings = op.__fvs_rule__(*args, **kwargs)
         all_bound: set[Operation] = set().union(
             *bindings.args, *bindings.kwargs.values()
