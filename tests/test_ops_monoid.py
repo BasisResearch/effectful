@@ -184,8 +184,8 @@ def test_plus_sequence(monoid):
 def test_plus_mapping(monoid):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=type(monoid.identity))
     _check_pair(
-        lhs=monoid.plus({"x": a(), "y": b()}, {"x": c(), "z": d()}),
-        rhs={"x": monoid.plus(a(), c()), "y": b(), "z": d()},
+        lhs=monoid.plus({0: a(), 1: b()}, {0: c(), 2: d()}),
+        rhs={0: monoid.plus(a(), c()), 1: b(), 2: d()},
         free_vars=[a, b, c, d],
     )
 
@@ -373,10 +373,10 @@ def test_reduce_body_mapping(monoid):
 
     g = Operation.define(f, name="g")
 
-    lhs = monoid.reduce({"a": f(x()), "b": g(x())}, {x: X()})
+    lhs = monoid.reduce({0: f(x()), 1: g(x())}, {x: X()})
     rhs = {
-        "a": monoid.reduce(f(x()), {x: X()}),
-        "b": monoid.reduce(g(x()), {x: X()}),
+        0: monoid.reduce(f(x()), {x: X()}),
+        1: monoid.reduce(g(x()), {x: X()}),
     }
     _check_pair(lhs=lhs, rhs=rhs, free_vars=[X, f, g])
 
