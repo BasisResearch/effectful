@@ -289,7 +289,14 @@ def _int_eq(a: Any, b: Any) -> bool:
 
 
 def _jax_eq(a: Any, b: Any) -> bool:
-    return bool(jax.numpy.allclose(a, b))
+    def _leaf_eq(x: Any, y: Any) -> bool:
+        return bool(jax.numpy.all(jax.numpy.isclose(x, y, equal_nan=True)))
+
+    try:
+        leaves = jax.tree.leaves(jax.tree.map(_leaf_eq, a, b))
+    except (ValueError, TypeError):
+        return False
+    return all(leaves)
 
 
 INT_BACKEND = Backend(

@@ -256,9 +256,13 @@ def test_plus_sequence(monoid, backend):
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_mapping(monoid, backend):
     a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
+
+    lhs = monoid.plus({0: a(), 1: b()}, {0: c(), 2: d()})
+    rhs = {0: monoid.plus(a(), c()), 1: monoid.plus(b()), 2: monoid.plus(d())}
+
     _check_rewrite(
-        lhs=monoid.plus({0: a(), 1: b()}, {0: c(), 2: d()}),
-        rhs={0: monoid.plus(a(), c()), 1: b(), 2: d()},
+        lhs=lhs,
+        rhs=rhs,
         rule=MonoidOverMapping(),
         backend=backend,
         free_vars=[a, b, c, d],
