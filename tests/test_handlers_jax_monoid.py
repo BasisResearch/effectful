@@ -1,5 +1,6 @@
 import jax
 import pytest
+from jax import random as random
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
@@ -12,7 +13,8 @@ from effectful.handlers.jax.monoid import (
 )
 from effectful.handlers.jax.monoid import range as Range
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.monoid import Max, Min, Product, Sum
+from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Sum
+from effectful.ops.semantics import handler
 from tests._monoid_helpers import JAX_BACKEND, Backend, check_rewrite, define_vars
 
 MONOIDS = [
@@ -245,3 +247,23 @@ def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: Backe
         backend=backend,
         free_vars=[u, v, f],
     )
+
+
+def test_reduce_matmul():
+    key = jax.random.PRNGKey(0)
+    # Define dimensions
+    B, I, J, K = 2, 3, 4, 5
+
+    # Create sample matrices
+    X = random.normal(key, (B, I, J))
+    Y = random.normal(key, (B, J, K))
+    (b, i, j, k) = define_vars("b", "i", "j", "k", typ=jax.Array)
+
+    with handler(NormalizeIntp):
+        actual = Sum.reduce(
+            delta((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)),
+            {b: Range(B), i: Range(I), j: Range(J), k: Range(K)},
+        )
+
+    expected = jnp.einsum("bij,bjk->bik", X, Y)
+    assert jnp.allclose(actual, expected)
