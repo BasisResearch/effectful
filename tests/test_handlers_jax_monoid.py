@@ -6,7 +6,6 @@ from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.monoid import (
     ArrayReduce,
     LogSumExp,
-    ReduceDeltaEmpty,
     ReduceDeltaIndependent,
     ReduceDependentRangeMask,
     delta,
@@ -125,7 +124,7 @@ def test_reduce_delta_empty(monoid, reductor, backend: Backend):
     check_rewrite(
         lhs=lhs,
         rhs=rhs,
-        rule=ReduceDeltaEmpty(),
+        rule=ReduceDeltaIndependent(),
         backend=backend,
         free_vars=[x, X],
     )
@@ -142,11 +141,11 @@ def test_reduce_delta_independent_one(monoid, reductor, backend: Backend):
     Y = define_vars("Y", typ=backend.stream_typ)
     f = backend.fresh_op("f", n_args=1, ret="scalar")
 
-    lhs = monoid.reduce(delta((y(),), f(y())), {y: Y()})
-    rhs = monoid.reduce(
-        delta((), bind_dims(f(unbind_dims(Y(), k)), k)),
-        {},
-    )
+    # We use a concrete range here instead of an abstract one, because
+    # unbind_dims is undefined on empty arrays (and the rewrite produces a
+    # different rhs in this case)
+    lhs = monoid.reduce(delta((y(),), f(y())), {y: Range(3)})
+    rhs = monoid.reduce(bind_dims(f(unbind_dims(jnp.arange(3), k)), k), {})
 
     check_rewrite(
         lhs=lhs,
@@ -166,13 +165,17 @@ def test_reduce_delta_independent_preserves_others(monoid, reductor, backend: Ba
     ≡ reduce(M, {x: X()}, delta((x(),), bind_dims(f(x(), unbind_dims(Y(), k)), k)))
     """
     (x, y, k) = define_vars("x", "y", "k", typ=backend.scalar_typ)
-    (X, Y) = define_vars("X", "Y", typ=backend.stream_typ)
     f = backend.fresh_op("f", n_args=2, ret="scalar")
 
-    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: X(), y: Y()})
+    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: Range(2), y: Range(3)})
     rhs = monoid.reduce(
-        delta((x(),), bind_dims(f(x(), unbind_dims(Y(), k)), k)),
-        {x: X()},
+        bind_dims(
+            bind_dims(
+                f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k
+            ),
+            x,
+        ),
+        {},
     )
 
     check_rewrite(
@@ -180,7 +183,7 @@ def test_reduce_delta_independent_preserves_others(monoid, reductor, backend: Ba
         rhs=rhs,
         rule=ReduceDeltaIndependent(),
         backend=backend,
-        free_vars=[x, y, k, X, Y, f],
+        free_vars=[f],
     )
 
 

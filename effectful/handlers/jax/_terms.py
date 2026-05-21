@@ -452,20 +452,21 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     (3, 2)
     """
 
-    def _evaluate(expr):
-        if isinstance(expr, Term):
-            (args, kwargs) = jax.tree.map(_evaluate, (expr.args, expr.kwargs))
-            return _partial_eval(expr)
-        if not jax.tree_util.treedef_is_leaf(jax.tree.structure(expr)):
-            return jax.tree.map(_evaluate, expr)
-        return expr
+    # def _evaluate(expr):
+    #     if isinstance(expr, Term):
+    #         (args, kwargs) = jax.tree.map(_evaluate, (expr.args, expr.kwargs))
+    #         return _partial_eval(expr)
+    #     if not jax.tree_util.treedef_is_leaf(jax.tree.structure(expr)):
+    #         return jax.tree.map(_evaluate, expr)
+    #     return expr
 
     if not isinstance(t, Term):
         return t
 
-    result = _evaluate(t)
-    if not isinstance(result, Term) or not args:
-        return result
+    # result = _evaluate(t)
+    # if not isinstance(result, Term) or not args:
+    #     return result
+    result = t
 
     # ensure that the result is a jax_getitem with an array as the first argument
     if not (result.op is jax_getitem and isinstance(result.args[0], jax.Array)):

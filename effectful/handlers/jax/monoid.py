@@ -1,5 +1,7 @@
 import dataclasses
 import functools
+import typing
+from typing import Iterable
 
 import jax
 
@@ -149,54 +151,51 @@ def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
     raise NotHandled
 
 
-@dataclasses.dataclass
-class range:
-    start: int
-    stop: int
-    step: int
-
-    def __init__(self, *args: int):
-        match args:
-            case (stop,):
-                self.stop = stop
-            case (start, stop):
-                self.start = start
-                self.stop = stop
-            case (start, stop, step):
-                self.start = start
-                self.stop = stop
-                self.step = step
-            case _:
-                raise ValueError(f"Unexpected arguments: {args}")
-
-    @Operation.define
-    def __iter__(self):
-        if (
-            isinstance(self.start, Term)
-            or isinstance(self.stop, Term)
-            or isinstance(self.step, Term)
-        ):
-            raise NotHandled
-
-        return iter(range(self.start, self.stop, self.step))
+py_range = range
 
 
-class ReduceDeltaEmpty(ObjectInterpretation):
-    """Eliminate a Delta with no index.
+@Operation.define
+def range(*args: int) -> Iterable[jax.Array]:
+    raise NotHandled
 
-    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
 
-    """
+def _range_start(term: Term):
+    assert term.op == range
+    if len(term.args) < 2:
+        return 0
+    return term.args[0]
 
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        if isinstance(body, Term) and body.op == delta and not body.args[0]:
-            return monoid.reduce(body.args[1], streams)
-        return fwd()
+
+def _range_stop(term: Term):
+    assert term.op == range
+    if len(term.args) < 2:
+        return term.args[0]
+    return term.args[1]
+
+
+def _range_step(term: Term):
+    assert term.op == range
+    if len(term.args) < 3:
+        return 1
+    return term.args[2]
+
+
+def _is_simple_range(term):
+    assert term.op == range
+    start = _range_start(term)
+    step = _range_step(term)
+    return (
+        not isinstance(start, Term)
+        and start == 0
+        and not isinstance(step, Term)
+        and step == 1
+    )
 
 
 class ReduceDeltaIndependent(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
+
+    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
 
     reduce(M, streams ∪ {v: range(N)}, delta(idx' ++ (v(),), body))
     ═══════════════════════════════════════════════════════════════════════════
@@ -217,12 +216,24 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not (isinstance(tail_index, Term) and tail_index.op in streams):
             return fwd()
 
-        tail_stream = streams[tail_index.op]
-        fresh_op = Operation.define(tail_index.op)
-        fresh_stream = unbind_dims(tail_stream, fresh_op)
-        subst_intp: Interpretation = {tail_index.op: deffn(fresh_stream)}
-        fresh_body = bind_dims(handler(subst_intp)(evaluate)(body), fresh_op)
-        fresh_streams = {k: v for (k, v) in streams.items() if k != tail_index.op}
+        tail_op: Operation = tail_index.op
+        tail_stream = streams[tail_op]
+        if not (
+            isinstance(tail_stream, Term)
+            and tail_stream.op == range
+            and _is_simple_range(tail_stream)
+        ):
+            return fwd()
+
+        fresh_op = Operation.define(tail_op)
+        indices = jnp.arange(_range_stop(tail_stream))
+        if isinstance(indices, jax.Array) and len(indices) == 0:
+            return monoid.identity
+
+        fresh_stream = unbind_dims(indices, fresh_op)
+        subst_intp = typing.cast(Interpretation, {tail_op: deffn(fresh_stream)})
+        fresh_body = bind_dims(handler(subst_intp)(evaluate)(weight), fresh_op)
+        fresh_streams = {k: v for (k, v) in streams.items() if k != tail_op}
         return monoid.reduce(delta(head_indices, fresh_body), fresh_streams)
 
 
@@ -243,18 +254,18 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         simple_ranges = {
             k: v
             for (k, v) in streams.items()
-            if isinstance(v, range)
-            and not isinstance(v.start, Term)
-            and v.start == 0
-            and not isinstance(v.step, Term)
-            and v.step == 1
+            if isinstance(v, Term) and _is_simple_range(v)
         }
         for u, u_stream in simple_ranges.items():
             if fvsof(u_stream) & stream_vars:
                 continue
 
             for v, v_stream in simple_ranges.items():
-                if isinstance(v_stream, Term) and v_stream.stop.op == u:
+                if (
+                    isinstance(v_stream, Term)
+                    and isinstance(_range_stop(v_stream), Term)
+                    and _range_stop(v_stream).op == u
+                ):
                     fresh_streams = {
                         a: (u_stream if a == v else b) for (a, b) in streams.items()
                     }
@@ -274,9 +285,41 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         return fwd()
 
 
+class ReduceRange(ObjectInterpretation):
+    """Replace concrete-range stream values with materialized ``jnp.arange``.
+
+    reduce(M, streams ∪ {v: range(a, b, s)}, body)
+    ≡ reduce(M, streams ∪ {v: jnp.arange(a, b, s)}, body)
+
+    when ``a``, ``b``, ``s`` are concrete and ``body`` is not a delta term.
+    Delegates the actual reduction to whichever handler picks up the
+    materialized ``jax.Array`` streams.
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid: Monoid, body, streams: Streams):
+        if isinstance(body, Term) and body.op == delta:
+            return fwd()
+
+        new_streams: dict = {}
+        any_replaced = False
+        for k, v in streams.items():
+            if isinstance(v, Term) and v.op == range:
+                new_streams[k] = jnp.arange(
+                    _range_start(v), _range_stop(v), _range_step(v)
+                )
+                any_replaced = True
+            else:
+                new_streams[k] = v
+
+        if not any_replaced:
+            return fwd()
+        return monoid.reduce(body, new_streams)
+
+
 NormalizeIntp.extend(
     ArrayReduce(),
-    ReduceDeltaEmpty(),
+    ReduceRange(),
     ReduceDeltaIndependent(),
     ReduceDependentRangeMask(),
     SumPlusJax(),

@@ -2,10 +2,15 @@ import jax
 import pytest
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
+from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof, unbind_dims
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop, syntactic_eq
-from effectful.ops.types import Term
+from effectful.ops.types import Operation, Term
+
+
+def test_unbind_dims_empty():
+    t1 = unbind_dims(jnp.array([]), Operation.define(jax.Array))
+    t2 = jnp.add(t1, 1)
 
 
 def test_bind_dims():
