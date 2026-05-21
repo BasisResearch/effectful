@@ -15,7 +15,7 @@ from effectful.ops.monoid import (
     Sum,
     outer_stream,
 )
-from effectful.ops.semantics import evaluate, fwd, handler, typeof
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Operation
 
@@ -40,10 +40,11 @@ def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
     :class:`jax.Array` (no Terms).
     """
+    typs = (typeof(a) for a in args)
     return (
         bool(args)
-        and any(isinstance(a, jax.Array) for a in args)
-        and all(isinstance(a, jax.typing.ArrayLike) for a in args)
+        and any(issubclass(t, jax.Array) for t in typs)
+        and all(issubclass(t, jax.typing.ArrayLike) for t in typs)
     )
 
 
@@ -129,16 +130,24 @@ class ArrayReduce(ObjectInterpretation):
         for stream_key, stream_body, streams_tail in outer_stream(streams):
             if not issubclass(typeof(stream_body), jax.Array):
                 continue
-            with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
-                eval_body = evaluate(body)
-                eval_streams_tail = evaluate(streams_tail)
-                assert isinstance(eval_streams_tail, dict)
-                reduce_tail = (
-                    monoid.reduce(eval_body, eval_streams_tail)
-                    if len(eval_streams_tail) > 0
-                    else eval_body
-                )
-                return reductor(bind_dims(reduce_tail, index), axis=0)
+
+            if stream_key in fvsof(body):
+                with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
+                    eval_body = evaluate(body)
+                    eval_streams_tail = evaluate(streams_tail)
+                    assert isinstance(eval_streams_tail, dict)
+                    reduce_tail = (
+                        monoid.reduce(eval_body, eval_streams_tail)
+                        if len(eval_streams_tail) > 0
+                        else eval_body
+                    )
+                    return reductor(bind_dims(reduce_tail, index), axis=0)
+            else:
+                # TODO: In this case, the stream is unused in the body. The body
+                # should be multiplied by the length of the stream. The current
+                # behavior is not efficient.
+                return fwd()
+
         return fwd()
 
 
