@@ -583,9 +583,9 @@ def test_reduce_lifted_1(outer, inner, backend):
     )
 
 
-def test_reduce_cartesian_1(backend):
-    a, i = define_vars("a", "i", typ=backend.scalar_typ)
-    A = define_vars("A", typ=backend.stream_typ)
+def test_reduce_cartesian_1():
+    a, i = define_vars("a", "i", typ=int)
+    A = define_vars("A", typ=tuple[int])
 
     with handler(NormalizeIntp):
         term1 = Sum.reduce(
@@ -596,9 +596,9 @@ def test_reduce_cartesian_1(backend):
     assert term1 == term2
 
 
-def test_reduce_cartesian_2(backend):
-    a, i = define_vars("a", "i", typ=backend.scalar_typ)
-    A = define_vars("A", typ=backend.stream_typ)
+def test_reduce_cartesian_2():
+    a, i = define_vars("a", "i", typ=int)
+    A = define_vars("A", typ=tuple[int])
 
     with handler(NormalizeIntp):
         term1 = Sum.reduce(
