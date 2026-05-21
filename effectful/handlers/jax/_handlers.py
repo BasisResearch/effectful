@@ -127,15 +127,12 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     return result
 
 
-class JaxOperation[**P, T](Operation[P, T]): ...
-
-
 @functools.cache
 def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
-    @JaxOperation.define
+    @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
