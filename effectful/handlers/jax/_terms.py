@@ -8,7 +8,6 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
     IndexElement,
-    _partial_eval,
     _register_jax_op,
     bind_dims,
     jax_getitem,
