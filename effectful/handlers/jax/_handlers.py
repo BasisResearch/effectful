@@ -19,6 +19,7 @@ from effectful.ops.syntax import (
     defop,
     implements,
     syntactic_eq,
+    syntactic_hash,
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
@@ -262,3 +263,9 @@ def _(x: jax.Array, other) -> bool:
         and x.shape == other.shape
         and bool((jnp.asarray(x) == jnp.asarray(other)).all())
     )
+
+
+@syntactic_hash.register(jax.Array)
+def _(x: jax.Array) -> int:
+    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
+    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
