@@ -1,7 +1,6 @@
-import dataclasses
 import functools
 import typing
-from typing import Iterable
+from collections.abc import Iterable
 
 import jax
 
@@ -189,8 +188,10 @@ def _range_step(term: Term):
     return term.args[2]
 
 
-def _is_simple_range(term):
-    assert term.op == range
+def _is_simple_range(term: Term) -> bool:
+    if term.op != range:
+        return False
+
     start = _range_start(term)
     step = _range_step(term)
     return (
@@ -237,6 +238,8 @@ class ReduceDeltaIndependent(ObjectInterpretation):
             return fwd()
 
         indices, weight = body.args
+        assert isinstance(indices, tuple)
+
         if not indices:
             return monoid.reduce(weight, streams)
 
@@ -246,11 +249,7 @@ class ReduceDeltaIndependent(ObjectInterpretation):
 
         tail_op: Operation = tail_index.op
         tail_stream = streams[tail_op]
-        if not (
-            isinstance(tail_stream, Term)
-            and tail_stream.op == range
-            and _is_simple_range(tail_stream)
-        ):
+        if not (isinstance(tail_stream, Term) and _is_simple_range(tail_stream)):
             return fwd()
 
         fresh_op = Operation.define(tail_op)
@@ -333,7 +332,7 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                     if isinstance(body, Term) and body.op == delta:
                         fresh_body = delta(
                             body.args[0],
-                            jnp.where(v() < u(), body.args[1], monoid.identity),
+                            jnp.where(v() < u(), body.args[1], monoid.identity),  # type: ignore[arg-type]
                         )
                     else:
                         fresh_body = jnp.where(v() < u(), body, monoid.identity)
