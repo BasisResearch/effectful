@@ -210,6 +210,25 @@ class ReduceDeltaIndependent(ObjectInterpretation):
     ═══════════════════════════════════════════════════════════════════════════
     reduce(M, streams, delta(idx', bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)))
 
+    Not yet supported:
+
+    - **Strided index streams** (``range(0, N, k)`` for ``k != 1``): the
+      premise ``_is_simple_range`` requires ``start == 0`` and ``step == 1``.
+      A strided extension would substitute ``v() := unbind_dims(jnp.arange(
+      start, stop, step), fv)`` and otherwise follow the same shape — the
+      change is purely in the recognised range form, the bind/unbind cycle
+      below is unchanged.
+    - **Non-zero start** (``range(a, b, 1)`` with ``a != 0``): same template
+      as the strided case; only the recognised range form changes.
+    - **Non-bare index expressions** (``delta((2*v(),), w)``,
+      ``delta((f(v()),), w)``, etc.): currently requires the final index
+      entry to be a bare call ``v()`` of a stream var op. Generalizing to
+      arbitrary index expressions is a scatter, not a bind: materialize the
+      index expression and the weight separately over ``v``, then
+      ``jnp.zeros(N).at[indices].set(values)`` (for Sum; analogous for
+      other monoids using ``.add``/``.min``/``.max``/...). This is a
+      different leaf operation from ``bind_dims`` and warrants a sibling
+      rule rather than an extension of this one.
     """
 
     @implements(Monoid.reduce)
@@ -253,6 +272,36 @@ class ReduceDependentRangeMask(ObjectInterpretation):
     ═══════════════════════════════════════════════════════════════════════════
     reduce(M, streams ∪ {u: range(N), v: range(N)}, where(v() < u(), body, M.identity))
 
+    Currently recognises only the lower-triangular form ``v: range(u())``:
+    constant start of 0, dependent stop equal to a bare call of another
+    stream var.
+
+    Not yet supported:
+
+    - **Upper-triangular** (``v: range(u(), N)`` — constant stop, dependent
+      start): bbox becomes ``range(0, N)`` (or ``range(0, bbox_N)``), guard
+      becomes ``v() >= u()``. Same shape of rewrite as lower-tri; differs
+      only in which side of the range carries the stream-var reference and
+      in the predicate direction.
+    - **Banded** (``v: range(u() - k, u() + k + 1)`` — two-sided dependent
+      bounds with constant width): bbox is ``range(0, N + k)`` (or similar
+      bounded by both endpoints' extents), guard is
+      ``(v() >= u() - k) & (v() < u() + k + 1)``. Needs both-sides
+      affine-bound recognition.
+    - **Strided dependent** (``v: range(0, u(), k)`` for ``k != 1``): bbox
+      stays ``range(0, N)`` and guard becomes
+      ``(v() < u()) & (v() % k == 0)`` (or equivalent), or alternatively
+      embed in a smaller bbox ``range(0, ceil(N/k))`` and remap the index.
+    - **Affine bounds** (``v: range(a*u() + b, c*u() + d)`` for affine
+      coefficients): bbox computed from ``ub(c*u() + d)`` over ``u``'s
+      range; guard is the conjunction of the two affine constraints. This
+      subsumes the upper/banded/strided cases under one affine recogniser.
+    - **Multi-stream-var dependent** (``v: range(u() + w())`` referencing
+      more than one outer stream var): bbox is the affine combination over
+      both referents' ranges; guard threads through all dependencies.
+    - **Reverse-order dependent ranges**: e.g. ``v: range(u(), 0, -1)``;
+      needs to handle negative step and the corresponding reverse
+      enumeration.
     """
 
     @implements(Monoid.reduce)
@@ -324,6 +373,33 @@ class ReduceRange(ObjectInterpretation):
         if not any_replaced:
             return fwd()
         return monoid.reduce(body, new_streams)
+
+
+# Cross-cutting delta rules not yet implemented:
+#
+# - **Delta-commuting** (DC-hoist): for any pure op ``f`` (no Scoped binders
+#   that intersect a delta's index ops), push delta outward:
+#       f(args..., delta(idx, body), args...)
+#       ≡ delta(idx, f(args..., body, args...))
+#   This normalizes delta to the outermost position so the reduce rules can
+#   pattern-match ``isinstance(body, Term) and body.op == delta`` cleanly.
+#   The soundness condition is mechanical via ``op.__fvs_rule__``: refuse to
+#   commute when a non-delta arg's scope binds any op in the delta's idx.
+#
+# - **Delta-merging** (DC-merge): under a pure binary op ``f`` (or
+#   generalized n-ary), merge multiple deltas when their index tuples are
+#   subsequence-compatible:
+#       f(delta(idx_a, v), delta(idx_b, w)) ≡ delta(idx_max, f(v, w))
+#   where ``idx_max`` is the longer of ``idx_a``, ``idx_b`` and ``idx_a`` is
+#   a subsequence of ``idx_b`` (or vice versa). Refuse to fire when neither
+#   is a subsequence of the other, since that would silently insert an
+#   outer-product broadcast.
+#
+# - **Empty-domain detection at the term level**: currently size-0 named
+#   dims must be resolved by leaf consumers (``bind_dims``, reductors with
+#   ``initial=monoid.identity``). The empty-domain check is intentionally
+#   NOT a rule on its own — rewrites stay size-polymorphic and leaf ops
+#   carry the burden. See the conversation in monoid.py's history for why.
 
 
 NormalizeIntp.extend(
