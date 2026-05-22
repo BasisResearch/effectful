@@ -350,6 +350,7 @@ def check_rewrite(
     free_vars=[],
     max_examples: int = 25,
     deadline=None,
+    normalize=NormalizeIntp,
 ) -> None:
     with handler(rule):
         norm = evaluate(lhs)
@@ -358,7 +359,7 @@ def check_rewrite(
     @given(intp=random_interpretation(free_vars))
     @settings(max_examples=max_examples, deadline=deadline)
     def _check_semantics(intp):
-        with handler(NormalizeIntp), handler(intp):
+        with handler(normalize), handler(intp):
             lhs_val = evaluate(lhs)
             rhs_val = evaluate(rhs)
         assert backend.eq(lhs_val, rhs_val)
