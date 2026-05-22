@@ -23,7 +23,15 @@ from effectful.handlers.numpyro import (
     CategoricalProbsTerm,
     NormalTerm,
 )
-from effectful.ops.monoid import Monoid, Product, Sum, WeightedStream, stream, weighted
+from effectful.ops.monoid import (
+    Monoid,
+    NormalizeIntp,
+    Product,
+    Sum,
+    WeightedStream,
+    stream,
+    weighted,
+)
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import NotHandled, Operation, Term
@@ -243,3 +251,6 @@ class NumpyroLogProb(ObjectInterpretation):
         if progress:
             return monoid.reduce(body, new_streams)
         return fwd()
+
+
+NormalizeIntp.extend(NumpyroCategorical())
