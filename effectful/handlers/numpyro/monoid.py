@@ -18,7 +18,11 @@ import numpyro.distributions.constraints as constraints
 import effectful.handlers.jax.numpy as ejnp
 from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax.monoid import LogSumExp
-from effectful.handlers.numpyro import NormalTerm
+from effectful.handlers.numpyro import (
+    CategoricalLogitsTerm,
+    CategoricalProbsTerm,
+    NormalTerm,
+)
 from effectful.ops.monoid import Monoid, Product, Sum, WeightedStream, stream, weighted
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
@@ -150,6 +154,66 @@ class NumpyroGaussHermite(ObjectInterpretation):
             return jax_getitem(_w, (idx,))
 
         return WeightedStream(stream=nodes, weight=weight_fn, monoid=w_monoid)
+
+
+@dataclass
+class NumpyroCategorical(ObjectInterpretation):
+    """Exact enumeration ('quadrature') for ``weighted(Categorical(...))``.
+
+    A categorical with ``K`` outcomes has finite integer support
+    ``{0, …, K-1}``; integration reduces to an exact finite sum. The rule
+    replaces ``weighted(d)`` with a :class:`WeightedStream` whose stream is
+    ``jnp.arange(K)`` and whose weight indexes into the per-outcome
+    probability vector.
+
+    Weight monoid is :data:`Product` for linear-space bodies and :data:`Sum`
+    for log-space bodies (under :data:`LogSumExp`), matching the
+    distributes-over pairs used by :class:`ReduceWeightedStream`.
+
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        new_streams = dict(streams)
+        progress = False
+        for k, v in streams.items():
+            d = _weighted_dist_arg(v)
+            ws = self._categorical(d, monoid)
+            if ws is None:
+                continue
+            new_streams[k] = ws
+            progress = True
+        if progress:
+            return monoid.reduce(body, new_streams)
+        return fwd()
+
+    def _categorical(self, d, monoid: Monoid) -> WeightedStream | None:
+        # Pick the natural representation for the target weight monoid so we
+        # don't go probs→log or logits→probs→log unnecessarily.
+        if monoid is LogSumExp:
+            w_monoid: Monoid = Sum
+            if isinstance(d, dist.CategoricalLogits | CategoricalLogitsTerm):
+                weights = jax.nn.log_softmax(jnp.asarray(d.logits), axis=-1)
+            elif isinstance(d, dist.CategoricalProbs | CategoricalProbsTerm):
+                weights = jnp.log(jnp.asarray(d.probs))
+            else:
+                return None
+        else:
+            w_monoid = Product
+            if isinstance(d, dist.CategoricalProbs | CategoricalProbsTerm):
+                weights = jnp.asarray(d.probs)
+            elif isinstance(d, dist.CategoricalLogits | CategoricalLogitsTerm):
+                weights = jax.nn.softmax(jnp.asarray(d.logits), axis=-1)
+            else:
+                return None
+
+        indices = jnp.arange(weights.shape[-1])
+
+        # The support value *is* the index, so the lookup is direct.
+        def weight_fn(x, _w=weights):
+            return jax_getitem(_w, (x,))
+
+        return WeightedStream(stream=indices, weight=weight_fn, monoid=w_monoid)
 
 
 class NumpyroLogProb(ObjectInterpretation):
