@@ -87,6 +87,12 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     if not sized_fvs:
         return t
 
+    # if any dimension is zero sized, the result is empty
+    if any(size == 0 for size in sized_fvs.values()):
+        key = tuple(sized_fvs.keys())
+        shape = tuple(sized_fvs[k] for k in key)
+        return jax_getitem(jnp.empty(shape), key)
+
     def _is_eager(t):
         return not isinstance(t, Term) or t.op in sized_fvs or is_eager_array(t)
 
