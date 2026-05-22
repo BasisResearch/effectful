@@ -133,6 +133,21 @@ def weighted(x) -> WeightedStream:
     raise NotImplementedError("Unsupported type", type(x))
 
 
+@Operation.define
+@functools.singledispatch
+def stream(x) -> Iterable:
+    """Smart constructor lifting a value into the :data:`Stream` type.
+
+    Used to wrap opaque ``support``-like values (e.g. numpyro
+    distributions or constraints) that aren't structurally iterable but
+    should appear in the stream slot of a :class:`WeightedStream`. Concrete
+    iterables can be registered to pass through unchanged; symbolic sources
+    register impls that ``raise NotHandled`` so the call stays a Term and
+    downstream rules can pattern-match on the wrapped value.
+    """
+    raise NotImplementedError("Unsupported stream source", type(x))
+
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))

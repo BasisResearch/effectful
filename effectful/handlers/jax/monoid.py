@@ -14,6 +14,7 @@ from effectful.ops.monoid import (
     NormalizeIntp,
     Product,
     Sum,
+    distributes_over,
     outer_stream,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
@@ -37,6 +38,10 @@ def cartesian_prod(x, y):
 
 
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
+
+# ``Sum`` in log space is multiplication, which distributes over ``LogSumExp``:
+#   a + logsumexp(b, c) = logsumexp(a + b, a + c)
+distributes_over.register(Sum, LogSumExp)
 
 
 def _jax_args(args):
