@@ -123,6 +123,25 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+@dataclass
+class WeightedStream[T, W](Stream[tuple[T, W]]):
+    stream: Stream[T]
+    weight: Callable[[T], W]
+    monoid: Monoid[W]
+
+    def __iter__(self):
+        if isinstance(self.stream, Term):
+            return iter_(self)
+
+        return ((x, self.weight(x)) for x in self.stream)
+
+
+@Operation.define
+@functools.singledispatch
+def weighted(x) -> WeightedStream:
+    raise NotImplementedError("Unsupported type", type(x))
+
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))

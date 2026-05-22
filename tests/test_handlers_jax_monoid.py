@@ -5,7 +5,8 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax.monoid import ArrayReduce, LogSumExp
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.monoid import Max, Min, Product, Sum
+from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Sum, WeightedStream
+from effectful.ops.semantics import coproduct
 from tests._monoid_helpers import JAX_BACKEND, Backend, check_rewrite, define_vars
 
 MONOIDS = [
@@ -93,4 +94,38 @@ def test_reduce_array_3(monoid, reductor, backend: Backend):
         rule=ArrayReduce(),
         backend=backend,
         free_vars=[x, y, k1, k2, X, f, g],
+    )
+
+
+@pytest.mark.xfail(
+    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
+)
+def test_jax_weighted_reduce(backend: Backend):
+    """Sum over a single ``WeightedStream`` with ``Product`` weights lowers to
+    ``jnp.sum(w(X) * body(X))`` under ``NormalizeIntp`` ∘ ``ArrayReduce``.
+
+    Verifies that the desugaring rule composes cleanly with the JAX lowering
+    so existing handlers need no changes to support weighted streams.
+    """
+    (x, k) = define_vars("x", "k", typ=jax.Array)
+    X = define_vars("X", typ=backend.stream_typ)
+    body = backend.fresh_op("body", n_args=1, ret="scalar")
+    w = backend.fresh_op("w", n_args=1, ret="scalar")
+
+    ws = WeightedStream(stream=X(), weight=lambda v: w(v), monoid=Product)
+    lhs = Sum.reduce(body(x()), {x: ws})
+    rhs = jnp.sum(
+        bind_dims(
+            unbind_dims(w(X()), k) * unbind_dims(body(X()), k),
+            k,
+        ),
+        axis=0,
+    )
+
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(NormalizeIntp, ArrayReduce()),
+        backend=backend,
+        free_vars=[x, k, X, body, w],
     )

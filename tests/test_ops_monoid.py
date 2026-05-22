@@ -28,6 +28,7 @@ from effectful.ops.monoid import (
     ReduceNoStreams,
     ReduceSplit,
     Sum,
+    WeightedStream,
     distributes_over,
 )
 from effectful.ops.semantics import fvsof, handler
@@ -665,4 +666,67 @@ def test_reduce_lifted_2(outer, inner, backend):
         rule=ReduceDistributeCartesianProduct(),
         backend=backend,
         free_vars=[a, i, s, t, A, N, T, A_domain, f1, f2],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Weighted streams
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
+)
+def test_reduce_single_weighted_stream(backend):
+    """Single weighted stream desugars:
+    Sum.reduce(body, {a: WS(A, w, Product)})
+      = Sum.reduce(Product.plus(w(a), body), {a: A})
+    """
+    a = define_vars("a", typ=backend.scalar_typ)
+    A = define_vars("A", typ=backend.stream_typ)
+    body = backend.fresh_op("body", n_args=1, ret="scalar")
+    w = backend.fresh_op("w", n_args=1, ret="scalar")
+
+    ws = WeightedStream(stream=A(), weight=lambda v: w(v), monoid=Product)
+    lhs = Sum.reduce(body(a()), {a: ws})
+    rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
+
+    check_rewrite(
+        lhs=lhs, rhs=rhs, rule=NormalizeIntp, backend=backend, free_vars=[A, body, w]
+    )
+
+
+@pytest.mark.xfail(
+    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
+)
+def test_reduce_weighted_factorization(backend):
+    """Two independent weighted streams under Sum with Product weights factor:
+        Sum.reduce(f(a)*g(b), {a: WS(A, w_a, Product), b: WS(B, w_b, Product)})
+          = (Sum.reduce(w_a(a)*f(a), {a: A})) * (Sum.reduce(w_b(b)*g(b), {b: B}))
+
+    Exercises chaining of ``ReduceWeightedStream`` with ``ReduceFactorization``
+    inside ``NormalizeIntp``.
+    """
+    a, b = define_vars("a", "b", typ=backend.scalar_typ)
+    A, B = define_vars("A", "B", typ=backend.stream_typ)
+    f = backend.fresh_op("f", n_args=1, ret="scalar")
+    g = backend.fresh_op("g", n_args=1, ret="scalar")
+    w_a = backend.fresh_op("w_a", n_args=1, ret="scalar")
+    w_b = backend.fresh_op("w_b", n_args=1, ret="scalar")
+
+    ws_a = WeightedStream(stream=A(), weight=lambda v: w_a(v), monoid=Product)
+    ws_b = WeightedStream(stream=B(), weight=lambda v: w_b(v), monoid=Product)
+
+    lhs = Sum.reduce(Product.plus(f(a()), g(b())), {a: ws_a, b: ws_b})
+    rhs = Product.plus(
+        Sum.reduce(Product.plus(w_a(a()), f(a())), {a: A()}),
+        Sum.reduce(Product.plus(w_b(b()), g(b())), {b: B()}),
+    )
+
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=NormalizeIntp,
+        backend=backend,
+        free_vars=[A, B, f, g, w_a, w_b],
     )
