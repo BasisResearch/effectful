@@ -4,13 +4,12 @@ import itertools
 import operator
 import typing
 from collections import Counter, UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.internals.unification import canonicalize
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
@@ -26,10 +25,7 @@ from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Ter
 
 type Stream[T] = Iterable[T]
 
-
-# Note: The streams value type should be something like Iterable[T], but some of
-# our target stream types (e.g. jax.Array) are not subtypes of Iterable
-type Streams[T] = Mapping[Operation[[], T], Stream[T]]
+type Streams = Mapping[Operation[[], Any], Stream[Any]]
 
 type Body[T] = (
     Iterable[T]
@@ -40,9 +36,7 @@ type Body[T] = (
 )
 
 
-def outer_stream[T](
-    streams: Streams[T],
-) -> Iterable[tuple[Operation, Stream[T], dict[Operation, Stream[T]]]]:
+def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]]:
     """Returns the streams that can be ordered outermost in the loop nest as
     well as the remaining streams in the nest.
 

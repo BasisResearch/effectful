@@ -1,11 +1,26 @@
+import functools
+
 import jax
 import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, unbind_dims
-from effectful.handlers.jax.monoid import ArrayReduce, LogSumExp
+from effectful.handlers.jax.monoid import (
+    ArrayReduce,
+    LogSumExp,
+    ProductPlusJax,
+    SumPlusJax,
+)
 from effectful.handlers.jax.scipy.special import logsumexp
-from effectful.ops.monoid import Max, Min, NormalizeIntp, Product, Sum, WeightedStream
+from effectful.ops.monoid import (
+    Max,
+    Min,
+    NormalizeIntp,
+    Product,
+    ReduceWeightedStream,
+    Sum,
+    WeightedStream,
+)
 from effectful.ops.semantics import coproduct
 from tests._monoid_helpers import JAX_BACKEND, Backend, check_rewrite, define_vars
 
@@ -97,9 +112,6 @@ def test_reduce_array_3(monoid, reductor, backend: Backend):
     )
 
 
-@pytest.mark.xfail(
-    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
-)
 def test_jax_weighted_reduce(backend: Backend):
     """Sum over a single ``WeightedStream`` with ``Product`` weights lowers to
     ``jnp.sum(w(X) * body(X))`` under ``NormalizeIntp`` ∘ ``ArrayReduce``.
@@ -112,20 +124,18 @@ def test_jax_weighted_reduce(backend: Backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = WeightedStream(stream=X(), weight=lambda v: w(v), monoid=Product)
+    ws = WeightedStream(stream=X(), weight=w, monoid=Product)
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
-        bind_dims(
-            unbind_dims(w(X()), k) * unbind_dims(body(X()), k),
-            k,
-        ),
-        axis=0,
+        bind_dims(w(unbind_dims(X(), k)) * body(unbind_dims(X(), k)), k), axis=0
     )
 
     check_rewrite(
         lhs=lhs,
         rhs=rhs,
-        rule=coproduct(NormalizeIntp, ArrayReduce()),
+        rule=functools.reduce(
+            coproduct, [ReduceWeightedStream(), ArrayReduce(), ProductPlusJax()]
+        ),
         backend=backend,
         free_vars=[x, k, X, body, w],
     )

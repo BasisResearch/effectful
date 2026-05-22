@@ -1,3 +1,4 @@
+import math
 import typing
 
 import pytest
@@ -32,8 +33,8 @@ from effectful.ops.monoid import (
     WeightedStream,
     distributes_over,
 )
-from effectful.ops.semantics import coproduct, fvsof, handler
-from effectful.ops.types import Operation
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import (
     INT_BACKEND,
     JAX_BACKEND,
@@ -713,8 +714,8 @@ def test_reduce_weighted_factorization(backend):
     w_a = backend.fresh_op("w_a", n_args=1, ret="scalar")
     w_b = backend.fresh_op("w_b", n_args=1, ret="scalar")
 
-    ws_a = WeightedStream(stream=A(), weight=lambda v: w_a(v), monoid=Product)
-    ws_b = WeightedStream(stream=B(), weight=lambda v: w_b(v), monoid=Product)
+    ws_a = WeightedStream(stream=A(), weight=w_a, monoid=Product)
+    ws_b = WeightedStream(stream=B(), weight=w_b, monoid=Product)
 
     lhs = Sum.reduce(Product.plus(f(a()), g(b())), {a: ws_a, b: ws_b})
     rhs = Product.plus(
@@ -729,3 +730,34 @@ def test_reduce_weighted_factorization(backend):
         backend=backend,
         free_vars=[A, B, f, g, w_a, w_b],
     )
+
+
+def test_weighted_expectation_demo():
+    """Demo: compute E[f(X)] = Σ_x w(x)·f(x) via a weighted reduce.
+
+    X ranges over [1, 2, 3, 4] with weights w(x) = x/10 (a valid distribution
+    since the weights sum to 1) and f(x) = x*x. Expected value:
+        0.1·1 + 0.2·4 + 0.3·9 + 0.4·16 = 10.0
+    """
+    weights = {1: 0.1, 2: 0.2, 3: 0.3, 4: 0.4}
+
+    def _w(v: int) -> float:
+        if isinstance(v, Term):
+            raise NotHandled
+        return weights[v]
+
+    def _f(v: int) -> float:
+        if isinstance(v, Term):
+            raise NotHandled
+        return float(v * v)
+
+    a = define_vars("a", typ=int)
+    w = Operation.define(_w, name="w")
+    f = Operation.define(_f, name="f")
+
+    ws = WeightedStream(stream=[1, 2, 3, 4], weight=w, monoid=Product)
+
+    with handler(NormalizeIntp):
+        result = evaluate(Sum.reduce(f(a()), {a: ws}))
+
+    assert math.isclose(result, 10.0)
