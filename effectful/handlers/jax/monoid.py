@@ -1,4 +1,5 @@
 import functools
+from collections.abc import Iterable
 
 import jax
 
@@ -18,6 +19,8 @@ from effectful.ops.monoid import (
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Operation
+
+Iterable.register(jax.Array)  # required to make jax arrays compatible with Stream[T]
 
 
 def cartesian_prod(x, y):

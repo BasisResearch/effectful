@@ -27,11 +27,12 @@ from effectful.ops.monoid import (
     ReduceFusion,
     ReduceNoStreams,
     ReduceSplit,
+    ReduceWeightedStream,
     Sum,
     WeightedStream,
     distributes_over,
 )
-from effectful.ops.semantics import fvsof, handler
+from effectful.ops.semantics import coproduct, fvsof, handler
 from effectful.ops.types import Operation
 from tests._monoid_helpers import (
     INT_BACKEND,
@@ -674,9 +675,6 @@ def test_reduce_lifted_2(outer, inner, backend):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
-)
 def test_reduce_single_weighted_stream(backend):
     """Single weighted stream desugars:
     Sum.reduce(body, {a: WS(A, w, Product)})
@@ -687,18 +685,19 @@ def test_reduce_single_weighted_stream(backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = WeightedStream(stream=A(), weight=lambda v: w(v), monoid=Product)
+    ws = WeightedStream(stream=A(), weight=w, monoid=Product)
     lhs = Sum.reduce(body(a()), {a: ws})
     rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
 
     check_rewrite(
-        lhs=lhs, rhs=rhs, rule=NormalizeIntp, backend=backend, free_vars=[A, body, w]
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceWeightedStream(),
+        backend=backend,
+        free_vars=[A, body, w],
     )
 
 
-@pytest.mark.xfail(
-    strict=True, reason="ReduceWeightedStream rewrite rule not yet implemented"
-)
 def test_reduce_weighted_factorization(backend):
     """Two independent weighted streams under Sum with Product weights factor:
         Sum.reduce(f(a)*g(b), {a: WS(A, w_a, Product), b: WS(B, w_b, Product)})
@@ -719,14 +718,14 @@ def test_reduce_weighted_factorization(backend):
 
     lhs = Sum.reduce(Product.plus(f(a()), g(b())), {a: ws_a, b: ws_b})
     rhs = Product.plus(
-        Sum.reduce(Product.plus(w_a(a()), f(a())), {a: A()}),
-        Sum.reduce(Product.plus(w_b(b()), g(b())), {b: B()}),
+        Sum.reduce(Product.plus(w_a(a()), Product.plus(f(a()))), {a: A()}),
+        Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
     )
 
     check_rewrite(
         lhs=lhs,
         rhs=rhs,
-        rule=NormalizeIntp,
+        rule=coproduct(ReduceWeightedStream(), ReduceFactorization()),
         backend=backend,
         free_vars=[A, B, f, g, w_a, w_b],
     )

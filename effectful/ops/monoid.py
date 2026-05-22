@@ -10,10 +10,12 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any, Protocol
 
 from effectful.internals.disjoint_set import DisjointSet
+from effectful.internals.unification import canonicalize
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
+    defdata,
     deffn,
     implements,
     iter_,
@@ -22,9 +24,7 @@ from effectful.ops.syntax import (
 )
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
-
-class Stream[T](Protocol):
-    def __iter__(self) -> Iterator[T]: ...
+type Stream[T] = Iterable[T]
 
 
 # Note: The streams value type should be something like Iterable[T], but some of
@@ -124,16 +124,13 @@ class MonoidWithZero[T](Monoid[T]):
 
 
 @dataclass
-class WeightedStream[T, W](Stream[tuple[T, W]]):
+class WeightedStream[T, W](Iterable[T]):
     stream: Stream[T]
     weight: Callable[[T], W]
     monoid: Monoid[W]
 
     def __iter__(self):
-        if isinstance(self.stream, Term):
-            return iter_(self)
-
-        return ((x, self.weight(x)) for x in self.stream)
+        return defdata(iter_, self)
 
 
 @Operation.define
@@ -579,6 +576,24 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         return fwd()
 
 
+class ReduceWeightedStream(ObjectInterpretation):
+    """reduce(M, body, {x: WeightedStream(s, w, WM), ...}) = reduce(M,
+    WM.plus(w(x), body), {x: s, ...})
+
+    requires distributes_over(WM, M).
+
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        for k, v in streams.items():
+            if isinstance(v, WeightedStream) and distributes_over(v.monoid, monoid):
+                weighted_body = v.monoid.plus(v.weight(k()), body)
+                new_streams = {**streams, k: v.stream}
+                return monoid.reduce(weighted_body, new_streams)
+        return fwd()
+
+
 class MonoidOverCallable(ObjectInterpretation):
     """``monoid.reduce(f, streams) = lambda *a: monoid.reduce(f(*a), streams)``."""
 
@@ -773,6 +788,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceSplit(),
     ReduceFactorization(),
     ReduceDistributeCartesianProduct(),
+    ReduceWeightedStream(),
     PlusEmpty(),
     PlusSingle(),
     PlusIdentity(),

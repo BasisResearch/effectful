@@ -801,6 +801,7 @@ def _(typ: typing._ConcatenateGenericAlias):  # type: ignore
 
 @canonicalize.register
 def _(typ: typing._AnyMeta):  # type: ignore
+
     return typing.Any
 
 

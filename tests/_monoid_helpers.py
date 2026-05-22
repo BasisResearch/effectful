@@ -1,7 +1,7 @@
 import itertools
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from typing import Annotated, Any, get_args, get_origin
 
 import jax
 from hypothesis import given, settings
@@ -25,8 +25,19 @@ def _jax_array_value_strategy() -> st.SearchStrategy[jax.Array]:
     ).map(lambda xs: jax.numpy.asarray(xs, dtype=jax.numpy.float32))
 
 
+# Shape-preserving unary jax fns: scalar → scalar (counterpart of
+# ``_UNARY_NUM_FNS`` for ints). Used for ops declared with ``ret="scalar"``.
+_UNARY_JAX_SCALAR_FNS: list[Callable[[jax.Array], jax.Array]] = [
+    lambda a: a,
+    lambda a: a + 1,
+    lambda a: a - 1,
+    lambda a: -a,
+    lambda a: 2 * a,
+]
+
 # Unary jax fns map a scalar to a 1-D array (analogous to ``_UNARY_LIST_FNS``
 # for ints). Uses the effectful-wrapped jnp so named-dim broadcasting works.
+# Used for ops declared with ``ret="stream"``.
 _UNARY_JAX_FNS: list[Callable[[jax.Array], jax.Array]] = [
     lambda a: _jnp.stack([a, a + 1]),
     lambda a: _jnp.stack([a, -a]),
@@ -91,14 +102,33 @@ _UNARY_JAX_LIST_FNS: list[Callable[[jax.Array], list[jax.Array]]] = [
 ]
 
 
+def _is_stream(annotation: Any) -> bool:
+    """True if ``annotation`` carries the ``"stream"`` Annotated marker.
+
+    On the JAX backend ``scalar_typ`` and ``stream_typ`` are both ``jax.Array``,
+    so :meth:`Backend.fresh_op` tags stream returns as
+    ``Annotated[jax.Array, "stream"]`` to keep them distinguishable here.
+    """
+    return get_origin(annotation) is Annotated and "stream" in annotation.__metadata__
+
+
+def _strip(annotation: Any) -> Any:
+    """Strip an ``Annotated`` wrapper to its underlying type."""
+    if get_origin(annotation) is Annotated:
+        return get_args(annotation)[0]
+    return annotation
+
+
 def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
     """Pick a strategy producing a callable suitable for binding `op` in an
     interpretation. Inspects the operation's signature.
     """
     sig = op.__signature__
     params = list(sig.parameters.values())
-    ret = sig.return_annotation
-    param_types = tuple(p.annotation for p in params)
+    ret_annot = sig.return_annotation
+    ret = _strip(ret_annot)
+    ret_is_stream = _is_stream(ret_annot)
+    param_types = tuple(_strip(p.annotation) for p in params)
 
     if not params:
         return _value_strategy_for(ret).map(deffn)
@@ -109,7 +139,9 @@ def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
     if get_origin(ret) is list and get_args(ret) == (int,) and param_types == (int,):
         return st.sampled_from(_UNARY_LIST_FNS)
     if ret is jax.Array and param_types == (jax.Array,):
-        return st.sampled_from(_UNARY_JAX_FNS)
+        if ret_is_stream:
+            return st.sampled_from(_UNARY_JAX_FNS)
+        return st.sampled_from(_UNARY_JAX_SCALAR_FNS)
     if ret is jax.Array and param_types == (jax.Array, jax.Array):
         return st.sampled_from(_BINARY_JAX_FNS)
     if (
@@ -274,7 +306,15 @@ class Backend:
         each of type ``scalar_typ``.
         """
         scalar = self.scalar_typ
-        out = self.stream_typ if ret == "stream" else scalar
+        if ret == "stream":
+            out = self.stream_typ
+            # When scalar_typ == stream_typ (e.g. jax backend), tag the return
+            # with an Annotated marker so ``_strategy_for_op`` can pick the
+            # right (shape-changing) function family.
+            if scalar is out:
+                out = Annotated[out, "stream"]
+        else:
+            out = scalar
         params = ", ".join(f"_a{i}" for i in range(n_args))
         ns: dict[str, Any] = {"NotHandled": NotHandled}
         exec(f"def _fn({params}):\n    raise NotHandled\n", ns)
