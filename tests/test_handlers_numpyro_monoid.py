@@ -11,7 +11,6 @@ into a single named-dim ``jnp.sum``; the RHS therefore matches that final
 form, in the style of ``test_jax_weighted_reduce``.
 """
 
-import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
 import pytest
