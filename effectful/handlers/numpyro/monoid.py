@@ -5,45 +5,24 @@ distribution as a weighted stream. By default it stays symbolic — i.e.
 ``weighted(d)`` returns a ``Term`` whose ``args[0]`` is ``d`` — so that
 specialized reduction rules (closed-form expectations, quadrature, etc.)
 can pattern-match on the distribution.
-
-Two general-purpose reduction rules are provided here:
-
-* :class:`NumpyroSampling` — Monte Carlo approximation. Replaces
-  ``weighted(d)`` with a sample-backed :class:`WeightedStream` of ``n_samples``
-  i.i.d. draws and uniform weights, then delegates to the standard
-  :class:`ReduceWeightedStream` machinery.
-
-* :class:`NumpyroLogProb` — generic symbolic lowering. Replaces
-  ``weighted(d)`` with ``WeightedStream(stream(d.support), d.log_prob, Sum)``.
-  ``Sum`` acts as multiplication in log space and
-  ``distributes_over(Sum, LogSumExp)`` is registered, so a subsequent
-  ``LogSumExp.reduce`` is desugared by ``ReduceWeightedStream`` into the
-  standard log-space expectation integrand:
-
-      LogSumExp.reduce(Sum.plus(d.log_prob(x), body), {x: stream(d.support)})
 """
 
 from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpyro.distributions as dist
 import numpyro.distributions.constraints as constraints
 
+import effectful.handlers.jax.numpy as ejnp
+from effectful.handlers.jax import jax_getitem
 from effectful.handlers.jax.monoid import LogSumExp
-from effectful.ops.monoid import (
-    Monoid,
-    Product,
-    Sum,
-    WeightedStream,
-    stream,
-    weighted,
-)
+from effectful.handlers.numpyro import NormalTerm
+from effectful.ops.monoid import Monoid, Product, Sum, WeightedStream, stream, weighted
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import NotHandled, Operation, Term
-
-# --- smart constructors stay symbolic for distributions / constraints -----
 
 
 @weighted.register(dist.Distribution)
@@ -71,18 +50,15 @@ def _weighted_dist_arg(v) -> dist.Distribution | None:
     return d if isinstance(d, dist.Distribution) else None
 
 
-# --- rule: Monte Carlo sampling -------------------------------------------
-
-
 @dataclass
 class NumpyroSampling(ObjectInterpretation):
     """Replace ``weighted(d)`` with a sample-backed :class:`WeightedStream`.
 
-    Draws ``n_samples`` i.i.d. samples from ``d`` and attaches a uniform
-    weight ``1/n_samples`` (linear space) or ``-log(n_samples)`` (log
-    space, when the outer monoid is :data:`LogSumExp`). The resulting
-    :class:`WeightedStream` is then handled by the standard
-    :class:`ReduceWeightedStream` rewrite.
+    Draws ``n_samples`` i.i.d. samples from ``d`` and attaches a uniform weight
+    ``1/n_samples`` (linear space) or ``-log(n_samples)`` (log space, when the
+    outer monoid is :data:`LogSumExp`). The resulting :class:`WeightedStream` is
+    then handled by the standard :class:`ReduceWeightedStream` rewrite.
+
     """
 
     rng_key: jax.Array
@@ -114,18 +90,78 @@ class NumpyroSampling(ObjectInterpretation):
         return fwd()
 
 
-# --- rule: symbolic log-prob lowering -------------------------------------
+@dataclass
+class NumpyroGaussHermite(ObjectInterpretation):
+    """Gauss–Hermite quadrature for ``weighted(Normal(μ, σ))``.
+
+    For ``X ∼ Normal(μ, σ²)``, the change of variable ``u = (x-μ)/(σ√2)`` gives
+    ::
+
+        E[f(X)] = (1/√π) ∫ f(μ + σ√2 · u) e^{-u²} du
+               ≈ Σᵢ (wᵢ/√π) · f(μ + σ√2 · uᵢ)
+
+    where ``{uᵢ, wᵢ}`` are the physicists' Hermite nodes/weights from
+    :func:`numpy.polynomial.hermite.hermgauss`. The rule replaces
+    ``weighted(d)`` with a :class:`WeightedStream` of length ``n_nodes`` and
+    lets the standard :class:`ReduceWeightedStream` machinery finish.
+
+    Weight monoid is :data:`Product` for linear-space bodies (e.g.
+    ``Sum.reduce``) and :data:`Sum` for log-space bodies (e.g.
+    ``LogSumExp.reduce``); both pairs distribute correctly.
+
+    """
+
+    n_nodes: int = 20
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        new_streams = dict(streams)
+        progress = False
+        for k, v in streams.items():
+            d = _weighted_dist_arg(v)
+            if not isinstance(d, dist.Normal | NormalTerm):
+                continue
+            new_streams[k] = self._gauss_hermite(d, monoid)
+            progress = True
+        if progress:
+            return monoid.reduce(body, new_streams)
+        return fwd()
+
+    def _gauss_hermite(self, d, monoid: Monoid) -> WeightedStream:
+        u, w = np.polynomial.hermite.hermgauss(self.n_nodes)
+        u_jax = jnp.asarray(u, dtype=jnp.float32)
+        w_jax = jnp.asarray(w, dtype=jnp.float32)
+
+        nodes = d.loc + jnp.sqrt(2.0) * d.scale * u_jax
+        if monoid is LogSumExp:
+            weights = jnp.log(w_jax) - 0.5 * jnp.log(jnp.pi)
+            w_monoid: Monoid = Sum
+        else:
+            weights = w_jax / jnp.sqrt(jnp.pi)
+            w_monoid = Product
+
+        # Position-match the node value back to its weight via argmin. The
+        # weight function is invoked symbolically by ``ReduceWeightedStream``
+        # (with a Term arg), so we use the effectful-wrapped jnp so the
+        # lookup becomes a Term that evaluates to the right scalar once the
+        # default reduce binds the stream variable to a concrete node.
+        def weight_fn(x, _nodes=nodes, _w=weights):
+            idx = ejnp.argmin(ejnp.abs(_nodes - x))
+            return jax_getitem(_w, (idx,))
+
+        return WeightedStream(stream=nodes, weight=weight_fn, monoid=w_monoid)
 
 
 class NumpyroLogProb(ObjectInterpretation):
     """Lower ``weighted(d)`` to its symbolic log-prob form.
 
-    Generic fallback: produces a :class:`WeightedStream` whose stream is
-    the symbolic ``stream(d.support)``, weight is ``d.log_prob``, and
-    weight monoid is :data:`Sum` (log-space multiplication). With
-    ``distributes_over(Sum, LogSumExp)`` registered, a surrounding
-    ``LogSumExp.reduce`` will then desugar via :class:`ReduceWeightedStream`
-    into the standard expectation integrand.
+    Generic fallback: produces a :class:`WeightedStream` whose stream is the
+    symbolic ``stream(d.support)``, weight is ``d.log_prob``, and weight monoid
+    is :data:`Sum` (log-space multiplication). With ``distributes_over(Sum,
+    LogSumExp)`` registered, a surrounding ``LogSumExp.reduce`` will then
+    desugar via :class:`ReduceWeightedStream` into the standard expectation
+    integrand.
+
     """
 
     @implements(Monoid.reduce)

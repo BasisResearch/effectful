@@ -9,13 +9,11 @@ from effectful.handlers.jax.monoid import (
     ArrayReduce,
     LogSumExp,
     ProductPlusJax,
-    SumPlusJax,
 )
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     Max,
     Min,
-    NormalizeIntp,
     Product,
     ReduceWeightedStream,
     Sum,
