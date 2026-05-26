@@ -357,7 +357,7 @@ class _DistributionTerm(dist.Distribution):
         raise NotHandled
 
     @defop
-    def expand(self, batch_shape) -> jax.Array:
+    def expand(self, batch_shape) -> dist.Distribution:
         if not self._is_eager:
             raise NotHandled
 
