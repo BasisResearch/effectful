@@ -1,5 +1,6 @@
 import math
 import typing
+from collections.abc import Iterable
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -32,7 +33,6 @@ from effectful.ops.monoid import (
     ReduceWeightedStream,
     Sum,
     distributes_over,
-    weighted,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation, Term
@@ -682,14 +682,12 @@ def test_reduce_single_weighted_stream(backend):
     Sum.reduce(body, {a: WS(A, w, Product)})
       = Sum.reduce(Product.plus(w(a), body), {a: A})
     """
-    a = define_vars("a", typ=backend.scalar_typ)
+    a, e = define_vars("a", "e", typ=backend.scalar_typ)
     A = define_vars("A", typ=backend.stream_typ)
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    e = define_vars("e", typ=backend.scalar_typ)
-    ws = weighted(A(), e, w(e()), Product)
-    lhs = Sum.reduce(body(a()), {a: ws})
+    lhs = Sum.reduce(body(a()), {a: Product.weighted(A(), e, w(e()))})
     rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
 
     check_rewrite(
@@ -703,25 +701,26 @@ def test_reduce_single_weighted_stream(backend):
 
 def test_reduce_weighted_factorization(backend):
     """Two independent weighted streams under Sum with Product weights factor:
-        Sum.reduce(f(a)*g(b), {a: WS(A, w_a, Product), b: WS(B, w_b, Product)})
+        Sum.reduce(f(a)*g(b), {a: Product.weighted(A, a, w_a), b: Product.weighted(B, b, w_b)})
           = (Sum.reduce(w_a(a)*f(a), {a: A})) * (Sum.reduce(w_b(b)*g(b), {b: B}))
 
     Exercises chaining of ``ReduceWeightedStream`` with ``ReduceFactorization``
     inside ``NormalizeIntp``.
     """
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
+    a, b, e_a, e_b = define_vars("a", "b", "e_a", "e_b", typ=backend.scalar_typ)
     A, B = define_vars("A", "B", typ=backend.stream_typ)
     f = backend.fresh_op("f", n_args=1, ret="scalar")
     g = backend.fresh_op("g", n_args=1, ret="scalar")
     w_a = backend.fresh_op("w_a", n_args=1, ret="scalar")
     w_b = backend.fresh_op("w_b", n_args=1, ret="scalar")
 
-    e_a = define_vars("e_a", typ=backend.scalar_typ)
-    e_b = define_vars("e_b", typ=backend.scalar_typ)
-    ws_a = weighted(A(), e_a, w_a(e_a()), Product)
-    ws_b = weighted(B(), e_b, w_b(e_b()), Product)
-
-    lhs = Sum.reduce(Product.plus(f(a()), g(b())), {a: ws_a, b: ws_b})
+    lhs = Sum.reduce(
+        Product.plus(f(a()), g(b())),
+        {
+            a: Product.weighted(A(), e_a, w_a(e_a())),
+            b: Product.weighted(B(), e_b, w_b(e_b())),
+        },
+    )
     rhs = Product.plus(
         Sum.reduce(Product.plus(w_a(a()), Product.plus(f(a()))), {a: A()}),
         Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
@@ -741,30 +740,20 @@ def test_reduce_cartesian_weighted_stream(backend):
     is independent of the plate var rewrites to a single joint
     ``WeightedStream``:
 
-        CartesianProduct.reduce(WeightedStream(s, e, w(e), M), {p: P})
-          = WeightedStream(
-              stream  = CartesianProduct.reduce(s, {p: P}),
-              var     = row,
-              weight  = M.reduce(w(e), {e: row()}),
-              monoid  = M,
-            )
+        CartesianProduct.reduce(M.weighted(s, e, w(e)), {p: P})
+          = M.weighted(CartesianProduct.reduce(s, {p: P}), row, M.reduce(w(e), {e: row()}))
     """
-    from collections.abc import Iterable
-
-    p = define_vars("p", typ=backend.scalar_typ)
+    p, e_var = define_vars("p", "e_var", typ=backend.scalar_typ)
     S, P = define_vars("S", "P", typ=backend.stream_typ)
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    e_var = define_vars("e", typ=backend.scalar_typ)
-    ws = weighted(S(), e_var, w(e_var()), Product)
-    lhs = CartesianProduct.reduce(ws, {p: P()})
+    lhs = CartesianProduct.reduce(Product.weighted(S(), e_var, w(e_var())), {p: P()})
 
     row_var = Operation.define(Iterable[backend.scalar_typ], name="row")
-    rhs = weighted(
+    rhs = Product.weighted(
         CartesianProduct.reduce(S(), {p: P()}),
         row_var,
         Product.reduce(w(e_var()), {e_var: row_var()}),
-        Product,
     )
 
     check_rewrite(
@@ -782,7 +771,7 @@ def test_lift_weighted_cartesian(backend):
 
         Sum.reduce(
             Product.reduce(body(a()), {a: A()}),
-            {A: CartesianProduct.reduce(weighted(S, e, w(e), Product), {p: P})},
+            {A: CartesianProduct.reduce(Product.weighted(S, e, w(e)), {p: P})},
         )
 
     The inner ``weighted`` becomes a joint ``weighted`` (rule 1), lifts its
@@ -800,14 +789,12 @@ def test_lift_weighted_cartesian(backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = weighted(S(), e, w(e()), Product)
     lhs = Sum.reduce(
         Product.reduce(body(a()), {a: A()}),
-        {A: CartesianProduct.reduce(ws, {p: P()})},
+        {A: CartesianProduct.reduce(Product.weighted(S(), e, w(e())), {p: P()})},
     )
     rhs = Product.reduce(
-        Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}),
-        {p: P()},
+        Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}), {p: P()}
     )
 
     check_rewrite(
@@ -841,14 +828,13 @@ def test_weighted_expectation_demo():
             raise NotHandled
         return float(v * v)
 
-    a = define_vars("a", typ=int)
+    a, e = define_vars("a", "e", typ=int)
     w = Operation.define(_w, name="w")
     f = Operation.define(_f, name="f")
 
-    e = define_vars("e", typ=int)
-    ws = weighted([1, 2, 3, 4], e, w(e()), Product)
-
     with handler(NormalizeIntp):
-        result = evaluate(Sum.reduce(f(a()), {a: ws}))
+        result = evaluate(
+            Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], e, w(e()))})
+        )
 
     assert math.isclose(result, 10.0)

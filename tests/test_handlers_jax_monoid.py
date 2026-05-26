@@ -24,7 +24,6 @@ from effectful.ops.monoid import (
     Product,
     ReduceWeightedStream,
     Sum,
-    weighted,
 )
 from effectful.ops.semantics import coproduct, handler
 from effectful.ops.types import Interpretation
@@ -119,18 +118,19 @@ def test_reduce_array_3(monoid, reductor, backend: Backend):
 
 
 def test_jax_weighted_reduce(backend: Backend):
-    """Sum over a single ``WeightedStream`` with ``Product`` weights lowers to
+    """Sum over a single stream with ``Product`` weights lowers to
     ``jnp.sum(w(X) * body(X))`` under ``NormalizeIntp`` ∘ ``ArrayReduce``.
 
     Verifies that the desugaring rule composes cleanly with the JAX lowering
     so existing handlers need no changes to support weighted streams.
+
     """
     (x, k) = define_vars("x", "k", typ=jax.Array)
     X = define_vars("X", typ=backend.stream_typ)
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = weighted(X(), x, w(x()), monoid=Product)
+    ws = Product.weighted(X(), x, w(x()))
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
         bind_dims(w(unbind_dims(X(), k)) * body(unbind_dims(X(), k)), k), axis=0

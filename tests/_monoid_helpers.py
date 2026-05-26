@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import NormalizeIntp, weighted
+from effectful.ops.monoid import NormalizeIntp, _is_monoid_weighted
 from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
@@ -327,8 +327,8 @@ class Backend:
 
 
 def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
-    a_stream, a_var, a_weight, a_monoid = a.args
-    b_stream, b_var, b_weight, b_monoid = b.args
+    a_monoid, a_stream, a_var, a_weight = a.args
+    b_monoid, b_stream, b_var, b_weight = b.args
     if a_monoid is not b_monoid:
         return False
     a_elems = list(a_stream)
@@ -348,9 +348,9 @@ def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
 def _int_eq(a: Any, b: Any) -> bool:
     if (
         isinstance(a, Term)
-        and a.op is weighted
+        and _is_monoid_weighted(a.op)
         and isinstance(b, Term)
-        and b.op is weighted
+        and _is_monoid_weighted(b.op)
     ):
         return _weighted_stream_eq(a, b, _int_eq)
     return not isinstance(a, Term) and not isinstance(b, Term) and a == b
@@ -359,9 +359,9 @@ def _int_eq(a: Any, b: Any) -> bool:
 def _jax_eq(a: Any, b: Any) -> bool:
     if (
         isinstance(a, Term)
-        and a.op is weighted
+        and _is_monoid_weighted(a.op)
         and isinstance(b, Term)
-        and b.op is weighted
+        and _is_monoid_weighted(b.op)
     ):
         return _weighted_stream_eq(a, b, _jax_eq)
 

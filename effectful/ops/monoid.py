@@ -15,7 +15,6 @@ from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
     deffn,
-    defop,
     implements,
     syntactic_eq,
     syntactic_hash,
@@ -110,6 +109,21 @@ class Monoid[T]:
             return self.plus(*new_reduces)
         raise NotHandled
 
+    @Operation.define
+    def weighted[Elem, A, B](
+        self,
+        stream: Annotated[Iterable, Scoped[B]],
+        var: Annotated[Operation[[], Elem], Scoped[A]],
+        weight: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[Iterable, Scoped[B]]:
+        """A stream paired with a per-element weight. ``var`` is an
+        :class:`Operation` standing for "an element of ``stream``"; ``weight``
+        is an expression that uses ``var`` and evaluates to the weight of that
+        element.
+
+        """
+        raise NotHandled
+
 
 class MonoidWithZero[T](Monoid[T]):
     zero: T
@@ -117,22 +131,6 @@ class MonoidWithZero[T](Monoid[T]):
     def __init__(self, name: str, identity: T, zero: T):
         super().__init__(name=name, identity=identity)
         self.zero = zero
-
-
-@defop
-def weighted[T, W, A, B](
-    stream: Annotated[Iterable, Scoped[B]],
-    var: Annotated[Operation[[], T], Scoped[A]],
-    weight: Annotated[W, Scoped[A | B]],
-    monoid: Monoid[W],
-) -> Annotated[Iterable, Scoped[B]]:
-    """A stream paired with a per-element weight. ``var`` is an
-    :class:`Operation` standing for "an element of ``stream``"; ``weight`` is
-    an expression that uses ``var`` and evaluates to the weight of that
-    element. Always stays as a :class:`Term`; consumers pattern-match on
-    ``term.op is weighted`` and read ``term.args``.
-    """
-    raise NotHandled
 
 
 Min = Monoid(name="Min", identity=float("inf"))
@@ -188,6 +186,12 @@ def _is_monoid_reduce(op: Operation) -> bool:
     """True if ``op`` is the ``reduce`` operation of some :class:`Monoid`."""
     owner = getattr(op, "__self__", None)
     return isinstance(owner, Monoid) and op is owner.reduce
+
+
+def _is_monoid_weighted(op: Operation) -> bool:
+    """True if ``op`` is the ``weighted`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.weighted
 
 
 class PlusEmpty(ObjectInterpretation):
@@ -573,8 +577,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
 
 class ReduceWeightedStream(ObjectInterpretation):
-    """reduce(M, body, {x: weighted(s, v, w, WM), ...}) = reduce(M,
-    WM.plus(w[v:=x()], body), {x: s, ...})
+    """reduce(M, body, {x: WM.weighted(s, v, w), ...}) = reduce(M, WM.plus(w[v:=x()], body), {x: s, ...})
 
     requires distributes_over(WM, M).
 
@@ -585,8 +588,9 @@ class ReduceWeightedStream(ObjectInterpretation):
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         for k, v in streams.items():
-            if isinstance(v, Term) and v.op is weighted:
-                v_stream, v_var, v_weight, v_monoid = v.args
+            if isinstance(v, Term) and _is_monoid_weighted(v.op):
+                v_stream, v_var, v_weight = v.args
+                v_monoid = v.op.__self__
                 if not distributes_over(v_monoid, monoid):
                     continue
                 w_at_k = deffn(v_weight, v_var)(k())
@@ -618,9 +622,12 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         if monoid is not CartesianProduct:
             return fwd()
-        if not (isinstance(body, Term) and body.op is weighted):
+        if not (isinstance(body, Term) and _is_monoid_weighted(body.op)):
             return fwd()
-        s, e_op, w, weight_monoid = body.args
+
+        s, e_op, w = body.args
+        weight_monoid = body.op.__self__
+
         if set(streams.keys()) & fvsof(w):
             return fwd()
 
@@ -628,7 +635,7 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
         row_op = Operation.define(Iterable, name="row")
         joint_weight = weight_monoid.reduce(w, {e_op: row_op()})
 
-        return weighted(joint_stream, row_op, joint_weight, weight_monoid)
+        return weight_monoid.weighted(joint_stream, row_op, joint_weight)
 
 
 class MonoidOverCallable(ObjectInterpretation):
