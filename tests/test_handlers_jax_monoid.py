@@ -1,4 +1,5 @@
 import functools
+import typing
 
 import jax
 import pytest
@@ -23,9 +24,10 @@ from effectful.ops.monoid import (
     Product,
     ReduceWeightedStream,
     Sum,
-    WeightedStream,
+    weighted,
 )
 from effectful.ops.semantics import coproduct, handler
+from effectful.ops.types import Interpretation
 from tests._monoid_helpers import JAX_BACKEND, Backend, check_rewrite, define_vars
 
 MONOIDS = [
@@ -128,7 +130,7 @@ def test_jax_weighted_reduce(backend: Backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = WeightedStream(stream=X(), weight=w, monoid=Product)
+    ws = weighted(X(), x, w(x()), monoid=Product)
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
         bind_dims(w(unbind_dims(X(), k)) * body(unbind_dims(X(), k)), k), axis=0
@@ -138,7 +140,11 @@ def test_jax_weighted_reduce(backend: Backend):
         lhs=lhs,
         rhs=rhs,
         rule=functools.reduce(
-            coproduct, [ReduceWeightedStream(), ArrayReduce(), ProductPlusJax()]
+            coproduct,
+            typing.cast(
+                list[Interpretation],
+                [ReduceWeightedStream(), ArrayReduce(), ProductPlusJax()],
+            ),
         ),
         backend=backend,
         free_vars=[x, k, X, body, w],
