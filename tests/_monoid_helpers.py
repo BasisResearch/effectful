@@ -327,8 +327,10 @@ class Backend:
 
 
 def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
-    a_monoid, a_stream, a_var, a_weight = a.args
-    b_monoid, b_stream, b_var, b_weight = b.args
+    a_monoid = a.op.__self__
+    a_stream, a_var, a_weight = a.args
+    b_monoid = b.op.__self__
+    b_stream, b_var, b_weight = b.args
     if a_monoid is not b_monoid:
         return False
     a_elems = list(a_stream)
