@@ -776,6 +776,52 @@ def test_reduce_cartesian_weighted_stream(backend):
     )
 
 
+def test_lift_weighted_cartesian(backend):
+    """Compose ``ReduceCartesianWeightedStream`` + ``ReduceWeightedStream`` +
+    ``ReduceDistributeCartesianProduct`` on a Sum-of-Product-of-weighted shape:
+
+        Sum.reduce(
+            Product.reduce(body(a()), {a: A()}),
+            {A: CartesianProduct.reduce(weighted(S, e, w(e), Product), {p: P})},
+        )
+
+    The inner ``weighted`` becomes a joint ``weighted`` (rule 1), lifts its
+    per-element weight into the outer Sum body (rule 2), and the lifted form
+    matches the inversion pattern (rule 3), yielding::
+
+        Product.reduce(
+            Sum.reduce(Product.plus(w(a()), body(a())), {a: S}),
+            {p: P},
+        )
+    """
+    a = define_vars("a", typ=backend.scalar_typ)
+    e, p = define_vars("e", "p", typ=backend.scalar_typ)
+    A, S, P = define_vars("A", "S", "P", typ=backend.stream_typ)
+    body = backend.fresh_op("body", n_args=1, ret="scalar")
+    w = backend.fresh_op("w", n_args=1, ret="scalar")
+
+    ws = weighted(S(), e, w(e()), Product)
+    lhs = Sum.reduce(
+        Product.reduce(body(a()), {a: A()}),
+        {A: CartesianProduct.reduce(ws, {p: P()})},
+    )
+    rhs = Product.reduce(
+        Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}),
+        {p: P()},
+    )
+
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(
+            coproduct(ReduceWeightedStream(), ReduceCartesianWeightedStream()),
+            ReduceDistributeCartesianProduct(),
+        ),
+        backend=backend,
+        free_vars=[S, P, body, w],
+    )
+
+
 def test_weighted_expectation_demo():
     """Demo: compute E[f(X)] = Σ_x w(x)·f(x) via a weighted reduce.
 
