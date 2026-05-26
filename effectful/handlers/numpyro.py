@@ -400,19 +400,9 @@ expand = _DistributionTerm.expand
 
 @defdata.register(dist.Distribution)
 class _DistributionMethodTerm(_DistributionTerm):
-    """Fallback term for distribution-method ops whose return annotation is the
-    abstract ``dist.Distribution`` (e.g. ``expand`` and ``to_event`` when the
-    receiver is non-eager).
-
-    Without this registration, ``defdata`` dispatch on ``dist.Distribution`` falls
-    through to ``collections.abc.Callable`` (since ``Distribution`` defines
-    ``__call__``) and produces a ``_CallableTerm``, breaking chained method calls
-    like ``Normal(mu_term, 1.0).expand([J]).to_event(1)``. See #666.
-
-    The receiver of the deferred op is taken as the first positional argument; we
-    carry forward its distribution family so further chained methods remain
-    available on the resulting term.
-    """
+    """Term for distribution-method ops returning the abstract ``dist.Distribution``
+    (``expand``, ``to_event``). Catches the ``defdata`` fallthrough that would
+    otherwise hit ``_CallableTerm``. See #666."""
 
     def __init__(self, ty, op, *args, **kwargs):
         receiver = args[0] if args else None
@@ -425,9 +415,7 @@ class _DistributionMethodTerm(_DistributionTerm):
 
     @functools.cached_property
     def _pos_base_dist(self) -> dist.Distribution:
-        # Materialise by recursively building the receiver's _pos_base_dist
-        # and invoking NumPyro's method of the same name on it. Works for any
-        # ``dist.Distribution``-returning method op without a per-op switch.
+        # Delegate to NumPyro's method of the same name on the materialised receiver.
         receiver = self._args[0]
         base = (
             receiver._pos_base_dist
