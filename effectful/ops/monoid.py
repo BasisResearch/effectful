@@ -14,10 +14,9 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
-    defdata,
     deffn,
+    defop,
     implements,
-    iter_,
     syntactic_eq,
     syntactic_hash,
 )
@@ -120,35 +119,45 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
-@dataclass
-class WeightedStream[T, W](Iterable[T]):
-    stream: Stream[T]
-    weight: Callable[[T], W]
-    monoid: Monoid[W]
-
-    def __iter__(self):
-        return defdata(iter_, self)
-
-
 @Operation.define
 @functools.singledispatch
-def weighted(x) -> WeightedStream:
+def to_weighted(x) -> Iterable:
+    """Smart constructor lifting a value (e.g. a distribution) into a
+    weighted stream. Backends register single-dispatch impls that return a
+    :func:`weighted` term.
+    """
     raise NotImplementedError("Unsupported type", type(x))
 
 
 @Operation.define
 @functools.singledispatch
-def stream(x) -> Iterable:
+def to_stream(x) -> Iterable:
     """Smart constructor lifting a value into the :data:`Stream` type.
 
     Used to wrap opaque ``support``-like values (e.g. numpyro
     distributions or constraints) that aren't structurally iterable but
-    should appear in the stream slot of a :class:`WeightedStream`. Concrete
+    should appear in the stream slot of a :func:`weighted` term. Concrete
     iterables can be registered to pass through unchanged; symbolic sources
     register impls that ``raise NotHandled`` so the call stays a Term and
     downstream rules can pattern-match on the wrapped value.
     """
     raise NotImplementedError("Unsupported stream source", type(x))
+
+
+@defop
+def weighted[T, W, A, B](
+    stream: Annotated[Iterable, Scoped[B]],
+    var: Annotated[Operation[[], T], Scoped[A]],
+    weight: Annotated[W, Scoped[A | B]],
+    monoid: Monoid[W],
+) -> Annotated[Iterable, Scoped[B]]:
+    """A stream paired with a per-element weight. ``var`` is an
+    :class:`Operation` standing for "an element of ``stream``"; ``weight`` is
+    an expression that uses ``var`` and evaluates to the weight of that
+    element. Always stays as a :class:`Term`; consumers pattern-match on
+    ``term.op is weighted`` and read ``term.args``.
+    """
+    raise NotHandled
 
 
 Min = Monoid(name="Min", identity=float("inf"))
@@ -589,21 +598,62 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
 
 class ReduceWeightedStream(ObjectInterpretation):
-    """reduce(M, body, {x: WeightedStream(s, w, WM), ...}) = reduce(M,
-    WM.plus(w(x), body), {x: s, ...})
+    """reduce(M, body, {x: weighted(s, v, w, WM), ...}) = reduce(M,
+    WM.plus(w[v:=x()], body), {x: s, ...})
 
     requires distributes_over(WM, M).
 
+    The substitution ``v -> x`` is done by beta-reducing ``deffn(w, v)`` on
+    ``x()`` — symbolic, no Python dispatch on the weight expression.
     """
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         for k, v in streams.items():
-            if isinstance(v, WeightedStream) and distributes_over(v.monoid, monoid):
-                weighted_body = v.monoid.plus(v.weight(k()), body)
-                new_streams = {**streams, k: v.stream}
+            if isinstance(v, Term) and v.op is weighted:
+                v_stream, v_var, v_weight, v_monoid = v.args
+                if not distributes_over(v_monoid, monoid):
+                    continue
+                w_at_k = deffn(v_weight, v_var)(k())
+                weighted_body = v_monoid.plus(w_at_k, body)
+                new_streams = {**streams, k: v_stream}
                 return monoid.reduce(weighted_body, new_streams)
         return fwd()
+
+
+class ReduceCartesianWeightedStream(ObjectInterpretation):
+    """``CartesianProduct.reduce`` over a :func:`weighted` body whose
+    ``weight`` is independent of the plate (product-index) streams::
+
+        CartesianProduct.reduce(weighted(s, e, w, M), plates)
+          = weighted(
+              CartesianProduct.reduce(s, plates),
+              row,
+              M.reduce(w, {e: row()}),
+              M,
+            )
+
+    Reuses ``body``'s element binder ``e`` (already typed by construction);
+    introduces a fresh ``row`` binder typed as ``Iterable[elem_type]``.
+
+    Only fires when ``w`` is independent of the plate vars.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if monoid is not CartesianProduct:
+            return fwd()
+        if not (isinstance(body, Term) and body.op is weighted):
+            return fwd()
+        s, e_op, w, weight_monoid = body.args
+        if set(streams.keys()) & fvsof(w):
+            return fwd()
+
+        joint_stream = CartesianProduct.reduce(s, streams)
+        row_op = Operation.define(Iterable, name="row")
+        joint_weight = weight_monoid.reduce(w, {e_op: row_op()})
+
+        return weighted(joint_stream, row_op, joint_weight, weight_monoid)
 
 
 class MonoidOverCallable(ObjectInterpretation):
@@ -801,6 +851,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFactorization(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
+    ReduceCartesianWeightedStream(),
     PlusEmpty(),
     PlusSingle(),
     PlusIdentity(),

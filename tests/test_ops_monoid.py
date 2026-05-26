@@ -23,6 +23,7 @@ from effectful.ops.monoid import (
     PlusSingle,
     PlusZero,
     Product,
+    ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
     ReduceFactorization,
     ReduceFusion,
@@ -30,8 +31,8 @@ from effectful.ops.monoid import (
     ReduceSplit,
     ReduceWeightedStream,
     Sum,
-    WeightedStream,
     distributes_over,
+    weighted,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.types import NotHandled, Operation, Term
@@ -686,7 +687,8 @@ def test_reduce_single_weighted_stream(backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = WeightedStream(stream=A(), weight=w, monoid=Product)
+    e = define_vars("e", typ=backend.scalar_typ)
+    ws = weighted(A(), e, w(e()), Product)
     lhs = Sum.reduce(body(a()), {a: ws})
     rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
 
@@ -714,8 +716,10 @@ def test_reduce_weighted_factorization(backend):
     w_a = backend.fresh_op("w_a", n_args=1, ret="scalar")
     w_b = backend.fresh_op("w_b", n_args=1, ret="scalar")
 
-    ws_a = WeightedStream(stream=A(), weight=w_a, monoid=Product)
-    ws_b = WeightedStream(stream=B(), weight=w_b, monoid=Product)
+    e_a = define_vars("e_a", typ=backend.scalar_typ)
+    e_b = define_vars("e_b", typ=backend.scalar_typ)
+    ws_a = weighted(A(), e_a, w_a(e_a()), Product)
+    ws_b = weighted(B(), e_b, w_b(e_b()), Product)
 
     lhs = Sum.reduce(Product.plus(f(a()), g(b())), {a: ws_a, b: ws_b})
     rhs = Product.plus(
@@ -729,6 +733,46 @@ def test_reduce_weighted_factorization(backend):
         rule=coproduct(ReduceWeightedStream(), ReduceFactorization()),
         backend=backend,
         free_vars=[A, B, f, g, w_a, w_b],
+    )
+
+
+def test_reduce_cartesian_weighted_stream(backend):
+    """``CartesianProduct.reduce`` over a ``WeightedStream`` body whose weight
+    is independent of the plate var rewrites to a single joint
+    ``WeightedStream``:
+
+        CartesianProduct.reduce(WeightedStream(s, e, w(e), M), {p: P})
+          = WeightedStream(
+              stream  = CartesianProduct.reduce(s, {p: P}),
+              var     = row,
+              weight  = M.reduce(w(e), {e: row()}),
+              monoid  = M,
+            )
+    """
+    from collections.abc import Iterable
+
+    p = define_vars("p", typ=backend.scalar_typ)
+    S, P = define_vars("S", "P", typ=backend.stream_typ)
+    w = backend.fresh_op("w", n_args=1, ret="scalar")
+
+    e_var = define_vars("e", typ=backend.scalar_typ)
+    ws = weighted(S(), e_var, w(e_var()), Product)
+    lhs = CartesianProduct.reduce(ws, {p: P()})
+
+    row_var = Operation.define(Iterable[backend.scalar_typ], name="row")
+    rhs = weighted(
+        CartesianProduct.reduce(S(), {p: P()}),
+        row_var,
+        Product.reduce(w(e_var()), {e_var: row_var()}),
+        Product,
+    )
+
+    check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceCartesianWeightedStream(),
+        backend=backend,
+        free_vars=[S, P, w],
     )
 
 
@@ -755,7 +799,8 @@ def test_weighted_expectation_demo():
     w = Operation.define(_w, name="w")
     f = Operation.define(_f, name="f")
 
-    ws = WeightedStream(stream=[1, 2, 3, 4], weight=w, monoid=Product)
+    e = define_vars("e", typ=int)
+    ws = weighted([1, 2, 3, 4], e, w(e()), Product)
 
     with handler(NormalizeIntp):
         result = evaluate(Sum.reduce(f(a()), {a: ws}))

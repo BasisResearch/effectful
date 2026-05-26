@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import NormalizeIntp
+from effectful.ops.monoid import NormalizeIntp, weighted
 from effectful.ops.semantics import apply, evaluate, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
@@ -326,11 +326,45 @@ class Backend:
         return Operation.define(fn, name=name)
 
 
+def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
+    a_stream, a_var, a_weight, a_monoid = a.args
+    b_stream, b_var, b_weight, b_monoid = b.args
+    if a_monoid is not b_monoid:
+        return False
+    a_elems = list(a_stream)
+    b_elems = list(b_stream)
+    if len(a_elems) != len(b_elems):
+        return False
+    a_weight_fn = deffn(a_weight, a_var)
+    b_weight_fn = deffn(b_weight, b_var)
+    for ea, eb in zip(a_elems, b_elems):
+        if not leaf_eq(ea, eb):
+            return False
+        if not leaf_eq(a_weight_fn(ea), b_weight_fn(eb)):
+            return False
+    return True
+
+
 def _int_eq(a: Any, b: Any) -> bool:
+    if (
+        isinstance(a, Term)
+        and a.op is weighted
+        and isinstance(b, Term)
+        and b.op is weighted
+    ):
+        return _weighted_stream_eq(a, b, _int_eq)
     return not isinstance(a, Term) and not isinstance(b, Term) and a == b
 
 
 def _jax_eq(a: Any, b: Any) -> bool:
+    if (
+        isinstance(a, Term)
+        and a.op is weighted
+        and isinstance(b, Term)
+        and b.op is weighted
+    ):
+        return _weighted_stream_eq(a, b, _jax_eq)
+
     def _leaf_eq(x: Any, y: Any) -> bool:
         return bool(jax.numpy.all(jax.numpy.isclose(x, y, equal_nan=True)))
 
@@ -357,12 +391,12 @@ def check_rewrite(
     assert syntactic_eq_alpha(norm, rhs)
 
     @given(intp=random_interpretation(free_vars))
-    @settings(max_examples=max_examples, deadline=deadline)
+    @settings(max_examples=max_examples, deadline=deadline, report_multiple_bugs=False)
     def _check_semantics(intp):
         with handler(normalize), handler(intp):
             lhs_val = evaluate(lhs)
             rhs_val = evaluate(rhs)
-        assert backend.eq(lhs_val, rhs_val)
+            assert backend.eq(lhs_val, rhs_val)
 
     _check_semantics()
 

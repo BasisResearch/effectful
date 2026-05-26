@@ -29,7 +29,7 @@ from effectful.ops.monoid import (
     Product,
     Sum,
     WeightedStream,
-    stream,
+    to_stream,
     weighted,
 )
 from effectful.ops.semantics import fwd
@@ -42,12 +42,12 @@ def _weighted_dist(_d):
     raise NotHandled
 
 
-@stream.register(dist.Distribution)
+@to_stream.register(dist.Distribution)
 def _stream_dist(_d):
     raise NotHandled
 
 
-@stream.register(constraints.Constraint)
+@to_stream.register(constraints.Constraint)
 def _stream_constraint(_c):
     raise NotHandled
 
@@ -221,7 +221,7 @@ class NumpyroCategorical(ObjectInterpretation):
         def weight_fn(x, _w=weights):
             return jax_getitem(_w, (x,))
 
-        return WeightedStream(stream=indices, weight=weight_fn, monoid=w_monoid)
+        return weighted(stream=indices, weight=weight_fn, monoid=w_monoid)
 
 
 class NumpyroLogProb(ObjectInterpretation):
@@ -244,8 +244,8 @@ class NumpyroLogProb(ObjectInterpretation):
             d = _weighted_dist_arg(v)
             if d is None:
                 continue
-            new_streams[k] = WeightedStream(
-                stream=stream(d.support), weight=d.log_prob, monoid=Sum
+            new_streams[k] = weighted(
+                stream=to_stream(d.support), weight=d.log_prob, monoid=Sum
             )
             progress = True
         if progress:
