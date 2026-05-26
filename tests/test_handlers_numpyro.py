@@ -929,3 +929,23 @@ def test_distribution_typeof():
         typeof(dist.Normal(jax_getitem(jnp.array([0, 1, 2]), [defop(jax.Array)()])))
         is numpyro.distributions.continuous.Normal
     )
+
+
+def test_distribution_method_chain_on_non_eager_term():
+    """Regression test for #666.
+
+    ``Normal(mu_term, 1.0).expand([J]).to_event(1)`` must not raise
+    ``AttributeError`` mid-chain. Previously ``_DistributionTerm.expand`` was
+    ``@defop``-annotated to return ``jax.Array``, routing ``.expand([J])``'s
+    result through ``_ArrayTerm`` (no ``.to_event``). The fix annotates
+    ``expand`` to return ``dist.Distribution`` and registers a fallback
+    ``_DistributionMethodTerm`` for ``defdata`` dispatch on the abstract base,
+    so the chain stays in the distribution-term surface.
+    """
+    mu = defop(jax.Array, name="mu")
+
+    expanded = dist.Normal(mu(), 1.0).expand([3])
+    assert isinstance(expanded, numpyro.distributions.Distribution)
+
+    chained = expanded.to_event(1)
+    assert isinstance(chained, numpyro.distributions.Distribution)
