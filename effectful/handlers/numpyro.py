@@ -226,10 +226,12 @@ class _DistributionTerm(dist.Distribution):
 
     @functools.cached_property
     def _is_eager(self) -> bool:
-        return all(
-            (not isinstance(x, Term) or is_eager_array(x))
-            for x in (*self.args, *self.kwargs.values())
-        )
+        def _arg_is_eager(x):
+            if isinstance(x, _DistributionTerm):
+                return x._is_eager
+            return not isinstance(x, Term) or is_eager_array(x)
+
+        return all(_arg_is_eager(x) for x in (*self.args, *self.kwargs.values()))
 
     @property
     def op(self):
@@ -420,6 +422,32 @@ class _DistributionMethodTerm(_DistributionTerm):
             else dist.Distribution
         )
         super().__init__(constr, op, *args, **kwargs)
+
+    @functools.cached_property
+    def _pos_base_dist(self) -> dist.Distribution:
+        # Materialise the deferred method op against a real NumPyro distribution
+        # built from the (now-eager) receiver. Inherited ``@defop`` methods
+        # (``batch_shape``, ``event_shape``, ``support``, ``log_prob``,
+        # ``sample``, ...) then resolve via the standard ``_DistributionTerm``
+        # machinery against this base.
+        receiver = self._args[0]
+        base = (
+            receiver._pos_base_dist
+            if isinstance(receiver, _DistributionTerm)
+            else receiver
+        )
+        if self._op is _DistributionTerm.to_event:
+            n = (
+                self._args[1]
+                if len(self._args) > 1
+                else self._kwargs.get("reinterpreted_batch_ndims")
+            )
+            return base.to_event(n)
+        if self._op is _DistributionTerm.expand:
+            return base.expand(self._args[1])
+        raise NotImplementedError(
+            f"_DistributionMethodTerm._pos_base_dist for op {self._op}"
+        )
 
 
 @defop
