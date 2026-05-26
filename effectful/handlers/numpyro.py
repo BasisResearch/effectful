@@ -425,29 +425,16 @@ class _DistributionMethodTerm(_DistributionTerm):
 
     @functools.cached_property
     def _pos_base_dist(self) -> dist.Distribution:
-        # Materialise the deferred method op against a real NumPyro distribution
-        # built from the (now-eager) receiver. Inherited ``@defop`` methods
-        # (``batch_shape``, ``event_shape``, ``support``, ``log_prob``,
-        # ``sample``, ...) then resolve via the standard ``_DistributionTerm``
-        # machinery against this base.
+        # Materialise by recursively building the receiver's _pos_base_dist
+        # and invoking NumPyro's method of the same name on it. Works for any
+        # ``dist.Distribution``-returning method op without a per-op switch.
         receiver = self._args[0]
         base = (
             receiver._pos_base_dist
             if isinstance(receiver, _DistributionTerm)
             else receiver
         )
-        if self._op is _DistributionTerm.to_event:
-            n = (
-                self._args[1]
-                if len(self._args) > 1
-                else self._kwargs.get("reinterpreted_batch_ndims")
-            )
-            return base.to_event(n)
-        if self._op is _DistributionTerm.expand:
-            return base.expand(self._args[1])
-        raise NotImplementedError(
-            f"_DistributionMethodTerm._pos_base_dist for op {self._op}"
-        )
+        return getattr(base, self._op.__name__)(*self._args[1:], **self._kwargs)
 
 
 @defop
