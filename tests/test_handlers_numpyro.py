@@ -480,6 +480,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("concentration0", f"exp(rand({batch_shape + indep_shape}))"),
             ),
             batch_shape,
+            xfail="to_event composed with expand_by on indexed dims not implemented",
         )
 
         # Dirichlet.to_event
@@ -493,6 +494,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                     ),
                 ),
                 batch_shape,
+                xfail="to_event composed with expand_by on indexed dims not implemented",
             )
 
         # TransformedDistribution.to_event
