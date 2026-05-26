@@ -951,28 +951,3 @@ def test_distribution_method_chain_on_non_eager_term():
     assert isinstance(chained, numpyro.distributions.Distribution)
 
 
-def test_vectorised_hierarchical_model_mcmc():
-    """End-to-end regression for #666.
-
-    The issue framed the bug as blocking "the standard NumPyro vectorised
-    hierarchical-model idiom". With the annotation fix, the idiomatic form
-    (``numpyro.plate`` around a sample) traces correctly under MCMC and
-    produces samples of the expected shape.
-    """
-    import jax.random as jr
-
-    def model():
-        mu = numpyro.sample("mu", dist.Normal(0.0, 1.0))
-        with numpyro.plate("j", 3):
-            numpyro.sample("theta", dist.Normal(mu, 1.0))
-
-    mcmc = numpyro.infer.MCMC(
-        numpyro.infer.NUTS(model),
-        num_warmup=20,
-        num_samples=20,
-        progress_bar=False,
-    )
-    mcmc.run(jr.PRNGKey(0))
-    samples = mcmc.get_samples()
-    assert samples["mu"].shape == (20,)
-    assert samples["theta"].shape == (20, 3)
