@@ -126,8 +126,8 @@ class Monoid[W]:
 
     @Operation.define
     def weighted[T](
-        self, stream: Iterable[T], weight: Callable[[T], W] | Operation[[T], W]
-    ) -> Iterable[T]:
+        self, stream: Stream[T], weight: Callable[[T], W] | Operation[[T], W]
+    ) -> Stream[T]:
         """A stream paired with a per-element weight. ``var`` is an
         :class:`Operation` standing for "an element of ``stream``"; ``weight``
         is an expression that uses ``var`` and evaluates to the weight of that
