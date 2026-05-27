@@ -590,12 +590,17 @@ class LiteLLMProvider(ObjectInterpretation):
         # substitution (for nested or recursive Template calls). The merged
         # substitution is scoped via _get_active_type_subs so inner calls
         # invoked as tools by the LLM can inherit it.
+        #
+        # Bind types via the already-defaulted bound_args so parameters with
+        # default values are covered (_unify_signature requires every
+        # annotated, non-VAR parameter to be in BoundArguments.arguments).
         sig = template.__signature__
-        type_args = tuple(nested_type(a).value for a in args)
-        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
         try:
-            bound_types = sig.bind(*type_args, **type_kwargs)
-            local_subs = unify(sig, bound_types)
+            arg_types = {
+                name: nested_type(v).value for name, v in bound_args.arguments.items()
+            }
+            type_bound = sig.bind(**arg_types)
+            local_subs = unify(sig, type_bound)
         except TypeError:
             local_subs = {}
 

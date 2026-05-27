@@ -1813,3 +1813,33 @@ def test_pydantic_dispatch_serialize_tool_unchanged():
     )
     direct = _serialize_tool(echo_int_outer, {"x": int}, strict=True)
     assert via_pydantic == direct
+
+
+def test_call_handles_template_with_default_params():
+    """_call must bind type info for parameters with defaults, not just
+    explicitly-passed ones. _unify_signature asserts that every annotated
+    non-VAR parameter is in BoundArguments.arguments, so if defaults are
+    skipped we get an AssertionError. Regression for codeadapt-style
+    templates."""
+    captured: list = []
+
+    @Template.define
+    def with_defaults(topic: str, style: str = "casual", length: int = 100) -> str:
+        """Write about {topic} in {style} style, {length} words."""
+        raise NotHandled
+
+    def _captured(env, response_type, model, *, type_subs={}, **kwargs):
+        captured.append(dict(type_subs))
+        return ({"role": "assistant", "content": "ok"}, [], "ok")
+
+    with (
+        handler(LiteLLMProvider()),
+        handler({call_assistant: _captured}),
+    ):
+        # Call with only the required arg; style and length should default.
+        with_defaults("apples")
+
+    # No exception should have fired. type_subs is empty because the
+    # template has no free TypeVars, but the type binding code path
+    # must not raise on defaults.
+    assert captured == [{}]
