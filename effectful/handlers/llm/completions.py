@@ -36,7 +36,13 @@ from effectful.handlers.llm.template import (
     Tool,
     _is_recursive_signature,
 )
-from effectful.internals.unification import nested_type
+from effectful.internals.unification import (
+    Substitutions,
+    freetypevars,
+    nested_type,
+    substitute,
+    unify,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -78,6 +84,31 @@ def _get_history() -> collections.OrderedDict[str, Message]:
     raise _NoActiveHistoryException(
         "No active message history. This operation should only be used within a handler that provides a message history."
     )
+
+
+@Operation.define
+def _get_active_type_subs() -> Substitutions:
+    """Active TypeVar substitution from the enclosing Template call, or {}
+    when no Template call is in flight.
+
+    Scoped by LiteLLMProvider._call via `handler({_get_active_type_subs: ...})`
+    for the lifetime of each call. Inner (nested or recursive) Template
+    calls read the outer binding, merge their own, and re-install.
+    """
+    return {}
+
+
+def _bound_for(tv: typing.Any) -> typing.Any | None:
+    """If `tv` is a TypeVar with a bound or constraints, return the
+    schema-usable type. Bound wins over constraints. Otherwise None.
+    """
+    if not isinstance(tv, typing.TypeVar):
+        return None
+    if tv.__bound__ is not None:
+        return tv.__bound__
+    if tv.__constraints__:
+        return typing.Union[tv.__constraints__]
+    return None
 
 
 def append_message(message: Message, last: bool = True) -> None:
