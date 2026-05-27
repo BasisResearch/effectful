@@ -583,10 +583,16 @@ def _validate_tool(
         raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
 
-def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+def _serialize_tool(
+    value: Tool,
+    param_annotations: dict[str, Any],
+    *,
+    strict: bool,
+) -> ChatCompletionToolParam:
     fields: dict[str, Any] = {
-        name: TypeToPydanticType().evaluate(param.annotation)
-        for name, param in inspect.signature(value).parameters.items()
+        name: TypeToPydanticType().evaluate(ann)
+        for name, ann in param_annotations.items()
+        if ann is not inspect.Parameter.empty
     }
     sig_model = pydantic.create_model(
         "Params",
@@ -603,7 +609,7 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
                 "name": value.__name__,
                 "description": textwrap.dedent(value.__default__.__doc__),
                 "parameters": response_format["json_schema"]["schema"],
-                "strict": True,
+                "strict": strict,
             },
         }
     )
@@ -611,12 +617,19 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
 
 @TypeToPydanticType.register(Tool)
 def _pydantic_type_tool(ty: type[Tool]):
+    def _default_serialize(value: Tool) -> ChatCompletionToolParam:
+        params = {
+            name: p.annotation
+            for name, p in inspect.signature(value).parameters.items()
+        }
+        return _serialize_tool(value, params, strict=True)
+
     schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
     schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate_tool),
-        pydantic.PlainSerializer(_serialize_tool),
+        pydantic.PlainSerializer(_default_serialize),
         pydantic.WithJsonSchema(schema),
     ]
 
