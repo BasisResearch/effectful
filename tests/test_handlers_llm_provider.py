@@ -10,6 +10,7 @@ import inspect
 import json
 import os
 import re
+import typing
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
@@ -2158,3 +2159,56 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ---------------------------------------------------------------------------
+# Polymorphic Tool / Template integration tests (#489)
+# ---------------------------------------------------------------------------
+
+
+class TestPolymorphicTemplates:
+    @requires_llm
+    @pytest.mark.parametrize(
+        "examples,expected_type",
+        [
+            ([1, 2, 3, 4], int),
+            (["apple", "orange", "pear"], str),
+        ],
+    )
+    def test_polymorphic_template_return_type(self, request, examples, expected_type):
+        """Template with free TypeVar in return position: the substituted
+        return type is what the LLM is asked to produce."""
+
+        @Template.define
+        def generate_similar[T](examples: typing.Sequence[T]) -> T:
+            """Generate another instance of the items in {examples}."""
+            raise NotImplementedError
+
+        with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+            result = generate_similar(examples)
+        assert isinstance(result, expected_type)
+
+    @requires_llm
+    def test_polymorphic_tool_shared_typevar(self, request):
+        """A Tool sharing a module-level TypeVar with its Template gets
+        its parameter schema specialized to the Template's T binding."""
+        T = typing.TypeVar("T")
+
+        @Tool.define
+        def extend_seq(xs: typing.Sequence[T], y: T) -> typing.Sequence[T]:
+            """Append {y} to {xs}."""
+            return list(xs) + [y]
+
+        @Template.define
+        def use_extend(xs: typing.Sequence[T]) -> typing.Sequence[T]:
+            """Use `extend_seq` to append one more element to {xs}.
+            Return the resulting sequence."""
+            raise NotImplementedError
+
+        with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+            out = use_extend([1, 2, 3])
+
+        assert isinstance(out, list)
+        assert out[:3] == [1, 2, 3]
+        assert all(isinstance(x, int) for x in out)
+        assert len(out) >= 4
