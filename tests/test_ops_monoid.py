@@ -825,13 +825,11 @@ def test_weighted_expectation_demo():
             raise NotHandled
         return float(v * v)
 
-    a, e = define_vars("a", "e", typ=int)
+    a = define_vars("a", typ=int)
     w = Operation.define(_w, name="w")
     f = Operation.define(_f, name="f")
 
     with handler(NormalizeIntp):
-        result = evaluate(
-            Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], e, w(e()))})
-        )
+        result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
 
     assert math.isclose(result, 10.0)
