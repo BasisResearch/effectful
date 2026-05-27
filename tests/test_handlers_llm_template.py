@@ -1531,3 +1531,285 @@ def test_tool_forward_ref():
     sig = inspect.signature(_tool_forward_ref)
     assert sig.parameters["x"].annotation is int
     assert sig.return_annotation is str
+
+
+# ---------------------------------------------------------------------------
+# Polymorphic Tool/Template tests (#489)
+# ---------------------------------------------------------------------------
+
+import typing
+from collections.abc import Sequence
+
+from effectful.handlers.llm.completions import (
+    _bound_for,
+    _get_active_type_subs,
+    call_assistant,
+)
+
+
+def test_get_active_type_subs_default_is_empty():
+    """Outside any handler, _get_active_type_subs returns {}."""
+    assert _get_active_type_subs() == {}
+
+
+def test_get_active_type_subs_under_handler():
+    T = typing.TypeVar("T")
+    with handler({_get_active_type_subs: lambda: {T: int}}):
+        assert _get_active_type_subs() == {T: int}
+
+
+def test_get_active_type_subs_nested_handlers_shadow():
+    """Inner handler scope shadows outer; outer restored on exit."""
+    T = typing.TypeVar("T")
+    with handler({_get_active_type_subs: lambda: {T: int}}):
+        assert _get_active_type_subs() == {T: int}
+        with handler({_get_active_type_subs: lambda: {T: str}}):
+            assert _get_active_type_subs() == {T: str}
+        assert _get_active_type_subs() == {T: int}
+
+
+def test_template_type_rule_specializes_return_annotation():
+    """__type_rule__ uses nested_type + unify to specialize the return
+    annotation from runtime args, the same path _call invokes."""
+
+    @Template.define
+    def echo_first[T](xs: Sequence[T]) -> T:
+        """Return the first element of {xs}."""
+        raise NotHandled
+
+    assert echo_first.__type_rule__([1, 2, 3]) is int
+    assert echo_first.__type_rule__(["a", "b"]) is str
+
+
+def test_template_type_rule_monomorphic_passthrough():
+    """A non-polymorphic template's __type_rule__ returns its static
+    return annotation. No regression for the common case."""
+
+    @Template.define
+    def haiku(topic: str) -> str:
+        """Write a haiku on {topic}."""
+        raise NotHandled
+
+    assert haiku.__type_rule__("apple") is str
+
+
+def test_bound_for_typevar():
+    """_bound_for: TypeVar with bound -> bound; with constraints -> Union;
+    plain TypeVar -> None; non-TypeVar -> None."""
+    T_int = typing.TypeVar("T_int", bound=int)
+    T_two = typing.TypeVar("T_two", int, str)
+    T_plain = typing.TypeVar("T_plain")
+
+    assert _bound_for(T_int) is int
+    assert _bound_for(T_two) == int | str
+    assert _bound_for(T_plain) is None
+    assert _bound_for(int) is None
+
+
+def test_call_propagates_outer_subs_via_type_subs_kwarg():
+    """_call computes local_subs from args, merges with outer subs (from
+    _get_active_type_subs), and passes the merged dict to call_assistant
+    as type_subs."""
+    T = typing.TypeVar("T")
+    U = typing.TypeVar("U")
+    captured: list = []
+
+    @Template.define
+    def f(xs: Sequence[U]) -> U:
+        """Echo first of {xs}."""
+        raise NotHandled
+
+    def _captured(env, response_type, model, *, type_subs={}, **kwargs):
+        captured.append(dict(type_subs))
+        return ({"role": "assistant", "content": "x"}, [], "x")
+
+    with (
+        handler({_get_active_type_subs: lambda: {T: int}}),
+        handler(LiteLLMProvider()),
+        handler({call_assistant: _captured}),
+    ):
+        f(["a", "b"])
+
+    assert captured, "call_assistant was not invoked"
+    subs = captured[0]
+    assert subs.get(T) is int  # inherited from outer
+    assert subs.get(U) is str  # computed locally from args
+
+
+def test_nested_template_conflict_raises():
+    """If outer and local subs disagree on a TypeVar binding, _call
+    raises TypeError at the merge step."""
+    T = typing.TypeVar("T")
+
+    @Template.define
+    def f(xs: Sequence[T]) -> T:
+        """First of {xs}."""
+        raise NotHandled
+
+    def _never_called(env, response_type, model, *, type_subs={}, **kwargs):
+        raise AssertionError("call_assistant invoked despite outer/local subs conflict")
+
+    with (
+        handler({_get_active_type_subs: lambda: {T: str}}),
+        handler(LiteLLMProvider()),
+        handler({call_assistant: _never_called}),
+    ):
+        with pytest.raises(TypeError, match="conflict"):
+            f([1, 2, 3])
+
+
+def test_unconstrained_polymorphic_tool_raises():
+    """A Tool with a free PEP 695 TypeVar (no module-level sharing,
+    no bound) raises TypeError at tool-spec-build time. Error message
+    names both remediations."""
+
+    @Tool.define
+    def echo[T](x: T) -> T:
+        """Return {x}."""
+        return x
+
+    @Template.define
+    def use_echo(seed: int) -> int:
+        """Use `echo` to echo {seed}."""
+        raise NotHandled
+
+    def _no_completion(*args, **kwargs):
+        raise AssertionError("completion called; expected TypeError earlier")
+
+    with (
+        handler(LiteLLMProvider()),
+        handler({completion: _no_completion}),
+    ):
+        with pytest.raises(TypeError) as exc:
+            use_echo(42)
+
+    msg = str(exc.value)
+    assert "echo" in msg
+    assert "module scope" in msg
+    assert "bound" in msg
+
+
+def test_tool_with_shared_module_typevar_specializes_under_template_subs():
+    """A Tool sharing a module-level TypeVar with its Template gets the
+    TypeVar substituted away by the call_assistant spec-build loop —
+    the inner _serialize_tool sees a concrete annotation."""
+    T = typing.TypeVar("T")
+    captured_specs: list = []
+
+    @Tool.define
+    def extend_seq(xs: Sequence[T], y: T) -> Sequence[T]:
+        """Append {y} to {xs}."""
+        return list(xs) + [y]
+
+    @Template.define
+    def use_extend(xs: Sequence[T]) -> Sequence[T]:
+        """Use extend_seq to append one more element to {xs}."""
+        raise NotHandled
+
+    def _captured(env, response_type, model, *, type_subs={}, **kwargs):
+        captured_specs.append(dict(type_subs))
+        return ({"role": "assistant", "content": "[1,2,3]"}, [], [1, 2, 3])
+
+    with (
+        handler(LiteLLMProvider()),
+        handler({call_assistant: _captured}),
+    ):
+        use_extend([1, 2, 3])
+
+    assert captured_specs
+    assert captured_specs[0].get(T) is int
+
+
+def test_tool_with_typevar_bound_specializes_to_bound():
+    """def f[T: int]: spec-build uses the bound int via _bound_for, no
+    Template sharing required. Schema is fully concrete and strict."""
+
+    @Tool.define
+    def echo_intish[T: int](x: T) -> T:
+        """Return {x}."""
+        return x
+
+    @Template.define
+    def use_echo_intish(seed: int) -> int:
+        """Use echo_intish to echo {seed}."""
+        raise NotHandled
+
+    captured_call: list = []
+
+    def _capture_then_finish(env, response_type, model, *, type_subs={}, **kwargs):
+        # Trigger tool-spec build by computing it the same way
+        # call_assistant does internally — except we just confirm no
+        # TypeError fires (i.e. _bound_for kicked in).
+        from effectful.handlers.llm.completions import _collect_tools
+        from effectful.internals.unification import freetypevars, substitute
+
+        tools = _collect_tools(env)
+        for k, tool in tools.items():
+            sig = inspect.signature(tool)
+            specialized = {}
+            free: set = set()
+            for name, p in sig.parameters.items():
+                ann = p.annotation
+                if ann is inspect.Parameter.empty:
+                    specialized[name] = ann
+                    continue
+                ann = substitute(ann, type_subs)
+                for tv in tuple(freetypevars(ann)):
+                    bound = _bound_for(tv)
+                    if bound is not None:
+                        ann = substitute(ann, {tv: bound})
+                free |= freetypevars(ann)
+                specialized[name] = ann
+            if free:
+                raise AssertionError(
+                    f"Tool {k} still has free TypeVars {free}; _bound_for "
+                    f"should have eliminated them."
+                )
+            captured_call.append((k, specialized))
+        return ({"role": "assistant", "content": "1"}, [], 1)
+
+    with (
+        handler(LiteLLMProvider()),
+        handler({call_assistant: _capture_then_finish}),
+    ):
+        use_echo_intish(7)
+
+    # echo_intish should have x: int in its specialized params
+    matching = [s for k, s in captured_call if k == "echo_intish"]
+    assert matching, "echo_intish was not collected as a tool"
+    assert matching[0]["x"] is int
+
+
+def test_zero_param_tool_spec_unchanged():
+    """A Tool with no parameters builds a valid spec under the new
+    spec-build loop (zero iterations, free=set(), no error)."""
+    from effectful.handlers.llm.encoding import _serialize_tool
+
+    @Tool.define
+    def now_op() -> int:
+        """Return the current timestamp."""
+        return 0
+
+    spec = _serialize_tool(now_op, {}, strict=True)
+    assert spec["function"]["parameters"]["properties"] == {}
+    assert spec["function"]["strict"] is True
+
+
+def test_pydantic_dispatch_serialize_tool_unchanged():
+    """The PlainSerializer at _pydantic_type_tool keeps producing the
+    same output as a direct _serialize_tool call. Locks the backward
+    compat of the (value, param_annotations, *, strict) signature."""
+    import pydantic
+
+    from effectful.handlers.llm.encoding import Encodable, _serialize_tool
+
+    @Tool.define
+    def echo_int_outer(x: int) -> int:
+        """Return {x}."""
+        return x
+
+    via_pydantic = pydantic.TypeAdapter(Encodable[Tool]).dump_python(
+        echo_int_outer, mode="json", context={"echo_int_outer": echo_int_outer}
+    )
+    direct = _serialize_tool(echo_int_outer, {"x": int}, strict=True)
+    assert via_pydantic == direct

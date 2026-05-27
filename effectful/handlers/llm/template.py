@@ -105,6 +105,13 @@ class Tool[**P, T](Operation[P, T]):
 
         See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Tool.define`.
 
+        **Polymorphic signatures.** A :class:`Tool` may carry free :class:`typing.TypeVar`s in its signature, in which case the concrete types are resolved at call time:
+
+        - If the :class:`TypeVar` appears in the enclosing :class:`Template`'s signature (via a shared module-level ``T = typing.TypeVar("T")``), it is pinned by the Template's runtime arguments. The tool spec sent to the LLM has the concrete type and stays in strict mode.
+        - If the :class:`TypeVar` has a bound or constraints (``def f[T: int]`` or ``T = TypeVar("T", int, str)``), the bound becomes the schema sent to the LLM.
+
+        If neither applies — i.e., a free :class:`TypeVar` that no enclosing Template pins and no bound constrains — the call raises :class:`TypeError` at tool-spec-build time. Resolve by either (1) declaring the :class:`TypeVar` at module scope and sharing it between the Tool and the Template, or (2) adding a bound. PEP 695 syntax (``def f[T]``) declares a fresh :class:`TypeVar` per def, so it cannot share ``T`` across signatures.
+
         """
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
@@ -263,6 +270,10 @@ class Template[**P, T](Tool[P, T]):
         The prompt will be provided with any instances of :class:`Tool` that exist in the lexical context as callable tools.
 
         See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Template.define`.
+
+        **Polymorphic return types.** A :class:`Template` may declare free :class:`typing.TypeVar`s in its signature; at call time, they are pinned by the runtime types of the Template's arguments via :func:`effectful.internals.unification.unify`. The substituted return type is what the LLM is asked to produce, so a call like ``generate_similar([1, 2, 3])`` against a template with signature ``Sequence[T] -> T`` requests an ``int`` from the LLM.
+
+        See also :func:`Tool.define` for the polymorphism contract on Tools (including the requirement that unpinned, unbounded TypeVars raise at call time).
 
         """
         frame = inspect.currentframe()

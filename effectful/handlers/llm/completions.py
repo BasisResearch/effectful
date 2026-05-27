@@ -5,6 +5,7 @@ import dataclasses
 import functools
 import inspect
 import json
+import operator
 import string
 import textwrap
 import traceback
@@ -28,6 +29,7 @@ from litellm import (
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
+    _serialize_tool,
     to_content_blocks,
 )
 from effectful.handlers.llm.template import (
@@ -107,7 +109,7 @@ def _bound_for(tv: typing.Any) -> typing.Any | None:
     if tv.__bound__ is not None:
         return tv.__bound__
     if tv.__constraints__:
-        return typing.Union[tv.__constraints__]
+        return functools.reduce(operator.or_, tv.__constraints__)
     return None
 
 
@@ -261,6 +263,8 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     model: str,
+    *,
+    type_subs: Substitutions = {},
     **kwargs,
 ) -> MessageResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
@@ -268,20 +272,52 @@ def call_assistant[T](
     This effect is emitted for model request/response rounds so handlers can
     observe/log requests.
 
+    The optional ``type_subs`` argument carries the substitution that the
+    enclosing Template call pinned on its free TypeVars (computed by
+    :class:`LiteLLMProvider._call`). It is applied to each in-scope Tool's
+    parameter annotations before the JSON schema is built, so polymorphic
+    Tools whose TypeVars are shared with the Template's signature get
+    fully concrete, strict-mode tool specs.
+
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
             includes the raw assistant message for retry handling.
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
+        TypeError: If a Tool in scope has free TypeVars that the enclosing
+            Template's substitution (and the TypeVar's bound or constraints)
+            cannot resolve. The message names the two remediations: share T
+            at module scope, or declare a bound.
     """
     tools = _collect_tools(env)
-    tool_specs = {
-        k: typing.cast(
-            pydantic.TypeAdapter[typing.Any],
-            pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
-        ).dump_python(t, mode="json", context={k: t})
-        for k, t in tools.items()
-    }
+    tool_specs: dict[str, typing.Any] = {}
+    for k, tool in tools.items():
+        sig = inspect.signature(tool)
+        specialized: dict[str, typing.Any] = {}
+        free: set = set()
+        for name, p in sig.parameters.items():
+            ann = p.annotation
+            if ann is inspect.Parameter.empty:
+                specialized[name] = ann
+                continue
+            ann = substitute(ann, type_subs)
+            # Fallback: if anything's still free, try the TypeVar's bound.
+            for tv in tuple(freetypevars(ann)):
+                bound = _bound_for(tv)
+                if bound is not None:
+                    ann = substitute(ann, {tv: bound})
+            free |= freetypevars(ann)
+            specialized[name] = ann
+        if free:
+            raise TypeError(
+                f"Tool {k!r} has free TypeVar(s) {free} in its signature "
+                f"that are not pinned by the enclosing Template call. "
+                f"Resolve by either: (1) declaring the TypeVar at module "
+                f"scope and sharing it between the Tool and the Template "
+                f"(e.g. `T = typing.TypeVar('T')`), or (2) adding a bound "
+                f"to the TypeVar (e.g. `def {k}[T: <bound>](...)`)."
+            )
+        tool_specs[k] = _serialize_tool(tool, specialized, strict=True)
 
     # The OpenAI API requires a wrapper object for non-object structured output types,
     # so we create one on the fly here. Using a Pydantic model offloads JSON schema
@@ -549,6 +585,33 @@ class LiteLLMProvider(ObjectInterpretation):
         if not _is_recursive_signature(template.__signature__):
             env = env.new_child({k: None for k, v in env.items() if v is template})
 
+        # Compute the substitution pinning template's free TypeVars from the
+        # runtime argument types, and merge with any outer Template's
+        # substitution (for nested or recursive Template calls). The merged
+        # substitution is scoped via _get_active_type_subs so inner calls
+        # invoked as tools by the LLM can inherit it.
+        sig = template.__signature__
+        type_args = tuple(nested_type(a).value for a in args)
+        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
+        try:
+            bound_types = sig.bind(*type_args, **type_kwargs)
+            local_subs = unify(sig, bound_types)
+        except TypeError:
+            local_subs = {}
+
+        outer_subs = _get_active_type_subs()
+        merged_subs: dict = dict(outer_subs)
+        for tv, ty in local_subs.items():
+            if tv in merged_subs and merged_subs[tv] != ty:
+                raise TypeError(
+                    f"Nested Template {template.__name__!r} binds {tv} = "
+                    f"{ty!r} conflicting with the enclosing call's binding "
+                    f"{tv} = {merged_subs[tv]!r}."
+                )
+            merged_subs[tv] = ty
+
+        return_type = template.__type_rule__(*args, **kwargs)
+
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
         )  # type: ignore
@@ -566,12 +629,13 @@ class LiteLLMProvider(ObjectInterpretation):
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
             result: T | None = None
-            while message["role"] != "assistant" or tool_calls:
-                message, tool_calls, result = call_assistant(
-                    env, template.__signature__.return_annotation, **self.config
-                )
-                for tool_call in tool_calls:
-                    message = call_tool(tool_call)
+            with handler({_get_active_type_subs: lambda: merged_subs}):
+                while message["role"] != "assistant" or tool_calls:
+                    message, tool_calls, result = call_assistant(
+                        env, return_type, type_subs=merged_subs, **self.config
+                    )
+                    for tool_call in tool_calls:
+                        message = call_tool(tool_call)
 
         try:
             _get_history()
