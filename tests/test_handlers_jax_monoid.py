@@ -130,7 +130,7 @@ def test_jax_weighted_reduce(backend: Backend):
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    ws = Product.weighted(X(), x, w(x()))
+    ws = Product.weighted(X(), w)
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
         bind_dims(w(unbind_dims(X(), k)) * body(unbind_dims(X(), k)), k), axis=0
