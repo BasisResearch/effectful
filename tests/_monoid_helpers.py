@@ -1,4 +1,5 @@
 import itertools
+import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, get_args, get_origin
@@ -326,45 +327,55 @@ class Backend:
         return Operation.define(fn, name=name)
 
 
+def _is_weighted(x: Any) -> bool:
+    return isinstance(x, Term) and _is_monoid_weighted(x.op)
+
+
+def _weight_pairs(x: Any, monoid: Any) -> list[tuple[Any, Any]] | None:
+    """Return ``(element, weight)`` pairs for a stream.
+
+    A weighted-monoid Term yields each element paired with its weight. A plain
+    (unweighted) stream yields each element paired with ``monoid.identity`` --
+    the no-op weight -- so an unweighted stream compares equal to a weighted one
+    exactly when every weight reduces to the identity (e.g. ``[()]`` vs a
+    weighted ``[()]`` whose single empty row reduces to the identity, and, more
+    generally, whenever both streams are empty). Returns ``None`` for a
+    non-stream Term, which never compares equal to a weighted stream.
+    """
+    if isinstance(x, Term):
+        if not _is_monoid_weighted(x.op):
+            return None
+        stream, weight = x.args
+        assert not isinstance(stream, Term)
+        return [(e, typing.cast(Callable, weight)(e)) for e in stream]
+    return [(e, monoid.identity) for e in x]
+
+
 def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
-    a_monoid = a.op.__self__
-    a_stream, a_var, a_weight = a.args
-    b_monoid = b.op.__self__
-    b_stream, b_var, b_weight = b.args
-    if a_monoid is not b_monoid:
+    monoids = {x.op.__self__ for x in (a, b) if _is_weighted(x)}
+    # distinct weight monoids can never be equal
+    if len(monoids) != 1:
         return False
-    a_elems = list(a_stream)
-    b_elems = list(b_stream)
-    if len(a_elems) != len(b_elems):
+    monoid = next(iter(monoids))
+
+    a_pairs = _weight_pairs(a, monoid)
+    b_pairs = _weight_pairs(b, monoid)
+    if a_pairs is None or b_pairs is None or len(a_pairs) != len(b_pairs):
         return False
-    a_weight_fn = deffn(a_weight, a_var)
-    b_weight_fn = deffn(b_weight, b_var)
-    for ea, eb in zip(a_elems, b_elems):
-        if not leaf_eq(ea, eb):
-            return False
-        if not leaf_eq(a_weight_fn(ea), b_weight_fn(eb)):
+    for (ea, wa), (eb, wb) in zip(a_pairs, b_pairs):
+        if not leaf_eq(ea, eb) or not leaf_eq(wa, wb):
             return False
     return True
 
 
 def _int_eq(a: Any, b: Any) -> bool:
-    if (
-        isinstance(a, Term)
-        and _is_monoid_weighted(a.op)
-        and isinstance(b, Term)
-        and _is_monoid_weighted(b.op)
-    ):
+    if _is_weighted(a) or _is_weighted(b):
         return _weighted_stream_eq(a, b, _int_eq)
     return not isinstance(a, Term) and not isinstance(b, Term) and a == b
 
 
 def _jax_eq(a: Any, b: Any) -> bool:
-    if (
-        isinstance(a, Term)
-        and _is_monoid_weighted(a.op)
-        and isinstance(b, Term)
-        and _is_monoid_weighted(b.op)
-    ):
+    if _is_weighted(a) or _is_weighted(b):
         return _weighted_stream_eq(a, b, _jax_eq)
 
     def _leaf_eq(x: Any, y: Any) -> bool:

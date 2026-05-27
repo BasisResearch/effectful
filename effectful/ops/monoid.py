@@ -10,7 +10,15 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
+from effectful.internals.unification import nested_type
+from effectful.ops.semantics import (
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    typeof_full,
+)
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -19,7 +27,14 @@ from effectful.ops.syntax import (
     syntactic_eq,
     syntactic_hash,
 )
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,
+    Operation,
+    Term,
+    _CustomSingleDispatchCallable,
+)
 
 type Stream[T] = Iterable[T]
 
@@ -49,13 +64,13 @@ def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]
     )
 
 
-class Monoid[T]:
+class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
     _name: str
-    identity: T
+    identity: W
 
-    def __init__(self, identity: T, name: str):
+    def __init__(self, identity: W, name: str):
         self._name = name
         self.identity = identity
 
@@ -110,12 +125,9 @@ class Monoid[T]:
         raise NotHandled
 
     @Operation.define
-    def weighted[Elem, A, B](
-        self,
-        stream: Annotated[Iterable, Scoped[B]],
-        var: Annotated[Operation[[], Elem], Scoped[A]],
-        weight: Annotated[T, Scoped[A | B]],
-    ) -> Annotated[Iterable, Scoped[B]]:
+    def weighted[T](
+        self, stream: Iterable[T], weight: Callable[[T], W] | Operation[[T], W]
+    ) -> Iterable[T]:
         """A stream paired with a per-element weight. ``var`` is an
         :class:`Operation` standing for "an element of ``stream``"; ``weight``
         is an expression that uses ``var`` and evaluates to the weight of that
@@ -174,6 +186,35 @@ class _ExtensibleBinaryRelation[S, T]:
 distributes_over = _ExtensibleBinaryRelation(
     {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
 )
+
+
+@_CustomSingleDispatchCallable
+def stream_element_type(__dispatch: Callable[[type], Callable[[Any], Any]], typ: Any):
+    """Maps a stream type to the type of its elements.
+
+    Extensible per backend via :meth:`register`. Dispatch is on the type's
+    *origin* (e.g. ``list`` for ``list[int]``), so a handler registered for a
+    base class or ABC also covers its subclasses, most-specific match winning.
+    """
+    if typing.get_origin(typ) is Annotated:
+        typ = typing.get_args(typ)[0]
+    origin = typing.get_origin(typ) or typ
+    return __dispatch(origin)(typ)
+
+
+@stream_element_type.register(object)
+def _stream_element_type_default(typ: Any) -> Any:
+    raise NotImplementedError(
+        f"No element-type handler registered for stream type {typ!r}"
+    )
+
+
+# ``Iterable`` covers ``list``, ``tuple``, ``MutableSequence``, ... via origin
+# subclass dispatch.
+@stream_element_type.register(Iterable)
+def _stream_element_type_iterable(typ: Any) -> Any:
+    """Element type of a single-parameter generic stream like ``list[T]``."""
+    return typing.get_args(typ)[0]
 
 
 def _is_monoid_plus(op: Operation) -> bool:
@@ -589,11 +630,11 @@ class ReduceWeightedStream(ObjectInterpretation):
     def reduce(self, monoid, body, streams):
         for k, v in streams.items():
             if isinstance(v, Term) and _is_monoid_weighted(v.op):
-                v_stream, v_var, v_weight = v.args
+                v_stream, v_weight = v.args
                 v_monoid = v.op.__self__
                 if not distributes_over(v_monoid, monoid):
                     continue
-                w_at_k = deffn(v_weight, v_var)(k())
+                w_at_k = v_weight(k())
                 weighted_body = v_monoid.plus(w_at_k, body)
                 new_streams = {**streams, k: v_stream}
                 return monoid.reduce(weighted_body, new_streams)
@@ -604,12 +645,10 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
     """``CartesianProduct.reduce`` over a :func:`weighted` body whose
     ``weight`` is independent of the plate (product-index) streams::
 
-        CartesianProduct.reduce(weighted(s, e, w, M), plates)
-          = weighted(
+        CartesianProduct.reduce(M.weighted(s, w), plates)
+          = M.weighted(
               CartesianProduct.reduce(s, plates),
-              row,
-              M.reduce(w, {e: row()}),
-              M,
+              deffn(M.reduce(w, {e: row()}), row),
             )
 
     Reuses ``body``'s element binder ``e`` (already typed by construction);
@@ -625,17 +664,24 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
         if not (isinstance(body, Term) and _is_monoid_weighted(body.op)):
             return fwd()
 
-        s, e_op, w = body.args
-        weight_monoid = body.op.__self__
+        s, w = body.args
+        if not isinstance(s, Term) and len(s) == 0:
+            return CartesianProduct.reduce([], streams)
 
         if set(streams.keys()) & fvsof(w):
             return fwd()
 
-        joint_stream = CartesianProduct.reduce(s, streams)
-        row_op = Operation.define(Iterable, name="row")
-        joint_weight = weight_monoid.reduce(w, {e_op: row_op()})
+        stream_type = typeof_full(s) if isinstance(s, Term) else nested_type(s).value
+        elem_typ = stream_element_type(stream_type)
+        elem_op = Operation.define(elem_typ, name="elem")
+        row_op = Operation.define(Iterable[elem_typ], name="row")
 
-        return weight_monoid.weighted(joint_stream, row_op, joint_weight)
+        weight_monoid = body.op.__self__
+        joint_weight = deffn(
+            weight_monoid.reduce(w(elem_op()), {elem_op: row_op()}), row_op
+        )
+        joint_stream = CartesianProduct.reduce(s, streams)
+        return weight_monoid.weighted(joint_stream, joint_weight)
 
 
 class MonoidOverCallable(ObjectInterpretation):

@@ -307,8 +307,23 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
+def typeof_full[T](term: Expr[T]) -> type[T]:
+    """Return the type of an expression, including any type parameters."""
+    from effectful.internals.runtime import interpreter
+    from effectful.internals.unification import Box
+
+    def _apply(op, *args, **kwargs):
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    with interpreter({apply: _apply}):
+        type_or_value = evaluate(term)
+        if isinstance(type_or_value, Box):
+            return type_or_value.value
+        return typing.cast(type[T], type(type_or_value))
+
+
 def typeof[T](term: Expr[T]) -> type[T]:
-    """Return the type of an expression.
+    """Return the type of an expression, with type parameters stripped.
 
     **Example usage**:
 
@@ -329,17 +344,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    from effectful.internals.runtime import interpreter
-    from effectful.internals.unification import Box
-
-    def _apply(op, *args, **kwargs):
-        return Box(op.__type_rule__(*args, **kwargs))
-
-    with interpreter({apply: _apply}):
-        type_or_value = evaluate(term)
-        if isinstance(type_or_value, Box):
-            return _simple_type(type_or_value.value)
-        return typing.cast(type[T], type(type_or_value))
+    return _simple_type(typeof_full(term))
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:

@@ -35,6 +35,7 @@ from effectful.ops.monoid import (
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.syntax import deffn
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import (
     INT_BACKEND,
@@ -682,12 +683,12 @@ def test_reduce_single_weighted_stream(backend):
     Sum.reduce(body, {a: WS(A, w, Product)})
       = Sum.reduce(Product.plus(w(a), body), {a: A})
     """
-    a, e = define_vars("a", "e", typ=backend.scalar_typ)
+    a = define_vars("a", typ=backend.scalar_typ)
     A = define_vars("A", typ=backend.stream_typ)
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    lhs = Sum.reduce(body(a()), {a: Product.weighted(A(), e, w(e()))})
+    lhs = Sum.reduce(body(a()), {a: Product.weighted(A(), w)})
     rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
 
     check_rewrite(
@@ -707,7 +708,7 @@ def test_reduce_weighted_factorization(backend):
     Exercises chaining of ``ReduceWeightedStream`` with ``ReduceFactorization``
     inside ``NormalizeIntp``.
     """
-    a, b, e_a, e_b = define_vars("a", "b", "e_a", "e_b", typ=backend.scalar_typ)
+    a, b = define_vars("a", "b", typ=backend.scalar_typ)
     A, B = define_vars("A", "B", typ=backend.stream_typ)
     f = backend.fresh_op("f", n_args=1, ret="scalar")
     g = backend.fresh_op("g", n_args=1, ret="scalar")
@@ -716,10 +717,7 @@ def test_reduce_weighted_factorization(backend):
 
     lhs = Sum.reduce(
         Product.plus(f(a()), g(b())),
-        {
-            a: Product.weighted(A(), e_a, w_a(e_a())),
-            b: Product.weighted(B(), e_b, w_b(e_b())),
-        },
+        {a: Product.weighted(A(), w_a), b: Product.weighted(B(), w_b)},
     )
     rhs = Product.plus(
         Sum.reduce(Product.plus(w_a(a()), Product.plus(f(a()))), {a: A()}),
@@ -747,13 +745,12 @@ def test_reduce_cartesian_weighted_stream(backend):
     S, P = define_vars("S", "P", typ=backend.stream_typ)
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
-    lhs = CartesianProduct.reduce(Product.weighted(S(), e_var, w(e_var())), {p: P()})
+    lhs = CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})
 
     row_var = Operation.define(Iterable[backend.scalar_typ], name="row")
     rhs = Product.weighted(
         CartesianProduct.reduce(S(), {p: P()}),
-        row_var,
-        Product.reduce(w(e_var()), {e_var: row_var()}),
+        deffn(Product.reduce(w(e_var()), {e_var: row_var()}), row_var),
     )
 
     check_rewrite(
@@ -784,14 +781,14 @@ def test_lift_weighted_cartesian(backend):
         )
     """
     a = define_vars("a", typ=backend.scalar_typ)
-    e, p = define_vars("e", "p", typ=backend.scalar_typ)
+    p = define_vars("p", typ=backend.scalar_typ)
     A, S, P = define_vars("A", "S", "P", typ=backend.stream_typ)
     body = backend.fresh_op("body", n_args=1, ret="scalar")
     w = backend.fresh_op("w", n_args=1, ret="scalar")
 
     lhs = Sum.reduce(
         Product.reduce(body(a()), {a: A()}),
-        {A: CartesianProduct.reduce(Product.weighted(S(), e, w(e())), {p: P()})},
+        {A: CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})},
     )
     rhs = Product.reduce(
         Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}), {p: P()}
