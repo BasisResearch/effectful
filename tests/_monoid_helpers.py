@@ -9,7 +9,6 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import effectful.handlers.jax.numpy as _jnp
-from effectful.handlers.jax.monoid import array_to_stream
 from effectful.internals.runtime import interpreter
 from effectful.ops.monoid import NormalizeIntp, Stream, _is_monoid_weighted
 from effectful.ops.semantics import apply, evaluate, handler
@@ -44,9 +43,9 @@ _UNARY_JAX_SCALAR_FNS: list[Callable[[jax.Array], jax.Array]] = [
 ]
 
 _UNARY_JAX_STREAM_FNS: list[Callable[[jax.Array], Stream[jax.Array]]] = [
-    lambda a: array_to_stream(_jnp.stack([a, a + 1])),
-    lambda a: array_to_stream(_jnp.stack([a, -a])),
-    lambda a: array_to_stream(_jnp.stack([a, a + 1, 2 * a])),
+    lambda a: _jnp.stack([a, a + 1]),
+    lambda a: _jnp.stack([a, -a]),
+    lambda a: _jnp.stack([a, a + 1, 2 * a]),
 ]
 
 _BINARY_JAX_SCALAR_FNS: list[Callable[[jax.Array, jax.Array], jax.Array]] = [
@@ -126,9 +125,7 @@ def _jax_strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]
         if ret == jax.Array:
             return _jax_array_value_strategy().map(deffn)
         if ret == Stream[jax.Array]:
-            return _jax_array_stream_strategy().map(
-                lambda arr: deffn(array_to_stream(arr))
-            )
+            return _jax_array_stream_strategy().map(deffn)
     elif ret == jax.Array:
         if n_args == 1:
             return st.sampled_from(_UNARY_JAX_SCALAR_FNS)

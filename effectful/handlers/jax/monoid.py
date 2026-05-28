@@ -18,14 +18,12 @@ from effectful.ops.monoid import (
     Sum,
     distributes_over,
     outer_stream,
-    stream_element_type,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 Iterable.register(jax.Array)  # required to make jax arrays compatible with Stream[T]
-stream_element_type.register(jax.Array, lambda t: jax.Array)
 
 
 def cartesian_prod(x, y):
