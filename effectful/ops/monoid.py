@@ -2,7 +2,6 @@ import collections.abc
 import functools
 import itertools
 import operator
-import types
 import typing
 from collections import Counter, UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
@@ -11,7 +10,6 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.internals.unification import nested_type
 from effectful.ops.semantics import (
     coproduct,
     evaluate,
@@ -19,7 +17,6 @@ from effectful.ops.semantics import (
     fwd,
     handler,
     typeof,
-    typeof_full,
 )
 from effectful.ops.syntax import (
     ObjectInterpretation,

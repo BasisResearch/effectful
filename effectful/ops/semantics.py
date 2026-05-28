@@ -311,26 +311,11 @@ def _simple_type(tp: type) -> type:
         tp = functools.reduce(operator.or_, (type(arg) for arg in args))
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
-    return _resolve_aliases(tp)
-
-
-def typeof_full[T](term: Expr[T]) -> type[T]:
-    """Return the type of an expression, including any type parameters."""
-    from effectful.internals.runtime import interpreter
-    from effectful.internals.unification import Box
-
-    def _apply(op, *args, **kwargs):
-        return Box(op.__type_rule__(*args, **kwargs))
-
-    with interpreter({apply: _apply}):
-        type_or_value = evaluate(term)
-        if isinstance(type_or_value, Box):
-            return type_or_value.value
-        return typing.cast(type[T], type(type_or_value))
+    return typing.get_origin(tp) or tp
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
-    """Return the type of an expression, with type parameters stripped.
+    """Return the type of an expression.
 
     **Example usage**:
 
@@ -351,7 +336,17 @@ def typeof[T](term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    return _simple_type(typeof_full(term))
+    from effectful.internals.runtime import interpreter
+    from effectful.internals.unification import Box
+
+    def _apply(op, *args, **kwargs):
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    with interpreter({apply: _apply}):
+        type_or_value = evaluate(term)
+        if isinstance(type_or_value, Box):
+            return _simple_type(type_or_value.value)
+        return typing.cast(type[T], type(type_or_value))
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
