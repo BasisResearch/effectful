@@ -1900,3 +1900,16 @@ def test_unify_mapping_typeddict_subclass():
 
     subs = unify(collections.abc.Mapping, Info)
     assert subs == {}
+
+
+def test_unify_jax_array_iterable():
+    import jax
+
+    subs = unify(collections.abc.Iterable[T], jax.Array)
+    assert subs == {T: jax.Array}
+
+
+def test_nested_type_jax_array():
+    import jax
+
+    assert nested_type(jax.numpy.array([0, 1, 2])) == jax.Array

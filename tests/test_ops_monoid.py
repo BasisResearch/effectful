@@ -2,11 +2,14 @@ import math
 import typing
 from collections.abc import Iterable
 
+import jax
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import effectful.handlers.jax.monoid  # noqa: F401
+import effectful.handlers.jax.numpy as jnp
+from effectful.handlers.jax import jax_getitem
 from effectful.ops.monoid import (
     CartesianProduct,
     Max,
@@ -565,6 +568,22 @@ def test_reduce_independent_4(backend):
         backend=backend,
         free_vars=[A, B, C, f],
     )
+
+
+def test_reduce_cartesian_3():
+    i = define_vars("i", typ=jax.Array)
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(3)})
+    assert value.shape == (2**3, 3)
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(1)})
+    assert value.shape == (2**1, 1)
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(1), {i: jnp.arange(3)})
+    assert value.shape == (1**3, 3)
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)

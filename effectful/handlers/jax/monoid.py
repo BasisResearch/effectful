@@ -23,8 +23,6 @@ from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
-Iterable.register(jax.Array)  # required to make jax arrays compatible with Stream[T]
-
 
 def cartesian_prod(x, y):
     if x.ndim == 1:
@@ -115,7 +113,15 @@ class CartesianProductPlusJax(ObjectInterpretation):
             if not isinstance(a, jax.Array):
                 return fwd()
             result = a if result is None else cartesian_prod(result, a)
-        return result if result is not None else CartesianProduct.identity
+        if result is None:
+            return CartesianProduct.identity
+        # CartesianProduct values are streams of rows. ``cartesian_prod``
+        # already lifts 1D inputs to 2D, but a single-array call seeds
+        # ``result = a`` unchanged — promote so the rank invariant holds for
+        # every array-path return.
+        if result.ndim == 1:
+            result = result[:, None]
+        return result
 
 
 ARRAY_REDUCTORS = {

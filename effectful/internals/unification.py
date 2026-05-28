@@ -556,7 +556,7 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
         and issubclass(subtyp, typing.get_origin(typ))
     ):
         return subs  # implicit expansion to subtyp[Any]
-    elif isinstance(typ, GenericAlias) and isinstance(subtyp, type):
+    elif isinstance(typ, GenericAlias):
         # Special case for treating arrays as iterables of arrays
         try:
             import jax
