@@ -2,6 +2,7 @@ import collections.abc
 import functools
 import itertools
 import operator
+import types
 import typing
 from collections import Counter, UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping
@@ -33,7 +34,6 @@ from effectful.ops.types import (
     NotHandled,
     Operation,
     Term,
-    _CustomSingleDispatchCallable,
 )
 
 type Stream[T] = Iterable[T]
@@ -186,35 +186,6 @@ class _ExtensibleBinaryRelation[S, T]:
 distributes_over = _ExtensibleBinaryRelation(
     {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
 )
-
-
-@_CustomSingleDispatchCallable
-def stream_element_type(__dispatch: Callable[[type], Callable[[Any], Any]], typ: Any):
-    """Maps a stream type to the type of its elements.
-
-    Extensible per backend via :meth:`register`. Dispatch is on the type's
-    *origin* (e.g. ``list`` for ``list[int]``), so a handler registered for a
-    base class or ABC also covers its subclasses, most-specific match winning.
-    """
-    if typing.get_origin(typ) is Annotated:
-        typ = typing.get_args(typ)[0]
-    origin = typing.get_origin(typ) or typ
-    return __dispatch(origin)(typ)
-
-
-@stream_element_type.register(object)
-def _stream_element_type_default(typ: Any) -> Any:
-    raise NotImplementedError(
-        f"No element-type handler registered for stream type {typ!r}"
-    )
-
-
-# ``Iterable`` covers ``list``, ``tuple``, ``MutableSequence``, ... via origin
-# subclass dispatch.
-@stream_element_type.register(Iterable)
-def _stream_element_type_iterable(typ: Any) -> Any:
-    """Element type of a single-parameter generic stream like ``list[T]``."""
-    return typing.get_args(typ)[0]
 
 
 def _is_monoid_plus(op: Operation) -> bool:
@@ -672,7 +643,13 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
             return fwd()
 
         stream_type = typeof_full(s) if isinstance(s, Term) else nested_type(s).value
-        elem_typ = stream_element_type(stream_type)
+        if not (
+            isinstance(stream_type, types.GenericAlias)
+            and typing.get_origin(stream_type) == Stream
+        ):
+            return fwd()
+
+        elem_typ = typing.get_args(stream_type)[0]
         elem_op = Operation.define(elem_typ, name="elem")
         row_op = Operation.define(Iterable[elem_typ], name="row")
 
@@ -681,6 +658,7 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
             weight_monoid.reduce(w(elem_op()), {elem_op: row_op()}), row_op
         )
         joint_stream = CartesianProduct.reduce(s, streams)
+
         return weight_monoid.weighted(joint_stream, joint_weight)
 
 
