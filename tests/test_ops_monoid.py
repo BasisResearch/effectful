@@ -9,7 +9,6 @@ from hypothesis import strategies as st
 
 import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem
 from effectful.ops.monoid import (
     CartesianProduct,
     Max,
