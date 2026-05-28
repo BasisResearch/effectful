@@ -18,6 +18,7 @@ from effectful.ops.semantics import (
     fvsof,
     fwd,
     handler,
+    typeof,
     typeof_full,
 )
 from effectful.ops.syntax import (
@@ -628,6 +629,11 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
     Only fires when ``w`` is independent of the plate vars.
     """
 
+    @Operation.define
+    @staticmethod
+    def _iterable_elem[T](iter: Iterable[T]) -> T:
+        raise NotHandled
+
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         if monoid is not CartesianProduct:
@@ -642,14 +648,7 @@ class ReduceCartesianWeightedStream(ObjectInterpretation):
         if set(streams.keys()) & fvsof(w):
             return fwd()
 
-        stream_type = typeof_full(s) if isinstance(s, Term) else nested_type(s).value
-        if not (
-            isinstance(stream_type, types.GenericAlias)
-            and typing.get_origin(stream_type) == Stream
-        ):
-            return fwd()
-
-        elem_typ = typing.get_args(stream_type)[0]
+        elem_typ = typeof(self._iterable_elem(s))
         elem_op = Operation.define(elem_typ, name="elem")
         row_op = Operation.define(Iterable[elem_typ], name="row")
 
