@@ -5,7 +5,7 @@ from collections.abc import Iterable
 import jax
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, unbind_dims
+from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
@@ -422,6 +422,88 @@ class ReduceRange(ObjectInterpretation):
 #   ``initial=monoid.identity``). The empty-domain check is intentionally
 #   NOT a rule on its own — rewrites stay size-polymorphic and leaf ops
 #   carry the burden. See the conversation in monoid.py's history for why.
+
+
+def _parse_einsum_spec(
+    subscripts: str, operands: tuple[jax.Array, ...]
+) -> tuple[list[str], str]:
+    """Parse a numpy/jax-style einsum subscripts string.
+
+    Supports explicit ``"ij,jk->ik"`` and implicit ``"ij,jk"`` forms; in the
+    implicit case the output is each letter appearing exactly once across all
+    inputs, sorted alphabetically. Does not support ellipsis ``...``.
+    """
+    if "..." in subscripts:
+        raise NotImplementedError("einsum ellipsis not yet supported")
+    if "->" in subscripts:
+        in_part, out_spec = subscripts.split("->")
+    else:
+        in_part = subscripts
+        counts: dict[str, int] = {}
+        for c in in_part.replace(",", ""):
+            counts[c] = counts.get(c, 0) + 1
+        out_spec = "".join(sorted(c for c, n in counts.items() if n == 1))
+    in_specs = in_part.split(",")
+    if len(in_specs) != len(operands):
+        raise ValueError(
+            f"einsum: {len(in_specs)} input specs but {len(operands)} operands"
+        )
+    for spec, arr in zip(in_specs, operands, strict=True):
+        if len(spec) != arr.ndim:
+            raise ValueError(
+                f"einsum spec {spec!r} has {len(spec)} indices but operand "
+                f"has shape {arr.shape}"
+            )
+    return in_specs, out_spec
+
+
+def einsum(subscripts: str, *operands: jax.Array) -> jax.Array:
+    """Evaluate an einsum expression using monoid reductions.
+
+    Mirrors the ``jax.numpy.einsum(subscripts, *operands)`` interface for the
+    subset of subscript strings that do not use ``...`` (ellipsis). The
+    expression is encoded as a product of named-dim-bound operands wrapped in
+    a :func:`delta` over the output indices and reduced with
+    :data:`Sum.reduce` over every index; :class:`ReduceDeltaIndependent` peels
+    output indices into positional axes and :class:`ArrayReduce` sums over the
+    remainder.
+
+    Repeated index letters within a single operand (``"ii"``, ``"iij"``) work
+    because the unbinding substitution inside :class:`ReduceDeltaIndependent`
+    threads one fresh op through every occurrence of the repeated index — the
+    diagonal falls out naturally without a separate ``jnp.diagonal`` step.
+
+    This is the *unoptimised* baseline: all operands are broadcast into a
+    single intermediate before reduction. A contraction-ordering normalization
+    rule (planned) reorders large products into pairwise contractions without
+    requiring changes here.
+    """
+    if not operands:
+        raise ValueError("einsum requires at least one operand")
+    in_specs, out_spec = _parse_einsum_spec(subscripts, operands)
+
+    all_letters = set(out_spec) | {c for s in in_specs for c in s}
+    ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
+
+    factors = [
+        unbind_dims(arr, *(ops[c] for c in spec))
+        for arr, spec in zip(operands, in_specs, strict=True)
+    ]
+    body = Product.plus(*factors)
+
+    # ``sizesof`` walks the named-dim expression and returns ``{op: size}``,
+    # also cross-checking size consistency across operands.
+    sizes = sizesof(body)
+    for c in out_spec:
+        if ops[c] not in sizes:
+            raise ValueError(f"einsum: output index {c!r} not present in any input")
+
+    out_tuple = tuple(ops[c]() for c in out_spec)
+    streams = {op: range(size) for op, size in sizes.items()}
+    expr = Sum.reduce(delta(out_tuple, body), streams)
+
+    with handler(NormalizeIntp):
+        return typing.cast(jax.Array, evaluate(expr))
 
 
 NormalizeIntp.extend(

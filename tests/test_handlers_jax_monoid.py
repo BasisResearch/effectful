@@ -14,6 +14,7 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaIndependent,
     ReduceDependentRangeMask,
     delta,
+    einsum,
 )
 from effectful.handlers.jax.monoid import range as Range
 from effectful.handlers.jax.scipy.special import logsumexp
@@ -262,3 +263,75 @@ def test_reduce_matmul(backend: JaxBackend):
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
     assert jnp.allclose(actual, expected)
+
+
+# Default per-letter sizes used to materialize random operands for the einsum
+# correctness tests. Distinct primes keep transposes from sneaking by.
+_EINSUM_DIM_SIZES = {
+    "a": 2,
+    "b": 3,
+    "c": 4,
+    "d": 5,
+    "e": 6,
+    "i": 7,
+    "j": 8,
+    "k": 5,
+}
+
+
+EINSUM_EXAMPLES = [
+    # vector operations
+    "i->i",  # do nothing
+    "i->",  # vector sum
+    ",i->i",  # scalar-vector product
+    "i,i->",  # inner product
+    "i,j->ij",  # outer product
+    "i,i->i",  # element-wise product
+    # matrix operations
+    "ij->ij",  # do nothing
+    "ij->ji",  # matrix transpose
+    "ii->",  # matrix trace
+    "ii->i",  # matrix diagonal
+    ",ij->ij",  # scalar-matrix product
+    "ij,j->i",  # matrix-vector product
+    "ij,ij->ij",  # hadamard product
+    "ij,jk->ik",  # matrix-matrix product
+    # composite contractions
+    "ab,a->",
+    "a,a,a,ab->ab",
+    "ab,bc,cd->da",
+    "ai->i",
+    ",ai,abij->ij",
+    "a,ai,bij->ij",
+    "ai,abi,bci,cdi->i",
+    "aij,abij,bcij->ij",
+    "a,abi,bcij,cdij->ij",
+]
+
+
+def _make_einsum_operands(spec: str, key: jax.Array) -> list[jax.Array]:
+    in_part = spec.split("->")[0] if "->" in spec else spec
+    in_specs = in_part.split(",")
+    keys = random.split(key, max(len(in_specs), 1))
+    operands = []
+    for k, s in zip(keys, in_specs, strict=True):
+        shape = tuple(_EINSUM_DIM_SIZES[c] for c in s) if s else ()
+        operands.append(random.normal(k, shape))
+    return operands
+
+
+@pytest.mark.parametrize("spec", EINSUM_EXAMPLES)
+def test_einsum_matches_jnp(spec: str):
+    """``einsum`` returns the same result as ``jnp.einsum`` for every spec
+    in ``EINSUM_EXAMPLES``.
+    """
+    key = jax.random.PRNGKey(hash(spec) & 0xFFFFFFFF)
+    operands = _make_einsum_operands(spec, key)
+    actual = einsum(spec, *operands)
+    expected = jnp.einsum(spec, *operands)
+    assert actual.shape == expected.shape, (
+        f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
+    )
+    assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-4), (
+        f"value mismatch for {spec!r}"
+    )
