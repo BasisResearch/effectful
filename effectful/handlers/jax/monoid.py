@@ -218,7 +218,14 @@ def _is_simple_range(term: Term) -> bool:
 class ReduceDeltaIndependent(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
 
+    ══════════════════════════════════════════════════════════════
     reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
+
+
+    reduce(M, {v: range(N)}, delta(idx' ++ (v(),), body))
+    ═══════════════════════════════════════════════════════
+    bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)
+
 
     reduce(M, streams ∪ {v: range(N)}, delta(idx' ++ (v(),), body))
     ═══════════════════════════════════════════════════════════════════════════
@@ -274,7 +281,10 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         subst_intp = typing.cast(Interpretation, {tail_op: deffn(fresh_stream)})
         fresh_body = bind_dims(handler(subst_intp)(evaluate)(weight), fresh_op)
         fresh_streams = {k: v for (k, v) in streams.items() if k != tail_op}
-        return monoid.reduce(delta(head_indices, fresh_body), fresh_streams)
+        if fresh_streams:
+            return monoid.reduce(delta(head_indices, fresh_body), fresh_streams)
+        else:
+            return fresh_body
 
 
 class ReduceDependentRangeMask(ObjectInterpretation):

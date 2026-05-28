@@ -159,8 +159,7 @@ def test_reduce_delta_empty(monoid, reductor, backend: JaxBackend):
 def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     """One R1 step: peel the final preserved index off a delta.
 
-    reduce(M, {y: Y()}, delta((y(),), f(y())))
-    ≡ reduce(M, {}, delta((), bind_dims(f(unbind_dims(Y(), k)), k)))
+    reduce(M, {y: Y()}, delta((y(),), f(y()))) ≡ bind_dims(f(unbind_dims(Y(), k)), k)
     """
     (y, k) = backend.define_vars("y", "k", ret="scalar")
     f = backend.define_vars("f", arg_types=[backend.scalar_typ], ret="scalar")
@@ -169,7 +168,7 @@ def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     # unbind_dims is undefined on empty arrays (and the rewrite produces a
     # different rhs in this case)
     lhs = monoid.reduce(delta((y(),), f(y())), {y: Range(3)})
-    rhs = monoid.reduce(bind_dims(f(unbind_dims(jnp.arange(3), k)), k), {})
+    rhs = bind_dims(f(unbind_dims(jnp.arange(3), k)), k)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
 
 
@@ -189,14 +188,8 @@ def test_reduce_delta_independent_preserves_others(
     )
 
     lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: Range(2), y: Range(3)})
-    rhs = monoid.reduce(
-        bind_dims(
-            bind_dims(
-                f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k
-            ),
-            x,
-        ),
-        {},
+    rhs = bind_dims(
+        bind_dims(f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k), x
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
 
