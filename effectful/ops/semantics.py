@@ -311,7 +311,7 @@ def _simple_type(tp: type) -> type:
         tp = functools.reduce(operator.or_, (type(arg) for arg in args))
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
-    return typing.get_origin(tp) or tp
+    return _resolve_aliases(tp)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
