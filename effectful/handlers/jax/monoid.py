@@ -1,6 +1,7 @@
 import functools
 import typing
 from collections.abc import Iterable
+from typing import Callable, Protocol
 
 import jax
 
@@ -425,7 +426,7 @@ class ReduceRange(ObjectInterpretation):
 
 
 def _parse_einsum_spec(
-    subscripts: str, operands: tuple[jax.Array, ...]
+    subscripts: str, *operands: tuple[int, ...]
 ) -> tuple[list[str], str]:
     """Parse a numpy/jax-style einsum subscripts string.
 
@@ -448,16 +449,20 @@ def _parse_einsum_spec(
         raise ValueError(
             f"einsum: {len(in_specs)} input specs but {len(operands)} operands"
         )
-    for spec, arr in zip(in_specs, operands, strict=True):
-        if len(spec) != arr.ndim:
+    for spec, shape in zip(in_specs, operands, strict=True):
+        if len(spec) != len(shape):
             raise ValueError(
                 f"einsum spec {spec!r} has {len(spec)} indices but operand "
-                f"has shape {arr.shape}"
+                f"has shape {shape}"
             )
     return in_specs, out_spec
 
 
-def einsum(subscripts: str, *operands: jax.Array) -> jax.Array:
+class Einsum(Protocol):
+    def __call__(self, *args: jax.Array) -> jax.Array: ...
+
+
+def einsum(subscripts: str, *operands: tuple[int, ...]) -> Einsum:
     """Evaluate an einsum expression using monoid reductions.
 
     Mirrors the ``jax.numpy.einsum(subscripts, *operands)`` interface for the
@@ -480,30 +485,34 @@ def einsum(subscripts: str, *operands: jax.Array) -> jax.Array:
     """
     if not operands:
         raise ValueError("einsum requires at least one operand")
-    in_specs, out_spec = _parse_einsum_spec(subscripts, operands)
+    in_specs, out_spec = _parse_einsum_spec(subscripts, *operands)
 
     all_letters = set(out_spec) | {c for s in in_specs for c in s}
     ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
 
+    sizes = {}
+    for spec, shape in zip(in_specs, operands, strict=True):
+        for l, s in zip(spec, shape, strict=True):
+            if l in sizes and sizes[l] != s:
+                raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
+            else:
+                sizes[l] = s
+    for c in out_spec:
+        if c not in sizes:
+            raise ValueError(f"einsum: output index {c!r} not present in any input")
+
+    arrays = [Operation.define(jax.Array) for _ in operands]
     factors = [
-        unbind_dims(arr, *(ops[c] for c in spec))
-        for arr, spec in zip(operands, in_specs, strict=True)
+        unbind_dims(arr(), *(ops[c] for c in spec))
+        for arr, spec in zip(arrays, in_specs, strict=True)
     ]
     body = Product.plus(*factors)
 
-    # ``sizesof`` walks the named-dim expression and returns ``{op: size}``,
-    # also cross-checking size consistency across operands.
-    sizes = sizesof(body)
-    for c in out_spec:
-        if ops[c] not in sizes:
-            raise ValueError(f"einsum: output index {c!r} not present in any input")
-
     out_tuple = tuple(ops[c]() for c in out_spec)
-    streams = {op: range(size) for op, size in sizes.items()}
-    expr = Sum.reduce(delta(out_tuple, body), streams)
-
-    with handler(NormalizeIntp):
-        return typing.cast(jax.Array, evaluate(expr))
+    streams = {op: range(sizes[c]) for c, op in ops.items()}
+    expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
+    norm_expr = handler(NormalizeIntp)(evaluate)(expr)
+    return typing.cast(Einsum, norm_expr)
 
 
 NormalizeIntp.extend(
