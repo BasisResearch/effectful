@@ -81,10 +81,8 @@ class Monoid[W]:
     def __hash__(self):
         return hash(id(self))
 
-    # the weak typing allows us to write monoid.plus(monoid.identity, <array>)
-    # and monoid.plus(monoid.identity, <float>)
     @Operation.define
-    def plus(self, *args: Any) -> Any:
+    def plus(self, *args: W) -> W:
         """Monoid addition. Handlers supply per-monoid and broadcasting
         behavior; the default rule only handles empty / Term cases.
         """

@@ -8,7 +8,7 @@ import opt_einsum
 from jax import lax
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
@@ -213,6 +213,22 @@ def _is_simple_range(term: Term) -> bool:
         and not isinstance(step, Term)
         and step == 1
     )
+
+
+class BindDimsMonoidPlus(ObjectInterpretation):
+    @implements(bind_dims)
+    def _(self, value, *names):
+        if isinstance(value, Term) and _is_monoid_plus(value.op):
+            return value.op(*(bind_dims(x, *names) for x in value.args))
+        return fwd()
+
+
+class BindDimsBindDims(ObjectInterpretation):
+    @implements(bind_dims)
+    def _(self, value, *names):
+        if isinstance(value, Term) and value.op == bind_dims:
+            return bind_dims(value.args[0], *(names + value.args[1:]))
+        return fwd()
 
 
 class ReduceDeltaIndependent(ObjectInterpretation):
@@ -474,16 +490,19 @@ class ReduceOrderContraction(ObjectInterpretation):
         if not distributes_over(body_monoid, monoid):
             return fwd()
 
+        factors = weight.args
+        if len(factors) < 3:
+            return fwd()
+
         sized_dims = {
-            op: len
+            op: l
             for (op, stream) in streams.items()
-            if (len := self._stream_length(stream)) is not None
+            if (l := self._stream_length(stream)) is not None
         }
 
         if not all(isinstance(i, Term) and i.op in sized_dims for i in out_indices):
             return fwd()
 
-        factors = weight.args
         sized_tensor_factors, other_factors = partition(
             factors,
             lambda f: (
@@ -495,25 +514,106 @@ class ReduceOrderContraction(ObjectInterpretation):
             list(fvsof(f) & set(streams.keys())) for f in sized_tensor_factors
         ]
 
-        dim_symbol = {
+        dim_to_symbol = {
             op: opt_einsum.get_symbol(i) for (i, op) in enumerate(sized_dims.keys())
         }
+
         contract_str = (
             ",".join(
-                "".join(dim_symbol[i] for i in indices) for indices in factor_indices
+                "".join(dim_to_symbol[i] for i in indices) for indices in factor_indices
             )
             + "->"
-            + "".join(dim_symbol[i.op] for i in out_indices)
+            + "".join(dim_to_symbol[i.op] for i in out_indices)
         )
         contract_shapes = [tuple(sized_dims[i] for i in ix) for ix in factor_indices]
-        (path, info) = opt_einsum.contract_path(
+        (_, info) = opt_einsum.contract_path(
             contract_str, *contract_shapes, shapes=True
         )
 
-        # reduced_factors = list(sized_tensor_factors)
-        # for fst, snd in path:
-        #     reduced_factors.append(monoid.reduce())
+        reduced_factors = list(sized_tensor_factors)
+        for (fst_idx, snd_idx), reduce_dims, _, _, _ in info.contraction_list:
+            fst = reduced_factors[fst_idx]
+            del reduced_factors[fst_idx]
+
+            snd = reduced_factors[snd_idx]
+            del reduced_factors[snd_idx]
+
+            pair_dims = (fvsof(fst) | fvsof(snd)) & set(sized_dims.keys())
+            retained_dims = tuple(
+                i() for i in pair_dims if dim_to_symbol[i] not in reduce_dims
+            )
+            reduced_factor = monoid.reduce(
+                delta(retained_dims, body_monoid.plus(fst, snd)),
+                {op: s for (op, s) in streams.items() if op in pair_dims},
+            )
+            breakpoint()
+            reduced_factors.insert(0, reduced_factor)
+
+        other_streams = {
+            op: stream for (op, stream) in streams.items() if op not in sized_dims
+        }
+        if other_streams:
+            result = monoid.reduce(
+                body_monoid.plus(*reduced_factors, *other_factors), other_streams
+            )
+        else:
+            result = body_monoid.plus(*reduced_factors, *other_factors)
+        return result
+
+
+class ReduceSumProductContraction(ObjectInterpretation):
+    """Fast-path a binary sum-of-products contraction.
+
+    A ``tensordot``-detecting variant of :class:`ArrayReduce`. Matches::
+
+        Sum.reduce(Product.plus(A, B), streams)
+
+    when ``A`` and ``B`` are the only (concrete :class:`jax.Array`) factors, and
+    emits a single :func:`jax.lax.dot_general` instead of broadcasting ``A`` and
+    ``B`` into a dense ``O(|A|·|B|)`` product and summing it — the
+    :class:`ArrayReduce` baseline.
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid: Monoid, body, streams: Streams):
+        if monoid is not Sum:
+            return fwd()
+
         breakpoint()
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_plus(body.op)
+            and body.op.__self__ is Product
+        ):
+            return fwd()
+
+        factors = body.args
+        if len(factors) != 2 or not all(
+            issubclass(typeof(f), jax.Array) for f in factors
+        ):
+            return fwd()
+        a, b = factors
+
+        stream_vars = set(streams.keys())
+
+        a_idx = fvsof(a) & stream_vars
+        b_idx = fvsof(b) & stream_vars
+        shared = a_idx & b_idx
+
+        contracted = list(shared)
+
+        # every summed index must be a contracting (shared) dim; a summed index
+        # in only one factor is a partial marginal, not a contraction
+        summed = a_idx | b_idx
+        if summed != set(contracted):
+            return fwd()
+
+        lhs = bind_dims(a, *contracted)
+        rhs = bind_dims(b, *contracted)
+
+        axes = tuple(py_range(len(contracted)))
+        result = jnp.tensordot(lhs, rhs, axes=(axes, axes))
+        return result
 
 
 def _parse_einsum_spec(
@@ -608,6 +708,7 @@ def einsum(subscripts: str, *operands: tuple[int, ...]) -> Einsum:
 
 NormalizeIntp.extend(
     ArrayReduce(),
+    ReduceSumProductContraction(),
     ReduceRange(),
     ReduceDeltaIndependent(),
     ReduceOrderContraction(),
@@ -618,4 +719,6 @@ NormalizeIntp.extend(
     MaxPlusJax(),
     LogSumExpPlusJax(),
     CartesianProductPlusJax(),
+    BindDimsMonoidPlus(),
+    BindDimsBindDims(),
 )
