@@ -4,9 +4,12 @@ from collections.abc import Iterable
 from typing import Callable, Protocol
 
 import jax
+import opt_einsum
+from jax import lax
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
+from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
@@ -17,6 +20,7 @@ from effectful.ops.monoid import (
     Product,
     Streams,
     Sum,
+    _is_monoid_plus,
     distributes_over,
     outer_stream,
 )
@@ -49,12 +53,7 @@ def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
     :class:`jax.Array` (no Terms).
     """
-    typs = (typeof(a) for a in args)
-    return (
-        bool(args)
-        and any(issubclass(t, jax.Array) for t in typs)
-        and all(issubclass(t, jax.typing.ArrayLike) for t in typs)
-    )
+    return bool(args) and all(is_eager_array(a) for a in args)
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -425,6 +424,98 @@ class ReduceRange(ObjectInterpretation):
 #   carry the burden. See the conversation in monoid.py's history for why.
 
 
+def partition(iterable, predicate):
+    trues, falses = [], []
+    for item in iterable:
+        (trues if predicate(item) else falses).append(item)
+    return trues, falses
+
+
+class ReduceOrderContraction(ObjectInterpretation):
+    @staticmethod
+    def _stream_length(stream) -> int | None:
+        if isinstance(stream, jax.Array):
+            shape = stream.shape
+            if len(shape) == 0:
+                raise ValueError("Unexpected scalar array")
+            return shape[0]
+        elif isinstance(stream, Term) and stream.op == range:
+            start = _range_start(stream)
+            stop = _range_stop(stream)
+            step = _range_step(stream)
+
+            if (
+                isinstance(start, Term)
+                or isinstance(stop, Term)
+                or isinstance(step, Term)
+            ):
+                return None
+
+            if step > 0 and start < stop:
+                length = (stop - start - 1) // step + 1
+            elif step < 0 and start > stop:
+                length = (start - stop - 1) // (-step) + 1
+            else:
+                length = 0
+            assert length >= 0
+            return length
+        return None
+
+    @implements(Monoid.reduce)
+    def _(self, monoid: Monoid, body, streams: Streams):
+        if not (isinstance(body, Term) and body.op == delta):
+            return fwd()
+
+        out_indices, weight = body.args
+        if not (isinstance(weight, Term) and _is_monoid_plus(weight.op)):
+            return fwd()
+        body_monoid = weight.op.__self__
+
+        if not distributes_over(body_monoid, monoid):
+            return fwd()
+
+        sized_dims = {
+            op: len
+            for (op, stream) in streams.items()
+            if (len := self._stream_length(stream)) is not None
+        }
+
+        if not all(isinstance(i, Term) and i.op in sized_dims for i in out_indices):
+            return fwd()
+
+        factors = weight.args
+        sized_tensor_factors, other_factors = partition(
+            factors,
+            lambda f: (
+                issubclass(typeof(f), jax.Array)
+                and (fvsof(f) & set(streams.keys())) <= set(sized_dims.keys())
+            ),
+        )
+        factor_indices = [
+            list(fvsof(f) & set(streams.keys())) for f in sized_tensor_factors
+        ]
+
+        dim_symbol = {
+            op: opt_einsum.get_symbol(i) for (i, op) in enumerate(sized_dims.keys())
+        }
+        contract_str = (
+            ",".join(
+                "".join(dim_symbol[i] for i in indices) for indices in factor_indices
+            )
+            + "->"
+            + "".join(dim_symbol[i.op] for i in out_indices)
+        )
+        contract_shapes = [tuple(sized_dims[i] for i in ix) for ix in factor_indices]
+        (path, info) = opt_einsum.contract_path(
+            contract_str, *contract_shapes, shapes=True
+        )
+
+        # reduced_factors = list(sized_tensor_factors)
+        # for fst, snd in path:
+        #     reduced_factors.append(monoid.reduce())
+        breakpoint()
+
+
 def _parse_einsum_spec(
     subscripts: str, *operands: tuple[int, ...]
 ) -> tuple[list[str], str]:
@@ -519,6 +610,7 @@ NormalizeIntp.extend(
     ArrayReduce(),
     ReduceRange(),
     ReduceDeltaIndependent(),
+    ReduceOrderContraction(),
     ReduceDependentRangeMask(),
     SumPlusJax(),
     ProductPlusJax(),
