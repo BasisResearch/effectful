@@ -227,7 +227,7 @@ def _build_definition_reader(
     def body(level: typing.Literal["short", "full"] = "short") -> str:
         obj = env[name]
         if level == "short":
-            return pydoc.render_doc(obj, renderer=pydoc.plaintext)
+            return pydoc.render_doc(obj, renderer=pydoc.plaintext)  # type: ignore[attr-defined]
         return inspect.getsource(obj)
 
     body.__name__ = name
@@ -262,18 +262,19 @@ def _build_synthetic_reader(
     `_collect_tools` or intentionally excluded).
     """
     try:
-        inferred = nested_type(value).value
-        adapter = pydantic.TypeAdapter(Encodable[inferred])
+        inferred: typing.Any = nested_type(value).value
+        adapter: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[inferred]
+        )
         adapter.json_schema()
     except Exception:
         # The probe chains through several third-party libraries
-        # (nested_type → inspect.signature → typing.get_overloads →
+        # (nested_type, inspect.signature, typing.get_overloads,
         # Pydantic schema generation). Any failure means "this symbol
-        # cannot be exposed as a synthetic reader" — the contract is
-        # skip-on-probe-failure, so we catch broadly. The cost of a
-        # too-narrow catch is a crash mid-call_assistant; the cost of a
-        # too-broad catch is silently skipping a symbol that might have
-        # worked.
+        # cannot be exposed as a synthetic reader", so we catch broadly.
+        # The cost of a too-narrow catch is a crash mid-call_assistant;
+        # the cost of a too-broad catch is silently skipping a symbol
+        # that might have worked.
         return None
 
     def body():
