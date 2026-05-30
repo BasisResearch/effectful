@@ -92,7 +92,10 @@ def generate_good_poem(topic: str) -> Poem:
     Keep iterating until evaluate_poem_tool returns GOOD.
     Return your final poem as JSON with 'content' and 'form' fields.
 
-    Do not call the 'generate_good_poem' tool.
+    Do not call any tool other than evaluate_poem_tool. In particular,
+    do not call generate_good_poem and do not call any read-only lexical
+    reader that may appear in the tool list. Those are not relevant to
+    this task.
     """
     raise NotHandled
 
