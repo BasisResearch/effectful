@@ -778,7 +778,8 @@ def test_template_method():
     assert a.random in a.f.tools.values()
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert a.f not in a.f.tools.values()
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
+    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert any(t() == 4 for t in a.f.tools.values() if t is a.random)
 
     class B(A):
@@ -795,7 +796,8 @@ def test_template_method():
     assert isinstance(b.f, Template)
     assert b.random in b.f.tools.values()
     assert b.reverse in b.f.tools.values()
-    assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
+    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
+    assert "local_variable" in b.f.__context__ and "local_variable" in a.f.tools
 
 
 def test_template_method_nested_class():
@@ -826,7 +828,8 @@ def test_template_method_nested_class():
     assert "random" in a.f.tools
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert "f" not in a.f.tools
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
+    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
+    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert a.f.tools["random"]() == 4
 
 
@@ -1531,3 +1534,303 @@ def test_tool_forward_ref():
     sig = inspect.signature(_tool_forward_ref)
     assert sig.parameters["x"].annotation is int
     assert sig.return_annotation is str
+
+
+# ---------------------------------------------------------------------------
+# Synthetic readers for lexical context (PR #545 finish-up)
+# ---------------------------------------------------------------------------
+
+import os
+import re
+import typing
+from pathlib import Path
+
+import pydantic
+
+from effectful.handlers.llm.completions import (
+    _build_synthetic_reader,
+    _collect_synthetic_readers,
+    _collect_tools,
+)
+from effectful.handlers.llm.template import _LEXICAL_READERS_PREFACE
+
+
+# Helpers for the test matrix
+@dataclasses.dataclass
+class _SimpleDataclass:
+    x: int
+    y: str
+
+
+class _SimpleModel(pydantic.BaseModel):
+    """Pydantic model used in encodable-probe matrix tests."""
+
+    x: int
+    y: str
+
+
+class _OpaqueNoEncoder:
+    """Plain user class with no Pydantic encoder."""
+
+    pass
+
+
+def test_synthetic_reader_value_reader_returns_live_value():
+    """A value-reader returns whatever env[name] currently is. Mutation
+    after reader construction propagates."""
+    env = {"x": [1, 2, 3]}
+    tool = _build_synthetic_reader([1, 2, 3], "x", env)
+    assert tool is not None
+    assert tool() == [1, 2, 3]
+    env["x"].append(4)
+    assert tool() == [1, 2, 3, 4]
+
+
+def test_synthetic_reader_value_reader_rebind():
+    """A reader returns the current binding even after rebind. The
+    annotation is set at .tools-access time but the body reads live."""
+    env: dict = {"x": 42}
+    tool = _build_synthetic_reader(42, "x", env)
+    assert tool is not None
+    assert tool() == 42
+    env["x"] = 99
+    assert tool() == 99
+
+
+def test_synthetic_reader_skips_when_name_deleted():
+    """If env[name] is deleted between collection and call, the reader
+    raises KeyError on direct invocation. call_tool's ToolCallExecutionError
+    wrapping is the standard tool-runtime-error contract, tested elsewhere."""
+    env = {"x": 42}
+    tool = _build_synthetic_reader(42, "x", env)
+    assert tool is not None
+    del env["x"]
+    with pytest.raises(KeyError):
+        tool()
+
+
+@pytest.mark.parametrize(
+    "name,value,should_have_tool",
+    [
+        ("primitive_int", 42, True),
+        ("primitive_str", "hello", True),
+        ("list_of_int", [1, 2, 3], True),
+        ("dict", {"a": 1}, True),
+        ("dataclass_simple", _SimpleDataclass(x=1, y="hello"), True),
+        ("pydantic_model", _SimpleModel(x=1, y="hello"), True),
+        # The plan's matrix says re.Pattern and pathlib.PosixPath instances
+        # ARE exposed by Encodable. Pin them here as a regression guard.
+        ("re_pattern", re.compile(r"x"), True),
+        ("pathlib_path", Path("/tmp"), True),
+        # Unencodable categories: probe rejects.
+        ("opaque", _OpaqueNoEncoder(), False),
+        ("typevar", typing.TypeVar("T"), False),
+    ],
+)
+def test_synthetic_reader_probe_matches_encodable(name, value, should_have_tool):
+    """The §2c probe accepts iff the symbol can produce a Pydantic
+    schema. No false positives, no false negatives."""
+    env = {name: value}
+    tool = _build_synthetic_reader(value, name, env)
+    if should_have_tool:
+        assert tool is not None
+    else:
+        assert tool is None
+
+
+def test_synthetic_readers_yield_to_real_tools():
+    """Real Tools/Templates collected by `_collect_tools` take precedence
+    over same-named synthetic readers (which are skipped via
+    `already_collected`)."""
+
+    @Tool.define
+    def shared() -> int:
+        """Doc."""
+        return 1
+
+    env = collections.ChainMap({"shared": shared, "shared_value": 42})
+    real = _collect_tools(env)
+    synth = _collect_synthetic_readers(env, set(real))
+    assert "shared" not in synth, "real tool name should not be re-wrapped"
+    assert "shared_value" in synth
+
+
+def test_synthetic_reader_annotation_has_no_free_typevars():
+    """Polymorphic-Template post-#668 substitutes TypeVars in Tool
+    annotations. Synthetic reader annotations come from nested_type,
+    which produces concrete types — substitution is a no-op."""
+    from effectful.internals.unification import freetypevars
+
+    env = {"x": [1, 2, 3]}
+    tool = _build_synthetic_reader([1, 2, 3], "x", env)
+    assert tool is not None
+    sig = inspect.signature(tool)
+    assert freetypevars(sig.return_annotation) == set()
+
+
+# ---- Definition-readers ----
+
+
+def test_definition_reader_short_form_substring_properties():
+    """Short form (pydoc.render_doc output) contains the docstring,
+    method signatures, and method docstrings. Substring assertions
+    only — pydoc output format is not a stable API."""
+
+    class _ReaderTarget:
+        """Class docstring."""
+
+        def method(self, x: int) -> str:
+            """Method docstring."""
+            return str(x)
+
+    env = {"_ReaderTarget": _ReaderTarget}
+    tool = _build_synthetic_reader(_ReaderTarget, "_ReaderTarget", env)
+    assert tool is not None
+
+    short = tool(level="short")
+    assert "Class docstring." in short
+    assert "method(self, x: int) -> str" in short
+    assert "Method docstring." in short
+
+
+def test_definition_reader_full_form_routes_to_getsource_not_pydoc():
+    """level="full" must route to inspect.getsource, not pydoc. Two
+    independent properties distinguish them: method bodies appear only
+    in getsource output, and the 'Methods defined here:' header is
+    pydoc-specific."""
+
+    class _ReaderTarget:
+        """Doc."""
+
+        def method(self, x: int) -> str:
+            return str(x)
+
+    env = {"_ReaderTarget": _ReaderTarget}
+    tool = _build_synthetic_reader(_ReaderTarget, "_ReaderTarget", env)
+    assert tool is not None
+
+    full = tool(level="full")
+    assert "return str(x)" in full, (
+        "method body must be present (only getsource shows bodies)"
+    )
+    assert "Methods defined here:" not in full, "pydoc-specific header must be absent"
+
+
+def test_definition_reader_lives_through_env():
+    """Rebinding the class in env shows the new definition on the next
+    call. Matches §1 live semantics."""
+
+    class _Old:
+        """Old class."""
+
+    class _New:
+        """New class."""
+
+    env: dict = {"x": _Old}
+    tool = _build_synthetic_reader(_Old, "x", env)
+    assert tool is not None
+    assert "Old class." in tool(level="short")
+
+    env["x"] = _New
+    assert "New class." in tool(level="short")
+
+
+def test_definition_reader_function():
+    """A user-defined function gets a definition-reader. Its short form
+    contains the function signature and docstring; full form contains
+    the function body."""
+
+    def _example(x: int) -> int:
+        """Add one."""
+        return x + 1
+
+    env = {"_example": _example}
+    tool = _build_synthetic_reader(_example, "_example", env)
+    assert tool is not None
+    short = tool(level="short")
+    assert "_example(x: int) -> int" in short
+    assert "Add one." in short
+    full = tool(level="full")
+    assert "return x + 1" in full
+
+
+def test_definition_reader_baseclass_uses_metaclass_dispatch():
+    """Singledispatch on `type` matches Pydantic BaseModel subclasses
+    (whose metaclass is ModelMetaclass, a subclass of type). The plan
+    relies on this — verify."""
+
+    class BMSubclass(pydantic.BaseModel):
+        """BM doc."""
+
+        x: int
+
+    env = {"BMSubclass": BMSubclass}
+    tool = _build_synthetic_reader(BMSubclass, "BMSubclass", env)
+    assert tool is not None
+    short = tool(level="short")
+    assert "BM doc." in short
+
+
+def test_definition_reader_skips_when_source_unreachable():
+    """Builtin C types like `int` fail inspect.getsource with TypeError;
+    we skip them at probe time rather than crashing at call time."""
+    env = {"int": int}
+    assert _build_synthetic_reader(int, "int", env) is None
+
+
+def test_typevars_are_skipped():
+    """TypeVar instances are not classes or routines; they fall through
+    to the value-reader default branch, fail the §2c probe with
+    PydanticSchemaGenerationError, and are skipped."""
+    T = typing.TypeVar("T")
+    env = {"T": T}
+    assert _build_synthetic_reader(T, "T", env) is None
+
+
+def test_module_values_are_skipped():
+    """Modules are never wrapped as synthetic readers — registered to
+    return None at dispatch time."""
+    env = {"os": os}
+    assert _build_synthetic_reader(os, "os", env) is None
+
+
+def test_box_value_filtered_via_probe_typeerror_chain():
+    """Box-as-value is skipped via the probe TypeError branch. Chain:
+
+      nested_type(Box(42))  →  Box(42)               (passthrough; unification.py:952)
+      .value                →  42                    (Box's only field)
+      Encodable[42]         →  TypeError             (literal value, not a type)
+      §2c probe catches     →  _build_synthetic_reader returns None
+
+    Named for the contract (chain-as-contract). If nested_type later
+    handles Box more usefully, this test breaks and we revisit."""
+    from effectful.internals.unification import Box
+
+    env = {"b": Box(42)}
+    assert _build_synthetic_reader(Box(42), "b", env) is None
+
+
+def test_system_prompt_contains_preface():
+    """Template.__system_prompt__ includes the lexical-readers preface
+    sentence unconditionally."""
+
+    @Template.define
+    def with_preface(x: int) -> int:
+        """Doc."""
+        raise NotHandled
+
+    assert _LEXICAL_READERS_PREFACE in with_preface.__system_prompt__
+
+
+def test_template_tools_includes_synthetic_readers_for_locals():
+    """The Template.tools property includes synthetic readers for
+    plain values in lexical scope (e.g., test-local variables)."""
+    _test_data = [10, 20, 30]
+
+    @Template.define
+    def t() -> int:
+        """Doc."""
+        raise NotHandled
+
+    assert "_test_data" in t.tools
+    assert t.tools["_test_data"]() == [10, 20, 30]

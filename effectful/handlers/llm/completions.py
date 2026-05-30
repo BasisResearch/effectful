@@ -5,9 +5,11 @@ import dataclasses
 import functools
 import inspect
 import json
+import pydoc
 import string
 import textwrap
 import traceback
+import types
 import typing
 import uuid
 
@@ -209,6 +211,112 @@ def _collect_tools(
     return result
 
 
+def _build_definition_reader(
+    value: typing.Any, name: str, env: collections.abc.Mapping[str, typing.Any]
+) -> Tool | None:
+    """Build a Tool that returns the source / help() output of a class or
+    function.  Probe is `inspect.getsource` reachability; symbols whose
+    source is unreachable (builtin C, REPL lambdas, etc.) are skipped."""
+    try:
+        inspect.getsource(value)
+    except (OSError, TypeError):
+        return None
+
+    kind = "class" if inspect.isclass(value) else "function"
+
+    def body(level: typing.Literal["short", "full"] = "short") -> str:
+        obj = env[name]
+        if level == "short":
+            return pydoc.render_doc(obj, renderer=pydoc.plaintext)
+        return inspect.getsource(obj)
+
+    body.__name__ = name
+    body.__doc__ = (
+        f"Read the definition of `{name}` (a {kind}). "
+        f'`level="short"` (default) returns `help({name})` output; '
+        f'`level="full"` returns `inspect.getsource({name})`. '
+        f"Calls must include `level` explicitly under OpenAI strict mode."
+    )
+    body.__annotations__ = {
+        "level": typing.Literal["short", "full"],
+        "return": str,
+    }
+    return Tool.define(body)
+
+
+@functools.singledispatch
+def _build_synthetic_reader(
+    value: typing.Any,
+    name: str,
+    env: collections.abc.Mapping[str, typing.Any],
+) -> Tool | None:
+    """Build a synthetic read-only Tool for a lexical symbol.
+
+    Default branch: value-reader. Probe is the §2c Encodable schema check;
+    on failure (unencodable value), return None and let the symbol be
+    skipped silently.
+
+    Registrations route classes and functions through the
+    definition-reader path (`_build_definition_reader`), and route Tool,
+    Agent, and module values to a no-op (already collected by
+    `_collect_tools` or intentionally excluded).
+    """
+    try:
+        inferred = nested_type(value).value
+        adapter = pydantic.TypeAdapter(Encodable[inferred])
+        adapter.json_schema()
+    except Exception:
+        # The probe chains through several third-party libraries
+        # (nested_type → inspect.signature → typing.get_overloads →
+        # Pydantic schema generation). Any failure means "this symbol
+        # cannot be exposed as a synthetic reader" — the contract is
+        # skip-on-probe-failure, so we catch broadly. The cost of a
+        # too-narrow catch is a crash mid-call_assistant; the cost of a
+        # too-broad catch is silently skipping a symbol that might have
+        # worked.
+        return None
+
+    def body():
+        return env[name]
+
+    body.__name__ = name
+    body.__doc__ = f"Read the value of lexical variable `{name}` (type `{inferred}`)."
+    body.__annotations__ = {"return": inferred}
+    return Tool.define(body)
+
+
+_build_synthetic_reader.register(type, _build_definition_reader)
+_build_synthetic_reader.register(types.FunctionType, _build_definition_reader)
+_build_synthetic_reader.register(types.BuiltinFunctionType, _build_definition_reader)
+_build_synthetic_reader.register(types.MethodType, _build_definition_reader)
+
+
+@_build_synthetic_reader.register(types.ModuleType)
+@_build_synthetic_reader.register(Tool)
+@_build_synthetic_reader.register(Agent)
+def _no_synthetic_reader(value, name, env):
+    return None
+
+
+def _collect_synthetic_readers(
+    env: collections.abc.Mapping[str, typing.Any],
+    already_collected: collections.abc.Set[str],
+) -> collections.abc.Mapping[str, Tool]:
+    """Synthetic readers for lexical symbols not already covered by
+    `_collect_tools`. Skips dunder names and any name already in
+    `already_collected`."""
+    result: dict[str, Tool] = {}
+    for name, obj in env.items():
+        if name in already_collected:
+            continue
+        if name.startswith("__"):
+            continue
+        tool = _build_synthetic_reader(obj, name, env)
+        if tool is not None:
+            result[name] = tool
+    return result
+
+
 @Operation.define
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> typing.Any:
@@ -243,7 +351,12 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = _collect_tools(env)
+    tools = dict(_collect_tools(env))
+    # Add synthetic readers for non-Tool lexical symbols.  These mirror the
+    # bound-args layer that LiteLLMProvider._call adds to env, so the LLM
+    # sees readers for the Template's arguments alongside other lexical
+    # context.
+    tools.update(_collect_synthetic_readers(env, set(tools)))
     tool_specs = {
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],

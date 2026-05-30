@@ -2158,3 +2158,36 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ---------------------------------------------------------------------------
+# Synthetic readers — integration (PR #545 finish-up)
+# ---------------------------------------------------------------------------
+
+
+# Module-level binding the LLM will be asked to inspect via a synthetic
+# reader.  The reader's name in the tool list is `_known_data`.
+_known_data = [10, 20, 30, 40, 50]
+
+
+class TestSyntheticReaderIntegration:
+    """The LLM can read lexical context through synthetic reader tools."""
+
+    @requires_llm
+    def test_llm_reads_lexical_value(self, request):
+        """Template asks LLM to inspect _known_data and report its sum.
+        The synthetic reader for _known_data is available in the tools
+        array; the LLM should call it, see [10,20,30,40,50], and report
+        the sum (150)."""
+
+        @Template.define
+        def report_sum() -> int:
+            """Use the `_known_data` tool to read the list of numbers,
+            then return their sum as an integer."""
+            raise NotImplementedError
+
+        with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+            result = report_sum()
+
+        assert isinstance(result, int)
+        assert result == sum(_known_data)  # 150
