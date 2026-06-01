@@ -1,14 +1,13 @@
 import functools
 import typing
 from collections.abc import Iterable
-from typing import Callable, Protocol
+from typing import Protocol
 
 import jax
 import opt_einsum
-from jax import lax
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
@@ -562,16 +561,16 @@ class ReduceOrderContraction(ObjectInterpretation):
 
 
 class ReduceSumProductContraction(ObjectInterpretation):
-    """Fast-path a binary sum-of-products contraction.
+    """Fast-path a sum-of-products contraction.
 
     A ``tensordot``-detecting variant of :class:`ArrayReduce`. Matches::
 
         Sum.reduce(Product.plus(A, B), streams)
 
-    when ``A`` and ``B`` are the only (concrete :class:`jax.Array`) factors, and
-    emits a single :func:`jax.lax.dot_general` instead of broadcasting ``A`` and
-    ``B`` into a dense ``O(|A|·|B|)`` product and summing it — the
-    :class:`ArrayReduce` baseline.
+    when ``A`` and ``B`` are the only factors, and emits a single
+    :func:`jnp.tensordot` instead of broadcasting ``A`` and ``B`` into a dense
+    ``O(|A|·|B|)`` product and summing it — the :class:`ArrayReduce` baseline.
+
     """
 
     @implements(Monoid.reduce)
@@ -579,7 +578,6 @@ class ReduceSumProductContraction(ObjectInterpretation):
         if monoid is not Sum:
             return fwd()
 
-        breakpoint()
         if not (
             isinstance(body, Term)
             and _is_monoid_plus(body.op)
@@ -588,32 +586,43 @@ class ReduceSumProductContraction(ObjectInterpretation):
             return fwd()
 
         factors = body.args
-        if len(factors) != 2 or not all(
+        if len(factors) < 2 or not all(
             issubclass(typeof(f), jax.Array) for f in factors
         ):
             return fwd()
-        a, b = factors
 
+        (lhs, rhs), tail = factors[:2], factors[2:]
         stream_vars = set(streams.keys())
 
-        a_idx = fvsof(a) & stream_vars
-        b_idx = fvsof(b) & stream_vars
-        shared = a_idx & b_idx
+        lhs_idx = fvsof(lhs) & stream_vars
+        rhs_idx = fvsof(rhs) & stream_vars
+        tail_idx = fvsof(tail) & stream_vars
 
-        contracted = list(shared)
+        shared = (lhs_idx & rhs_idx) - tail_idx
+        contracted = [k for k in streams if k in shared]
 
-        # every summed index must be a contracting (shared) dim; a summed index
-        # in only one factor is a partial marginal, not a contraction
-        summed = a_idx | b_idx
-        if summed != set(contracted):
-            return fwd()
+        indexes = [Operation.define(op) for op in contracted]
+        subst: Interpretation = {
+            k: deffn(unbind_dims(streams[k], i))
+            for (k, i) in zip(contracted, indexes, strict=True)
+        }
+        tail_streams = {k: v for (k, v) in streams.items() if k not in shared}
 
-        lhs = bind_dims(a, *contracted)
-        rhs = bind_dims(b, *contracted)
+        with handler(subst):
+            lhs_subst, rhs_subst, tail_streams_subst = evaluate(
+                (lhs, rhs, tail_streams)
+            )
+
+        lhs_bound = bind_dims(lhs_subst, *indexes)
+        rhs_bound = bind_dims(rhs_subst, *indexes)
 
         axes = tuple(py_range(len(contracted)))
-        result = jnp.tensordot(lhs, rhs, axes=(axes, axes))
-        return result
+        contraction = Product.plus(
+            jnp.tensordot(lhs_bound, rhs_bound, axes=(axes, axes)), *factors[2:]
+        )
+        if tail_streams_subst:
+            return Sum.reduce(contraction, tail_streams_subst)
+        return contraction
 
 
 def _parse_einsum_spec(

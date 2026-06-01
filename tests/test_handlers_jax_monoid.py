@@ -13,6 +13,7 @@ from effectful.handlers.jax.monoid import (
     ProductPlusJax,
     ReduceDeltaIndependent,
     ReduceDependentRangeMask,
+    ReduceSumProductContraction,
     delta,
     einsum,
 )
@@ -243,6 +244,109 @@ def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBa
         {u: Range(0, N, 1), v: Range(0, N, 1)},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
+
+
+def test_reduce_contraction_single(backend: JaxBackend):
+    i = backend.define_vars("i", ret="scalar")
+    I = backend.define_vars("I", ret="stream")
+    (A, B) = backend.define_vars(
+        "A", "B", arg_types=(backend.scalar_typ,), ret="scalar"
+    )
+
+    lhs = Sum.reduce(Product.plus(A(i()), B(i())), {i: I()})
+    rhs = Product.plus(
+        jnp.tensordot(
+            bind_dims(A(unbind_dims(I(), i)), i),
+            bind_dims(B(unbind_dims(I(), i)), i),
+            axes=((0,), (0,)),
+        )
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
+
+
+def test_reduce_contraction_double(backend: JaxBackend):
+    i, j = backend.define_vars("i", "j", ret="scalar")
+    I, J = backend.define_vars("I", "J", ret="stream")
+    (A, B) = backend.define_vars(
+        "A", "B", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = Sum.reduce(Product.plus(A(i(), j()), B(i(), j())), {i: I(), j: J()})
+    rhs = Product.plus(
+        jnp.tensordot(
+            bind_dims(A(unbind_dims(I(), i), unbind_dims(J(), j)), i, j),
+            bind_dims(B(unbind_dims(I(), i), unbind_dims(J(), j)), i, j),
+            axes=((0, 1), (0, 1)),
+        )
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
+
+
+def test_reduce_contraction_multi_factor(backend: JaxBackend):
+    i, j = backend.define_vars("i", "j", ret="scalar")
+    I, J = backend.define_vars("I", "J", ret="stream")
+    B = backend.define_vars(
+        "B", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+    A, C = backend.define_vars("A", "C", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = Sum.reduce(Product.plus(A(i()), B(i(), j()), C(j())), {i: I(), j: J()})
+    rhs = Product.plus(
+        jnp.tensordot(
+            bind_dims(
+                jnp.tensordot(
+                    bind_dims(A(unbind_dims(I(), i)), i),
+                    bind_dims(B(unbind_dims(I(), i), unbind_dims(J(), j)), i),
+                    axes=((0,), (0,)),
+                ),
+                j,
+            ),
+            bind_dims(C(unbind_dims(J(), j)), j),
+            axes=((0,), (0,)),
+        )
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
+
+
+def test_reduce_contraction_shared_only(backend: JaxBackend):
+    i, j, k = backend.define_vars("i", "j", "k", ret="scalar")
+    I, J, K = backend.define_vars("I", "J", "K", ret="stream")
+    A = backend.define_vars(
+        "A",
+        arg_types=(backend.scalar_typ, backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+    B, C = backend.define_vars(
+        "B", "C", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = Sum.reduce(
+        Product.plus(A(i(), j(), k()), B(i(), j()), C(j(), k())),
+        {i: I(), j: J(), k: K()},
+    )
+    rhs = Product.plus(
+        jnp.tensordot(
+            bind_dims(
+                jnp.tensordot(
+                    bind_dims(
+                        A(
+                            unbind_dims(I(), i),
+                            unbind_dims(J(), j),
+                            unbind_dims(K(), k),
+                        ),
+                        i,
+                    ),
+                    bind_dims(B(unbind_dims(I(), i), unbind_dims(J(), j)), i),
+                    axes=((0,), (0,)),
+                ),
+                j,
+                k,
+            ),
+            bind_dims(C(unbind_dims(J(), j), unbind_dims(K(), k)), j, k),
+            axes=((0, 1), (0, 1)),
+        )
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
 
 
 def test_reduce_matmul(backend: JaxBackend):
