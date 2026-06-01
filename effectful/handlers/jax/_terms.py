@@ -468,10 +468,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     dims = t.args[1]
     assert isinstance(dims, Sequence)
 
-    # ensure that the order is a subset of the named dimensions
     order_set = set(args)
-    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
-        raise NotHandled
 
     # permute the inner array so that the leading dimensions are in the order
     # specified and the trailing dimensions are the remaining named dimensions
@@ -483,14 +480,16 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     ]
     dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
     perm = (
-        [dim_ops.index(o) for o in args]
+        [dim_ops.index(o) for o in args if o in dim_ops]
         + reindex_dims
         + list(range(len(dims), len(array.shape)))
     )
     array = jnp.transpose(array, perm)
-    reindexed = jax_getitem(
-        array, (slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)
+
+    index_expr = tuple(slice(None) if op in dim_ops else None for op in args) + tuple(
+        dims[i] for i in reindex_dims
     )
+    reindexed = jax_getitem(array, index_expr)
     return reindexed
 
 
