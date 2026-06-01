@@ -7,7 +7,7 @@ import jax
 import opt_einsum
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, unbind_dims
+from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
@@ -24,7 +24,7 @@ from effectful.ops.monoid import (
     outer_stream,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements
+from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 
@@ -237,14 +237,29 @@ class ReduceDeltaIndependent(ObjectInterpretation):
     reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
 
 
-    reduce(M, {v: range(N)}, delta(idx' ++ (v(),), body))
+    reduce(M, {v: range(N)}, delta((v(),) ++ idx', body))
     ═══════════════════════════════════════════════════════
     bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)
 
 
-    reduce(M, streams ∪ {v: range(N)}, delta(idx' ++ (v(),), body))
+    reduce(M, streams ∪ {v: range(N)}, delta((v(),) ++ idx', body))
     ═══════════════════════════════════════════════════════════════════════════
-    reduce(M, streams, delta(idx', bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)))
+    bind_dims(reduce(M, streams, delta(idx', body[v() := unbind_dims(streams[v], fv)])), fv)
+
+    The output index ``v`` is peeled from the *head* of the index tuple and
+    substituted with a fresh **named** dimension ``fv`` (via ``unbind_dims``),
+    but it is **not** bound to a positional axis until the surrounding reduce
+    has finished. Keeping output indices named through the contraction is what
+    lets downstream rules (:class:`ReduceSumProductContraction`,
+    :class:`ArrayReduce`) align them by identity: if ``v`` were bound to a
+    positional axis up front, a factor that does not mention ``v`` would have a
+    fabricated size-1 axis that ``jnp.tensordot`` then concatenates as a
+    *separate* output axis instead of broadcasting against ``v`` (e.g.
+    ``einsum("ij,j->i")`` yielding ``(N, 1)`` instead of ``(N,)``). Binding
+    after the reduce — in head-first peel order, so the leftmost output index
+    ends up as the leading axis — avoids that. ``fv`` survives the contraction
+    as a named free variable and is materialised positionally exactly once,
+    here.
 
     Not yet supported:
 
@@ -278,28 +293,39 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not indices:
             return monoid.reduce(weight, streams)
 
-        head_indices, tail_index = indices[:-1], indices[-1]
-        if not (isinstance(tail_index, Term) and tail_index.op in streams):
+        head_index, tail_indices = indices[0], indices[1:]
+        if not (isinstance(head_index, Term) and head_index.op in streams):
             return fwd()
 
-        tail_op: Operation = tail_index.op
-        tail_stream = streams[tail_op]
-        if not (isinstance(tail_stream, Term) and _is_simple_range(tail_stream)):
+        head_op: Operation = head_index.op
+        head_stream = streams[head_op]
+        if not (isinstance(head_stream, Term) and _is_simple_range(head_stream)):
             return fwd()
 
-        fresh_op = Operation.define(tail_op)
-        indices = jnp.arange(_range_stop(tail_stream))
-        if isinstance(indices, jax.Array) and len(indices) == 0:
+        fresh_op = Operation.define(head_op)
+        arange = jnp.arange(_range_stop(head_stream))
+        if isinstance(arange, jax.Array) and len(arange) == 0:
             return monoid.identity
 
-        fresh_stream = unbind_dims(indices, fresh_op)
-        subst_intp = typing.cast(Interpretation, {tail_op: deffn(fresh_stream)})
-        fresh_body = bind_dims(handler(subst_intp)(evaluate)(weight), fresh_op)
-        fresh_streams = {k: v for (k, v) in streams.items() if k != tail_op}
-        if fresh_streams:
-            return monoid.reduce(delta(head_indices, fresh_body), fresh_streams)
+        fresh_stream = unbind_dims(arange, fresh_op)
+        subst_intp = typing.cast(Interpretation, {head_op: deffn(fresh_stream)})
+        # Substitute the output index with a fresh *named* dimension; do not
+        # bind it positionally yet.
+        fresh_weight = handler(subst_intp)(evaluate)(weight)
+        fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
+
+        # Reduce the remaining indices/streams first (``fresh_op`` rides along
+        # as a named free variable), then bind it to a positional axis. Any
+        # remaining output index lives in ``tail_indices`` and is still a key
+        # of ``fresh_streams``, so ``tail_indices`` non-empty implies
+        # ``fresh_streams`` non-empty; the reduce is only skipped when there is
+        # genuinely nothing left to reduce, avoiding the empty-stream reduction
+        # (which would collapse to ``M.identity``).
+        if tail_indices or fresh_streams:
+            inner = monoid.reduce(delta(tail_indices, fresh_weight), fresh_streams)
         else:
-            return fresh_body
+            inner = fresh_weight
+        return bind_dims(inner, fresh_op)
 
 
 class ReduceDependentRangeMask(ObjectInterpretation):
@@ -447,6 +473,21 @@ def partition(iterable, predicate):
 
 
 class ReduceOrderContraction(ObjectInterpretation):
+    """Reorder a large product before contraction using an ``opt_einsum`` path.
+
+    Matches ``monoid.reduce(monoid2.plus(f1, ..., fn), streams)`` where
+    ``monoid2`` distributes over ``monoid`` and there are at least three
+    factors. Each factor is modelled as a tensor whose dimensions are the
+    streams it reads (contracted) together with any surviving named/anonymous
+    dimensions (kept in the output). An :func:`opt_einsum.contract_path` cost
+    model over those sizes chooses a contraction order, and the product is
+    re-emitted as a nest of pairwise reduces following that path.
+
+    The pairwise reduces are left symbolic: :class:`ReduceSumProductContraction`
+    (for ``Sum``/``Product``) or :class:`ArrayReduce` lowers each one into an
+    actual contraction, and streams are substituted there rather than here.
+    """
+
     @staticmethod
     def _stream_length(stream) -> int | None:
         if isinstance(stream, jax.Array):
@@ -476,87 +517,154 @@ class ReduceOrderContraction(ObjectInterpretation):
             return length
         return None
 
+    @staticmethod
+    def _anon_sizes(factor, named_ops: list) -> tuple[int, ...]:
+        """Sizes of ``factor``'s positional (unnamed) dimensions.
+
+        Binding every named dimension exposes the anonymous axes as the
+        trailing shape. Symbolic factors do not reduce to a concrete array, so
+        they report no anonymous dimensions.
+        """
+        bound = bind_dims(factor, *named_ops)
+        if is_eager_array(bound):
+            return tuple(bound.shape[len(named_ops) :])
+        return ()
+
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        if not (isinstance(body, Term) and body.op == delta):
+        # the body must be a monoid2.plus for a monoid2 such that
+        # distributes_over(monoid2, monoid)
+        if not (isinstance(body, Term) and _is_monoid_plus(body.op)):
             return fwd()
 
-        out_indices, weight = body.args
-        if not (isinstance(weight, Term) and _is_monoid_plus(weight.op)):
-            return fwd()
-        body_monoid = weight.op.__self__
-
-        if not distributes_over(body_monoid, monoid):
+        monoid2: Monoid = body.op.__self__
+        if not distributes_over(monoid2, monoid):
             return fwd()
 
-        factors = weight.args
+        factors = body.args
         if len(factors) < 3:
             return fwd()
-
-        sized_dims = {
-            op: l
-            for (op, stream) in streams.items()
-            if (l := self._stream_length(stream)) is not None
-        }
-
-        if not all(isinstance(i, Term) and i.op in sized_dims for i in out_indices):
+        if not all(issubclass(typeof(f), jax.Array) for f in factors):
             return fwd()
 
-        sized_tensor_factors, other_factors = partition(
-            factors,
-            lambda f: (
-                issubclass(typeof(f), jax.Array)
-                and (fvsof(f) & set(streams.keys())) <= set(sized_dims.keys())
-            ),
+        stream_vars = set(streams.keys())
+        if not stream_vars:
+            return fwd()
+
+        # grab sizes of reduction dimensions and any dimensions of the factors
+        # (named or anonymous)
+        #
+        # for each factor, we compute an einsum approximation of it so we can
+        # compute its cost
+        #
+        # any anonymous/named dimensions get dimension markers, but are never
+        # reduced so must all appear in the output side; streams also get
+        # dimension markers and are reduced so do not appear in the output side;
+        # factors with no visible dimensions are treated as scalars
+        dim_size: dict = {}
+
+        def record(key, size: int | None) -> None:
+            if size is not None:
+                dim_size[key] = size
+
+        factor_dims: list[list] = []
+        for idx, f in enumerate(factors):
+            named = sizesof(f)
+            f_streams = fvsof(f) & stream_vars
+            keys: list = []
+            # reduced (stream) dimensions, sized by the stream itself
+            for op in f_streams:
+                record(op, self._stream_length(streams[op]))
+                keys.append(op)
+            # surviving named dimensions
+            for op, size in named.items():
+                record(op, size)
+                if op not in f_streams:
+                    keys.append(op)
+            # surviving anonymous (positional) dimensions
+            for pos, size in enumerate(self._anon_sizes(f, list(named.keys()))):
+                anon_key = ("anon", idx, pos)
+                record(anon_key, size)
+                keys.append(anon_key)
+            factor_dims.append(keys)
+
+        # a cost model needs a known size for every dimension
+        if any(k not in dim_size for keys in factor_dims for k in keys):
+            return fwd()
+
+        # build a string / shapes input compatible with opt_einsum.contract_path
+        symbols: dict = {}
+
+        def sym(key) -> str:
+            if key not in symbols:
+                symbols[key] = opt_einsum.get_symbol(len(symbols))
+            return symbols[key]
+
+        in_specs = ["".join(sym(k) for k in keys) for keys in factor_dims]
+
+        out_keys: list = []
+        seen: set = set()
+        for keys in factor_dims:
+            for k in keys:
+                if k not in stream_vars and k not in seen:
+                    seen.add(k)
+                    out_keys.append(k)
+        out_spec = "".join(sym(k) for k in out_keys)
+
+        subscripts = ",".join(in_specs) + "->" + out_spec
+        shapes = [tuple(dim_size[k] for k in keys) for keys in factor_dims]
+
+        path, _ = opt_einsum.contract_path(
+            subscripts, *shapes, shapes=True, optimize="auto"
         )
-        factor_indices = [
-            list(fvsof(f) & set(streams.keys())) for f in sized_tensor_factors
+
+        # a single step is no reordering at all — defer to the greedy
+        # contraction handlers rather than reproducing the same product
+        if len(path) < 2:
+            return fwd()
+
+        # given a contraction path, generate a new reduce nest. streams don't
+        # need to be substituted/contractions written out, since ArrayReduce and
+        # ReduceSumProductContraction will do that.
+        #
+        # Each operand tracks the streams it still depends on; a stream is
+        # reduced at the step where it stops appearing in any other operand.
+        remaining: list[tuple] = [
+            (f, {k for k in keys if k in stream_vars})
+            for f, keys in zip(factors, factor_dims, strict=True)
         ]
 
-        dim_to_symbol = {
-            op: opt_einsum.get_symbol(i) for (i, op) in enumerate(sized_dims.keys())
-        }
+        reduced: set = set()
+        for step in path:
+            selected = [remaining[k] for k in step]
+            terms = [t for (t, _) in selected]
 
-        contract_str = (
-            ",".join(
-                "".join(dim_to_symbol[i] for i in indices) for indices in factor_indices
+            for k in sorted(step, reverse=True):
+                del remaining[k]
+
+            used = set().union(*(s for (_, s) in selected))
+            elsewhere = (
+                set().union(*(s for (_, s) in remaining)) if remaining else set()
             )
-            + "->"
-            + "".join(dim_to_symbol[i.op] for i in out_indices)
-        )
-        contract_shapes = [tuple(sized_dims[i] for i in ix) for ix in factor_indices]
-        (_, info) = opt_einsum.contract_path(
-            contract_str, *contract_shapes, shapes=True
-        )
+            contract = used - elsewhere
 
-        reduced_factors = list(sized_tensor_factors)
-        for (fst_idx, snd_idx), reduce_dims, _, _, _ in info.contraction_list:
-            fst = reduced_factors[fst_idx]
-            del reduced_factors[fst_idx]
+            # using monoid2.plus directly causes an infinite loop
+            combined = defdata(monoid2.plus, *terms)
+            if contract:
+                substreams = {s: v for (s, v) in streams.items() if s in contract}
+                new_term = monoid.reduce(combined, substreams)
+                reduced |= contract
+            else:
+                new_term = combined
+            remaining.append((new_term, used - contract))
 
-            snd = reduced_factors[snd_idx]
-            del reduced_factors[snd_idx]
+        assert len(remaining) == 1
+        result = remaining[0][0]
 
-            pair_dims = (fvsof(fst) | fvsof(snd)) & set(sized_dims.keys())
-            retained_dims = tuple(
-                i() for i in pair_dims if dim_to_symbol[i] not in reduce_dims
-            )
-            reduced_factor = monoid.reduce(
-                delta(retained_dims, body_monoid.plus(fst, snd)),
-                {op: s for (op, s) in streams.items() if op in pair_dims},
-            )
-            breakpoint()
-            reduced_factors.insert(0, reduced_factor)
-
-        other_streams = {
-            op: stream for (op, stream) in streams.items() if op not in sized_dims
-        }
-        if other_streams:
-            result = monoid.reduce(
-                body_monoid.plus(*reduced_factors, *other_factors), other_streams
-            )
-        else:
-            result = body_monoid.plus(*reduced_factors, *other_factors)
+        # streams referenced by no factor are reduced last (they scale the body)
+        leftover = {s: v for (s, v) in streams.items() if s not in reduced}
+        if leftover:
+            result = monoid.reduce(result, leftover)
         return result
 
 
@@ -602,15 +710,18 @@ class ReduceSumProductContraction(ObjectInterpretation):
         contracted = [k for k in streams if k in shared]
 
         indexes = [Operation.define(op) for op in contracted]
-        subst: Interpretation = {
-            k: deffn(unbind_dims(streams[k], i))
-            for (k, i) in zip(contracted, indexes, strict=True)
-        }
+        subst = typing.cast(
+            Interpretation,
+            {
+                k: deffn(unbind_dims(streams[k], i))
+                for (k, i) in zip(contracted, indexes, strict=True)
+            },
+        )
         tail_streams = {k: v for (k, v) in streams.items() if k not in shared}
 
         with handler(subst):
-            lhs_subst, rhs_subst, tail_streams_subst = evaluate(
-                (lhs, rhs, tail_streams)
+            lhs_subst, rhs_subst, tail_streams_subst = typing.cast(
+                tuple, evaluate((lhs, rhs, tail_streams))
             )
 
         lhs_bound = bind_dims(lhs_subst, *indexes)

@@ -122,7 +122,8 @@ def test_jax_weighted_reduce(backend: JaxBackend):
     ws = Product.weighted(X(), w)
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
-        bind_dims(w(unbind_dims(X(), k)) * body(unbind_dims(X(), k)), k), axis=0
+        bind_dims(Product.plus(w(unbind_dims(X(), k)), body(unbind_dims(X(), k))), k),
+        axis=0,
     )
     backend.check_rewrite(
         lhs=lhs,
@@ -431,7 +432,9 @@ def test_einsum_matches_jnp(spec: str):
     """
     key = jax.random.PRNGKey(hash(spec) & 0xFFFFFFFF)
     operands = _make_einsum_operands(spec, key)
-    actual = einsum(spec, *(arr.shape for arr in operands))(*operands)
+    einsum_f = einsum(spec, *(arr.shape for arr in operands))
+    with handler(NormalizeIntp):
+        actual = einsum_f(*operands)
     expected = jnp.einsum(spec, *operands)
     assert actual.shape == expected.shape, (
         f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"

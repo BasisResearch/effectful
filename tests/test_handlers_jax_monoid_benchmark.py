@@ -1,8 +1,14 @@
 """Benchmark ``effectful.handlers.jax.monoid.einsum`` against ``jnp.einsum``
 under ``jax.jit`` on a range of representative subscript patterns.
 
-Run with ``pytest tests/test_handlers_jax_monoid_benchmark.py --benchmark-only``
-(serially — ``pytest-benchmark`` disables itself under ``pytest-xdist``).
+Both implementations run through the same parametrized test, so grouping by
+the ``spec`` parameter puts them side by side (with a relative ratio column)
+for each subscript pattern::
+
+    pytest tests/test_handlers_jax_monoid_benchmark.py \\
+        --benchmark-only --benchmark-group-by=param:spec
+
+(Run serially — ``pytest-benchmark`` disables itself under ``pytest-xdist``.)
 
 The current implementation is the *unoptimized* baseline (single broadcast over
 all operands, no contraction ordering). These benchmarks exist so we can track
@@ -59,27 +65,31 @@ def rng_key():
     return random.PRNGKey(0)
 
 
+def _jnp_fn(spec, operands):
+    """``jax.numpy.einsum`` under ``jax.jit`` — the baseline."""
+    return jax.jit(lambda *xs: jnp.einsum(spec, *xs))
+
+
+def _effectful_fn(spec, operands):
+    """Our ``einsum`` under ``jax.jit``."""
+    einsum_term = einsum(spec, *(arr.shape for arr in operands))
+    return jax.jit(lambda *xs: einsum_term(*xs))
+
+
+IMPLEMENTATIONS = {
+    "jnp": _jnp_fn,
+    "effectful": _effectful_fn,
+}
+
+
+@pytest.mark.parametrize("impl", list(IMPLEMENTATIONS), ids=list(IMPLEMENTATIONS))
 @pytest.mark.parametrize("spec,sizes", BENCHMARK_CASES)
-def test_bench_jnp_einsum(benchmark, spec, sizes, rng_key):
-    """Baseline: ``jax.numpy.einsum`` under ``jax.jit``."""
-    operands = _make_operands(spec, sizes, rng_key)
-    f = jax.jit(lambda *xs: jnp.einsum(spec, *xs))
-    f(*operands).block_until_ready()  # warm up cache
-
-    @benchmark
-    def _run():
-        return f(*operands).block_until_ready()
-
-
-@pytest.mark.parametrize("spec,sizes", BENCHMARK_CASES)
-def test_bench_effectful_einsum(benchmark, spec, sizes, rng_key):
-    """Our ``einsum`` under ``jax.jit``. Compare against the ``jnp_einsum``
-    baseline run for the same spec.
+def test_bench_einsum(benchmark, impl, spec, sizes, rng_key):
+    """Time one ``(spec, impl)`` pair. Group by ``spec`` to compare ``jnp``
+    against ``effectful`` for the same subscript pattern (see module docstring).
     """
     operands = _make_operands(spec, sizes, rng_key)
-    einsum_term = einsum(spec, *(arr.shape for arr in operands))
-    einsum_f = lambda *args: einsum_term(*args)
-    f = jax.jit(einsum_f)
+    f = IMPLEMENTATIONS[impl](spec, operands)
     f(*operands).block_until_ready()  # warm up cache
 
     @benchmark
