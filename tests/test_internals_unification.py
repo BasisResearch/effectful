@@ -1900,3 +1900,10 @@ def test_unify_mapping_typeddict_subclass():
 
     subs = unify(collections.abc.Mapping, Info)
     assert subs == {}
+
+
+def test_unify_jax_array_iterable():
+    import jax
+
+    subs = unify(collections.abc.Iterable[T], jax.Array)
+    assert subs == {T: jax.Array}

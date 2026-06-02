@@ -14,8 +14,15 @@ from effectful.handlers.jax._handlers import (
     unbind_dims,
 )
 from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.internals.unification import Box, nested_type
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, NotHandled, Operation, Term
+
+
+@nested_type.register(jax.Array)
+@nested_type.register(jax._src.core.Tracer)
+def _(value):
+    return Box(jax.Array)
 
 
 class _IndexUpdateHelper:

@@ -10,7 +10,14 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler
+from effectful.ops.semantics import (
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    typeof,
+)
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -19,11 +26,17 @@ from effectful.ops.syntax import (
     syntactic_eq,
     syntactic_hash,
 )
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import (
+    Expr,
+    Interpretation,
+    NotHandled,
+    Operation,
+    Term,
+)
 
-# Note: The streams value type should be something like Iterable[T], but some of
-# our target stream types (e.g. jax.Array) are not subtypes of Iterable
-type Streams[T] = Mapping[Operation[[], T], Any]
+type Stream[T] = Iterable[T]
+
+type Streams = Mapping[Operation[[], Any], Stream[Any]]
 
 type Body[T] = (
     Iterable[T]
@@ -34,9 +47,7 @@ type Body[T] = (
 )
 
 
-def outer_stream(
-    streams: Streams,
-) -> Iterable[tuple[Operation, Expr, dict[Operation, Expr]]]:
+def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]]:
     """Returns the streams that can be ordered outermost in the loop nest as
     well as the remaining streams in the nest.
 
@@ -51,13 +62,13 @@ def outer_stream(
     )
 
 
-class Monoid[T]:
+class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
     _name: str
-    identity: T
+    identity: W
 
-    def __init__(self, identity: T, name: str):
+    def __init__(self, identity: W, name: str):
         self._name = name
         self.identity = identity
 
@@ -109,6 +120,18 @@ class Monoid[T]:
                         self.reduce(*eval_args) if streams_tail else eval_args[0]
                     )
             return self.plus(*new_reduces)
+        raise NotHandled
+
+    @Operation.define
+    def weighted[T](
+        self, stream: Stream[T], weight: Callable[[T], W] | Operation[[T], W]
+    ) -> Stream[T]:
+        """A stream paired with a per-element weight. ``var`` is an
+        :class:`Operation` standing for "an element of ``stream``"; ``weight``
+        is an expression that uses ``var`` and evaluates to the weight of that
+        element.
+
+        """
         raise NotHandled
 
 
@@ -173,6 +196,12 @@ def _is_monoid_reduce(op: Operation) -> bool:
     """True if ``op`` is the ``reduce`` operation of some :class:`Monoid`."""
     owner = getattr(op, "__self__", None)
     return isinstance(owner, Monoid) and op is owner.reduce
+
+
+def _is_monoid_weighted(op: Operation) -> bool:
+    """True if ``op`` is the ``weighted`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.weighted
 
 
 class PlusEmpty(ObjectInterpretation):
@@ -557,6 +586,78 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         return fwd()
 
 
+class ReduceWeightedStream(ObjectInterpretation):
+    """reduce(M, body, {x: WM.weighted(s, v, w), ...}) = reduce(M, WM.plus(w[v:=x()], body), {x: s, ...})
+
+    requires distributes_over(WM, M).
+
+    The substitution ``v -> x`` is done by beta-reducing ``deffn(w, v)`` on
+    ``x()`` — symbolic, no Python dispatch on the weight expression.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        for k, v in streams.items():
+            if isinstance(v, Term) and _is_monoid_weighted(v.op):
+                v_stream, v_weight = v.args
+                v_monoid = v.op.__self__
+                if not distributes_over(v_monoid, monoid):
+                    continue
+                w_at_k = v_weight(k())
+                weighted_body = v_monoid.plus(w_at_k, body)
+                new_streams = {**streams, k: v_stream}
+                return monoid.reduce(weighted_body, new_streams)
+        return fwd()
+
+
+class ReduceCartesianWeightedStream(ObjectInterpretation):
+    """``CartesianProduct.reduce`` over a :func:`weighted` body whose
+    ``weight`` is independent of the plate (product-index) streams::
+
+        CartesianProduct.reduce(M.weighted(s, w), plates)
+          = M.weighted(
+              CartesianProduct.reduce(s, plates),
+              deffn(M.reduce(w, {e: row()}), row),
+            )
+
+    Reuses ``body``'s element binder ``e`` (already typed by construction);
+    introduces a fresh ``row`` binder typed as ``Iterable[elem_type]``.
+
+    Only fires when ``w`` is independent of the plate vars.
+    """
+
+    @Operation.define
+    @staticmethod
+    def _iterable_elem[T](iter: Iterable[T]) -> T:
+        raise NotHandled
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if monoid is not CartesianProduct:
+            return fwd()
+        if not (isinstance(body, Term) and _is_monoid_weighted(body.op)):
+            return fwd()
+
+        s, w = body.args
+        if not isinstance(s, Term) and len(s) == 0:
+            return CartesianProduct.reduce([], streams)
+
+        if set(streams.keys()) & fvsof(w):
+            return fwd()
+
+        elem_typ = typeof(self._iterable_elem(s))
+        elem_op = Operation.define(elem_typ, name="elem")
+        row_op = Operation.define(Iterable[elem_typ], name="row")
+
+        weight_monoid = body.op.__self__
+        joint_weight = deffn(
+            weight_monoid.reduce(w(elem_op()), {elem_op: row_op()}), row_op
+        )
+        joint_stream = CartesianProduct.reduce(s, streams)
+
+        return weight_monoid.weighted(joint_stream, joint_weight)
+
+
 class MonoidOverCallable(ObjectInterpretation):
     """``monoid.reduce(f, streams) = lambda *a: monoid.reduce(f(*a), streams)``."""
 
@@ -751,6 +852,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceSplit(),
     ReduceFactorization(),
     ReduceDistributeCartesianProduct(),
+    ReduceWeightedStream(),
+    ReduceCartesianWeightedStream(),
     PlusEmpty(),
     PlusSingle(),
     PlusIdentity(),
