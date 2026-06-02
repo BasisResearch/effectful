@@ -40,6 +40,11 @@ MONOIDS = [
 ]
 
 
+@pytest.fixture(scope="module")
+def rng_key():
+    return random.PRNGKey(0)
+
+
 @pytest.fixture
 def backend() -> JaxBackend:
     return JaxBackend()
@@ -370,68 +375,123 @@ def test_reduce_matmul(backend: JaxBackend):
     assert jnp.allclose(actual, expected)
 
 
-# Default per-letter sizes used to materialize random operands for the einsum
-# correctness tests. Distinct primes keep transposes from sneaking by.
-_EINSUM_DIM_SIZES = {
-    "a": 2,
-    "b": 3,
-    "c": 4,
-    "d": 5,
-    "e": 6,
-    "i": 7,
-    "j": 8,
-    "k": 5,
-}
-
-
-EINSUM_EXAMPLES = [
-    # vector operations
-    "i->i",  # do nothing
-    "i->",  # vector sum
-    ",i->i",  # scalar-vector product
-    "i,i->",  # inner product
-    "i,j->ij",  # outer product
-    "i,i->i",  # element-wise product
-    # matrix operations
-    "ij->ij",  # do nothing
-    "ij->ji",  # matrix transpose
-    "ii->",  # matrix trace
-    "ii->i",  # matrix diagonal
-    ",ij->ij",  # scalar-matrix product
-    "ij,j->i",  # matrix-vector product
-    "ij,ij->ij",  # hadamard product
-    "ij,jk->ik",  # matrix-matrix product
-    # composite contractions
-    "ab,a->",
-    "a,a,a,ab->ab",
-    "ab,bc,cd->da",
-    "ai->i",
-    ",ai,abij->ij",
-    "a,ai,bij->ij",
-    "ai,abi,bci,cdi->i",
-    "aij,abij,bcij->ij",
-    "a,abi,bcij,cdij->ij",
+EINSUM_CASES = [
+    pytest.param("ij,jk->ik", {"i": 64, "j": 64, "k": 64}, id="matmul"),
+    pytest.param(
+        "bij,bjk->bik",
+        {"b": 16, "i": 32, "j": 32, "k": 32},
+        id="batched_matmul",
+    ),
+    pytest.param(
+        "a,abi,bcij,cdij->ij",
+        {"a": 4, "b": 4, "c": 4, "d": 4, "i": 8, "j": 8},
+        id="mixed_rank",
+    ),
+    # ───────────────────────── single-operand reshuffles ─────────────────────
+    # No contraction across operands — these stress the diagonal/transpose/sum
+    # rewrites rather than any pairwise product ordering.
+    pytest.param("ij->ji", {"i": 256, "j": 256}, id="transpose"),
+    pytest.param("ijk->", {"i": 96, "j": 96, "k": 96}, id="full_reduce"),
+    pytest.param("ijk->k", {"i": 96, "j": 96, "k": 96}, id="partial_reduce"),
+    # Repeated index *within* one operand — exercises the implicit-diagonal path
+    # in ReduceDeltaIndependent (no explicit jnp.diagonal step).
+    pytest.param("ii->", {"i": 1024}, id="trace"),
+    pytest.param("ii->i", {"i": 1024}, id="diagonal"),
+    pytest.param("bii->b", {"b": 256, "i": 128}, id="batched_trace"),
+    pytest.param("iij->ij", {"i": 128, "j": 128}, id="diagonal_keep"),
+    # ───────────────────────── no-shared-index blowups ───────────────────────
+    # Output is the full outer product — nothing contracts, so the result tensor
+    # is as large as the dense intermediate. Pure broadcast cost.
+    pytest.param("i,j->ij", {"i": 1024, "j": 1024}, id="outer_product"),
+    pytest.param("ij,kl->ijkl", {"i": 32, "j": 32, "k": 32, "l": 32}, id="outer_4d"),
+    # Element-wise: every index shared, none contracted.
+    pytest.param("ij,ij->ij", {"i": 512, "j": 512}, id="hadamard"),
+    # ───────────────────────── ordering-sensitive products ───────────────────
+    # Skewed matrix chain: contracting middle-first (b,d small) is orders of
+    # magnitude cheaper than the left-to-right order, which materializes a big
+    # a×c intermediate. The classic "matrix chain order matters" case.
+    pytest.param(
+        "ab,bc,cd->ad", {"a": 256, "b": 2, "c": 256, "d": 2}, id="skewed_chain"
+    ),
+    pytest.param(
+        "ab,bc,cd,de->ae",
+        {"a": 50, "b": 40, "c": 30, "d": 20, "e": 10},
+        id="chain_4",
+    ),
+    pytest.param(
+        "ab,bc,cd,de,ef->af",
+        {"a": 12, "b": 11, "c": 10, "d": 9, "e": 8, "f": 7},
+        id="chain_5",
+    ),
+    # ───────────────────────── tensor-network shapes ─────────────────────────
+    # Cyclic / hyperedge contractions with no tree decomposition into matmuls;
+    # every operand shares indices with two others.
+    pytest.param("ij,jk,ki->", {"i": 64, "j": 64, "k": 64}, id="trace_of_product"),
+    pytest.param("ij,jk,ik->", {"i": 48, "j": 48, "k": 48}, id="triangle"),
+    pytest.param("ijk,jl,kl->il", {"i": 24, "j": 24, "k": 24, "l": 24}, id="hyperedge"),
+    # Star: many operands share one contracted index, fanning into a large
+    # outer-product output.
+    pytest.param(
+        "ai,bi,ci,di->abcd",
+        {"a": 8, "b": 8, "c": 8, "d": 8, "i": 32},
+        id="star_contraction",
+    ),
+    # Bilinear / quadratic form over a batch (attention-score flavored).
+    pytest.param("bi,ij,bj->b", {"b": 128, "i": 64, "j": 64}, id="bilinear"),
+    # Batched matrix chain — batch axis rides through three contractions.
+    pytest.param(
+        "bij,bjk,bkl->bil",
+        {"b": 16, "i": 24, "j": 24, "k": 24, "l": 24},
+        id="batched_chain",
+    ),
+    # Multi-index contraction surface: a whole axis-group (c) contracts at once.
+    pytest.param(
+        "abc,cde->abde",
+        {"a": 12, "b": 12, "c": 12, "d": 12, "e": 12},
+        id="tensor_contraction",
+    ),
+    # Leading scalar factor plus an element-wise reduce — checks that the
+    # rank-0 operand threads through without spawning a degenerate axis.
+    pytest.param(",ij,ij->", {"i": 256, "j": 256}, id="scalar_scaled_reduce"),
 ]
 
 
-def _make_einsum_operands(spec: str, key: jax.Array) -> list[jax.Array]:
-    in_part = spec.split("->")[0] if "->" in spec else spec
+def _make_operands(spec: str, sizes: dict[str, int], key: jax.Array) -> list[jax.Array]:
+    in_part = spec.split("->")[0]
     in_specs = in_part.split(",")
-    keys = random.split(key, max(len(in_specs), 1))
-    operands = []
-    for k, s in zip(keys, in_specs, strict=True):
-        shape = tuple(_EINSUM_DIM_SIZES[c] for c in s) if s else ()
-        operands.append(random.normal(k, shape))
-    return operands
+    keys = random.split(key, len(in_specs))
+    return [
+        random.normal(k, tuple(sizes[c] for c in s) if s else ())
+        for k, s in zip(keys, in_specs, strict=True)
+    ]
 
 
-@pytest.mark.parametrize("spec", EINSUM_EXAMPLES)
-def test_einsum_matches_jnp(spec: str):
+@pytest.mark.parametrize(
+    "impl", [pytest.param(jnp.einsum, id="jax"), pytest.param(einsum, id="effectful")]
+)
+@pytest.mark.parametrize("spec,sizes", EINSUM_CASES)
+@pytest.mark.benchmark(warmup=True, warmup_iterations=1)
+def test_einsum_bench(benchmark, impl, spec, sizes, rng_key):
+    """Time one ``(spec, impl)`` pair. Group by ``spec`` to compare ``jnp``
+    against ``effectful`` for the same subscript pattern (see module docstring).
+    """
+    operands = _make_operands(spec, sizes, rng_key)
+
+    @jax.jit
+    def f(*operands):
+        return impl(spec, *operands)
+
+    @benchmark
+    def _run():
+        return f(*operands).block_until_ready()
+
+
+@pytest.mark.parametrize("spec,sizes", EINSUM_CASES)
+def test_einsum_matches_jnp(spec: str, sizes, rng_key):
     """``einsum`` returns the same result as ``jnp.einsum`` for every spec
     in ``EINSUM_EXAMPLES``.
     """
-    key = jax.random.PRNGKey(hash(spec) & 0xFFFFFFFF)
-    operands = _make_einsum_operands(spec, key)
+    operands = _make_operands(spec, sizes, rng_key)
     actual = einsum(spec, *operands)
     expected = jnp.einsum(spec, *operands)
     assert actual.shape == expected.shape, (

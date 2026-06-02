@@ -467,30 +467,64 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     array = t.args[0]
     dims = t.args[1]
     assert isinstance(dims, Sequence)
+    ndim = len(array.shape)
 
-    order_set = set(args)
+    def axis_op(ax: int) -> Operation | None:
+        """The named op of a bare index term at axis ``ax``, else ``None``."""
+        if ax < len(dims):
+            d = dims[ax]
+            if isinstance(d, Term) and not d.args and not d.kwargs:
+                return d.op
+        return None
 
-    # permute the inner array so that the leading dimensions are in the order
-    # specified and the trailing dimensions are the remaining named dimensions
-    # (or slices)
-    reindex_dims = [
-        i
-        for i, o in enumerate(dims)
-        if not isinstance(o, Term) or o.op not in order_set
-    ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
-    perm = (
-        [dim_ops.index(o) for o in args if o in dim_ops]
-        + reindex_dims
-        + list(range(len(dims), len(array.shape)))
+    # Assign an einsum id to every axis of ``array``. Axes that share a named op
+    # get the *same* id — a repeated op (e.g. ``arr[i(), i()]``) ties its axes
+    # together, which einsum reads as a diagonal. Every other axis (slices, ints,
+    # fancy indices, compound terms, and trailing positional axes) gets a unique
+    # id, so einsum simply carries it through to be reindexed below.
+    op_ids: dict[Operation, int] = {}
+    in_ids: list[int] = []
+    next_id = 0
+    for ax in range(ndim):
+        op = axis_op(ax)
+        if op is not None:
+            if op not in op_ids:
+                op_ids[op] = next_id
+                next_id += 1
+            in_ids.append(op_ids[op])
+        else:
+            in_ids.append(next_id)
+            next_id += 1
+
+    # Output order: bound args that actually appear (in the requested order,
+    # deduplicated by the diagonal merge), then every remaining axis in
+    # first-appearance order. einsum does the permutation and the diagonals; with
+    # all distinct ids retained in the output it performs no reduction.
+    present_arg_ids = [op_ids[o] for o in args if o in op_ids]
+    seen = set(present_arg_ids)
+    rest_ids: list[int] = []
+    for i in in_ids:
+        if i not in seen:
+            seen.add(i)
+            rest_ids.append(i)
+
+    array = jnp.einsum(array, in_ids, present_arg_ids + rest_ids)
+
+    # Re-apply the original index for each carried axis, re-name unbound op axes,
+    # and insert size-1 axes for bound args that never appeared. Trailing
+    # positional axes (first appearance beyond ``dims``) are left for jax_getitem
+    # to carry implicitly.
+    first_pos: dict[int, int] = {}
+    for ax, i in enumerate(in_ids):
+        first_pos.setdefault(i, ax)
+
+    index_expr = tuple(
+        slice(None) if o in op_ids else None for o in args
+    ) + tuple(
+        dims[first_pos[i]] if first_pos[i] < len(dims) else slice(None)
+        for i in rest_ids
     )
-    array = jnp.transpose(array, perm)
-
-    index_expr = tuple(slice(None) if op in dim_ops else None for op in args) + tuple(
-        dims[i] for i in reindex_dims
-    )
-    reindexed = jax_getitem(array, index_expr)
-    return reindexed
+    return jax_getitem(array, index_expr)
 
 
 @unbind_dims.register(jax.Array)  # type: ignore

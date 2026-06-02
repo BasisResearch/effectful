@@ -1,4 +1,5 @@
 import functools
+import logging
 import typing
 from collections.abc import Iterable
 from typing import Protocol
@@ -8,7 +9,7 @@ import jax.core
 import opt_einsum
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.partial import (
     PartialEvalMultiAxisReduce,
@@ -31,6 +32,8 @@ from effectful.ops.monoid import (
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+
+logger = logging.getLogger(__name__)
 
 
 def cartesian_prod(x, y):
@@ -308,28 +311,30 @@ class ReduceDeltaIndependent(ObjectInterpretation):
             return fwd()
 
         fresh_op = Operation.define(head_op)
+
+        # optimize direct indexing (only works for simple ranges)
+        def _jax_getitem(arr, index):
+            return fwd(arr, [fresh_op() if i.op == head_op else i for i in index])
+
+        direct_weight = handler(
+            typing.cast(Interpretation, {jax_getitem: _jax_getitem})
+        )(evaluate)(weight)
+
+        # substitute indirect indexing
         arange = jnp.arange(_range_stop(head_stream))
         if isinstance(arange, jax.Array) and len(arange) == 0:
             return monoid.identity
-
         fresh_stream = unbind_dims(arange, fresh_op)
-        subst_intp = typing.cast(Interpretation, {head_op: deffn(fresh_stream)})
-        # Substitute the output index with a fresh *named* dimension; do not
-        # bind it positionally yet.
-        fresh_weight = handler(subst_intp)(evaluate)(weight)
-        fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
 
-        # Reduce the remaining indices/streams first (``fresh_op`` rides along
-        # as a named free variable), then bind it to a positional axis. Any
-        # remaining output index lives in ``tail_indices`` and is still a key
-        # of ``fresh_streams``, so ``tail_indices`` non-empty implies
-        # ``fresh_streams`` non-empty; the reduce is only skipped when there is
-        # genuinely nothing left to reduce, avoiding the empty-stream reduction
-        # (which would collapse to ``M.identity``).
+        indirect_weight = handler(
+            typing.cast(Interpretation, {head_op: deffn(fresh_stream)})
+        )(evaluate)(direct_weight)
+
+        fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
         if tail_indices or fresh_streams:
-            inner = monoid.reduce(delta(tail_indices, fresh_weight), fresh_streams)
+            inner = monoid.reduce(delta(tail_indices, indirect_weight), fresh_streams)
         else:
-            inner = fresh_weight
+            inner = indirect_weight
         return bind_dims(inner, fresh_op)
 
 
@@ -825,6 +830,8 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     streams = {op: range(sizes[c]) for c, op in ops.items()}
     expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
+
+    logger.debug("einsum %r normalized to:\n%s", subscripts, norm_expr)
 
     @jax.jit
     def jitted_einsum(*args):
