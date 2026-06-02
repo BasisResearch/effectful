@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from typing import Protocol
 
 import jax
+import jax.core
 import opt_einsum
 
 import effectful.handlers.jax.numpy as jnp
@@ -147,7 +148,7 @@ class ArrayReduce(ObjectInterpretation):
         reductor = ARRAY_REDUCTORS[monoid]
         index = Operation.define(jax.Array)
         for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if not issubclass(typeof(stream_body), jax.Array):
+            if not (issubclass(typeof(stream_body), jax.Array | jax.core.Tracer)):
                 continue
 
             if stream_key in fvsof(body):
