@@ -50,7 +50,7 @@ BENCHMARK_CASES = [
 ]
 
 
-def _make_operands(spec: str, sizes: dict[str, int], key: jax.Array) -> list:
+def _make_operands(spec: str, sizes: dict[str, int], key: jax.Array) -> list[jax.Array]:
     in_part = spec.split("->")[0]
     in_specs = in_part.split(",")
     keys = random.split(key, len(in_specs))
@@ -65,21 +65,7 @@ def rng_key():
     return random.PRNGKey(0)
 
 
-def _jnp_fn(spec, operands):
-    """``jax.numpy.einsum`` under ``jax.jit`` — the baseline."""
-    return jax.jit(lambda *xs: jnp.einsum(spec, *xs))
-
-
-def _effectful_fn(spec, operands):
-    """Our ``einsum`` under ``jax.jit``."""
-    einsum_term = einsum(spec, *(arr.shape for arr in operands))
-    return jax.jit(lambda *xs: einsum_term(*xs))
-
-
-IMPLEMENTATIONS = {
-    "jnp": _jnp_fn,
-    "effectful": _effectful_fn,
-}
+IMPLEMENTATIONS = {"jnp": jnp.einsum, "effectful": einsum}
 
 
 @pytest.mark.parametrize("impl", list(IMPLEMENTATIONS), ids=list(IMPLEMENTATIONS))
@@ -89,7 +75,11 @@ def test_bench_einsum(benchmark, impl, spec, sizes, rng_key):
     against ``effectful`` for the same subscript pattern (see module docstring).
     """
     operands = _make_operands(spec, sizes, rng_key)
-    f = IMPLEMENTATIONS[impl](spec, operands)
+
+    @jax.jit
+    def f(*operands):
+        return IMPLEMENTATIONS[impl](spec, *operands)
+
     f(*operands).block_until_ready()  # warm up cache
 
     @benchmark

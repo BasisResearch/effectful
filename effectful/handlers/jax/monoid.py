@@ -9,6 +9,10 @@ import opt_einsum
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax.partial import (
+    PartialEvalMultiAxisReduce,
+    PartialEvalSingleAxisReduce,
+)
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
@@ -769,11 +773,7 @@ def _parse_einsum_spec(
     return in_specs, out_spec
 
 
-class Einsum(Protocol):
-    def __call__(self, *args: jax.Array) -> jax.Array: ...
-
-
-def einsum(subscripts: str, *operands: tuple[int, ...]) -> Einsum:
+def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     """Evaluate an einsum expression using monoid reductions.
 
     Mirrors the ``jax.numpy.einsum(subscripts, *operands)`` interface for the
@@ -796,14 +796,15 @@ def einsum(subscripts: str, *operands: tuple[int, ...]) -> Einsum:
     """
     if not operands:
         raise ValueError("einsum requires at least one operand")
-    in_specs, out_spec = _parse_einsum_spec(subscripts, *operands)
+
+    in_specs, out_spec = _parse_einsum_spec(subscripts, *[op.shape for op in operands])
 
     all_letters = set(out_spec) | {c for s in in_specs for c in s}
     ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
 
     sizes = {}
-    for spec, shape in zip(in_specs, operands, strict=True):
-        for l, s in zip(spec, shape, strict=True):
+    for spec, op in zip(in_specs, operands, strict=True):
+        for l, s in zip(spec, op.shape, strict=True):
             if l in sizes and sizes[l] != s:
                 raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
             else:
@@ -823,7 +824,18 @@ def einsum(subscripts: str, *operands: tuple[int, ...]) -> Einsum:
     streams = {op: range(sizes[c]) for c, op in ops.items()}
     expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
-    return typing.cast(Einsum, norm_expr)
+
+    @jax.jit
+    def jitted_einsum(*args):
+        with (
+            handler(NormalizeIntp),
+            handler(PartialEvalSingleAxisReduce),
+            handler(PartialEvalMultiAxisReduce()),
+        ):
+            result = norm_expr(*args)
+            return result
+
+    return jitted_einsum(*operands)
 
 
 NormalizeIntp.extend(

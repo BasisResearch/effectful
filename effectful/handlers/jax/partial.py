@@ -59,33 +59,45 @@ dimensions. Multi-axis reductions are still vmapped.
 
 class PartialEvalMultiAxisReduce(ObjectInterpretation):
     @implements(jnp.tensordot)
-    def _(a: jax.Array, b: jax.Array, axes=2, **kwargs) -> jax.Array:
-        named_a = _named_dims(a)
-        named_b = _named_dims(b)
+    def _(self, a: jax.Array, b: jax.Array, axes=2, **kwargs) -> jax.Array:
         a_shape = a.shape
 
         if isinstance(a_shape, Term):
             return fwd()
 
+        # convert named dims that appear in one argument but not both to
+        # positional
+        named_a = _named_dims(a)
+        named_b = _named_dims(b)
+        distinct = set(named_a) ^ set(named_b)
+        if not distinct:
+            return fwd()
+
+        distinct_a = [i for i in named_a if i in distinct]
+        distinct_b = [i for i in named_b if i in distinct]
+        bound_a = bind_dims(a, *distinct_a)
+        bound_b = bind_dims(b, *distinct_b)
+
+        # reduction dims shift right to accommodate new positional dims
         if isinstance(axes, int):
             a_dims = range(len(a_shape) - axes, len(a_shape))
             b_dims = range(axes)
         else:
             a_dims = axes[0]
             b_dims = axes[1]
+        shifted_a_dims = tuple(d + len(distinct_a) for d in a_dims)
+        shifted_b_dims = tuple(d + len(distinct_b) for d in b_dims)
+        assert len(shifted_a_dims) == len(shifted_b_dims)
 
-        shifted_a_dims = tuple(d + len(named_a) for d in a_dims)
-        shifted_b_dims = tuple(
-            d + len(named_a) + len(a_shape) + len(named_b) for d in b_dims
-        )
-        shifted_axes = (shifted_a_dims, shifted_b_dims)
+        reduced = fwd(bound_a, bound_b, axes=(shifted_a_dims, shifted_b_dims), **kwargs)
 
-        bound_a = bind_dims(a, *named_a)
-        bound_b = bind_dims(b, *named_b)
-        reduced = fwd(bound_a, bound_b, axes=shifted_axes, **kwargs)
-        return jax_getitem(
+        # reindex bound named dims
+        reindexed = jax_getitem(
             reduced,
-            tuple(i() for i in named_a)
-            + tuple(slice(None) for _ in a_shape)
-            + tuple(i() for i in named_b),
+            tuple(i() for i in distinct_a)
+            # skip remaining positional dims in a
+            + tuple(slice(None) for _ in range(len(a_shape) - len(shifted_a_dims)))
+            + tuple(i() for i in distinct_b),
         )
+
+        return reindexed

@@ -432,9 +432,7 @@ def test_einsum_matches_jnp(spec: str):
     """
     key = jax.random.PRNGKey(hash(spec) & 0xFFFFFFFF)
     operands = _make_einsum_operands(spec, key)
-    einsum_f = einsum(spec, *(arr.shape for arr in operands))
-    with handler(NormalizeIntp):
-        actual = einsum_f(*operands)
+    actual = einsum(spec, *operands)
     expected = jnp.einsum(spec, *operands)
     assert actual.shape == expected.shape, (
         f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
