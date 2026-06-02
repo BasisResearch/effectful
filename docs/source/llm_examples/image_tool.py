@@ -1,4 +1,5 @@
-from pprint import pprint
+import argparse
+import os
 
 from PIL import Image
 
@@ -6,19 +7,22 @@ from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     RetryLLMHandler,
-    completion,
 )
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import handler
+from effectful.ops.types import NotHandled
 
 
 class ImageTools(Agent):
     """You are an image processing agent."""
 
+    _image_to_handle: dict[int, int]
+    _handle_to_image: dict[int, Image.Image]
+
     def __init__(self):
         self._image_to_handle = {}
         self._handle_to_image = {}
 
-    def _encode(self, image: Image) -> int:
+    def _encode(self, image: Image.Image) -> int:
         image_id = id(image)
         handle = self._image_to_handle.get(image_id, None)
         if handle is not None:
@@ -31,7 +35,7 @@ class ImageTools(Agent):
         self._handle_to_image[handle] = image
         return handle
 
-    def _decode(self, image_handle: int) -> Image:
+    def _decode(self, image_handle: int) -> Image.Image:
         return self._handle_to_image[image_handle]
 
     @Tool.define
@@ -62,26 +66,25 @@ class ImageTools(Agent):
         the previous.
 
         """
-        pass  # type: ignore
+        raise NotHandled
 
-    def rotate_and_concat(self, i: Image) -> Image:
+    def rotate_and_concat(self, i: Image.Image) -> Image.Image:
         return self._decode(self._rotate_and_concat(self._encode(i)))
 
 
-def log_completion(*args, **kwargs):
-    pprint((args, kwargs))
-    return fwd()
-
-
 if __name__ == "__main__":
-    image_agent = ImageTools()
-    img = Image.open("_static/img/chirho_logo_wide.png")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
+        help="LLM model to use (must support image inputs)",
+    )
+    args = parser.parse_args()
 
-    image_agent._rotate_and_concat.tools
-    provider = LiteLLMProvider(model="gpt-5-mini")
-    with (
-        handler(provider),
-        handler({completion: log_completion}),
-        handler(RetryLLMHandler()),
-    ):
+    image_agent = ImageTools()
+    img = Image.open("../_static/img/chirho_logo_wide.png")
+
+    provider = LiteLLMProvider(model=args.model)
+    with handler(provider), handler(RetryLLMHandler()):
         image_agent.rotate_and_concat(img).show()
