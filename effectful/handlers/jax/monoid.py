@@ -143,35 +143,40 @@ ARRAY_REDUCTORS = {
 class ArrayReduce(ObjectInterpretation):
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        if monoid not in ARRAY_REDUCTORS or typeof(body) is not jax.Array:
+        reductor = ARRAY_REDUCTORS.get(monoid, None)
+        if reductor is None:
             return fwd()
-        if not streams:
-            return monoid.identity
 
-        reductor = ARRAY_REDUCTORS[monoid]
-        index = Operation.define(jax.Array)
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if not (issubclass(typeof(stream_body), jax.Array | jax.core.Tracer)):
-                continue
+        if typeof(body) is not jax.Array:
+            return fwd()
 
-            if stream_key in fvsof(body):
-                with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
-                    eval_body = evaluate(body)
-                    eval_streams_tail = evaluate(streams_tail)
-                    assert isinstance(eval_streams_tail, dict)
-                    reduce_tail = (
-                        monoid.reduce(eval_body, eval_streams_tail)
-                        if len(eval_streams_tail) > 0
-                        else eval_body
-                    )
-                    return reductor(bind_dims(reduce_tail, index), axis=0)
-            else:
-                # TODO: In this case, the stream is unused in the body. The body
-                # should be multiplied by the length of the stream. The current
-                # behavior is not efficient.
-                return fwd()
+        body_fvs = fvsof(body)
+        used_array_streams = {
+            k
+            for k, v in streams.items()
+            if issubclass(typeof(v), jax.Array | jax.core.Tracer) and k in body_fvs
+        }
+        if not used_array_streams:
+            return fwd()
 
-        return fwd()
+        tail_streams = {
+            k: v for (k, v) in streams.items() if k not in used_array_streams
+        }
+
+        indexes = [
+            (k, Operation.define(jax.Array)) for k in streams if k in used_array_streams
+        ]
+        subst_intp = typing.cast(
+            Interpretation,
+            {k: deffn(unbind_dims(streams[k], index)) for (k, index) in indexes},
+        )
+        subst_body = handler(subst_intp)(evaluate)(body)
+        subst_tail_streams = handler(subst_intp)(evaluate)(tail_streams)
+        pos_body = bind_dims(subst_body, *(i for (_, i) in indexes))
+        reduced_body = reductor(pos_body, axis=tuple(py_range(len(indexes))))
+        if subst_tail_streams:
+            return monoid.reduce(reduced_body, subst_tail_streams)
+        return reduced_body
 
 
 @Operation.define
@@ -335,6 +340,7 @@ class ReduceDeltaIndependent(ObjectInterpretation):
             inner = monoid.reduce(delta(tail_indices, indirect_weight), fresh_streams)
         else:
             inner = indirect_weight
+
         return bind_dims(inner, fresh_op)
 
 
@@ -831,7 +837,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
 
-    logger.debug("einsum %r normalized to:\n%s", subscripts, norm_expr)
+    print("einsum %r normalized to:\n%s" % (subscripts, norm_expr))
 
     @jax.jit
     def jitted_einsum(*args):

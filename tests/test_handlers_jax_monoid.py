@@ -56,7 +56,7 @@ def test_reduce_array_1(monoid, reductor, backend: JaxBackend):
     X = backend.define_vars("X", ret="stream")
 
     lhs = monoid.reduce(x(), {x: X()})
-    rhs = reductor(bind_dims(unbind_dims(X(), k), k), axis=0)
+    rhs = reductor(bind_dims(unbind_dims(X(), k), k), axis=(0,))
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ArrayReduce())
 
 
@@ -70,14 +70,7 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
 
     lhs = monoid.reduce(f(x(), y()), {x: X(), y: Y()})
     rhs = reductor(
-        bind_dims(
-            reductor(
-                bind_dims(f(unbind_dims(X(), k1), unbind_dims(Y(), k2)), k2),
-                axis=0,
-            ),
-            k1,
-        ),
-        axis=0,
+        bind_dims(f(unbind_dims(X(), k1), unbind_dims(Y(), k2)), k1, k2), axis=(0, 1)
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ArrayReduce())
 
@@ -97,16 +90,9 @@ def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
     lhs = monoid.reduce(f(x(), y()), {x: X(), y: g(x())})
     rhs = reductor(
         bind_dims(
-            reductor(
-                bind_dims(
-                    f(unbind_dims(X(), k1), unbind_dims(g(unbind_dims(X(), k1)), k2)),
-                    k2,
-                ),
-                axis=0,
-            ),
-            k1,
+            f(unbind_dims(X(), k1), unbind_dims(g(unbind_dims(X(), k1)), k2)), k1, k2
         ),
-        axis=0,
+        axis=(0, 1),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ArrayReduce())
 
@@ -128,7 +114,7 @@ def test_jax_weighted_reduce(backend: JaxBackend):
     lhs = Sum.reduce(body(x()), {x: ws})
     rhs = jnp.sum(
         bind_dims(Product.plus(w(unbind_dims(X(), k)), body(unbind_dims(X(), k))), k),
-        axis=0,
+        axis=(0,),
     )
     backend.check_rewrite(
         lhs=lhs,

@@ -28,7 +28,12 @@ def _reduce_axis(array, axis=None, **kwargs) -> jax.Array:
         return fwd()
 
     bound_arr = bind_dims(array, *named_dims)
-    reduced = fwd(bound_arr, axis=axis + len(named_dims), **kwargs)
+
+    if isinstance(axis, int):
+        axis = (axis,)
+    shifted_axis = tuple(a + len(named_dims) for a in axis)
+
+    reduced = fwd(bound_arr, axis=shifted_axis, **kwargs)
     return unbind_dims(reduced, *named_dims)
 
 
