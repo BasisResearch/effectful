@@ -209,7 +209,7 @@ def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
         jnp.where(v() < u(), body, monoid.identity),
         {u: arange(0, N, 1), v: arange(0, N, 1)},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentarangeMask())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)

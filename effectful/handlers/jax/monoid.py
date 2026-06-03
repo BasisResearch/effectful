@@ -473,23 +473,10 @@ class ReduceRange(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        if isinstance(body, Term) and body.op == delta:
-            return fwd()
-
-        new_streams: dict = {}
-        any_replaced = False
-        for k, v in streams.items():
-            if isinstance(v, Term) and v.op == arange:
-                new_streams[k] = jnp.arange(
-                    _range_start(v), _range_stop(v), _range_step(v)
-                )
-                any_replaced = True
-            else:
-                new_streams[k] = v
-
-        if not any_replaced:
-            return fwd()
-        return monoid.reduce(body, new_streams)
+        if arange in fvsof((body, streams)):
+            body, streams = handler({arange: jnp.arange})(evaluate)((body, streams))
+            return monoid.reduce(body, streams)
+        return fwd()
 
 
 # Cross-cutting delta rules not yet implemented:
@@ -892,9 +879,9 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
 
 NormalizeIntp.extend(
+    ReduceRange(),
     ArrayReduce(),
     ReduceSumProductContraction(),
-    # ReduceRange(),
     ReduceDeltaIndependent(),
     ReduceOrderContraction(),
     ReduceDependentRangeMask(),
