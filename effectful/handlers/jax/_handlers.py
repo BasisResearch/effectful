@@ -146,7 +146,10 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             and not isinstance(args[0], Term)
             and sized_fvs
             and args[1]
-            and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
+            and all(
+                (isinstance(k, Term) and k.op in sized_fvs) or k == slice(None)
+                for k in args[1]
+            )
         ):
             raise NotHandled
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
