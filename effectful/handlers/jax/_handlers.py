@@ -66,9 +66,13 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
 
     def _getitem_sizeof(x: jax.Array, key: tuple[Expr[IndexElement], ...]):
         if is_eager_array(x):
-            for i, k in enumerate(key):
+            i = 0
+            for k in key:
                 if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
                     update_sizes(sizes, k.op, x.shape[i])
+                if k is not None:
+                    i += 1
+
         return defdata(jax_getitem, x, key)
 
     def _apply(op, *args, **kwargs):
