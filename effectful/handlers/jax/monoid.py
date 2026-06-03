@@ -173,7 +173,7 @@ class ArrayReduce(ObjectInterpretation):
         subst_body = handler(subst_intp)(evaluate)(body)
         subst_tail_streams = handler(subst_intp)(evaluate)(tail_streams)
         pos_body = bind_dims(subst_body, *(i for (_, i) in indexes))
-        reduced_body = reductor(pos_body, axis=tuple(py_range(len(indexes))))
+        reduced_body = reductor(pos_body, axis=tuple(range(len(indexes))))
         if subst_tail_streams:
             return monoid.reduce(reduced_body, subst_tail_streams)
         return reduced_body
@@ -184,37 +184,38 @@ def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
     raise NotHandled
 
 
-py_range = range
-
-
-@Operation.define
-def range(*args: int) -> Iterable[jax.Array]:
-    raise NotHandled
+arange = Operation.define(jnp.arange)
 
 
 def _range_start(term: Term):
-    assert term.op == range
+    assert term.op == arange
+    if "start" in term.kwargs:
+        return term.kwargs["start"]
     if len(term.args) < 2:
         return 0
     return term.args[0]
 
 
 def _range_stop(term: Term):
-    assert term.op == range
+    assert term.op == arange
+    if "stop" in term.kwargs:
+        return term.kwargs["stop"]
     if len(term.args) < 2:
         return term.args[0]
     return term.args[1]
 
 
 def _range_step(term: Term):
-    assert term.op == range
+    assert term.op == arange
+    if "step" in term.kwargs:
+        return term.kwargs["step"]
     if len(term.args) < 3:
         return 1
     return term.args[2]
 
 
 def _is_simple_range(term: Term) -> bool:
-    if term.op != range:
+    if term.op != arange:
         return False
 
     start = _range_start(term)
@@ -240,6 +241,43 @@ class BindDimsBindDims(ObjectInterpretation):
     def _(self, value, *names):
         if isinstance(value, Term) and value.op == bind_dims:
             return bind_dims(value.args[0], *(names + value.args[1:]))
+        return fwd()
+
+
+class GetitemArange(ObjectInterpretation):
+    @implements(jax_getitem)
+    def _(self, value, index):
+        def _is_arange(i):
+            return isinstance(i, Term) and i.op == arange
+
+        def _replace_arange(i):
+            if not _is_arange(i):
+                return i
+            return slice(_range_start(i), _range_stop(i), _range_step(i))
+
+        if not any(_is_arange(i) for i in index):
+            return fwd()
+
+        return jax_getitem(value, [_replace_arange(i) for i in index])
+
+
+class GetitemGetitem(ObjectInterpretation):
+    @implements(jax_getitem)
+    def _(self, arr, index) -> jax.Array:
+        progress = False
+        inner_index = []
+        outer_index = []
+        for i in index:
+            if isinstance(i, Term) and i.op == jax_getitem:
+                inner_index.append(i.args[0])
+                outer_index += i.args[1]
+                progress = True
+            else:
+                inner_index.append(slice(None))
+                outer_index.append(i)
+
+        if progress:
+            return jax_getitem(jax_getitem(arr, inner_index), outer_index)
         return fwd()
 
 
@@ -326,10 +364,10 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         )(evaluate)(weight)
 
         # substitute indirect indexing
-        arange = jnp.arange(_range_stop(head_stream))
-        if isinstance(arange, jax.Array) and len(arange) == 0:
+        r = jnp.arange(_range_stop(head_stream))
+        if isinstance(r, jax.Array) and len(r) == 0:
             return monoid.identity
-        fresh_stream = unbind_dims(arange, fresh_op)
+        fresh_stream = unbind_dims(r, fresh_op)
 
         indirect_weight = handler(
             typing.cast(Interpretation, {head_op: deffn(fresh_stream)})
@@ -441,7 +479,7 @@ class ReduceRange(ObjectInterpretation):
         new_streams: dict = {}
         any_replaced = False
         for k, v in streams.items():
-            if isinstance(v, Term) and v.op == range:
+            if isinstance(v, Term) and v.op == arange:
                 new_streams[k] = jnp.arange(
                     _range_start(v), _range_stop(v), _range_step(v)
                 )
@@ -511,7 +549,7 @@ class ReduceOrderContraction(ObjectInterpretation):
             if len(shape) == 0:
                 raise ValueError("Unexpected scalar array")
             return shape[0]
-        elif isinstance(stream, Term) and stream.op == range:
+        elif isinstance(stream, Term) and stream.op == arange:
             start = _range_start(stream)
             stop = _range_stop(stream)
             step = _range_step(stream)
@@ -743,7 +781,7 @@ class ReduceSumProductContraction(ObjectInterpretation):
         lhs_bound = bind_dims(lhs_subst, *indexes)
         rhs_bound = bind_dims(rhs_subst, *indexes)
 
-        axes = tuple(py_range(len(contracted)))
+        axes = tuple(range(len(contracted)))
         contraction = Product.plus(
             jnp.tensordot(lhs_bound, rhs_bound, axes=(axes, axes)), *factors[2:]
         )
@@ -833,7 +871,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     body = Product.plus(*factors)
 
     out_tuple = tuple(ops[c]() for c in out_spec)
-    streams = {op: range(sizes[c]) for c, op in ops.items()}
+    streams = {op: arange(sizes[c]) for c, op in ops.items()}
     expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
 
@@ -847,6 +885,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
             handler(PartialEvalMultiAxisReduce()),
         ):
             result = norm_expr(*args)
+            assert isinstance(result, jax.Array)
             return result
 
     return jitted_einsum(*operands)
@@ -855,7 +894,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 NormalizeIntp.extend(
     ArrayReduce(),
     ReduceSumProductContraction(),
-    ReduceRange(),
+    # ReduceRange(),
     ReduceDeltaIndependent(),
     ReduceOrderContraction(),
     ReduceDependentRangeMask(),
@@ -867,4 +906,6 @@ NormalizeIntp.extend(
     CartesianProductPlusJax(),
     BindDimsMonoidPlus(),
     BindDimsBindDims(),
+    GetitemArange(),
+    GetitemGetitem(),
 )

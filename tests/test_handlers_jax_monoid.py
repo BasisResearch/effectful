@@ -14,10 +14,10 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaIndependent,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
+    arange,
     delta,
     einsum,
 )
-from effectful.handlers.jax.monoid import range as Range
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     Max,
@@ -161,7 +161,7 @@ def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     # We use a concrete range here instead of an abstract one, because
     # unbind_dims is undefined on empty arrays (and the rewrite produces a
     # different rhs in this case)
-    lhs = monoid.reduce(delta((y(),), f(y())), {y: Range(3)})
+    lhs = monoid.reduce(delta((y(),), f(y())), {y: arange(3)})
     rhs = bind_dims(f(unbind_dims(jnp.arange(3), k)), k)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
 
@@ -181,7 +181,7 @@ def test_reduce_delta_independent_preserves_others(
         "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
     )
 
-    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: Range(2), y: Range(3)})
+    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: arange(2), y: arange(3)})
     rhs = bind_dims(
         bind_dims(f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k), x
     )
@@ -204,12 +204,12 @@ def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
 
     body = f(u(), v())
 
-    lhs = monoid.reduce(body, {u: Range(0, N, 1), v: Range(0, u(), 1)})
+    lhs = monoid.reduce(body, {u: arange(0, N, 1), v: arange(0, u(), 1)})
     rhs = monoid.reduce(
         jnp.where(v() < u(), body, monoid.identity),
-        {u: Range(0, N, 1), v: Range(0, N, 1)},
+        {u: arange(0, N, 1), v: arange(0, N, 1)},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentarangeMask())
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
@@ -230,10 +230,10 @@ def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBa
     weight = f(u(), v())
     idx = (u(), v())
 
-    lhs = monoid.reduce(delta(idx, weight), {u: Range(0, N, 1), v: Range(0, u(), 1)})
+    lhs = monoid.reduce(delta(idx, weight), {u: arange(0, N, 1), v: arange(0, u(), 1)})
     rhs = monoid.reduce(
         delta(idx, jnp.where(v() < u(), weight, monoid.identity)),
-        {u: Range(0, N, 1), v: Range(0, N, 1)},
+        {u: arange(0, N, 1), v: arange(0, N, 1)},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
@@ -354,7 +354,7 @@ def test_reduce_matmul(backend: JaxBackend):
     with handler(NormalizeIntp):
         actual = Sum.reduce(
             delta((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)),
-            {b: Range(B), i: Range(I), j: Range(J), k: Range(K)},
+            {b: arange(B), i: arange(I), j: arange(J), k: arange(K)},
         )
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
