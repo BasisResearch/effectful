@@ -53,10 +53,14 @@ distributes_over.register(Sum, LogSumExp)
 
 def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
-    :class:`jax.typing.ArrayLike` or named tensor.
+    :class:`jax.typing.ArrayLike` or named tensor. At least one argument must be
+    a jax-related type.
+
     """
-    return bool(args) and all(
-        is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args
+    return (
+        bool(args)
+        and all(is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args)
+        and any(is_eager_array(a) or isinstance(a, jax.Array) for a in args)
     )
 
 
