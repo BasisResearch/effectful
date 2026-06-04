@@ -843,26 +843,7 @@ def _parse_einsum_spec(
 
 
 def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
-    """Evaluate an einsum expression using monoid reductions.
-
-    Mirrors the ``jax.numpy.einsum(subscripts, *operands)`` interface for the
-    subset of subscript strings that do not use ``...`` (ellipsis). The
-    expression is encoded as a product of named-dim-bound operands wrapped in
-    a :func:`delta` over the output indices and reduced with
-    :data:`Sum.reduce` over every index; :class:`ReduceDeltaIndependent` peels
-    output indices into positional axes and :class:`ArrayReduce` sums over the
-    remainder.
-
-    Repeated index letters within a single operand (``"ii"``, ``"iij"``) work
-    because the unbinding substitution inside :class:`ReduceDeltaIndependent`
-    threads one fresh op through every occurrence of the repeated index — the
-    diagonal falls out naturally without a separate ``jnp.diagonal`` step.
-
-    This is the *unoptimised* baseline: all operands are broadcast into a
-    single intermediate before reduction. A contraction-ordering normalization
-    rule (planned) reorders large products into pairwise contractions without
-    requiring changes here.
-    """
+    """Evaluate an einsum expression using monoid reductions."""
     if not operands:
         raise ValueError("einsum requires at least one operand")
 
