@@ -721,8 +721,16 @@ class ReduceOrderContraction(ObjectInterpretation):
             )
             contract = used - elsewhere
 
-            # using monoid2.plus directly causes an infinite loop
-            combined = defdata(monoid2.plus, *terms)
+            # dispatching monoid2.plus on symbolic terms causes an infinite
+            # loop: PlusAssoc re-flattens the contraction tree back into the
+            # original flat plus, which re-enters this handler. Build the
+            # term directly in that case; concrete operands are safe to
+            # dispatch (they reduce to a value, so nothing can re-flatten).
+            if any(isinstance(t, Term) for t in terms):
+                combined = defdata(monoid2.plus, *terms)
+            else:
+                combined = monoid2.plus(*terms)
+
             if contract:
                 substreams = {s: v for (s, v) in streams.items() if s in contract}
                 new_term = monoid.reduce(combined, substreams)

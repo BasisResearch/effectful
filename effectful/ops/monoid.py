@@ -91,11 +91,15 @@ class Monoid[W]:
             return self.zero
 
         nonident_args = [a for a in args if a is not self.identity]
+
         if not nonident_args:
             return self.identity
 
         if len(nonident_args) == 1:
             return nonident_args[0]
+
+        if len(nonident_args) != len(args):
+            return self.plus(*nonident_args)
 
         return defdata(self.plus, *nonident_args)
 
