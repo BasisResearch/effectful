@@ -510,15 +510,14 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
 
     array = jnp.einsum(array, in_ids, present_arg_ids + rest_ids)
 
-    # Re-apply the original index for each carried axis, re-name unbound op axes,
-    # and insert size-1 axes for bound args that never appeared. Trailing
-    # positional axes (first appearance beyond ``dims``) are left for jax_getitem
-    # to carry implicitly.
+    # Re-apply the original index for each carried axis and re-name unbound op
+    # axes. Trailing positional axes (first appearance beyond ``dims``) are left
+    # for jax_getitem to carry implicitly.
     first_pos: dict[int, int] = {}
     for ax, i in enumerate(in_ids):
         first_pos.setdefault(i, ax)
 
-    index_expr = tuple(slice(None) if o in op_ids else None for o in args) + tuple(
+    index_expr = (slice(None),) * len(present_arg_ids) + tuple(
         dims[first_pos[i]] if first_pos[i] < len(dims) else slice(None)
         for i in rest_ids
     )

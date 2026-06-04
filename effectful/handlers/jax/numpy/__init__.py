@@ -19,7 +19,6 @@ for name, op in jax.numpy.__dict__.items():
 
 pi = jax.numpy.pi
 
-
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
     from jax.numpy import *  # noqa: F403
