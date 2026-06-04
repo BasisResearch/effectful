@@ -1,6 +1,8 @@
 import functools
 import logging
 import typing
+from collections.abc import Mapping
+from typing import Protocol
 
 import jax
 import jax.core
@@ -128,16 +130,36 @@ class CartesianProductPlusJax(ObjectInterpretation):
         return result
 
 
-ARRAY_REDUCTORS = {
-    Sum: jnp.sum,
-    Product: jnp.prod,
-    Min: jnp.min,
-    Max: jnp.max,
-    LogSumExp: logsumexp,
-}
+class Reductor(Protocol):
+    def __call__(
+        self, arr: jax.Array, axis: int | tuple[int, ...] | None = None
+    ) -> jax.Array: ...
+
+
+ARRAY_REDUCTORS: Mapping[Monoid, Reductor] = {}
+for monoid, func in [
+    (Sum, jnp.sum),
+    (Product, jnp.prod),
+    (Min, jnp.min),
+    (Max, jnp.max),
+]:
+    ARRAY_REDUCTORS[monoid] = functools.partial(func, initial=monoid.identity)
+ARRAY_REDUCTORS[LogSumExp] = logsumexp
 
 
 class ArrayReduce(ObjectInterpretation):
+    """Reduce an array body over its array/``arange`` streams.
+
+    Substitutes every used stream into the body via :func:`_substitute_streams`
+    (``arange`` streams slice their direct-index uses ``arr[v()]`` rather than
+    materializing and gathering; everything else gathers), binds the resulting
+    named dims positionally, and sums them out with the monoid's reductor.
+
+    ``delta`` bodies are left to :class:`ReduceDeltaIndependent`; ``monoid.plus``
+    bodies are claimed first by the higher-precedence contraction rules, with
+    this rule as the dense-broadcast fallback for the ones they decline.
+    """
+
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         reductor = ARRAY_REDUCTORS.get(monoid, None)
@@ -147,32 +169,32 @@ class ArrayReduce(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
+        # delta bodies belong to ReduceDeltaIndependent
+        if isinstance(body, Term) and body.op is delta:
+            return fwd()
+
         body_fvs = fvsof(body)
-        used_array_streams = {
+        used = [
             k
             for k, v in streams.items()
             if issubclass(typeof(v), jax.Array | jax.core.Tracer) and k in body_fvs
-        }
-        if not used_array_streams:
+        ]
+        if not used:
             return fwd()
 
-        tail_streams = {
-            k: v for (k, v) in streams.items() if k not in used_array_streams
-        }
+        # an empty reduction axis collapses the whole reduce to the identity
+        if any(_arange_length(streams[k]) == 0 for k in used):
+            return monoid.identity
 
-        indexes = [
-            (k, Operation.define(jax.Array)) for k in streams if k in used_array_streams
-        ]
-        subst_intp = typing.cast(
-            Interpretation,
-            {k: deffn(unbind_dims(streams[k], index)) for (k, index) in indexes},
+        tail_streams = {k: v for (k, v) in streams.items() if k not in used}
+
+        (subst_body, subst_tail), fresh = _substitute_streams(
+            (body, tail_streams), streams, used
         )
-        subst_body = handler(subst_intp)(evaluate)(body)
-        subst_tail_streams = handler(subst_intp)(evaluate)(tail_streams)
-        pos_body = bind_dims(subst_body, *(i for (_, i) in indexes))
-        reduced_body = reductor(pos_body, axis=tuple(range(len(indexes))))
-        if subst_tail_streams:
-            return monoid.reduce(reduced_body, subst_tail_streams)
+        pos_body = bind_dims(subst_body, *fresh.values())
+        reduced_body = reductor(pos_body, axis=tuple(range(len(fresh))))
+        if subst_tail:
+            return monoid.reduce(reduced_body, subst_tail)
         return reduced_body
 
 
@@ -225,6 +247,90 @@ def _is_simple_range(term: Term) -> bool:
     )
 
 
+def _arange_length(term) -> int | None:
+    """Concrete length of an ``arange`` term, or ``None`` if it is not an
+    ``arange`` term or any of its bounds is symbolic (a ``Term``).
+    """
+    if not (isinstance(term, Term) and term.op is arange):
+        return None
+    a, b, s = _range_start(term), _range_stop(term), _range_step(term)
+    if any(isinstance(x, Term) for x in (a, b, s)):
+        return None
+    return len(range(int(a), int(b), int(s)))
+
+
+def _substitute_streams(expr, streams, vars):
+    """Substitute each op in ``vars`` into its uses within ``expr``, replacing it
+    with a fresh named dimension.
+
+    Returns ``(expr2, fresh)`` where ``fresh`` maps each var op to its fresh
+    named-dim op (iteration order matches ``vars``). The fresh dims are left
+    *named* -- callers decide when and how to bind them positionally.
+
+    Substitution is context-dependent on the stream value ``streams[k]``:
+
+    - A concrete-bounded ``arange(a, b, s)``: a bare ``v()`` used as a direct
+      array index ``arr[..., v(), ...]`` is split into an inner slice
+      ``arr[..., a:b:s, ...]`` plus an outer index that swaps ``v()`` for
+      ``fresh_v()`` -- so the range never materializes into a gather. Any
+      *remaining* ``v()`` is materialized as ``unbind_dims(jnp.arange(a, b, s),
+      fresh_v)``.
+    - Anything else (a concrete array, a symbolic stream term, or an ``arange``
+      with non-concrete bounds): every ``v()`` becomes
+      ``unbind_dims(streams[k], fresh_v)`` -- a gather.
+
+    The two passes cannot be fused: the direct-index pass must see a bare
+    ``v()`` before the materializing pass rewrites it.
+    """
+    vars = list(vars)
+    fresh = {k: Operation.define(k) for k in vars}
+
+    # concrete-bounded arange streams slice their direct-index uses; the rest
+    # gather.
+    arange_bounds: dict[Operation, tuple] = {}
+    for k in vars:
+        v = streams[k]
+        if isinstance(v, Term) and v.op is arange:
+            a, b, s = _range_start(v), _range_stop(v), _range_step(v)
+            if not any(isinstance(x, Term) for x in (a, b, s)):
+                arange_bounds[k] = (a, b, s)
+
+    # PHASE 1 (direct): slice a bare range var used as an array index.
+    if arange_bounds:
+
+        def _jax_getitem(arr, index):
+            inner_index, outer_index = [], []
+            progress = False
+            for i in index:
+                if isinstance(i, Term) and i.op in arange_bounds:
+                    a, b, s = arange_bounds[i.op]
+                    inner_index.append(slice(a, b, s))
+                    outer_index.append(fresh[i.op]())
+                    progress = True
+                else:
+                    inner_index.append(slice(None))
+                    outer_index.append(i)
+            if progress:
+                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
+            return fwd(arr, index)
+
+        expr = handler(typing.cast(Interpretation, {jax_getitem: _jax_getitem}))(
+            evaluate
+        )(expr)
+
+    # PHASE 2 (indirect): substitute any remaining uses of each var.
+    subst: dict = {}
+    for k in vars:
+        if k in arange_bounds:
+            a, b, s = arange_bounds[k]
+            subst[k] = deffn(unbind_dims(jnp.arange(a, b, s), fresh[k]))
+        else:
+            subst[k] = deffn(unbind_dims(streams[k], fresh[k]))
+    expr = handler(typing.cast(Interpretation, subst))(evaluate)(expr)
+
+    return expr, fresh
+
+
 class BindDimsMonoidPlus(ObjectInterpretation):
     @implements(bind_dims)
     def _(self, value, *names):
@@ -239,104 +345,6 @@ class BindDimsBindDims(ObjectInterpretation):
         if isinstance(value, Term) and value.op == bind_dims:
             return bind_dims(value.args[0], *(names + value.args[1:]))
         return fwd()
-
-
-class ArangeArrayReduce(ObjectInterpretation):
-    """:class:`ArrayReduce` specialized to symbolic ``arange`` streams.
-
-    Lowers ``reduce(M, streams, body)`` to ``reductor(body, axis=...)`` like
-    :class:`ArrayReduce`, but for ``v: arange(a, b, s)`` streams. Using the
-    two-phase substitution of :class:`ReduceDeltaIndependent`, a bare ``v()``
-    used as a direct array index ``arr[v()]`` is split into a slice
-    ``arr[a:b:s]`` plus a fresh-named-dim index, rather than materialized and
-    gathered; any remaining ``v()`` is materialized along the same fresh dim.
-    Fires on neither ``delta`` (left to :class:`ReduceDeltaIndependent`) nor
-    ``monoid.plus`` (left to the contraction rules) bodies.
-    """
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        reductor = ARRAY_REDUCTORS.get(monoid, None)
-        if reductor is None:
-            return fwd()
-
-        if typeof(body) is not jax.Array:
-            return fwd()
-
-        # delta bodies belong to ReduceDeltaIndependent; monoid-plus bodies to
-        # the contraction rules.
-        if isinstance(body, Term) and (body.op is delta or _is_monoid_plus(body.op)):
-            return fwd()
-
-        body_fvs = fvsof(body)
-        arange_streams = {
-            k: v
-            for k, v in streams.items()
-            if k in body_fvs and isinstance(v, Term) and v.op is arange
-        }
-        if not arange_streams:
-            return fwd()
-
-        # concrete bounds are needed both to slice and to materialize
-        bounds: dict[Operation, tuple] = {}
-        for k, v in arange_streams.items():
-            a, b, s = _range_start(v), _range_stop(v), _range_step(v)
-            if any(isinstance(x, Term) for x in (a, b, s)):
-                return fwd()
-            bounds[k] = (a, b, s)
-
-        # an empty reduction axis collapses the whole reduce to the identity
-        if any(
-            len(range(int(a), int(b), int(s))) == 0 for (a, b, s) in bounds.values()
-        ):
-            return monoid.identity
-
-        fresh = {k: Operation.define(k) for k in arange_streams}
-        tail_streams = {k: v for (k, v) in streams.items() if k not in arange_streams}
-
-        # PHASE 1 (direct): a bare ``v()`` used as an array index is a slice in
-        # disguise. Split the indexing in two -- an inner ``arr[..., a:b:s, ...]``
-        # that slices each axis indexed by a range var, and an outer index that
-        # replaces that var with a fresh named dim ``fresh_v()`` -- so the range
-        # never materializes into a gather.
-        def _jax_getitem(arr, index):
-            inner_index, outer_index = [], []
-            progress = False
-            for i in index:
-                if isinstance(i, Term) and i.op in arange_streams:
-                    a, b, s = bounds[i.op]
-                    inner_index.append(slice(a, b, s))
-                    outer_index.append(fresh[i.op]())
-                    progress = True
-                else:
-                    inner_index.append(slice(None))
-                    outer_index.append(i)
-            if progress:
-                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
-            return fwd(arr, index)
-
-        direct_body = handler(typing.cast(Interpretation, {jax_getitem: _jax_getitem}))(
-            evaluate
-        )(body)
-
-        # PHASE 2 (indirect): materialize any remaining ``v()`` along ``fresh_v``.
-        subst_intp = typing.cast(
-            Interpretation,
-            {
-                k: deffn(unbind_dims(jnp.arange(a, b, s), fresh[k]))
-                for k, (a, b, s) in bounds.items()
-            },
-        )
-        subst_body = handler(subst_intp)(evaluate)(direct_body)
-        subst_tail = handler(subst_intp)(evaluate)(tail_streams)
-
-        fresh_ops = list(fresh.values())
-        pos_body = bind_dims(subst_body, *fresh_ops)
-        reduced_body = reductor(pos_body, axis=tuple(range(len(fresh_ops))))
-
-        if subst_tail:
-            return monoid.reduce(reduced_body, subst_tail)
-        return reduced_body
 
 
 class ReduceDeltaIndependent(ObjectInterpretation):
@@ -411,31 +419,21 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not (isinstance(head_stream, Term) and _is_simple_range(head_stream)):
             return fwd()
 
-        fresh_op = Operation.define(head_op)
-
-        # optimize direct indexing (only works for simple ranges)
-        def _jax_getitem(arr, index):
-            return fwd(arr, [fresh_op() if i.op == head_op else i for i in index])
-
-        direct_weight = handler(
-            typing.cast(Interpretation, {jax_getitem: _jax_getitem})
-        )(evaluate)(weight)
-
-        # substitute indirect indexing
-        r = jnp.arange(_range_stop(head_stream))
-        if isinstance(r, jax.Array) and len(r) == 0:
+        # an empty range collapses the whole reduce to the identity
+        if _arange_length(head_stream) == 0:
             return monoid.identity
-        fresh_stream = unbind_dims(r, fresh_op)
 
-        indirect_weight = handler(
-            typing.cast(Interpretation, {head_op: deffn(fresh_stream)})
-        )(evaluate)(direct_weight)
+        # peel the head index: substitute it into the weight (slicing direct
+        # uses, materializing the rest) along a fresh named dim, but bind that
+        # dim only *after* the surrounding reduce -- see the class docstring.
+        weight2, fresh = _substitute_streams(weight, streams, [head_op])
+        fresh_op = fresh[head_op]
 
         fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
         if tail_indices or fresh_streams:
-            inner = monoid.reduce(delta(tail_indices, indirect_weight), fresh_streams)
+            inner = monoid.reduce(delta(tail_indices, weight2), fresh_streams)
         else:
-            inner = indirect_weight
+            inner = weight2
 
         return bind_dims(inner, fresh_op)
 
@@ -596,27 +594,7 @@ class ReduceOrderContraction(ObjectInterpretation):
             if len(shape) == 0:
                 raise ValueError("Unexpected scalar array")
             return shape[0]
-        elif isinstance(stream, Term) and stream.op == arange:
-            start = _range_start(stream)
-            stop = _range_stop(stream)
-            step = _range_step(stream)
-
-            if (
-                isinstance(start, Term)
-                or isinstance(stop, Term)
-                or isinstance(step, Term)
-            ):
-                return None
-
-            if step > 0 and start < stop:
-                length = (stop - start - 1) // step + 1
-            elif step < 0 and start > stop:
-                length = (start - stop - 1) // (-step) + 1
-            else:
-                length = 0
-            assert length >= 0
-            return length
-        return None
+        return _arange_length(stream)
 
     @staticmethod
     def _anon_sizes(factor, named_ops: list) -> tuple[int, ...]:
@@ -810,20 +788,12 @@ class ReduceSumProductContraction(ObjectInterpretation):
         shared = (lhs_idx & rhs_idx) - tail_idx
         contracted = [k for k in streams if k in shared]
 
-        indexes = [Operation.define(op) for op in contracted]
-        subst = typing.cast(
-            Interpretation,
-            {
-                k: deffn(unbind_dims(streams[k], i))
-                for (k, i) in zip(contracted, indexes, strict=True)
-            },
-        )
         tail_streams = {k: v for (k, v) in streams.items() if k not in shared}
 
-        with handler(subst):
-            lhs_subst, rhs_subst, tail_streams_subst = typing.cast(
-                tuple, evaluate((lhs, rhs, tail_streams))
-            )
+        (lhs_subst, rhs_subst, tail_streams_subst), fresh = _substitute_streams(
+            (lhs, rhs, tail_streams), streams, contracted
+        )
+        indexes = [fresh[k] for k in contracted]
 
         lhs_bound = bind_dims(lhs_subst, *indexes)
         rhs_bound = bind_dims(rhs_subst, *indexes)
@@ -939,7 +909,6 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 NormalizeIntp.extend(
     ReduceRange(),
     ArrayReduce(),
-    ArangeArrayReduce(),
     ReduceSumProductContraction(),
     ReduceDeltaIndependent(),
     ReduceOrderContraction(),
