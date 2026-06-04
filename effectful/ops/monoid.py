@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
+import effectful.handlers.jax
 from effectful.internals.disjoint_set import DisjointSet
 from effectful.ops.semantics import (
     coproduct,
@@ -21,6 +22,7 @@ from effectful.ops.semantics import (
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
+    defdata,
     deffn,
     implements,
     syntactic_eq,
@@ -86,9 +88,14 @@ class Monoid[W]:
         """Monoid addition. Handlers supply per-monoid and broadcasting
         behavior; the default rule only handles empty / Term cases.
         """
-        if not args:
+        if hasattr(self, "zero") and any(a is self.zero for a in args):
+            return self.zero
+
+        nonident_args = [a for a in args if a is not self.identity]
+        if not nonident_args:
             return self.identity
-        raise NotHandled
+
+        return defdata(self.plus, *nonident_args)
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -202,16 +209,6 @@ def _is_monoid_weighted(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.weighted
 
 
-class PlusEmpty(ObjectInterpretation):
-    """plus() = 0"""
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if not args:
-            return monoid.identity
-        return fwd()
-
-
 class PlusSingle(ObjectInterpretation):
     """plus(x) = x"""
 
@@ -219,16 +216,6 @@ class PlusSingle(ObjectInterpretation):
     def plus(self, _, *args):
         if len(args) == 1:
             return args[0]
-        return fwd()
-
-
-class PlusIdentity(ObjectInterpretation):
-    """x₁ + ... + 0 + ... + xₙ = x₁ + ... + xₙ"""
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if any(x is monoid.identity for x in args):
-            return monoid.plus(*(x for x in args if x is not monoid.identity))
         return fwd()
 
 
@@ -852,9 +839,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
-    PlusEmpty(),
     PlusSingle(),
-    PlusIdentity(),
     PlusAssoc(),
     PlusDistr(),
     PlusZero(),

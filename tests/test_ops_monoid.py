@@ -20,8 +20,6 @@ from effectful.ops.monoid import (
     PlusConsecutiveDups,
     PlusDistr,
     PlusDups,
-    PlusEmpty,
-    PlusIdentity,
     PlusSingle,
     PlusZero,
     Product,
@@ -156,7 +154,7 @@ def test_zero_absorbs(monoid, backend: Backend, data):
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_empty(monoid, backend: Backend):
-    backend.check_rewrite(lhs=monoid.plus(), rhs=monoid.identity, rule=PlusEmpty())
+    backend.check_rewrite(lhs=monoid.plus(), rhs=monoid.identity, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -172,7 +170,7 @@ def test_plus_identity_right(monoid, backend: Backend):
     lhs = monoid.plus(x(), monoid.identity)
     rhs = monoid.plus(x())
 
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -240,10 +238,10 @@ def test_plus_distributes(backend: Backend):
 
 
 def test_plus_distributes_constant(backend: Backend):
-    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
-    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
+    a, b, c, d, e = backend.define_vars("a", "b", "c", "d", "e", ret="scalar")
+    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), e())
     rhs = Product.plus(
-        5,
+        e(),
         Sum.plus(
             Product.plus(a(), c()),
             Product.plus(a(), d()),
@@ -479,15 +477,15 @@ def test_reduce_independent_3_negative(backend: Backend):
 
 
 def test_reduce_independent_4(backend: Backend):
-    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     A, B, C = backend.define_vars("A", "B", "C", ret="stream")
     f = backend.define_vars(
         "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
     )
 
-    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), 7), {a: A(), b: B(), c: C()})
+    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), d()), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
-        7,
+        d(),
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
