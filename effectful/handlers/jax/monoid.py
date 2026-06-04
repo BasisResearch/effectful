@@ -333,14 +333,6 @@ def _substitute_streams(expr, streams, vars):
     return expr, fresh
 
 
-class BindDimsMonoidPlus(ObjectInterpretation):
-    @implements(bind_dims)
-    def _(self, value, *names):
-        if isinstance(value, Term) and _is_monoid_plus(value.op):
-            return value.op(*(bind_dims(x, *names) for x in value.args))
-        return fwd()
-
-
 class BindDimsBindDims(ObjectInterpretation):
     @implements(bind_dims)
     def _(self, value, *names):
@@ -902,6 +894,5 @@ NormalizeIntp.extend(
     MaxPlusJax(),
     LogSumExpPlusJax(),
     CartesianProductPlusJax(),
-    BindDimsMonoidPlus(),
     BindDimsBindDims(),
 )
