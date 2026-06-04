@@ -104,6 +104,7 @@ def test_jax_weighted_reduce(backend: JaxBackend):
     rhs = jnp.sum(
         bind_dims(Product.plus(w(unbind_dims(X(), k)), body(unbind_dims(X(), k))), k),
         axis=(0,),
+        initial=0,
     )
     backend.check_rewrite(
         lhs=lhs,
