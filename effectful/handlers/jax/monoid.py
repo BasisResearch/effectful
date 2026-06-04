@@ -540,13 +540,6 @@ class ReduceRange(ObjectInterpretation):
 #   carry the burden. See the conversation in monoid.py's history for why.
 
 
-def partition(iterable, predicate):
-    trues, falses = [], []
-    for item in iterable:
-        (trues if predicate(item) else falses).append(item)
-    return trues, falses
-
-
 class ReduceOrderContraction(ObjectInterpretation):
     """Reorder a large product before contraction using an ``opt_einsum`` path.
 
