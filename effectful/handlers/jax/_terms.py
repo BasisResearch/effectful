@@ -469,6 +469,11 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     assert isinstance(dims, Sequence)
     ndim = len(array.shape)
 
+    # ensure that the order is a subset of the named dimensions
+    order_set = set(args)
+    if not order_set <= set(a.op for a in dims if isinstance(a, Term)):
+        raise NotHandled
+
     def axis_op(ax: int) -> Operation | None:
         """The named op of a bare index term at axis ``ax``, else ``None``."""
         if ax < len(dims):
