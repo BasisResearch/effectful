@@ -10,14 +10,7 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.disjoint_set import DisjointSet
-from effectful.ops.semantics import (
-    coproduct,
-    evaluate,
-    fvsof,
-    fwd,
-    handler,
-    typeof,
-)
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -27,13 +20,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
     syntactic_hash,
 )
-from effectful.ops.types import (
-    Expr,
-    Interpretation,
-    NotHandled,
-    Operation,
-    Term,
-)
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 type Stream[T] = Iterable[T]
 
@@ -94,7 +81,7 @@ class Monoid[W]:
         if len(nonident_args) != len(args):
             return self.plus(*nonident_args)
 
-        return defdata(self.plus, *nonident_args)
+        return defdata(self.plus, *nonident_args)  # type: ignore[return-value]
 
     @Operation.define
     def reduce[A, B, U: Body](
