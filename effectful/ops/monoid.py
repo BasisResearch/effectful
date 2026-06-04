@@ -72,7 +72,9 @@ class Monoid[W]:
     @Operation.define
     def plus(self, *args: W) -> W:
         """Monoid addition. Handlers supply per-monoid and broadcasting
-        behavior; the default rule only handles empty / Term cases.
+        behavior; the default rule only handles identity and zero cases (for
+        monoids that have a zero).
+
         """
         if hasattr(self, "zero") and any(a is self.zero for a in args):
             return self.zero
