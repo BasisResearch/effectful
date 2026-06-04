@@ -837,7 +837,7 @@ def _reduce_axis(array, axis=None, **kwargs) -> jax.Array:
 
     if isinstance(axis, int):
         axis = (axis,)
-    shifted_axis = tuple(a + len(named_dims) for a in axis)
+    shifted_axis = tuple(a + len(named_dims) if a >= 0 else a for a in axis)
 
     reduced = fwd(bound_arr, axis=shifted_axis, **kwargs)
     return unbind_dims(reduced, *named_dims)
@@ -896,8 +896,8 @@ class PartialEvalMultiAxisReduce(ObjectInterpretation):
         else:
             a_dims = axes[0]
             b_dims = axes[1]
-        shifted_a_dims = tuple(d + len(distinct_a) for d in a_dims)
-        shifted_b_dims = tuple(d + len(distinct_b) for d in b_dims)
+        shifted_a_dims = tuple(d + len(distinct_a) if d >= 0 else d for d in a_dims)
+        shifted_b_dims = tuple(d + len(distinct_b) if d >= 0 else d for d in b_dims)
         assert len(shifted_a_dims) == len(shifted_b_dims)
 
         reduced = fwd(bound_a, bound_b, axes=(shifted_a_dims, shifted_b_dims), **kwargs)
