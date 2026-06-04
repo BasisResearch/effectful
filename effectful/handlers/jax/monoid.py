@@ -354,21 +354,6 @@ class ReduceDeltaIndependent(ObjectInterpretation):
     ═══════════════════════════════════════════════════════════════════════════
     bind_dims(reduce(M, streams, delta(idx', body[v() := unbind_dims(streams[v], fv)])), fv)
 
-    The output index ``v`` is peeled from the *head* of the index tuple and
-    substituted with a fresh **named** dimension ``fv`` (via ``unbind_dims``),
-    but it is **not** bound to a positional axis until the surrounding reduce
-    has finished. Keeping output indices named through the contraction is what
-    lets downstream rules (:class:`ReduceSumProductContraction`,
-    :class:`ArrayReduce`) align them by identity: if ``v`` were bound to a
-    positional axis up front, a factor that does not mention ``v`` would have a
-    fabricated size-1 axis that ``jnp.tensordot`` then concatenates as a
-    *separate* output axis instead of broadcasting against ``v`` (e.g.
-    ``einsum("ij,j->i")`` yielding ``(N, 1)`` instead of ``(N,)``). Binding
-    after the reduce — in head-first peel order, so the leftmost output index
-    ends up as the leading axis — avoids that. ``fv`` survives the contraction
-    as a named free variable and is materialised positionally exactly once,
-    here.
-
     Not yet supported:
 
     - **Strided index streams** (``range(0, N, k)`` for ``k != 1``): the
