@@ -1912,4 +1912,4 @@ def test_unify_jax_array_iterable():
 def test_nested_type_jax_array():
     import jax
 
-    assert nested_type(jax.numpy.array([0, 1, 2])) == jax.Array
+    assert issubclass(nested_type(jax.numpy.array([0, 1, 2])).value, jax.Array)
