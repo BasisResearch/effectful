@@ -786,39 +786,6 @@ class ReduceSumProductContraction(ObjectInterpretation):
         return contraction
 
 
-def _parse_einsum_spec(
-    subscripts: str, *operands: tuple[int, ...]
-) -> tuple[list[str], str]:
-    """Parse a numpy/jax-style einsum subscripts string.
-
-    Supports explicit ``"ij,jk->ik"`` and implicit ``"ij,jk"`` forms; in the
-    implicit case the output is each letter appearing exactly once across all
-    inputs, sorted alphabetically. Does not support ellipsis ``...``.
-    """
-    if "..." in subscripts:
-        raise NotImplementedError("einsum ellipsis not yet supported")
-    if "->" in subscripts:
-        in_part, out_spec = subscripts.split("->")
-    else:
-        in_part = subscripts
-        counts: dict[str, int] = {}
-        for c in in_part.replace(",", ""):
-            counts[c] = counts.get(c, 0) + 1
-        out_spec = "".join(sorted(c for c, n in counts.items() if n == 1))
-    in_specs = in_part.split(",")
-    if len(in_specs) != len(operands):
-        raise ValueError(
-            f"einsum: {len(in_specs)} input specs but {len(operands)} operands"
-        )
-    for spec, shape in zip(in_specs, operands, strict=True):
-        if len(spec) != len(shape):
-            raise ValueError(
-                f"einsum spec {spec!r} has {len(spec)} indices but operand "
-                f"has shape {shape}"
-            )
-    return in_specs, out_spec
-
-
 def _named_dims(term: Expr[jax.Array]) -> tuple[Operation, ...]:
     if not (isinstance(term, Term) and term.op == jax_getitem):
         return ()
@@ -921,7 +888,10 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     if not operands:
         raise ValueError("einsum requires at least one operand")
 
-    in_specs, out_spec = _parse_einsum_spec(subscripts, *[op.shape for op in operands])
+    in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
+        [subscripts, *(op.shape for op in operands)], shapes=True
+    )
+    in_specs = in_spec.split(",")
 
     all_letters = set(out_spec) | {c for s in in_specs for c in s}
     ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
