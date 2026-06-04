@@ -20,6 +20,8 @@ from effectful.ops.monoid import (
     PlusConsecutiveDups,
     PlusDistr,
     PlusDups,
+    PlusEmpty,
+    PlusSingle,
     Product,
     ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
@@ -152,13 +154,13 @@ def test_zero_absorbs(monoid, backend: Backend, data):
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_empty(monoid, backend: Backend):
-    backend.check_rewrite(lhs=monoid.plus(), rhs=monoid.identity, rule={})
+    backend.check_rewrite(lhs=monoid.plus(), rhs=monoid.identity, rule=PlusEmpty())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_single(monoid, backend: Backend):
     x = backend.define_vars("x", ret="scalar")
-    backend.check_rewrite(lhs=monoid.plus(x()), rhs=x(), rule={})
+    backend.check_rewrite(lhs=monoid.plus(x()), rhs=x(), rule=PlusSingle())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -318,7 +320,7 @@ def test_plus_zero(monoid, backend: Backend):
 def test_partial_1(monoid, backend: Backend):
     x = backend.define_vars("x", ret="scalar")
     lhs = monoid.reduce(x(), {x: []})
-    rhs = monoid.identity
+    rhs = monoid.plus()
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
@@ -328,7 +330,7 @@ def test_partial_2(monoid, backend: Backend):
     Y = backend.define_vars("Y", ret="stream")
 
     lhs = monoid.reduce(x(), {y: Y(), x: []})
-    rhs = monoid.identity
+    rhs = monoid.plus()
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 

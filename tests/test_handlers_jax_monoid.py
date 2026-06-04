@@ -18,10 +18,17 @@ from effectful.handlers.jax.monoid import (
     delta,
     einsum,
 )
-from effectful.ops.monoid import NormalizeIntp, Product, ReduceWeightedStream, Sum
+from effectful.ops.monoid import (
+    NormalizeIntp,
+    Product,
+    ReduceWeightedStream,
+    Sum,
+)
 from effectful.ops.semantics import coproduct, handler
 from effectful.ops.types import Interpretation
-from tests._monoid_helpers import JaxBackend
+from tests._monoid_helpers import (
+    JaxBackend,
+)
 
 MONOIDS = [
     pytest.param(monoid, reductor, id=monoid._name)
