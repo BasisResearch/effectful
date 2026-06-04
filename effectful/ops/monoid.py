@@ -95,6 +95,9 @@ class Monoid[W]:
         if not nonident_args:
             return self.identity
 
+        if len(nonident_args) == 1:
+            return nonident_args[0]
+
         return defdata(self.plus, *nonident_args)
 
     @Operation.define
@@ -209,16 +212,6 @@ def _is_monoid_weighted(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.weighted
 
 
-class PlusSingle(ObjectInterpretation):
-    """plus(x) = x"""
-
-    @implements(Monoid.plus)
-    def plus(self, _, *args):
-        if len(args) == 1:
-            return args[0]
-        return fwd()
-
-
 class PlusAssoc(ObjectInterpretation):
     """x + (y + z) = (x + y) + z = x + y + z"""
 
@@ -276,18 +269,6 @@ class PlusDistr(ObjectInterpretation):
                     final_sum += terms
             if progress:
                 return monoid.plus(*non_terms, *final_sum)
-        return fwd()
-
-
-class PlusZero(ObjectInterpretation):
-    """x₁ * ... * 0 * ... * xₙ = 0"""
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if not (isinstance(monoid, MonoidWithZero)):
-            return fwd()
-        if any(x is monoid.zero for x in args):
-            return monoid.zero
         return fwd()
 
 
@@ -839,10 +820,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
-    PlusSingle(),
     PlusAssoc(),
     PlusDistr(),
-    PlusZero(),
     PlusConsecutiveDups(),
     PlusDups(),
     SumPlus(),

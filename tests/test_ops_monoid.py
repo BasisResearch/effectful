@@ -20,8 +20,6 @@ from effectful.ops.monoid import (
     PlusConsecutiveDups,
     PlusDistr,
     PlusDups,
-    PlusSingle,
-    PlusZero,
     Product,
     ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
@@ -160,7 +158,7 @@ def test_plus_empty(monoid, backend: Backend):
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_plus_single(monoid, backend: Backend):
     x = backend.define_vars("x", ret="scalar")
-    backend.check_rewrite(lhs=monoid.plus(x()), rhs=x(), rule=PlusSingle())
+    backend.check_rewrite(lhs=monoid.plus(x()), rhs=x(), rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -180,7 +178,7 @@ def test_plus_identity_left(monoid, backend: Backend):
     lhs = monoid.plus(monoid.identity, x())
     rhs = monoid.plus(x())
 
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -312,8 +310,8 @@ def test_plus_zero(monoid, backend: Backend):
     lhs_right = monoid.plus(a(), monoid.zero)
     lhs_left = monoid.plus(monoid.zero, a())
     rhs = monoid.zero
-    backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule=PlusZero())
-    backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule=PlusZero())
+    backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
