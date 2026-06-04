@@ -1,7 +1,6 @@
 import functools
 import logging
 import typing
-from collections.abc import Mapping
 from typing import Protocol
 
 import jax
@@ -136,14 +135,17 @@ class Reductor(Protocol):
     ) -> jax.Array: ...
 
 
-ARRAY_REDUCTORS: Mapping[Monoid, Reductor] = {}
+ARRAY_REDUCTORS: dict[Monoid, Reductor] = {}
 for monoid, func in [
     (Sum, jnp.sum),
     (Product, jnp.prod),
     (Min, jnp.min),
     (Max, jnp.max),
 ]:
+    assert isinstance(monoid, Monoid)
+    assert callable(func)
     ARRAY_REDUCTORS[monoid] = functools.partial(func, initial=monoid.identity)
+
 ARRAY_REDUCTORS[LogSumExp] = logsumexp
 
 
