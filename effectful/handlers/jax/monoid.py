@@ -395,10 +395,6 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not (isinstance(head_stream, Term) and _is_simple_range(head_stream)):
             return fwd()
 
-        # an empty range collapses the whole reduce to the identity
-        if _arange_length(head_stream) == 0:
-            return monoid.identity
-
         # peel the head index: substitute it into the weight (slicing direct
         # uses, materializing the rest) along a fresh named dim, but bind that
         # dim only *after* the surrounding reduce -- see the class docstring.

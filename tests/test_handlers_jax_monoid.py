@@ -234,6 +234,16 @@ def test_reduce_delta_empty(monoid, reductor, backend: JaxBackend):
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_reduce_delta_empty_arange(monoid, reductor, backend: JaxBackend):
+    x = backend.define_vars("x", ret="scalar")
+    f = backend.define_vars("f", arg_types=[backend.scalar_typ], ret="scalar")
+
+    lhs = monoid.reduce(delta((x(),), f(x())), {x: arange(0)})
+    rhs = bind_dims(f(unbind_dims(jnp.array([]), x)), x)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     """One R1 step: peel the final preserved index off a delta.
 

@@ -93,8 +93,9 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
 
     # if any dimension is zero sized, the result is empty
     if any(size == 0 for size in sized_fvs.values()):
-        key = tuple(sized_fvs.keys())
-        shape = tuple(sized_fvs[k] for k in key)
+        ops = tuple(sized_fvs.keys())
+        key = tuple(k() for k in ops)
+        shape = tuple(sized_fvs[k] for k in ops)
         return jax_getitem(jnp.empty(shape), key)
 
     def _is_eager(t):
