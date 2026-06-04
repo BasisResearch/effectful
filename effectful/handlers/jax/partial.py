@@ -63,7 +63,7 @@ dimensions. Multi-axis reductions are still vmapped.
 
 
 class PartialEvalMultiAxisReduce(ObjectInterpretation):
-    @implements(jnp.tensordot)
+    @implements(jnp.tensordot)  # type: ignore[arg-type]
     def _(self, a: jax.Array, b: jax.Array, axes=2, **kwargs) -> jax.Array:
         a_shape = a.shape
 

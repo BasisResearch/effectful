@@ -147,7 +147,8 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             and sized_fvs
             and args[1]
             and all(
-                (isinstance(k, Term) and k.op in sized_fvs) or k == slice(None)
+                (isinstance(k, Term) and k.op in sized_fvs)
+                or (isinstance(k, slice) and k == slice(None))
                 for k in args[1]
             )
         ):

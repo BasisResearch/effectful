@@ -1,8 +1,6 @@
 import functools
 import logging
 import typing
-from collections.abc import Iterable
-from typing import Protocol
 
 import jax
 import jax.core
@@ -27,7 +25,6 @@ from effectful.ops.monoid import (
     Sum,
     _is_monoid_plus,
     distributes_over,
-    outer_stream,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, implements
@@ -244,41 +241,102 @@ class BindDimsBindDims(ObjectInterpretation):
         return fwd()
 
 
-class GetitemArange(ObjectInterpretation):
-    @implements(jax_getitem)
-    def _(self, value, index):
-        def _is_arange(i):
-            return isinstance(i, Term) and i.op == arange
+class ArangeArrayReduce(ObjectInterpretation):
+    """:class:`ArrayReduce` specialized to symbolic ``arange`` streams.
 
-        def _replace_arange(i):
-            if not _is_arange(i):
-                return i
-            return slice(_range_start(i), _range_stop(i), _range_step(i))
+    Lowers ``reduce(M, streams, body)`` to ``reductor(body, axis=...)`` like
+    :class:`ArrayReduce`, but for ``v: arange(a, b, s)`` streams. Using the
+    two-phase substitution of :class:`ReduceDeltaIndependent`, a bare ``v()``
+    used as a direct array index ``arr[v()]`` is split into a slice
+    ``arr[a:b:s]`` plus a fresh-named-dim index, rather than materialized and
+    gathered; any remaining ``v()`` is materialized along the same fresh dim.
+    Fires on neither ``delta`` (left to :class:`ReduceDeltaIndependent`) nor
+    ``monoid.plus`` (left to the contraction rules) bodies.
+    """
 
-        if not any(_is_arange(i) for i in index):
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        reductor = ARRAY_REDUCTORS.get(monoid, None)
+        if reductor is None:
             return fwd()
 
-        return jax_getitem(value, [_replace_arange(i) for i in index])
+        if typeof(body) is not jax.Array:
+            return fwd()
 
+        # delta bodies belong to ReduceDeltaIndependent; monoid-plus bodies to
+        # the contraction rules.
+        if isinstance(body, Term) and (body.op is delta or _is_monoid_plus(body.op)):
+            return fwd()
 
-class GetitemGetitem(ObjectInterpretation):
-    @implements(jax_getitem)
-    def _(self, arr, index) -> jax.Array:
-        progress = False
-        inner_index = []
-        outer_index = []
-        for i in index:
-            if isinstance(i, Term) and i.op == jax_getitem:
-                inner_index.append(i.args[0])
-                outer_index += i.args[1]
-                progress = True
-            else:
-                inner_index.append(slice(None))
-                outer_index.append(i)
+        body_fvs = fvsof(body)
+        arange_streams = {
+            k: v
+            for k, v in streams.items()
+            if k in body_fvs and isinstance(v, Term) and v.op is arange
+        }
+        if not arange_streams:
+            return fwd()
 
-        if progress:
-            return jax_getitem(jax_getitem(arr, inner_index), outer_index)
-        return fwd()
+        # concrete bounds are needed both to slice and to materialize
+        bounds: dict[Operation, tuple] = {}
+        for k, v in arange_streams.items():
+            a, b, s = _range_start(v), _range_stop(v), _range_step(v)
+            if any(isinstance(x, Term) for x in (a, b, s)):
+                return fwd()
+            bounds[k] = (a, b, s)
+
+        # an empty reduction axis collapses the whole reduce to the identity
+        if any(
+            len(range(int(a), int(b), int(s))) == 0 for (a, b, s) in bounds.values()
+        ):
+            return monoid.identity
+
+        fresh = {k: Operation.define(k) for k in arange_streams}
+        tail_streams = {k: v for (k, v) in streams.items() if k not in arange_streams}
+
+        # PHASE 1 (direct): a bare ``v()`` used as an array index is a slice in
+        # disguise. Split the indexing in two -- an inner ``arr[..., a:b:s, ...]``
+        # that slices each axis indexed by a range var, and an outer index that
+        # replaces that var with a fresh named dim ``fresh_v()`` -- so the range
+        # never materializes into a gather.
+        def _jax_getitem(arr, index):
+            inner_index, outer_index = [], []
+            progress = False
+            for i in index:
+                if isinstance(i, Term) and i.op in arange_streams:
+                    a, b, s = bounds[i.op]
+                    inner_index.append(slice(a, b, s))
+                    outer_index.append(fresh[i.op]())
+                    progress = True
+                else:
+                    inner_index.append(slice(None))
+                    outer_index.append(i)
+            if progress:
+                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
+            return fwd(arr, index)
+
+        direct_body = handler(typing.cast(Interpretation, {jax_getitem: _jax_getitem}))(
+            evaluate
+        )(body)
+
+        # PHASE 2 (indirect): materialize any remaining ``v()`` along ``fresh_v``.
+        subst_intp = typing.cast(
+            Interpretation,
+            {
+                k: deffn(unbind_dims(jnp.arange(a, b, s), fresh[k]))
+                for k, (a, b, s) in bounds.items()
+            },
+        )
+        subst_body = handler(subst_intp)(evaluate)(direct_body)
+        subst_tail = handler(subst_intp)(evaluate)(tail_streams)
+
+        fresh_ops = list(fresh.values())
+        pos_body = bind_dims(subst_body, *fresh_ops)
+        reduced_body = reductor(pos_body, axis=tuple(range(len(fresh_ops))))
+
+        if subst_tail:
+            return monoid.reduce(reduced_body, subst_tail)
+        return reduced_body
 
 
 class ReduceDeltaIndependent(ObjectInterpretation):
@@ -474,8 +532,10 @@ class ReduceRange(ObjectInterpretation):
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
         if arange in fvsof((body, streams)):
-            body, streams = handler({arange: jnp.arange})(evaluate)((body, streams))
-            return monoid.reduce(body, streams)
+            intp: Interpretation = {arange: jnp.arange}
+            subst_body = handler(intp)(evaluate)(body)
+            subst_streams = handler(intp)(evaluate)(streams)
+            return monoid.reduce(subst_body, subst_streams)
         return fwd()
 
 
@@ -839,7 +899,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     all_letters = set(out_spec) | {c for s in in_specs for c in s}
     ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
 
-    sizes = {}
+    sizes: dict[str, int] = {}
     for spec, op in zip(in_specs, operands, strict=True):
         for l, s in zip(spec, op.shape, strict=True):
             if l in sizes and sizes[l] != s:
@@ -862,8 +922,6 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
 
-    print("einsum %r normalized to:\n%s" % (subscripts, norm_expr))
-
     @jax.jit
     def jitted_einsum(*args):
         with (
@@ -881,6 +939,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 NormalizeIntp.extend(
     ReduceRange(),
     ArrayReduce(),
+    ArangeArrayReduce(),
     ReduceSumProductContraction(),
     ReduceDeltaIndependent(),
     ReduceOrderContraction(),
@@ -893,6 +952,4 @@ NormalizeIntp.extend(
     CartesianProductPlusJax(),
     BindDimsMonoidPlus(),
     BindDimsBindDims(),
-    GetitemArange(),
-    GetitemGetitem(),
 )

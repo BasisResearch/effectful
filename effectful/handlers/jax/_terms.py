@@ -518,9 +518,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     for ax, i in enumerate(in_ids):
         first_pos.setdefault(i, ax)
 
-    index_expr = tuple(
-        slice(None) if o in op_ids else None for o in args
-    ) + tuple(
+    index_expr = tuple(slice(None) if o in op_ids else None for o in args) + tuple(
         dims[first_pos[i]] if first_pos[i] < len(dims) else slice(None)
         for i in rest_ids
     )

@@ -6,8 +6,9 @@ import pytest
 from jax import random as random
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import (
+    ArangeArrayReduce,
     ArrayReduce,
     LogSumExp,
     ProductPlusJax,
@@ -27,7 +28,8 @@ from effectful.ops.monoid import (
     ReduceWeightedStream,
     Sum,
 )
-from effectful.ops.semantics import coproduct, handler
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation
 from tests._monoid_helpers import JaxBackend
 
@@ -127,6 +129,100 @@ def test_jax_weighted_reduce(backend: JaxBackend):
             ),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# ArangeArrayReduce: ArrayReduce specialized to symbolic ``arange`` streams,
+# slicing direct index uses instead of materializing + gathering.
+# ---------------------------------------------------------------------------
+
+# ``ArangeArrayReduce`` slices direct index uses itself, so it needs no other
+# rule composed below it.
+ARANGE_REDUCE_RULE: Interpretation = ArangeArrayReduce()
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_arange_reduce_direct_full(monoid, reductor, rng_key):
+    """A full-range direct index ``A[v()]`` over ``v: arange(len(A))`` reduces
+    to ``reductor(A, axis=0)`` -- the whole axis, via a no-op slice."""
+    A = random.normal(rng_key, (7,))
+    v = defop(jax.Array, name="v")
+
+    lhs = monoid.reduce(jax_getitem(A, [v()]), {v: arange(7)})
+    with handler(ARANGE_REDUCE_RULE):
+        got = evaluate(lhs)
+    assert jnp.allclose(got, reductor(A, axis=0), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_arange_reduce_direct_slice(monoid, reductor, rng_key):
+    """An offset/strided range ``v: arange(1, 6, 2)`` used as a direct index
+    reduces over the slice ``A[1:6:2]`` and leaves no ``arange`` gather behind."""
+    A = random.normal(rng_key, (8,))
+    v = defop(jax.Array, name="v")
+
+    lhs = monoid.reduce(jax_getitem(A, [v()]), {v: arange(1, 6, 2)})
+    with handler(ARANGE_REDUCE_RULE):
+        got = evaluate(lhs)
+
+    assert jnp.allclose(got, reductor(A[1:6:2], axis=0), atol=1e-4, rtol=1e-4)
+    # the direct index became a slice, not a materialized-arange gather
+    assert arange not in fvsof(got)
+
+
+def test_arange_reduce_emits_slice(rng_key):
+    """The rewrite produces ``A[a:b:s][fresh()]`` (a slice + named-dim index),
+    not an ``arange`` gather, when the indexed array is left symbolic."""
+    A = defop(jax.Array, name="A")  # symbolic 1-D array
+    v = defop(jax.Array, name="v")
+
+    lhs = Sum.reduce(jax_getitem(A(), [v()]), {v: arange(1, 6, 2)})
+    with handler(ARANGE_REDUCE_RULE):
+        norm = evaluate(lhs)
+
+    assert arange not in fvsof(norm)
+    # a slice survives somewhere in the normalized term
+    assert "slice(1, 6, 2)" in repr(norm)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_arange_reduce_indirect(monoid, reductor, rng_key):
+    """When the range var is used both as a direct index and as a value
+    (``A[v()] + v()``), the direct use slices and the indirect use materializes
+    the range, both aligned on the same fresh dim."""
+    A = random.normal(rng_key, (6,))
+    v = defop(jax.Array, name="v")
+    vals = jnp.arange(6).astype(A.dtype)
+
+    lhs = monoid.reduce(jax_getitem(A, [v()]) + v(), {v: arange(6)})
+    with handler(ARANGE_REDUCE_RULE):
+        got = evaluate(lhs)
+    assert jnp.allclose(got, reductor(A + vals, axis=0), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_arange_reduce_two_streams(monoid, reductor, rng_key):
+    """Two arange streams indexing a 2-D array reduce over both axes at once."""
+    A = random.normal(rng_key, (4, 5))
+    u = defop(jax.Array, name="u")
+    w = defop(jax.Array, name="w")
+
+    lhs = monoid.reduce(jax_getitem(A, [u(), w()]), {u: arange(4), w: arange(5)})
+    with handler(ARANGE_REDUCE_RULE):
+        got = evaluate(lhs)
+    assert jnp.allclose(got, reductor(A, axis=(0, 1)), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_arange_reduce_empty(monoid, reductor, rng_key):
+    """An empty range collapses the reduce to the monoid identity."""
+    A = random.normal(rng_key, (5,))
+    v = defop(jax.Array, name="v")
+
+    lhs = monoid.reduce(jax_getitem(A, [v()]), {v: arange(0)})
+    with handler(ARANGE_REDUCE_RULE):
+        got = evaluate(lhs)
+    assert jnp.allclose(got, monoid.identity)
 
 
 # ---------------------------------------------------------------------------
