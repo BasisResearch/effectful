@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
-import effectful.handlers.jax
 from effectful.internals.disjoint_set import DisjointSet
 from effectful.ops.semantics import (
     coproduct,
