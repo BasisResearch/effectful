@@ -403,6 +403,16 @@ class ReduceSplit(ObjectInterpretation):
 
 
 class _ReduceLiftShared(ObjectInterpretation):
+    """Hoist shared streams into outer reduce.
+
+    Sum.reduce(F₁(x) × ... × Fₖ(x), {x: X} ∪ S)
+      => Sum.reduce(Sum.reduce(F₁(x) × ... × Fₖ(x), S), {x: X})
+
+    Only applies to product bodies, because it enables _ReduceSplitIdependent to
+    act on the body.
+
+    """
+
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         if not (
