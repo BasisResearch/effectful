@@ -46,17 +46,6 @@ type Body[T] = (
 )
 
 
-def topo_streams(streams: Streams) -> Iterable[Operation]:
-    """Returns the streams that can be ordered outermost in the loop nest as
-    well as the remaining streams in the nest.
-
-    """
-    stream_vars = set(streams.keys())
-    pred = {k: fvsof(v) & stream_vars for k, v in streams.items()}
-    topo = TopologicalSorter(pred)
-    return topo.static_order()
-
-
 def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]]:
     """Returns the streams that can be ordered outermost in the loop nest as
     well as the remaining streams in the nest.
