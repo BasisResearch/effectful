@@ -438,7 +438,7 @@ def test_reduce_independent_1(backend: Backend):
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
 def test_reduce_independent_2(backend: Backend):
@@ -456,7 +456,7 @@ def test_reduce_independent_2(backend: Backend):
             {b: B()},
         ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
 def test_reduce_independent_3_negative(backend: Backend):
@@ -469,7 +469,7 @@ def test_reduce_independent_3_negative(backend: Backend):
     )
     g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="stream")
 
-    with handler(ReduceFactorization):  # ty:ignore[invalid-argument-type]
+    with handler(ReduceFactorization()):  # ty:ignore[invalid-argument-type]
         lhs = Sum.reduce(
             Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}
         )
@@ -497,7 +497,23 @@ def test_reduce_independent_4(backend: Backend):
             {b: B()},
         ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+def test_reduce_chain(backend: Backend):
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f, h = backend.define_vars("f", "h", arg_types=(backend.scalar_typ,), ret="scalar")
+    g = backend.define_vars(
+        "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = Sum.reduce(Product.plus(f(x()), g(x(), y()), h(y())), {x: X(), y: Y()})
+    rhs = Sum.reduce(
+        Product.plus(h(y()), Sum.reduce(Product.plus(f(x()), g(x(), y())), {x: X()})),
+        {y: Y()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -520,7 +536,7 @@ def test_reduce_lift_shared(outer, inner, backend: Backend):
         ),
         {c: C()},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -548,7 +564,7 @@ def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
         ),
         {c: C(), d: h(c())},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
 def test_reduce_cartesian_3():
@@ -701,7 +717,7 @@ def test_reduce_weighted_factorization(backend: Backend):
         Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization)
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization())
     )
 
 

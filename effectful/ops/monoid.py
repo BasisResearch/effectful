@@ -73,6 +73,33 @@ def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]
     )
 
 
+def inner_stream(
+    streams: dict[Operation, Expr],
+) -> Iterable[tuple[dict[Operation, Expr], Operation, Expr]]:
+    """Returns the streams that can be ordered innermost in the loop nest as
+    well as the remaining streams in the nest.
+
+    """
+    stream_vars = set(streams.keys())
+
+    no_dependents = set()
+    succ = defaultdict(set)
+    for k, v in streams.items():
+        preds = fvsof(v) & stream_vars
+        if preds:
+            for pred in preds:
+                succ[pred].add(k)
+        else:
+            no_dependents.add(k)
+
+    topo = TopologicalSorter(succ)
+    topo.prepare()
+    return (
+        ({k: v for (k, v) in streams.items() if k != op}, op, streams[op])
+        for op in set(topo.get_ready()) | no_dependents
+    )
+
+
 class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
@@ -402,61 +429,12 @@ class ReduceSplit(ObjectInterpretation):
         return fwd()
 
 
-class _ReduceLiftShared(ObjectInterpretation):
-    """Hoist shared streams into outer reduce.
+class ReduceFactorization(ObjectInterpretation):
+    """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
 
-    Sum.reduce(F₁(x) × ... × Fₖ(x), {x: X} ∪ S)
-      => Sum.reduce(Sum.reduce(F₁(x) × ... × Fₖ(x), S), {x: X})
-
-    Only applies to product bodies, because it enables _ReduceSplitIdependent to
-    act on the body.
-
-    """
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        if not (
-            isinstance(body, Term)
-            and _is_monoid_plus(body.op)
-            and distributes_over(body.op.__self__, monoid)
-        ):
-            return fwd()
-
-        factors = [(arg, fvsof(arg)) for arg in body.args]
-        stream_vars = set(streams)
-
-        shared = {}
-        for op in topo_streams(streams):
-            stream = streams[op]
-            # stream is shared by all factors and all dependencies are also
-            # shared streams
-            if all(op in fvs for (_, fvs) in factors) and (
-                (fvsof(stream) & stream_vars) <= set(shared)
-            ):
-                shared[op] = stream
-
-        if not shared:
-            return fwd()
-
-        not_shared = {k: v for (k, v) in streams.items() if k not in shared}
-        if not not_shared:
-            return fwd()
-
-        return monoid.reduce(monoid.reduce(body, not_shared), shared)
-
-
-class _ReduceSplitIndependent(ObjectInterpretation):
-    """
-    Implements factorization of independent terms.
-    For example, when having two independent distributions,
-    we can rewrite their marginalization as:
-        ∫p(x)⋅q(y)dxdy => ∫p(x)dx ⋅ ∫q(y)dy
-
-    More specifically, in terms of reduces we are performing:
-        reduce(R, (S₁ × ... × Sₖ) , A₁ * ... * Aₖ)
-        => reduce(R, S₁, A₁) * ... * reduce(R, Sₖ, Aₖ)
-        where free(Aᵢ) ∩ free(Aⱼ) ∩ S = ∅
-          and free(Aᵢ) ∩ S ⊆ Sᵢ
+    where F_v = factors mentioning v, F_rest = the others. Fires only when
+    v has no dependents among the remaining streams (so it can be innermost)
+    and F_rest is nonempty (universal variables stay in the outer core).
     """
 
     @implements(Monoid.reduce)
@@ -469,86 +447,34 @@ class _ReduceSplitIndependent(ObjectInterpretation):
         ):
             return fwd()
 
-        inner_monoid: Monoid = body.op.__self__
-        stream_vars = set(streams.keys())
-        factors = [(arg, fvsof(arg)) for arg in body.args]
-        stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
-        ds = DisjointSet(len(streams))
+        inner = body.op.__self__
+        factors = [(a, fvsof(a)) for a in body.args]
 
-        # streams are in the same partition as their dependencies
-        for stream_var, stream_id in stream_ids.items():
-            stream_body = streams[stream_var]
-            deps = sorted([stream_ids[v] for v in fvsof(stream_body) & stream_vars])
-            ds.union(stream_id, *deps)
-
-        # factors are in the same partition as their dependencies
-        for _, factor_fvs in factors:
-            factor_streams = sorted([stream_ids[v] for v in (factor_fvs & stream_vars)])
-            ds.union(*factor_streams)
-
-        placed_streams = set()
-        new_reduces = []
-        for stream_key in streams:
-            if stream_key in placed_streams:
+        # candidates: innermost-eligible (no remaining stream depends on v),
+        # non-universal (some factor doesn't mention v)
+        support: dict = {}
+        for v in streams:
+            if any(v in fvsof(s) for k, s in streams.items() if k is not v):
                 continue
+            f_v = frozenset(i for i, (_, fvs) in enumerate(factors) if v in fvs)
+            if len(f_v) == len(factors):
+                continue  # v is universal: leave it in the outer core
+            support[v] = f_v
 
-            partition = ds.find(stream_ids[stream_key])
-            partition_streams = {
-                k: v
-                for (k, v) in streams.items()
-                if ds.find(stream_ids[k]) == partition
-            }
-            partition_stream_keys = set(partition_streams.keys())
-
-            partition_factors = [t for t in factors if (t[1] & partition_stream_keys)]
-
-            assert all(
-                (t[1] & stream_vars) <= partition_stream_keys for t in partition_factors
-            ), "partition contains all streams required by factor"
-
-            partition_term = inner_monoid.plus(*(t[0] for t in partition_factors))
-            new_reduces.append((partition_term, partition_streams))
-            placed_streams |= partition_stream_keys
-
-        constant_factors = [t for (t, fvs) in factors if not (fvs & stream_vars)]
-
-        if len(new_reduces) <= 1 and not constant_factors:
-            return fwd()
-
-        result = inner_monoid.plus(
-            *constant_factors, *(monoid.reduce(*args) for args in new_reduces)
-        )
-        return result
-
-
-ReduceFactorization = coproduct(_ReduceLiftShared(), _ReduceSplitIndependent())
-
-
-def inner_stream(
-    streams: dict[Operation, Expr],
-) -> Iterable[tuple[dict[Operation, Expr], Operation, Expr]]:
-    """Returns the streams that can be ordered innermost in the loop nest as
-    well as the remaining streams in the nest.
-
-    """
-    stream_vars = set(streams.keys())
-
-    no_dependents = set()
-    succ = defaultdict(set)
-    for k, v in streams.items():
-        preds = fvsof(v) & stream_vars
-        if preds:
-            for pred in preds:
-                succ[pred].add(k)
-        else:
-            no_dependents.add(k)
-
-    topo = TopologicalSorter(succ)
-    topo.prepare()
-    return (
-        ({k: v for (k, v) in streams.items() if k != op}, op, streams[op])
-        for op in set(topo.get_ready()) | no_dependents
-    )
+        # eliminate a variable with subset-minimal factor support
+        # (leaves-first; canonical on hierarchical/laminar supports)
+        for v, f_v in support.items():
+            if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
+                continue
+            inner_red = monoid.reduce(
+                inner.plus(*(factors[i][0] for i in sorted(f_v))), {v: streams[v]}
+            )
+            rest_streams = {k: s for k, s in streams.items() if k is not v}
+            new_body = inner.plus(
+                *(a for i, (a, _) in enumerate(factors) if i not in f_v), inner_red
+            )
+            return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
+        return fwd()
 
 
 class ReduceDistributeCartesianProduct(ObjectInterpretation):
@@ -903,7 +829,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceNoStreams(),
     ReduceFusion(),
     ReduceSplit(),
-    ReduceFactorization,
+    ReduceFactorization(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
