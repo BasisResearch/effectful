@@ -438,7 +438,7 @@ def test_reduce_independent_1(backend: Backend):
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
 
 
 def test_reduce_independent_2(backend: Backend):
@@ -451,9 +451,12 @@ def test_reduce_independent_2(backend: Backend):
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}),
-        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+        Sum.reduce(
+            Product.plus(b(), Sum.reduce(Product.plus(f(b(), c())), {c: C()})),
+            {b: B()},
+        ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
 
 
 def test_reduce_independent_3_negative(backend: Backend):
@@ -466,7 +469,7 @@ def test_reduce_independent_3_negative(backend: Backend):
     )
     g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="stream")
 
-    with handler(ReduceFactorization()):  # ty:ignore[invalid-argument-type]
+    with handler(ReduceFactorization):  # ty:ignore[invalid-argument-type]
         lhs = Sum.reduce(
             Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}
         )
@@ -489,9 +492,63 @@ def test_reduce_independent_4(backend: Backend):
     rhs = Product.plus(
         7,
         Sum.reduce(Product.plus(a()), {a: A()}),
-        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+        Sum.reduce(
+            Product.plus(b(), Sum.reduce(Product.plus(f(b(), c())), {c: C()})),
+            {b: B()},
+        ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lift_shared(outer, inner, backend: Backend):
+    """A stream free in every factor is hoisted into an outer reduce:
+    Sum.reduce(f(a, c) * g(b, c), {a: A, b: B, c: C})
+      = Sum.reduce(Sum.reduce(f(a, c), {a: A}) * Sum.reduce(g(b, c), {b: B}), {c: C})
+    """
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    f, g = backend.define_vars(
+        "f", "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = outer.reduce(inner.plus(f(a(), c()), g(b(), c())), {a: A(), b: B(), c: C()})
+    rhs = outer.reduce(
+        inner.plus(
+            outer.reduce(inner.plus(f(a(), c())), {a: A()}),
+            outer.reduce(inner.plus(g(b(), c())), {b: B()}),
+        ),
+        {c: C()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
+    """A shared stream is lifted together with its dependencies: both ``c``
+    and ``d = h(c)`` appear in every factor, so both are hoisted."""
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    h = backend.define_vars("h", arg_types=(backend.scalar_typ,), ret="stream")
+    f, g = backend.define_vars(
+        "f",
+        "g",
+        arg_types=(backend.scalar_typ, backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+
+    lhs = outer.reduce(
+        inner.plus(f(a(), c(), d()), g(b(), c(), d())),
+        {a: A(), b: B(), c: C(), d: h(c())},
+    )
+    rhs = outer.reduce(
+        inner.plus(
+            outer.reduce(inner.plus(f(a(), c(), d())), {a: A()}),
+            outer.reduce(inner.plus(g(b(), c(), d())), {b: B()}),
+        ),
+        {c: C(), d: h(c())},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization)
 
 
 def test_reduce_cartesian_3():
@@ -644,7 +701,7 @@ def test_reduce_weighted_factorization(backend: Backend):
         Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization)
     )
 
 

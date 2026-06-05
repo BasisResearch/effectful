@@ -47,6 +47,17 @@ type Body[T] = (
 )
 
 
+def topo_streams(streams: Streams) -> Iterable[Operation]:
+    """Returns the streams that can be ordered outermost in the loop nest as
+    well as the remaining streams in the nest.
+
+    """
+    stream_vars = set(streams.keys())
+    pred = {k: fvsof(v) & stream_vars for k, v in streams.items()}
+    topo = TopologicalSorter(pred)
+    return topo.static_order()
+
+
 def outer_stream(streams: Streams) -> Iterable[tuple[Operation, Stream, Streams]]:
     """Returns the streams that can be ordered outermost in the loop nest as
     well as the remaining streams in the nest.
@@ -391,7 +402,40 @@ class ReduceSplit(ObjectInterpretation):
         return fwd()
 
 
-class ReduceFactorization(ObjectInterpretation):
+class _ReduceLiftShared(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_plus(body.op)
+            and distributes_over(body.op.__self__, monoid)
+        ):
+            return fwd()
+
+        factors = [(arg, fvsof(arg)) for arg in body.args]
+        stream_vars = set(streams)
+
+        shared = {}
+        for op in topo_streams(streams):
+            stream = streams[op]
+            # stream is shared by all factors and all dependencies are also
+            # shared streams
+            if all(op in fvs for (_, fvs) in factors) and (
+                (fvsof(stream) & stream_vars) <= set(shared)
+            ):
+                shared[op] = stream
+
+        if not shared:
+            return fwd()
+
+        not_shared = {k: v for (k, v) in streams.items() if k not in shared}
+        if not not_shared:
+            return fwd()
+
+        return monoid.reduce(monoid.reduce(body, not_shared), shared)
+
+
+class _ReduceSplitIndependent(ObjectInterpretation):
     """
     Implements factorization of independent terms.
     For example, when having two independent distributions,
@@ -462,13 +506,16 @@ class ReduceFactorization(ObjectInterpretation):
 
             constant_factors = [t for (t, fvs) in factors if not (fvs & stream_vars)]
 
-            if len(new_reduces) > 1:
+            if len(new_reduces) > 1 or len(constant_factors) > 0:
                 result = inner_monoid.plus(
                     *constant_factors, *(monoid.reduce(*args) for args in new_reduces)
                 )
                 return result
 
         return fwd()
+
+
+ReduceFactorization = coproduct(_ReduceLiftShared(), _ReduceSplitIndependent())
 
 
 def inner_stream(
@@ -850,7 +897,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceNoStreams(),
     ReduceFusion(),
     ReduceSplit(),
-    ReduceFactorization(),
+    ReduceFactorization,
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
