@@ -451,68 +451,64 @@ class _ReduceSplitIndependent(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        if not is_commutative(monoid):
-            return fwd()
-        if (
-            isinstance(body, Term)
+        if not (
+            is_commutative(monoid)
+            and isinstance(body, Term)
             and _is_monoid_plus(body.op)
             and distributes_over(body.op.__self__, monoid)
         ):
-            inner_monoid: Monoid = body.op.__self__
-            stream_vars = set(streams.keys())
-            factors = [(arg, fvsof(arg)) for arg in body.args]
-            stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
-            ds = DisjointSet(len(streams))
+            return fwd()
 
-            # streams are in the same partition as their dependencies
-            for stream_var, stream_id in stream_ids.items():
-                stream_body = streams[stream_var]
-                deps = sorted([stream_ids[v] for v in fvsof(stream_body) & stream_vars])
-                ds.union(stream_id, *deps)
+        inner_monoid: Monoid = body.op.__self__
+        stream_vars = set(streams.keys())
+        factors = [(arg, fvsof(arg)) for arg in body.args]
+        stream_ids = {v: i for (i, v) in enumerate(stream_vars)}
+        ds = DisjointSet(len(streams))
 
-            # factors are in the same partition as their dependencies
-            for _, factor_fvs in factors:
-                factor_streams = sorted(
-                    [stream_ids[v] for v in (factor_fvs & stream_vars)]
-                )
-                ds.union(*factor_streams)
+        # streams are in the same partition as their dependencies
+        for stream_var, stream_id in stream_ids.items():
+            stream_body = streams[stream_var]
+            deps = sorted([stream_ids[v] for v in fvsof(stream_body) & stream_vars])
+            ds.union(stream_id, *deps)
 
-            placed_streams = set()
-            new_reduces = []
-            for stream_key in streams:
-                if stream_key in placed_streams:
-                    continue
+        # factors are in the same partition as their dependencies
+        for _, factor_fvs in factors:
+            factor_streams = sorted([stream_ids[v] for v in (factor_fvs & stream_vars)])
+            ds.union(*factor_streams)
 
-                partition = ds.find(stream_ids[stream_key])
-                partition_streams = {
-                    k: v
-                    for (k, v) in streams.items()
-                    if ds.find(stream_ids[k]) == partition
-                }
-                partition_stream_keys = set(partition_streams.keys())
+        placed_streams = set()
+        new_reduces = []
+        for stream_key in streams:
+            if stream_key in placed_streams:
+                continue
 
-                partition_factors = [
-                    t for t in factors if (t[1] & partition_stream_keys)
-                ]
+            partition = ds.find(stream_ids[stream_key])
+            partition_streams = {
+                k: v
+                for (k, v) in streams.items()
+                if ds.find(stream_ids[k]) == partition
+            }
+            partition_stream_keys = set(partition_streams.keys())
 
-                assert all(
-                    (t[1] & stream_vars) <= partition_stream_keys
-                    for t in partition_factors
-                ), "partition contains all streams required by factor"
+            partition_factors = [t for t in factors if (t[1] & partition_stream_keys)]
 
-                partition_term = inner_monoid.plus(*(t[0] for t in partition_factors))
-                new_reduces.append((partition_term, partition_streams))
-                placed_streams |= partition_stream_keys
+            assert all(
+                (t[1] & stream_vars) <= partition_stream_keys for t in partition_factors
+            ), "partition contains all streams required by factor"
 
-            constant_factors = [t for (t, fvs) in factors if not (fvs & stream_vars)]
+            partition_term = inner_monoid.plus(*(t[0] for t in partition_factors))
+            new_reduces.append((partition_term, partition_streams))
+            placed_streams |= partition_stream_keys
 
-            if len(new_reduces) > 1 or len(constant_factors) > 0:
-                result = inner_monoid.plus(
-                    *constant_factors, *(monoid.reduce(*args) for args in new_reduces)
-                )
-                return result
+        constant_factors = [t for (t, fvs) in factors if not (fvs & stream_vars)]
 
-        return fwd()
+        if len(new_reduces) <= 1 and not constant_factors:
+            return fwd()
+
+        result = inner_monoid.plus(
+            *constant_factors, *(monoid.reduce(*args) for args in new_reduces)
+        )
+        return result
 
 
 ReduceFactorization = coproduct(_ReduceLiftShared(), _ReduceSplitIndependent())
