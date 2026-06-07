@@ -1633,7 +1633,9 @@ _PROBE_FAIL_CASES: list[tuple[str, typing.Any]] = [
 ]
 
 
-@pytest.mark.parametrize("name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None)
+@pytest.mark.parametrize(
+    "name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None
+)
 def test_define_lexical_reader_returns_value(name, value):
     """`_define_lexical_reader` builds a Tool when `Encodable[T]`
     schema generates; calling it returns the live value."""
@@ -1642,7 +1644,11 @@ def test_define_lexical_reader_returns_value(name, value):
     assert tool() == value
 
 
-@pytest.mark.parametrize("name,value", _PROBE_FAIL_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None)
+@pytest.mark.parametrize(
+    "name,value",
+    _PROBE_FAIL_CASES,
+    ids=lambda x: x[0] if isinstance(x, tuple) else None,
+)
 def test_define_lexical_reader_raises_for_unencodable(name, value):
     """Schema-generation failures propagate from `_define_lexical_reader`;
     the call site decides whether to skip."""
@@ -1691,6 +1697,7 @@ def _example_method_owner_unannotated():
     class _C:
         def m(self):
             return 1
+
     return _C().m
 
 
@@ -1698,6 +1705,7 @@ def _example_method_owner_annotated():
     class _C:
         def m(self) -> int:
             return 1
+
     return _C().m
 
 
@@ -1716,7 +1724,11 @@ _EXPOSED_THROUGH_ENCODABLE: list[tuple[str, typing.Callable[[], typing.Any]]] = 
 ]
 
 
-@pytest.mark.parametrize("name,make_value", _EXPOSED_THROUGH_ENCODABLE, ids=lambda x: x[0] if isinstance(x, tuple) else None)
+@pytest.mark.parametrize(
+    "name,make_value",
+    _EXPOSED_THROUGH_ENCODABLE,
+    ids=lambda x: x[0] if isinstance(x, tuple) else None,
+)
 def test_collect_tools_exposes_callable_shaped_values(name, make_value):
     """Annotated callables, classes, builtins, and methods flow through
     Encodable's broad Callable handler and become synthesis-shaped tools.
