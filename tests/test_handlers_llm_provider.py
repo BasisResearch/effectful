@@ -2228,16 +2228,14 @@ class TestSyntheticReaderIntegration:
         assert fn(0.5) is False
         assert fn(threshold) is False
 
-    def test_template_skips_lexical_classes(self):
-        """Classes in the defining scope are NOT exposed as readers.
-        Locks the skip-via-catch direction for the `type` Encodable
-        handler: `Hand`/`Finger` produce `PydanticInvalidForJsonSchema`
-        at the probe and the call site catches them.
+    def test_template_exposes_lexical_classes(self):
+        """Classes in the defining scope are exposed as readers via the
+        broad `Encodable[Callable]` handler.
 
         This is the `Hand`/`Finger`/`generate_arm` motivating example
-        from #497 pinned to its current contract.  A follow-up that
-        adds real `Encodable[type]` impls flips this test to a positive
-        assertion.
+        from #497.  The pure-Encodable pivot means classes flow through
+        as Callable-synthesis tools (their `__init__` signature becomes
+        the schema), so the LLM at least sees that they exist in scope.
         """
 
         class Finger:
@@ -2253,5 +2251,5 @@ class TestSyntheticReaderIntegration:
             raise NotImplementedError
 
         tools = describe_hand_action.tools
-        assert "Finger" not in tools
-        assert "Hand" not in tools
+        assert "Finger" in tools
+        assert "Hand" in tools
