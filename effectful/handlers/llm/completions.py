@@ -198,6 +198,16 @@ class _LexicalVariableTool[T](Tool[[], T]):
         value = env[name]
         assert name.isidentifier()
         assert not isinstance(value, Tool)
+        # Class objects route through `nested_type`'s Callable branch,
+        # which extracts their `__init__` signature and returns
+        # `Callable[Args, Return]`.  That sidesteps the `type` passthrough
+        # in `Encodable[T]`.  Reject classes at the value level so the
+        # skip-via-catch direction stays consistent for both bare classes
+        # and dataclass-like classes with annotated constructors.
+        if isinstance(value, type):
+            raise pydantic.errors.PydanticSchemaGenerationError(
+                f"Class objects are not exposed as synthetic readers ({name})."
+            )
         typ: typing.Any = nested_type(value).value
         # Probe schema generation.  Raises when `Encodable[typ]` is not
         # implemented for this type; the caller is responsible for
