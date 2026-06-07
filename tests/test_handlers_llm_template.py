@@ -1548,9 +1548,9 @@ from pathlib import Path
 import pydantic
 
 from effectful.handlers.llm.completions import (
-    _SYNTHETIC_READER_PROBE_FAILURES,
-    _collect_tools,
     _LexicalVariableTool,
+    _collect_tools,
+    _is_synthetic_reader_eligible,
 )
 
 
@@ -1633,14 +1633,9 @@ def test_synthetic_reader_skips_when_name_deleted():
     ],
 )
 def test_synthetic_reader_probe_matches_encodable(name, value, should_have_tool):
-    """The probe accepts iff the symbol can produce a Pydantic schema."""
-    env = {name: value}
-    if should_have_tool:
-        tool = _LexicalVariableTool.define(env, name=name)
-        assert tool() == value
-    else:
-        with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-            _LexicalVariableTool.define(env, name=name)
+    """The eligibility predicate accepts iff the symbol produces a
+    Pydantic schema and is not a class/module/callable/Agent/Tool."""
+    assert _is_synthetic_reader_eligible(value) is should_have_tool
 
 
 def test_synthetic_readers_yield_to_real_tools():
@@ -1675,66 +1670,62 @@ def test_synthetic_reader_annotation_has_no_free_typevars():
 
 
 def test_lexical_reader_skips_modules():
-    """Modules are not exposed as readers; `Encodable[types.ModuleType]`
-    preempts the Callable fallback and Pydantic raises during the probe."""
+    """Modules are not exposed as readers."""
     env = {"os": os}
-    with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-        _LexicalVariableTool.define(env, name="os")
+    assert not _is_synthetic_reader_eligible(os)
     assert "os" not in _collect_tools(env)
 
 
 def test_lexical_reader_skips_user_classes():
-    """User-defined classes are not exposed as readers; Pydantic raises
-    `PydanticInvalidForJsonSchema` when handed a bare `type`."""
+    """User-defined classes are not exposed as readers."""
 
     class _UserClass:
         """Some class."""
 
     env = {"_UserClass": _UserClass}
-    with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-        _LexicalVariableTool.define(env, name="_UserClass")
+    assert not _is_synthetic_reader_eligible(_UserClass)
     assert "_UserClass" not in _collect_tools(env)
 
 
 def test_lexical_reader_skips_unannotated_functions():
     """Unannotated functions are not exposed as readers."""
     env = {"_example_unannotated": _example_unannotated}
-    with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-        _LexicalVariableTool.define(env, name="_example_unannotated")
+    assert not _is_synthetic_reader_eligible(_example_unannotated)
     assert "_example_unannotated" not in _collect_tools(env)
 
 
-def test_lexical_reader_skips_unannotated_bound_methods():
-    """Unannotated bound methods are not exposed as readers.
-    Annotated callables resolve to `Callable[...]` and follow the
-    `_pydantic_callable` path instead (see the
-    `test_lexical_reader_exposes_annotated_callables` contract below)."""
+def test_lexical_reader_skips_annotated_functions():
+    """Annotated functions in lexical scope are skipped by the predicate
+    just like unannotated ones — the eligibility check is by value type,
+    not by signature shape, so the synthetic-reader machinery never
+    duplicates the Callable-synthesis schema that real Tool definitions
+    rely on."""
+    env = {"_example_annotated": _example_annotated}
+    assert not _is_synthetic_reader_eligible(_example_annotated)
+    assert "_example_annotated" not in _collect_tools(env)
+
+
+def test_lexical_reader_skips_bound_methods():
+    """Bound methods (annotated or not) are not exposed as readers."""
 
     class _C:
-        def m(self):
+        def annotated(self) -> int:
             return 1
 
-    env = {"m": _C().m}
-    with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-        _LexicalVariableTool.define(env, name="m")
-    assert "m" not in _collect_tools(env)
+        def unannotated(self):
+            return 2
 
-
-def test_lexical_reader_exposes_annotated_callables():
-    """Annotated callables in lexical scope ARE exposed as readers via
-    the `Callable[Args, Ret]` resolution path.  Their schemas describe
-    the function signature, which is useful synthesis context."""
-    env = {"_example_annotated": _example_annotated}
-    result = _collect_tools(env)
-    assert "_example_annotated" in result
-    assert result["_example_annotated"]() is _example_annotated
+    inst = _C()
+    for name, value in [("annotated", inst.annotated), ("unannotated", inst.unannotated)]:
+        env = {name: value}
+        assert not _is_synthetic_reader_eligible(value)
+        assert name not in _collect_tools(env)
 
 
 def test_lexical_reader_skips_builtin_functions():
     """Builtin functions (`len`, etc.) are not exposed as readers."""
     env = {"len": len}
-    with pytest.raises(_SYNTHETIC_READER_PROBE_FAILURES):
-        _LexicalVariableTool.define(env, name="len")
+    assert not _is_synthetic_reader_eligible(len)
     assert "len" not in _collect_tools(env)
 
 

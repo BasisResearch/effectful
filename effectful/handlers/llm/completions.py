@@ -8,6 +8,7 @@ import json
 import string
 import textwrap
 import traceback
+import types
 import typing
 import uuid
 
@@ -182,9 +183,9 @@ class _LexicalVariableTool[T](Tool[[], T]):
     """A Tool that returns the current value of a variable captured from
     a Template's lexical context.
 
-    Variables become available as zero-argument tools without explicit
-    wrapping.  The body reads `env[name]` at call time, so mutation or
-    rebinding of the captured variable propagates to subsequent calls.
+    Callers must gate construction on `_is_synthetic_reader_eligible`;
+    this classmethod assumes the value has already been deemed
+    schema-encodable and does no further checks.
     """
 
     @classmethod
@@ -196,23 +197,7 @@ class _LexicalVariableTool[T](Tool[[], T]):
         **kwargs,
     ) -> "Tool[[], typing.Any]":
         value = env[name]
-        assert name.isidentifier()
-        assert not isinstance(value, Tool)
-        # Class objects route through `nested_type`'s Callable branch,
-        # which extracts their `__init__` signature and returns
-        # `Callable[Args, Return]`.  That sidesteps the `type` passthrough
-        # in `Encodable[T]`.  Reject classes at the value level so the
-        # skip-via-catch direction stays consistent for both bare classes
-        # and dataclass-like classes with annotated constructors.
-        if isinstance(value, type):
-            raise pydantic.errors.PydanticSchemaGenerationError(
-                f"Class objects are not exposed as synthetic readers ({name})."
-            )
         typ: typing.Any = nested_type(value).value
-        # Probe schema generation.  Raises when `Encodable[typ]` is not
-        # implemented for this type; the caller is responsible for
-        # catching probe failures and skipping the symbol.
-        pydantic.TypeAdapter(Encodable[typ]).json_schema()
 
         def tool_fn():
             return env[name]
@@ -229,20 +214,11 @@ class _LexicalVariableTool[T](Tool[[], T]):
         return super().define(tool_fn, **kwargs)
 
 
-# Exceptions the probe (`_LexicalVariableTool.define`) can raise that
-# the caller should treat as "this symbol is not exposable as a reader,
-# skip it."  Each entry covers an observed failure mode:
-#   * `PydanticSchemaGenerationError` / `PydanticInvalidForJsonSchema`:
-#     `Encodable[typ]` is not implemented for the inferred type.
-#   * `PydanticUserError`: schema construction succeeds but the type is
-#     not fully defined (bare ForwardRef).
-#   * `TypeError`: `Encodable[typ]` evaluation cannot traverse the type.
-#   * `AttributeError`: `nested_type` attribute lookups (`__qualname__`,
-#     `__module__`, `typing.get_overloads`) fail on pathological values
-#     such as `pytest.mark.parametrize` or method descriptors.
-#   * `NameError`: `nested_type` evaluates a forward-ref annotation that
-#     does not resolve in the current scope (e.g. an Operation wrapping a
-#     third-party callable with stringified annotations).
+# Exceptions raised by the eligibility probe in
+# `_is_synthetic_reader_eligible`.  `TypeError` / `AttributeError` /
+# `NameError` cover empirically-observed `nested_type` failures on
+# pathological values (`pytest.mark.parametrize`, method descriptors,
+# Operations with unresolved forward-refs); see #673.
 _SYNTHETIC_READER_PROBE_FAILURES: tuple[type[BaseException], ...] = (
     pydantic.errors.PydanticSchemaGenerationError,
     pydantic.errors.PydanticInvalidForJsonSchema,
@@ -251,6 +227,40 @@ _SYNTHETIC_READER_PROBE_FAILURES: tuple[type[BaseException], ...] = (
     AttributeError,
     NameError,
 )
+
+
+# Concrete types that are never wrapped as synthetic readers regardless
+# of whether `Encodable[T]` would happen to schematise them.  Class
+# objects with annotated `__init__` route through `nested_type`'s
+# Callable branch and slip past `Encodable[type]`; modules / functions
+# / methods / builtins / Agent instances would otherwise be wrapped as
+# `Callable[Args, Return]` synthesis schemas.
+_NON_READER_TYPES: tuple[type, ...] = (
+    type,
+    types.ModuleType,
+    types.FunctionType,
+    types.MethodType,
+    types.BuiltinFunctionType,
+    Agent,
+    Tool,
+)
+
+
+def _is_synthetic_reader_eligible(value: typing.Any) -> bool:
+    """Decide whether `value` should be exposed as a synthetic reader.
+
+    A value is eligible iff it is not an instance of any
+    `_NON_READER_TYPES` class AND its `Encodable[nested_type(value)]`
+    schema can be generated.
+    """
+    if isinstance(value, _NON_READER_TYPES):
+        return False
+    try:
+        typ = nested_type(value).value
+        pydantic.TypeAdapter(Encodable[typ]).json_schema()
+    except _SYNTHETIC_READER_PROBE_FAILURES:
+        return False
+    return True
 
 
 def _collect_tools(
@@ -268,11 +278,12 @@ def _collect_tools(
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-        elif name.isidentifier() and not name.startswith("__"):
-            try:
-                result[name] = _LexicalVariableTool.define(env, name=name)
-            except _SYNTHETIC_READER_PROBE_FAILURES:
-                continue
+        elif (
+            name.isidentifier()
+            and not name.startswith("__")
+            and _is_synthetic_reader_eligible(obj)
+        ):
+            result[name] = _LexicalVariableTool.define(env, name=name)
 
     # Same Tool can appear under multiple names when visible both in the
     # enclosing scope and via an Agent instance's MRO.  Keep only the
