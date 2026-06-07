@@ -11,12 +11,6 @@ from typing import Annotated, Any
 
 from effectful.ops.types import Annotation, Operation
 
-_LEXICAL_READERS_PREFACE = (
-    "You also have access to read-only tools for inspecting the lexical "
-    "scope where this template is defined. Their names match variable "
-    "names from that scope; calling one returns the current value."
-)
-
 
 class _IsRecursiveAnnotation(Annotation):
     """
@@ -223,13 +217,9 @@ class Template[**P, T](Tool[P, T]):
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools, plus synthetic
         readers for other lexical symbols. Auto-captured from lexical context."""
-        from effectful.handlers.llm.completions import (
-            _collect_synthetic_readers,
-            _collect_tools,
-        )
+        from effectful.handlers.llm.completions import _collect_tools
 
         result = dict(_collect_tools(self.__context__))
-        result.update(_collect_synthetic_readers(self.__context__, set(result)))
 
         # We remove the template itself from the tool map unless it is explicitly
         # marked as recursive (see test_template_method, test_template_method_nested_class).
@@ -322,14 +312,7 @@ class Template[**P, T](Tool[P, T]):
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
         mod = inspect.getmodule(_fn)
-        op.__system_prompt__ = "\n\n".join(  # type: ignore[attr-defined]
-            part
-            for part in (
-                inspect.getdoc(mod) if mod is not None else None,
-                _LEXICAL_READERS_PREFACE,
-            )
-            if part
-        )
+        op.__system_prompt__ = inspect.getdoc(mod) or ""  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (

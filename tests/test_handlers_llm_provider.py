@@ -2165,11 +2165,6 @@ class TestAgentSystemMessageDeduplication:
 # ---------------------------------------------------------------------------
 
 
-# Module-level binding the LLM will be asked to inspect via a synthetic
-# reader.  The reader's name in the tool list is `_known_data`.
-_known_data = [10, 20, 30, 40, 50]
-
-
 class TestSyntheticReaderIntegration:
     """The LLM can read lexical context through synthetic reader tools."""
 
@@ -2179,6 +2174,7 @@ class TestSyntheticReaderIntegration:
         The synthetic reader for _known_data is available in the tools
         array; the LLM should call it, see [10,20,30,40,50], and report
         the sum (150)."""
+        _known_data = [10, 20, 30, 40, 50]
 
         @Template.define
         def report_sum() -> int:
@@ -2191,3 +2187,71 @@ class TestSyntheticReaderIntegration:
 
         assert isinstance(result, int)
         assert result == sum(_known_data)  # 150
+
+    @pytest.mark.skip(
+        reason=(
+            "Fixture recording pending: run `REBUILD_FIXTURES=1 pytest "
+            "tests/test_handlers_llm_provider.py"
+            "::TestSyntheticReaderIntegration"
+            "::test_template_synthesis_uses_lexical_reader` "
+            "locally with an API key, commit the recorded JSON files, "
+            "and remove this skip."
+        )
+    )
+    @requires_llm
+    def test_template_synthesis_uses_lexical_reader(self, request):
+        """A Template that synthesizes a callable grounds its output
+        in a lexical value exposed as a synthetic reader.
+
+        The Template asks the LLM to write a lambda comparing its
+        argument against `threshold`; the LLM must call the `threshold`
+        reader to inspect the value before emitting code.
+        """
+        threshold = 0.85
+
+        @Template.define
+        def make_above_threshold() -> Callable[[float], bool]:
+            """Write a Python lambda that returns True iff its float
+            argument is strictly greater than the value of `threshold`.
+            Use the `threshold` reader tool to inspect its current value
+            before emitting the lambda."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            fn = make_above_threshold()
+
+        assert fn(0.9) is True
+        assert fn(0.5) is False
+        assert fn(threshold) is False
+
+    def test_template_skips_lexical_classes(self):
+        """Classes in the defining scope are NOT exposed as readers.
+        Locks the skip-via-catch direction for the `type` Encodable
+        handler: `Hand`/`Finger` produce `PydanticInvalidForJsonSchema`
+        at the probe and the call site catches them.
+
+        This is the `Hand`/`Finger`/`generate_arm` motivating example
+        from #497 pinned to its current contract.  A follow-up that
+        adds real `Encodable[type]` impls flips this test to a positive
+        assertion.
+        """
+
+        class Finger:
+            def wiggle(self) -> str:
+                return "wiggle"
+
+        class Hand:
+            fingers: list[Finger]
+
+        @Template.define
+        def describe_hand_action() -> str:
+            """Doc."""
+            raise NotImplementedError
+
+        tools = describe_hand_action.tools
+        assert "Finger" not in tools
+        assert "Hand" not in tools

@@ -31,7 +31,7 @@ from openai.types.chat import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Agent, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
 from effectful.ops.types import Operation, Term
 
@@ -684,3 +684,18 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(schema),
     ]
+
+
+# Handlers for types that should not appear as synthetic readers in
+# `_collect_tools`. They return `ty` unchanged, preempting the broad
+# `_pydantic_callable` fallback so Pydantic's natural
+# PydanticSchemaGenerationError / PydanticInvalidForJsonSchema fires at
+# TypeAdapter(...).json_schema() and the caller's catch skips the value.
+@TypeToPydanticType.register(types.ModuleType)
+@TypeToPydanticType.register(types.FunctionType)
+@TypeToPydanticType.register(types.BuiltinFunctionType)
+@TypeToPydanticType.register(types.MethodType)
+@TypeToPydanticType.register(type)
+@TypeToPydanticType.register(Agent)
+def _pydantic_type_passthrough(ty):
+    return ty
