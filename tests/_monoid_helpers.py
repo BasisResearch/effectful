@@ -322,6 +322,11 @@ class IntBackend(Backend):
                 return st.sampled_from(self._unary_num_fns)
             case (builtins.int, builtins.int), "scalar":
                 return st.sampled_from(self._binary_num_fns)
+            case (builtins.int, builtins.int, builtins.int), "scalar":
+                return st.tuples(
+                    st.sampled_from(self._binary_num_fns),
+                    st.sampled_from(self._binary_num_fns),
+                ).map(lambda fg: lambda a, b, c: fg[0](a, fg[1](b, c)))
             case (builtins.int,), "stream":
                 return st.sampled_from(self._unary_list_fns)
         raise NotImplementedError(

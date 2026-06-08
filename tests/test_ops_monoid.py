@@ -449,7 +449,10 @@ def test_reduce_independent_2(backend: Backend):
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}),
-        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+        Sum.reduce(
+            Product.plus(b(), Sum.reduce(Product.plus(f(b(), c())), {c: C()})),
+            {b: B()},
+        ),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
@@ -487,7 +490,77 @@ def test_reduce_independent_4(backend: Backend):
     rhs = Product.plus(
         d(),
         Sum.reduce(Product.plus(a()), {a: A()}),
-        Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
+        Sum.reduce(
+            Product.plus(b(), Sum.reduce(Product.plus(f(b(), c())), {c: C()})),
+            {b: B()},
+        ),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+def test_reduce_chain(backend: Backend):
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f, h = backend.define_vars("f", "h", arg_types=(backend.scalar_typ,), ret="scalar")
+    g = backend.define_vars(
+        "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = Sum.reduce(Product.plus(f(x()), g(x(), y()), h(y())), {x: X(), y: Y()})
+    rhs = Sum.reduce(
+        Product.plus(h(y()), Sum.reduce(Product.plus(f(x()), g(x(), y())), {x: X()})),
+        {y: Y()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lift_shared(outer, inner, backend: Backend):
+    """A stream free in every factor is hoisted into an outer reduce:
+    Sum.reduce(f(a, c) * g(b, c), {a: A, b: B, c: C})
+      = Sum.reduce(Sum.reduce(f(a, c), {a: A}) * Sum.reduce(g(b, c), {b: B}), {c: C})
+    """
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    f, g = backend.define_vars(
+        "f", "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = outer.reduce(inner.plus(f(a(), c()), g(b(), c())), {a: A(), b: B(), c: C()})
+    rhs = outer.reduce(
+        inner.plus(
+            outer.reduce(inner.plus(f(a(), c())), {a: A()}),
+            outer.reduce(inner.plus(g(b(), c())), {b: B()}),
+        ),
+        {c: C()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
+    """A shared stream is lifted together with its dependencies: both ``c``
+    and ``d = h(c)`` appear in every factor, so both are hoisted."""
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    h = backend.define_vars("h", arg_types=(backend.scalar_typ,), ret="stream")
+    f, g = backend.define_vars(
+        "f",
+        "g",
+        arg_types=(backend.scalar_typ, backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+
+    lhs = outer.reduce(
+        inner.plus(f(a(), c(), d()), g(b(), c(), d())),
+        {a: A(), b: B(), c: C(), d: h(c())},
+    )
+    rhs = outer.reduce(
+        inner.plus(
+            outer.reduce(inner.plus(f(a(), c(), d())), {a: A()}),
+            outer.reduce(inner.plus(g(b(), c(), d())), {b: B()}),
+        ),
+        {c: C(), d: h(c())},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
