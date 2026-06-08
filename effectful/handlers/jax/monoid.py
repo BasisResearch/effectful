@@ -175,7 +175,7 @@ class ArrayReduce(ObjectInterpretation):
             return fwd()
 
         # delta bodies belong to ReduceDeltaIndependent
-        if isinstance(body, Term) and body.op is delta:
+        if isinstance(body, Term) and (body.op is delta or _is_monoid_plus(body.op)):
             return fwd()
 
         body_fvs = fvsof(body)
@@ -719,7 +719,8 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
         handler(PartialEvalSingleAxisReduce),
         handler(PartialEvalMultiAxisReduce()),
     ):
-        result = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)(*operands)
+        norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
+        result = norm(*operands)
         assert isinstance(result, jax.Array)
         return result
 
