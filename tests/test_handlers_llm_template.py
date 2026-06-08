@@ -1534,7 +1534,6 @@ def test_tool_forward_ref():
 # Synthetic readers for lexical context (PR #545 finish-up)
 # ---------------------------------------------------------------------------
 
-import os
 import re
 import typing
 from pathlib import Path
