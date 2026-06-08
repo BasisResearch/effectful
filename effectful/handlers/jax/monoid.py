@@ -557,37 +557,29 @@ class ReduceSumProductContraction(ObjectInterpretation):
             return fwd()
 
         factors = body.args
-        if len(factors) < 2 or not all(
+        if len(factors) != 2 or not all(
             issubclass(typeof(f), jax.Array) for f in factors
         ):
             return fwd()
 
-        (lhs, rhs), tail = factors[:2], factors[2:]
+        (lhs, rhs) = factors
         stream_vars = set(streams.keys())
 
-        lhs_idx = fvsof(lhs) & stream_vars
-        rhs_idx = fvsof(rhs) & stream_vars
-        tail_idx = fvsof(tail) & stream_vars
+        # a fully factored reduce only has streams that are used by all factors
+        shared = fvsof(lhs) & fvsof(rhs) & stream_vars
+        if not all(k in shared for k in streams):
+            return fwd()
 
-        shared = (lhs_idx & rhs_idx) - tail_idx
-        contracted = [k for k in streams if k in shared]
-
-        tail_streams = {k: v for (k, v) in streams.items() if k not in shared}
-
-        (lhs_subst, rhs_subst, tail_streams_subst), fresh = _substitute_streams(
-            (lhs, rhs, tail_streams), streams, contracted
+        (lhs_subst, rhs_subst), fresh = _substitute_streams(
+            (lhs, rhs), streams, streams
         )
-        indexes = [fresh[k] for k in contracted]
+        indexes = [fresh[k] for k in streams]
 
         lhs_bound = bind_dims(lhs_subst, *indexes)
         rhs_bound = bind_dims(rhs_subst, *indexes)
 
-        axes = tuple(range(len(contracted)))
-        contraction = Product.plus(
-            jnp.tensordot(lhs_bound, rhs_bound, axes=(axes, axes)), *factors[2:]
-        )
-        if tail_streams_subst:
-            return Sum.reduce(contraction, tail_streams_subst)
+        axes = tuple(range(len(indexes)))
+        contraction = jnp.tensordot(lhs_bound, rhs_bound, axes=(axes, axes))
         return contraction
 
 
