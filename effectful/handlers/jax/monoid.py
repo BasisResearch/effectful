@@ -1,12 +1,12 @@
 import functools
 import logging
 import typing
-from collections.abc import Iterable
 from typing import Protocol
 
 import jax
 import jax.core
 import opt_einsum
+from opt_einsum import get_symbol
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
@@ -27,7 +27,7 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -578,17 +578,7 @@ class ContractLongestArrayStream(ObjectInterpretation):
 
 
 class ReduceSumProductContraction(ObjectInterpretation):
-    """Fast-path a sum-of-products contraction.
-
-    A ``tensordot``-detecting variant of :class:`ArrayReduce`. Matches::
-
-        Sum.reduce(Product.plus(A, B), streams)
-
-    when ``A`` and ``B`` are the only factors, and emits a single
-    :func:`jnp.tensordot` instead of broadcasting ``A`` and ``B`` into a dense
-    ``O(|A|·|B|)`` product and summing it — the :class:`ArrayReduce` baseline.
-
-    """
+    """Fast-path a sum-of-products contraction."""
 
     @implements(Sum.reduce)
     def _(self, body, streams: Streams):
@@ -621,106 +611,9 @@ class ReduceSumProductContraction(ObjectInterpretation):
         lhs_bound = bind_dims(lhs_subst, *indexes)
         rhs_bound = bind_dims(rhs_subst, *indexes)
 
-        axes = tuple(range(len(indexes)))
-        contraction = jnp.tensordot(lhs_bound, rhs_bound, axes=(axes, axes))
+        dims = "".join(get_symbol(i) for i in range(len(indexes)))
+        contraction = jnp.einsum(f"{dims}...,{dims}...->...", lhs_bound, rhs_bound)
         return contraction
-
-
-def _named_dims(term: Expr[jax.Array]) -> tuple[Operation, ...]:
-    if not (isinstance(term, Term) and term.op == jax_getitem):
-        return ()
-    index = term.args[1]
-    assert isinstance(index, Iterable)
-    return tuple(i.op for i in index if isinstance(i, Term) and not i.args)
-
-
-def _reduce_axis(array, axis=None, **kwargs) -> jax.Array:
-    if axis is None:
-        return fwd()
-
-    named_dims = _named_dims(array)
-    if not named_dims:
-        return fwd()
-
-    bound_arr = bind_dims(array, *named_dims)
-
-    if isinstance(axis, int):
-        axis = (axis,)
-    shifted_axis = tuple(a + len(named_dims) if a >= 0 else a for a in axis)
-
-    reduced = fwd(bound_arr, axis=shifted_axis, **kwargs)
-    return unbind_dims(reduced, *named_dims)
-
-
-PartialEvalSingleAxisReduce: Interpretation = typing.cast(
-    Interpretation,
-    {
-        op: _reduce_axis
-        for op in [
-            jnp.sum,
-            jnp.prod,
-            jnp.min,
-            jnp.max,
-            jnp.any,
-            jnp.all,
-            jnp.mean,
-            jnp.argmax,
-            logsumexp,
-        ]
-    },
-)
-"""Partial evaluator for reductions over a single axis.
-
-More efficient than vmapping a single axis reduction over the remaining
-dimensions. Multi-axis reductions are still vmapped.
-
-"""
-
-
-class PartialEvalMultiAxisReduce(ObjectInterpretation):
-    @implements(jnp.tensordot)  # type: ignore[arg-type]
-    def _(self, a: jax.Array, b: jax.Array, axes=2, **kwargs) -> jax.Array:
-        a_shape = a.shape
-
-        if isinstance(a_shape, Term):
-            return fwd()
-
-        # convert named dims that appear in one argument but not both to
-        # positional
-        named_a = _named_dims(a)
-        named_b = _named_dims(b)
-        distinct = set(named_a) ^ set(named_b)
-        if not distinct:
-            return fwd()
-
-        distinct_a = [i for i in named_a if i in distinct]
-        distinct_b = [i for i in named_b if i in distinct]
-        bound_a = bind_dims(a, *distinct_a)
-        bound_b = bind_dims(b, *distinct_b)
-
-        # reduction dims shift right to accommodate new positional dims
-        if isinstance(axes, int):
-            a_dims = range(len(a_shape) - axes, len(a_shape))
-            b_dims = range(axes)
-        else:
-            a_dims = axes[0]
-            b_dims = axes[1]
-        shifted_a_dims = tuple(d + len(distinct_a) if d >= 0 else d for d in a_dims)
-        shifted_b_dims = tuple(d + len(distinct_b) if d >= 0 else d for d in b_dims)
-        assert len(shifted_a_dims) == len(shifted_b_dims)
-
-        reduced = fwd(bound_a, bound_b, axes=(shifted_a_dims, shifted_b_dims), **kwargs)
-
-        # reindex bound named dims
-        reindexed = jax_getitem(
-            reduced,
-            tuple(i() for i in distinct_a)
-            # skip remaining positional dims in a
-            + tuple(slice(None) for _ in range(len(a_shape) - len(shifted_a_dims)))
-            + tuple(i() for i in distinct_b),
-        )
-
-        return reindexed
 
 
 @jax.jit(static_argnums=(0,))
@@ -757,11 +650,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
     out_tuple = tuple(ops[c]() for c in out_spec)
     streams = {op: arange(sizes[c]) for c, op in ops.items()}
-    with (
-        handler(NormalizeIntp),
-        handler(PartialEvalSingleAxisReduce),
-        handler(PartialEvalMultiAxisReduce()),
-    ):
+    with handler(NormalizeIntp):
         norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
         result = norm(*operands)
         assert isinstance(result, jax.Array)
@@ -769,7 +658,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
 
 NormalizeIntp.extend(
-    ReduceRange(),
+    # ReduceRange(),
     ArrayReduce(),
     ReduceSumProductContraction(),
     ReduceDeltaIndependent(),

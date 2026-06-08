@@ -1,8 +1,12 @@
 import functools
+import itertools
 import typing
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import EllipsisType
 from typing import Annotated
+
+from opt_einsum import get_symbol
+from opt_einsum.parser import parse_einsum_input
 
 try:
     import jax
@@ -11,7 +15,7 @@ except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, fwd, typeof
 from effectful.ops.syntax import (
     Scoped,
     _CustomSingleDispatchCallable,
@@ -189,6 +193,93 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
 
     functools.update_wrapper(_jax_op, jax_fn)
     return _jax_op
+
+
+def _named_dims(term: Expr[jax.Array]) -> tuple[Operation, ...]:
+    if not (isinstance(term, Term) and term.op == jax_getitem):
+        return ()
+    index = term.args[1]
+    assert isinstance(index, Iterable)
+    return tuple(i.op for i in index if isinstance(i, Term) and not i.args)
+
+
+def _reduce_named(array, axis=None, **kwargs) -> jax.Array:
+    if axis is None:
+        return fwd()
+
+    named_dims = _named_dims(array)
+    if not named_dims:
+        return fwd()
+
+    bound_arr = bind_dims(array, *named_dims)
+
+    if isinstance(axis, int):
+        axis = (axis,)
+    shifted_axis = tuple(a + len(named_dims) if a >= 0 else a for a in axis)
+
+    reduced = fwd(bound_arr, axis=shifted_axis, **kwargs)
+    return unbind_dims(reduced, *named_dims)
+
+
+def _einsum_named(subscripts, *operands, **kwargs) -> jax.Array:
+    # only the string-subscripts form is handled; forward the interleaved form
+    if not isinstance(subscripts, str):
+        if any(isinstance(x, Term) for x in (subscripts, *operands)):
+            raise ValueError("Interleaved einsum is not implemented with named tensors")
+        return jax.numpy.einsum(subscripts, *operands, **kwargs)
+
+    # forward if any operand has a symbolic (Term) shape
+    if any(isinstance(arr.shape, Term) for arr in operands):
+        raise NotHandled
+
+    named = [_named_dims(op) for op in operands]
+
+    # normalize: expand ellipses and make the output explicit, using the
+    # positional shapes (shapes=True avoids materializing the operands)
+    shapes = [op.shape for op in operands]
+    in_part, out_part, _ = parse_einsum_input([subscripts, *shapes], shapes=True)
+    in_specs = in_part.split(",")
+    assert len(in_specs) == len(operands)
+
+    # fresh symbols for named dims, avoiding every symbol already in use;
+    # get_symbol gives an effectively unlimited supply (spills into unicode)
+    used = {c for c in (in_part + out_part) if c not in ",->"}
+    counter = itertools.count()
+
+    def next_symbol():
+        while True:
+            s = get_symbol(next(counter))
+            if s not in used:
+                used.add(s)
+                return s
+
+    # assign a letter per unique named dim; shared names reuse the same letter
+    # so einsum aligns them as batch dims rather than contracting
+    letter_of, order = {}, []
+    for dims in named:
+        for d in dims:
+            if d not in letter_of:
+                letter_of[d] = next_symbol()
+                order.append(d)
+
+    # bind named dims to leading positional axes and prepend their letters
+    bound, new_in_specs = [], []
+    for op, dims, spec in zip(operands, named, in_specs):
+        bound.append(bind_dims(op, *dims) if dims else op)
+        new_in_specs.append("".join(letter_of[d] for d in dims) + spec)
+
+    # add every named dim to the front of the output as passthrough
+    out_prefix = "".join(letter_of[d] for d in order)
+    new_subscripts = ",".join(new_in_specs) + "->" + out_prefix + out_part
+
+    result = jax.numpy.einsum(new_subscripts, *bound, **kwargs)
+
+    # unbind: leading axes correspond to `order`, reindex them back to named
+    reindexed = jax_getitem(
+        result,
+        tuple(d() for d in order) + tuple(slice(None) for _ in range(len(out_part))),
+    )
+    return reindexed
 
 
 @_register_jax_op

@@ -1,23 +1,18 @@
-import itertools
 from typing import TYPE_CHECKING
 
 import jax.numpy
-from opt_einsum import get_symbol
-from opt_einsum.parser import parse_einsum_input
 
 from effectful.handlers.jax._handlers import (
-    _einsum_named,
-    _named_dims,
     _reduce_named,
     _register_jax_op,
     _register_jax_op_no_partial_eval,
 )
 from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled, Operation, Term
 
 _NO_OVERLOAD = ["array", "asarray"]
 _REDUCTION = ["sum", "prod", "min", "max", "any", "all", "mean", "argmax"]
 
+__all__ = []
 for name, op in jax.numpy.__dict__.items():
     wrapped_value = None
     if not callable(op):
@@ -28,17 +23,11 @@ for name, op in jax.numpy.__dict__.items():
         wrapped_value = _register_jax_op(op)
 
     globals()[name] = wrapped_value
+    __all__.append(name)
 
 for name in _REDUCTION:
     op = globals()[name]
     globals()[name] = handler({op: _reduce_named})(op)
-
-# einsum = effectful.handlers.jax._handlers.einsum
-# tensordot = handler({tensordot: _tensordot_named})(tensordot)
-
-
-einsum = Operation.define(_einsum_named)
-
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
