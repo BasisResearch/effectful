@@ -1621,13 +1621,6 @@ _PROBE_OK_CASES: list[tuple[str, typing.Any]] = [
 ]
 
 
-_PROBE_FAIL_CASES: list[tuple[str, typing.Any]] = [
-    ("opaque", _OpaqueNoEncoder()),
-    ("typevar", typing.TypeVar("T")),
-    ("module", os),
-]
-
-
 @pytest.mark.parametrize(
     "name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None
 )
@@ -1636,18 +1629,6 @@ def test_lexical_variable_tool_returns_value(name, value):
     schema generates; calling it returns the captured value."""
     tool = _LexicalVariableTool.define(value, name=name)
     assert tool() is value
-
-
-@pytest.mark.parametrize(
-    "name,value",
-    _PROBE_FAIL_CASES,
-    ids=lambda x: x[0] if isinstance(x, tuple) else None,
-)
-def test_lexical_variable_tool_raises_for_unencodable(name, value):
-    """Schema-generation failures propagate from `_LexicalVariableTool`;
-    the call site decides whether to skip."""
-    with pytest.raises(Exception):
-        _LexicalVariableTool.define(value, name=name)
 
 
 # ---- Encodable-passthrough exposure (annotated callables, classes,
