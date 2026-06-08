@@ -828,6 +828,22 @@ class MonoidOverSequence(ObjectInterpretation):
         return result
 
 
+class PlusInf(ObjectInterpretation):
+    """Workaround for the inability to give Monoid.plus(x, inf) a type."""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if monoid in (Sum, Max) and any(
+            not isinstance(x, Term) and x == float("inf") for x in args
+        ):
+            return float("inf")
+        if monoid in (Sum, Min) and any(
+            not isinstance(x, Term) and x == -float("inf") for x in args
+        ):
+            return -float("inf")
+        return fwd()
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -859,6 +875,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
+    PlusInf(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).

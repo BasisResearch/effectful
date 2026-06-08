@@ -174,9 +174,16 @@ class ArrayReduce(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        # delta bodies belong to ReduceDeltaIndependent
-        if isinstance(body, Term) and (body.op is delta or _is_monoid_plus(body.op)):
-            return fwd()
+        if isinstance(body, Term):
+            # delta bodies belong to ReduceDeltaIndependent
+            if body.op is delta:
+                return fwd()
+            if _is_monoid_plus(body.op):
+                # factorizable bodies get factored
+                factors = body.args
+                factor_fvs = [fvsof(f) for f in factors]
+                if not all(k in fvs for fvs in factor_fvs for k in streams):
+                    return fwd()
 
         body_fvs = fvsof(body)
         used = [
