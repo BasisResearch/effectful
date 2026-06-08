@@ -222,7 +222,7 @@ def _collect_tools(
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-        elif name.isidentifier() and not name.startswith("__"):
+        elif name.isidentifier():
             try:
                 result[name] = _define_lexical_reader(env, name=name)
             # `TypeError`/`AttributeError`/`NameError` absorb `nested_type`

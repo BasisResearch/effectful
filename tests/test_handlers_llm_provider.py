@@ -2190,12 +2190,13 @@ class TestSyntheticReaderIntegration:
 
     @pytest.mark.skip(
         reason=(
-            "Fixture recording pending: run `REBUILD_FIXTURES=1 pytest "
-            "tests/test_handlers_llm_provider.py"
-            "::TestSyntheticReaderIntegration"
-            "::test_template_synthesis_uses_lexical_reader` "
-            "locally with an API key, commit the recorded JSON files, "
-            "and remove this skip."
+            "Blocked on synthesizer issue #674: pytest's `request` fixture "
+            "has type `_pytest.fixtures.TopRequest`, which leaks into the "
+            "Template's lexical context.  `mypy_type_check`'s "
+            "`collect_imports` drops `_`-prefixed modules even when "
+            "referenced by emitted stubs, so mypy fails on "
+            "`Name '_pytest' is not defined`.  Unskip and record fixtures "
+            "with `REBUILD_FIXTURES=true` once #674 lands."
         )
     )
     @requires_llm
@@ -2211,10 +2212,15 @@ class TestSyntheticReaderIntegration:
 
         @Template.define
         def make_above_threshold() -> Callable[[float], bool]:
-            """Write a Python lambda that returns True iff its float
-            argument is strictly greater than the value of `threshold`.
-            Use the `threshold` reader tool to inspect its current value
-            before emitting the lambda."""
+            """Use the `threshold` reader tool to inspect its current
+            float value, then emit a single Python function definition:
+
+                def above(x: float) -> bool:
+                    return x > <the value you read>
+
+            The function definition MUST be the last and only statement.
+            Do not emit any other code, no trailing assignment, no
+            imports, no comments after the function."""
             raise NotImplementedError
 
         with (

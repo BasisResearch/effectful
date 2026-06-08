@@ -1784,14 +1784,6 @@ def test_lexical_reader_exposes_data_values():
     assert result["model"]() == env["model"]
 
 
-def test_lexical_reader_skips_dunders():
-    """Dunder-prefixed names like `__builtins__` are never exposed."""
-    env = {"__builtins__": __builtins__, "regular": 42}
-    result = _collect_tools(env)
-    assert "__builtins__" not in result
-    assert "regular" in result
-
-
 def test_lexical_reader_skips_marker_objects():
     """`pytest.mark.parametrize` (a `MarkDecorator`) in env does not
     abort tool collection; the probe catches the `AttributeError` from
