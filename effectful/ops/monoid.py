@@ -4,7 +4,7 @@ import itertools
 import operator
 import typing
 from collections import Counter, UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Set
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
@@ -406,6 +406,30 @@ class ReduceSplit(ObjectInterpretation):
         return fwd()
 
 
+@Operation.define
+def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
+    """Used by `ReduceFactorization` to choose a contraction when there is
+    ambiguity. Takes the factors and streams that are eligible for contraction
+    (innermost and non-universal).
+
+    The default behavior is to return the first support-minimal stream in the
+    streams dictionary.
+
+    """
+    assert len(streams) > 0
+
+    factors = [(a, fvsof(a)) for a in factors]
+    support: dict = {
+        k: frozenset(i for i, (_, fvs) in enumerate(factors) if k in fvs)
+        for k in streams
+    }
+    for v, f_v in support.items():
+        if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
+            continue
+        return v
+    assert False, "expected at least one subset-minimal stream"
+
+
 class ReduceFactorization(ObjectInterpretation):
     """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
 
@@ -430,39 +454,40 @@ class ReduceFactorization(ObjectInterpretation):
 
         # candidates: innermost-eligible (no remaining stream depends on v),
         # non-universal (some factor doesn't mention v)
-        support: dict = {}
-        for v in streams:
-            if any(v in fvsof(s) for k, s in streams.items() if k is not v):
+        eligible = {}
+        for k, v in streams.items():
+            if any(k in fvsof(s) for k, s in streams.items() if k is not k):
                 continue
-            f_v = frozenset(i for i, (_, fvs) in enumerate(factors) if v in fvs)
-            if len(f_v) == len(factors):
+            if len({i for i, (_, fvs) in enumerate(factors) if k in fvs}) == len(
+                factors
+            ):
                 continue  # v is universal: leave it in the outer core
-            support[v] = f_v
+            eligible[k] = v
 
-        # eliminate a variable with subset-minimal factor support
-        # (leaves-first; canonical on hierarchical/laminar supports)
-        inner_stream = None
-        inner_factor_ids = None
-        for v, f_v in support.items():
-            if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
-                continue
-            inner_stream = v
-            inner_factor_ids = f_v
-            break
-
-        if not inner_stream or not inner_factor_ids:
+        if not eligible:
             return fwd()
+        if len(eligible) == 1:
+            inner_stream = next(iter(eligible))
+        else:
+            inner_stream = choose_contraction(body.args, eligible)
+
+        inner_factor_ids = frozenset(
+            i for i, (_, fvs) in enumerate(factors) if inner_stream in fvs
+        )
 
         inner_factors = [factors[i][0] for i in sorted(inner_factor_ids)]
         inner_stream_keys = {inner_stream}
         inner_deps = set().union(
-            *(factors[i][1] for i in f_v), fvsof(streams[v]) & stream_keys
+            *(factors[i][1] for i in inner_factor_ids),
+            fvsof(streams[inner_stream]) & stream_keys,
         )
 
-        outer_factors = [a for i, (a, _) in enumerate(factors) if i not in f_v]
+        outer_factors = [
+            a for i, (a, _) in enumerate(factors) if i not in inner_factor_ids
+        ]
         outer_stream_keys = stream_keys - inner_stream_keys
         outer_factor_deps = set().union(
-            *(vars for i, (_, vars) in enumerate(factors) if i not in f_v)
+            *(vars for i, (_, vars) in enumerate(factors) if i not in inner_factor_ids)
         )
 
         # find all streams that are used in the inner factors/streams and are

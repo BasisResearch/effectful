@@ -22,6 +22,7 @@ from effectful.ops.monoid import (
     Streams,
     Sum,
     _is_monoid_plus,
+    choose_contraction,
     distributes_over,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
@@ -62,6 +63,28 @@ def _jax_args(args):
         and all(is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args)
         and any(is_eager_array(a) or isinstance(a, jax.Array) for a in args)
     )
+
+
+class PlusJaxUpcast(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        arg_types = [typeof(a) for a in args]
+
+        def _is_jax(t):
+            return issubclass(t, jax.Array | jax.core.Tracer)
+
+        # exists array valued and non-array-valued args
+        if any(_is_jax(t) for t in arg_types) and any(
+            not _is_jax(t) for t in arg_types
+        ):
+            return monoid.plus(
+                *(
+                    a if _is_jax(t) else jnp.asarray(a)
+                    for (a, t) in zip(args, arg_types, strict=True)
+                )
+            )
+
+        return fwd()
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -541,6 +564,19 @@ class ReduceRange(ObjectInterpretation):
 #   carry the burden. See the conversation in monoid.py's history for why.
 
 
+class ContractLongestArrayStream(ObjectInterpretation):
+    @implements(choose_contraction)
+    def _(self, factors, streams):
+        lengths = {
+            k: v.shape[0] if isinstance(v, jax.Array) and v.shape else 0
+            for (k, v) in streams.items()
+        }
+        longest = max(lengths.values())
+        return fwd(
+            factors, {k: v for (k, v) in streams.items() if lengths[k] == longest}
+        )
+
+
 class ReduceSumProductContraction(ObjectInterpretation):
     """Fast-path a sum-of-products contraction.
 
@@ -744,4 +780,6 @@ NormalizeIntp.extend(
     MaxPlusJax(),
     LogSumExpPlusJax(),
     CartesianProductPlusJax(),
+    ContractLongestArrayStream(),
+    PlusJaxUpcast(),
 )
