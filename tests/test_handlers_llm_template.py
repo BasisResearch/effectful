@@ -1640,7 +1640,7 @@ def test_lexical_variable_tool_returns_value(name, value):
     """`_LexicalVariableTool` builds a Tool when `Encodable[T]`
     schema generates; calling it returns the captured value."""
     tool = _LexicalVariableTool.define(value, name=name)
-    assert tool() == value
+    assert tool() is value
 
 
 @pytest.mark.parametrize(
