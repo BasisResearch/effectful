@@ -257,10 +257,15 @@ def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
       ``from <module> import <name>`` or ``from <module> import <name> as <alias>``.
     """
     # (module_name, asname_in_context) for plain imports; asname is None when same as module_name
+    # Reject any sys.modules key whose dot-separated segments are not all
+    # valid Python identifiers — covers mypyc-internal UUID-prefixed names
+    # (``4c842c94c09923bae9e4__mypyc``), CI tool entries with hyphens or
+    # mid-name digits, and the like. ``_pytest.fixtures``-style internal
+    # modules pass and stay imported (#674).
     modules: set[tuple[str, str | None]] = set(
         (k, None)
         for k in sys.modules.keys()
-        if k not in SKIPPED_GLOBALS and not k.startswith("_") and k[0].isalpha()
+        if k not in SKIPPED_GLOBALS and all(seg.isidentifier() for seg in k.split("."))
     )
     # module -> list of (name_in_module, name_in_context) for from-imports
     symbol_imports: dict[str, list[tuple[str, str]]] = {}
