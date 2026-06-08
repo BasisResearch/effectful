@@ -867,6 +867,73 @@ def test_nested_type_term_error():
         nested_type(mock_term)
 
 
+def test_nested_type_marker_decorator_widens_to_class():
+    """#673: ``pytest.mark.parametrize`` is a ``MarkDecorator`` instance --
+    callable, but lacks ``__qualname__``. The Callable branch's
+    ``typing.get_overloads`` raises ``AttributeError``; per the
+    canonicalize-widening principle (PR #613) the fallback should be
+    ``Box(type(value))``."""
+    val = pytest.mark.parametrize
+    assert nested_type(val).value is type(val)
+
+
+def test_nested_type_method_descriptor_widens_to_class():
+    """#673: ``dict.get`` is a ``method_descriptor`` -- callable but
+    missing ``__module__``. Same widening shape as MarkDecorator."""
+    val = dict.get
+    assert nested_type(val).value is type(val)
+
+
+def test_nested_type_unresolvable_forward_ref_widens():
+    """#673: an ``Operation`` whose default carries a stringified
+    annotation whose name does not resolve in the captured scope.
+    ``inspect.signature`` consults ``Operation.__signature__`` which
+    calls ``typing.get_type_hints`` -- forward-ref evaluation raises
+    ``NameError``. ``nested_type`` should widen to ``Box(type(value))``
+    rather than propagating."""
+    from effectful.ops.syntax import defop
+
+    def _hidden_module():
+        class ClientSession:  # noqa: F841 -- intentionally not visible to op
+            pass
+
+        def real(x: "ClientSession") -> int:  # noqa: F821 -- forward ref unresolved
+            raise NotImplementedError
+
+        return real
+
+    op = defop(_hidden_module())
+    assert nested_type(op).value is type(op)
+
+
+def test_nested_type_eager_annotation_produces_precise_type():
+    """#673: when the annotation is NOT stringified, it resolves at
+    function-def time and ``typing.get_type_hints`` succeeds.
+    ``nested_type`` then has enough information to build the precise
+    ``Operation[[ClientSession], int]`` expression (rather than
+    widening to ``Box(type(value))``).  Counterpart to the
+    forward-ref-widens test above."""
+    import effectful.ops.types
+    from effectful.ops.syntax import defop
+
+    def _eager_module():
+        class ClientSession:
+            pass
+
+        def real(x: ClientSession) -> int:
+            raise NotImplementedError
+
+        return real, ClientSession
+
+    real, ClientSession = _eager_module()
+    op = defop(real)
+    inferred = nested_type(op).value
+    assert typing.get_origin(inferred) is effectful.ops.types.Operation
+    arg_types, return_type = typing.get_args(inferred)
+    assert list(arg_types) == [ClientSession]
+    assert return_type is int
+
+
 def sequence_getitem[T](seq: collections.abc.Sequence[T], index: int) -> T:
     return seq[index]
 

@@ -131,6 +131,24 @@ class TestCollectImports:
         assert any("math" in s and "import" in s for s in unparsed)
         assert any("os" in s and "import" in s for s in unparsed)
 
+    def test_private_module_is_imported(self):
+        """``_``-prefixed modules in ``sys.modules`` are imported alongside
+        public ones (#674).  Without this, emitted stubs that reference
+        types from internal modules — e.g. pytest's ``request`` fixture
+        whose type is ``_pytest.fixtures.TopRequest`` — crash
+        ``mypy_type_check`` with ``Name '_pytest' is not defined``."""
+        import _pytest.fixtures  # noqa: F401
+
+        result = collect_imports({})
+        modules = {
+            alias.name
+            for stmt in result
+            if isinstance(stmt, ast.Import)
+            for alias in stmt.names
+        }
+        assert "_pytest" in modules
+        assert "_pytest.fixtures" in modules
+
 
 class TestCollectImportsStress:
     """Stress test collect_imports with get_context: imports, aliases, external symbols."""
@@ -869,6 +887,25 @@ class TestMypyTypeCheckE2E:
         source = "def f(x: int, s: str) -> bool:\n    return len(s) > x"
         module = ast.parse(source)
         mypy_type_check(module, get_context(), [int, str], bool)
+
+    def test_private_module_qualified_type_in_context(self):
+        """Regression for #674: a ctx value whose runtime type lives in
+        a ``_``-prefixed module must not crash ``mypy_type_check`` with
+        ``Name '_pytest' is not defined``.  Uses a pytest fixture-request
+        instance because that is the path that surfaced the bug."""
+        import _pytest.fixtures
+
+        # Build a `request`-shaped instance.  We cannot easily instantiate
+        # `TopRequest` properly outside pytest, but `__new__` gives us a
+        # value whose `type(...).__module__` is `_pytest.fixtures`, which
+        # is what triggers the qualname emission in
+        # `collect_variable_declarations`.
+        fake_request = _pytest.fixtures.TopRequest.__new__(_pytest.fixtures.TopRequest)
+        ctx = {"request": fake_request}
+        source = "def f() -> int:\n    return 0"
+        module = ast.parse(source)
+        # Must not raise.
+        mypy_type_check(module, ctx, None, int)
 
     def test_simple_function_no_params_with_get_context(self):
         """Function with no params, returns int; get_context()."""
