@@ -248,65 +248,24 @@ SKIPPED_GLOBALS = (
 )
 
 
-def _module_qualnames(nodes: typing.Iterable[ast.AST]) -> set[str]:
-    """Collect every ``a.b.c`` qualified-name *prefix* reachable from
-    each AST node.  Used by ``mypy_type_check`` so that ``collect_imports``
-    keeps ``_``-prefixed modules that the emitted stubs actually
-    reference (e.g. ``_pytest.fixtures.TopRequest``).
-
-    For ``Attribute(Attribute(Name("_pytest"), "fixtures"), "TopRequest")``
-    this returns ``{"_pytest.fixtures"}``.  ``mypy_type_check`` then walks
-    parents to add ``"_pytest"`` as well.
-    """
-    out: set[str] = set()
-    for node in nodes:
-        for sub in ast.walk(node):
-            if not isinstance(sub, ast.Attribute):
-                continue
-            parts: list[str] = [sub.attr]
-            cur: ast.AST = sub.value
-            while isinstance(cur, ast.Attribute):
-                parts.append(cur.attr)
-                cur = cur.value
-            if isinstance(cur, ast.Name):
-                parts.append(cur.id)
-                # parts is now [last_attr, ..., first_name]; the module
-                # qualified name is everything except the final attribute,
-                # reversed.  For `_pytest.fixtures.TopRequest`:
-                # parts == ["TopRequest", "fixtures", "_pytest"]; the
-                # module is "_pytest.fixtures".
-                out.add(".".join(reversed(parts[1:])))
-    return out
-
-
-def collect_imports(
-    ctx: Mapping[str, Any],
-    referenced_module_names: typing.AbstractSet[str] = frozenset(),
-) -> list[ast.stmt]:
+def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
     """Collect module imports and symbol imports from context.
 
     - Modules in context (e.g. ``import math``) produce ``import math``.
     - Symbols from a module that is not in context (e.g. ``from typing import Any``
       gives context ``{"Any": typing.Any}`` but no ``typing`` module) produce
       ``from <module> import <name>`` or ``from <module> import <name> as <alias>``.
-
-    ``_``-prefixed modules are normally filtered out (private modules
-    are not part of a library's public surface and importing them in
-    synthesised code is rude).  When ``referenced_module_names`` contains
-    one of those private modules, the filter is overridden so the
-    emitted stubs can resolve types like ``_pytest.fixtures.TopRequest``.
     """
     # (module_name, asname_in_context) for plain imports; asname is None when same as module_name
+    # Reject any sys.modules key whose dot-separated segments are not all
+    # valid Python identifiers — covers mypyc-internal UUID-prefixed names
+    # (``4c842c94c09923bae9e4__mypyc``), CI tool entries with hyphens or
+    # mid-name digits, and the like. ``_pytest.fixtures``-style internal
+    # modules pass and stay imported (#674).
     modules: set[tuple[str, str | None]] = set(
         (k, None)
         for k in sys.modules.keys()
-        if k not in SKIPPED_GLOBALS
-        and (
-            # Normal case: public module name (alpha-first, not `_`-prefixed)
-            (k[0].isalpha() and not k.startswith("_"))
-            # Override: `_`-prefixed module referenced by the emitted stubs
-            or k in referenced_module_names
-        )
+        if k not in SKIPPED_GLOBALS and all(seg.isidentifier() for seg in k.split("."))
     )
     # module -> list of (name_in_module, name_in_context) for from-imports
     symbol_imports: dict[str, list[tuple[str, str]]] = {}
@@ -618,6 +577,7 @@ def mypy_type_check(
         )
     func_name = last.name
 
+    imports = collect_imports(ctx)
     # Ensure annotations in the postlude can be resolved (e.g. collections.abc.Callable, typing)
     baseline_imports: list[ast.stmt] = [
         ast.Import(names=[ast.alias(name="collections", asname=None)]),
@@ -627,17 +587,6 @@ def mypy_type_check(
     ]
     stubs = collect_runtime_type_stubs(ctx)
     variables = collect_variable_declarations(ctx)
-
-    # Walk the emitted stubs and variable declarations to discover every
-    # qualified module name they reference, then ask `collect_imports` to
-    # keep those modules even if they are `_`-prefixed.  Parent packages
-    # are also added so `import _pytest.fixtures` brings in `_pytest`.
-    referenced_modules = _module_qualnames(stubs + variables)
-    for ref in list(referenced_modules):
-        while "." in ref:
-            ref = ref.rsplit(".", 1)[0]
-            referenced_modules.add(ref)
-    imports = collect_imports(ctx, referenced_modules)
 
     # Collect names already declared in the type-checking preamble
     # (variable declarations and class stubs) that could collide with
