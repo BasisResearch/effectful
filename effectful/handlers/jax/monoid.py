@@ -336,14 +336,6 @@ def _substitute_streams(expr, streams, vars):
     return expr, fresh
 
 
-class BindDimsBindDims(ObjectInterpretation):
-    @implements(bind_dims)
-    def _(self, value, *names):
-        if isinstance(value, Term) and value.op == bind_dims:
-            return bind_dims(value.args[0], *(names + value.args[1:]))
-        return fwd()
-
-
 class ReduceDeltaIndependent(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
 
@@ -755,5 +747,4 @@ NormalizeIntp.extend(
     MaxPlusJax(),
     LogSumExpPlusJax(),
     CartesianProductPlusJax(),
-    BindDimsBindDims(),
 )
