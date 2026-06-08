@@ -1,19 +1,15 @@
-import itertools
 from typing import TYPE_CHECKING
 
 import jax.numpy
-from opt_einsum import get_symbol
-from opt_einsum.parser import parse_einsum_input
 
 from effectful.handlers.jax._handlers import (
     _einsum_named,
-    _named_dims,
     _reduce_named,
     _register_jax_op,
     _register_jax_op_no_partial_eval,
 )
 from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.types import Operation
 
 _NO_OVERLOAD = ["array", "asarray"]
 _REDUCTION = ["sum", "prod", "min", "max", "any", "all", "mean", "argmax"]
