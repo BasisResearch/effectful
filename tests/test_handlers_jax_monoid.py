@@ -14,7 +14,6 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaIndependent,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    arange,
     delta,
     einsum,
 )
@@ -133,7 +132,7 @@ def test_arange_reduce_direct_full(monoid, reductor, backend: JaxBackend):
     (v, k) = backend.define_vars("v", "k", ret="scalar")
     A = backend.define_vars("A", ret="stream")
 
-    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: arange(7)})
+    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: range(7)})
     rhs = reductor(
         bind_dims(jax_getitem(jax_getitem(A(), [slice(0, 7, 1)]), [k()]), k),
         axis=(0,),
@@ -148,7 +147,7 @@ def test_arange_reduce_direct_slice(monoid, reductor, backend: JaxBackend):
     (v, k) = backend.define_vars("v", "k", ret="scalar")
     A = backend.define_vars("A", ret="stream")
 
-    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: arange(1, 6, 2)})
+    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: range(1, 6, 2)})
     rhs = reductor(
         bind_dims(jax_getitem(jax_getitem(A(), [slice(1, 6, 2)]), [k()]), k),
         axis=(0,),
@@ -164,7 +163,7 @@ def test_arange_reduce_indirect(monoid, reductor, backend: JaxBackend):
     (v, k) = backend.define_vars("v", "k", ret="scalar")
     A = jnp.arange(10)
 
-    lhs = monoid.reduce(jax_getitem(A, [v()]) + v(), {v: arange(5)})
+    lhs = monoid.reduce(jax_getitem(A, [v()]) + v(), {v: range(5)})
     rhs = reductor(
         bind_dims(
             jax_getitem(jax_getitem(A, [slice(0, 5, 1)]), [k()])
@@ -183,7 +182,7 @@ def test_arange_reduce_two_streams(monoid, reductor, backend: JaxBackend):
     (u, w, k1, k2) = backend.define_vars("u", "w", "k1", "k2", ret="scalar")
     A = jnp.arange(8 * 9).reshape((8, 9))
 
-    lhs = monoid.reduce(jax_getitem(A, [u(), w()]), {u: arange(4), w: arange(5)})
+    lhs = monoid.reduce(jax_getitem(A, [u(), w()]), {u: range(4), w: range(5)})
     rhs = reductor(
         bind_dims(
             jax_getitem(jax_getitem(A, [slice(0, 4, 1), slice(0, 5, 1)]), [k1(), k2()]),
@@ -201,7 +200,7 @@ def test_arange_reduce_empty(monoid, reductor, backend: JaxBackend):
     (v,) = (backend.define_vars("v", ret="scalar"),)
     A = backend.define_vars("A", ret="stream")
 
-    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: arange(0)})
+    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: range(0)})
     rhs = monoid.identity
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ArrayReduce())
 
@@ -231,7 +230,7 @@ def test_reduce_delta_empty_arange(monoid, reductor, backend: JaxBackend):
     x = backend.define_vars("x", ret="scalar")
     f = backend.define_vars("f", arg_types=[backend.scalar_typ], ret="scalar")
 
-    lhs = monoid.reduce(delta((x(),), f(x())), {x: arange(0)})
+    lhs = monoid.reduce(delta((x(),), f(x())), {x: range(0)})
     rhs = bind_dims(f(unbind_dims(jnp.array([]), x)), x)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
 
@@ -248,7 +247,7 @@ def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     # We use a concrete range here instead of an abstract one, because
     # unbind_dims is undefined on empty arrays (and the rewrite produces a
     # different rhs in this case)
-    lhs = monoid.reduce(delta((y(),), f(y())), {y: arange(3)})
+    lhs = monoid.reduce(delta((y(),), f(y())), {y: range(3)})
     rhs = bind_dims(f(unbind_dims(jnp.arange(3), k)), k)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaIndependent())
 
@@ -268,7 +267,7 @@ def test_reduce_delta_independent_preserves_others(
         "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
     )
 
-    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: arange(2), y: arange(3)})
+    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: range(2), y: range(3)})
     rhs = bind_dims(
         bind_dims(f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k), x
     )
@@ -291,10 +290,9 @@ def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
 
     body = f(u(), v())
 
-    lhs = monoid.reduce(body, {u: arange(0, N, 1), v: arange(0, u(), 1)})
+    lhs = monoid.reduce(body, {u: range(N), v: jnp.arange(u())})
     rhs = monoid.reduce(
-        jnp.where(v() < u(), body, monoid.identity),
-        {u: arange(0, N, 1), v: arange(0, N, 1)},
+        jnp.where(v() < u(), body, monoid.identity), {u: range(N), v: range(N)}
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
@@ -317,10 +315,10 @@ def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBa
     weight = f(u(), v())
     idx = (u(), v())
 
-    lhs = monoid.reduce(delta(idx, weight), {u: arange(0, N, 1), v: arange(0, u(), 1)})
+    lhs = monoid.reduce(delta(idx, weight), {u: range(N), v: jnp.arange(u())})
     rhs = monoid.reduce(
         delta(idx, jnp.where(v() < u(), weight, monoid.identity)),
-        {u: arange(0, N, 1), v: arange(0, N, 1)},
+        {u: range(N), v: range(N)},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
@@ -333,10 +331,10 @@ def test_reduce_contraction_single(backend: JaxBackend):
     )
 
     lhs = Sum.reduce(Product.plus(A(i()), B(i())), {i: I()})
-    rhs = jnp.tensordot(
+    rhs = jnp.einsum(
+        "a...,a...->...",
         bind_dims(A(unbind_dims(I(), i)), i),
         bind_dims(B(unbind_dims(I(), i)), i),
-        axes=((0,), (0,)),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
 
@@ -349,10 +347,10 @@ def test_reduce_contraction_double(backend: JaxBackend):
     )
 
     lhs = Sum.reduce(Product.plus(A(i(), j()), B(i(), j())), {i: I(), j: J()})
-    rhs = jnp.tensordot(
+    rhs = jnp.einsum(
+        "ab...,ab...->...",
         bind_dims(A(unbind_dims(I(), i), unbind_dims(J(), j)), i, j),
         bind_dims(B(unbind_dims(I(), i), unbind_dims(J(), j)), i, j),
-        axes=((0, 1), (0, 1)),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
 
@@ -370,7 +368,7 @@ def test_reduce_matmul(backend: JaxBackend):
     with handler(NormalizeIntp):
         actual = Sum.reduce(
             delta((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)),
-            {b: arange(B), i: arange(I), j: arange(J), k: arange(K)},
+            {b: range(B), i: range(I), j: range(J), k: range(K)},
         )
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)

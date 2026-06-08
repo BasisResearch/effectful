@@ -35,7 +35,6 @@ for name in _REDUCTION:
 
 einsum = Operation.define(_einsum_named)
 
-
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
-    from jax.numpy import *  # noqa: F403
+    from jax.numpy import *  # type: ignore[assignment] # noqa: F403

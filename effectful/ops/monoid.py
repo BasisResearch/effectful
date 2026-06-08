@@ -139,24 +139,6 @@ class Monoid[W]:
         broadcasting behavior; the default rule only handles the empty-stream
         case.
         """
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if isinstance(stream_body, Term):
-                continue
-            stream_values_iter = iter(stream_body)
-
-            # if we iterate and get a term instead of a real iterator, skip
-            if isinstance(stream_values_iter, Term):
-                continue
-
-            new_reduces = []
-            for stream_val in stream_values_iter:
-                with handler({stream_key: deffn(stream_val)}):
-                    eval_args = evaluate((body, streams_tail))
-                    assert isinstance(eval_args, tuple)
-                    new_reduces.append(
-                        self.reduce(*eval_args) if streams_tail else eval_args[0]
-                    )
-            return self.plus(*new_reduces)
         raise NotHandled
 
     @Operation.define
@@ -368,16 +350,28 @@ class PlusDups(ObjectInterpretation):
         return fwd()
 
 
-class ReduceNoStreams(ObjectInterpretation):
-    """Implements the identity
-    reduce(R, ∅, body) = 0
-    """
-
+class ReducePartial(ObjectInterpretation):
     @implements(Monoid.reduce)
-    def reduce(self, monoid, _, streams):
-        if len(streams) == 0:
-            return monoid.identity
-        return fwd()
+    def _(self, monoid, body, streams):
+        for stream_key, stream_body, streams_tail in outer_stream(streams):
+            if isinstance(stream_body, Term):
+                continue
+            stream_values_iter = iter(stream_body)
+
+            # if we iterate and get a term instead of a real iterator, skip
+            if isinstance(stream_values_iter, Term):
+                continue
+
+            new_reduces = []
+            for stream_val in stream_values_iter:
+                with handler({stream_key: deffn(stream_val)}):
+                    eval_args = evaluate((body, streams_tail))
+                    assert isinstance(eval_args, tuple)
+                    new_reduces.append(
+                        monoid.reduce(*eval_args) if streams_tail else eval_args[0]
+                    )
+            return monoid.plus(*new_reduces)
+        return monoid.identity
 
 
 class ReduceFusion(ObjectInterpretation):
@@ -880,7 +874,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
-    ReduceNoStreams(),
+    ReducePartial(),
     ReduceFusion(),
     ReduceSplit(),
     ReduceFactorization(),

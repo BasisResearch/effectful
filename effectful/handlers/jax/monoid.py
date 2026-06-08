@@ -212,13 +212,17 @@ class ArrayReduce(ObjectInterpretation):
         used = [
             k
             for k, v in streams.items()
-            if issubclass(typeof(v), jax.Array | jax.core.Tracer) and k in body_fvs
+            if k in body_fvs
+            and (
+                issubclass(typeof(v), jax.Array | jax.core.Tracer)
+                or isinstance(v, range)
+            )
         ]
         if not used:
             return fwd()
 
         # an empty reduction axis collapses the whole reduce to the identity
-        if any(_arange_length(streams[k]) == 0 for k in used):
+        if any(not isinstance(streams[k], Term) and len(streams[k]) == 0 for k in used):
             return monoid.identity
 
         tail_streams = {k: v for (k, v) in streams.items() if k not in used}
@@ -238,60 +242,13 @@ def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
     raise NotHandled
 
 
-arange = Operation.define(jnp.arange)
-
-
-def _range_start(term: Term):
-    assert term.op == arange
-    if "start" in term.kwargs:
-        return term.kwargs["start"]
-    if len(term.args) < 2:
-        return 0
-    return term.args[0]
-
-
 def _range_stop(term: Term):
-    assert term.op == arange
+    assert term.op == jnp.arange
     if "stop" in term.kwargs:
         return term.kwargs["stop"]
     if len(term.args) < 2:
         return term.args[0]
     return term.args[1]
-
-
-def _range_step(term: Term):
-    assert term.op == arange
-    if "step" in term.kwargs:
-        return term.kwargs["step"]
-    if len(term.args) < 3:
-        return 1
-    return term.args[2]
-
-
-def _is_simple_range(term: Term) -> bool:
-    if term.op != arange:
-        return False
-
-    start = _range_start(term)
-    step = _range_step(term)
-    return (
-        not isinstance(start, Term)
-        and start == 0
-        and not isinstance(step, Term)
-        and step == 1
-    )
-
-
-def _arange_length(term) -> int | None:
-    """Concrete length of an ``arange`` term, or ``None`` if it is not an
-    ``arange`` term or any of its bounds is symbolic (a ``Term``).
-    """
-    if not (isinstance(term, Term) and term.op is arange):
-        return None
-    a, b, s = _range_start(term), _range_stop(term), _range_step(term)
-    if any(isinstance(x, Term) for x in (a, b, s)):
-        return None
-    return len(range(int(a), int(b), int(s)))
 
 
 def _substitute_streams(expr, streams, vars):
@@ -322,24 +279,20 @@ def _substitute_streams(expr, streams, vars):
 
     # concrete-bounded arange streams slice their direct-index uses; the rest
     # gather.
-    arange_bounds: dict[Operation, tuple] = {}
-    for k in vars:
-        v = streams[k]
-        if isinstance(v, Term) and v.op is arange:
-            a, b, s = _range_start(v), _range_stop(v), _range_step(v)
-            if not any(isinstance(x, Term) for x in (a, b, s)):
-                arange_bounds[k] = (a, b, s)
+    range_streams: dict[Operation, range] = {
+        k: streams[k] for k in vars if isinstance(streams[k], range)
+    }
 
     # PHASE 1 (direct): slice a bare range var used as an array index.
-    if arange_bounds:
+    if range_streams:
 
         def _jax_getitem(arr, index):
             inner_index, outer_index = [], []
             progress = False
             for i in index:
-                if isinstance(i, Term) and i.op in arange_bounds:
-                    a, b, s = arange_bounds[i.op]
-                    inner_index.append(slice(a, b, s))
+                if isinstance(i, Term) and i.op in range_streams:
+                    r = range_streams[i.op]
+                    inner_index.append(slice(r.start, r.stop, r.step))
                     outer_index.append(fresh[i.op]())
                     progress = True
                 else:
@@ -356,13 +309,13 @@ def _substitute_streams(expr, streams, vars):
     # PHASE 2 (indirect): substitute any remaining uses of each var.
     subst: dict = {}
     for k in vars:
-        if k in arange_bounds:
-            a, b, s = arange_bounds[k]
-            subst[k] = deffn(unbind_dims(jnp.arange(a, b, s), fresh[k]))
+        if k in range_streams:
+            r = range_streams[k]
+            subst[k] = deffn(unbind_dims(jnp.arange(r.start, r.stop, r.step), fresh[k]))
         else:
             subst[k] = deffn(unbind_dims(streams[k], fresh[k]))
-    expr = handler(typing.cast(Interpretation, subst))(evaluate)(expr)
 
+    expr = handler(typing.cast(Interpretation, subst))(evaluate)(expr)
     return expr, fresh
 
 
@@ -420,7 +373,11 @@ class ReduceDeltaIndependent(ObjectInterpretation):
 
         head_op: Operation = head_index.op
         head_stream = streams[head_op]
-        if not (isinstance(head_stream, Term) and _is_simple_range(head_stream)):
+        if not (
+            isinstance(head_stream, range)
+            and head_stream.start == 0
+            and head_stream.step == 1
+        ):
             return fwd()
 
         # peel the head index: substitute it into the weight (slicing direct
@@ -485,15 +442,16 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         simple_ranges = {
             k: v
             for (k, v) in streams.items()
-            if isinstance(v, Term) and _is_simple_range(v)
+            if isinstance(v, range) and v.start == 0 and v.step == 1
         }
         for u, u_stream in simple_ranges.items():
             if fvsof(u_stream) & stream_vars:
                 continue
 
-            for v, v_stream in simple_ranges.items():
+            for v, v_stream in streams.items():
                 if (
                     isinstance(v_stream, Term)
+                    and v_stream.op == jnp.arange
                     and isinstance(_range_stop(v_stream), Term)
                     and _range_stop(v_stream).op == u
                 ):
@@ -513,27 +471,6 @@ class ReduceDependentRangeMask(ObjectInterpretation):
 
                     return monoid.reduce(fresh_body, fresh_streams)
 
-        return fwd()
-
-
-class ReduceRange(ObjectInterpretation):
-    """Replace concrete-range stream values with materialized ``jnp.arange``.
-
-    reduce(M, streams ∪ {v: range(a, b, s)}, body)
-    ≡ reduce(M, streams ∪ {v: jnp.arange(a, b, s)}, body)
-
-    when ``a``, ``b``, ``s`` are concrete and ``body`` is not a delta term.
-    Delegates the actual reduction to whichever handler picks up the
-    materialized ``jax.Array`` streams.
-    """
-
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        if arange in fvsof((body, streams)):
-            intp: Interpretation = {arange: jnp.arange}
-            subst_body = handler(intp)(evaluate)(body)
-            subst_streams = handler(intp)(evaluate)(streams)
-            return monoid.reduce(subst_body, subst_streams)
         return fwd()
 
 
@@ -649,7 +586,7 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     body = Product.plus(*factors)
 
     out_tuple = tuple(ops[c]() for c in out_spec)
-    streams = {op: arange(sizes[c]) for c, op in ops.items()}
+    streams = {op: range(sizes[c]) for c, op in ops.items()}
     with handler(NormalizeIntp):
         norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
         result = norm(*operands)
@@ -658,7 +595,6 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
 
 NormalizeIntp.extend(
-    # ReduceRange(),
     ArrayReduce(),
     ReduceSumProductContraction(),
     ReduceDeltaIndependent(),
