@@ -456,7 +456,7 @@ class ReduceFactorization(ObjectInterpretation):
         # non-universal (some factor doesn't mention v)
         eligible = {}
         for k, v in streams.items():
-            if any(k in fvsof(s) for k, s in streams.items() if k is not k):
+            if any(k in fvsof(vv) for kk, vv in streams.items() if k is not kk):
                 continue
             if len({i for i, (_, fvs) in enumerate(factors) if k in fvs}) == len(
                 factors
