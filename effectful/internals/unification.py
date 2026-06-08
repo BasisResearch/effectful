@@ -962,18 +962,39 @@ def _(value: effectful.ops.types.Term):
 @nested_type.register
 def _(value: effectful.ops.types.Operation):
     typ = nested_type.dispatch(collections.abc.Callable)(value).value
-    (arg_types, return_type) = typing.get_args(typ)
+    args = typing.get_args(typ)
+    if not args:
+        # Callable branch widened to `Box(type(value))` because
+        # introspection failed (#673); propagate the widening.
+        return Box(type(value))
+    (arg_types, return_type) = args
     return Box(effectful.ops.types.Operation[arg_types, return_type])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Callable):
-    if typing.get_overloads(value):
+    # `typing.get_overloads(value)` reads `__qualname__`/`__module__` on
+    # the callable and raises `AttributeError` on values like
+    # `pytest.mark.parametrize` (a `MarkDecorator`) or `dict.get` (a
+    # `method_descriptor`).  Treat that the same way as the
+    # no-signature fallback: widen to `Box(type(value))`.  #673.
+    try:
+        if typing.get_overloads(value):
+            return Box(type(value))
+    except (AttributeError, TypeError):
         return Box(type(value))
 
+    # `inspect.signature(value)` may consult a custom `__signature__`
+    # property (e.g. `Operation.__signature__` calls
+    # `typing.get_type_hints`) which raises `NameError` when an
+    # annotation forward-ref cannot be resolved.  Per canonicalize's
+    # widening principle (see eb8680 on PR #613), an unresolvable
+    # annotation does not mean the value isn't callable -- widen to
+    # `Box(type(value))` rather than propagating the introspection
+    # failure.  #673.
     try:
         sig = inspect.signature(value)
-    except ValueError:
+    except (ValueError, TypeError, NameError, AttributeError):
         return Box(type(value))
 
     if sig.return_annotation is inspect.Signature.empty:
