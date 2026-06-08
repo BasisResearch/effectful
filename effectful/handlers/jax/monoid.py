@@ -9,7 +9,7 @@ import jax.core
 import opt_einsum
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
@@ -25,7 +25,7 @@ from effectful.ops.monoid import (
     distributes_over,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, implements
+from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -542,190 +542,6 @@ class ReduceRange(ObjectInterpretation):
 #   carry the burden. See the conversation in monoid.py's history for why.
 
 
-class ReduceOrderContraction(ObjectInterpretation):
-    """Reorder a large product before contraction using an ``opt_einsum`` path.
-
-    Matches ``monoid.reduce(monoid2.plus(f1, ..., fn), streams)`` where
-    ``monoid2`` distributes over ``monoid`` and there are at least three
-    factors. Each factor is modelled as a tensor whose dimensions are the
-    streams it reads (contracted) together with any surviving named/anonymous
-    dimensions (kept in the output). An :func:`opt_einsum.contract_path` cost
-    model over those sizes chooses a contraction order, and the product is
-    re-emitted as a nest of pairwise reduces following that path.
-
-    The pairwise reduces are left symbolic: :class:`ReduceSumProductContraction`
-    (for ``Sum``/``Product``) or :class:`ArrayReduce` lowers each one into an
-    actual contraction, and streams are substituted there rather than here.
-    """
-
-    @staticmethod
-    def _stream_length(stream) -> int | None:
-        if isinstance(stream, jax.Array):
-            shape = stream.shape
-            if len(shape) == 0:
-                raise ValueError("Unexpected scalar array")
-            return shape[0]
-        return _arange_length(stream)
-
-    @staticmethod
-    def _anon_sizes(factor, named_ops: list) -> tuple[int, ...]:
-        """Sizes of ``factor``'s positional (unnamed) dimensions.
-
-        Binding every named dimension exposes the anonymous axes as the
-        trailing shape. Symbolic factors do not reduce to a concrete array, so
-        they report no anonymous dimensions.
-        """
-        bound = bind_dims(factor, *named_ops)
-        if is_eager_array(bound):
-            return tuple(bound.shape[len(named_ops) :])
-        return ()
-
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        # the body must be a monoid2.plus for a monoid2 such that
-        # distributes_over(monoid2, monoid)
-        if not (isinstance(body, Term) and _is_monoid_plus(body.op)):
-            return fwd()
-
-        monoid2: Monoid = body.op.__self__
-        if not distributes_over(monoid2, monoid):
-            return fwd()
-
-        factors = body.args
-        if len(factors) < 3:
-            return fwd()
-        if not all(issubclass(typeof(f), jax.Array) for f in factors):
-            return fwd()
-
-        stream_vars = set(streams.keys())
-        if not stream_vars:
-            return fwd()
-
-        # grab sizes of reduction dimensions and any dimensions of the factors
-        # (named or anonymous)
-        #
-        # for each factor, we compute an einsum approximation of it so we can
-        # compute its cost
-        #
-        # any anonymous/named dimensions get dimension markers, but are never
-        # reduced so must all appear in the output side; streams also get
-        # dimension markers and are reduced so do not appear in the output side;
-        # factors with no visible dimensions are treated as scalars
-        dim_size: dict = {}
-
-        def record(key, size: int | None) -> None:
-            if size is not None:
-                dim_size[key] = size
-
-        factor_dims: list[list] = []
-        for idx, f in enumerate(factors):
-            named = sizesof(f)
-            f_streams = fvsof(f) & stream_vars
-            keys: list = []
-            # reduced (stream) dimensions, sized by the stream itself
-            for op in f_streams:
-                record(op, self._stream_length(streams[op]))
-                keys.append(op)
-            # surviving named dimensions
-            for op, size in named.items():
-                record(op, size)
-                if op not in f_streams:
-                    keys.append(op)
-            # surviving anonymous (positional) dimensions
-            for pos, size in enumerate(self._anon_sizes(f, list(named.keys()))):
-                anon_key = ("anon", idx, pos)
-                record(anon_key, size)
-                keys.append(anon_key)
-            factor_dims.append(keys)
-
-        # a cost model needs a known size for every dimension
-        if any(k not in dim_size for keys in factor_dims for k in keys):
-            return fwd()
-
-        # build a string / shapes input compatible with opt_einsum.contract_path
-        symbols: dict = {}
-
-        def sym(key) -> str:
-            if key not in symbols:
-                symbols[key] = opt_einsum.get_symbol(len(symbols))
-            return symbols[key]
-
-        in_specs = ["".join(sym(k) for k in keys) for keys in factor_dims]
-
-        out_keys: list = []
-        seen: set = set()
-        for keys in factor_dims:
-            for k in keys:
-                if k not in stream_vars and k not in seen:
-                    seen.add(k)
-                    out_keys.append(k)
-        out_spec = "".join(sym(k) for k in out_keys)
-
-        subscripts = ",".join(in_specs) + "->" + out_spec
-        shapes = [tuple(dim_size[k] for k in keys) for keys in factor_dims]
-
-        path, _ = opt_einsum.contract_path(
-            subscripts, *shapes, shapes=True, optimize="auto"
-        )
-
-        # a single step is no reordering at all — defer to the greedy
-        # contraction handlers rather than reproducing the same product
-        if len(path) < 2:
-            return fwd()
-
-        # given a contraction path, generate a new reduce nest. streams don't
-        # need to be substituted/contractions written out, since ArrayReduce and
-        # ReduceSumProductContraction will do that.
-        #
-        # Each operand tracks the streams it still depends on; a stream is
-        # reduced at the step where it stops appearing in any other operand.
-        remaining: list[tuple] = [
-            (f, {k for k in keys if k in stream_vars})
-            for f, keys in zip(factors, factor_dims, strict=True)
-        ]
-
-        reduced: set = set()
-        for step in path:
-            selected = [remaining[k] for k in step]
-            terms = [t for (t, _) in selected]
-
-            for k in sorted(step, reverse=True):
-                del remaining[k]
-
-            used = set().union(*(s for (_, s) in selected))
-            elsewhere = (
-                set().union(*(s for (_, s) in remaining)) if remaining else set()
-            )
-            contract = used - elsewhere
-
-            # dispatching monoid2.plus on symbolic terms causes an infinite
-            # loop: PlusAssoc re-flattens the contraction tree back into the
-            # original flat plus, which re-enters this handler. Build the
-            # term directly in that case; concrete operands are safe to
-            # dispatch (they reduce to a value, so nothing can re-flatten).
-            if any(isinstance(t, Term) for t in terms):
-                combined = defdata(monoid2.plus, *terms)
-            else:
-                combined = monoid2.plus(*terms)
-
-            if contract:
-                substreams = {s: v for (s, v) in streams.items() if s in contract}
-                new_term = monoid.reduce(combined, substreams)
-                reduced |= contract
-            else:
-                new_term = combined
-            remaining.append((new_term, used - contract))
-
-        assert len(remaining) == 1
-        result = remaining[0][0]
-
-        # streams referenced by no factor are reduced last (they scale the body)
-        leftover = {s: v for (s, v) in streams.items() if s not in reduced}
-        if leftover:
-            result = monoid.reduce(result, leftover)
-        return result
-
-
 class ReduceSumProductContraction(ObjectInterpretation):
     """Fast-path a sum-of-products contraction.
 
@@ -883,6 +699,7 @@ class PartialEvalMultiAxisReduce(ObjectInterpretation):
         return reindexed
 
 
+@jax.jit(static_argnums=(0,))
 def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
     """Evaluate an einsum expression using monoid reductions."""
     if not operands:
@@ -916,21 +733,14 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
     out_tuple = tuple(ops[c]() for c in out_spec)
     streams = {op: arange(sizes[c]) for c, op in ops.items()}
-    expr = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
-    norm_expr = handler(NormalizeIntp)(evaluate)(expr)
-
-    @jax.jit
-    def jitted_einsum(*args):
-        with (
-            handler(NormalizeIntp),
-            handler(PartialEvalSingleAxisReduce),
-            handler(PartialEvalMultiAxisReduce()),
-        ):
-            result = norm_expr(*args)
-            assert isinstance(result, jax.Array)
-            return result
-
-    return jitted_einsum(*operands)
+    with (
+        handler(NormalizeIntp),
+        handler(PartialEvalSingleAxisReduce),
+        handler(PartialEvalMultiAxisReduce()),
+    ):
+        result = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)(*operands)
+        assert isinstance(result, jax.Array)
+        return result
 
 
 NormalizeIntp.extend(
@@ -938,7 +748,6 @@ NormalizeIntp.extend(
     ArrayReduce(),
     ReduceSumProductContraction(),
     ReduceDeltaIndependent(),
-    ReduceOrderContraction(),
     ReduceDependentRangeMask(),
     SumPlusJax(),
     ProductPlusJax(),
