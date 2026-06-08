@@ -88,6 +88,24 @@ def inner_stream(
     )
 
 
+def inner_streams_first(streams: dict[Operation, Expr]) -> Iterable[Operation]:
+    """Iterable over streams where dependent streams precede their dependencies."""
+    stream_vars = set(streams.keys())
+
+    no_dependents = set()
+    succ = defaultdict(set)
+    for k, v in streams.items():
+        preds = fvsof(v) & stream_vars
+        if preds:
+            for pred in preds:
+                succ[pred].add(k)
+        else:
+            no_dependents.add(k)
+
+    topo = TopologicalSorter(succ)
+    return topo.static_order()
+
+
 class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
@@ -436,6 +454,7 @@ class ReduceFactorization(ObjectInterpretation):
             return fwd()
 
         inner = body.op.__self__
+        stream_keys = set(streams)
         factors = [(a, fvsof(a)) for a in body.args]
 
         # candidates: innermost-eligible (no remaining stream depends on v),
@@ -451,18 +470,53 @@ class ReduceFactorization(ObjectInterpretation):
 
         # eliminate a variable with subset-minimal factor support
         # (leaves-first; canonical on hierarchical/laminar supports)
+        inner_stream = None
+        inner_factor_ids = None
         for v, f_v in support.items():
             if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
                 continue
-            inner_red = monoid.reduce(
-                inner.plus(*(factors[i][0] for i in sorted(f_v))), {v: streams[v]}
+            inner_stream = v
+            inner_factor_ids = f_v
+            break
+
+        if not inner_stream or not inner_factor_ids:
+            return fwd()
+
+        inner_factors = [factors[i][0] for i in sorted(inner_factor_ids)]
+        inner_stream_keys = {inner_stream}
+        inner_deps = set().union(
+            *(factors[i][1] for i in f_v), fvsof(streams[v]) & stream_keys
+        )
+
+        outer_factors = [a for i, (a, _) in enumerate(factors) if i not in f_v]
+        outer_stream_keys = stream_keys - inner_stream_keys
+        outer_factor_deps = set().union(
+            *(vars for i, (_, vars) in enumerate(factors) if i not in f_v)
+        )
+
+        # find all streams that are used in the inner factors/streams and are
+        # not used by the outer factors/streams
+        # this has to be done iteratively, because moving a stream inward
+        # reduces the outer dependency set
+        # ensures that no future factorization application creates a reduce that
+        # fuses with with the inner reduce
+        for s in inner_streams_first(streams):
+            outer_stream_deps = (
+                set().union(*(fvsof(streams[k]) for k in outer_stream_keys))
+                & stream_keys
             )
-            rest_streams = {k: s for k, s in streams.items() if k is not v}
-            new_body = inner.plus(
-                *(a for i, (a, _) in enumerate(factors) if i not in f_v), inner_red
-            )
-            return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
-        return fwd()
+            outer_deps = outer_factor_deps | outer_stream_deps
+            if s in inner_deps and s not in outer_deps:
+                inner_stream_keys |= {s}
+                inner_deps |= stream_keys & fvsof(streams[s])
+                outer_stream_keys -= {s}
+
+        inner_streams = {k: v for (k, v) in streams.items() if k in inner_stream_keys}
+        inner_red = monoid.reduce(inner.plus(*inner_factors), inner_streams)
+
+        rest_streams = {k: s for k, s in streams.items() if k in outer_stream_keys}
+        new_body = inner.plus(*outer_factors, inner_red)
+        return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
 
 
 class ReduceDistributeCartesianProduct(ObjectInterpretation):
