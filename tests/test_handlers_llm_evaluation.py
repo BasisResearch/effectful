@@ -19,6 +19,7 @@ from RestrictedPython import RestrictingNodeTransformer
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
     RestrictedEvalProvider,
+    _module_qualnames,
     collect_imports,
     collect_runtime_type_stubs,
     collect_variable_declarations,
@@ -130,6 +131,97 @@ class TestCollectImports:
         unparsed = [ast.unparse(stmt) for stmt in result]
         assert any("math" in s and "import" in s for s in unparsed)
         assert any("os" in s and "import" in s for s in unparsed)
+
+    def test_private_module_kept_when_referenced(self):
+        """Private (``_``-prefixed) modules are normally filtered out,
+        but when a downstream stub references the module (#674), the
+        filter is overridden so mypy can resolve the qualified name."""
+        import _pytest.fixtures  # noqa: F401
+
+        ctx: dict[str, typing.Any] = {}
+        plain = collect_imports(ctx)
+        plain_modules = {
+            alias.name
+            for stmt in plain
+            if isinstance(stmt, ast.Import)
+            for alias in stmt.names
+        }
+        assert "_pytest" not in plain_modules
+        assert "_pytest.fixtures" not in plain_modules
+
+        with_ref = collect_imports(ctx, {"_pytest", "_pytest.fixtures"})
+        with_ref_modules = {
+            alias.name
+            for stmt in with_ref
+            if isinstance(stmt, ast.Import)
+            for alias in stmt.names
+        }
+        assert "_pytest" in with_ref_modules
+        assert "_pytest.fixtures" in with_ref_modules
+
+    def test_private_module_not_kept_when_unreferenced(self):
+        """Soundness: ``referenced_module_names`` does not pull in modules
+        nothing references.  An unreferenced ``_``-prefixed module stays
+        filtered even when something else triggers the override path."""
+        import _pytest.fixtures  # noqa: F401
+
+        ctx: dict[str, typing.Any] = {}
+        result = collect_imports(ctx, {"_unrelated_private_module_name"})
+        modules = {
+            alias.name
+            for stmt in result
+            if isinstance(stmt, ast.Import)
+            for alias in stmt.names
+        }
+        assert "_pytest" not in modules
+        assert "_pytest.fixtures" not in modules
+
+
+class TestModuleQualnames:
+    """The helper that powers the #674 fix: walk an AST, return every
+    ``a.b.c`` qualified module-name reachable from an ``Attribute``
+    chain anchored on a ``Name``."""
+
+    def test_extracts_prefix_from_attribute_chain(self):
+        """``_pytest.fixtures.TopRequest`` yields ``_pytest.fixtures``
+        (the module qualified name with the leaf class trimmed) AND
+        ``_pytest`` (the parent package, surfaced by ``ast.walk``
+        visiting the nested ``Attribute`` node).  Both are useful: the
+        full qualified module name is what mypy needs to import, and
+        the parent package is what makes the namespace resolve."""
+        tree = ast.parse("x: _pytest.fixtures.TopRequest", mode="exec")
+        assert _module_qualnames([tree]) == {"_pytest.fixtures", "_pytest"}
+
+    def test_extracts_from_multiple_chains(self):
+        """Each chain contributes its own qualified prefix."""
+        tree = ast.parse(
+            "a: _pytest.fixtures.TopRequest\nb: typing.Dict[str, int]",
+            mode="exec",
+        )
+        result = _module_qualnames([tree])
+        assert "_pytest.fixtures" in result
+        assert "typing" in result
+
+    def test_does_not_extract_bare_segment_names(self):
+        """``_pytest.fixtures.TopRequest`` must NOT yield ``"fixtures"``
+        on its own.  Naive splits would have, and that would pull in any
+        top-level package called ``fixtures`` from ``sys.modules``."""
+        tree = ast.parse("x: _pytest.fixtures.TopRequest", mode="exec")
+        result = _module_qualnames([tree])
+        assert "fixtures" not in result
+        assert "TopRequest" not in result
+
+    def test_ignores_plain_name_references(self):
+        """A bare ``Name`` (no ``Attribute``) like ``x: int`` carries no
+        module-qualified information, so it produces nothing."""
+        tree = ast.parse("x: int", mode="exec")
+        assert _module_qualnames([tree]) == set()
+
+    def test_extracts_from_generic_parameters(self):
+        """Module references inside generic args are still discovered:
+        ``dict[str, _pkg.Inner.Cls]`` yields ``_pkg.Inner``."""
+        tree = ast.parse("x: dict[str, _pkg.Inner.Cls]", mode="exec")
+        assert "_pkg.Inner" in _module_qualnames([tree])
 
 
 class TestCollectImportsStress:
@@ -869,6 +961,27 @@ class TestMypyTypeCheckE2E:
         source = "def f(x: int, s: str) -> bool:\n    return len(s) > x"
         module = ast.parse(source)
         mypy_type_check(module, get_context(), [int, str], bool)
+
+    def test_private_module_qualified_type_in_context(self):
+        """Regression for #674: a ctx value whose runtime type lives in
+        a ``_``-prefixed module must not crash ``mypy_type_check`` with
+        ``Name '_pytest' is not defined``.  Uses a pytest fixture-request
+        instance because that is the path that surfaced the bug."""
+        import _pytest.fixtures
+
+        # Build a `request`-shaped instance.  We cannot easily instantiate
+        # `TopRequest` properly outside pytest, but `__new__` gives us a
+        # value whose `type(...).__module__` is `_pytest.fixtures`, which
+        # is what triggers the qualname emission in
+        # `collect_variable_declarations`.
+        fake_request = _pytest.fixtures.TopRequest.__new__(
+            _pytest.fixtures.TopRequest
+        )
+        ctx = {"request": fake_request}
+        source = "def f() -> int:\n    return 0"
+        module = ast.parse(source)
+        # Must not raise.
+        mypy_type_check(module, ctx, None, int)
 
     def test_simple_function_no_params_with_get_context(self):
         """Function with no params, returns int; get_context()."""
