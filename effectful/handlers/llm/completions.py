@@ -219,12 +219,40 @@ class _LexicalVariableTool[T](Tool[[], T]):
         return super().define(tool_fn)
 
 
+@Operation.define
+def expose_lexical_readers() -> bool:
+    """Effect controlling whether `_collect_tools` builds synthetic
+    read-only Tools for non-Tool/Template values in a Template's
+    lexical scope.
+
+    Default behaviour is *off*: only real Tools/Templates/Agents reach
+    the LLM, and the lexical context is invisible.  Install
+    `LexicalReaders` to flip it on for the call-site where the LLM
+    should be able to inspect closure state.
+    """
+    return False
+
+
+class LexicalReaders(ObjectInterpretation):
+    """Handler that enables synthetic lexical-reader generation in
+    `_collect_tools`.  Each plain value in a Template's lexical context
+    becomes a zero-argument Tool that returns the captured value.
+    """
+
+    @implements(expose_lexical_readers)
+    def _enabled(self) -> bool:
+        return True
+
+
 def _collect_tools(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> collections.abc.Mapping[str, Tool]:
-    """Operations and Templates available as tools, plus synthetic
-    readers for other lexical symbols.  Auto-captured from lexical context."""
+    """Operations and Templates available as tools.  When
+    `expose_lexical_readers` is on (see :class:`LexicalReaders`),
+    plain values in the lexical context are also wrapped as synthetic
+    read-only tools."""
     result: dict[str, Tool] = {}
+    readers_on = expose_lexical_readers()
 
     for name, obj in env.items():
         if isinstance(obj, Tool | Template):
@@ -234,7 +262,7 @@ def _collect_tools(
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-        elif name.isidentifier():
+        elif readers_on and name.isidentifier():
             try:
                 result[name] = _LexicalVariableTool.define(obj, name=name)
             # `TypeError` joins the three Pydantic errors because the

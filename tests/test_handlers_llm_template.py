@@ -778,8 +778,6 @@ def test_template_method():
     assert a.random in a.f.tools.values()
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert a.f not in a.f.tools.values()
-    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
-    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert any(t() == 4 for t in a.f.tools.values() if t is a.random)
 
     class B(A):
@@ -796,8 +794,6 @@ def test_template_method():
     assert isinstance(b.f, Template)
     assert b.random in b.f.tools.values()
     assert b.reverse in b.f.tools.values()
-    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
-    assert "local_variable" in b.f.__context__ and "local_variable" in a.f.tools
 
 
 def test_template_method_nested_class():
@@ -828,8 +824,6 @@ def test_template_method_nested_class():
     assert "random" in a.f.tools
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert "f" not in a.f.tools
-    # local_variable is now exposed as a synthetic reader (PR #545 finish-up).
-    assert "local_variable" in a.f.__context__ and "local_variable" in a.f.tools
     assert a.f.tools["random"]() == 4
 
 
@@ -1548,6 +1542,7 @@ from pathlib import Path
 import pydantic
 
 from effectful.handlers.llm.completions import (
+    LexicalReaders,
     _collect_tools,
     _LexicalVariableTool,
 )
@@ -1696,17 +1691,13 @@ _EXPOSED_THROUGH_ENCODABLE: list[tuple[str, typing.Callable[[], typing.Any]]] = 
     ids=lambda x: x[0] if isinstance(x, tuple) else None,
 )
 def test_collect_tools_exposes_callable_shaped_values(name, make_value):
-    """Annotated callables, classes, builtins, and methods flow through
-    Encodable's broad Callable handler and become synthesis-shaped tools.
-
-    Templates defined in scopes that don't want this exposure should
-    explicitly avoid binding these names or filter them at the handler
-    layer (e.g., `Template.tools` is not the place to second-guess what
-    Encodable accepts).
-    """
+    """With `LexicalReaders` installed, annotated callables, classes,
+    builtins, and methods flow through Encodable's broad Callable
+    handler and become synthesis-shaped tools."""
     value = make_value()
     env = {name: value}
-    assert name in _collect_tools(env)
+    with handler(LexicalReaders()):
+        assert name in _collect_tools(env)
 
 
 def test_collect_tools_skips_agent_instances_but_exposes_their_tools():
@@ -1739,7 +1730,8 @@ def test_lexical_reader_exposes_data_values():
         "d": {"k": 1},
         "model": _SimpleModel(x=1, y="hi"),
     }
-    result = _collect_tools(env)
+    with handler(LexicalReaders()):
+        result = _collect_tools(env)
     assert {"x", "s", "lst", "d", "model"} <= set(result)
     for k, v in env.items():
         assert result[k]() is v
@@ -1747,7 +1739,7 @@ def test_lexical_reader_exposes_data_values():
 
 def test_template_tools_includes_synthetic_readers_for_locals():
     """The Template.tools property includes synthetic readers for
-    plain values in lexical scope (e.g., test-local variables)."""
+    plain values in lexical scope when `LexicalReaders` is installed."""
     _test_data = [10, 20, 30]
 
     @Template.define
@@ -1755,5 +1747,26 @@ def test_template_tools_includes_synthetic_readers_for_locals():
         """Doc."""
         raise NotHandled
 
-    assert "_test_data" in t.tools
-    assert t.tools["_test_data"]() == [10, 20, 30]
+    with handler(LexicalReaders()):
+        tools = t.tools
+        assert "_test_data" in tools
+        assert tools["_test_data"]() == [10, 20, 30]
+
+
+def test_lexical_readers_off_by_default():
+    """Without `LexicalReaders` installed, `_collect_tools` does not
+    wrap plain values as synthetic readers."""
+    env = {"x": 42, "s": "hello"}
+    result = _collect_tools(env)
+    assert "x" not in result
+    assert "s" not in result
+
+
+def test_lexical_readers_handler_enables_collection():
+    """Installing `LexicalReaders` flips the gate; the same values are
+    exposed as zero-arg reader tools."""
+    env = {"x": 42, "s": "hello"}
+    with handler(LexicalReaders()):
+        result = _collect_tools(env)
+    assert result["x"]() == 42
+    assert result["s"]() == "hello"

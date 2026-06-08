@@ -28,6 +28,7 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
+    LexicalReaders,
     LiteLLMProvider,
     ResultDecodingError,
     RetryLLMHandler,
@@ -2182,7 +2183,10 @@ class TestSyntheticReaderIntegration:
             then return their sum as an integer."""
             raise NotImplementedError
 
-        with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalReaders()),
+        ):
             result = report_sum()
 
         assert isinstance(result, int)
@@ -2216,6 +2220,7 @@ class TestSyntheticReaderIntegration:
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LimitLLMCallsHandler(max_calls=4)),
+            handler(LexicalReaders()),
         ):
             fn = make_above_threshold()
 
@@ -2224,13 +2229,11 @@ class TestSyntheticReaderIntegration:
         assert fn(threshold) is False
 
     def test_template_exposes_lexical_classes(self):
-        """Classes in the defining scope are exposed as readers via the
-        broad `Encodable[Callable]` handler.
-
-        This is the `Hand`/`Finger`/`generate_arm` motivating example
-        from #497.  The pure-Encodable pivot means classes flow through
-        as Callable-synthesis tools (their `__init__` signature becomes
-        the schema), so the LLM at least sees that they exist in scope.
+        """When `LexicalReaders` is installed, classes in the defining
+        scope are exposed as readers via the broad `Encodable[Callable]`
+        handler — the `Hand`/`Finger`/`generate_arm` motivating example
+        from #497.  Without the handler the readers are gated off; this
+        test pins both contracts.
         """
 
         class Finger:
@@ -2245,6 +2248,12 @@ class TestSyntheticReaderIntegration:
             """Doc."""
             raise NotImplementedError
 
-        tools = describe_hand_action.tools
-        assert "Finger" in tools
-        assert "Hand" in tools
+        # Off by default.
+        assert "Finger" not in describe_hand_action.tools
+        assert "Hand" not in describe_hand_action.tools
+
+        # On under the handler.
+        with handler(LexicalReaders()):
+            tools = describe_hand_action.tools
+            assert "Finger" in tools
+            assert "Hand" in tools
