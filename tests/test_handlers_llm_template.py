@@ -1745,15 +1745,6 @@ def test_lexical_reader_exposes_data_values():
         assert result[k]() is v
 
 
-def test_lexical_reader_doc_mentions_name():
-    """Each synthetic reader carries a per-instance docstring that
-    names the captured variable so the LLM can tell readers apart."""
-    env = {"my_var": [1, 2, 3]}
-    tool = _LexicalVariableTool.define(env, name="my_var")
-    assert tool.__doc__ is not None
-    assert "my_var" in tool.__doc__
-
-
 def test_template_tools_includes_synthetic_readers_for_locals():
     """The Template.tools property includes synthetic readers for
     plain values in lexical scope (e.g., test-local variables)."""

@@ -190,7 +190,7 @@ class _LexicalVariableTool[T](Tool[[], T]):
     """
 
     @classmethod
-    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":  # type: ignore[override]
+    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
         """Construct a synthetic reader Tool that returns `value`.
 
         Raises if `Encodable[nested_type(value)]` cannot be generated.
