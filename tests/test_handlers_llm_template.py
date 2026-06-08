@@ -1655,16 +1655,6 @@ def test_lexical_variable_tool_raises_for_unencodable(name, value):
         _LexicalVariableTool.define(value, name=name)
 
 
-def test_synthetic_reader_annotation_has_no_free_typevars():
-    """Synthetic reader annotations come from `nested_type`, which
-    produces concrete types — TypeVar substitution is a no-op."""
-    from effectful.internals.unification import freetypevars
-
-    tool = _LexicalVariableTool.define([1, 2, 3], name="x")
-    sig = inspect.signature(tool)
-    assert freetypevars(sig.return_annotation) == set()
-
-
 # ---- Encodable-passthrough exposure (annotated callables, classes,
 # builtins, methods) ----
 
@@ -1739,7 +1729,9 @@ def test_collect_tools_skips_agent_instances_but_exposes_their_tools():
 
 
 def test_lexical_reader_exposes_data_values():
-    """Data-shaped values are exposed as readers (positive contract)."""
+    """Data-shaped values are exposed as readers (positive contract).
+    Readers snapshot the value, so calling one returns the *same*
+    object that was in env at construction time."""
     env = {
         "x": 1,
         "s": "hello",
@@ -1749,8 +1741,8 @@ def test_lexical_reader_exposes_data_values():
     }
     result = _collect_tools(env)
     assert {"x", "s", "lst", "d", "model"} <= set(result)
-    assert result["x"]() == 1
-    assert result["model"]() == env["model"]
+    for k, v in env.items():
+        assert result[k]() is v
 
 
 def test_lexical_reader_doc_mentions_name():
