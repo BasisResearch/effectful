@@ -547,11 +547,8 @@ class ReduceSumProductContraction(ObjectInterpretation):
 
     """
 
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        if monoid is not Sum:
-            return fwd()
-
+    @implements(Sum.reduce)
+    def _(self, body, streams: Streams):
         if not (
             isinstance(body, Term)
             and _is_monoid_plus(body.op)
