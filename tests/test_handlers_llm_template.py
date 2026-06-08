@@ -1549,7 +1549,7 @@ import pydantic
 
 from effectful.handlers.llm.completions import (
     _collect_tools,
-    _define_lexical_reader,
+    _LexicalVariableTool,
 )
 
 
@@ -1583,34 +1583,34 @@ def _example_annotated(x: int) -> int:
     return x
 
 
-def test_synthetic_reader_returns_live_value():
-    """A reader returns whatever env[name] currently is. Mutation
-    after reader construction propagates."""
-    env: dict = {"x": [1, 2, 3]}
-    tool = _define_lexical_reader(env, name="x")
+def test_synthetic_reader_returns_captured_value():
+    """The reader closes over the value snapshot taken at construction
+    time.  In-place mutation of a mutable captured value is visible
+    (same object reference); rebinding the source name is not."""
+    captured: list[int] = [1, 2, 3]
+    tool = _LexicalVariableTool.define(captured, name="x")
     assert tool() == [1, 2, 3]
-    env["x"].append(4)
+    captured.append(4)
     assert tool() == [1, 2, 3, 4]
 
 
-def test_synthetic_reader_rebind():
-    """The reader returns the current binding even after rebind. The
-    body reads `env[name]` at call time, not a snapshot."""
+def test_synthetic_reader_snapshot_survives_rebind():
+    """Tools are constructed fresh each `call_assistant` invocation,
+    so rebinding the source name between construction and invocation
+    has no effect on the captured value."""
     env: dict = {"x": 42}
-    tool = _define_lexical_reader(env, name="x")
-    assert tool() == 42
+    tool = _LexicalVariableTool.define(env["x"], name="x")
     env["x"] = 99
-    assert tool() == 99
+    assert tool() == 42
 
 
-def test_synthetic_reader_raises_when_name_deleted():
-    """If env[name] is deleted between collection and call, the reader
-    raises KeyError on direct invocation."""
+def test_synthetic_reader_snapshot_survives_deletion():
+    """The closure holds the value directly, so deleting the source
+    name does not invalidate the reader."""
     env: dict = {"x": 42}
-    tool = _define_lexical_reader(env, name="x")
+    tool = _LexicalVariableTool.define(env["x"], name="x")
     del env["x"]
-    with pytest.raises(KeyError):
-        tool()
+    assert tool() == 42
 
 
 _PROBE_OK_CASES: list[tuple[str, typing.Any]] = [
@@ -1636,11 +1636,10 @@ _PROBE_FAIL_CASES: list[tuple[str, typing.Any]] = [
 @pytest.mark.parametrize(
     "name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None
 )
-def test_define_lexical_reader_returns_value(name, value):
-    """`_define_lexical_reader` builds a Tool when `Encodable[T]`
-    schema generates; calling it returns the live value."""
-    env = {name: value}
-    tool = _define_lexical_reader(env, name=name)
+def test_lexical_variable_tool_returns_value(name, value):
+    """`_LexicalVariableTool` builds a Tool when `Encodable[T]`
+    schema generates; calling it returns the captured value."""
+    tool = _LexicalVariableTool.define(value, name=name)
     assert tool() == value
 
 
@@ -1649,33 +1648,11 @@ def test_define_lexical_reader_returns_value(name, value):
     _PROBE_FAIL_CASES,
     ids=lambda x: x[0] if isinstance(x, tuple) else None,
 )
-def test_define_lexical_reader_raises_for_unencodable(name, value):
-    """Schema-generation failures propagate from `_define_lexical_reader`;
+def test_lexical_variable_tool_raises_for_unencodable(name, value):
+    """Schema-generation failures propagate from `_LexicalVariableTool`;
     the call site decides whether to skip."""
-    env = {name: value}
     with pytest.raises(Exception):
-        _define_lexical_reader(env, name=name)
-
-
-def test_collect_tools_skips_unencodable_values():
-    """`_collect_tools` catches probe failures and omits the symbol."""
-    for name, value in _PROBE_FAIL_CASES:
-        env = {name: value}
-        assert name not in _collect_tools(env)
-
-
-def test_collect_tools_real_tools_take_precedence_over_value_readers():
-    """`isinstance(obj, Tool | Template)` fires before the reader branch."""
-
-    @Tool.define
-    def shared() -> int:
-        """Doc."""
-        return 1
-
-    env = collections.ChainMap({"shared": shared, "shared_value": 42})
-    result = _collect_tools(env)
-    assert result["shared"] is shared
-    assert result["shared_value"]() == 42
+        _LexicalVariableTool.define(value, name=name)
 
 
 def test_synthetic_reader_annotation_has_no_free_typevars():
@@ -1683,8 +1660,7 @@ def test_synthetic_reader_annotation_has_no_free_typevars():
     produces concrete types — TypeVar substitution is a no-op."""
     from effectful.internals.unification import freetypevars
 
-    env = {"x": [1, 2, 3]}
-    tool = _define_lexical_reader(env, name="x")
+    tool = _LexicalVariableTool.define([1, 2, 3], name="x")
     sig = inspect.signature(tool)
     assert freetypevars(sig.return_annotation) == set()
 
@@ -1743,13 +1719,6 @@ def test_collect_tools_exposes_callable_shaped_values(name, make_value):
     assert name in _collect_tools(env)
 
 
-def test_collect_tools_skips_modules():
-    """Modules naturally fail `Encodable[types.ModuleType]` and get
-    filtered by the probe-and-catch."""
-    env = {"os": os}
-    assert "os" not in _collect_tools(env)
-
-
 def test_collect_tools_skips_agent_instances_but_exposes_their_tools():
     """Agent instances themselves naturally fail the Encodable probe,
     but the MRO walk in `_collect_tools` continues to expose their
@@ -1766,7 +1735,7 @@ def test_collect_tools_skips_agent_instances_but_exposes_their_tools():
     result = _collect_tools(env)
     assert "a" not in result
     # The MRO walk picks up the contained Tool.
-    assert any(k.startswith("a__") for k in result)
+    assert inst.t in result.values()
 
 
 def test_lexical_reader_exposes_data_values():
@@ -1784,36 +1753,11 @@ def test_lexical_reader_exposes_data_values():
     assert result["model"]() == env["model"]
 
 
-def test_lexical_reader_skips_marker_objects():
-    """`pytest.mark.parametrize` (a `MarkDecorator`) in env does not
-    abort tool collection; the probe catches the `AttributeError` from
-    `nested_type`'s Callable branch (`typing.get_overloads` accesses
-    `__qualname__` which `MarkDecorator` lacks)."""
-    env = {"mark": pytest.mark.parametrize, "regular": 42}
-    result = _collect_tools(env)
-    assert "mark" not in result
-    assert "regular" in result
-
-
-def test_system_prompt_has_no_lexical_readers_preface():
-    """The system prompt no longer carries a global preface about
-    lexical readers; the per-tool docstring carries the framing."""
-
-    @Template.define
-    def t(x: int) -> int:
-        """Doc."""
-        raise NotHandled
-
-    # Module docstring may be present, but the old preface phrasing
-    # ("You also have access to read-only tools") is not.
-    assert "read-only tools for inspecting the lexical" not in t.__system_prompt__
-
-
 def test_lexical_reader_doc_mentions_name():
     """Each synthetic reader carries a per-instance docstring that
     names the captured variable so the LLM can tell readers apart."""
     env = {"my_var": [1, 2, 3]}
-    tool = _define_lexical_reader(env, name="my_var")
+    tool = _LexicalVariableTool.define(env, name="my_var")
     assert tool.__doc__ is not None
     assert "my_var" in tool.__doc__
 

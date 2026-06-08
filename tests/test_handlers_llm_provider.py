@@ -2188,17 +2188,6 @@ class TestSyntheticReaderIntegration:
         assert isinstance(result, int)
         assert result == sum(_known_data)  # 150
 
-    @pytest.mark.skip(
-        reason=(
-            "Blocked on synthesizer issue #674: pytest's `request` fixture "
-            "has type `_pytest.fixtures.TopRequest`, which leaks into the "
-            "Template's lexical context.  `mypy_type_check`'s "
-            "`collect_imports` drops `_`-prefixed modules even when "
-            "referenced by emitted stubs, so mypy fails on "
-            "`Name '_pytest' is not defined`.  Unskip and record fixtures "
-            "with `REBUILD_FIXTURES=true` once #674 lands."
-        )
-    )
     @requires_llm
     def test_template_synthesis_uses_lexical_reader(self, request):
         """A Template that synthesizes a callable grounds its output

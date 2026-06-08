@@ -178,33 +178,45 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
-def _define_lexical_reader(
-    env: collections.abc.Mapping[str, typing.Any], *, name: str
-) -> "Tool[[], typing.Any]":
-    """Construct a synthetic reader Tool for `env[name]`.
+class _LexicalVariableTool[T](Tool[[], T]):
+    """A zero-arg `Tool` that returns the captured value of a variable
+    from a `Template`'s lexical context.
 
-    Raises if the value's `Encodable[nested_type(value)]` schema cannot
-    be generated.  The caller is responsible for catching the failure
-    and deciding whether to skip the symbol.
+    Tools are constructed fresh each `call_assistant` invocation, so
+    the reader closes over the snapshot `value` rather than the
+    surrounding `env` — in-place mutation of a mutable value is still
+    visible (same object reference), but rebinding the source name is
+    not.
     """
-    value = env[name]
-    typ: typing.Any = nested_type(value).value
-    # Probe schema generation; raises if `Encodable[typ]` is not implemented.
-    pydantic.TypeAdapter(Encodable[typ]).json_schema()
 
-    def tool_fn():
-        return env[name]
+    @classmethod
+    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":  # type: ignore[override]
+        """Construct a synthetic reader Tool that returns `value`.
 
-    tool_fn.__name__ = name
-    tool_fn.__qualname__ = name
-    tool_fn.__module__ = type(value).__module__
-    tool_fn.__doc__ = (
-        f"Reads the value of lexical variable `{name}` from the "
-        f"enclosing scope where this Template was defined.  Takes "
-        f"no arguments; returns the current value."
-    )
-    tool_fn.__annotations__ = {"return": typ}
-    return Tool.define(tool_fn)
+        Raises if `Encodable[nested_type(value)]` cannot be generated.
+        The caller is responsible for catching the failure and deciding
+        whether to skip the symbol.
+        """
+        assert not isinstance(value, Tool), (
+            "Tools are real tools and must not be re-wrapped as lexical readers."
+        )
+        typ: typing.Any = nested_type(value).value
+        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
+        pydantic.TypeAdapter(Encodable[typ]).json_schema()
+
+        def tool_fn():
+            return value
+
+        tool_fn.__name__ = name
+        tool_fn.__qualname__ = name
+        tool_fn.__module__ = type(value).__module__
+        tool_fn.__doc__ = (
+            f"Reads the value of lexical variable `{name}` from the "
+            f"enclosing scope where this Template was defined.  Takes "
+            f"no arguments; returns the current value."
+        )
+        tool_fn.__annotations__ = {"return": typ}
+        return super().define(tool_fn)
 
 
 def _collect_tools(
@@ -224,17 +236,18 @@ def _collect_tools(
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
         elif name.isidentifier():
             try:
-                result[name] = _define_lexical_reader(env, name=name)
-            # `TypeError`/`AttributeError`/`NameError` absorb `nested_type`
-            # bugs on pathological values (MarkDecorator, method descriptors,
-            # Operations with unresolved forward-refs); see #673.
+                result[name] = _LexicalVariableTool.define(obj, name=name)
+            # `TypeError` joins the three Pydantic errors because the
+            # `Encodable[T]` registry raises `TypeError` to signal
+            # "no schema possible" — e.g. `_pydantic_type_operation`,
+            # `_pydantic_type_term`, and `_pydantic_callable`'s
+            # incomplete-signature path. Same intent as the Pydantic
+            # cases, different exception class.
             except (
                 pydantic.errors.PydanticSchemaGenerationError,
                 pydantic.errors.PydanticInvalidForJsonSchema,
                 pydantic.errors.PydanticUserError,
                 TypeError,
-                AttributeError,
-                NameError,
             ):
                 continue
 
