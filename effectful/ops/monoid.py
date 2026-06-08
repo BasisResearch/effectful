@@ -4,7 +4,7 @@ import itertools
 import operator
 import typing
 from collections import Counter, UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Set
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
