@@ -176,10 +176,10 @@ class ReduceArrayGather(ObjectInterpretation):
             ):
                 kk = Operation.define(k)
                 subst_body = handler({k: deffn(unbind_dims(v, kk))})(evaluate)(body)
-                subst_streams = {
-                    sk: sv if sk != k else range(v.shape[0])
-                    for (sk, sv) in streams.items()
-                }
+                subst_streams = handler({k: kk})(evaluate)(
+                    {sk: sv for (sk, sv) in streams.items() if sk != k}
+                    | {kk: range(v.shape[0])}
+                )
                 return monoid.reduce(subst_body, subst_streams)
 
         return fwd()
@@ -206,7 +206,7 @@ ARRAY_REDUCTORS[LogSumExp] = logsumexp
 
 
 class ReduceArray(ObjectInterpretation):
-    """Reduce an array body over its array/``arange`` streams."""
+    """Reduce an array body over range streams."""
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
@@ -217,20 +217,23 @@ class ReduceArray(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
+        if isinstance(body, Term) and body.op == delta:
+            pos_dims = {
+                d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams
+            }
+        else:
+            pos_dims = {}
+
         body_fvs = fvsof(body)
-        used = [
+        used = {
             k
             for k, v in streams.items()
-            if k in body_fvs
-            and (
-                issubclass(typeof(v), jax.Array | jax.core.Tracer)
-                or isinstance(v, range)
-            )
-        ]
+            if k in body_fvs and k not in pos_dims and isinstance(v, range)
+        }
         if not used:
             return fwd()
 
-        delta_key = tuple(k() for k in used)
+        delta_key = tuple(k() for k in streams if k in used)
         arr = monoid.reduce(delta(delta_key, body), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
@@ -257,6 +260,16 @@ class DeltaEmpty(ObjectInterpretation):
     def _(self, index, weight):
         if not index:
             return weight
+        return fwd()
+
+
+class DeltaFusion(ObjectInterpretation):
+    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
+
+    @implements(delta)
+    def _(self, index, weight):
+        if isinstance(weight, Term) and weight.op == delta:
+            return delta(index + weight.args[0], weight.args[1])
         return fwd()
 
 
@@ -487,6 +500,9 @@ class ReduceSumProductContraction(ObjectInterpretation):
         if shared != stream_vars:
             return fwd()
 
+        if not all(isinstance(v, range) for v in streams.values()):
+            return fwd()
+
         # create leading reduction dimensions
         delta_key = tuple(k() for k in streams)
         pos_lhs = Sum.reduce(delta(delta_key, lhs), streams)
@@ -545,6 +561,7 @@ NormalizeIntp.extend(
     ReduceDeltaSimpleRange(),
     ReduceDependentRangeMask(),
     DeltaEmpty(),
+    DeltaFusion(),
     SumPlusJax(),
     ProductPlusJax(),
     MinPlusJax(),
