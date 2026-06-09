@@ -854,6 +854,14 @@ def _(x: object, other) -> bool:
     return x == other
 
 
+@syntactic_eq.register(int | float)
+def _(x: int | float, other) -> bool:
+    # Terms often override __eq__
+    if isinstance(other, Term) or not isinstance(other, int | float):
+        return False
+    return x == other
+
+
 @_CustomSingleDispatchCallable
 def syntactic_hash(__dispatch: Callable[[type], Callable[[Any], int]], x) -> int:
     """Structural hash compatible with :func:`syntactic_eq`.
