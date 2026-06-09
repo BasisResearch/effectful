@@ -1,7 +1,10 @@
+import builtins
 import collections.abc
 import contextlib
 import dataclasses
 import functools
+import inspect
+import itertools
 import operator
 import types
 import typing
@@ -224,6 +227,13 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
+@evaluate.register(builtins.range)
+@evaluate.register(str | bytes | bytearray)
+@evaluate.register(int | float | complex | bool | type(None))
+def _evaluate_atomic(expr: Any, **kwargs):
+    return expr
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
     args = tuple(evaluate(arg) for arg in expr.args)
@@ -282,6 +292,75 @@ def _evaluate_set_view(expr, **kwargs):
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
     return [evaluate(item) for item in expr]
+
+
+@evaluate.register(collections.abc.Set)
+def _evaluate_set(expr, **kwargs):
+    return type(expr)(evaluate(item) for item in expr)
+
+
+@evaluate.register(collections.abc.Generator)
+def _evaluate_generator(expr, **kwargs):
+    if inspect.getgeneratorstate(expr) != inspect.GEN_CREATED:
+        return expr  # cannot introspect in-progress generator
+    else:
+        from effectful.internals.runtime import get_interpretation
+
+        intp = get_interpretation()
+        return (evaluate(item, intp=intp) for item in expr)
+
+
+@evaluate.register(collections.abc.Iterator)
+def _evaluate_iterator(expr, **kwargs):
+    return iter(evaluate(expr.__reduce__()[1]))
+
+
+@evaluate.register(type(iter((1,))))
+def _evaluate_tuple_iterator(expr, **kwargs):
+    return iter(evaluate(expr.__reduce__()[1]))
+
+
+@evaluate.register(builtins.slice)
+def _evaluate_slice(expr, **kwargs):
+    return builtins.slice(*evaluate((expr.start, expr.stop, expr.step)))
+
+
+@evaluate.register(builtins.map)
+def _evaluate_map(expr, **kwargs):
+    _, (fn, iterator) = expr.__reduce__()
+    return builtins.map(evaluate(fn), evaluate(iterator))
+
+
+@evaluate.register(builtins.filter)
+def _evaluate_filter(expr, **kwargs):
+    _, (fn_or_none, iterator) = expr.__reduce__()
+    return builtins.filter(evaluate(fn_or_none), evaluate(iterator))
+
+
+@evaluate.register(builtins.zip)
+def _evaluate_zip(expr, **kwargs):
+    iterators_strict = expr.__reduce__()[1:]
+    strict = len(iterators_strict) == 2 and iterators_strict[1] is True
+    values = iterators_strict[0]
+    return builtins.zip(*[evaluate(v) for v in values], strict=strict)
+
+
+@evaluate.register(builtins.enumerate)
+def _evaluate_enumerate(expr, **kwargs):
+    _, (iterator, start) = expr.__reduce__()
+    return builtins.enumerate(evaluate(iterator), start=start)
+
+
+@evaluate.register(builtins.reversed)
+def _evaluate_reversed(expr, **kwargs):
+    _, (seq,) = expr.__reduce__()
+    return builtins.reversed(evaluate(seq))
+
+
+@evaluate.register(itertools.product)
+def _evaluate_product(expr: itertools.product, **kwargs):
+    _, (iterables, repeat) = expr.__reduce__()
+    return itertools.product(*[evaluate(it) for it in iterables], repeat=repeat)
 
 
 def _simple_type(tp: type) -> type:
