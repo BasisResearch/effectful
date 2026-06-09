@@ -480,7 +480,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("concentration0", f"exp(rand({batch_shape + indep_shape}))"),
             ),
             batch_shape,
-            xfail="to_event not implemented",
+            xfail="to_event composed with expand_by on indexed dims not implemented",
         )
 
         # Dirichlet.to_event
@@ -494,7 +494,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                     ),
                 ),
                 batch_shape,
-                xfail="to_event not implemented",
+                xfail="to_event composed with expand_by on indexed dims not implemented",
             )
 
         # TransformedDistribution.to_event
@@ -513,7 +513,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
                 ("high", f"2. + rand({batch_shape + indep_shape})"),
             ),
             batch_shape,
-            xfail="to_event not implemented",
+            xfail="TransformedDistribution not implemented",
         )
 
 
@@ -929,3 +929,94 @@ def test_distribution_typeof():
         typeof(dist.Normal(jax_getitem(jnp.array([0, 1, 2]), [defop(jax.Array)()])))
         is numpyro.distributions.continuous.Normal
     )
+
+
+def test_distribution_method_chain_on_non_eager_term():
+    """Regression test for #666 (narrow).
+
+    ``Normal(mu_term, 1.0).expand([J]).to_event(1)`` must not raise
+    ``AttributeError`` mid-chain. Previously ``_DistributionTerm.expand`` was
+    ``@defop``-annotated to return ``jax.Array``, routing ``.expand([J])``'s
+    result through ``_ArrayTerm`` (no ``.to_event``). The fix annotates
+    ``expand`` to return ``dist.Distribution`` and registers a fallback
+    ``_DistributionMethodTerm`` for ``defdata`` dispatch on the abstract base,
+    so the chain stays in the distribution-term surface.
+    """
+    mu = defop(jax.Array, name="mu")
+
+    expanded = dist.Normal(mu(), 1.0).expand([3])
+    assert isinstance(expanded, numpyro.distributions.Distribution)
+
+    chained = expanded.to_event(1)
+    assert isinstance(chained, numpyro.distributions.Distribution)
+
+
+def test_expand_to_event_shape_laws():
+    """Equational laws for ``.expand`` and ``.to_event`` on a distribution term
+    whose free-variable arg has been bound by an effectful handler.
+
+    These hold for any NumPyro distribution and should survive any future
+    refactor of how deferred method ops are encoded:
+
+      d.expand(s).batch_shape == tuple(s)
+      d.expand(s).event_shape == d.event_shape
+      d.to_event(k).event_shape == d.batch_shape[-k:] + d.event_shape
+      d.to_event(k).batch_shape == d.batch_shape[:-k]
+    """
+    import jax.numpy as jnp
+
+    from effectful.ops.semantics import handler
+
+    mu = defop(jax.Array, name="mu")
+
+    with handler({mu: lambda: jnp.array(0.0)}):
+        d = dist.Normal(mu(), 1.0)
+        assert d.batch_shape == ()
+        assert d.event_shape == ()
+
+        expanded = d.expand([3, 4])
+        assert expanded.batch_shape == (3, 4)
+        assert expanded.event_shape == ()
+
+        indep = expanded.to_event(1)
+        assert indep.batch_shape == (3,)
+        assert indep.event_shape == (4,)
+
+        chained = d.expand([3]).to_event(1)
+        assert chained.batch_shape == ()
+        assert chained.event_shape == (3,)
+        assert not chained.support.is_discrete
+
+
+def test_expand_to_event_chain_end_to_end_mcmc():
+    """End-to-end regression: the literal #666 idiom — ``Normal(mu_term, 1.0)
+    .expand([J]).to_event(1)`` with ``mu_term`` bound by an effectful handler —
+    must trace, build a potential, and run MCMC to completion.
+
+    Before the fix this raised ``AttributeError: '_ArrayTerm' object has no
+    attribute 'to_event'`` at chain construction. After the fix, the chain
+    constructs a ``_DistributionMethodTerm`` whose materialised
+    ``_pos_base_dist`` resolves to a real ``dist.Independent`` wrapping the
+    handler-bound receiver, so NumPyro's downstream property/sample/log_prob
+    accesses all resolve.
+    """
+    import jax.numpy as jnp
+    import jax.random as jr
+
+    from effectful.ops.semantics import handler
+
+    mu = defop(jax.Array, name="mu")
+
+    def model():
+        numpyro.sample("theta", dist.Normal(mu(), 1.0).expand([3]).to_event(1))
+
+    with handler({mu: lambda: jnp.array(0.0)}):
+        mcmc = numpyro.infer.MCMC(
+            numpyro.infer.NUTS(model),
+            num_warmup=20,
+            num_samples=20,
+            progress_bar=False,
+        )
+        mcmc.run(jr.PRNGKey(0))
+
+    assert mcmc.get_samples()["theta"].shape == (20, 3)
