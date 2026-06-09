@@ -178,35 +178,115 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
-def _collect_tools(
+class _LexicalVariableTool[T](Tool[[], T]):
+    """A zero-arg `Tool` that returns the captured value of a variable
+    from a `Template`'s lexical context.
+
+    Tools are constructed fresh each `call_assistant` invocation, so
+    the reader closes over the snapshot `value` rather than the
+    surrounding `env` — in-place mutation of a mutable value is still
+    visible (same object reference), but rebinding the source name is
+    not.
+    """
+
+    @classmethod
+    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
+        """Construct a synthetic reader Tool that returns `value`.
+
+        Raises if `Encodable[nested_type(value)]` cannot be generated.
+        The caller is responsible for catching the failure and deciding
+        whether to skip the symbol.
+        """
+        assert not isinstance(value, Tool), (
+            "Tools are real tools and must not be re-wrapped as lexical readers."
+        )
+        typ: typing.Any = nested_type(value).value
+        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
+        pydantic.TypeAdapter(Encodable[typ]).json_schema()
+
+        def tool_fn():
+            return value
+
+        tool_fn.__name__ = name
+        tool_fn.__qualname__ = name
+        tool_fn.__module__ = type(value).__module__
+        tool_fn.__doc__ = (
+            f"Reads the value of lexical variable `{name}` from the "
+            f"enclosing scope where this Template was defined.  Takes "
+            f"no arguments; returns the current value."
+        )
+        tool_fn.__annotations__ = {"return": typ}
+        return super().define(tool_fn)
+
+
+@Operation.define
+def collect_tools(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> collections.abc.Mapping[str, Tool]:
-    """Operations and Templates available as tools. Auto-capture from lexical context."""
-    result = {}
+    """Return the tools available to a Template given its lexical context.
+
+    Default rule: real `Tool` and `Template` values bound directly in
+    `env`, plus `Tool` methods discovered through the MRO of any
+    `Agent` instance in `env`.  Same-Tool-under-different-names is
+    deduped so each Tool appears exactly once.
+
+    Handlers (see :class:`LexicalReaders`) may override this to add
+    synthetic readers, hide tools, etc.
+    """
+    result: dict[str, Tool] = {}
 
     for name, obj in env.items():
-        # Collect tools directly in context
         if isinstance(obj, Tool | Template):
             result[name] = obj
-
-        # Collect tools as methods on Agent instances in context
         elif isinstance(obj, Agent):
             for cls in type(obj).__mro__:
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
 
-    # The same Tool can appear under multiple names when it is both
-    # visible in the enclosing scope *and* discovered via an Agent
-    # instance's MRO.  Since Tools are hashable Operations and
-    # instance-method Tools are cached per instance, we keep only
-    # the last name for each unique tool object.
+    # Same Tool can appear under multiple names when visible both in the
+    # enclosing scope and via an Agent instance's MRO.  Keep only the
+    # last name for each unique tool object.
     tool2name = {tool: name for name, tool in sorted(result.items())}
     for name, tool in tuple(result.items()):
         if tool2name[tool] != name:
             del result[name]
 
     return result
+
+
+class LexicalReaders(ObjectInterpretation):
+    """Override `collect_tools` to also expose plain values from the
+    lexical context as zero-argument read-only Tools.  Each non-Tool,
+    non-Template, non-Agent value bound to a valid identifier is
+    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
+    schema-generation failures cause the symbol to be skipped.
+    """
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        result = dict(fwd())
+        for name, obj in env.items():
+            if name in result or not name.isidentifier():
+                continue
+            try:
+                result[name] = _LexicalVariableTool.define(obj, name=name)
+            # `TypeError` joins the three Pydantic errors because the
+            # `Encodable[T]` registry raises `TypeError` to signal
+            # "no schema possible" — e.g. `_pydantic_type_operation`,
+            # `_pydantic_type_term`, and `_pydantic_callable`'s
+            # incomplete-signature path. Same intent as the Pydantic
+            # cases, different exception class.
+            except (
+                pydantic.errors.PydanticSchemaGenerationError,
+                pydantic.errors.PydanticInvalidForJsonSchema,
+                pydantic.errors.PydanticUserError,
+                TypeError,
+            ):
+                continue
+        return result
 
 
 @Operation.define
@@ -243,7 +323,7 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = _collect_tools(env)
+    tools = dict(collect_tools(env))
     tool_specs = {
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],
