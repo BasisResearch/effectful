@@ -269,9 +269,7 @@ class LexicalReaders(ObjectInterpretation):
     ) -> collections.abc.Mapping[str, Tool]:
         result = dict(fwd())
         for name, obj in env.items():
-            if name in result or isinstance(obj, Tool | Template | Agent):
-                continue
-            if not name.isidentifier():
+            if name in result or not name.isidentifier():
                 continue
             try:
                 result[name] = _LexicalVariableTool.define(obj, name=name)
