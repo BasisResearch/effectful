@@ -1,4 +1,3 @@
-import inspect
 from types import NoneType
 from typing import TYPE_CHECKING
 
