@@ -76,7 +76,8 @@ def test_reduce_array_1(monoid, reductor, backend: JaxBackend):
         lhs=lhs,
         rhs=rhs,
         rule=functools.reduce(
-            coproduct, [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()]
+            coproduct,  # type: ignore[arg-type]
+            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
         ),
     )
 
@@ -98,7 +99,8 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
         lhs=lhs,
         rhs=rhs,
         rule=functools.reduce(
-            coproduct, [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()]
+            coproduct,  # type: ignore[arg-type]
+            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
         ),
     )
 
@@ -126,7 +128,7 @@ def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
         lhs=lhs,
         rhs=rhs,
         rule=functools.reduce(
-            coproduct,
+            coproduct,  # type: ignore[arg-type]
             [
                 ReduceArrayGather(),
                 ReduceArray(),
